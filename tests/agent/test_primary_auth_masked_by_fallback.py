@@ -115,3 +115,37 @@ def test_primary_serving_again_reports_only_its_own_failure(home, backup_url):
     assert result["failed"] is True
     assert "hermes auth add anthropic" not in result["final_response"]
     assert "primary_auth_failure" not in result
+
+
+
+def _anthropic_model_cooldown():
+    """The real raise site: the pool benched the key for one model, other models still have it."""
+    import agent.anthropic_credentials as ac
+    from hermes_cli.auth import AuthError
+    from hermes_cli.runtime_provider import _anthropic_token_or_raise
+
+    real = ac.resolve_anthropic_token
+    ac.resolve_anthropic_token = lambda model=None: None if model else "sk-ant-ok"
+    try:
+        _anthropic_token_or_raise(model="claude-opus-4")
+    except AuthError as exc:
+        return exc
+    finally:
+        ac.resolve_anthropic_token = real
+    raise AssertionError("expected an AuthError")
+
+
+def _missing_external_cli():
+    from hermes_cli.auth import AuthError
+
+    return AuthError("Could not find the 'claude-cli' CLI command 'claude'. Install it.", provider="claude-cli",
+                     code="missing_external_process_cli")
+
+
+@pytest.mark.parametrize("make_exc", [_anthropic_model_cooldown, _missing_external_cli])
+def test_primary_failures_a_relogin_cannot_fix_are_not_called_lapsed_logins(make_exc):
+    """A per-model cooldown leaves the login working, and a missing CLI needs installing: neither is a
+    lapsed login, so a backup's later failure must not tell the user to sign in to the primary."""
+    from agent.primary_auth_fallback import primary_auth_failure_from_exc
+
+    assert primary_auth_failure_from_exc(make_exc(), "anthropic", "custom") is None

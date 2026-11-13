@@ -26,6 +26,10 @@ class PrimaryAuthFailure:
     backup: str = ""
 
 
+# AuthError codes whose fix is not a sign-in: an outage, a per-model cooldown, a CLI that is not installed.
+_NOT_A_LOGIN_PROBLEM = frozenset({"temporarily_unavailable", "model_rate_limited", "missing_external_process_cli"})
+
+
 def primary_auth_failure_from_exc(exc: Any, provider: Any, backup: Any = "") -> Optional[PrimaryAuthFailure]:
     """The structured reason for a primary ``AuthError`` that a re-login fixes, else None.
 
@@ -35,7 +39,7 @@ def primary_auth_failure_from_exc(exc: Any, provider: Any, backup: Any = "") -> 
 
     if not isinstance(exc, AuthError) or is_rate_limited_auth_error(exc) or exc.retryable is True:
         return None
-    if exc.code in _ENTITLEMENT_ERROR_CODES or exc.code == "temporarily_unavailable":
+    if exc.code in _ENTITLEMENT_ERROR_CODES or exc.code in _NOT_A_LOGIN_PROBLEM:
         return None
     from agent.turn_failure_copy import relogin_command_hint, short_detail
 

@@ -141,9 +141,11 @@ _FALLBACK_SIGNED_OUT = {'failure_reason': 'auth', 'failure_retryable': False, 'e
 _DIRECTSDK = {'provider': 'claude-subscription-directsdk-experimental', 'model': 'claude-opus-5-5'}
 
 
-def test_a_turn_whose_primary_login_lapsed_offers_the_primary_sign_in():
+@pytest.mark.parametrize('reason', ['auth', 'auth_permanent'])
+def test_a_turn_whose_primary_login_lapsed_offers_the_primary_sign_in(reason):
     """The primary fell back at route time and the fallback failed too: the card's Sign in action is the primary's."""
-    surface = _complete(*_authority_turn(Platform.LOCAL, _FALLBACK_SIGNED_OUT, identity=_DIRECTSDK))['error_surface']
+    failure = {**_FALLBACK_SIGNED_OUT, 'failure_reason': reason}
+    surface = _complete(*_authority_turn(Platform.LOCAL, failure, identity=_DIRECTSDK))['error_surface']
     assert (surface['layer'], surface['auth_kind'], surface['provider']) == ('auth', 'oauth', 'nous')
     assert surface['provider_label'] == 'Nous Portal'
 
@@ -167,4 +169,6 @@ def test_a_fallback_failing_for_its_own_reason_keeps_its_card(reason):
     surface = _complete(*_authority_turn(Platform.LOCAL, failure, identity=_DIRECTSDK))['error_surface']
     assert surface['provider'] == _DIRECTSDK['provider']
     assert surface['code'] == reason
+    if reason == 'rate_limit':
+        assert (surface['retryable'], surface['resets_at']) == (True, 1900000000.0)
 

@@ -462,14 +462,18 @@ class _BareUrl:
 def _closing_mark_run(url: str):
     """The first mark run of *url* that prose follows and no later run of the same marks reopens as
     URL text: in ``a*;b*c`` the ``*;`` pairs with ``*c``, so ``;`` is internal punctuation and the URL
-    runs on; in ``a**,next`` nothing does, so ``**`` closes emphasis. One right-to-left pass."""
+    runs on; in ``a**,next`` nothing does, so ``**`` closes emphasis. A reopening run that a later
+    closer of its marks pairs opens emphasis instead: in ``a**,next**word**`` the ``**word`` pairs with
+    the last ``**``, so the first ``**`` still closes and both bold spans render. One right-to-left pass."""
     runs = list(_URL_MARK_RUN_RE.finditer(url))
-    reopened, closing = set(), None
+    reopened, closers, closing = set(), set(), None
     for r in reversed(runs):
         if not _prose_follows(url, r.end()):
-            reopened.add(r.group())
+            if r.group() not in closers:
+                reopened.add(r.group())
         elif r.group() not in reopened:
             closing = r
+            closers.add(r.group())
     return closing
 
 

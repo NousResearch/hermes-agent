@@ -272,6 +272,8 @@ def test_emphasis_wrapping_a_url_that_ends_in_slash_still_renders(adapter, wrapp
     ("**https://example.com**—next", "*https://example\\.com*—next"),
     ("[**https://x.example/**]", "\\[*https://x\\.example/*\\]"),
     ("~~https://x.example/a~~,next", "~https://x\\.example/a~,next"),
+    ("**https://x/a**,next", "*https://x/a*,next"),
+    ("**https://example.com/a**,next**word**", "*https://example\\.com/a*,next*word*"),
 ])
 def test_emphasis_around_a_url_pairs_as_around_any_word(adapter, wrapped, rendered):
     """Bold across a newline, nested emphasis and a closer with prose right after it pair as they

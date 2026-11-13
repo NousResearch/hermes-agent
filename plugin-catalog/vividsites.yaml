@@ -1,14 +1,14 @@
 name: vividsites
 repo: https://github.com/krumjahn/vividsites-connectors
-sha: 3751f3477315796aa48a8dc8f1fde43ca861611d
+sha: ac045b1d3adfdfb663beb36a8586aa7728362d02
 subdir: hermes
-description: Free public components without a key, plus cinematic templates and website blueprints with an optional paid library account.
+description: Cinematic website design sources for Hermes. Free UI components without a key; website templates, build prompts and blueprints with an optional paid VividSites library account.
 maintainer: VividSites
 tier: community
-category: tools
+category: web
 requires_hermes: ">=0.23.1"
 version: "1.2.0"
-title: VividSites
+title: VividSites — Cinematic Website Design
 readme: true
 capabilities:
   provides_tools:

@@ -26,7 +26,7 @@ from tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
-    _registered_adapter_secret_env, _registry_adapter_secret_env,
+    _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
     strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
@@ -468,7 +468,18 @@ def served_profile_child_env(
                     "no profile secret scope bound while multiplexing is on; the child would inherit the "
                     "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
         env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
+        if not (_is_routed_home(target) if target else secrets is not None):
+            _restore_bootstrap_tokens(env, os.environ if base is None else base)
     return env
+
+
+def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) -> None:
+    """A credentialed child of the launch home (a gateway it starts, a ``key_cmd`` helper such as
+    ``op read``) authenticates to the home's vault itself, so it keeps the bootstrap token the Tier-1
+    scrub removed, from the process env (systemd, Docker ``-e``) or ``.env`` (an overlay wins)."""
+    for name in _secret_source_bootstrap_env():
+        if name not in env and source.get(name):
+            env[name] = source[name]
 
 
 def host_gateway_child_env(

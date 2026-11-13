@@ -1085,8 +1085,9 @@ wire_shell_path() {
     local login_shell="${SHELL:-/bin/bash}"
     case "${login_shell##*/}" in
         zsh)
-            append_shell_path "$HOME/.zshrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            append_shell_path "$HOME/.zprofile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            # zsh reads its startup files from $ZDOTDIR when set (XDG setups), never ~/.zshrc then.
+            append_shell_path "${ZDOTDIR:-$HOME}/.zshrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+            append_shell_path "${ZDOTDIR:-$HOME}/.zprofile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             ;;
         fish)
             append_shell_path "$HOME/.config/fish/config.fish" 'fish_add_path "$HOME/.local/bin"' '^[[:space:]]*fish_add_path.*\.local/bin'
@@ -1197,7 +1198,7 @@ print_path_reload_hint() {
     local rc
     local login_shell="${SHELL:-}"
     case "${login_shell##*/}" in
-        zsh) rc="source ~/.zshrc" ;;
+        zsh) rc="source ${ZDOTDIR:-~}/.zshrc" ;;
         fish) rc="source ~/.config/fish/config.fish" ;;
         bash|"") rc="source ~/.bashrc" ;;
         *) rc=". ~/.profile" ;;

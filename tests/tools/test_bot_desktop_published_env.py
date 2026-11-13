@@ -133,11 +133,12 @@ def test_the_key_set_matches_what_launcher_sh_writes():
 
 # ---- agent-machine sinks (sandbox-hosted screen) ------------------------------------------------------------
 
-def test_desktop_env_adds_nothing_from_a_sandbox_hosted_screen_but_stamps_activity(sandbox_screen):
-    base = {"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0", "PATH": "/usr/bin"}
+def test_desktop_env_drops_this_machines_seat_for_a_sandbox_hosted_screen_but_stamps_activity(sandbox_screen):
+    base = {"DISPLAY": ":0", "XAUTHORITY": "/home/u/.Xauthority", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/u/bus",
+            "WAYLAND_DISPLAY": "wayland-0", "PATH": "/usr/bin"}
     activity = runtime.state_dir() / "activity"
     assert not activity.exists()
-    assert runtime.desktop_env(base) == base
+    assert runtime.desktop_env(base) == {"PATH": "/usr/bin"}
     assert activity.exists(), "a spawn on a sandbox-hosted screen is still the agent using it"
 
 
@@ -148,10 +149,21 @@ def test_browser_and_cua_driver_envs_carry_none_of_the_backend_values(sandbox_sc
 
     browser_env = build_browser_env()
     assert _leaked(browser_env) == {}
-    assert browser_env.get("DISPLAY") == ":0"
+    assert "DISPLAY" not in browser_env
     cua_env = cua_driver_child_env({"DISPLAY": ":0", "PATH": "/usr/bin"})
     assert _leaked(cua_env) == {}
-    assert cua_env["DISPLAY"] == ":0"
+    assert "DISPLAY" not in cua_env
+
+
+def test_a_host_cua_driver_never_gets_this_machines_seat_for_a_sandbox_hosted_screen(sandbox_screen, monkeypatch):
+    """bounded / unrestricted computer_use runs its embedded daemon on THIS machine even under terminal placement:
+    with no display it fails, where the seat would put an approval-bypassed driver on the human's own desktop."""
+    for key, value in {"DISPLAY": ":0", "XAUTHORITY": "/home/u/.Xauthority",
+                       "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/u/bus"}.items():
+        monkeypatch.setenv(key, value)
+    from tools.computer_use.cua_backend import CuaDriverBackend
+    env = CuaDriverBackend("unrestricted")._embedded_daemon.child_env()
+    assert not {"DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"} & set(env)
 
 
 def test_local_terminal_env_carries_none_of_the_backend_values(sandbox_screen, monkeypatch):
@@ -209,8 +221,8 @@ def test_cached_driver_identity_follows_a_sandbox_hosted_screen(sandbox_screen, 
     from tools.computer_use import cua_backend
     monkeypatch.setenv("DISPLAY", ":0")
     assert cua_backend.desktop_identity() == ":20"
-    backend["env_file"] = b""  # the screen is down: nothing published
-    assert cua_backend.desktop_identity() == ":0"
+    backend["env_file"] = b""  # the screen is down: nothing published, and the seat is not the screen either
+    assert cua_backend.desktop_identity() == ""
     assert cua_backend.backend_display_stale(":20", cua_backend.desktop_identity())
 
 

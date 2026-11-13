@@ -353,16 +353,21 @@ def _allocate_display() -> int:
 def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
     merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
-    Pure: never starts anything (it is called from env builders, status probes and tests). A screen hosted
-    inside the terminal backend adds nothing (see :func:`host_published_env`) but still counts as used."""
+    Pure: never starts anything (it is called from env builders, status probes and tests). While the screen is
+    hosted inside the terminal backend this machine's seat is removed instead: a GUI child started here then has
+    no screen and fails, rather than acting on the seat a human is sitting at (#90374 class)."""
+    from tools.bot_desktop import sandbox_host
     env = dict(os.environ if base_env is None else base_env)
     published = host_published_env()
     if published:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
-    elif is_running():
-        touch_activity()  # the sandbox-hosted screen: the spawn is still the agent using it
+    elif sandbox_host._read_marker():
+        for key in ("DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY"):
+            env.pop(key, None)
+        if is_running():
+            touch_activity()  # the sandbox-hosted screen: the spawn is still the agent using it
     return env
 
 

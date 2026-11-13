@@ -56,7 +56,12 @@ in `~/.hermes/.env`. On NixOS, `services.hermes-agent.environment` is written to
 `systemd.services.hermes-backend.environment` when the backend runs),
 `environment.variables` for interactive shells, or, in container mode, an `--env`
 entry in `services.hermes-agent.container.extraOptions` with the directory mounted
-through `container.extraVolumes`.
+through `container.extraVolumes`. The Home Manager module writes
+`services.hermes-agent.environment` to the same `.env`: set the variable on the
+user units instead, with `systemd.user.services.hermes-agent.Service.Environment`
+(and `hermes-backend`) on Linux, or
+`launchd.agents.hermes-agent.config.EnvironmentVariables` (and `hermes-backend`)
+on macOS.
 
 ```bash
 # Point managed scope at a custom directory (set by IT / the deployment, not the user)

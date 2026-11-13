@@ -484,8 +484,14 @@ class GatewayAuthorizationMixin:
         source = getattr(entry, "origin", None)
         if source is None:
             return None
-        from gateway.session_identity import restore_identity
+        from gateway.session_identity import identity_of, restore_identity
         restore_identity(source, runner=self, transport_profile=getattr(entry, "transport_profile", None))
+        if (getattr(self.config, 'multiplex_profiles', False)
+                and not self._names_receiving_bot(source, identity_of(source))
+                and self._fronting_relay(source.platform, None) is not None):
+            from gateway.session_native_recovery_routes import verified_restored_relay_source
+            if verified := verified_restored_relay_source(self, entry):
+                return verified
         return source
 
     def _adapter_flag(self, platform, name: str, profile) -> bool:

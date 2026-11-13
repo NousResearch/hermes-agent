@@ -298,6 +298,7 @@ class GatewayStartupMixin:
         *before* ``_finish_startup_restore`` released the gate. See #91969.
         """
         from gateway.run import _startup_restore_drain_timeout_secs
+        self._boot_reply_recovery_incomplete = False
         claimed = await self._claim_pending_obligations()
 
         async def _boot_sends() -> None:
@@ -366,6 +367,7 @@ class GatewayStartupMixin:
             )
         except Exception:
             logger.warning("delivery ledger sweep failed; scheduling recovery", exc_info=True)
+            self._boot_reply_recovery_incomplete = True
             schedule_served_recovery(self)
             return []
         if not claimed:
@@ -375,6 +377,7 @@ class GatewayStartupMixin:
         # resume path must never re-run these turns (#91969).
         sendable, complete = await prepare_recovery_claims(self, claimed)
         if not complete:
+            self._boot_reply_recovery_incomplete = True
             schedule_served_recovery(self)
         return sendable
 
@@ -410,7 +413,9 @@ class GatewayStartupMixin:
 
         async def _redeliver_after_wait():
             try:
-                while getattr(self, "_running", False):
+                from gateway.run_reconnect_recovery import recovery_allowed
+
+                while recovery_allowed(self):
                     wake.clear()
                     waiting = await asyncio.to_thread(pending_retries)
                     deadlines = [r["not_before"] for r in waiting
@@ -1467,8 +1472,9 @@ class GatewayStartupMixin:
             recover_gateway_pending(self)
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
-        if self._schedule_resume_pending_sessions() is None:
-            schedule_served_recovery(self)
+        if not getattr(self, "_boot_reply_recovery_incomplete", False):
+            if self._schedule_resume_pending_sessions() is None:
+                schedule_served_recovery(self)
         await self._finish_startup_restore()
         from gateway.run_runtime import recover_gateway_native_sessions
         await recover_gateway_native_sessions(self)

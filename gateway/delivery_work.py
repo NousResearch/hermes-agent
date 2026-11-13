@@ -66,10 +66,20 @@ def messaging_work_count(runner):
                     if key not in running:
                         pending.add(key)
     replay = getattr(runner, "_delivery_work", {})
+    replay_owners = {task for task in replay if not task.done()}
+    counted = owners | replay_owners
+    state = runner.__dict__
+    # A retained receipt owns work even if its original send task has left.
+    # An in-flight write within an active send/replay shares that owner's slot.
     return (
         runner._running_agent_count()
         + len(pending)
-        + sum(not task.done() for task in replay if task not in owners)
+        + len(replay_owners - owners)
+        + len(state.get("_delivery_settlements", {}))
+        + sum(
+            caller not in counted
+            for _, caller, _ in state.get("_delivery_settlement_writes", {}).values()
+        )
     )
 
 

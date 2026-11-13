@@ -801,7 +801,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
     def _drain_work_counts(self) -> tuple:
         """``(agents, cron, api, deferred)`` the drain waits on; a managed-worker turn is a chat turn."""
         return (
-            self._running_agent_count() + managed_turn_count(self), self._active_cron_job_count(),
+            messaging_work_count(self) + managed_turn_count(self), self._active_cron_job_count(),
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
         )
 
@@ -1875,7 +1875,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 _cron_at_start, _api_at_start, _cron_timeout, _cron_drain_cfg, timeout,
             )
         _drain_started_at = time.monotonic()
-        ctx.active_agents, ctx.timed_out = await self._drain_active_agents(timeout, _cron_timeout)
+        self._stop_draining_delivery = True
+        try:
+            ctx.active_agents, ctx.timed_out = await self._drain_active_agents(timeout, _cron_timeout)
+        finally:
+            self._stop_draining_delivery = False
         ctx.drain_elapsed = time.monotonic() - _drain_started_at
         logger.info(
             "Shutdown phase: drain done at +%.2fs (drain took %.2fs, timed_out=%s, active_at_start=%d, "

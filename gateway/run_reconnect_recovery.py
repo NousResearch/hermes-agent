@@ -17,11 +17,28 @@ logger = logging.getLogger("gateway.run")
 RECOVERY_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0, 16.0)
 
 
+def stopping(runner):
+    return getattr(runner, "_draining", False) or getattr(
+        runner, "_restart_requested", False
+    )
+
+
 def recovery_allowed(runner):
-    return (
-        getattr(runner, "_running", False)
-        and not getattr(runner, "_draining", False)
-        and not getattr(runner, "_restart_requested", False)
+    return getattr(runner, "_running", False) and not stopping(runner)
+
+
+def _settlement_targets(runner, platform, profile):
+    from gateway.run_delivery_settlement import settlement_platforms
+
+    targets = settlement_platforms(runner, profile)
+    return targets if platform == Platform.RELAY else targets & {platform}
+
+
+def _may_run(runner, platform, profile):
+    state = runner.__dict__
+    return recovery_allowed(runner) or (
+        (getattr(runner, "_running", False) or state.get("_stop_draining_delivery", False))
+        and bool(_settlement_targets(runner, platform, profile))
     )
 
 
@@ -55,7 +72,12 @@ def resume_candidates(runner, entries, platform, profile, protected):
 
 async def _recover_once(runner, platform, profile):
     if not recovery_allowed(runner):
-        return True
+        from gateway.run_delivery_settlement import flush_settlements
+
+        complete = True
+        for target in _settlement_targets(runner, platform, profile):
+            complete = await flush_settlements(runner, target, profile) and complete
+        return complete
     try:
         recovered = await runner._redeliver_failed_obligations_for_platform(
             platform, profile=profile
@@ -104,7 +126,7 @@ def schedule_served_recovery(runner):
 
 def schedule_recovery(runner, platform, *, profile=None, delayed=False):
     """One retained worker per bot; reconnects coalesce without resetting its failure budget."""
-    if not recovery_allowed(runner):
+    if not _may_run(runner, platform, profile):
         return
     transport = _transport(runner, platform, profile)
     if transport is not None and transport.is_relay:
@@ -123,7 +145,7 @@ def schedule_recovery(runner, platform, *, profile=None, delayed=False):
         failures = 0
         wait_first = delayed
         try:
-            while recovery_allowed(runner):
+            while _may_run(runner, platform, profile):
                 if wait_first:
                     if failures >= len(RECOVERY_RETRY_DELAYS):
                         logger.error(
@@ -138,7 +160,7 @@ def schedule_recovery(runner, platform, *, profile=None, delayed=False):
                     await asyncio.sleep(RECOVERY_RETRY_DELAYS[failures])
                     failures += 1
                 wake.clear()
-                if not recovery_allowed(runner):
+                if not _may_run(runner, platform, profile):
                     return
                 complete = await _recover_once(runner, platform, profile)
                 if complete and not wake.is_set():

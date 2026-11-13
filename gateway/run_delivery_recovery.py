@@ -74,7 +74,7 @@ def relay_recovery_pending(runner):
     return False
 
 
-async def claim_reconnected_replies(runner, platform, profile, targets):
+async def claim_reconnected_replies(platform, profile, targets, claimed):
     """Adopt offline-at-boot replies before claiming this process's failed sends."""
     from gateway.delivery_ledger import (
         sweep_failed_for_runtime,
@@ -88,15 +88,31 @@ async def claim_reconnected_replies(runner, platform, profile, targets):
         if name == platform.value
         and (bot == owner or (bot is None and owner == "default"))
     }
-    inherited = await asyncio.to_thread(sweep_recoverable, deliverable_targets=eligible)
-    try:
-        return inherited + await asyncio.to_thread(
-            sweep_failed_for_runtime, platform.value, profile=profile
-        )
-    except Exception:
-        # A later read failing must not strand the earlier claims as attempting.
-        await refund_unsent_claims(runner, inherited)
-        raise
+    claimed.extend(
+        await asyncio.to_thread(sweep_recoverable, deliverable_targets=eligible)
+    )
+    claimed.extend(
+        await asyncio.to_thread(sweep_failed_for_runtime, platform.value, profile=profile)
+    )
+
+
+async def _settle_interrupted_claims(runner, rows):
+    """Keep adopted timers and settle only claims that still lack an outcome."""
+    from gateway.run_delivery_settlement import flush_settlements, retain_settlement
+
+    targets = set()
+    for row in rows:
+        platform, profile = Platform(row["platform"]), row.get("profile")
+        if row.get("adopted"):
+            runner._schedule_flood_redelivery(platform, profile=profile)
+        elif not row.get("_settled"):
+            state = "failed" if row.get("_dispatched") else "unsent"
+            retain_settlement(
+                runner, row, state, row.get("last_error") or "send_path_degraded"
+            )
+        targets.add((platform, profile))
+    for platform, profile in targets:
+        await flush_settlements(runner, platform, profile)
 
 
 async def refund_unsent_claims(runner, rows=()):
@@ -123,7 +139,16 @@ async def prepare_recovery_claims(runner, claimed):
 
 async def redeliver_after_reconnect(runner, platform, profile=None):
     """Sent count, or None when recovery is incomplete and auto-resume must be deferred."""
+    from gateway.run_delivery_settlement import flush_settlements, settlement_platforms
+    from gateway.run_reconnect_recovery import stopping
+
     with delivery_work(runner):
+        if stopping(runner):
+            targets = settlement_platforms(runner, profile) if platform == Platform.RELAY else {platform}
+            complete = True
+            for target in targets:
+                complete = await flush_settlements(runner, target, profile) and complete
+            return 0 if complete else None
         if platform == Platform.RELAY:
             delivered = 0
             complete = True
@@ -136,30 +161,45 @@ async def redeliver_after_reconnect(runner, platform, profile=None):
                 else:
                     delivered += count
             return delivered if complete else None
+        claim = None
+        claimed = []
         try:
             from gateway.delivery_ledger import ledger_enabled
-            from gateway.run_delivery_settlement import flush_settlements
 
             if not await asyncio.to_thread(ledger_enabled):
                 return 0
             if not await flush_settlements(runner, platform, profile):
                 return None
+            if stopping(runner):
+                return 0
             targets = deliverable_targets(runner)
-            claimed = await claim_reconnected_replies(
-                runner, platform, profile, targets
+            claim = asyncio.create_task(
+                claim_reconnected_replies(platform, profile, targets, claimed)
             )
+            await asyncio.shield(claim)
+            if stopping(runner):
+                await _settle_interrupted_claims(runner, claimed)
+                return 0
+            if not claimed:
+                await runner._arm_flood_timers_for_waiting_rows()
+                return 0
+            sendable, complete = await prepare_recovery_claims(runner, claimed)
+            delivered = await runner._redeliver_claimed_obligations(sendable)
+        except asyncio.CancelledError:
+            if claim is not None:
+                # The claim transaction may finish after cancellation. Wait for its
+                # actual rows so we can safely release everything it left unsent.
+                await asyncio.gather(claim, return_exceptions=True)
+            await _settle_interrupted_claims(runner, claimed)
+            raise
         except Exception:
+            await _settle_interrupted_claims(runner, claimed)
             logger.warning(
                 "delivery recovery failed after %s reconnect",
                 platform.value,
                 exc_info=True,
             )
             return None
-        if not claimed:
-            await runner._arm_flood_timers_for_waiting_rows()
-            return 0
-        sendable, complete = await prepare_recovery_claims(runner, claimed)
-        delivered = await runner._redeliver_claimed_obligations(sendable)
         if not complete:
             logger.warning(
                 "Reply recovery could not clear resume flags; deferring auto-resume"
@@ -202,10 +242,14 @@ async def redeliver_claimed(runner, claimed):
     """Send already-claimed replies, preserving the logical platform and runtime route."""
     from gateway.delivery_ledger import RECOVERED_MARKER
     from gateway.run_delivery_settlement import settle_replay_result
+    from gateway.run_reconnect_recovery import stopping
 
     redelivered = 0
     with delivery_work(runner):
-        for row in claimed:
+        for index, row in enumerate(claimed):
+            if stopping(runner):
+                await _settle_interrupted_claims(runner, claimed[index:])
+                break
             if row.get("adopted"):
                 continue
             transport = await obligation_transport(runner, row)
@@ -223,6 +267,7 @@ async def redeliver_claimed(runner, claimed):
                 # that may now be streaming into this same chat/thread.
                 metadata["_interim_send"] = True
             try:
+                row["_dispatched"] = True
                 if transport.is_relay:
                     result = await transport.send(
                         Platform(row["platform"]),

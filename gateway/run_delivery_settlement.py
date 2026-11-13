@@ -4,60 +4,98 @@ import asyncio
 import logging
 
 from gateway.config import Platform
+from gateway.delivery_work import _publish_work_count
 
 logger = logging.getLogger("gateway.run")
 
 
-async def _apply_settlement(runner, pending, oid):
+def _write_settlement(oid, state, error):
     from gateway.delivery_ledger import (
         mark_delivered,
         mark_failed,
         release_runtime_claim,
     )
 
-    # Take it before yielding. Two flushes must not refund the same claim after
-    # the first one has already made it available for a new send.
-    settlement = pending.pop(oid, None)
-    if settlement is None:
-        return True
-    row, state, error = settlement
-    try:
-        if state == "unsent":
-            await asyncio.to_thread(release_runtime_claim, oid, error)
-        elif state == "delivered":
-            await asyncio.to_thread(mark_delivered, oid)
-        else:
-            await asyncio.to_thread(mark_failed, oid, error)
-    except Exception:
+    if state == "unsent":
+        release_runtime_claim(oid, error)
+    elif state == "delivered":
+        mark_delivered(oid)
+    else:
+        mark_failed(oid, error)
+
+
+def _record_write_result(runner, pending, oid, settlement, write):
+    runner._delivery_settlement_writes.pop(oid)
+    if write.cancelled():
+        # Only loop teardown cancels the shielded write. Its thread may still commit.
+        logger.warning("Settlement write for delivery claim %s has unknown outcome", oid)
+    elif (exc := write.exception()) is not None:
         pending.setdefault(oid, settlement)
+        row, state, _ = settlement
         logger.warning(
-            "Delivery claim %s could not be settled as %s", oid, state, exc_info=True
+            "Delivery claim %s could not be settled as %s", oid, state, exc_info=exc
         )
         from gateway.run_reconnect_recovery import schedule_recovery
 
         schedule_recovery(
             runner, Platform(row["platform"]), profile=row.get("profile"), delayed=True
         )
+    _publish_work_count(runner)
+
+
+async def _apply_settlement(runner, pending, oid):
+    # Only the write owns its receipt. Cancellation of its caller cannot stop the
+    # thread, and a refund that committed must never be applied to a new claim.
+    settlement = pending.pop(oid, None)
+    if settlement is None:
+        return True
+    write = asyncio.create_task(asyncio.to_thread(_write_settlement, oid, *settlement[1:]))
+    runner.__dict__.setdefault("_delivery_settlement_writes", {})[oid] = (
+        write, asyncio.current_task(), settlement[0]
+    )
+    write.add_done_callback(
+        lambda done: _record_write_result(runner, pending, oid, settlement, done)
+    )
+    try:
+        await asyncio.shield(write)
+    except Exception:  # health: allow BLE001 -- the write callback retains the outcome
         return False
     return True
 
 
-async def settle_claim(runner, row, state, error=""):
+def retain_settlement(runner, row, state, error=""):
+    row["_settled"] = True
     pending = runner.__dict__.setdefault("_delivery_settlements", {})
-    oid = row["obligation_id"]
-    pending[oid] = (row, state, error)
-    return await _apply_settlement(runner, pending, oid)
+    pending[row["obligation_id"]] = (row, state, error)
+    return pending
+
+
+async def settle_claim(runner, row, state, error=""):
+    pending = retain_settlement(runner, row, state, error)
+    return await _apply_settlement(runner, pending, row["obligation_id"])
+
+
+def _bot(row):
+    return row["platform"], row.get("profile") or "default"
+
+
+def settlement_platforms(runner, profile):
+    pending = runner.__dict__.get("_delivery_settlements", {})
+    return {
+        Platform(row["platform"])
+        for row, _, _ in pending.values()
+        if _bot(row)[1] == (profile or "default")
+    }
 
 
 async def flush_settlements(runner, platform, profile):
     """Retry only DB updates, before the next claim pass for this credential owner."""
     pending = runner.__dict__.get("_delivery_settlements", {})
-    complete = True
+    bot = (platform.value, profile or "default")
+    writes = runner.__dict__.get("_delivery_settlement_writes", {})
+    complete = not any(_bot(row) == bot for _, _, row in writes.values())
     for oid, (row, _, _) in list(pending.items()):
-        if (row["platform"], row.get("profile") or "default") == (
-            platform.value,
-            profile or "default",
-        ):
+        if _bot(row) == bot:
             if not await _apply_settlement(runner, pending, oid):
                 complete = False
     return complete

@@ -151,6 +151,36 @@ class TestBuildNativeVisionToolResult:
         assert env["content"][1]["image_url"]["url"] == "data:image/png;base64,XYZ"
         assert "what does it say?" in env["content"][0]["text"]
 
+    def test_claim_carries_its_persistence_correction(self):
+        """"You can see it natively now" is a claim about THIS turn; the same string reaches
+        later turns through the store, so it must tell that reader how to get the pixels back."""
+        env = _build_native_vision_tool_result(
+            image_url="/tmp/foo.png",
+            question="what does it say?",
+            image_data_url="data:image/png;base64,XYZ",
+            image_size_bytes=1024,
+        )
+        text = env["content"][0]["text"]
+        assert "you can see it natively now" in text
+        assert "call vision_analyze again to re-view" in text
+        assert "call vision_analyze again to re-view" in env["text_summary"]
+
+    def test_durable_projection_is_self_correcting(self):
+        """The reported scenario (#142288): a gateway-rebuilt session hands the model the vision
+        tool result as text with ``[screenshot]`` where the pixels were — the persisted text
+        must not claim native sight without also saying how to re-view the image."""
+        from agent.session_persistence import _durable_content
+        env = _build_native_vision_tool_result(
+            image_url="/tmp/foo.png",
+            question="what does it say?",
+            image_data_url="data:image/png;base64,XYZ",
+            image_size_bytes=1024,
+        )
+        durable = _durable_content(env["content"])
+        assert "[screenshot]" in durable
+        assert "you can see it natively now" in durable
+        assert "call vision_analyze again to re-view" in durable
+
 
 
 # ─── _vision_analyze_native ──────────────────────────────────────────────────

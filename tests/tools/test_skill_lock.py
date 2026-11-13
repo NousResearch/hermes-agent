@@ -73,11 +73,24 @@ def test_file_tools_refuse_a_locked_skill_and_its_record(locked_home):
     ("find {H}/skills -name SKILL.md -exec cat {{}} +", False),
     ("p={H}/out.txt; echo x > \"$p\"", False),
     ("cp -r {H}/new-skill {H}/skills/ops/new-skill", False),
+    # Inline code: the locked skill is refused only as a write target, not as a read source or as
+    # the same `skills/<name>` segment inside another checkout (#154700).
+    ("python3 -c \"open('{T}/out.md','w').write(open('{L}/SKILL.md').read())\"", False),
+    ("python3 -c \"from pathlib import Path; Path('{T}/out.md').write_text(Path('{L}/SKILL.md').read_text())\"", False),
+    ("node -e \"const fs=require('fs'); fs.writeFileSync('{T}/out.md', fs.readFileSync('{L}/SKILL.md'))\"", False),
+    ("python3 -c \"open('{T}/checkout/skills/ops/locked-skill/SKILL.md','w').write('x')\"", False),
+    ("python3 - <<'EOF'\nopen('{T}/checkout/skills/locked-skill/SKILL.md','w').write('x')\nEOF", False),
+    ("python3 -c \"open('{L}/SKILL.md','r+').write('x')\"", True),
+    ("python3 -c \"open('{T}/out.md','w').write(open('{L}/SKILL.md').read()); open('{L}/SKILL.md','a')\"", True),
+    ("python3 -c \"import shutil; shutil.copy('{T}/x.md', '{L}/SKILL.md')\"", True),
+    ("python3 -c \"open('{T}/checkout/../hh/skills/ops/locked-skill/SKILL.md','w').write('x')\"", True),
+    ("python3 -c \"u='x'; open(f'{{u}}/skills/locked-skill/SKILL.md','w').write('x')\"", True),
+    ("python3 - <<'EOF'\nopen('{L}/SKILL.md','w').write('x')\nEOF", True),
 ])
 def test_terminal_refuses_writes_into_a_locked_skill_but_not_reads(locked_home, command, blocked):
     from tools.skill_lock import command_refusal
     lock_dir = locked_home / "skills/ops/locked-skill"
-    reason = command_refusal(command.format(L=lock_dir, H=locked_home), str(locked_home))
+    reason = command_refusal(command.format(L=lock_dir, H=locked_home, T=locked_home.parent), str(locked_home))
     assert (reason is not None) is blocked, reason
 
 

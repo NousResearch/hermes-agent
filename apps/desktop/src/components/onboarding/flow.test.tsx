@@ -146,3 +146,56 @@ describe('ConfirmingModelPanel sign-in result', () => {
     expect(screen.getByText('Your apps moved.')).toBeTruthy()
   })
 })
+
+describe('external CLI sign-in step', () => {
+  const longCommand = '/Users/someone/.nvm/current/bin/claude auth login'
+
+  beforeEach(() => {
+    $desktopOnboarding.set({
+      ...confirmingModelState(),
+      flow: {
+        copied: false,
+        provider: {
+          cli_command: longCommand,
+          docs_url: '',
+          flow: 'external',
+          id: 'claude-subscription-directsdk-experimental',
+          name: 'Claude Subscription DirectSDK (Experimental)',
+          status: { logged_in: false }
+        },
+        status: 'external_pending'
+      }
+    })
+  })
+
+  it('lets the step shrink to the card so a long command cannot push Copy and the footer out', () => {
+    render(<Harness />)
+
+    const command = screen.getByText(longCommand, { exact: false }).closest('code')
+
+    if (!command) {
+      throw new Error('command code element missing')
+    }
+
+    // Grid tracks default to min-width:auto; without these the one-line command sets the step's width.
+    const step = command.closest('.grid')
+
+    if (!step) {
+      throw new Error('step grid missing')
+    }
+
+    expect(step.classList.contains('min-w-0')).toBe(true)
+    expect(command.classList.contains('truncate')).toBe(false)
+    expect(command.classList.contains('break-all')).toBe(true)
+  })
+
+  it('keeps the command selectable and the Copy and continue actions rendered', () => {
+    render(<Harness />)
+
+    const command = screen.getByText(longCommand, { exact: false }).closest('code')
+
+    expect(command?.getAttribute('data-selectable-text')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: "I've signed in" })).toBeTruthy()
+  })
+})

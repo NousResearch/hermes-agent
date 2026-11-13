@@ -33,6 +33,11 @@ from agent.secret_sources.base import (
 
 logger = logging.getLogger(__name__)
 
+# bws's global env options (besides the token, which callers pass explicitly).
+# BWS_CONFIG_FILE / BWS_PROFILE can select a self-hosted server; dropping them
+# would send the token to the default (US Cloud) endpoint instead.
+BWS_ENV_ALLOW = ("BWS_SERVER_URL", "BWS_CONFIG_FILE", "BWS_PROFILE")
+
 _BWS_RUN_TIMEOUT = 30
 
 # <hermes_home>/bws_cache.json holds only secret VALUES (never the access
@@ -385,7 +390,7 @@ def _run_bws_list(bws: Path, access_token: str, project_id: str, server_url: str
     cmd = [str(bws), "secret", "list", "--output", "json", "--", project_id]
     # The bws child gets its access token and an allowlisted env, never the
     # post-dotenv provider credentials (or, under multiplex, a sibling's).
-    env = build_minimal_provider_env(allow_env=("BWS_SERVER_URL",),
+    env = build_minimal_provider_env(allow_env=BWS_ENV_ALLOW,
                                      extra_env={"BWS_ACCESS_TOKEN": access_token})
     # Empty server_url keeps whatever BWS_SERVER_URL the shell already had (manual
     # overrides keep working), but only once it validates — see apply_server_url_to_env.

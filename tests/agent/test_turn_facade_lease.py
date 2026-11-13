@@ -178,6 +178,35 @@ class _MovingClock:
         self._at, self._anchor = at, time.monotonic()
 
 
+def test_host_suspend_does_not_spend_the_lease_authority(monkeypatch):
+    """A laptop sleep must not consume the lease TTL: the first tick after wake renews normally
+    when no successor took the row, instead of reporting a lock fight that never happened (#144503)."""
+    class _Clocks:
+        wall = 1000.0  # keeps running while the host sleeps
+        awake = time.monotonic()  # stays put while the host sleeps
+
+    monkeypatch.setattr("agent.turn_facade_lease.time", SimpleNamespace(time=lambda: _Clocks.wall))
+    # raising=False: on the pre-fix code (no awake clock) the patch still lands and the tick must
+    # fail on behaviour — wall-clock patience spent — not on a missing attribute.
+    monkeypatch.setattr("agent.turn_facade_lease.awake_seconds", lambda: _Clocks.awake, raising=False)
+
+    db = _Db()
+    calls = []
+    agent = _agent(db)
+    agent.interrupt = lambda msg, **kw: calls.append(msg)
+    lease = DurableTurnLease(agent, db, "s1", "h", expires_at=_Clocks.wall + LEASE_TTL_SECONDS)
+    lease.turn_active = True
+
+    # The host sleeps far past the TTL: the wall-clock row expiry passes, the awake clock moves 5s.
+    _Clocks.wall += 600.0
+    _Clocks.awake += 5.0
+    assert lease.refresh_tick() is None
+    assert calls == [] and lease.interrupt_message is None
+    assert lease.stop.is_set() is False
+    # The renewal moved the authority a full TTL past the wake-up instant.
+    assert lease._authority_deadline >= _Clocks.awake + LEASE_TTL_SECONDS - 1.0
+
+
 def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkeypatch):
     """Real SessionDB + a real second-connection write lock. The local deadline never runs past the
     row's committed expiry (a renewal that waited for the lock), and a renewal blocked near expiry
@@ -191,6 +220,9 @@ def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkey
     fake_time = SimpleNamespace(time=clock.time, monotonic=time.monotonic, sleep=time.sleep)
     monkeypatch.setattr(turn_facade_lease, "time", fake_time)
     monkeypatch.setattr(hermes_state_compression, "time", fake_time)
+    # The lease authority runs on the awake clock; bind it to the same moving clock so the
+    # wall-clock expiry stamps and the awake-domain deadline advance together here.
+    monkeypatch.setattr(turn_facade_lease, "awake_seconds", clock.time)
 
     path = tmp_path / "state.db"
     db = hermes_state.SessionDB(path)

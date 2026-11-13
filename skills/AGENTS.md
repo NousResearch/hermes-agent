@@ -5,7 +5,7 @@ user docs: `website/docs/user-guide/features/skills.md`, `curator.md`.
 
 ## Two surfaces
 
-- **`skills/`** — built-in, loadable by default, organised by category (`skills/github/`, `skills/mlops/`).
+- **`skills/`** — built-in, loadable by default, organised by category (`skills/software-development/`, `skills/media/`).
 - **`optional-skills/`** — heavier/niche skills shipped but NOT active; installed via
   `hermes skills install official/<category>/<skill>` (adapter `tools/skills_hub_official.py`
   `OptionalSkillSource`). Categories: `autonomous-ai-agents, blockchain, communication, creative,

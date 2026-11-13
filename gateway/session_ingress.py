@@ -57,6 +57,12 @@ async def admit_message(authority, event):
             named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
             return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
                     'or answered. Ask the operator to check gateway.log.')
+        runner = authority.runner
+        if exc.reason == 'runtime_draining' and runner._draining:
+            # A restart's after-turn wait or a stop refused it before commit: the same notice the
+            # in-process path gives, not a turn error that offers a /retry into the drain (#152410).
+            from agent.i18n import t
+            return t('gateway.busy.drain_rejected_new_work', action=runner._status_action_gerund())
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.

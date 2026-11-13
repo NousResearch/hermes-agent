@@ -381,13 +381,12 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
 
 def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[str]:
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
-    # Approval-gated paths are allowed at this layer so interactive tools can
-    # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
+    # Approval-gated paths skip only the credential deny (so the ``.ssh/`` prefix
+    # doesn't swallow ``~/.ssh/config``) and let interactive tools prompt; the
+    # protected-subpath and HERMES_WRITE_SAFE_ROOT checks below still apply.
     key = deny_key(resolved)
-    if any(key in map(deny_key, build_write_approval_paths(home)) for home in homes):
-        return None
-
-    if any(
+    approval_gated = any(key in map(deny_key, build_write_approval_paths(home)) for home in homes)
+    if not approval_gated and any(
         key in map(deny_key, build_write_denied_paths(home))
         or any(key.startswith(deny_key(prefix)) for prefix in build_write_denied_prefixes(home))
         for home in homes

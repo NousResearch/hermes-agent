@@ -29,9 +29,19 @@ _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS = 2.0
 # background work finish before superseding it like a person's turn.
 _BACKGROUND_WORK_WAIT_SECONDS = 120.0
 _BACKGROUND_WORK_POLL_SECONDS = 0.1
-# The bound turn's wait, or None for a turn that supersedes at once: a predicate that, once true,
-# ends the wait early (a person's input arrived for the session, the gateway is draining).
-_TURN_WAITS_FOR_BACKGROUND_WORK: contextvars.ContextVar[Optional[Callable[[], bool]]] = contextvars.ContextVar(
+
+
+@dataclass
+class _TurnWait:
+    """One bound turn's wait: ``ends_wait`` ends it early once true (a person's input arrived for
+    the session, the gateway is draining); ``deadline`` is set by the turn's first wait and shared
+    by every later one (a cold /refine cancel, then the resident agent's first step)."""
+    ends_wait: Callable[[], bool]
+    deadline: Optional[float] = None
+
+
+# The bound turn's wait, or None for a turn that supersedes at once.
+_TURN_WAITS_FOR_BACKGROUND_WORK: contextvars.ContextVar[Optional[_TurnWait]] = contextvars.ContextVar(
     "hermes_turn_waits_for_background_work", default=None)
 
 
@@ -43,10 +53,10 @@ def _never() -> bool:
 def turn_waits_for_background_work(ends_wait: Callable[[], bool] = _never) -> Iterator[None]:
     """Bind around a turn no person asked for (a message a plugin injected): before it supersedes
     the session's background review and plugin forks, the ones already running may finish, for up
-    to :data:`_BACKGROUND_WORK_WAIT_SECONDS`. ``ends_wait`` turning true ends that wait at once (a
-    person's input arrived behind the turn, the gateway drains). A person's turn never binds it and
-    supersedes them at once."""
-    token = _TURN_WAITS_FOR_BACKGROUND_WORK.set(ends_wait)
+    to :data:`_BACKGROUND_WORK_WAIT_SECONDS` over the whole turn. ``ends_wait`` turning true ends
+    that wait at once (a person's input arrived behind the turn, the gateway drains). A person's
+    turn never binds it and supersedes them at once."""
+    token = _TURN_WAITS_FOR_BACKGROUND_WORK.set(_TurnWait(ends_wait))
     try:
         yield
     finally:
@@ -154,9 +164,9 @@ def _interrupt_background_review(
         logger.debug("Failed to start background-review cancellation thread", exc_info=True)
 
 
-def _await_background_work(agent: Any, ends_wait: Callable[[], bool]) -> None:
+def _await_background_work(agent: Any, wait: _TurnWait) -> None:
     """Let the session's running review and launched plugin forks finish, for up to
-    :data:`_BACKGROUND_WORK_WAIT_SECONDS` in all. A deferred fork is not waited for (it waits for
+    :data:`_BACKGROUND_WORK_WAIT_SECONDS` in all, counted from the turn's first wait. A deferred fork is not waited for (it waits for
     machine idle, which no turn brings). The wait ends early once the session agent is interrupted
     (a person stopped or overtook the turn) or ``ends_wait()`` is true (a person's input is queued
     behind the turn or steered or redirected into it, the gateway drains)."""
@@ -169,7 +179,9 @@ def _await_background_work(agent: Any, ends_wait: Callable[[], bool]) -> None:
         return
     logger.info("Turn waits for %d background task(s) of session %s before starting",
                 len(pending), getattr(agent, "session_id", None))
-    deadline = time.monotonic() + _BACKGROUND_WORK_WAIT_SECONDS
+    if wait.deadline is None:
+        wait.deadline = time.monotonic() + _BACKGROUND_WORK_WAIT_SECONDS
+    deadline, ends_wait = wait.deadline, wait.ends_wait
     for run in pending:
         while not run.request_done.wait(timeout=min(_BACKGROUND_WORK_POLL_SECONDS,
                                                      max(0.0, deadline - time.monotonic()))):
@@ -208,8 +220,8 @@ def cancel_background_review_for_live_turn(
     """
     from agent.plugin_session_fork import interrupt_plugin_forks
 
-    if (ends_wait := _TURN_WAITS_FOR_BACKGROUND_WORK.get()) is not None:
-        _await_background_work(agent, ends_wait)
+    if (wait := _TURN_WAITS_FOR_BACKGROUND_WORK.get()) is not None:
+        _await_background_work(agent, wait)
     # Plugin session forks share the session id too: fenced and interrupted alongside the review,
     # awaited under the same bounded deadline.
     plugin_runs = interrupt_plugin_forks(agent, message=message, tool_reason=tool_reason)

@@ -131,3 +131,30 @@ def test_a_persons_turn_after_a_plugin_injected_one_on_the_same_thread_supersede
     started[0].thread.join(10)
 
     assert not thread.is_alive() and started[0].outcome == ["cancelled"]
+
+
+def test_a_turn_that_waits_twice_shares_one_deadline(monkeypatch):
+    """The cold /refine cancel and then the resident agent's first step are one turn's waits: the
+    second does not restart the bound, so the turn never waits past it in all."""
+    import time
+    monkeypatch.setattr(br, "_BACKGROUND_WORK_WAIT_SECONDS", 1.0)
+    refine_guard, resident = _session(), _session()
+    first, elapsed = _start_review(refine_guard), []
+
+    def turn():
+        with br.turn_waits_for_background_work():
+            t0 = time.monotonic()
+            br.cancel_background_review_for_live_turn(refine_guard)  # waits out the whole bound
+            second = _start_review(resident)
+            br.cancel_background_review_for_live_turn(resident)  # bound already spent
+            elapsed.append(time.monotonic() - t0)
+            second.thread.join(10)
+            elapsed.append(second.outcome)
+
+    thread = threading.Thread(target=turn, daemon=True)
+    thread.start()
+    thread.join(20)
+    first.thread.join(10)
+
+    assert first.outcome == ["cancelled"] and elapsed[1] == ["cancelled"]
+    assert elapsed[0] < 1.8, f"the second wait restarted the bound ({elapsed[0]:.1f}s in all)"

@@ -27,6 +27,25 @@ def test_escaped_quote_inside_ansi_c_does_not_hide_next_command():
     assert detect_hardline_command("echo $'\\''\nrm -rf /")[0] is True
 
 
+@pytest.mark.parametrize("command", [
+    r"echo $$'\'; mkfs.ext4 /dev/sda; echo ''",
+    r"echo $$'\' ; rm -rf / ; echo ''",
+    r"kill $$'\';rm -rf /;'",
+])
+def test_pid_expansion_before_quote_is_not_ansi_c(command):
+    # `$$` is the PID, so `'\'` is a closed single-quoted backslash and the next command runs.
+    assert detect_hardline_command(command)[0] is True
+    assert detect_dangerous_command(command)[0] is True
+
+
+def test_surrogate_escape_stays_encoded():
+    # bash turns \ud800 into raw bytes (`$'\ud800rm'` runs a command named b"\xed\xa0\x80rm", not
+    # rm), so it must not decode into a lone surrogate the rest of the pipeline cannot encode.
+    from tools.approval_ansi_c import expand_ansi_c_quotes
+
+    expand_ansi_c_quotes(r"$'\ud800rm' -rf /").encode("utf-8")
+
+
 def test_ansi_c_encoded_absolute_home_folds_to_home_rule(monkeypatch):
     home = "/home/ansi-user"
     monkeypatch.setenv("HOME", home)

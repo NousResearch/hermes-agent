@@ -19,7 +19,8 @@ def _decode_escape(match: re.Match) -> str:
     hex_digits, octal, short_u, long_u, control, named = match.groups()
     if hex_digits or short_u or long_u:
         code = int(hex_digits or short_u or long_u, 16)
-        return chr(code) if code <= 0x10FFFF else match.group(0)
+        # bash emits surrogates as raw bytes, never a real character; keep them encoded.
+        return chr(code) if code <= 0x10FFFF and not 0xD800 <= code <= 0xDFFF else match.group(0)
     if octal:
         return chr(int(octal, 8) & 0xFF)
     if control:
@@ -63,6 +64,10 @@ def _step(command: str, i: int, stack: list[list], out: list[str]) -> int:
     ch, context = command[i], stack[-1]
     if ch == "\\":
         out.append(command[i:i + 2])
+        return i + 2
+    if command.startswith("$$", i):
+        # `$$` is the PID; a `'`/`"`/`(` after it starts a new token, not `$'`/`$"`/`$(`.
+        out.append("$$")
         return i + 2
     if context[0] == '"':
         if ch == '"':

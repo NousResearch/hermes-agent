@@ -215,7 +215,8 @@ def ensure(name, *, base_env=None, explicit=False, verify=True, progress=None, p
 
 
 def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None, repair=False,
-              project_root: Path | None = None, evict_incompatible_plugins: bool = False) -> None:
+              project_root: Path | None = None, evict_incompatible_plugins: bool = False,
+              automatic: list[str] | None = None, carried: list[str] | None = None) -> None:
     from pm.environments import running_from_selected_environment
 
     if extras and not explicit and not repair and not running_from_selected_environment(
@@ -233,15 +234,17 @@ def sync_venv(extras=None, *, explicit=False, plugins: PluginInput | None = None
     if isinstance(plugins, Selection) and "expected_config" not in plugins.data:
         from pm.filesystem import file_digest
         plugins = Selection({**plugins.data,
-                             "expected_config": file_digest(Path(plugins.data["home"]) / "config.yaml") or "missing"})
+                             "expected_config": file_digest(Path(plugins.data["home"]) / "config.yaml") or "missing"})  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
     foreign = project_root is not None and Path(project_root).resolve() != paths.repo_root().resolve()
     if is_runtime() and not foreign:
         from pm.install import sync_venv as direct
         return direct(extras, explicit=explicit, plugins=plugins, repair=repair,
-                      evict_incompatible_plugins=evict_incompatible_plugins)
+                      evict_incompatible_plugins=evict_incompatible_plugins, automatic=automatic, carried=carried)
     _request("sync_venv", {"extras": extras, "explicit": explicit, "repair": repair,
                           "plugins": plugin_inputs.encode(plugins),
-                          "evict_incompatible_plugins": evict_incompatible_plugins}, project_root=project_root)
+                          "evict_incompatible_plugins": evict_incompatible_plugins, "automatic": automatic,
+                          "carried": carried},
+             project_root=project_root)
 
 
 def ensure_tools_for_sync() -> None:
@@ -402,13 +405,13 @@ def build_requirements_environment(requirements: Sequence[str], *, out: Path,
                                    python: Path | None = None, cache: Path | None = None,
                                    env: Mapping[str, str] | None = None, wheelhouse: Path | None = None,
                                    offline: bool = False, sealed: bool = False,
-                                   explicit: bool = False) -> Path:
+                                   explicit: bool = False, lock: Path | None = None) -> Path:
     if isinstance(requirements, str):
         raise TypeError("requirements must be a sequence, not a string")
     return Path(_python_operation("build_requirements_environment", {
         "requirements": list(requirements), "out": Path(out), "python": python, "cache": cache,
         "env": dict(env) if env is not None else None, "wheelhouse": wheelhouse,
-        "offline": offline, "sealed": sealed, "explicit": explicit,
+        "offline": offline, "sealed": sealed, "explicit": explicit, "lock": lock,
     }))
 
 

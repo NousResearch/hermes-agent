@@ -64,6 +64,9 @@ case "$ARCH" in arm64|x64) ;; *) echo "error: --arch must be arm64 or x64" >&2; 
 # and real Squirrel.Mac, so it is meaningful only on a macOS CI runner.
 [ "$(uname -s)" = "Darwin" ] || { echo "error: this driver runs on macOS only" >&2; exit 1; }
 [ "${GITHUB_ACTIONS:-}" = true ] || { echo "error: this driver is CI-only (GITHUB_ACTIONS required)" >&2; exit 1; }
+# The package must be native to this host: an x64 bundle on Apple Silicon
+# would launch under Rosetta and prove nothing about native coverage.
+[ "$(uname -m)" = "${ARCH/x64/x86_64}" ] || { echo "error: --arch $ARCH does not match this $(uname -m) host" >&2; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ASSETS="$REPO_ROOT/tests/install/e2e-assets"
@@ -410,6 +413,12 @@ phase_update() {
     --home "$HERMES_HOME" --user-data "$HERMES_DESKTOP_USER_DATA_DIR" \
     --out "$LOG_DIR" --phase new --expect-commit "$new_commit" --mock-url "$HERMES_E2E_MOCK_URL" \
     2>&1 | ts_prefix | tee "$LOG_DIR/desktop-chat-new.log"
+
+  # The check right after relaunch can win the race against the app's first payload-Python spawn.
+  step "re-verifying the NEW bundle's signature after it ran a chat"
+  codesign --verify --deep --strict --verbose=2 "$old_app" 2>&1 | ts_prefix | tee "$LOG_DIR/new-bundle-seal-after-chat.log" \
+    || fail "the NEW bundle modified its own signed files while it ran (new-bundle-seal-after-chat.log)"
+  ok "NEW bundle still satisfies its code signature after the chat"
 
   step "PASS: packaged $(manifest_side old tag) -> $new_tag via the real About -> Update now route"
 }

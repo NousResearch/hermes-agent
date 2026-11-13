@@ -20,6 +20,8 @@ from tests.gateway.test_prompt_queued_controls import Turn, _call, _completions,
 from tests.gateway.test_session_authority_cancel_settlement import ACTOR, REF, _authority, _submit
 from tests.waiting import async_wait_until, wait_until
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 async def _drained(authority):
     task = authority.sessions['s'].task
@@ -486,7 +488,7 @@ def test_a_hosted_room_queued_row_is_offered_no_controls_and_both_verbs_refuse_i
     verb and the verbs refuse them by name, so the room's terminal/results reads stay healthy."""
     from dataclasses import asdict
     from gateway.hosted_room_driver import TaskIdentity
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_controls import AuthorityConnection
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     authority, loop, principal, _ = hosted_owner
@@ -508,7 +510,7 @@ def test_a_hosted_room_queued_row_is_offered_no_controls_and_both_verbs_refuse_i
     assert [row['controls'] for row in run(pending())] == [[], []]
 
     conn = AuthorityConnection(authority, object(), {'user_id': principal.subject})
-    conn.actor = Principal(principal.subject, authority.profile_id, principal.capabilities, conn.actor.transport_id)
+    conn.actor = SessionActor(principal.subject, authority.profile_id, principal.capabilities, conn.actor.transport_id)
     conn.subscriptions[sid] = 'attached'
     for method, params in (('prompt.steer_queued', {}),
                            ('prompt.replace_queued', {'submission_id': 'edited', 'text': 'edited'})):

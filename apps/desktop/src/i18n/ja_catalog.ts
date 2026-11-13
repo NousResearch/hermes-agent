@@ -10,6 +10,9 @@ export const jaCatalog = {
   mostStarred: 'スターが多い順',
   newest: '新着',
   recentlyUpdated: '最近の更新',
+  mostUsed: 'よく使う順',
+  updateAvailable: '更新あり',
+  updatesAvailable: (count: number) => `更新 · ${count}`,
   alphabetical: '名前',
   sortBy: '並べ替え',
   seeAll: 'すべて表示',
@@ -27,6 +30,7 @@ export const jaCatalog = {
   installComplete: (name: string) => `「${name}」をインストールしました`,
   destinationChanged:
     'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
+  install: 'インストール',
   installed: 'インストール済み',
   searchSkills: 'スキルを検索',
   searchPlugins: 'プラグインを検索',

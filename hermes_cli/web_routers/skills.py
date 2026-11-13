@@ -15,8 +15,8 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_identifiers
 from hermes_cli.web_models import (
-    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
-    SkillsUpdateRequest)
+    SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillLock, SkillToggle,
+    SkillUninstallRequest, SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
     spawn_profile_action)
@@ -118,6 +118,23 @@ async def update_skills_hub(
     return spawn_profile_action(
         (body.profile if body else None) or profile, ["skills", "update"], "skills-update",
         log_msg="Failed to spawn skills update", prefix="Failed to update skills")
+
+
+@hub_router.get("/api/skills/hub/updates")
+async def list_skill_hub_updates(profile: Optional[str] = None):
+    """Hub-installed skills with an upstream update, scoped to ``profile`` (the
+    ``hermes skills check`` pass; fetches from each skill's recorded source)."""
+
+    def _run():
+        from tools.skills_hub_install import check_for_skill_updates
+
+        rows = check_for_skill_updates()
+        return {"updates": [
+            {k: row.get(k, "") for k in ("name", "identifier", "source")}
+            for row in rows if row.get("status") == "update_available"]}
+
+    with http_failure("skills hub update check failed", 502, "Update check failed"):
+        return await scoped_to_thread(profile, _run)
 
 
 @hub_router.get("/api/skills/hub/official")
@@ -363,7 +380,9 @@ async def get_skills(profile: Optional[str] = None):
             bundled_names = _read_bundled_names()
             hub_names = _read_hub_installed_names()
             external_names = _external_skill_names() - bundled_names - hub_names
+            locked_dirs, dir_by_name = _locked_index()
         for s in skills:
+            s["locked"] = dir_by_name.get(s["name"], s["name"]) in locked_dirs
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))
             s["provenance"] = (
@@ -372,6 +391,43 @@ async def get_skills(profile: Optional[str] = None):
                 else "external" if s["name"] in external_names
                 else "agent")
         return skills
+
+    return await asyncio.to_thread(_run)
+
+
+def _locked_index() -> tuple[set, dict]:
+    """(locked directory names, load name -> directory name) for the ``locked`` row flag.
+    Locks are keyed by the skill's DIRECTORY (what the write guards resolve to) while rows
+    carry the load name. A corrupt sidecar reads as unlocked here (``locked_skill_names`` is
+    best-effort); the write guards decide enforcement."""
+    from tools.skill_usage import locked_skill_names
+    locked = set(locked_skill_names())
+    if not locked:
+        return set(), {}
+    from tools.skills_tool import _skill_catalog
+    return locked, {e["load_name"]: e["path"].parent.name
+                    for e in _skill_catalog(skip_disabled=True) if e.get("load_name")}
+
+
+@router.put("/api/skills/lock")
+async def lock_skill(body: SkillLock, profile: Optional[str] = None):
+    """Lock/unlock a skill against AGENT edits (same record as ``hermes curator lock``).
+    The user's own edits (this dashboard's editor, their editor) stay allowed."""
+    from tools import skill_usage
+    from tools.skill_manager_tool import _find_skill
+
+    def _run():
+        with config_write_scope(body.profile or profile):
+            existing = _find_skill(body.name)
+            if existing is None:
+                raise HTTPException(status_code=404, detail=f"Skill '{body.name}' not found.")
+            key = existing["path"].name
+            if not skill_usage.set_locked(key, body.locked):
+                verb = "lock" if body.locked else "unlock"
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Could not {verb} '{key}': skills/.usage.json is not writable.")
+        return {"ok": True, "name": body.name, "locked": body.locked}
 
     return await asyncio.to_thread(_run)
 

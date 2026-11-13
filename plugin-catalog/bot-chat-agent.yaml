@@ -1,0 +1,43 @@
+name: bot-chat-agent
+repo: https://github.com/Tormen28/hermes-bot-chat-agent
+sha: 76e83e83517ba2a1a2d61d4757ed13c2ad3f1639
+subdir: ""
+title: Hermes Bots
+description: "Hermes Bots: a calmer Hermes Bot Chat that still does the work: short agentic replies, a block-only safety guard, a Desktop status card, mid-turn asks that are no longer dropped, background results delivered back to the same chat, a local short-term / long-term memory (decisions, project state, lessons; /memoria) with no API keys, and an opt-in panteón: Hermes may offer in one line to create a specialist bot and creates it only after your yes. Other sessions untouched. Disclosure — in sessions titled \"Bot Chat\" (and their subagent children) it injects a reply-style instruction, a bounded context / memory block, pending-ask reminders and (Desktop half enabled) a one-line specialist offer; blocks tool calls matching its rules (secrets, deletes, destructive git, protected-branch pushes, outbound messages, expensive models, kanban-lock bypasses, obfuscated exec, memory-injection) and, when team.assignees is configured, rewrites kanban_create arguments to add serialization parents and the teammate assignment; wraps tool output that looks like a prompt injection in an \"untrusted data\" label; it never approves anything. It opens <HERMES_HOME>/state.db, <HERMES_HOME>/kanban.db and <HERMES_HOME>/cron/executions.db (plus cron output files) read-only; writes plugin-local files under <HERMES_HOME>/bot-chat-agent/ (memory.db, deliveries.db, status.json, panteon-auto.json, dm-delegations.json, optional project-card.md) and its own team.assignees plugin setting; registers /memoria, /botmemory, /panteon and /pantheon; serves a small dashboard API at /api/plugins/bot-chat-agent; the Desktop half (opt-in in Capabilities → Plugins) calls the app's own profiles.create / profiles.configure for ONE preset profile, only after the user's explicit yes; changes the Desktop reasoning.collapsedByDefault setting while a Bot Chat is focused and restores it on leave/disable; makes no third-party network calls, no telemetry and no credential reads. Background work uses Hermes kanban / the gateway dispatcher when team.assignees is configured; on Hermes 0.23, results are offered into the next turn. A ContextEngine named bot-chat is registered but off until context.engine: bot-chat is set."
+maintainer: Tormen28
+category: desktop
+tier: community
+requires_hermes: ">=0.22.5"
+version: "0.3.0"
+docs_url: https://github.com/Tormen28/hermes-bot-chat-agent#readme
+image: https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/76e83e83517ba2a1a2d61d4757ed13c2ad3f1639/docs/hermes-bots-030-nous.jpg
+screenshots:
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/76e83e83517ba2a1a2d61d4757ed13c2ad3f1639/docs/screenshots/02-answer.png
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/76e83e83517ba2a1a2d61d4757ed13c2ad3f1639/docs/screenshots/10-real-panteon-created.png
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/76e83e83517ba2a1a2d61d4757ed13c2ad3f1639/docs/screenshots/12-real-delegation-done.png
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/76e83e83517ba2a1a2d61d4757ed13c2ad3f1639/docs/screenshots/22-newuser-status-card-dark.png
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/76e83e83517ba2a1a2d61d4757ed13c2ad3f1639/docs/screenshots/24-newuser-english-god-ready.png
+  - https://raw.githubusercontent.com/Tormen28/hermes-bot-chat-agent/76e83e83517ba2a1a2d61d4757ed13c2ad3f1639/docs/screenshots/25-newuser-loop-guard-explained.png
+platforms: [linux, macos, windows]
+known_issues:
+  - "Per-turn cost: the plugin's own pre_llm_call hook takes about 15 ms p50 / 20 ms p95 on a Windows 11 PC and about 5 ms p50 on Linux (SQLite connections are shared per turn). Measured only with a mock model, so real-model time-to-first-token and the quality of the deterministic compactor are not measured; with context.engine: bot-chat requests were ~30% smaller than without the plugin in a mock 300-turn run. The engine is off by default."
+  - "The panteón offer is an instruction injected into Bot Chat turns; a real model follows it most of the time, not guaranteed. The Desktop half must be switched on in Capabilities → Plugins for offers and profile creation."
+  - "Background-result delivery on Hermes 0.23 uses the next-turn offer path; durable in-transcript writes need the core B1 API, which 0.23 does not expose. The core bot-loop guard (gateway.bot_loop_guard.max_hops, default 4) can refuse later delegations to the same teammate in one chat; the card then shows an error."
+  - "Long-term memory is written only when the turn text contains clear cues (Decision:, Decisión:, We decided, Decidimos, Lesson:, Remember that, Recuerda que, From now on, …). There is no model and no network."
+  - "Language follows the user (es/en/fr/pt/de, detected offline from the latest message; language: es|en|fr|pt|de forces one). Plugin-written text (status card, /memoria, /botmemory, /pantheon) is translated; lines the model writes (panteón offer, ready notice, stop explanation) get an instruction to answer in that language, which a real model usually but not always follows. Specialist role prompts and guard block messages stay en/es."
+  - "hermes plugins remove takes out the Python half only; your data folder and the Desktop half (installed by the core) stay until you delete them."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - transform_tool_result
+    - post_llm_call
+    - agent_loop_stopped
+    - kanban_task_completed
+    - kanban_task_blocked
+    - kanban_task_claimed
+    - on_kanban_worker_spawned
+  provides_middleware: []
+  requires_env: []

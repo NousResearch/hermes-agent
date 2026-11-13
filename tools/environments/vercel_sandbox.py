@@ -80,6 +80,21 @@ def _extract_status_code(exc: BaseException) -> int | None:
             return value
     return None
 
+@cache
+def _transport_error_types() -> tuple[type[BaseException], ...]:
+    """Network exceptions of every HTTP stack the SDK may raise from.
+
+    vercel >= 0.12 moved the sandbox client from httpx to httpx2, a separate
+    distribution whose exceptions do not subclass httpx's.
+    """
+    types: list[type[BaseException]] = [httpx.NetworkError, httpx.ProtocolError, httpx.ReadError]
+    try:
+        import httpx2
+    except ImportError:
+        return tuple(types)
+    return (*types, httpx2.NetworkError, httpx2.ProtocolError, httpx2.ReadError)
+
+
 def _is_transient_vercel_error(exc: BaseException) -> bool:
     """True when any exception in the cause/context chain looks retryable."""
     seen: set[int] = set()
@@ -90,7 +105,7 @@ def _is_transient_vercel_error(exc: BaseException) -> bool:
         status = next((c for c in codes if isinstance(c, int)), None)
         name = type(error).__name__.lower()
         if (status in _TRANSIENT_STATUS_CODES
-                or isinstance(error, (httpx.NetworkError, httpx.ProtocolError, httpx.ReadError))
+                or isinstance(error, _transport_error_types())
                 or "ratelimit" in name or "servererror" in name):
             return True
         error = error.__cause__ or error.__context__
@@ -290,7 +305,14 @@ class VercelSandboxEnvironment(BaseEnvironment):
         if not snapshot_id:
             logger.warning("Vercel: filesystem snapshot for task %s did not return a snapshot id", self._task_id)
             return
-        _store_snapshot(self._task_id, snapshot_id)
+        # snapshot() already stopped the sandbox: a failed metadata write must not escape cleanup
+        # (it would skip the stop below and leave the closed env's processes unsettled).
+        try:
+            _store_snapshot(self._task_id, snapshot_id)
+        except Exception as exc:
+            logger.warning("Vercel: saving snapshot %s for task %s failed: %s", snapshot_id, self._task_id, exc,
+                           exc_info=True)
+            return
         logger.info("Vercel: saved filesystem snapshot %s for task %s", snapshot_id, self._task_id)
 
     def _ensure_sandbox_ready(self) -> None:

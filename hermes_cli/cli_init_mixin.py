@@ -162,6 +162,7 @@ class CLIInitMixin:
         self.final_response_markdown = _frm if _frm in {"render", "strip", "raw"} else "strip"
 
         self._inline_diffs_enabled = display.get("inline_diffs", True)
+        self._inline_images_mode = display.get("inline_images", "auto")
 
         # Per-turn accounting: CLI-only chrome riding the tool-progress feed.
         self._turn_summary_enabled = bool(display.get("turn_summary", True))
@@ -392,6 +393,8 @@ class CLIInitMixin:
     def _init_runtime_state(self, resume):
         """Session store + all per-run mutable state (queues, overlays, pet/voice/status-bar fields)."""
         from cli import _hermes_home
+        from hermes_cli.left_core_migration import serve_notices_on_stderr
+        serve_notices_on_stderr()
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
@@ -507,6 +510,7 @@ class CLIInitMixin:
         self._interrupt_queue = queue.Queue()
         self._agent_running = self._should_exit = False
         self._detach_on_exit = False  # Ctrl+D mid-turn: leave the gateway turn running (LC-6b)
+        self._viewer_disconnected = False  # SIGHUP/SIGTERM: drop the socket, never close the session
         self._last_turn_interrupted = False  # /goal never auto-queues on a Ctrl+C'd turn
         self._terminal_io_broken = False  # stdout EIO: freeze UI paints instead of spinning
         self._delete_session_on_exit = False  # /exit --delete

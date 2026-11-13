@@ -67,11 +67,11 @@ from .constants import (
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
-from .utils import coerce_list as _coerce_list, build_user_agent
+from .utils import coerce_list as _coerce_list, build_user_agent, describe_connect_proxy_error
 from .chunked_upload import (
     ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
 from .keyboards import (
-    ApprovalRequest, InlineKeyboard, InteractionEvent, build_approval_keyboard,
+    ApprovalRequest, InlineKeyboard, InteractionEvent, approval_button_request_id, build_approval_keyboard,
     build_update_prompt_keyboard, parse_approval_button_data, parse_interaction_event,
     parse_update_prompt_button_data)
 from gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
@@ -79,6 +79,10 @@ from gateway.platforms._shared import get_scoped_secret as _resolve_qq_secret
 
 def check_qq_requirements() -> bool:
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE
+
+
+def _ws_proxy() -> str | None:  # the WebSocket honours proxy env vars (WSL setups need this)
+    return next((v for v in map(os.getenv, ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")) if v), None)
 
 
 _VOICE_EXTENSIONS = (".silk", ".amr", ".mp3", ".wav", ".ogg", ".m4a", ".aac", ".speex", ".flac")
@@ -216,9 +220,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._wire_plugin_handlers(None)
             return True
         except Exception as exc:
-            message = f"QQ startup failed: {exc}"
+            message = f"QQ startup failed: {(shown := describe_connect_proxy_error(exc, _ws_proxy())) or exc}"  # may echo a proxy secret
             self._set_fatal_error("qq_connect_error", message, retryable=True)
-            logger.error("[%s] %s", self._log_tag, message, exc_info=True)
+            logger.error("[%s] %s", self._log_tag, message, exc_info=not shown)
             await self._cleanup()
             self._release_platform_lock()
             return False
@@ -306,13 +310,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _open_ws(self, gateway_url: str) -> None:
         await self._close_ws()
-        # Honor proxy env vars for the WebSocket (WSL setups need this).
         self._session = aiohttp.ClientSession(trust_env=gateway_trust_env())
-        proxy_vars = ("WSS_PROXY", "wss_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
-        ws_proxy = next((v for v in map(os.getenv, proxy_vars) if v), None)
         self._ws = await self._session.ws_connect(
-            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=ws_proxy,
-        )
+            gateway_url, headers={"User-Agent": build_user_agent()}, timeout=CONNECT_TIMEOUT_SECONDS, proxy=_ws_proxy())
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
     async def _listen_loop(self) -> None:
@@ -421,7 +421,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.info("[%s] Reconnected", self._log_tag)
             return True
         except Exception as exc:
-            logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
+            logger.warning("[%s] Reconnect failed: %s", self._log_tag, describe_connect_proxy_error(exc, _ws_proxy()) or exc)
             return False
 
     async def _read_events(self) -> None:
@@ -700,8 +700,10 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     self._log_tag, session_key, event.operator_openid)
                 return
             try:
-                from tools.approval import resolve_gateway_approval  # lazy: keep adapter light
-                count = resolve_gateway_approval(session_key, choice)
+                from tools.approval import resolve_gateway_approval_card  # lazy: keep adapter light
+                count = resolve_gateway_approval_card(  # refuses approve on Deny-only and a refused clicker
+                    session_key, choice, approval_button_request_id(button_data),
+                    actor_id=event.operator_openid, extra=self.config.extra)
                 logger.info(
                     "[%s] Button resolved %d approval(s) for session %s (choice=%s, operator=%s)",
                     self._log_tag, count, session_key, choice, event.operator_openid)
@@ -784,7 +786,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         nick = str(member.get("nick", "")) or str(author.get("username", ""))
         await self._ingest(
             d, msg_id, content, d.get("attachments"), timestamp,
-            chat_id=channel_id, qq_chat_type="guild", user_id=author_id, user_name=nick or None, chat_type="group")
+            chat_id=channel_id, qq_chat_type="guild", user_id=author_id, user_name=nick or None, chat_type="group",
+            is_bot=bool(author.get("bot")))
 
     async def _handle_dm_message(self, d, msg_id, content, author, timestamp) -> None:
         guild_id = str(d.get("guild_id", ""))
@@ -797,7 +800,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return
         await self._ingest(
             d, msg_id, content, d.get("attachments"), timestamp,
-            chat_id=guild_id, qq_chat_type="dm", user_id=author_id, chat_type="dm")
+            chat_id=guild_id, qq_chat_type="dm", user_id=author_id, chat_type="dm",
+            is_bot=bool(author.get("bot")))
 
     _INBOUND_HANDLERS = {
         "C2C_MESSAGE_CREATE": "_handle_c2c_message",
@@ -1469,28 +1473,24 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         """Send a 3-button approval request (allow-once / allow-always / deny);
         clicks come back as INTERACTION_CREATE decoded by parse_approval_button_data."""
         from .keyboards import build_approval_text
-        keyboard = build_approval_keyboard(req.session_key, allow_permanent=getattr(req, "allow_permanent", True))
+        keyboard = build_approval_keyboard(
+            req.session_key, allow_permanent=getattr(req, "allow_permanent", True), request_id=req.request_id)
         return await self.send_with_keyboard(chat_id, build_approval_text(req), keyboard, reply_to=reply_to)
 
     # Cross-adapter gateway contract: gateway/run.py detects send_exec_approval /
     # send_update_prompt on the adapter class for button-based approval/update UX.
 
-    _APPROVAL_TIMEOUT_SECONDS = 300  # matches gateway's default gateway_timeout
-
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Keyboard-card approval (called while the agent blocks on approval); clicks resolve via
-        _default_interaction_dispatch. QQ's 3-button keyboard has no session tier and no thread /
-        DM targeting, so only the ``always`` choice and the raw command/reason are used."""
-        description = prompt.description
-        if prompt.smart_denied:
-            description += " Owner override applies to this one operation only."
-        req = ApprovalRequest(
-            session_key=prompt.session_key, title="Execute this command?", description=description,
-            command_preview=prompt.command, timeout_sec=self._APPROVAL_TIMEOUT_SECONDS,
-            allow_permanent="always" in prompt.choices)
+        _default_interaction_dispatch. The body is the shared prompt text, so the preview QQ shows is the
+        one the shortened-preview check measured; the keyboard offers only ``prompt.choices`` (QQ's three
+        buttons fold the session tier into ``always``)."""
+        choices = prompt.choices
+        keyboard = build_approval_keyboard(prompt.session_key, allow_permanent="always" in choices,
+                                           allow_once="once" in choices, request_id=prompt.request_id)
         # QQ requires a msg_id for passive replies; the last inbound id is the natural one.
-        return await self.send_approval_request(
-            prompt.chat_id, req, reply_to=self._last_msg_id.get(prompt.chat_id))
+        return await self.send_with_keyboard(
+            prompt.chat_id, prompt.text, keyboard, reply_to=self._last_msg_id.get(prompt.chat_id))
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",

@@ -58,7 +58,7 @@ def test_fire_claim_loss_names_the_claim_loss_as_the_issuer():
     cancel_event = threading.Event()
     cancel_event.set()  # the claim was taken over: the watchdog must abort the turn
 
-    with pytest.raises(RuntimeError, match="lost its durable fire claim ownership"):
+    with pytest.raises(RuntimeError, match="was stopped: cron fire ownership was lost"):
         _run_agent_with_watchdog(
             agent, "do the thing", _oneshot_job(), "job-1", "nightly", "task-1", cancel_event,
         )

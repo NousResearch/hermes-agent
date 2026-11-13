@@ -11,20 +11,23 @@ reason to refuse, and a target that descends from the running commit is a forwar
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Iterable
 from contextlib import closing
 from pathlib import Path
+from typing import Optional
 
 # The runtime ledger DDL: a target whose state-store modules lack it predates the cutover.
 _RUNTIME_SCHEMA_MARKER = "CREATE TABLE IF NOT EXISTS session_admissions"
+# Where a tree keeps its state-store modules: the root today, the package once they move into it.
+# Literal per-location patterns serve as git pathspecs, fnmatch patterns and Path.glob patterns alike;
+# a ``:(glob)**`` pathspec would also match tests/ and is not honoured by ``rev-list --objects``.
+STATE_MODULES = ("hermes_state*.py", "src/hermes_agent/hermes_state*.py", "src/hermes_agent/hermes_state/*.py")
 _LEDGER_PROBE = ("SELECT EXISTS(SELECT 1 FROM session_admissions) "
                  "OR EXISTS(SELECT 1 FROM worker_executions)")
 _DOCS = "https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release"
 
 
-def target_predates_runtime(git_cmd, root: Path, target_ref: str) -> bool:
-    """True when ``target_ref`` does not descend from HEAD and none of its ``hermes_state*.py`` files
-    defines the runtime ledger. The pathspec keeps a blobless partial clone from fetching the whole
-    tree. Any git failure proves nothing (False)."""
+def _updater_git(git_cmd, root: Path) -> Callable[..., int]:
     import subprocess
 
     from hermes_cli.update_custody import run_git
@@ -34,13 +37,35 @@ def target_predates_runtime(git_cmd, root: Path, target_ref: str) -> bool:
             return run_git(git_cmd, list(args), cwd=str(root), capture_output=True, timeout=120).returncode
         except (OSError, subprocess.SubprocessError):
             return -1
+    return git
 
+
+def defines_runtime(sources: Iterable[str]) -> bool:
+    """Whether any of a tree's ``STATE_MODULES`` sources defines the runtime ledger. Lazy: stops at
+    the first match, so a caller reading sources over the network fetches no more than it needs."""
+    return any(_RUNTIME_SCHEMA_MARKER in source for source in sources)
+
+
+def target_predates_runtime(git_cmd, root: Path, target_ref: str, *,
+                            git: Optional[Callable[..., int]] = None,
+                            remote: Optional[Callable[[str], Optional[bool]]] = None) -> bool:
+    """True when ``target_ref`` does not descend from HEAD and none of its ``STATE_MODULES`` files
+    defines the runtime ledger. The pathspec keeps a blobless partial clone from fetching the whole
+    tree. Any git failure proves nothing (False). ``git`` runs one git command and returns its exit
+    code; the update check passes its own read-only probe.
+
+    ``remote`` answers the same question for a target whose commit, tree or schema blobs are missing
+    locally (True, False, or None when it cannot tell). The update check passes one because it never
+    fetches; the updater stays git-only."""
+    git = git or _updater_git(git_cmd, root)
     if git("merge-base", "--is-ancestor", "HEAD", target_ref) == 0:
         return False  # forward update: whatever the target's schema, it was written knowing this one
-    if git("cat-file", "-e", f"{target_ref}^{{commit}}") != 0:
-        return False
-    # Exit 1 = no match (the target lacks the ledger); 0 = found; anything else is a git error.
-    return git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", "hermes_state*.py") == 1
+    # grep can return 1 for unreadable blobs too: establish completeness before trusting no match.
+    if git("rev-list", "--objects", "--no-walk", "--sparse", "--missing=error", target_ref, "--", *STATE_MODULES) != 0:
+        return remote is not None and remote(target_ref) is True
+    # Exit 1 = no match in a complete local schema; 0 = found; anything else is a git error.
+    result = git("grep", "-q", "-F", _RUNTIME_SCHEMA_MARKER, target_ref, "--", *STATE_MODULES)
+    return result == 1 if result in (0, 1) else remote is not None and remote(target_ref) is True
 
 
 def _has_ledger_rows(db_path: Path) -> bool:
@@ -48,7 +73,10 @@ def _has_ledger_rows(db_path: Path) -> bool:
         return False
     from hermes_state_holders import read_only_db_uri
     try:
-        with closing(sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=5.0)) as conn:
+        from hermes_cli.sqlite_safe_read import connect_tracked
+
+        with closing(connect_tracked(read_only_db_uri(db_path), uri=True, timeout=5.0, tracking_path=db_path,
+                                     connect_fn=sqlite3.connect)) as conn:
             return bool(conn.execute(_LEDGER_PROBE).fetchone()[0])
     except sqlite3.Error:
         return False  # no ledger tables yet, or unreadable: nothing an older release would trip on
@@ -64,7 +92,7 @@ def _pre_runtime_snapshot(home: Path) -> str | None:
         if snap.name.startswith(".") or not db.is_file():
             continue
         try:
-            with closing(sqlite3.connect(read_only_db_uri(db), uri=True)) as conn:
+            with closing(sqlite3.connect(read_only_db_uri(db), uri=True)) as conn:  # health: allow HX015 -- quick-snapshot copy, never the live store
                 if conn.execute("SELECT 1 FROM sqlite_master WHERE name='session_admissions'").fetchone() is None:
                     return snap.name
         except sqlite3.Error:
@@ -82,15 +110,28 @@ def _named_profile(home: Path) -> str:
     return resolved.name if named else ""
 
 
-def downgrade_refusal(git_cmd, root: Path, target_ref: str, home: Path | None = None) -> str | None:
-    """Why the update must not move to ``target_ref``, or ``None``: refuses only a pre-runtime target
-    while this profile's or a sibling profile's state.db holds runtime ledger rows."""
+def _ledgered_profiles(home: Path | None) -> list[tuple[str, Path]]:
     from hermes_cli.backup import _sibling_profile_homes
     from hermes_constants import get_hermes_home
 
     home = Path(home or get_hermes_home())
     profiles = [(_named_profile(home), home), *_sibling_profile_homes(home)]
-    ledgered = [(name, h) for name, h in profiles if _has_ledger_rows(h / "state.db")]
+    return [(name, h) for name, h in profiles if _has_ledger_rows(h / "state.db")]
+
+
+def would_refuse(root: Path, target_ref: str, home: Path | None = None, *, git: Callable[..., int],
+                 remote: Optional[Callable[[str], Optional[bool]]] = None) -> bool:
+    """Whether ``hermes update`` would refuse ``target_ref`` here: the update check's read-only twin of
+    :func:`downgrade_refusal`, so a release the updater refuses is never offered as an update.
+    The store scan runs first, so ``remote`` is only consulted when some store has runtime history."""
+    return bool(_ledgered_profiles(home)) and target_predates_runtime(
+        None, root, target_ref, git=git, remote=remote)
+
+
+def downgrade_refusal(git_cmd, root: Path, target_ref: str, home: Path | None = None) -> str | None:
+    """Why the update must not move to ``target_ref``, or ``None``: refuses only a pre-runtime target
+    while this profile's or a sibling profile's state.db holds runtime ledger rows."""
+    ledgered = _ledgered_profiles(home)
     if not ledgered or not target_predates_runtime(git_cmd, root, target_ref):
         return None
     lines = [f"✗ Refusing to move this install to {target_ref[:12]}: that release predates the gateway runtime "

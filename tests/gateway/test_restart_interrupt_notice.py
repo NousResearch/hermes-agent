@@ -21,6 +21,8 @@ from gateway.session_settlement_recovery import (
 )
 from tui_gateway.contracts.registry import EVENTS
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 def test_restart_drain_timeout_default_stays_zero():
     from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -148,11 +150,12 @@ async def test_user_stop_is_not_relabelled_when_shutdown_starts_during_settlemen
 
 
 STOPPABLE_CHILD = """import json, os, sys, psutil
+from hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
 def send(frame):
     out.write((json.dumps(frame) + '\\n').encode())
-send({'type': 'hello', 'pid': me.pid, 'birth': me.create_time(), 'ancestors': [p.pid for p in me.parents()[:3]]})
+send({'type': 'hello', 'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]})
 for line in sys.stdin.buffer:
     frame = json.loads(line)
     if frame == {'type': 'stop'}:
@@ -174,7 +177,7 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
 
     from gateway import session_managed_worker as managed
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_policy import build_policy
     from gateway.session_settlement_recovery import commit_and_publish
     from hermes_state import SessionDB
@@ -190,8 +193,8 @@ def test_managed_worker_turn_settles_with_the_cause_of_the_stop_that_reached_it(
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
     runner.session_authority = authority
-    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c', profile=None), 'route')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
 
@@ -475,7 +478,7 @@ def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_p
     from gateway import session_managed_worker as managed
     from gateway.run_runtime import stop_authority_turns
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_policy import build_policy
     from hermes_state import SessionDB
     from hermes_state_runtime import begin_runtime_epoch, claim_session_input
@@ -488,8 +491,8 @@ def test_shutdown_stop_before_the_managed_worker_spawned_carries_its_cause(tmp_p
     db.create_session('s', source='test')
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
-    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c', profile=None), 'route')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     spawning, release, bootstrapped = threading.Event(), threading.Event(), []
@@ -539,7 +542,7 @@ def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_p
     from gateway import session_managed_worker as managed
     from gateway.run_runtime import stop_authority_turns
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_policy import build_policy
     from hermes_state import SessionDB
     from hermes_state_runtime import begin_runtime_epoch, claim_session_input
@@ -551,8 +554,8 @@ def test_a_stop_during_context_reference_expansion_never_spawns_the_worker(tmp_p
     db.create_session('s', source='test')
     authority = SessionAuthority(runner, profile_id='owned', instance_id='i', db=db,
                                  epoch=begin_runtime_epoch(db, instance_id='i'))
-    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c'), 'route')
-    actor = Principal('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
+    live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human', chat_id='c', profile=None), 'route')
+    actor = SessionActor('human', 'owned', frozenset({'session:submit', 'session:control'}), 'cli')
     ref = SessionRef('owned', 's')
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     expanding, release, spawned = threading.Event(), threading.Event(), []

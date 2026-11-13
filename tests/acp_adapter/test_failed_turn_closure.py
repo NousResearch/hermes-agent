@@ -41,6 +41,19 @@ class _LoopbackProvider:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 provider.requests.append(body)
                 spec = provider.script.pop(0)
+                # A safety refusal that arrives as an HTTP error (400 / provider APIError) rather than
+                # an HTTP-200 finish_reason: return the error body with the flagged text so the agent
+                # classifies it as content_policy_blocked on the exception path.
+                if spec.get("status") and spec["status"] != 200:
+                    payload = json.dumps({"error": {
+                        "message": spec.get("error", "request flagged for possible cybersecurity risk"),
+                        "type": "invalid_request_error", "code": None}}).encode()
+                    self.send_response(spec["status"])
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
                 delta = {"role": "assistant", "content": spec["content"]}
                 usage = {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
                 if body.get("stream"):
@@ -138,40 +151,37 @@ _REFUSAL_DETAIL = "I can't help with breaking into someone else's property."
 _NEW_REQUEST = "What is the capital of France?"
 
 
-def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(acp):
+def test_acp_refusal_never_poisons_the_next_prompt(acp):
     """Turn 1: HTTP-200 ``content_filter`` refusal. Turn 2: unrelated request.
 
-    Invariant: the durable tail after a failed turn is a Hermes-authored assistant row (never
-    provider text), and the next prompt reaches the provider as its own user row.
+    Invariant: a safety-filter refusal is deterministic for the unchanged conversation (the filter
+    judges the whole thread), so the refused turn is dropped from the live history and never rides
+    into the next prompt. Otherwise every later message re-refuses and the chat locks up (the
+    "Hermes Bot stuck sessions" report). The refusal still reaches the client live; transient
+    failures keep their close-and-replay path (the server_error / rate_limit / timeout tests below),
+    which this does not touch.
     """
-    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE
+    provider, prompt, _conversation_rows, _db, sid, conn, server = acp
 
-    provider, prompt, conversation_rows, db, sid, conn, server = acp
+    # An earlier accepted exchange, then the refused turn.
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
 
     provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
     prompt(_REFUSED)
 
-    rows = conversation_rows()
-    assert [r[0] for r in rows] == ["user", "assistant"], rows
-    assert rows[1][1] == FAILED_TURN_NOTICE  # no tool ran: no hedging, no provider detail
-    assert db.latest_conversation_role(sid) == "assistant"
-    # Typed, so a renderer or room poller never has to match the English copy to tell the
-    # boundary from a model reply.
-    with sqlite3.connect(db.db_path) as c:
-        kinds = [r[0] for r in c.execute(
-            "SELECT display_kind FROM messages WHERE session_id = ? AND role = 'assistant'", (sid,))]
-    assert kinds == [FAILED_TURN_DISPLAY_KIND]
-    # The refusal reaches the ACP client, but never becomes canonical assistant history.
+    # The refusal still reaches the ACP client live, but never becomes canonical history.
     texts = [getattr(getattr(u, "content", None), "text", None) or getattr(u, "text", None) for u in conn.updates]
     assert any(_REFUSAL_DETAIL in (t or "") for t in texts)
 
     provider.script = [{"finish_reason": "stop", "content": "Paris."}]
     prompt(_NEW_REQUEST)
 
+    # The next prompt reaches the provider with the prior accepted turn but WITHOUT the refused
+    # request — the deterministic filter is never handed the thread that tripped it again.
     sent = [m for m in provider.requests[-1]["messages"] if m["role"] != "system"]
-    assert [m["role"] for m in sent] == ["user", "assistant", "user"], sent
-    assert [m["content"] for m in sent if m["role"] == "user"] == [_REFUSED, _NEW_REQUEST]
-    assert sent[1] == {"role": "assistant", "content": FAILED_TURN_NOTICE}  # the type never reaches the wire
+    assert [m["content"] for m in sent if m["role"] == "user"] == ["hello", _NEW_REQUEST]
+    assert _REFUSED not in {m.get("content") for m in sent}
 
     # Turn 3: cancelled mid-turn. The interrupt envelope carries ``final_response=None``
     # (no assistant text yet); ``_finish_turn`` must still report ``cancelled`` — never crash
@@ -188,6 +198,128 @@ def test_acp_refusal_closes_the_turn_and_is_not_replayed_into_the_next_prompt(ac
     response = prompt("stop")
     assert response.stop_reason == "cancelled"
     assert state.history[-1] == {"role": "user", "content": "stop"}
+
+
+def test_acp_refusal_is_erased_durably_and_survives_a_reload(acp):
+    """Finding #3: the refused turn must leave the DURABLE transcript too, not only live memory.
+
+    Standalone ACP owns its ``SessionDB``, so the agent flushed the refused turn's user row before
+    the refusal was known. If only the in-memory history is cleaned, a fresh session load (process
+    restart / reopening the chat) restores the refused request and the chat re-locks. The owner
+    erases the whole refused turn durably, so the reload is clean. The user still SAW the refusal
+    live (asserted in the test above); here we assert the model-facing transcript no longer carries
+    it.
+    """
+    provider, prompt, conversation_rows, db, sid, _conn, _server = acp
+
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
+    prompt(_REFUSED)
+
+    # The durable transcript holds only the prior accepted exchange — the refused turn is erased.
+    assert conversation_rows() == [("user", "hello"), ("assistant", "Hello there.")]
+    assert _REFUSED not in {content for _role, content in conversation_rows()}
+
+    # A fresh SessionManager (reopen / restart) loads the clean transcript, never the refused ask.
+    from acp_adapter.session import SessionManager
+
+    reloaded = SessionManager(db=db).get_session(sid)
+    assert reloaded is not None
+    assert _REFUSED not in {m.get("content") for m in reloaded.history}
+    assert reloaded.history[-1].get("content") == "Hello there."
+
+
+def test_acp_exception_shaped_refusal_is_also_erased(acp):
+    """Finding M1: some providers return a safety refusal as an HTTP 400 / APIError, not an HTTP-200
+    ``finish_reason``. That exception path must recover identically — not persist the refused turn
+    and hand back the pre-refusal history — or the exception shape re-poisons the next prompt while
+    the user is told the message was left out.
+    """
+    provider, prompt, conversation_rows, _db, _sid, _conn, _server = acp
+
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    # No fallback configured, so the 400 is terminal and classified content_policy_blocked.
+    provider.script = [{"status": 400, "error": "request flagged for possible cybersecurity risk"}]
+    prompt(_REFUSED)
+
+    # Durable transcript: only the prior accepted exchange; the refused ask is gone.
+    assert conversation_rows() == [("user", "hello"), ("assistant", "Hello there.")]
+
+    # Next prompt reaches the provider without the refused request.
+    provider.script = [{"finish_reason": "stop", "content": "Paris."}]
+    prompt(_NEW_REQUEST)
+    sent = [m for m in provider.requests[-1]["messages"] if m["role"] != "system"]
+    assert [m["content"] for m in sent if m["role"] == "user"] == ["hello", _NEW_REQUEST]
+    assert _REFUSED not in {m.get("content") for m in sent}
+
+
+def test_acp_refused_turn_stays_in_the_display_tagged_content_refused(acp):
+    """The refused ask leaves the MODEL transcript (active-only) but is RETAINED in the durable
+    DISPLAY read, tagged content_refused — so a fresh ACP session load (reopen/restart) still shows
+    the greyed "you asked X → refused" block even though the model never sees it again."""
+    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+
+    provider, prompt, conversation_rows, db, sid, _conn, _server = acp
+
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
+    prompt(_REFUSED)
+
+    # MODEL read (active-only): the refused ask is gone.
+    assert _REFUSED not in {content for _role, content in conversation_rows()}
+
+    # DISPLAY read (include_compacted): the refused ask is kept, tagged, with the stored notice.
+    display = [m for m in db.get_messages_as_conversation(sid, include_compacted=True)
+               if m["role"] != "session_meta"]
+    refused_row = display[-1]
+    assert refused_row["content"] == _REFUSED
+    assert refused_row["display_kind"] == CONTENT_REFUSED_DISPLAY_KIND
+    assert CONTENT_REFUSED_METADATA_KEY in (refused_row.get("display_metadata") or {})
+
+
+def test_acp_reload_replays_the_refused_ask_and_notice_to_the_editor(acp):
+    """Finding #4486245780: reopening the editor must still SHOW the refused turn.
+
+    The refused turn leaves the MODEL context (``state.history`` is active-only) but is RETAINED in
+    the display projection. A reopened editor replays history via ``load_session``; if that replays
+    only the clean model history the user's refused ask and notice vanish on every reopen even though
+    SQLite keeps them. This drives a REAL ``load_session`` through a FRESH server (process-restart
+    fidelity) sharing the same DB and asserts the replayed ``session/update`` stream — not just the
+    DB rows — carries the refused ask plus the refusal notice, and still the prior clean exchange.
+    """
+    from agent.turn_failure_copy import CONTENT_REFUSED_NOTICE
+    from acp_adapter.server import HermesACPAgent
+    from acp_adapter.session import SessionManager
+
+    provider, prompt, _rows, db, sid, _conn, server = acp
+
+    provider.script = [{"finish_reason": "stop", "content": "Hello there."}]
+    prompt("hello")
+    provider.script = [{"finish_reason": "content_filter", "content": _REFUSAL_DETAIL}]
+    prompt(_REFUSED)
+
+    cwd = server.session_manager.get_session(sid).cwd
+
+    # Reopen from a fresh process: a new server + manager on the same DB cold-restores the session,
+    # then replays it to the editor.
+    reopened_conn = _RecordingConn()
+    reopened = HermesACPAgent(session_manager=SessionManager(db=db))
+    reopened.on_connect(reopened_conn)
+    resp = asyncio.run(reopened.load_session(cwd=cwd, session_id=sid))
+    assert resp is not None
+
+    texts = [getattr(getattr(u, "content", None), "text", None) or getattr(u, "text", None)
+             for u in reopened_conn.updates]
+    # The refused ask is shown again (model history alone would hide it).
+    assert any(_REFUSED in (t or "") for t in texts), f"refused ask hidden on reload: {texts}"
+    # The refusal notice rides along so the editor shows "you asked X -> refused".
+    assert any(CONTENT_REFUSED_NOTICE in (t or "") for t in texts), f"refusal notice missing: {texts}"
+    # The prior accepted exchange is still replayed.
+    assert any((t or "") == "hello" for t in texts)
+    assert any("Hello there." in (t or "") for t in texts)
 
 
 def test_failed_turn_boundary_is_idempotent_on_the_durable_tail_and_skips_context_overflow(tmp_path, monkeypatch):
@@ -293,4 +425,50 @@ def test_failed_turn_boundary_keeps_the_error_card_for_rehydration(tmp_path, mon
     assert metadata["error_surface"]["provider"] == "opencode-go"
     stored = db.get_messages(sid)[-1]["display_metadata"]
     assert (stored if isinstance(stored, dict) else json.loads(stored))["error_surface"]["code"] == "timeout"
+    db.close()
+
+
+def test_failed_turn_after_a_tool_row_is_closed_with_its_error_card(tmp_path, monkeypatch):
+    """A turn that fails after a tool already ran (an onboarding beat answered, then the provider
+    429s) leaves a ``tool`` row as the durable tail. It is as open as a bare user tail: without the
+    boundary a client reopening the session has no error card to draw for the turn."""
+    from types import SimpleNamespace
+
+    from agent.conversation_loop import _close_durable_failed_turn
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, PARTIAL_FAILED_TURN_NOTICE
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db = SessionDB(tmp_path / "state.db")
+    sid = "s1"
+    db.create_session(session_id=sid, source="tui", model="m")
+    call = {"id": "call_setup_beat_name", "type": "function",
+            "function": {"name": "setup_beat", "arguments": '{"beat":"name"}'}}
+    messages = [
+        {"role": "user", "content": "opening"},
+        {"role": "assistant", "content": "Hi!", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": call["id"], "content": '{"answer":{"name":"Austin"}}'},
+    ]
+    db.append_message(sid, "user", "opening")
+    db.append_message(sid, "assistant", "Hi!", tool_calls=[call])
+    db.append_message(sid, "tool", messages[-1]["content"], tool_call_id=call["id"])
+
+    def flush(rows):
+        last = rows[-1]
+        db.append_message(sid, last["role"], last["content"], display_kind=last.get("display_kind"),
+                          display_metadata=last.get("display_metadata"))
+
+    agent = SimpleNamespace(_session_db=db, session_id=sid, _flush_messages_to_session_db=flush,
+                            provider="nous", model="m")
+    failed = {"completed": False, "failed": True, "failure_reason": "rate_limit",
+              "error": "429 Too Many Requests", "messages": messages, "current_turn_user_idx": 0}
+    _close_durable_failed_turn(agent, failed)
+    _close_durable_failed_turn(agent, failed)  # redelivery: the tail is now the boundary
+
+    stored = db.get_messages(sid)
+    assert [row["role"] for row in stored] == ["user", "assistant", "tool", "assistant"]
+    boundary = stored[-1]
+    assert (boundary["content"], boundary["display_kind"]) == (PARTIAL_FAILED_TURN_NOTICE, FAILED_TURN_DISPLAY_KIND)
+    metadata = boundary["display_metadata"]
+    assert (metadata if isinstance(metadata, dict) else json.loads(metadata))["error_surface"]["code"] == "rate_limit"
     db.close()

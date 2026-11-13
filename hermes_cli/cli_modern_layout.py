@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 _SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _RST, _BOLD, _DIM = "\x1b[0m", "\x1b[1m", "\x1b[2m"
 _RED = "\x1b[38;2;239;83;80m"
-_TITLE_MAX = 72
 
 
 def is_modern(cli) -> bool:
@@ -112,28 +111,11 @@ def answer_label(timestamp: str = "") -> str:
     return f"\n{separator(True)}\n{_fg(_skin_hex('ui_accent', '#FFBF00'), bold=True)}{glyph} {name}{_RST}{stamp}"
 
 
-def _full_title(text: str) -> str:
-    """The reasoning's first ``**bold**`` heading, else its first sentence, whitespace-collapsed."""
-    text = (text or "").strip()
-    match = re.search(r"\*\*(.+?)\*\*", text)
-    title = match.group(1) if match else re.split(r"(?<=[.!?])\s|\n", text, maxsplit=1)[0]
-    return " ".join(title.split()).strip("*# ")
-
-
-def thought_title(text: str) -> str:
-    """Short title for a reasoning block: its first ``**bold**`` heading, else its first sentence."""
-    title = _full_title(text)
-    return title if len(title) <= _TITLE_MAX else title[:_TITLE_MAX - 1].rstrip() + "…"
-
-
-def thought_line(seconds: float | None, text: str) -> str:
-    """``∴ Thought for 3s · Planning the change`` (dim italic), closing a reasoning block."""
-    # The reasoning is printed above this line; a title that IS the whole reasoning would repeat it.
-    whole = _full_title(text) == " ".join((text or "").split()).strip("*# ")
-    title = "" if whole else thought_title(text)
+def thought_line(seconds: float | None) -> str:
+    """``∴ Thought for 3s`` (dim italic), closing a reasoning block. No title: the reasoning is
+    printed right above, so any excerpt of it would repeat what the user just read."""
     took = t("cli.modern.thought_for", seconds=f"{max(seconds or 0.0, 0.0):.0f}") if seconds else t("cli.modern.thought")
-    body = f"{took} · {title}" if title else took
-    return f"\x1b[2;3m∴ {body}{_RST}"
+    return f"\x1b[2;3m∴ {took}{_RST}"
 
 
 _REASONING_PREVIEW_LINES = 10  # classic's post-hoc reasoning box shows this many unless /reasoning full
@@ -152,7 +134,7 @@ def thought_rows(seconds: float | None, text: str, full: bool) -> list[str]:
     rows = ["", separator(False), *(reasoning_text_line(line) for line in shown)]
     if len(shown) < len(lines):
         rows.append(f"{_DIM}  {t('cli.chat.reasoning_more_lines', count=len(lines) - len(shown))}{_RST}")
-    return [*rows, thought_line(seconds, text), closing_separator(False)]
+    return [*rows, thought_line(seconds), closing_separator(False)]
 
 
 def completed_tool_line(cli, function_name: str, args: dict | None, duration: float, result=None,
@@ -166,20 +148,22 @@ def completed_tool_line(cli, function_name: str, args: dict | None, duration: fl
 
 def tool_row(function_name: str, args: dict | None, duration: float, result=None, is_error: bool = False) -> str:
     """``📖 Read calc.py  0.2s`` / ``✗ $ pytest -q  0.4s [exit 1]`` — one row per completed call, led by
-    the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed."""
-    from agent.display import get_tool_row_parts
+    the tool's emoji (the classic ``┊`` row's), or a red ``✗`` when that entry failed. A tool in
+    ``NEUTRAL_FAILURE_TOOLS`` keeps its emoji and shows the reason dim."""
+    from agent.display import get_tool_row_parts, is_neutral_failure
     rows = get_tool_row_parts(function_name, args or {}, result, is_error=bool(is_error))
+    neutral = is_neutral_failure(function_name, result)
     out = []
     for index, (emoji, verb, detail, suffix) in enumerate(rows):
         verb = (verb or function_name).strip()
-        mark = f"{_RED}✗{_RST}" if suffix is not None else (emoji or "●")
+        mark = f"{_RED}✗{_RST}" if suffix is not None and not neutral else (emoji or "●")
         line = f"{mark} {_BOLD}{verb[:1].upper()}{verb[1:]}{_RST}"
         if detail:
             line += f" {detail}"
         if index == len(rows) - 1 and duration >= 0.1:
             line += f"  {_DIM}{duration:.1f}s{_RST}"
         if suffix:
-            line += f"{_RED}{suffix}{_RST}"
+            line += f"{_DIM if neutral else _RED}{suffix}{_RST}"
         out.append(line)
     return "\n".join(out)
 

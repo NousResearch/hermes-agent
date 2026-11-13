@@ -125,3 +125,23 @@ it('keeps duplicate creation and its older-backend persona write on the captured
     delete win.__HERMES_BASE_PATH__
   }
 })
+
+it('closes itself shortly after a create, but never calls back once it has unmounted', async () => {
+  const stays = vi.fn()
+  const first = render(<CreateProfileDialog onClose={stays} onCreated={vi.fn()} open />)
+  fireEvent.change(screen.getByRole('textbox', { name: en.profiles.nameLabel }), { target: { value: 'kept' } })
+  fireEvent.click(screen.getByRole('button', { name: en.profiles.createAction }))
+  await waitFor(() => expect(stays).toHaveBeenCalledOnce(), { timeout: 2000 })
+  first.unmount()
+
+  const gone = vi.fn()
+  const created = vi.fn()
+  const second = render(<CreateProfileDialog onClose={gone} onCreated={created} open />)
+  fireEvent.change(screen.getByRole('textbox', { name: en.profiles.nameLabel }), { target: { value: 'left' } })
+  fireEvent.click(screen.getByRole('button', { name: en.profiles.createAction }))
+  await waitFor(() => expect(created).toHaveBeenCalledWith('left'))
+  second.unmount()
+  await new Promise(resolve => setTimeout(resolve, 1000))
+
+  expect(gone).not.toHaveBeenCalled()
+})

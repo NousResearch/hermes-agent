@@ -55,6 +55,11 @@ export function RenameProfileDialog({
   const p = t.profiles
   const redesign = usePortalShell()
   const input = useRef<HTMLInputElement>(null)
+  // The success state shows briefly before the dialog closes; a dialog that unmounts first must not
+  // call back into a page that is gone.
+  const closing = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(closing.current), [])
+
   // The redesign edits the name in place: the field opens holding the name you see, selected, so
   // typing replaces it. Classic starts the default agent's display name blank.
   const initial = isDefault && !redesign ? '' : isDefault ? displayName || currentName : currentName
@@ -124,7 +129,7 @@ export function RenameProfileDialog({
 
       await onRenamed?.(trimmed)
       setStatus('done')
-      window.setTimeout(onClose, 800)
+      closing.current = window.setTimeout(onClose, 800)
     } catch (err) {
       setStatus('idle')
       setError(err instanceof Error ? err.message : p.failedRename)

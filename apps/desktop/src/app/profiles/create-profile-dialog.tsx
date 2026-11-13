@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { ProfileScope } from '@/api/client'
 import { ActionStatus } from '@/components/ui/action-status'
@@ -58,6 +58,11 @@ export function CreateProfileDialog({
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
 
+  // The success state shows briefly before the dialog closes; a dialog that unmounts first must not
+  // call back into a page that is gone.
+  const closing = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(closing.current), [])
+
   useEffect(() => {
     if (!open) {
       return
@@ -104,7 +109,7 @@ export function CreateProfileDialog({
 
       await onCreated?.(trimmed)
       setStatus('done')
-      window.setTimeout(onClose, 800)
+      closing.current = window.setTimeout(onClose, 800)
     } catch (err) {
       setStatus('idle')
       setError(err instanceof Error ? err.message : p.failedCreate)

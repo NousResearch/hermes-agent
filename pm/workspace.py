@@ -28,6 +28,49 @@ def _member_ignored(directory, names):
     return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
 
 
+def _member_input_ignored(entry: Path):
+    """One plugin-owned input policy for currency and the initial snapshot.
+
+    Output names are not universal: reports/ may itself be a Python package,
+    build/ an in-tree backend and dist/ a shipped dashboard. Only explicitly
+    declared generated paths are omitted. Repair replays the recorded snapshot
+    instead of reinterpreting these rules against an older generation.
+    """
+    import tomllib
+
+    document = tomllib.loads((entry / "pyproject.toml").read_text(encoding="utf-8-sig"))
+    policy = document.get("tool", {}).get("hermes", {}).get("build-inputs", {})
+    if not isinstance(policy, dict) or policy.keys() - {"generated", "required"}:
+        raise ValueError(f"invalid tool.hermes.build-inputs: {entry}")
+
+    def paths_for(key):
+        values = policy.get(key, [])
+        if not isinstance(values, list):
+            raise ValueError(f"build-inputs.{key} must be a list of relative paths: {entry}")
+        for value in values:
+            if (not isinstance(value, str) or not value or value.startswith("/")
+                    or any(part in {"", ".", ".."} for part in value.split("/"))
+                    or any(char in value for char in "\\:*?[]")):
+                raise ValueError(f"invalid build-inputs.{key} path: {value!r}")
+        return tuple(Path(value) for value in values)
+
+    generated = paths_for("generated")
+    required = paths_for("required") + tuple(Path(name) for name in
+                                            ("pyproject.toml", "plugin.yaml", "plugin.yml", "plugin.json"))
+
+    def ignore(directory, names):
+        ignored = set(_member_ignored(directory, names))
+        for name in names:
+            relative = (Path(directory) / name).relative_to(entry)
+            if (any(relative.is_relative_to(path) for path in generated)
+                    and not any(relative.is_relative_to(path) or path.is_relative_to(relative)
+                                for path in required)):
+                ignored.add(name)
+        return ignored
+
+    return ignore
+
+
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
 # runner streams uv output from a pre-3.11 system python where this module's tomllib import
 # cannot load. Workspace callers keep reaching it from here.
@@ -52,9 +95,10 @@ def members_stamp(plugin_dirs) -> str:
             h.update(source.read_bytes())
             h.update(b"\0")
         if (entry / "pyproject.toml").is_file():
+            ignore = _member_input_ignored(entry)
             for directory, dirs, files in os.walk(entry):
-                dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
-                for name in sorted(set(files) - set(_member_ignored(directory, files))):
+                dirs[:] = sorted(set(dirs) - set(ignore(directory, dirs)))
+                for name in sorted(set(files) - set(ignore(directory, files))):
                     path = Path(directory) / name
                     h.update(path.relative_to(entry).as_posix().encode())
                     h.update(b"\0")
@@ -612,7 +656,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, extras: I
     if pyproject is not None:
         member = root / "plugin-sources" / key
         shutil.copytree(plugin_dir, member, symlinks=True,
-                        ignore=_member_ignored)
+                        ignore=_member_input_ignored(plugin_dir))
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies a workspace member by [project].name, so the same virtual
         # plugin enabled in two profiles would declare one name twice and fail

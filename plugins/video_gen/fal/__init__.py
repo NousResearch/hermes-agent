@@ -111,6 +111,12 @@ FAL_FAMILIES: dict[str, dict[str, Any]] = {
                              "alibaba/wan-3.0-prime/text-to-video", "alibaba/wan-3.0-prime/image-to-video", image_param_key="start_image_url",
                              duration_int=True, audio_param_key="audio", aspect_ratios=("16:9", "4:3", "1:1", "3:4", "9:16"),
                              resolutions=("480p", "720p", "1080p"), durations=(2, 30), audio=True, seed=True),
+    # Wan 2.7: integer duration enum 2..15, aspect_ratio on t2v only (i2v follows the image), `seed` + `negative_prompt` on both;
+    # audio is auto-generated when no audio_url is given (no toggle key).
+    "wan-2.7": _family("Wan 2.7", "~60-180s", "premium", "Alibaba. 1080p, auto audio, multi-shot prompts, 2-15s.",
+                       "fal-ai/wan/v2.7/text-to-video", "fal-ai/wan/v2.7/image-to-video", duration_int=True, image_drop_keys=("aspect_ratio",),
+                       aspect_ratios=("16:9", "9:16", "1:1", "4:3", "3:4"), resolutions=("720p", "1080p"), durations=(2, 15),
+                       audio_native=True, negative=True, seed=True),
     # v1.1 publishes the full schema: integer duration 3-15, nine aspect ratios (t2v only — i2v follows the image), 720p/1080p,
     # `seed` on both endpoints, audio always on (no generate_audio key).
     "happy-horse": _family("Happy Horse 1.1", "~60-120s", "premium", "Alibaba flagship. 1080p, native audio + multilingual lip-sync, 3-15s, nine aspect ratios.",
@@ -268,7 +274,7 @@ def _get_managed_fal_video_client(managed_gateway):
 
 
 def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
-    """Submit via direct credentials or the managed queue gateway; ``.get()`` blocks."""
+    """Submit via direct credentials or the managed queue gateway; ``wait_fal_queue_result`` blocks."""
     client = _load_fal_client()
     headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_video_gateway()
@@ -309,7 +315,8 @@ def _upscale_video(video_url: str, source_request_id: Optional[str] = None) -> O
             if not source_request_id:
                 raise RuntimeError("Managed SeedVR upscale requires the source FAL request id")
             arguments["source_request_id"] = source_request_id
-        result = _submit_fal_video_request(UPSCALER_ENDPOINT, arguments).get()
+        from tools.fal_common import wait_fal_queue_result
+        result = wait_fal_queue_result(_submit_fal_video_request(UPSCALER_ENDPOINT, arguments))
     except Exception as exc:
         logger.warning("Video upscale failed: %s", exc)
         return None
@@ -354,7 +361,7 @@ class FALVideoGenProvider(VideoGenProvider):
 
     def get_setup_schema(self) -> dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
-                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
+                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 2.7/3.0, Happy Horse, Grok Imagine, "
                        "Gemini Omni — text-to-video & image-to-video"}
 
     def capabilities(self) -> dict[str, Any]:
@@ -402,9 +409,10 @@ class FALVideoGenProvider(VideoGenProvider):
         payload = _build_payload(family, prompt=prompt, image_url=image_url_norm, duration=duration, aspect_ratio=aspect_ratio,
                                  resolution=resolution, negative_prompt=negative_prompt, audio=audio, seed=seed)
         try:
+            from tools.fal_common import wait_fal_queue_result
             handle = _submit_fal_video_request(endpoint, payload)
             source_request_id = getattr(handle, "request_id", None)
-            video, url = _video_url_from_result(handle.get())
+            video, url = _video_url_from_result(wait_fal_queue_result(handle))
         except Exception as exc:
             logger.warning("FAL video gen failed (family=%s, endpoint=%s): %s", family_id, endpoint, exc, exc_info=True)
             return _fal_error(f"FAL video generation failed: {exc}", "api_error", prompt, model=family_id, aspect_ratio=aspect_ratio)

@@ -1,0 +1,20 @@
+name: agent-run-debugger
+repo: https://github.com/Sahil-SS9/agent-run-debugger
+sha: f4eefefb47372afedee56618c89c6fbc5024ca2a
+description: "Local-first evidence debugger for failed, stalled or expensive agent runs: import one explicitly selected trace and get a deterministic timeline, observed failure points, ranked hypotheses that cite their evidence, missing-evidence gaps and an inert replay of the recorded run. Disclosure — imports a trace file explicitly named by you or by the model through the rundebug_import tool and writes only under the active profile's plugin-data directory, with redaction before the store, the journal and exports; replay executes nothing (no subprocess, no network connection, no live database); no telemetry, no background capture, no stored credentials, no third-party network calls and no self-updater; the export command is operator-CLI-only and is not exposed through tool, slash or gateway routes."
+maintainer: Sahil-SS9
+tier: community
+category: tools
+docs_url: https://github.com/Sahil-SS9/agent-run-debugger
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - rundebug_import
+    - rundebug_timeline
+    - rundebug_explain
+    - rundebug_replay
+    - rundebug_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

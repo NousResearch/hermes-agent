@@ -798,3 +798,23 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
     # allow-list and is never shortlisted — the constant-read invariant above is now carried
     # by the capabilities lookups alone.
     assert large_row["featured_models"] == []
+
+
+def test_apply_limits_skips_window_plan_rows():
+    """A window plan says its limits in ``plan_usage``; the credential-cooldown chip would add a second,
+    unrelated reset time, so ``_apply_limits`` leaves that row alone. Other pooled rows keep it."""
+    from hermes_cli import inventory
+
+    class _Pool:
+        def limit_state(self, models):
+            return {"scope": "account", "resets_at": 1_800_000_000}
+
+    rows = [
+        {"slug": "nous", "models": ["a/b"], "plan_usage": {"kind": "usage_window"}},
+        {"slug": "example", "models": ["a/b"]},
+    ]
+    with patch("hermes_cli.auth.read_credential_pool", return_value={"nous": [{}], "example": [{}]}), \
+            patch("agent.credential_pool.load_pool", return_value=_Pool()):
+        inventory._apply_limits(rows)
+    assert "limit" not in rows[0]
+    assert rows[1]["limit"]["scope"] == "account"

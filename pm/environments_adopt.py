@@ -110,6 +110,23 @@ def restart_needed(project_root: Path) -> str | None:
             f"loaded {running.parent.name}")
 
 
+_restart_pending: str | None = None
+
+
+def note_restart_pending(reason: str) -> None:
+    """Record that an install this process ran can only load in a new process.
+
+    An auto-started gateway that nothing restarts reads it (``gateway.run_idle_exit``) and retires,
+    so the next client starts one that boots the new generation instead of reattaching to this one.
+    """
+    global _restart_pending
+    _restart_pending = reason
+
+
+def restart_pending() -> str | None:
+    return _restart_pending
+
+
 def adopt_selected(project_root: Path) -> bool:
     """Move this process onto the selected generation. True when it already runs it, adopted it,
     or runs from no generation of this install at all (there is nothing to adopt)."""

@@ -1,0 +1,15 @@
+name: agent-si
+repo: https://github.com/joelbrilliant/hermes-agent-si
+sha: 51aa30e3278ec815c6813602d43387b01fb70970
+version: "0.2.0"
+description: "Anti-hallucination memory for Hermes: your agent stops inventing answers and answers from facts it can quote from you. One search over your past Hermes, Claude Code, Codex and Grok sessions, both sides shown when sources disagree, never a guess. No LLM, no key, no network, no dependencies. Disclosure — copies the messages of your past Claude Code (~/.claude/projects), Codex (~/.codex/sessions), Grok (~/.grok/sessions) and Hermes (state.db, plus any extra profiles named in brain.toml) sessions, word for word, into a local sessions.sqlite3 beside the brain for search; on by default (index_sessions), local only, no network."
+maintainer: joelbrilliant
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/joelbrilliant/hermes-agent-si#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

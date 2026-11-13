@@ -240,10 +240,12 @@ def _sessions_quiescent(exclude: str | None = None) -> bool:
 
 
 def _session_is_reapable(sid: str, session: dict) -> bool:
-    """Reaper eligibility: the LRU exemptions, and not the sole driver of an active /loop or /heartbeat
-    (closing the session stops the notification poller that fires it, freezing the schedule until a client
-    reattaches). Kept out of ``_sessions_quiescent``: an idle looping session does not block a memory trim."""
-    return _session_is_lru_evictable(sid, session) and not _session_owns_live_wakeup_schedule(session)
+    """Reaper eligibility: the LRU exemptions, and not the sole receiver of a pending wake-up — an active /loop or
+    /heartbeat, or a running background process that will notify it (closing the session stops the notification
+    poller that delivers both, and ``agent_close`` kills the process). Kept out of ``_sessions_quiescent``: an idle
+    session waiting on a wake-up does not block a memory trim."""
+    return (_session_is_lru_evictable(sid, session) and not _session_owns_live_wakeup_schedule(session)
+            and not _session_owns_pending_process_notification(session))
 
 
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
@@ -278,8 +280,8 @@ def _reap_idle_sessions() -> None:
         logger.debug("idle reaper periodic trim deferred: a session is busy or attached")
         return
     try:
-        from hermes_cli.mem_trim import trim_memory
-        trim_memory(reason="idle reaper periodic trim")
+        from hermes_cli.mem_trim import trim_memory_when_idle
+        trim_memory_when_idle(reason="idle reaper periodic trim")
     except Exception as exc:  # debug, not warning — a persistent failure would repeat every scan.
         logger.debug("idle reaper memory trim failed: %s: %s", type(exc).__name__, exc)
 

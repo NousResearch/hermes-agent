@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
-from utils import atomic_json_write
+from utils import atomic_json_write, unlink_files_older_than
 
 # Multiplexer / terminal-emulator identity env vars, checked in order when no real tty path is
 # available (e.g. stdin piped but stdout still a pty owned by a known terminal).
@@ -61,19 +61,6 @@ def is_enabled() -> bool:
         return True
 
 
-def _prune_stale(directory: Path, now: float) -> None:
-    """Best-effort removal of breadcrumbs older than the staleness window."""
-    try:
-        for entry in directory.iterdir():
-            try:
-                if entry.is_file() and now - entry.stat().st_mtime > _STALE_AFTER_SECONDS:
-                    entry.unlink()
-            except OSError:
-                continue
-    except OSError:
-        pass
-
-
 def write_breadcrumb(session_id: str, cwd: Optional[str] = None) -> None:
     """Record that this terminal's live session is ``session_id``. Never raises; no-op when the
     feature is disabled, the session id is empty, or no terminal identity exists."""
@@ -89,7 +76,7 @@ def write_breadcrumb(session_id: str, cwd: Optional[str] = None) -> None:
         now = time.time()
         payload = {"session_id": session_id, "cwd": cwd or os.getcwd(), "ts": now}
         atomic_json_write(directory / terminal_id, payload, indent=None)
-        _prune_stale(directory, now)
+        unlink_files_older_than(directory, "*", _STALE_AFTER_SECONDS, now=now)
     except Exception:
         pass
 

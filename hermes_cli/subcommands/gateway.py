@@ -14,25 +14,31 @@ _FORCE_SERVED_PROFILE_HELP = (
     "Start a separate gateway for this profile even when the default multiplexer already serves it "
     "(not recommended: two pollers on one bot token, port conflicts)")
 
+# `stop`/`restart` ask before interrupting live turns, cron jobs or background delegations.
+_INTERRUPT_HELP = (
+    "{verb} without asking even while sessions are live (turns, cron jobs, background delegations): "
+    "they are interrupted. Without it the command names the live work and asks y/N (refuses when "
+    "there is no terminal). --interrupt is the same flag")
+
 
 class _GatewayCommandParser(argparse.ArgumentParser):
-    """Ensure's parser errors share its machine-readable command boundary."""
+    """``ensure``'s and ``attach``'s parser errors share their machine-readable command boundary."""
 
-    def __init__(self, *args, ensure_json=False, **kwargs):
-        self.ensure_json = ensure_json
+    def __init__(self, *args, json_verb=None, **kwargs):
+        self.json_verb = json_verb
         super().__init__(*args, **kwargs)
 
     def parse_known_args(self, args=None, namespace=None):
         parsed, unknown = super().parse_known_args(args, namespace)
-        if self.ensure_json and unknown:
+        if self.json_verb and unknown:
             self.error("unknown arguments")
         return parsed, unknown
 
     def error(self, message):
-        if not self.ensure_json:
+        if not self.json_verb:
             return super().error(message)
         print('{"endpoint":null,"reason_code":"invalid_invocation","state":"inaccessible"}')
-        self.exit(2, "gateway ensure: invalid invocation\n")
+        self.exit(2, f"gateway {self.json_verb}: invalid invocation\n")
 
 
 def _flag(parser, *names, help, **kw):
@@ -112,9 +118,9 @@ def build_gateway_parser(
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
-    from hermes_cli.gateway_runtime_cli import cmd_gateway_ensure
+    from hermes_cli.gateway_runtime_cli import cmd_gateway_attach, cmd_gateway_ensure
     gateway_ensure = gateway_subparsers.add_parser(
-        "ensure", ensure_json=True,
+        "ensure", json_verb="ensure",
         help="Ensure a local runtime without installing or replacing a service",
         epilog="Exit codes: 0 ready; 2 invalid invocation; 3 incompatible; "
                "4 authorization/profile mismatch; 5 deadline; 6 draining/update-paused; "
@@ -123,6 +129,24 @@ def build_gateway_parser(
     gateway_ensure.add_argument("--timeout", default="60",
                                 help="Total startup deadline in seconds (default: 60)")
     gateway_ensure.set_defaults(func=cmd_gateway_ensure)
+
+    gateway_attach = gateway_subparsers.add_parser(
+        "attach", json_verb="attach",
+        help="Attach a local client: the gateway's WebSocket URL and a single-use session ticket",
+        description="Print the WebSocket URL of the gateway serving this profile and one single-use "
+                    "session ticket for it, for a local client that dials /api/ws itself. The ticket "
+                    "is a credential: it is printed for the calling process only, never logged, and "
+                    "expires 30 seconds after it is minted.",
+        epilog="Exit codes: 0 attached; 2 invalid invocation; otherwise the exit code "
+               "`hermes gateway ensure` gives the same verdict.")
+    _flag(gateway_attach, "--json", help="Emit one JSON result (default)")
+    attach_mode = gateway_attach.add_mutually_exclusive_group()
+    _flag(attach_mode, "--start", help="Start the gateway when none serves this profile")
+    _flag(attach_mode, "--recover",
+        help="Discover first; start (or replace an older Hermes's) gateway only when it is not ready")
+    gateway_attach.add_argument("--timeout", default="60",
+                                help="Start deadline in seconds for --start/--recover (default: 60)")
+    gateway_attach.set_defaults(func=cmd_gateway_attach)
 
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")
@@ -135,12 +159,17 @@ def build_gateway_parser(
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
     _add_system_flag(gateway_stop)
     _flag(gateway_stop, "--all", help="Stop ALL gateway processes across all profiles")
+    _flag(gateway_stop, "-y", "--yes", "--interrupt", dest="interrupt", help=_INTERRUPT_HELP.format(verb="stop"))
 
     gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
     _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
+    _flag(gateway_restart, "-y", "--yes", "--interrupt", dest="interrupt", help=_INTERRUPT_HELP.format(verb="restart"))
+    _flag(gateway_restart, "--detach", help=(
+        "Without an installed service, start the replacement in the background (as `gateway ensure` "
+        "does) instead of in this terminal; used by apps that run the restart as a short-lived client"))
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
@@ -202,6 +231,10 @@ def build_gateway_parser(
     _flag(gateway_migrate, "--multiplex", dest="multiplex", help="Converge onto the one host gateway (default)")
     _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
     _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
+    _flag(gateway_migrate, "--backends", dest="backends",
+        help="Report serve/dashboard background services and their ownership; "
+        "changes no service (normal Hermes startup bookkeeping still runs)")
+    _flag(gateway_migrate, "--json", dest="json", help="With --backends: print the report as JSON")
 
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
     # delivery key, written to .env. See website/docs/developer-guide/relay-connector-contract.md. EXPERIMENTAL.

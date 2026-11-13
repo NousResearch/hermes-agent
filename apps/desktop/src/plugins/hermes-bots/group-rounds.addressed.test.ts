@@ -159,4 +159,61 @@ describe('an addressed member that (pass)ed', () => {
     expect(log(room, 'Quiet')[0].from.kind).toBe('user')
     expect(room.activity.currentGroupActivity('Quiet').filter(event => event.kind === 'failed')).toEqual([])
   })
+
+  it('@everyone: a member that answered is not nudged or flagged for passing on a teammate reply later', async () => {
+    // Each member answers its first turn, then passes on the other's reply.
+    const turns = new Map<string, number>()
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        const count = (turns.get(String(profile)) ?? 0) + 1
+        turns.set(String(profile), count)
+
+        return count === 1 ? `${profile} answer` : '(pass)'
+      }
+    })
+
+    room.rounds.sendToGroupChat('All', MEMBERS, '@everyone status?')
+    await settle(room, 'All')
+
+    expect(log(room, 'All').filter(entry => entry.from.kind === 'member').map(entry => entry.text)).toEqual(['research answer', 'builder answer'])
+    expect(room.gateway.calls.every(call => !call.prompt.includes('explicitly addressed'))).toBe(true)
+    expect(room.activity.currentGroupActivity('All').filter(event => event.kind === 'failed')).toEqual([])
+  })
+
+  it('a follow-up sent while the first answer runs is still owed: the late first answer does not count for it', async () => {
+    let thread: null | string = null
+    let builderTurns = 0
+    const sent: { room?: Room } = {}
+
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        if (profile !== 'builder') {
+          return '(pass)'
+        }
+
+        builderTurns += 1
+
+        if (builderTurns === 1) {
+          // The follow-up lands in the same thread before the first answer does.
+          sent.room?.rounds.sendToGroupChat('Follow', MEMBERS, '@builder and the second thing?', thread)
+
+          return 'first answer'
+        }
+
+        return '(pass)'
+      }
+    })
+
+    sent.room = room
+    thread = room.rounds.sendToGroupChat('Follow', MEMBERS, '@builder first thing?')
+    await settle(room, 'Follow')
+
+    const entries = log(room, 'Follow').map(entry => `${entry.from.kind}:${entry.text}`)
+
+    expect(entries).toEqual(['user:@builder first thing?', 'user:@builder and the second thing?', 'member:first answer'])
+    expect(room.gateway.calls.filter(call => call.profile === 'builder').some(call => call.prompt.includes('explicitly addressed'))).toBe(true)
+    expect(room.activity.currentGroupActivity('Follow').filter(event => event.kind === 'failed')).toEqual([
+      expect.objectContaining({ member: room.membership.groupMemberKey(MEMBERS[1]), reason: 'explicitly addressed member passed twice' })
+    ])
+  })
 })

@@ -311,6 +311,94 @@ def test_user_assigned_line() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Opt-in routing: only a row carrying meta.opt_in routes.
+
+def _users_body(*rows: dict[str, Any]) -> _FakeResponse:
+    return _FakeResponse(json_body={"succeed": True, "data": {"users": list(rows)}})
+
+
+def test_wait_for_opted_in_user_polls_until_flag_lands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Poll 1 fails transiently, poll 2 sees no flag, poll 3 sees it land."""
+    calls = {"n": 0}
+
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        meta = {"opt_in": True} if calls["n"] >= 3 else {}
+        return _users_body({"id": "u1", "phoneNumber": "+15551234567",
+                            "assignedPhoneNumber": "+16282679185", "meta": meta})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+    waits: list = []
+    user = photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567", timeout_s=50, interval_s=5,
+        on_waiting=waits.append, sleep_fn=lambda _s: None,
+    )
+    assert user is not None and photon_auth.user_opted_in(user)
+    assert calls["n"] == 3 and waits == [1, 2]
+    # Never opted in -> None at the bound, not an endless poll.
+    monkeypatch.setattr(photon_auth.httpx, "get", lambda url, **kw: _users_body(
+        {"id": "u1", "phoneNumber": "+15551234567", "meta": {}}))
+    assert photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567", timeout_s=15, interval_s=5,
+        sleep_fn=lambda _s: None,
+    ) is None
+
+
+def test_wait_for_opted_in_user_wall_clock_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slow list calls must not stretch the promised wait past timeout_s (attempt cap is 12)."""
+    now = {"t": 0.0, "calls": 0}
+
+    def slow_get(url: str, **kwargs: Any) -> _FakeResponse:
+        now["calls"] += 1
+        now["t"] += 31.0  # each call burns most of its 30 s HTTP timeout
+        return _users_body({"id": "u1", "phoneNumber": "+15551234567", "meta": {}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", slow_get)
+    assert photon_auth.wait_for_opted_in_user(
+        "proj", "secret", "+15551234567", timeout_s=60, interval_s=5,
+        sleep_fn=lambda s: now.__setitem__("t", now["t"] + s), clock=lambda: now["t"],
+    ) is None
+    assert now["calls"] == 2 and now["t"] <= 60 + 31
+
+
+def test_register_user_if_absent_reuses_opted_in_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-run must reuse the OPTED-IN duplicate, not list order, or a landed opt-in is lost."""
+    monkeypatch.setattr(photon_auth.httpx, "get", lambda url, **kw: _users_body(
+        {"id": "stale", "phoneNumber": "+15551234567", "meta": {}},
+        {"id": "live", "phoneNumber": "+1 (555) 123-4567", "meta": {"opt_in": True}},
+    ))
+    monkeypatch.setattr(photon_auth.httpx, "post", lambda url, **kw: pytest.fail("created a duplicate"))
+    user, created = photon_auth.register_user_if_absent(
+        "proj", "secret", phone_number="+15551234567",
+    )
+    assert created is False and user["id"] == "live"
+
+
+def test_print_routing_status_uses_short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`photon status` must not stall ~30 s on a black-holed API: the live row uses a short
+    timeout and reports "could not verify" instead of hanging or raising."""
+    seen: list = []
+
+    def timing_out_get(url: str, **kwargs: Any) -> _FakeResponse:
+        seen.append(kwargs.get("timeout"))
+        raise photon_auth.httpx.ReadTimeout("")
+
+    monkeypatch.setattr(photon_auth, "load_user_numbers", lambda: ("+15551234567", "+16282679185"))
+    monkeypatch.setattr(photon_auth, "load_project_credentials", lambda: ("proj", "secret"))
+    monkeypatch.setattr(photon_auth.httpx, "get", timing_out_get)
+    lines: list = []
+    photon_auth.print_routing_status(lines.append)
+    assert seen and seen[0] <= 5.0
+    assert lines == ["  routing             : ? could not verify (ReadTimeout)"]
+
+
+# ---------------------------------------------------------------------------
 # Lines (assigned number)
 
 def test_get_imessage_line_returns_existing(monkeypatch: pytest.MonkeyPatch) -> None:

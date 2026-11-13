@@ -14,12 +14,15 @@ identity-less: nothing is inferred and nothing is stamped.
 
 from __future__ import annotations
 
+from gateway.owner_identity import host_owner_subject
 from hermes_state import SessionDB
 from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 _LOADED_USER = "alice"
-_LOGIN = f"basic:{_LOADED_USER}"
+# A signed-in login is the machine owner (gateway.owner_identity): its row carries the owner's OS
+# subject, the one native Desktop's own sessions carry, so Desktop and the TUI resume it.
+_LOGIN = host_owner_subject()
 
 
 class _LoginSocket:
@@ -62,7 +65,7 @@ def _create_desktop_session(transport, tmp_path) -> tuple[dict, str, str]:
 
 
 def test_desktop_session_row_records_the_logged_in_user(monkeypatch, tmp_path):
-    """Login succeeded, then a conversation: the row must name the human."""
+    """Login succeeded, then a conversation: the row must name the owner."""
     db = _real_db(monkeypatch, tmp_path)
     record, sid, key = _create_desktop_session(_LoginSocket(), tmp_path)
     try:

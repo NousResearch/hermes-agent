@@ -50,7 +50,7 @@ def test_collect_stats_sane_values(populated_db):
     assert stats["sessions"] >= 2
 
     fts = stats["fts_tables"]
-    assert set(fts) == {"messages_fts", "messages_fts_trigram", "messages_fts_cjk"}
+    assert set(fts) == {"messages_fts", "messages_fts_trigram"}
     for name, present in fts.items():
         assert isinstance(present, bool), name
     # Layout marker is absent (None) on legacy DBs, an int once stamped.
@@ -176,9 +176,9 @@ def _base_stats(**overrides):
         "fts_tables": {
             "messages_fts": True,
             "messages_fts_trigram": True,
-            "messages_fts_cjk": False,
         },
         "fts_storage_version": 1,
+        "fts_storage_upgrade_needed": False,
         "fts_rebuild_pending": False,
         "fts_rebuild_high_water": None,
         "fts_rebuild_progress": None,
@@ -231,7 +231,7 @@ def test_render_large_db_legacy_trigram_suggests_optimize():
 
     big = STATE_DB_SIZE_WARN_BYTES + 1
     lines = _render_state_db_stats(
-        _base_stats(logical_size_bytes=big, fts_storage_version=None),
+        _base_stats(logical_size_bytes=big, fts_storage_version=None, fts_storage_upgrade_needed=True),
         holders=None,
     )
     blob = " ".join(" ".join(str(p) for p in line) for line in lines)

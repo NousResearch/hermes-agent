@@ -335,8 +335,11 @@ def _apply_personality_to_session(
     return False, info
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+def _cfg_max_turns(cfg: dict, default: int | None = None) -> int:
+    """Foreground agents use the shared default; background tasks pass their separate 25-turn budget."""
+    from hermes_cli.config import DEFAULT_CONFIG, cfg_get, resolve_turn_limit as _resolve_turn_limit
+    if default is None:
+        default = _resolve_turn_limit(cfg_get(DEFAULT_CONFIG, "agent", "max_turns"))
     # Env override wins; resolve_turn_limit makes "none"/"unlimited"/0 first-class spellings.
     if env_val := os.environ.get("HERMES_TUI_MAX_TURNS"):
         return _resolve_turn_limit(env_val, default=default)
@@ -574,6 +577,10 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         # already closed the agent it saw, so one installed now is never closed (#49852).
         closed_midbuild = bool(session.get("_closing"))
         if not closed_midbuild:
+            # The replacement inherits the raw spawning ids: processes started before a compression rotation keep
+            # their old owner, and the reapers' notify keepalive (and close's kill set) match on it.
+            if inherited := set(getattr(old_agent, "_process_owner_task_ids", ())):
+                agent._process_owner_task_ids = {*inherited, *getattr(agent, "_process_owner_task_ids", ())}
             session.update(agent=agent, config_model_seen=config_model_seen)
             owned = opened or bool(getattr(old_agent, "_owns_session_db", False))
             if owned and _transfer_db_to_agent(agent, session_db):

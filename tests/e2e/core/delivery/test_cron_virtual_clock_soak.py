@@ -159,9 +159,7 @@ class Model:
         for job in self.active():
             if job.trigger:
                 job.trigger = False
-                job.fired += 1
-                self.fires.append((job.name, None, t))
-                job.advance_from(t)
+                self.manual(job.name, t)
                 continue
             if job.pending is None or job.pending > t:
                 continue
@@ -173,13 +171,13 @@ class Model:
             job.advance_from(t)
 
     def manual(self, name: str, t: float) -> None:
+        """A run-now ahead of the pending slot is an EXTRA fire: the slot and the repeat budget stay
+        put (cron/extra_fire.py, f656543e030). Once the slot is due it IS the scheduled fire."""
         job = self.jobs[name]
-        job.fired += 1
         self.fires.append((name, None, t))
-        if job.kind == "interval":
-            job.pending = t + job.interval
-        if job.times is not None and job.fired >= job.times:
-            job.done, job.pending = True, None
+        if job.pending is not None and job.pending <= t:
+            job.fired += 1
+            job.advance_from(t)
 
 
 # --- the soak driver -------------------------------------------------------------------------
@@ -551,7 +549,8 @@ class Soak:
                 assert not ok_sent or ok_sent[0]["exec_in_text"], f"{label}: wrong body delivered"
         for exec_id, row in rows.items():
             if exec_id not in starts:  # attempts that never ran must say so truthfully
-                assert row["status"] in ("failed", "unknown", "skipped"), f"{where} ghost row {row}"
+                # 'missed': the slots an outage collapsed or skipped (ee394bd9213), never a started run
+                assert row["status"] in ("failed", "unknown", "skipped", "missed"), f"{where} ghost row {row}"
         if hasattr(self, "long_run_exec"):
             row = rows[self.long_run_exec]
             assert (row["status"], H.effective_outcome(row, deliveries)) == ("completed", "delivered"), (

@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 
 import { $desktopBoot } from '@/store/boot'
 import { initializeConnectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
+import { keepGatewaysConnected } from '@/store/gateway-persistence'
 import { isAuxiliaryWindow, isPeerInstanceWindow } from '@/store/windows'
 
 const RETRY_DELAYS_MS = [1_000, 2_000]
@@ -79,6 +80,9 @@ export function useConnectionsRegistry(): void {
     // auxiliary windows already have an explicit destination of their own.
     if (!boot.running && !isAuxiliaryWindow() && !isPeerInstanceWindow()) {
       void initializeConnectionsRegistry().catch(() => undefined)
+      // Idempotent: a later re-boot (a connection-mode apply) keeps the other
+      // gateways' sockets instead of dropping and redialing them.
+      keepGatewaysConnected()
     }
   }, [boot.running])
 }

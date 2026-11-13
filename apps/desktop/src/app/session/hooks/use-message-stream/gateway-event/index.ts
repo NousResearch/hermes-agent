@@ -2,7 +2,7 @@ import { type GatewayEvent, registryBackendScopeKey } from '@hermes/shared'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
-import { acceptExecutionEvent } from '@/lib/execution-authority'
+import { acceptExecutionEvent, executionAdmission } from '@/lib/execution-authority'
 import {
   approvalReplaySessionId,
   resolveGatewayEventSessionId,
@@ -27,7 +27,7 @@ import { handleOnboardingEvent } from './onboarding'
 import { handleControlEvent } from './session-control'
 import { handleSessionInfoEvent } from './session-info'
 import { handleStatusEvent } from './status'
-import { handleToolEvent } from './tools'
+import { handleToolEvent, handleToolProgressEvent, retireTurnToolProgress } from './tools'
 import type { GatewayEventContext, GatewayEventDeps, GatewayEventHandler } from './types'
 
 export type { GatewayEventDeps } from './types'
@@ -91,6 +91,7 @@ const HANDLERS: GatewayEventHandler[] = [
   handleDeferredPickEvent,
   handleControlEvent,
   handleMessageStreamEvent,
+  handleToolProgressEvent,
   handleToolEvent,
   handleInputRequestEvent,
   handleDesktopBridgeEvent,
@@ -137,7 +138,20 @@ function admitExecutionEvent(
     deps.updateSessionState(sessionId, state => (state.interrupted ? { ...state, interrupted: false } : state))
   }
 
+  noteExecutionAdmission(event, sessionId, deps)
+
   return true
+}
+
+/** Record which owner admission the session's live turn runs. The in-flight journal is keyed on it: the turn's
+ *  prompt bubble can name an earlier admission (a regenerate keeps its bubble) or none (a queue drain adds none). */
+function noteExecutionAdmission(event: GatewayEvent, sessionId: null | string, deps: GatewayEventDeps): void {
+  const admissionId = executionAdmission(event)
+  const state = sessionId ? deps.sessionStateByRuntimeIdRef.current.get(sessionId) : undefined
+
+  if (sessionId && admissionId && state && state.turnAdmissionId !== admissionId) {
+    deps.updateSessionState(sessionId, current => ({ ...current, turnAdmissionId: admissionId }))
+  }
 }
 
 /** The gateway-event dispatcher, extracted from useMessageStream. */
@@ -298,6 +312,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // last one force-settles a dead turn, partial payload included.
         if (sessionId) {
           noteSessionEvent(sessionId)
+          retireTurnToolProgress(event.type, sessionId)
         }
       }
     },

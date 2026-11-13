@@ -156,5 +156,5 @@ def test_a_gateway_hang_up_during_a_plugin_command_ends_the_wait_and_leaves_noth
     assert not alive, 'the wait outlived the gateway'
     assert '/ppslow: Gateway disconnected' in out and 'stopped waiting' not in out, out
     assert out.count('/ppslow') == 1 and 'SLOW_DONE' not in out, out
-    wait = getattr(c, '_plugin_command_wait', None)
+    wait = getattr(c, '_gateway_command_wait', None)
     assert wait is None and pending == {}, (wait, pending)

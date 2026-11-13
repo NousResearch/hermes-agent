@@ -232,7 +232,7 @@ def test_grant_scope_is_restored_when_the_connection_ends_abnormally(daemon, end
     scope = {"type": "websocket", "path": EVENTS, "raw_path": EVENTS.encode(), "root_path": "",
              "query_string": b"", "app": web_server.app,
              "headers": [(b"x-hermes-gateway-ticket", _grant(daemon.beta).encode())],
-             "hermes.gateway_socket_peer": ("127.0.0.1", 50000)}
+             "client": ("127.0.0.1", 50000), "hermes.gateway_socket_peer": ("127.0.0.1", 50000)}
 
     async def connection():
         with _config_profile_scope(None):  # the launch profile's ambient scope

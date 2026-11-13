@@ -108,6 +108,21 @@ jobs:
           }
           Get-Content -LiteralPath $manifest
 
+      - name: No machine install left behind
+        if: always()
+        # Each journey's teardown deletes its fake profile (a full install: checkout, venv with
+        # every extra, PM tools, caches) and its serve.git. All of them on the runner's one drive
+        # outgrew its free space once the suite reached 13 files (run 39853224877: 92 MB left).
+        shell: pwsh
+        run: |
+          $left = @(Get-ChildItem -LiteralPath 'C:\Users' -Directory -Filter '*hermes-e2e-*' -ErrorAction SilentlyContinue)
+          $left += @(Get-ChildItem -Path "${{ runner.temp }}\wm\*\serve.git" -Directory -ErrorAction SilentlyContinue)
+          if ($left.Count -eq 0) { 'every machine install was removed'; exit 0 }
+          foreach ($d in $left) { "::error::left behind by a journey teardown: $($d.FullName)" }
+          Get-ChildItem -Path "${{ runner.temp }}\win-update-e2e\*\teardown-leftovers.txt" -ErrorAction SilentlyContinue |
+            ForEach-Object { Get-Content -LiteralPath $_.FullName }
+          exit 1
+
       - name: Upload transcripts, logs and receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

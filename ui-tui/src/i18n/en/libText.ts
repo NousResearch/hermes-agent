@@ -2,29 +2,18 @@
 // Owned namespace: `libText`.
 // Function leaves take positional args; packs use `{0}`, `{1}` (argument order documented per leaf).
 
+import { gatewayTextEn } from '@hermes/shared/gateway-text'
+
 export const libTextEn = {
   libText: {
-    // gatewayClient.ts — transport-drop reasons that reject in-flight RPCs and
+    // @hermes/shared/gateway-client (given Ink's `t`) — transport-drop reasons that reject in-flight RPCs and
     // therefore surface in the transcript. `gateway not connected` /
     // `gateway not running` are deliberately NOT here: app/userMessages.ts
     // parses them (NOT_CONNECTED_RE) and rewrites them into plain words.
     gateway: {
-      restarting: 'gateway restarting',
-      exited: 'gateway exited',
-      /** {0} = exit code */
-      exitedWithCode: (code: string) => `gateway exited (${code})`,
+      ...gatewayTextEn.libText.gateway,
       /** {0} = child process error message */
-      error: (message: string) => `gateway error: ${message}`,
-      websocketUnavailable: 'gateway websocket unavailable',
-      websocketConnectionFailed: 'gateway websocket connection failed',
-      /** {0} = websocket close code */
-      websocketClosedDuringConnect: (code: string) => `gateway websocket closed (${code}) during connect`,
-      websocketClosed: 'gateway websocket closed',
-      /** {0} = websocket close code */
-      websocketClosedWithCode: (code: string) => `gateway websocket closed (${code})`,
-      websocketStartupFailed: 'gateway websocket startup failed',
-      attachUrlChanged: 'gateway attach url changed',
-      closed: 'gateway closed'
+      error: (message: string) => `gateway error: ${message}`
     },
 
     // lib/terminalSetup.ts — /terminal-setup result messages. {0} = IDE label
@@ -79,7 +68,15 @@ export const libTextEn = {
       /** {0} = provider label */
       providerDetail: (label: string) => `${label} reports your credits or billing are exhausted.`,
       /** {0} = provider label */
-      providerTitle: (label: string) => `Out of credits · ${label}`
+      providerTitle: (label: string) => `Out of credits · ${label}`,
+      // A usage-window plan's limit (usageLimitDialog).
+      limitTitle: 'Limit reached',
+      limitOpenTopup: 'Open /topup',
+      /** {0} = model label (with its note) */
+      limitSwitchTo: (label: string) => `Switch to ${label}`,
+      limitCreditsAdd: 'Or add credits with /topup.',
+      limitCreditsBoth: 'Or add credits and turn on Keep going in /topup.',
+      limitCreditsUse: 'Or turn on Keep going in /topup to use your credits.'
     },
 
     // lib/subagentTree.ts — the `d2 · 7 agents · 124 tools · 2m 14s` summary chip.

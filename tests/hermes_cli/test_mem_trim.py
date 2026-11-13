@@ -10,17 +10,10 @@ from hermes_cli import mem_trim
 @pytest.fixture(autouse=True)
 def _reset_trim_state(monkeypatch):
     monkeypatch.setattr(mem_trim, "_last_trim_monotonic", 0.0)
+    monkeypatch.setattr(mem_trim, "_last_alloc_trim_monotonic", 0.0)
     monkeypatch.setattr(mem_trim, "_probe_done", True)
     monkeypatch.setattr(mem_trim, "_malloc_trim", None)
     monkeypatch.setattr(mem_trim, "_trim_call_count", 0)
-
-
-def test_unsupported_allocator_is_noop_without_gc(monkeypatch):
-    collect = Mock()
-    monkeypatch.setattr(mem_trim.gc, "collect", collect)
-
-    assert mem_trim.trim_memory(force=True, reason="test") is False
-    collect.assert_not_called()
 
 
 def test_config_kill_switch_overrides_force_from_config_file(monkeypatch, tmp_path):
@@ -43,6 +36,16 @@ def test_config_kill_switch_overrides_force_from_config_file(monkeypatch, tmp_pa
         reset_hermes_home_override(token)
 
 
+
+
+def test_gc_collect_runs_even_without_platform_primitive(monkeypatch):
+    # No page-release primitive (macOS, musl): the rate-limited gc.collect() still runs;
+    # only the success flag stays False.
+    collect = Mock()
+    monkeypatch.setattr(mem_trim.gc, "collect", collect)
+
+    assert mem_trim.trim_memory(force=True, reason="test") is False
+    collect.assert_called_once()
 
 
 def test_collect_memory_snapshot_parses_linux_proc_status(monkeypatch):
@@ -77,8 +80,33 @@ def test_success_collects_then_trims(monkeypatch):
     assert mem_trim._last_trim_monotonic == 100.0
 
 
+def test_collect_false_skips_gc_but_still_trims(monkeypatch):
+    """Regression for issue #146375: collect=False must drop the full gc.collect() (the
+    multi-second, GIL-holding call that stalls an in-process dashboard's event loop) while
+    still asking the allocator to release free pages."""
+    calls = []
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: calls.append("gc"))
+    monkeypatch.setattr(
+        mem_trim, "_malloc_trim", lambda pad: calls.append(("trim", pad)) or 1
+    )
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+
+    assert mem_trim.trim_memory(reason="post-compression", cooldown_seconds=60, collect=False) is True
+    assert calls == [("trim", 0)]  # no "gc" entry
 
 
+def test_collect_defaults_to_true_for_every_existing_caller(monkeypatch):
+    """Callers that predate #146375 and never pass collect= must keep running the full
+    collection -- this parameter is additive, not a behavior change for them."""
+    calls = []
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: calls.append("gc"))
+    monkeypatch.setattr(
+        mem_trim, "_malloc_trim", lambda pad: calls.append(("trim", pad)) or 1
+    )
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+
+    assert mem_trim.trim_memory(reason="turn", cooldown_seconds=60) is True
+    assert calls == ["gc", ("trim", 0)]
 
 
 def test_cooldown_suppresses_repeated_collection(monkeypatch):
@@ -157,3 +185,17 @@ def test_force_floor_coalesces_burst_closes(monkeypatch):
     monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 106.0)
     assert mem_trim.trim_memory(force=True, reason="agent close") is True
     assert trim.call_count == 2
+
+
+def test_allocator_only_trim_does_not_suppress_a_forced_collection(monkeypatch):
+    """An allocator-only housekeeping trim must not make a forced full collection right after it
+    (agent-cache pressure eviction) return early inside the 5 s force floor."""
+    calls = []
+    monkeypatch.setattr(mem_trim.gc, "collect", lambda: calls.append("gc"))
+    monkeypatch.setattr(mem_trim, "_malloc_trim", lambda pad: 1)
+    monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(mem_trim, "_config_settings", lambda: (True, 60.0, 1, 0.0))
+
+    assert mem_trim.trim_memory(reason="housekeeping", collect=False) is True
+    assert mem_trim.trim_memory(force=True, reason="agent_cache_pressure") is True
+    assert calls == ["gc"]

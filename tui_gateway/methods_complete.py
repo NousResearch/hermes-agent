@@ -235,8 +235,12 @@ def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
     local = _effective_terminal_backend() == "local"
     # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
-    # session cwd (Desktop sends it) or the session's terminal cwd as-is.
-    root = _completion_cwd(params) if local else (params.get("cwd") or _terminal_task_cwd(session))
+    # session cwd (Desktop sends it) or the session's terminal cwd as-is (".": the backend's own cwd). The TUI
+    # echoes session.info's cwd back; for a sandbox session nobody gave a workspace that is the host launch dir.
+    client_cwd = params.get("cwd")
+    if session and client_cwd == session.get("cwd") and _is_remote_launch_cwd(session):
+        client_cwd = None
+    root = _completion_cwd(params) if local else (client_cwd or _terminal_task_cwd(session) or ".")
     session_key = session.get("session_key") if session else None
     return _ok(rid, {"items": _path_completion_items(word, root, session_key, local)})
 
@@ -367,7 +371,8 @@ def _(rid, params: dict) -> dict:
     reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
     from hermes_cli.inventory import build_models_payload
-    payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
+    # Uncapped, as model.options: the refreshed row replaces the full one in the picker (#129260).
+    payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True)
     provider_data = next((p for p in payload["providers"] if p["slug"] == slug), None)
     if provider_data is None:  # key saved but provider didn't appear — still success
         provider_data = {"slug": slug, "name": pconfig.name, "is_current": False, "models": [], "total_models": 0}

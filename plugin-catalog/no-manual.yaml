@@ -1,0 +1,37 @@
+name: no-manual
+title: No Manual
+repo: https://github.com/cheedli/no-manual
+sha: 769d07f0120158ed3de01a6e9644d6c2f773ad5a
+description: "Furniture with no instructions? Send photos and Hermes finds the official manual, turns your disassembly photos into a manual in reverse, or works out flat-pack assembly (closets, bookcases, cabinets) from the parts, then coaches you step by step and checks a photo of each step. Steps arrive as images in chat; Hermes Desktop shows an interactive 3D step viewer. Never generates instructions for children's furniture or anything people sit, sleep or climb on. Disclosure — photos you add are sent to your own configured model provider through Hermes (ctx.llm) to read panels, labels and step photos; image and PDF paths the model passes are read from anywhere on disk (images and PDFs only) and copied into the plugin's folder, and `recent` mode picks up images from Hermes's shared inbound image cache (<HERMES_HOME>/cache/images, cache/documents/native-inputs) from the last 30 minutes, which on a multi-user gateway can include another chat's upload; manual PDFs found by Hermes's web search are downloaded over https (max 30 MB, public hosts only); photos, manual pages and generated images are stored in <HERMES_HOME>/plugin-data/no-manual/ and deleted with /nomanual delete; the Desktop half bundles three.js (source in desktop/src/); no shell commands, no background processes, no telemetry, no credentials stored."
+maintainer: cheedli
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/cheedli/no-manual#readme
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - nm_start_project
+    - nm_add_photos
+    - nm_set_details
+    - nm_status
+    - nm_record_stage
+    - nm_finish_recording
+    - nm_get_step
+    - nm_identify
+    - nm_attach_manual
+    - nm_extract_parts
+    - nm_confirm_parts
+    - nm_solve
+    - nm_render_steps
+    - nm_check_step
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+image: https://raw.githubusercontent.com/cheedli/no-manual/769d07f0120158ed3de01a6e9644d6c2f773ad5a/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/cheedli/no-manual/769d07f0120158ed3de01a6e9644d6c2f773ad5a/assets/solver-step.png
+  - https://raw.githubusercontent.com/cheedli/no-manual/769d07f0120158ed3de01a6e9644d6c2f773ad5a/assets/desktop-3d-viewer.png
+  - https://raw.githubusercontent.com/cheedli/no-manual/769d07f0120158ed3de01a6e9644d6c2f773ad5a/assets/recorder-step.png

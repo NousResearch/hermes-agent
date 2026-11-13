@@ -1,16 +1,20 @@
 name: jp-address
 repo: https://github.com/TakeshiTGAL/hermes-plugin-address
-sha: c778f382951fcc7f2b1a3f2feea77e26fdc3e70e
-description: "Splits one Japanese address into prefecture, city, town and the remainder with address_split, built on Geolonia's address data (CC BY 4.0, from the Digital Agency address base registry). Disclosure — Each call sends at most two HTTPS GET requests, with no API key, to japanese-addresses-v2.geoloniamaps.com or the JP_ADDRESS_BASE_URL you set (plain http only for 127.0.0.1 and localhost). The matched prefecture and municipality names go into the URL path; the house number, the lot and the building name are not sent. The tool is on for every surface, including gateways, and asks for no approval: anyone you allow on your Hermes gateway can call it. Turn a surface off with hermes tools. It writes no files and creates no cron job. A point can be coarser than the town and is not a rooftop geocode, and an address it cannot place for certain comes back as ambiguous or at the municipality instead of a guess. The publisher may change or stop the free host and suggests self-hosting for commercial use. Not tested from a Hermes model."
+sha: 9c75ffe4ec150b53f206973ef5c6668b7eaf9f01
+description: 'Splits one Japanese address into prefecture, city, town and the remainder with address_split, built on Geolonia''s address data (CC BY 4.0, from the Digital Agency address base registry). Give it a Japanese postal address as written, such as 東京都千代田区霞が関2-1-2, and it returns the prefecture, city and town as separate fields. Disclosure — Each call sends at most two HTTPS GET requests, with no API key, to japanese-addresses-v2.geoloniamaps.com or the JP_ADDRESS_BASE_URL you set (plain http only for 127.0.0.1 and localhost). The matched prefecture and municipality names go into the URL path; the house number, the lot and the building name are not sent. JP_ADDRESS_BASE_URL is read for the active profile on each call, and an HTTP proxy set in the environment is not used. The tool is on for every surface, including gateways, and asks for no approval: anyone you allow on your Hermes gateway can call it. Turn a surface off with hermes tools. While the plugin is enabled, its skill adds one line to the skills index of every session, including surfaces where the tools are turned off, and its pre_llm_call paragraph is added on those surfaces too. It writes no files and creates no cron job. A point can be coarser than the town and is not a rooftop geocode, and an address it cannot place for certain comes back as ambiguous or at the municipality instead of a guess. The publisher may change or stop the free host and suggests self-hosting for commercial use. Called from Hermes with five models in a small sample of 18 sessions (see CHANGELOG.md). The skill tells the model to pass a registered address from a company record into address_split only when a tool result already returned that address. If none was returned, it says the address was not split. When level is below 3, absent lists the missing parts, and those parts are not 0. pre_llm_call adds the address paragraph only on an address question, and adds nothing on other turns. An address question is 所在地, 住所, 都道府県, 丁目, 番地, a prefecture name, or address_split called in the previous turn. A company name alone or an unrelated question does not add it. The paragraph says to call address_split only with an address copied from a tool result, names the absent parts by level, and says a missing part is not written as 0. When a previous turn returned a prefecture, it says to copy that prefecture. transform_llm_output returns no string unless address_split was called and jp-charts would leave the reply unchanged. It does not match success wording. When address_split returned no prefecture, a named prefecture is removed and the reply says the address was not split. level 0, bad_args, and upstream are not described as a completed split.'
 maintainer: TakeshiTGAL
 tier: community
 category: tools
 requires_hermes: '>=0.21.4'
 docs_url: https://github.com/TakeshiTGAL/hermes-plugin-address#readme
-version: "0.1.0"
+version: 0.1.9
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-address/318384409054e0d43329ed4cf002ea61014f3d6c/assets/catalog-banner.png
 platforms: []
 capabilities:
   provides_tools:
   - address_split
-  provides_hooks: []
+  provides_hooks:
+  - pre_llm_call
+  - transform_tool_result
+  - transform_llm_output
   provides_middleware: []

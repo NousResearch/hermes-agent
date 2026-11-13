@@ -69,7 +69,7 @@ async def test_a_turn_that_failed_before_running_settles_failed_on_every_surface
     from gateway.run import GatewayRunner
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from hermes_state_runtime import get_session_admission
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -96,7 +96,7 @@ async def test_a_turn_that_failed_before_running_settles_failed_on_every_surface
     frames = []
     authority.sessions['s'].event_stream.observers.add(frames.append)
     try:
-        receipt = await authority.submit(Principal('human', 'p', frozenset({'session:submit'}), 't'),
+        receipt = await authority.submit(SessionActor('human', 'p', frozenset({'session:submit'}), 't'),
                                          Submission('r1', SessionRef('p', 's'), {'text': 'hello'}, 'queue'))
         await asyncio.wait_for(authority.sessions['s'].task, 10)
         outcome = 'failed' if fails else 'completed'
@@ -121,7 +121,7 @@ async def test_a_finite_prompt_answered_without_running_settles_failed(tmp_path,
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.session_authority import LiveSession, SessionAuthority
-    from gateway.session_contract import Principal, SessionRef, Submission
+    from gateway.session_contract import SessionActor, SessionRef, Submission
     from gateway.session_results import admission_result
     from hermes_cli.turn_exit import turn_exit_code
     from hermes_state_runtime import get_session_admission
@@ -138,7 +138,7 @@ async def test_a_finite_prompt_answered_without_running_settles_failed(tmp_path,
                                  epoch=begin_runtime_epoch(db, instance_id='owner'))
     authority.sessions['s'] = LiveSession(SessionSource(platform=Platform.TELEGRAM, chat_id='c', user_id='human'), 'route')
     try:
-        receipt = await authority.submit(Principal('human', 'p', frozenset({'session:submit'}), 't'),
+        receipt = await authority.submit(SessionActor('human', 'p', frozenset({'session:submit'}), 't'),
                                          Submission('r1', SessionRef('p', 's'), {'text': text, 'finite': True}, 'queue'))
         await asyncio.wait_for(authority.sessions['s'].task, 10)
         assert get_session_admission(db, admission_id=receipt.admission_id)['outcome'] == outcome

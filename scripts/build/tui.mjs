@@ -79,7 +79,7 @@ export async function buildTui(options) {
   return { out: destination, entry: join(destination, 'dist/entry.js') }
 }
 
-// npm's existing developer entrypoint retains ui-tui/dist without replacing
+// The workspace's existing developer entrypoint retains ui-tui/dist without replacing
 // the source workspace (a product includes its own package.json).
 async function buildDeveloperTui() {
   const scratch = mkdtempSync(join(tmpdir(), 'hermes-tui-'))

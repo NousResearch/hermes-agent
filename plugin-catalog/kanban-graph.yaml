@@ -8,7 +8,7 @@ category: desktop
 requires_hermes: ">=0.21.6"
 docs_url: https://github.com/Senci/hermes-kanban-graph
 version: "0.2.1"
-image: https://raw.githubusercontent.com/Senci/hermes-kanban-graph/6dee73134f30bc7d8fc10078dcf1b5a7bed30342/docs/assets/banner.png
+image: https://raw.githubusercontent.com/Senci/hermes-kanban-graph/ac45458959790fa7f6c1c3d44ad9a9d56e676cab/docs/assets/cover.png
 screenshots:
   - https://raw.githubusercontent.com/Senci/hermes-kanban-graph/6dee73134f30bc7d8fc10078dcf1b5a7bed30342/docs/assets/overview.png
   - https://raw.githubusercontent.com/Senci/hermes-kanban-graph/6dee73134f30bc7d8fc10078dcf1b5a7bed30342/docs/assets/lineage.png

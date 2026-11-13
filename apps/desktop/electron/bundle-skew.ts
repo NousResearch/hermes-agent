@@ -16,6 +16,11 @@
  *
  *   git merge-base --is-ancestor <stampCommit> HEAD
  *   git rev-list --count <stampCommit>..HEAD -- <RUNTIME_PATHS>
+ *   git ls-tree <stampCommit> / HEAD -- <RUNTIME_PATHS>   (only when the count is positive)
+ *
+ * The count is evidence and the endpoint content is the verdict: a change and its revert
+ * inside one update range leave the runtime byte-identical, which is exactly when
+ * `hermes update` reuses the packaged app (hermes_cli/desktop_build_reuse.py).
  *
  * Ancestry has to come first, because `A..HEAD` only means "how far HEAD is
  * ahead of A" when A is an ancestor of HEAD. When it is not, the range
@@ -81,6 +86,21 @@ export const RUNTIME_PATHS = [
 ] as const
 
 const NOT_STALE: BundleSkewResult = { desktopCommitsBehind: null, outOfSync: false }
+
+type GitOptions = Parameters<RunGit>[1]
+
+/**
+ * True only on proof that every runtime path holds the same object at the stamp and at HEAD
+ * (equal object ids are equal content). An empty or failed listing proves nothing, so the
+ * commit count keeps the verdict.
+ */
+async function runtimeContentMatches(runGit: RunGit, stampCommit: string, options: GitOptions): Promise<boolean> {
+  const [built, head] = await Promise.all(
+    [stampCommit, 'HEAD'].map(commit => runGit(['ls-tree', commit, '--', ...RUNTIME_PATHS], options))
+  )
+
+  return built.code === 0 && head.code === 0 && built.stdout.trim() !== '' && built.stdout === head.stdout
+}
 
 /**
  * About/version polls share one check per checkout, including failed checks.
@@ -196,7 +216,10 @@ export async function detectBundleSkew(
       return { desktopCommitsBehind: Number.isFinite(count) ? count : null, outOfSync: false }
     }
 
-    return { desktopCommitsBehind: count, outOfSync: true }
+    // Commits are evidence, content is the verdict: a change and its revert in one update range
+    // count 2 but leave the runtime byte-identical, and `hermes update` then rightly reuses the
+    // packaged app instead of rebuilding it. Warning there would never clear.
+    return { desktopCommitsBehind: count, outOfSync: !(await runtimeContentMatches(runGit, stamp.commit, options)) }
   } catch {
     return NOT_STALE
   }

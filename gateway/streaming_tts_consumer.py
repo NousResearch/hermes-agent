@@ -28,6 +28,24 @@ class _HandleDeclined(Exception):
     """The adapter declined ``begin_streaming_tts`` when the first PCM chunk arrived."""
 
 
+_DEFAULT_FINALIZE_TIMEOUT = 10.0
+
+
+def _finalize_timeout_seconds(tts_config: dict[str, Any]) -> float:
+    """``tts.streaming.finalize_timeout_seconds``: how long, once the reply text has ended, the
+    stream may go without new audio before it is cut off. Invalid values warn and use the default."""
+    raw = (tts_config.get("streaming") or {}).get("finalize_timeout_seconds", _DEFAULT_FINALIZE_TIMEOUT)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 0.0
+    if isinstance(raw, bool) or not value > 0:
+        logger.warning("tts.streaming.finalize_timeout_seconds in config.yaml must be a positive number of "
+                       "seconds, got %r; using the default %s s until it is fixed", raw, _DEFAULT_FINALIZE_TIMEOUT)
+        return _DEFAULT_FINALIZE_TIMEOUT
+    return value
+
+
 class StreamingTTSConsumer:
     """Consumes LLM text deltas and produces streaming PCM audio for an adapter."""
 
@@ -49,6 +67,8 @@ class StreamingTTSConsumer:
         self._completed = self._partial = self._aborted = False
         self._finished = self._dropped = self._suppress_whole_file = False
         self._lock, self._strip_markdown = threading.Lock(), None  # stripper lazily imported
+        self._finalize_timeout = _finalize_timeout_seconds(tts_config)
+        self._last_audio_at = float("-inf")  # loop time of the last PCM write
 
     def _streamer_format(self) -> AudioFormat:
         return AudioFormat(**{f: int(getattr(self._streamer, f, getattr(AudioFormat, f)))
@@ -204,6 +224,7 @@ class StreamingTTSConsumer:
                 raise _HandleDeclined()
             was_audible = self._handle.audible
             await self._adapter.write_streaming_tts(self._handle, chunk)
+            self._last_audio_at = self._loop.time()
             if not was_audible:
                 self._handle.audible = self._suppress_whole_file = True
 
@@ -236,4 +257,17 @@ class StreamingTTSConsumer:
         if self._task is not None:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
+        return self._completed
+
+    async def wait_finalized(self) -> bool:
+        """Wait for the drain task after ``finish()`` for as long as it keeps writing audio: stop
+        only once ``tts.streaming.finalize_timeout_seconds`` pass with no new PCM, so a slower
+        engine (local TTS on a CPU) still finishes a long reply. Returns True only on full success."""
+        started = self._loop.time()
+        while self._task is not None and not self._task.done():
+            idle = self._loop.time() - max(started, self._last_audio_at)
+            if idle >= self._finalize_timeout:
+                break
+            with contextlib.suppress(Exception):  # timeout or the drain task's own error, not cancel
+                await asyncio.wait_for(asyncio.shield(self._task), timeout=self._finalize_timeout - idle)
         return self._completed

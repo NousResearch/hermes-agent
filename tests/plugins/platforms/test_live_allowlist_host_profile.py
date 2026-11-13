@@ -140,16 +140,33 @@ def test_a_frozen_operator_value_is_not_replaced_by_a_later_bridged_one(_home, m
     assert (_decision_under_host_scope(_home, "999"), _decision_under_host_scope(_home, "222")) == (True, False)
 
 
-def test_a_frozen_bridged_list_the_bridge_did_not_retract_is_kept(_home, multiplexed, monkeypatch):
+@pytest.mark.parametrize("drop_marker", [True, False])
+def test_a_frozen_bridged_list_the_bridge_did_not_retract_is_kept(_home, multiplexed, monkeypatch, drop_marker):
     """Only the bridge's own retraction (name and marker both gone) drops a frozen bridged list. A live
-    value some other writer left without a marker is not evidence the list was removed: dropping it
-    would leave the host with no list at all, which an allowlist-less gate reads as open."""
+    value some other writer left, without a marker or over the bridge's stale one, is not evidence the
+    list was removed or replaced: dropping it would leave the host with no list at all, which an
+    allowlist-less gate reads as open."""
     _write(_home, telegram_cfg={"allow_from": ["111"]})
     _telegram(_home)
     _freeze()
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "333")
-    monkeypatch.delenv("HERMES_BRIDGED_TELEGRAM_ALLOWED_USERS")
+    if drop_marker:
+        monkeypatch.delenv("HERMES_BRIDGED_TELEGRAM_ALLOWED_USERS")
     assert (_decision_under_host_scope(_home, "111"), _decision_under_host_scope(_home, "333")) == (True, False)
+
+
+def test_an_operator_allow_all_grant_survives_the_host_scope(_home, multiplexed, monkeypatch):
+    """GATEWAY_ALLOW_ALL_USERS from the gateway's own environment (systemd, ``op run``) is not the
+    bridge's grant: following the bridge never revokes it."""
+    from gateway.platforms._shared import platform_gate_env
+    from gateway.run import _profile_runtime_scope
+
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    _write(_home, telegram_cfg={"allow_from": ["111"]})
+    _telegram(_home)
+    _freeze()
+    with _profile_runtime_scope(_home):
+        assert platform_gate_env("GATEWAY_ALLOW_ALL_USERS") == "true"
 
 
 def test_a_failed_host_reload_keeps_the_last_good_list(_home, multiplexed):
@@ -235,7 +252,8 @@ def test_a_retracted_grant_goes_before_the_list_it_masked(monkeypatch):
     """One edit removes a list AND the allow_all_users it masked: a reader sharing the mapping
     must never see "no list, grant still on", which admits every sender."""
     from gateway import config_loader
-    from gateway.platforms._shared import bridged_env_digest, bridged_env_marker, follow_bridged_env
+    from gateway.bridged_env import follow_bridged_env
+    from gateway.platforms._shared import bridged_env_digest, bridged_env_marker
 
     name, value = "TELEGRAM_ALLOWED_USERS", "111"
     scope = _OrderedScope({name: value, bridged_env_marker(name): bridged_env_digest(value),
@@ -251,11 +269,11 @@ def test_a_retracted_grant_goes_before_the_list_it_masked(monkeypatch):
 
 
 def test_following_snapshots_the_env_under_the_load_lock(monkeypatch):
-    """A load publishes all-or-nothing under _YAML_ENV_LOCK; following reads the env only while
+    """A load publishes all-or-nothing under YAML_ENV_LOCK; following reads the env only while
     holding it, so it never sees a list rewritten without its marker (or the reverse)."""
     from collections.abc import MutableMapping
 
-    from gateway.platforms import _shared
+    from gateway import bridged_env
 
     seen: list[bool] = []
 
@@ -264,7 +282,7 @@ def test_following_snapshots_the_env_under_the_load_lock(monkeypatch):
             self._env = dict(env)
 
         def __getitem__(self, key):
-            seen.append(_shared._YAML_ENV_LOCK._is_owned())
+            seen.append(bridged_env.YAML_ENV_LOCK._is_owned())
             return self._env[key]
 
         def __iter__(self):
@@ -280,12 +298,12 @@ def test_following_snapshots_the_env_under_the_load_lock(monkeypatch):
             del self._env[key]
 
         def get(self, key, default=None):
-            seen.append(_shared._YAML_ENV_LOCK._is_owned())
+            seen.append(bridged_env.YAML_ENV_LOCK._is_owned())
             return self._env.get(key, default)
 
-    monkeypatch.setattr(_shared.os, "environ", _Env(os.environ))
+    monkeypatch.setattr(bridged_env.os, "environ", _Env(os.environ))
 
-    _shared.follow_bridged_env({})
+    bridged_env.follow_bridged_env({})
 
     assert seen and all(seen), seen
 
@@ -313,7 +331,8 @@ def test_moving_users_between_lists_never_shows_a_reader_no_list(monkeypatch):
     """With a grant on, one edit retracts one bridged list and adds another: the new one must land
     before the old one goes (the retracted name here sorts first)."""
     from gateway import config_loader
-    from gateway.platforms._shared import bridged_env_digest, bridged_env_marker, follow_bridged_env
+    from gateway.bridged_env import follow_bridged_env
+    from gateway.platforms._shared import bridged_env_digest, bridged_env_marker
 
     old, new = "TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS"
     seen = []

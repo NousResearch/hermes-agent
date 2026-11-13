@@ -51,7 +51,9 @@ def test_routines_only_import_waits_and_summary_keeps_resume_commands(tmp_path, 
     monkeypatch.setattr(setup, "_run_setup_wizard_impl", wizard)
     monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda: object())
     monkeypatch.setattr(setup_summary, "_TOOL_ROW_BUILDERS", ())
-    monkeypatch.setattr(setup_summary.nous_subscription, "get_nous_subscription_features", lambda config: None)
+    # The summary imports nous_subscription locally inside the function, so patch the
+    # defining module's attribute rather than an attribute of setup_summary.
+    monkeypatch.setattr("hermes_cli.nous_subscription.get_nous_subscription_features", lambda config: None)
     setup.run_setup_wizard(Namespace())
     assert events == ["child output", "acknowledged", "mode menu"]
     output = capsys.readouterr().out

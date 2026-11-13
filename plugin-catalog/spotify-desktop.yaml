@@ -1,6 +1,6 @@
 name: spotify-desktop
 repo: https://github.com/cruzlxyz/hermes-spotify-desktop
-sha: 82b7656f863e8597e792146f2c3966497e1e9886
+sha: 1dab8e6e333a6d872fa5b85ec25d5bb0f96431f9
 description: 'Spotify Connect remote for Hermes Desktop — status-bar mini player (now playing,
   transport, volume, devices, search, playlists, queue) reusing the Hermes Spotify login
   (Spotify Premium required for playback control). Unified agent+desktop
@@ -9,7 +9,7 @@ description: 'Spotify Connect remote for Hermes Desktop — status-bar mini play
 maintainer: cruzlxyz
 tier: community
 version: "0.4.1"
-image: https://raw.githubusercontent.com/cruzlxyz/hermes-spotify-desktop/82b7656f863e8597e792146f2c3966497e1e9886/assets/cover.jpg
+image: https://raw.githubusercontent.com/cruzlxyz/hermes-spotify-desktop/1dab8e6e333a6d872fa5b85ec25d5bb0f96431f9/assets/cover.jpg
 category: desktop
 docs_url: https://github.com/cruzlxyz/hermes-spotify-desktop
 platforms: []

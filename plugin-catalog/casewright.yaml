@@ -1,6 +1,6 @@
 name: casewright
 repo: https://github.com/Zlyorka/casewright
-sha: 9bba27d70ae3ab5a2e7f79854a13d000a72ade7c
+sha: 1503a4f99821c62b599dfd871ed3a9e9e99b44fa
 subdir: ""
 description: Case orchestration on the kanban board — one brief becomes verifiable task cards with dependency gating, verdict gates and a bounded repair pass.
 maintainer: Zlyorka

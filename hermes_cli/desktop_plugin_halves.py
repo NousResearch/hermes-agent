@@ -44,8 +44,9 @@ _GIT_ORIGIN = re.compile(r'\[remote "origin"\][^[]*?url\s*=\s*(\S+)')
 #: Public: ``desktop_plugin_install`` takes it too, so a clone-publish never interleaves with a
 #: reconcile pass copying the same package's folder.
 ROOT_WRITER = threading.Lock()
-# mkdtemp's eight-character suffix; the hidden prefix is reserved for temporary publishes.
-_STAGING_NAME = re.compile(r"^\..+\.staging-[a-z0-9_]{8}$")
+# The two mkdtemp suffixes publishing into this root: Python's eight [a-z0-9_] characters and
+# Node's (libuv) six [A-Za-z0-9]. The hidden prefix is reserved for temporary publishes.
+_STAGING_NAME = re.compile(r"^\..+\.staging-(?:[a-z0-9_]{8}|[A-Za-z0-9]{6})$")
 # Electron publishes into this root too, outside ROOT_WRITER; allow ample time for in-flight copies.
 _ABANDONED_STAGING_AGE_S = 60 * 60
 

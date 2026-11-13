@@ -197,12 +197,22 @@ def dial_origin(bind_host: str, port: int) -> str:
     return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
 
+def private_listener_host(home) -> str:
+    """Bind address for the gateway API when the Webapp is off or unavailable."""
+    document = _config_document(Path(home))
+    gateway = document.get("gateway", {}) if isinstance(document, dict) else {}
+    value = gateway.get("api_bind_host", DEFAULT_HOST) if isinstance(gateway, dict) else DEFAULT_HOST
+    if value not in ("127.0.0.1", "::1"):
+        raise ValueError("gateway.api_bind_host must be 127.0.0.1 or ::1")
+    return value
+
+
 def listener_plan(home) -> tuple[str, int, WebappMount | None, str | None]:
     """The gateway listener's ``(host, port, webapp, reason)`` for the gateway serving *home*;
     *reason* says why a ``webapp:`` block that asks for the Webapp cannot be used."""
     settings = webapp_settings(home)
     if not settings.enabled:
-        return (*settings.bind, None, settings.reason)
+        return (private_listener_host(home), 0, None, settings.reason)
     from hermes_cli.config import get_project_root
     from hermes_cli.webapp import webapp_dist_dir
     mount = WebappMount(dist=webapp_dist_dir(get_project_root()), home=Path(home), public_url=settings.public_url)

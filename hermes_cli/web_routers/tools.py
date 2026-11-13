@@ -284,8 +284,11 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     scope_profile = body.profile or profile
 
     def _run():
-        with config_write_scope(scope_profile):
+        with _profile_scope(scope_profile):
+            # Plugin discovery runs here, before the mutation span: plugins load on a
+            # deadline thread and read config, which the held lock would block.
             _require_known_toolset(name)
+        with config_write_scope(scope_profile):
             config = load_config()
             if name in _CONFIG_ONLY_TOOLSETS:
                 # Config-only capabilities (stt) toggle their own section's
@@ -475,6 +478,12 @@ async def select_toolset_model(
         raise _bad_request("model is required")
 
     def _run():
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        with _profile_scope(body.profile or profile):
+            # Discover before the mutation span (see toggle_toolset): the catalog
+            # lookup below would otherwise load plugins while the lock is held.
+            _ensure_plugins_discovered()
         with config_write_scope(body.profile or profile):
             config = load_config()
             row = _find_toolset_provider_row(name, config, body.provider)
@@ -680,12 +689,13 @@ async def select_terminal_backend(
     backend = (body.backend or "").strip().lower()
 
     def _run():
-        with config_write_scope(body.profile or profile):
+        with _profile_scope(body.profile or profile):
             valid_names = {row["name"] for row in _terminal_backend_rows()}
             if backend not in valid_names:
                 raise _bad_request(
                     f"Unknown terminal backend: {body.backend!r}. "
                     f"Use one of: {', '.join(sorted(valid_names))}")
+        with config_write_scope(body.profile or profile):
             config = load_config()
             _dict_section(config, "terminal")["backend"] = backend
             save_config(config)

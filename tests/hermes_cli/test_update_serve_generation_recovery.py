@@ -986,6 +986,7 @@ def test_restarted_dashboard_unit_is_not_killed_by_the_continued_scan(monkeypatc
 def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monkeypatch):
     """A serve PID owned by a DIFFERENT unit is still selected for recovery."""
     from hermes_cli import dashboard_procs
+    from gateway import status as gateway_status
 
     signalled: list[int] = []
     restarted: list[str] = []
@@ -1002,6 +1003,8 @@ def test_serve_backend_survives_selection_when_the_dashboard_unit_restarts(monke
     )
     monkeypatch.setattr(dashboard_procs, "_lock_owned_serve_pids", lambda: set())
     monkeypatch.setattr(dashboard_procs.sys, "platform", "linux")
+    # The synthetic PID has no real kernel birth; give it a stable incarnation.
+    monkeypatch.setattr(gateway_status, "get_process_start_time", lambda pid: 12345)
 
     def _fake_kill(pid, sig):
         signalled.append(pid)

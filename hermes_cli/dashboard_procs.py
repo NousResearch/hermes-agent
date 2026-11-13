@@ -574,11 +574,18 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 
     from gateway.status import get_process_start_time
 
+    # Capture the incarnation before waiting. Unknown birth is not authority to signal.
+    births = {pid: get_process_start_time(pid) for pid in pids}
     descendants = _posix_descendants(pids)
+    signaled_roots: set[int] = set()
+
+    def _same(pid: int, start: int | None) -> bool:
+        return start is not None and get_process_start_time(pid) == start
 
     def _send(pid: int, sig) -> None:
         try:
             os.kill(pid, sig)
+            signaled_roots.add(pid)
             if sig == _signal.SIGKILL:
                 killed.append(pid)
         except ProcessLookupError:
@@ -587,21 +594,33 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
             failed.append((pid, str(e)))
 
     for pid in pids:
-        _send(pid, _signal.SIGTERM)
+        if _same(pid, births[pid]):
+            _send(pid, _signal.SIGTERM)
+        else:
+            failed.append((pid, "process incarnation unavailable or changed before SIGTERM"))
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
     alive = _wait_gone(pending, _POSIX_TERM_GRACE_SECONDS)
     killed.extend(p for p in pending if p not in alive)
     for pid in alive:
-        _send(pid, _signal.SIGKILL)
+        if _same(pid, births[pid]):
+            _send(pid, _signal.SIGKILL)
+        else:
+            failed.append((pid, "process incarnation changed before SIGKILL"))
 
     # Snapshot identity must still match: a PID recycled during the grace is not ours to signal.
-    survivors = [p for p, (_root, start) in descendants.items()
-                 if start is not None and get_process_start_time(p) == start]
+    # A child snapshot alone cannot authorize signals when its root was never proven ours
+    # (or its signal failed). In that case leave the entire subtree untouched.
+    survivors = [p for p, (root, start) in descendants.items()
+                 if root in killed and root in signaled_roots and root not in {f[0] for f in failed}
+                 and births.get(root) is not None and _same(p, start)]
     for sig in (_signal.SIGTERM, _signal.SIGKILL):
         for pid in survivors:
+            if not _same(pid, descendants[pid][1]):
+                continue
             with contextlib.suppress(OSError):
                 os.kill(pid, sig)
         survivors = _wait_gone(survivors, _POSIX_DESCENDANT_GRACE_SECONDS)
+        survivors = [pid for pid in survivors if _same(pid, descendants[pid][1])]
     failed.extend((pid, "descendant of the stopped backend still alive after SIGKILL")
                   for pid in survivors)
 
@@ -908,18 +927,29 @@ def _remote_lock_roots(base_dir: Path | None) -> list[Path]:
     return roots
 
 
-def _lock_owned_serve_pids(base_dir: Path | None = None) -> set[int]:
+def _lock_owned_serve_pids(base_dir: Path | None = None, *, strict: bool = False) -> set[int]:
     """PIDs claimed by valid ``{hermes_home}/desktop-ssh/<ownershipId>/backend.lock.json`` records
-    (best-effort: a bad record contributes no PID; never raises)."""
+    (best-effort by default: a bad record contributes no PID; strict mode raises
+    for unreadable directories or uncertain existing locks so the destructive boot reap refuses)."""
     owned: set[int] = set()
     entries: list[Path] = []
     for root in _remote_lock_roots(base_dir):
         try:
             entries.extend(root.iterdir() if root.is_dir() else [])
         except OSError:
+            if strict:
+                raise  # boot reap cannot treat an unreadable lock directory as empty
             continue
     for entry in entries:
-        lock = read_valid_backend_lock(entry / BACKEND_LOCK_NAME)
+        lock_path = entry / BACKEND_LOCK_NAME
+        lock = read_valid_backend_lock(lock_path)
+        if strict and lock is None:
+            try:
+                lock_path.lstat()  # includes dangling symlinks; permission errors propagate
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError(f"uncertain remote backend lock: {lock_path}")
         if lock is not None:
             owned.add(lock["pid"])  # validated as int
     return owned
@@ -973,16 +1003,16 @@ def _reap_orphaned_desktop_local_serves(
     signal_term = _signal.SIGTERM if signal_term is None else signal_term
     signal_kill = getattr(_signal, "SIGKILL", _signal.SIGTERM) if signal_kill is None else signal_kill
     sleep_fn = sleep_fn or _time.sleep
-    lock_owned_pids_fn = lock_owned_pids_fn or _lock_owned_serve_pids
+    lock_owned_pids_fn = lock_owned_pids_fn or (lambda: _lock_owned_serve_pids(strict=True))
     process_age_seconds_fn = process_age_seconds_fn or _process_age_seconds
     if sys.platform == "win32":  # Windows desktop uses taskkill tree teardown
         return _empty_result()
 
-    def _owned_pids() -> set[int]:
+    def _owned_pids() -> set[int] | None:
         try:
             return set(lock_owned_pids_fn())
         except Exception:
-            return set()  # never let lock scanning block or widen the reap
+            return None  # uncertain ownership cannot authorize a reap
 
     def _is_stale_orphan(pid: int) -> bool:
         try:  # never let a liveness probe failure widen the reap
@@ -990,23 +1020,41 @@ def _reap_orphaned_desktop_local_serves(
         except Exception:
             return False
 
-    exclude = _exclude_pids_from_env() | {os.getpid()} | _owned_pids()
+    owned = _owned_pids()
+    if owned is None:
+        return _empty_result()
+    exclude = _exclude_pids_from_env() | {os.getpid()} | owned
     with contextlib.suppress(Exception):
         exclude.add(os.getppid())  # the desktop / sshd wrapper
     try:
         scanned = _scan_dashboard_processes(exclude_pids=exclude)
+        from gateway.status import get_process_start_time
+        # Bind the scan's PID to an incarnation before age/PPID/lock selection can race reuse.
+        scanned_births = {pid: get_process_start_time(pid) for pid, _ in scanned}
     except Exception:
         return _empty_result()
     owned_now = _owned_pids()  # re-read: a lock may have been written since the scan
+    if owned_now is None:
+        return _empty_result()
     matched = [pid for pid, cmd in scanned
-               if _is_desktop_local_serve_cmdline(cmd) and pid not in owned_now
+               if scanned_births[pid] is not None and _is_desktop_local_serve_cmdline(cmd) and pid not in owned_now
                and _process_ppid(pid) in (0, 1) and _is_stale_orphan(pid)]
     if not matched:
         return _empty_result()
     descendants = _posix_descendants(matched)  # before the kill: the root's death reparents them
+    births = {pid: scanned_births[pid] for pid in matched}
+
+    def _still_owned(pid: int) -> bool:
+        locks = _owned_pids()
+        return (births[pid] is not None and get_process_start_time(pid) == births[pid]
+                and locks is not None and pid not in locks)
+
     killed: list[int] = []
     failed: list[int] = []
     for pid in matched:
+        if not _still_owned(pid):
+            failed.append(pid)
+            continue
         try:
             os.kill(pid, signal_term)
         except ProcessLookupError:
@@ -1020,9 +1068,13 @@ def _reap_orphaned_desktop_local_serves(
         if pid in failed:
             continue
         try:
-            if psutil.pid_exists(pid):
+            if psutil.pid_exists(pid) and _still_owned(pid):
                 os.kill(pid, signal_kill)
-            killed.append(pid)
+                killed.append(pid)
+            elif not psutil.pid_exists(pid):
+                killed.append(pid)
+            else:
+                failed.append(pid)
         except ProcessLookupError:
             killed.append(pid)
         except OSError:
@@ -1031,9 +1083,15 @@ def _reap_orphaned_desktop_local_serves(
     # keep the deleted state.db-wal inode open (#112631). The boot-path budget leaves no second
     # grace, and these trees already lost their Electron and their backend.
     # A root whose own kill raised (EPERM: not ours) keeps its subtree — do not orphan it half-way.
-    from gateway.status import get_process_start_time
     for pid, (root, start) in descendants.items():
-        if root not in failed and start is not None and get_process_start_time(pid) == start:
+        # A successfully killed root may already be gone. That is safe for its
+        # captured child only if no new root owns the PID and no lock appeared.
+        locks = _owned_pids()
+        root_now = get_process_start_time(root)
+        root_safe = (root in killed and root not in failed and locks is not None
+                     and root not in locks and
+                     (root_now == births[root] or (root_now is None and not psutil.pid_exists(root))))
+        if root_safe and start is not None and get_process_start_time(pid) == start:
             with contextlib.suppress(OSError):
                 os.kill(pid, signal_kill)
     with contextlib.suppress(Exception):

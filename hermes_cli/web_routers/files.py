@@ -197,10 +197,19 @@ def _fs_mime_type(path: Path) -> str:
 
 def _fs_preview_type_path(requested: str, target) -> PurePath:
     """The name a preview takes its MIME type and language from: the path as requested, so a
-    ``report.html`` link to an extensionless cache file previews as HTML. A requested name with
-    no extension falls back to the file it resolves to. Bytes and checks stay on *target*."""
-    alias = PurePath(str(requested or "").strip())
-    return alias if alias.suffix else PurePath(target)
+    ``report.html`` link to an extensionless cache file previews as HTML. A requested name whose
+    extension names no type (``latest``, ``notes.draft``) falls back to the file it resolves to.
+    A ``file:`` URL counts by the native path it names, decoded as the read decoded it (never
+    resolved). Bytes and checks stay on *target*."""
+    requested = str(requested or "").strip()
+    if requested.lower().startswith("file:"):
+        try:
+            requested = _file_url_path(requested)
+        except ValueError:
+            return PurePath(target)
+    alias = PurePath(requested)
+    known = alias.suffix.lower() in _FS_PREVIEW_LANGUAGE_BY_EXT or _fs_mime_type(alias) != "application/octet-stream"
+    return alias if known else PurePath(target)
 
 
 def _fs_looks_binary(data: bytes) -> bool:

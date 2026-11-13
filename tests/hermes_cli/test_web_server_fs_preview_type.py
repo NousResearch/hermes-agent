@@ -69,6 +69,37 @@ def test_a_host_link_without_an_extension_keeps_its_targets_type(client, tmp_pat
     assert response.json()["language"] == "html"
 
 
+@pytest.mark.require_symlinks
+@pytest.mark.parametrize(
+    ("link", "target", "field", "expected"),
+    [
+        ("report.draft", "report.html", "language", "html"),  # the link's extension names no type
+        ("main.go", "cache/7f24ab", "language", "go"),  # it names a language only
+        ("photo.png", "cache/7f24ab", "mimeType", "image/png"),  # it names a MIME type only
+    ],
+)
+def test_a_host_link_previews_as_the_type_one_of_its_names_says(client, tmp_path, link, target, field, expected):
+    (tmp_path / "cache").mkdir()
+    (tmp_path / target).write_bytes(HTML)
+    (tmp_path / link).symlink_to(tmp_path / target)
+
+    response = client.get("/api/fs/read-text", params={"path": str(tmp_path / link)})
+
+    assert response.status_code == 200
+    assert response.json()[field] == expected
+
+
+@pytest.mark.parametrize("endpoint", ["/api/fs/read-text", "/api/fs/read-data-url"])
+@pytest.mark.parametrize("suffix", ["page.html#section", "page.h%74ml"])
+def test_a_file_url_previews_as_the_type_of_the_path_it_names(client, tmp_path, endpoint, suffix):
+    """The read decodes a ``file:`` URL (fragment dropped, %-escapes decoded once); the type does too."""
+    (tmp_path / "page.html").write_bytes(HTML)
+
+    response = client.get(endpoint, params={"path": (tmp_path / "x").as_uri()[:-1] + suffix})
+
+    _assert_html_preview(endpoint, response)
+
+
 class _FakeSshFs:
     def __init__(self, resolved):
         self.resolved = resolved

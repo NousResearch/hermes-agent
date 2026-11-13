@@ -363,6 +363,21 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
+# Proton Mail (via Proton Mail Bridge) stamps no Authentication-Results on mail between two Proton accounts; it marks
+# such mail ``X-Pm-Origin: internal`` instead. Proton strips any sender-supplied X-Pm-* header from external mail and
+# adds its own ``X-Pm-Origin: external``, and Bridge/Proton clients cannot set headers on outgoing mail, so a single
+# ``internal`` value is Proton's own statement that it authenticated the sending account. Only honoured when the
+# operator has pinned Proton as the receiving authserv-id, i.e. the mailbox really is behind Proton.
+_PROTON_AUTHSERV_ID = "mail.protonmail.ch"
+
+
+def _is_proton_internal(msg: email_lib.message.Message) -> bool:
+    """True when the message carries exactly one ``X-Pm-Origin`` header whose value is ``internal``.
+    Fails closed: a forged ``internal`` that ever survived would sit beside Proton's own ``external`` (two values)."""
+    origins = msg.get_all("X-Pm-Origin") or []
+    return len(origins) == 1 and str(origins[0]).strip().lower() == "internal"
+
+
 def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str) -> tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
@@ -375,6 +390,8 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
     if not from_domain:
         return False, "missing From domain"
     if not (headers := msg.get_all("Authentication-Results")):
+        if authserv_id == _PROTON_AUTHSERV_ID and _is_proton_internal(msg):
+            return True, "Proton-internal mail (X-Pm-Origin: internal)"
         return False, _NO_AUTH_RESULTS_REASON
     trusted = " ".join(str(headers[0]).split())
     # _ar_clauses removes RFC 8601 CFWS comments and ignores semicolons inside them, so supported

@@ -1437,6 +1437,40 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertTrue(ok, reason)
 
+    def test_proton_internal_mail_authenticates_only_under_a_proton_pin(self):
+        """Proton-to-Proton mail carries no Authentication-Results, only X-Pm-Origin: internal."""
+        from plugins.platforms.email.adapter import (
+            _NO_AUTH_RESULTS_REASON, _verify_sender_authentication,
+        )
+
+        def verify(origins, authserv_id="mail.protonmail.ch", auth_results=()):
+            msg = self._msg("joe@pm.example", list(auth_results))
+            for origin in origins:
+                msg["X-Pm-Origin"] = origin
+            return _verify_sender_authentication(msg, "joe@pm.example", authserv_id=authserv_id)
+
+        ok, reason = verify(["internal"])
+        self.assertTrue(ok, reason)
+        ok, reason = verify([" Internal "])
+        self.assertTrue(ok, reason)
+        for origins, pin in (
+            (["internal"], "mx.ourserver.com"),       # not behind Proton: the header is sender-controlled
+            (["internal"], "child.mail.protonmail.ch"),  # exact pin only
+            (["internal"], ""),
+            (["internal", "external"], "mail.protonmail.ch"),  # forged value beside Proton's own
+            (["external", "internal"], "mail.protonmail.ch"),
+            (["external"], "mail.protonmail.ch"),
+            (["submission"], "mail.protonmail.ch"),
+            ([], "mail.protonmail.ch"),
+        ):
+            with self.subTest(origins=origins, pin=pin):
+                ok, _ = verify(origins, authserv_id=pin)
+                self.assertFalse(ok)
+        # With Authentication-Results present the normal verdict rules apply; X-Pm-Origin never overrides a fail.
+        ok, _ = verify(["internal"], auth_results=["mail.protonmail.ch; dmarc=fail header.from=pm.example"])
+        self.assertFalse(ok)
+        self.assertEqual(verify([]), (False, _NO_AUTH_RESULTS_REASON))
+
 
 def test_oversized_cron_output_is_delivered_as_one_whole_email():
     """No 4000-char truncation footer pointing at a file on the gateway host: the router hands

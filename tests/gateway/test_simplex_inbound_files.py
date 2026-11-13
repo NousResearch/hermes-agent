@@ -78,3 +78,40 @@ async def test_voice_note_is_received_only_for_authorized_senders(simplex):
         _chat_item(OWNER, file_id=22, file_name="note.m4a", msg_type="voice", text="")]}})
     assert sent == ["/freceive 22"]
     assert 22 in adapter._pending_file_transfers
+
+
+def _group_item(group_id, member_id, *, file_id):
+    item = _chat_item(0, file_id=file_id, file_name="doc.pdf")
+    item["chatInfo"] = {"type": "group", "groupInfo": {"groupId": group_id}}
+    item["chatItem"]["chatDir"] = {"type": "groupRcv", "groupMember": {"memberId": member_id}}
+    return item
+
+
+async def _descr_ready(adapter, chat_item, file_id):
+    await adapter._handle_event({"resp": {
+        "type": "rcvFileDescrReady", "rcvFileTransfer": {"fileId": file_id}, "chatItem": chat_item}})
+
+
+@pytest.mark.asyncio
+async def test_group_file_is_received_only_from_authorized_members_of_allowed_groups(simplex):
+    adapter, sent, _events = simplex
+    adapter.group_allow_from = {"7"}
+
+    await _descr_ready(adapter, _group_item(7, str(STRANGER), file_id=31), 31)
+    await _descr_ready(adapter, _group_item(8, str(OWNER), file_id=32), 32)  # group not allowed
+    await _descr_ready(adapter, _group_item(7, str(OWNER), file_id=33), 33)
+
+    assert sent == ["/freceive 33"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_chat_or_unwired_check_receives_nothing(simplex):
+    adapter, sent, _events = simplex
+    unknown = _chat_item(OWNER, file_id=41, file_name="doc.pdf")
+    unknown["chatInfo"]["type"] = "local"
+    await _descr_ready(adapter, unknown, 41)
+
+    adapter.set_authorization_check(None)
+    await _descr_ready(adapter, _chat_item(OWNER, file_id=42, file_name="doc.pdf"), 42)
+
+    assert sent == []

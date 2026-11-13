@@ -156,7 +156,9 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 
 Machine-readable entry points to this documentation:
 
-- **[`/llms.txt`](pathname:///docs/llms.txt)** — curated index of every doc page with short descriptions. ~17 KB, safe to load into an LLM context.
-- **[`/llms-full.txt`](pathname:///docs/llms-full.txt)** — every doc page concatenated into a single markdown file for one-shot ingestion. ~1.8 MB.
+- **[`/docs/llms.txt`](pathname:///docs/llms.txt)** — curated index of every doc page with short descriptions, grouped by section: a few tens of KB covering hundreds of pages, small enough to load into an LLM context whole.
+- **[`/docs/llms-full.txt`](pathname:///docs/llms-full.txt)** — every doc page concatenated into a single markdown file for one-shot ingestion. Several MB: too large to load blindly, so grep it for the section you need instead.
 
-Both files also resolve at `/docs/llms.txt` and `/docs/llms-full.txt`. Generated fresh on every deploy.
+Both files are generated from the docs tree on every deploy.
+
+Note that `https://hermes-agent.nousresearch.com/llms.txt` (the bare site root, no `/docs/`) is a **different, much shorter document**: a site summary with a couple of dozen links to the homepage, install pages, feature overviews and comparisons. It is not an index of the docs tree — use the `/docs/` paths above to look up a specific capability.

@@ -296,6 +296,34 @@ class TestMcpTest:
         assert cmd_mcp_test(_make_args(name="doesnotexist")) == 3
         assert "not found in config" in capsys.readouterr().out
 
+    def test_shows_which_tools_the_config_filter_keeps(self, tmp_path, capsys, monkeypatch):
+        """Discovered tools a tools.include/exclude filter drops are listed apart, not as available."""
+        _seed_config(tmp_path, {"notion": {"command": "npx", "tools": {"include": ["API-get-*"]}}})
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        tools = [("API-get-self", "Who am I"), ("API-patch-page", "Edit a page"), ("API-get-user", "One user")]
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda name, cfg, **kw: tools)
+        assert cmd_mcp_test(_make_args(name="notion")) == 0
+        out = capsys.readouterr().out
+        assert "Tools discovered: 3" in out
+        assert "2 kept by this server's tools.include/tools.exclude, 1 filtered out" in out
+        kept, filtered = out.split("Filtered out by config", 1)
+        assert "API-get-self" in kept and "API-get-user" in kept
+        assert "API-patch-page" not in kept
+        assert "API-patch-page" in filtered
+
+    def test_without_a_filter_every_tool_is_listed(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {"plain": {"command": "npx"}})
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        tools = [("one", ""), ("two", "")]
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda name, cfg, **kw: tools)
+        assert cmd_mcp_test(_make_args(name="plain")) == 0
+        out = capsys.readouterr().out
+        assert "Tools discovered: 2" in out
+        assert "filtered out" not in out.lower()
+        assert "one" in out and "two" in out
+
     def test_cli_dispatcher_forwards_test_exit_code(self, tmp_path, monkeypatch):
         """``hermes mcp test`` reaches ``main()`` with the handler's code (the dispatcher used to drop it)."""
         _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})

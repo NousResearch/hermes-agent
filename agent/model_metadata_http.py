@@ -25,9 +25,51 @@ def resolve_verify(base_url: str = ""):
     )
 
 
+_CLIENT_MODULE = None
+
+
+def client_module():
+    """The HTTP client module used to build probes.
+
+    ``httpx`` is installed only on Python >= 3.14 — pyproject.toml pins
+    ``httpx[socks]==0.28.1; python_version >= '3.14'`` — while Hermes
+    supports 3.11-3.14 (``requires-python = ">=3.11,<3.15"``). A bare
+    ``import httpx`` therefore raises ModuleNotFoundError on three of the
+    four supported interpreters, which turned EVERY model-metadata probe
+    into a failure and emitted a WARNING per estimate. Upstream saw the
+    same class of failure with bundled plugins (issues #134220, #135068,
+    #135443, #134127).
+
+    ``httpx2`` is the drop-in successor the MCP SDK moved to, and it has
+    the same API for everything this module uses: ``Timeout``, ``Client``,
+    Client's ``verify`` / ``timeout`` / ``follow_redirects`` /
+    ``event_hooks`` arguments, ``send(stream=)`` and ``build_request``.
+    The resolution order matches ``tools/mcp_tool.py``: prefer ``httpx2``,
+    fall back to ``httpx``.
+    """
+    global _CLIENT_MODULE
+    if _CLIENT_MODULE is not None:
+        return _CLIENT_MODULE
+
+    import importlib
+
+    for name in ("httpx2", "httpx"):
+        try:
+            module = importlib.import_module(name)
+        except ImportError:
+            continue
+        _CLIENT_MODULE = module
+        return module
+
+    raise ImportError(
+        "No HTTP client available for model metadata probes: install "
+        "'httpx2' (recommended) or 'httpx' (Python >= 3.14 only)."
+    )
+
+
 @contextmanager
 def stream(url: str, *, headers=None, params=None, timeout=10.0, verify=None):
-    import httpx
+    httpx = client_module()
     from agent.deadline import DeadlineExpired, run_bounded_sync
     from hermes_cli.urllib_security import url_origin
 

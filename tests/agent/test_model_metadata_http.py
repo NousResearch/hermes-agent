@@ -95,16 +95,20 @@ def test_metadata_auth_failure_closes_without_reading_body(servers, monkeypatch,
     url = servers(Handler)
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     monkeypatch.setattr(model_metadata, "detect_local_server_type", lambda *args, **kwargs: None)
-    import httpx
+    # Patch the module the transport actually resolves, not a hard-coded
+    # `httpx` — this test file used to `import httpx` directly, which made
+    # it uncollectable on every Python below 3.14 (httpx is installed only
+    # for python_version >= '3.14').
+    client_mod = model_metadata_http.client_module()
 
     responses = []
-    original_client = httpx.Client
+    original_client = client_mod.Client
 
     def recorded_client(**kwargs):
         kwargs["event_hooks"]["response"] = [responses.append]
         return original_client(**{**kwargs, "timeout": 2.0})
 
-    monkeypatch.setattr(httpx, "Client", recorded_client)
+    monkeypatch.setattr(client_mod, "Client", recorded_client)
     url += "/v1"
     result = model_metadata.fetch_endpoint_model_metadata(url, force_refresh=True)
     if status == 404:
@@ -117,3 +121,50 @@ def test_metadata_auth_failure_closes_without_reading_body(servers, monkeypatch,
         assert requests == ["/v1/models"]
     assert all(response.is_closed for response in responses)
     assert not responses[0].is_stream_consumed, "rejection read the absent body"
+
+
+def test_probe_transport_does_not_require_the_httpx_distribution(monkeypatch):
+    """The probe must work on Python versions where `httpx` is absent.
+
+    `httpx` is installed only for python_version >= '3.14' (pyproject.toml),
+    while Hermes supports 3.11-3.14. A bare `import httpx` in the transport
+    raised ModuleNotFoundError on three of the four supported
+    interpreters, which failed every model-metadata probe and logged a
+    WARNING per estimate.
+
+    The transport resolves `httpx2` first and falls back to `httpx`, so a
+    missing `httpx` must not matter — and when neither is importable the
+    error must say so instead of naming a single distribution.
+    """
+    import importlib
+
+    real_import_module = importlib.import_module
+
+    def blocked(*names):
+        def _import_module(name, *args, **kwargs):
+            if name in names:
+                raise ModuleNotFoundError(f"No module named '{name}'")
+            return real_import_module(name, *args, **kwargs)
+
+        return _import_module
+
+    # 1. `httpx` missing is fine — httpx2 (or httpx) still resolves.
+    monkeypatch.setattr(importlib, "import_module", blocked("httpx"))
+    monkeypatch.setattr(model_metadata_http, "_CLIENT_MODULE", None)
+    module = model_metadata_http.client_module()
+    assert module is not None
+    assert module.__name__ in ("httpx2", "httpx")
+
+    # 2. `httpx2` missing falls back to `httpx`.
+    monkeypatch.setattr(importlib, "import_module", blocked("httpx2"))
+    monkeypatch.setattr(model_metadata_http, "_CLIENT_MODULE", None)
+    module = model_metadata_http.client_module()
+    assert module is not None
+
+    # 3. Neither available: the error must name both, not just one.
+    monkeypatch.setattr(importlib, "import_module", blocked("httpx2", "httpx"))
+    monkeypatch.setattr(model_metadata_http, "_CLIENT_MODULE", None)
+    with pytest.raises(ImportError) as excinfo:
+        model_metadata_http.client_module()
+    message = str(excinfo.value)
+    assert "httpx2" in message and "httpx" in message

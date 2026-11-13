@@ -250,6 +250,8 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
             path, quiet=request.quiet, problems=problems))
         if request.quiet:  # nothing printed them: the caller (a gateway's client) shows them
             result.warnings.extend(line.strip().removeprefix("⚠ ") for line in problems if line.strip())
+        from hermes_cli.default_plugins import install_defaults
+        step("default plugins", lambda: install_defaults(path))
     if request.alias:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))

@@ -240,7 +240,7 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs t
 
 ## Terminal Backend Configuration
 
-Hermes ships six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Vercel Sandbox. Plugins add more, such as the official [Singularity/Apptainer](#singularityapptainer-backend) and [Sprites](#sprites-backend) backends.
+Hermes ships six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Vercel Sandbox. Plugins add more, such as the official [Singularity/Apptainer](#singularityapptainer-backend) and [Sprites](#sprites-backend) backends, and the [Tenki](#tenki-backend) cloud sandbox backend.
 
 ```yaml
 terminal:
@@ -320,6 +320,7 @@ For cloud sandboxes such as Modal, Daytona, Vercel Sandbox, and Sprites, `contai
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** (plugin) | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
 | **sprites** (plugin) | Sprite on Fly.io | Full (cloud microVM) | Stateful cloud sandboxes that persist between sessions |
+| **tenki** (plugin) | Tenki cloud sandbox | Full (cloud microVM) | On-demand cloud sandboxes, terminated at session end by default |
 
 ### Local Backend
 
@@ -679,6 +680,34 @@ terminal:
 
 **Optional settings** live under `plugins.entries.sprites.settings` (also editable in the Plugins hub): `name_prefix` (replace `hermes-` in every Sprite name), `scope` (`session` or `instance`, one Sprite per profile), and `image`, `max_cpus`, `max_ram_gb`, `max_disk_gb` for newly created Sprites. An invalid value stops the backend from starting, and `hermes doctor` names it. See the [plugin README](https://github.com/NousResearch/hermes-plugin-sprites#settings).
 
+### Tenki Backend
+
+Runs commands in a [Tenki](https://tenki.cloud) cloud sandbox (Ubuntu, user `tenki`, home `/home/tenki`). It is the [`tenki` plugin](https://github.com/hashbender/hermes-tenki); install it, then select it:
+
+```bash
+hermes plugins install hashbender/hermes-tenki --enable
+hermes config set terminal.backend tenki
+```
+
+The install asks before it adds the plugin's Python dependency (`tenki`); restart Hermes afterwards.
+
+```yaml
+terminal:
+  backend: tenki
+  container_cpu: 1
+  container_memory: 5120           # MB
+  container_persistent: false      # Terminate the sandbox at session end (default)
+  tenki_max_duration: 3600         # Sandbox lifetime cap, seconds
+```
+
+**Required:** `TENKI_API_KEY` in `~/.hermes/.env`. If you already use the Tenki CLI, `tenki auth token` prints a key you can use.
+
+**Persistence:** Unlike the other cloud backends, Tenki sandboxes are terminated at the end of the session unless you set `terminal.container_persistent: true` in `config.yaml`. With persistence on, the sandbox is snapshotted and resumed the next time.
+
+**Credentials:** `TENKI_API_KEY` is stripped from every command the agent runs, and is never forwarded into the sandbox unless you list it in `terminal.tenki_forward_env`.
+
+Other settings (`tenki_image`, `tenki_workspace_id`, `tenki_allow_inbound`, `tenki_allow_outbound`, `tenki_idle_timeout` and more) are listed in the [plugin README](https://github.com/hashbender/hermes-tenki#configuration).
+
 ### Common Terminal Backend Issues
 
 If terminal commands fail immediately or the terminal tool is reported as disabled:
@@ -690,6 +719,7 @@ If terminal commands fail immediately or the terminal tool is reported as disabl
 - **Daytona** — Needs `DAYTONA_API_KEY`. The Daytona SDK handles server URL configuration.
 - **Singularity** — Needs the `singularity` plugin (`hermes plugins install singularity`) and `apptainer` or `singularity` in `$PATH`. Common on HPC clusters.
 - **Sprites** — Needs the `sprites` plugin and `SPRITES_TOKEN`. `hermes doctor` shows the token, SDK and naming checks.
+- **Tenki** — Needs the `tenki` plugin and `TENKI_API_KEY`. `hermes doctor` shows the key, workspace and SDK checks.
 
 When in doubt, set `terminal.backend` back to `local` and verify that commands run there first.
 
@@ -699,7 +729,7 @@ For the **SSH**, **Modal**, and **Daytona** backends, Hermes pushes your `~/.her
 
 - The sync-back retries up to 3 times with backoff and refuses to extract remote archives larger than 2 GiB; set `terminal.sync_back_max_bytes` (bytes) in `config.yaml` to raise the cap for a larger state tree. Live sockets under the remote `~/.hermes/` (e.g. `gateway.sock`) are skipped rather than failing the transfer.
 - The downloaded archive is staged under the system temp directory (`hermes-sync-back-<pid>-*`); leftovers from a hard-killed process are reclaimed on the next sync-back.
-- Docker and Singularity use bind mounts (live host filesystem view) and don't need this. Sprites keeps its own persistent filesystem and does not sync back either.
+- Docker and Singularity use bind mounts (live host filesystem view) and don't need this. Sprites keeps its own persistent filesystem and does not sync back either, and neither does Tenki.
 - This covers Hermes state (`~/.hermes/`), **not** arbitrary working-tree files inside the sandbox — have the agent copy important artifacts out explicitly (e.g. `scp`, `modal volume put`) before the sandbox is destroyed.
 
 ### Docker Volume Mounts

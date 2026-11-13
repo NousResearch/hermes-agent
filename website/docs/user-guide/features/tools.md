@@ -75,6 +75,7 @@ The terminal tool can execute commands in different environments:
 | `ssh` | Remote server | Sandboxing, keep agent away from its own code |
 | `singularity` (plugin) | HPC containers | Cluster computing, rootless |
 | `sprites` (plugin) | Stateful Fly.io cloud sandbox | Persistent cloud environments with checkpoint & restore |
+| `tenki` (plugin) | Tenki cloud sandbox | On-demand cloud sandboxes, terminated at session end by default |
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
 | `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
@@ -165,6 +166,16 @@ A plugin ([`sprites`](https://github.com/NousResearch/hermes-plugin-sprites)) th
 hermes plugins install NousResearch/hermes-plugin-sprites --enable
 hermes config set terminal.backend sprites
 # Add SPRITES_TOKEN to ~/.hermes/.env
+```
+
+### Tenki
+
+A plugin ([`tenki`](https://github.com/hashbender/hermes-tenki)) that runs commands in a [Tenki](https://tenki.cloud) cloud sandbox. See [Tenki Backend](../configuration.md#tenki-backend).
+
+```bash
+hermes plugins install hashbender/hermes-tenki --enable
+hermes config set terminal.backend tenki
+# Add TENKI_API_KEY to ~/.hermes/.env
 ```
 
 ### Modal (Serverless Cloud)

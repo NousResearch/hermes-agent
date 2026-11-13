@@ -2097,6 +2097,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
 # Keys outside the Chat Completions schema that strict gateways (Fireworks-backed OpenCode
 # Go, Mistral, Moonshot/Kimi) reject with 422. The transport's convert_messages() drops them
 # in the main loop; the summary path calls chat.completions.create() directly, so mirror it.
+# tool_name is SQLite FTS bookkeeping; timestamp (gateway replay rows, stale-confirmation expiry) is the #47868 422.
 _SUMMARY_FOREIGN_MESSAGE_KEYS = PERSISTENCE_ONLY_MESSAGE_FIELDS | {"reasoning", "finish_reason", "tool_name",
     "codex_reasoning_items", "codex_message_items", "platform_message_id"}
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
@@ -2128,13 +2129,6 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
             api_msg.pop("name", None)
         # api_content holds the exact bytes the main loop sent; substituting (not popping)
         # keeps the summary's prefix identical instead of re-prefilling the largest context.
-        # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go, Mistral, Moonshot/Kimi) reject
-        # any message key outside the Chat Completions schema. The main loop drops these via
-        # ChatCompletionsTransport.convert_messages(), but the summary path hand-builds messages and calls
-        # chat.completions.create() directly, bypassing the transport — so mirror that sanitization here:
-        # tool_name (SQLite FTS bookkeeping), the codex_* reasoning carriers, timestamp (preserved on
-        # gateway user replay entries for the stale-confirmation expiry check — #47868 rejection class), and
-        # every Hermes-internal underscore-prefixed scaffolding key.
         substitute_api_content(api_msg)
         if needs_sanitize:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
@@ -2148,6 +2142,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     for idx, pfm in enumerate(agent.prefill_messages or ()):
         api_messages.insert((1 if effective_system else 0) + idx, pfm.copy())
 
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+    apply_rejected_thinking_suppression(agent, api_messages)  # the main loop's durable suppression
     # Compression/resume can orphan a tool result whose parent tool_call was summarized away.
     api_messages = agent._sanitize_api_messages(api_messages)
     # Same send-path vision eviction as the main loop (#89296).
@@ -2221,12 +2217,14 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
 
 
 def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
+    # Replayed signed thinking is bound to the system prompt, tools and messages the loop sent, so plan and build
+    # the request as turn_api_request.build_request_payload does (its tool_choice too: "auto", as on the chat path).
+    from agent.conversation_loop import _redecorate_prompt_cache_for_provider
+    api_messages, _, tools_for_api = _redecorate_prompt_cache_for_provider(agent, api_messages, tools_for_api=agent.tools)
+
     def _attempt(retry_count: int) -> str:
-        ant_kw = agent._get_transport().build_kwargs(
-            model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
-            reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
-            preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
-        ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw, api_messages)
+        ant_kw = agent._build_api_kwargs(api_messages, tools_for_api=tools_for_api)
+        sanitize_outbound_kwargs(agent, ant_kw)
         response = _managed_summary_call(
             agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
         return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)

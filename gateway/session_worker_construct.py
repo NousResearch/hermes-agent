@@ -190,6 +190,36 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
             explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
 
 
+def policy_alias_request(policy, frozen, model, key):
+    """``(alias model, runtime kwargs)`` when the policy runs a configured alias of its FROZEN config that the
+    creator did not route explicitly (a ``model.default: myalias`` session; an explicit ``-m`` alias was already
+    resolved at create), else None. A launch provider, URL or bound key is the user's route and keeps it."""
+    from hermes_cli.default_model_alias import alias_runtime_request
+    from hermes_cli.route_identity import normalize_route_base_url
+    request, route = json.loads(policy.request_json), frozen.get('model') or {}
+    # A launch pick counts while the route still carries it (``route_runtime``'s launch-URL rule): a following
+    # session whose profile moved on runs the profile's default, alias included. ``key`` is already None then.
+    picked_provider = str(request.get('provider') or '').strip().lower()
+    held = ((picked_provider and picked_provider == str(route.get('provider') or '').strip().lower())
+            or (request.get('base_url') and normalize_route_base_url(request['base_url'])
+                == normalize_route_base_url(route.get('base_url'))))
+    return None if key or held else alias_runtime_request(model, frozen)
+
+
+def model_route_runtime(policy, frozen, model, key, *, fallback=True):
+    """``(model, runtime, fallback_entry, aliased)``: ``route_runtime``, or the alias's own model, endpoint and
+    key together when ``policy_alias_request`` finds one, never the bare name on the default provider (#154786)."""
+    aliased = policy_alias_request(policy, frozen, model, key)
+    if aliased is None:
+        return (model, *route_runtime(policy, frozen, model, key, fallback=fallback), False)
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback
+    alias_model, request = aliased
+    with frozen_runtime_config(frozen):
+        if not fallback:
+            return alias_model, resolve_runtime_provider(**request), None, True
+        return (alias_model, *resolve_runtime_with_fallback(frozen, **request), True)
+
+
 def worker_route(policy, construct):
     """Child side: the ``api_key`` / ``base_url`` / ``api_mode`` overrides for the worker's agent, resolved
     as the in-process turn resolves its route (``route_runtime`` with the launch key, if one was bound),
@@ -205,7 +235,7 @@ def worker_route(policy, construct):
     frozen, model = policy.effective()
     if 'fallback_model' in construct:
         frozen = {**frozen, 'fallback_providers': construct['fallback_model'] or [], 'fallback_model': None}
-    runtime, fallback_entry = route_runtime(policy, frozen, model, construct['api_key'])
+    route_model, runtime, fallback_entry, aliased = model_route_runtime(policy, frozen, model, construct['api_key'])
     if fallback_entry is not None:
         return {}
     api_mode = runtime.get('api_mode')
@@ -216,6 +246,9 @@ def worker_route(policy, construct):
     if (api_mode == 'chat_completions' and runtime.get('provider') != 'custom'
             and not (frozen.get('model') or {}).get('api_mode')):
         api_mode = None
+    if aliased:  # the alias's own model, provider and key (no launch key: policy_alias_request saw none)
+        return {'model': route_model, 'api_key': runtime.get('api_key'), 'provider': runtime.get('provider'),
+                'base_url': runtime.get('base_url'), 'api_mode': api_mode}
     return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
             'api_mode': api_mode}
 

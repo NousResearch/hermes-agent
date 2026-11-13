@@ -1187,6 +1187,31 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         except Exception:
             logger.debug("Failed to restore thread_id from binding after session split", exc_info=True)
 
+    def _split_is_compression_continuation(self, agent_session_id) -> bool:
+        """Whether the agent's new session id is a compression continuation of this turn's session.
+
+        Both compression rotations publish the parent→child chain before the agent's id moves, so a
+        real split is on ``get_compression_chain``. Another session the store already has a row for
+        (an async subagent's session, a sibling) is not this route's conversation: rerouting to it
+        persists a route outside the local receipt's lineage, refused ``admission_conflict`` on every
+        later lookup, resume and delivery. Anything unverifiable keeps the old behaviour."""
+        ctx = self._ctx
+        store = self._runner.session_store
+        db = None
+        with suppress(Exception):
+            db_for_key = getattr(store, "_db_for_key", None)
+            db = db_for_key(ctx.session_key) if callable(db_for_key) else None
+        if db is None or not callable(getattr(db, "get_compression_chain", None)):
+            return True
+        try:
+            if db.get_session(agent_session_id) is None:
+                return True
+            return agent_session_id in db.get_compression_chain(ctx.session_id)
+        except Exception:
+            logger.warning("Could not verify session split %s → %s; syncing it as before",
+                           ctx.session_id, agent_session_id, exc_info=True)
+            return True
+
     def _sync_session_after_run(self, agent_history):
         """Sync session_id right after run_conversation(): compression can rotate before a follow-up
         model call fails, and the failure return must still point at the compressed child.
@@ -1220,10 +1245,24 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                         "compression finished",
                         ctx.session_key or "?", ctx.session_id, entry_session_id,
                     )
+                elif not self._split_is_compression_continuation(agent_session_id):
+                    logger.warning(
+                        "Skipping session split sync for %s: %s is not a compression "
+                        "continuation of %s; the route keeps its session",
+                        ctx.session_key or "?", agent_session_id, ctx.session_id,
+                    )
                 else:
                     entry.session_id = agent_session_id
-                    runner.session_store._save()
-                    runner.session_store._record_gateway_session_peer(agent_session_id, ctx.session_key, ctx.source)
+                    try:
+                        runner.session_store._save()
+                        runner.session_store._record_gateway_session_peer(agent_session_id, ctx.session_key, ctx.source)
+                    except Exception:
+                        # A half-published split must not outlive the failure: the saved route would
+                        # name a session the rest of the store never adopted.
+                        entry.session_id = ctx.session_id
+                        with suppress(Exception):
+                            runner.session_store._save()
+                        raise
                     persisted = True
             # Only after this run published its split — a stale /stop→/new predecessor must not
             # mutate routing state.

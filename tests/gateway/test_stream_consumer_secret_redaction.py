@@ -117,3 +117,53 @@ async def test_streamed_final_still_reconciles_when_a_second_redaction_pass_chan
     await consumer.run()
     assert consumer.delivered_final_matches(reply) is True
     assert all(_PW[6:-4] not in t for t in _delivered(adapter))
+
+
+@pytest.mark.asyncio
+async def test_failed_reply_file_resumes_without_cutting_into_a_masked_secret():
+    # Past the message cap the reply goes out as a file; the upload fails and it resumes as messages
+    # from where the chat left off. A mask in the live tail shortens it, so a resume offset counted
+    # from it lands inside the raw final and sends a key fragment no pattern matches.
+    from pathlib import Path
+
+    password = "Hunter2" + "xQ9vLm4RtZ8k"
+    para = "lorem ipsum dolor sit amet " * 6 + "\n"
+    reply = para * 9 + '{"pass' + 'word": "' + password + '", "user": "bob"}\n' + para * 21 + "Done."
+    cls = type("CapAdapter", (BasePlatformAdapter,), {"MAX_MESSAGE_LENGTH": 600, "MAX_SPLIT_MESSAGES": 4})
+    cls.__abstractmethods__ = frozenset()
+
+    async def send_reply_document(self, chat_id, path, **kw):
+        assert password[2:-2] not in Path(path).read_text()
+        return SimpleNamespace(success=False, message_id=None)
+
+    cls.send_reply_document = send_reply_document
+    adapter = cls.__new__(cls)
+    adapter._typing_paused = set()
+    adapter._fatal_error_message = None
+    shown = []
+    ids = iter(f"m{i}" for i in range(1000))
+
+    async def send(**kw):
+        shown.append(kw["content"])
+        return SimpleNamespace(success=True, message_id=next(ids))
+
+    async def edit_message(**kw):
+        shown.append(kw["content"])
+        return SimpleNamespace(success=True, message_id=kw["message_id"])
+
+    adapter.send, adapter.edit_message = send, edit_message
+    consumer = GatewayStreamConsumer(adapter, "chat", StreamConsumerConfig(
+        edit_interval=0.001, buffer_threshold=1, cursor=""))
+    drains = []
+    drain = consumer._drain_queue
+    consumer._drain_queue = lambda: (drains.append(None), drain())[1]
+    task = asyncio.create_task(consumer.run())
+    for i in range(0, len(reply), 40):
+        consumer.on_delta(reply[i:i + 40])
+        await async_wait_until(lambda: consumer._queue.empty(), timeout=5, what="delta drained")
+        seen = len(drains)
+        await async_wait_until(lambda: len(drains) > seen, timeout=5, what="tick done")
+    consumer.finish(reply)
+    await asyncio.wait_for(task, 30)
+    assert not any(password[2:-2] in text for text in shown)
+    assert "Done." in shown[-1]

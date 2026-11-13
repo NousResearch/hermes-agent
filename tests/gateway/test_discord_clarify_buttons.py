@@ -25,12 +25,12 @@ if _repo not in sys.path:
 
 # Triggers the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
-from plugins.platforms.discord.adapter import (  # noqa: E402
+from plugins.platforms.discord.adapter import (
     ClarifyChoiceView,
     DiscordAdapter,
 )
-from gateway.config import PlatformConfig  # noqa: E402
-from gateway.platforms.base import utf16_len  # noqa: E402
+from gateway.config import PlatformConfig
+from gateway.platforms.base import utf16_len
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +78,10 @@ def _make_interaction(*, user_id="42", display_name="Tester", roles=None,
     return SimpleNamespace(user=user, response=response, message=message)
 
 
+# ===========================================================================
+# ClarifyChoiceView construction
+# ===========================================================================
+
 def _embed_field_text(embed) -> str:
     """Joined embed field name/value text (real ``discord.Embed`` fields are objects, the
     gateway test double stores dicts)."""
@@ -88,10 +92,6 @@ def _embed_field_text(embed) -> str:
         parts.append(f"{name}\n{value}")
     return "\n".join(parts)
 
-
-# ===========================================================================
-# ClarifyChoiceView construction
-# ===========================================================================
 
 class TestClarifyChoiceViewConstruction:
     """Buttons are bare numbers; the option text lives in the message body."""
@@ -302,3 +302,40 @@ class TestDiscordSendClarify:
         assert "real choice" in body
         for leaked in ("only_name_here", "only_value_here"):
             assert leaked not in body, f"{leaked} leaked: {body!r}"
+
+
+@pytest.mark.asyncio
+async def test_many_long_choices_fit_content_and_render_literally():
+    """A dozen long options (#78115): the numbered list lands in content within Discord's
+    2000-char cap, keeps a line for every button, and escapes markdown so each option reads as typed."""
+    adapter = _make_adapter()
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=MagicMock(id=1))
+    adapter._client.get_channel = MagicMock(return_value=channel)
+    choices = [f"Option {i}: refactor the *auth* module and keep __init__ exports stable " + "x" * 40
+               for i in range(1, 13)]
+
+    result = await adapter.send_clarify(
+        chat_id="9001", question="Which plan?", choices=choices, clarify_id="cidL", session_key="sk-L")
+
+    assert result.success is True
+    content = channel.send.call_args.kwargs["content"]
+    assert len(content) <= 2000
+    assert "Which plan?" in content
+    assert r"1. Option 1: refactor the \*auth\*" in content and " *auth* " not in content
+    listed = [ln for ln in content.splitlines() if ln[:1].isdigit()]
+    assert [ln.split(". ", 1)[0] for ln in listed] == [str(n) for n in range(1, 13)]
+    # Options sharing a long opening still read differently once shortened (their ends survive).
+    same_start = ["Refactor the auth module, keep exports stable and migrate callers " * 4 + f"then ship to {env}"
+                  for env in ("staging", "canary", "prod", "nowhere")]
+    await adapter.send_clarify(
+        chat_id="9001", question="Rollout?", choices=same_start, clarify_id="cidS", session_key="sk-S")
+    content = channel.send.call_args.kwargs["content"]
+    assert all(f"ship to {env}" in content for env in ("staging", "canary", "prod", "nowhere"))
+    # ...and options sharing both a long opening and a long ending keep their differing middle.
+    same_ends = [same_start[0] + f" TARGET={env} " + same_start[0] for env in ("staging", "canary", "prod", "sandbox")]
+    await adapter.send_clarify(
+        chat_id="9001", question="Where?", choices=same_ends, clarify_id="cidM", session_key="sk-M")
+    content = channel.send.call_args.kwargs["content"]
+    assert len(content) <= 2000 and all(f"TARGET={env}" in content for env in ("staging", "canary", "prod", "sandbox"))
+

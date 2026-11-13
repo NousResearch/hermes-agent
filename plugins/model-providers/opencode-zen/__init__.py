@@ -7,16 +7,17 @@ chat_completions reasoning translations (GLM-5.2, Kimi K2, DeepSeek, Ox Alpha).
 from typing import Any
 
 from agent import reasoning_effort as re_
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import hermes_user_agent
 from providers import register_provider
-from providers.base import ProviderProfile
+from providers.base import LazyHeaders, ProviderProfile
+from datetime import UTC
 
 # Attribution headers (same values as OpenRouter / Vercel / Fireworks); via
 # default_headers so they survive model switches and credential rotation.
 _ATTRIBUTION_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
+    "User-Agent": lambda: hermes_user_agent("HermesAgent"),
 }
 
 
@@ -40,6 +41,17 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     """GLM-5.2 across alias spellings (glm-5.2 / glm-5-2 / glm-5p2)."""
     m = _flat_model_name(model)
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
+
+
+def _classify_go_error(error, *, status_code, message, **_):
+    """Go answers 429 for two different walls. ``GoUsageLimitError`` is the key's plan window
+    (5-hour/weekly/monthly) and must bench the key; the built-in pipeline already does that.
+    "Upstream request failed" is one model's upstream throttle: the key still serves every other
+    model, so benching it for the 429 hour starves the rest of the pool (aux tasks on another
+    model then see "no available entries")."""
+    if status_code == 429 and "upstream request failed" in message:
+        return {"reason": "upstream_rate_limit", "should_fallback": True}
+    return None
 
 
 class OpenCodeGoProfile(ProviderProfile):
@@ -85,7 +97,7 @@ class OpenCodeGoProfile(ProviderProfile):
             reset_at = datetime.fromisoformat(reset_raw) if reset_raw else None
             windows.append(AccountUsageWindow(label=label, used_percent=float(window["percent"]), reset_at=reset_at))
         return AccountUsageSnapshot(provider=self.name, source="go_usage_api",
-                                    fetched_at=datetime.now(timezone.utc), windows=tuple(windows))
+                                    fetched_at=datetime.now(UTC), windows=tuple(windows))
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
@@ -117,14 +129,14 @@ class OpenCodeZenProfile(ProviderProfile):
 
 opencode_zen = OpenCodeZenProfile(
     name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
-    base_url="https://opencode.ai/zen/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
+    base_url="https://opencode.ai/zen/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
     default_aux_model="gemini-3-flash",
 )
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
-    base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
-    default_aux_model="glm-5",
+    base_url="https://opencode.ai/zen/go/v1", default_headers=LazyHeaders(_ATTRIBUTION_HEADERS),
+    default_aux_model="glm-5", classify_api_error=_classify_go_error,
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
     # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),

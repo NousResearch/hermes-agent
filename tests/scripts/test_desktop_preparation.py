@@ -15,13 +15,14 @@ def _project(tmp_path: Path) -> tuple[Path, str]:
     source = tmp_path / "source with spaces"
     source.mkdir()
     (source / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.2.3"\n', encoding="utf-8")
-    (source / "package.json").write_text('{"workspaces": ["apps/desktop"]}', encoding="utf-8")
-    (source / "package-lock.json").write_text('{"packages": {}}', encoding="utf-8")
+    (source / "package.json").write_text('{}', encoding="utf-8")
+    (source / "pnpm-workspace.yaml").write_text("packages:\n  - apps/desktop\n", encoding="utf-8")
+    (source / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
     (source / ".gitignore").write_text(".build/\n", encoding="utf-8")
     (source / "pm").mkdir()
     (source / "pm/lock.json").write_text(json.dumps({"schema": 1, "packages": {
         name: {"version": "1.0.0", "artifacts": {current_target(): {"url": "https://example.test/tool", "sha256": "a" * 64}}}
-        for name in ("python", "node", "npm")
+        for name in ("python", "node", "pnpm")
     }}), encoding="utf-8")
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=source, check=True)
@@ -106,7 +107,7 @@ def test_prepared_input_roundtrip_rejects_mutation_and_foreign_source(tmp_path):
     from pm.registry import get_package
     store = cache / "tools"
     binaries = {}
-    for name in ("python", "node", "npm"):
+    for name in ("python", "node", "pnpm"):
         package = get_package(name)
         entry = store / package.store_entry("1.0.0", request.target)
         binary = package.binary(entry, request.target)
@@ -167,7 +168,7 @@ def test_prepared_cli_rejects_missing_result_without_provisioning(tmp_path):
     source = Path(__file__).resolve().parents[2]
     absent = tmp_path / "absent" / "prepared.json"
     result = subprocess.run([sys.executable, str(source / "scripts/bundles/desktop.py"), "--prepared", str(absent)],
-                            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+                            cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode != 0
     assert "preparation" in result.stderr.lower()
     assert "unrecognized arguments" not in result.stderr
@@ -227,9 +228,9 @@ def test_checkout_lock_excludes_a_second_build_process(tmp_path):
     )
     command = [sys.executable, "-I", "-c", probe, str(project), str(source)]
     with build_lock(source):
-        blocked = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        blocked = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
         assert blocked.returncode != 0 and "another desktop" in blocked.stderr
-    released = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    released = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
     assert released.returncode == 0, released.stderr
     assert released.stdout.strip() == "acquired"
 
@@ -273,3 +274,27 @@ def test_flavored_icon_staging_hands_the_admitted_checkout_back(tmp_path):
         with flavored_assets(rendered, assets):
             raise RuntimeError("packaging failed")
     require_source(source, commit)
+
+
+def test_clean_run_cannot_delete_the_outputs_of_a_build_that_holds_the_lock(tmp_path):
+    from scripts.bundles.desktop_inputs import build_lock
+    from scripts.bundles.desktop_prepare import BuildRequest, prepare
+
+    source, commit = _project(tmp_path)
+    request = BuildRequest.create(source, tag=None, commit=commit, variant="light",
+                                  work=tmp_path / "work", cache=tmp_path / "cache", bundle_env={})
+    running = source / "apps/desktop/release/running-build.msix"
+    running.parent.mkdir(parents=True)
+    running.write_text("output of the build that holds the lock", encoding="utf-8")
+    (source / ".gitignore").write_text(".build/\napps/desktop/release/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=source, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                    "commit", "-m", "ignore outputs"], cwd=source, check=True, capture_output=True)
+    request = BuildRequest.create(source, tag=None, commit=subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=source, text=True).strip(), variant="light",
+        work=tmp_path / "work", cache=tmp_path / "cache", bundle_env={})
+
+    with build_lock(source), pytest.raises(ValueError, match="another desktop"):
+        prepare(request, clean=True)
+
+    assert running.read_text(encoding="utf-8") == "output of the build that holds the lock"

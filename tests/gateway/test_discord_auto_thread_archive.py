@@ -13,7 +13,7 @@ any specific channel, and the fallback case is pinned because an unknown/absent 
 default must not silently produce an invalid duration.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 import sys
@@ -24,7 +24,7 @@ from gateway.config import PlatformConfig
 
 
 # The tests/gateway/conftest.py installs the discord mock at collection time; import after.
-from plugins.platforms.discord.adapter import (  # noqa: E402
+from plugins.platforms.discord.adapter import (
     DiscordAdapter,
     VALID_THREAD_AUTO_ARCHIVE_MINUTES,
 )
@@ -58,7 +58,7 @@ def _message(channel):
         content="please open a thread",
         mentions=[],
         attachments=[],
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
         channel=channel,
         author=SimpleNamespace(id=7, display_name="Alice", name="Alice", bot=False),
         create_thread=create_thread,

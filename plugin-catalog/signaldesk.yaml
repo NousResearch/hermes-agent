@@ -1,0 +1,45 @@
+name: signaldesk
+title: SignalDesk
+repo: https://github.com/codeybot-labs/signaldesk
+sha: 5fe8ab9876bf5d8bbb429276556ed91eb675568a
+version: "0.2.0"
+description: "Draft-first lead desk for founders and marketers: scan public hiring and launch signals (HN Who is hiring, YC hiring, Show HN, Launch HN, new YC companies; optional Product Hunt with a token) and local businesses on an OpenStreetMap map (LocalLead Map: city + business type or a drawn area, shown on an OpenLayers map), score them against your ICP, draft outreach, and never send without user approval (board, Desktop, or /signaldesk approve; the model cannot approve a lead or move a lead to sent/replied/won). Cron and unattended runs fail closed. Disclosure — fetches public JSON from Algolia HN Search and the yc-oss static API, and (only when you run a map scan) geocodes with Nominatim and queries public Overpass API instances; the board loads OpenStreetMap tiles in the browser; Product Hunt GraphQL is used only when PRODUCTHUNT_TOKEN is set; optional DNS MX lookups; lead data stays in $HERMES_HOME/plugin-data/signaldesk/; it never sends email itself, and its pre_tool_call hook blocks other send tools unless the lead was approved by you and the run is not a cron job."
+maintainer: codeybot-labs
+tier: community
+category: automation
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/codeybot-labs/signaldesk#readme
+readme: true
+platforms: []
+image: https://raw.githubusercontent.com/codeybot-labs/signaldesk/5fe8ab9876bf5d8bbb429276556ed91eb675568a/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/5fe8ab9876bf5d8bbb429276556ed91eb675568a/docs/screenshots/01-board-1920.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/5fe8ab9876bf5d8bbb429276556ed91eb675568a/docs/screenshots/06-map-1920.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/5fe8ab9876bf5d8bbb429276556ed91eb675568a/docs/screenshots/07-map-lead-draft.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/5fe8ab9876bf5d8bbb429276556ed91eb675568a/docs/screenshots/04-draft-approve.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/5fe8ab9876bf5d8bbb429276556ed91eb675568a/docs/screenshots/03-approved-panel.png
+  - https://raw.githubusercontent.com/codeybot-labs/signaldesk/5fe8ab9876bf5d8bbb429276556ed91eb675568a/docs/screenshots/02-board-1280.png
+known_issues:
+  - "The Hermes Desktop board page (desktop/plugin.js) passes catalog desktop-surface validation but was not clicked through in a live Desktop window on the build machine. The interactive HTML board is the supported demo and review UI."
+  - "Product Hunt is optional and stays off unless PRODUCTHUNT_TOKEN is set through Hermes secret_scope. Product Hunt API terms restrict commercial use without permission."
+  - "BetaList is not included; their site terms are not a clean fit for a keyless built-in source."
+  - "Show HN posts hosted only on GitHub often have no company inbox, so those leads are scored but usually have no contact."
+  - "LocalLead Map: public Overpass instances can be slow or rate-limited; SignalDesk tries them one at a time and falls back to the bundled Zürich demo extract (dentists, cafes) when all fail. The demo video's map scan used the Swiss instance overpass.osm.ch (SIGNALDESK_OVERPASS_URL) because overpass-api.de was unreachable from the build machine."
+  - "A live scan needs outbound HTTPS to Algolia and yc-oss.github.io. Each source is capped so a large hiring dump does not flood the board. The offline demo uses bundled fixtures."
+capabilities:
+  provides_tools:
+    - signaldesk_set_icp
+    - signaldesk_scan
+    - signaldesk_list
+    - signaldesk_draft
+    - signaldesk_mark
+    - signaldesk_followups
+    - signaldesk_export_csv
+    - signaldesk_sources
+    - signaldesk_prepare_send
+    - signaldesk_board
+    - signaldesk_map_scan
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

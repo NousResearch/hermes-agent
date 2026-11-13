@@ -1,0 +1,20 @@
+name: shelly-direct
+repo: https://github.com/cyberpz/hermes-shelly-direct
+sha: 8dff6456ba20aa26708494eccd64f667106fe7f4
+description: "Control Shelly Gen 1/2/3 devices directly on your LAN — discovery, relays, dimmers, covers, power meters. No Home Assistant, no MQTT, no cloud. Disclosure — the shelly tool switches relays, dimmers and covers on the user's LAN Shelly devices with no per-action confirmation; discovery sends UDP broadcasts and HTTP probes (with digest auth when a device password is set) to private LAN addresses only (RFC1918, 100.64/10, IPv6 ULA), and the agent can sweep a CIDR range only when the user sets allow_model_sweep: true; no cloud, no telemetry."
+maintainer: Cyberpz
+tier: community
+category: automation
+requires_hermes: ">=0.19"
+version: "1.0.0"
+title: "Shelly Direct"
+image: https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/8dff6456ba20aa26708494eccd64f667106fe7f4/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/8dff6456ba20aa26708494eccd64f667106fe7f4/docs/grid.png
+  - https://raw.githubusercontent.com/cyberpz/hermes-shelly-direct/8dff6456ba20aa26708494eccd64f667106fe7f4/docs/card.png
+readme: true
+capabilities:
+  provides_tools: [shelly]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

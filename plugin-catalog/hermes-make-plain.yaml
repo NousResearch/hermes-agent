@@ -1,0 +1,18 @@
+name: hermes-make-plain
+repo: https://github.com/hey-yx/hermes-make-plain
+sha: 6f60ee87eb23a34db38922d9852e6d01dd9fc7e1
+description: "One-click composer polish for the Hermes Desktop chat: a wand button at the right of the input box rewrites the draft in place into a clear request an AI can act on, with nothing added and nothing dropped. The layout follows the draft: a symptom report with a request stays one paragraph, separate edits get one short line each, and a draft that is already a list keeps its line count and markers. An answer longer than four times the draft is rejected with a toast, so a runaway answer never replaces the draft. Pure filler and repeated restatements are dropped, and every concrete detail is kept exactly as written: names, numbers, versions, ports, paths, file names, URLs, @-references, /commands and code. It stays in the draft's language and never translates. The message is never sent; the button spins while the rewrite is in flight, rejects an empty box before any work starts, and never overwrites a draft edited while the call is running. Disclosure: one model call per click through the llm.oneshot auxiliary route to the auxiliary.title_generation model; no other network calls, no telemetry, no analytics; reads and writes only the composer draft through the official SDK and keeps no copy of the text (plugin storage is a one-field load heartbeat); no shell commands, no credentials."
+maintainer: hey-yx
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+version: "0.3.6"
+title: "Hermes MakePlain"
+image: https://raw.githubusercontent.com/hey-yx/hermes-make-plain/6f60ee87eb23a34db38922d9852e6d01dd9fc7e1/assets/cover-en.png
+screenshots: []
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

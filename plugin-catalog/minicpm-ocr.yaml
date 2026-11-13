@@ -1,0 +1,40 @@
+# Community catalog entry — minicpm-ocr
+#
+# Owner-submitted: the PR author (PovedaAqui) owns and maintains the repo below.
+# Exact-SHA pin. No self-updating code: the plugin never fetches or replaces its
+# own files. Its only network calls are the configured OCR/Jev backend and, when
+# the user passes one, the public https document URL being read.
+name: minicpm-ocr
+repo: https://github.com/PovedaAqui/minicpm-ocr-hermes
+sha: 5ebb76905a65fe425e229d278dc63ce67840fe69
+subdir: minicpm_ocr
+title: MiniCPM-OCR
+version: "0.6.0"
+description: >-
+  Read images and PDFs with MiniCPM-OCR, score every region with MiniCPM-OCR
+  Jev, and keep failed regions in a durable human review queue. Four tools:
+  ocr_read, ocr_job, ocr_queue and ocr_verify. Works with the hosted ModelBest
+  document-parse API or a local document service / OpenAI-compatible server.
+  Disclosure — hosted mode sends the document and any scored region text to
+  api.modelbest.ai; local mode uploads nothing. Reads only the path or public
+  https URL passed to a tool, and stores review-queue state and CSV exports
+  under Hermes' plugin data directory. No telemetry, analytics, self-updater,
+  shell commands or background processes. The optional MODELBEST_API_KEY is read
+  through agent.secret_scope.get_secret; the plugin never reads .env, auth.json
+  or another tool's credential store.
+maintainer: PovedaAqui
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/PovedaAqui/minicpm-ocr-hermes#readme
+readme: true
+platforms: []
+known_issues:
+  - "Local document mode needs the official Docker image or the SDK Web Demo backend; a bare OpenAI-compatible chat server returns page text only and rejects PDFs."
+  - "On a 12 GB GPU the official Docker image's default 40960-token vLLM profile OOMs; the README gives the tested 16k-context profile."
+  - "ocr_verify needs the hosted Jev API or a local Jev render+score service; the parser alone does not score text."
+capabilities:
+  provides_tools: [ocr_read, ocr_job, ocr_queue, ocr_verify]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -12,6 +12,7 @@ import pytest
 
 from agent import moa_loop
 from agent.error_classifier import FailoverReason, classify_api_error
+import itertools
 
 ALTERNATION_MSG = "Conversation roles must alternate user/assistant/user/assistant/..."
 
@@ -30,7 +31,7 @@ def _strict_destination(calls, strict_models):
     def call_llm(**kw):
         calls.append(kw)
         msgs = [m for m in kw["messages"] if m["role"] != "system"]
-        if kw["model"] in strict_models and any(a["role"] == b["role"] for a, b in zip(msgs, msgs[1:])):
+        if kw["model"] in strict_models and any(a["role"] == b["role"] for a, b in itertools.pairwise(msgs)):
             raise _AlternationRejected()
         return SimpleNamespace(choices=[])
     return call_llm

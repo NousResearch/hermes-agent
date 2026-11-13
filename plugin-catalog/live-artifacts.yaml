@@ -1,0 +1,33 @@
+name: live-artifacts
+repo: https://github.com/mindsocket/hermes-live-artifacts
+sha: a5f163e9f403053c3b3886557ca8d84fda5e8fae
+subdir: plugin
+title: Live Artifacts
+description: "Create and use interactive artifacts - pages, designs and dashboards - in your sessions. Disclosure — runs a local web listener (default 127.0.0.1:47318) serving agent-written pages; anyone holding a page link can open it and write to its data store with no sign-in, so keep it on loopback or a private tailnet; pages may load scripts from public CDNs (cdnjs, jsdelivr, unpkg, Tailwind, jQuery, Plotly) inside a sandboxed frame; page-side MCP tool calls run only for servers you add to `plugins.entries.live-artifacts.mcp_allowlist`."
+maintainer: mindsocket
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/mindsocket/hermes-live-artifacts#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/a5f163e9f403053c3b3886557ca8d84fda5e8fae/docs/screenshots/review-page.png
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/a5f163e9f403053c3b3886557ca8d84fda5e8fae/docs/screenshots/dashboard.png
+  - https://raw.githubusercontent.com/mindsocket/hermes-live-artifacts/a5f163e9f403053c3b3886557ca8d84fda5e8fae/docs/screenshots/chat-send.png
+platforms: [macos, linux]
+known_issues:
+  - "Access to a page is by possession of its link, with no sign-in. Keep the listener on loopback or a private network such as a tailnet."
+capabilities:
+  provides_tools:
+    - live_artifact_create
+    - live_artifact_update
+    - live_artifact_list
+    - live_artifact_read
+    - live_artifact_db_read
+    - live_artifact_db_write
+    - live_artifact_archive
+    - live_artifact_delete
+    - live_artifact_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

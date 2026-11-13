@@ -33,10 +33,27 @@ falls back silently to the syntax-only result.
 
 Concretely, on every successful `write_file` or `patch`:
 
-1. Hermes captures a baseline of current diagnostics for the file.
-2. Performs the write.
-3. Re-queries the language server, filters out diagnostics that were
-   already in the baseline, and surfaces only the new ones.
+1. Hermes performs the write, then sends the new content to the language
+   server. The write waits for the verdict only while the whole tool call
+   stays under about 80 ms.
+2. Hermes asks for the verdict directly where the server supports it:
+   TypeScript (`typescript-language-server`) answers a synchronous
+   diagnostics request, and pyright answers a document pull. Warm servers
+   usually reply in 10–90 ms. When the verdict has diagnostics, Hermes
+   compares them against the verdict on the pre-edit content and keeps
+   only the new ones.
+3. A verdict that arrives inside that window appears in the tool result's
+   `lsp_diagnostics`. A slower one (cold server, very large file) is
+   attached to the session's **next** tool result, labelled `LSP
+   diagnostics introduced by your earlier edit of <path>`. If the model
+   tries to finish the turn while a check is still running, Hermes waits
+   up to 5 s for it. Any problems it finds go to the model as a new
+   message before the answer is accepted, so a one-shot `hermes chat -q`
+   run still sees them. Earlier messages are never rewritten.
+
+If the same file is edited again before its check finishes, the newer
+check runs against the older edit's baseline. Errors the first edit
+introduced are still reported unless the second edit fixed them.
 
 The agent sees output like:
 

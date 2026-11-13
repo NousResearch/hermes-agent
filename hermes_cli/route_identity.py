@@ -6,6 +6,12 @@ from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 
+# ``model.*`` keys bound to one endpoint: an inline credential and a credential pointer. A route
+# change clears them, and profile inheritance never copies them to another profile.
+ENDPOINT_CREDENTIAL_KEYS = ("api_key", "api")
+ENDPOINT_KEY_POINTER_KEYS = ("key_env", "api_key_env")
+
+
 def normalize_route_base_url(base_url: Any) -> str:
     """Canonicalize only proven-equivalent endpoint URL components."""
     raw = str(base_url or "")
@@ -83,7 +89,7 @@ def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Opt
     return normalize_provider(inferred) == canonical
 
 
-def drop_stale_model_route(model_cfg: Any, provider: Any, config: Any = None) -> "tuple[dict[str, Any], bool]":
+def drop_stale_model_route(model_cfg: Any, provider: Any, config: Any = None) -> tuple[dict[str, Any], bool]:
     """Pop the route keys (``base_url``, ``api_mode``) a previous provider left in ``model:``
     when the block is re-pointed at *provider* without a fresh route (``hermes config set
     model.provider``). Mirrors what a persisted ``/model`` switch writes: the route is synced to

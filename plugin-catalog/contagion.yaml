@@ -1,0 +1,11 @@
+name: contagion
+repo: https://github.com/onchaindc/Contagion
+sha: 0fcfebbc8b7dc789c9ef38ddc156ea81a4135116
+description: "Taint-aware execution. Once a session reads untrusted content, its commands lose network, secrets and out-of-project writes at the OS layer. Disclosure — Contagion replaces the local terminal backend (`terminal.backend: contagion`): until a session is marked tainted its commands and file tools run on the host like the local backend, and core's local-only locked-skill terminal guard does not run for it. Taint detection is pattern-based on tool names and terminal/code text and is kept in memory only, so a restart or `/contagion clear` lifts it for every session; while tainted, jailed commands can still read files outside your home directory and write inside the project folder, and egress tools are gated only by an approval prompt. The URL, query or first 120 characters of each command that caused taint are logged to the plugin's data folder."
+maintainer: onchaindc
+tier: community
+capabilities:
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+requires_hermes: ">=0.22.6"

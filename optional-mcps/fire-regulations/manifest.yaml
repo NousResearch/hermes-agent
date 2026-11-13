@@ -1,0 +1,69 @@
+# Nous-approved MCP catalog entry proposal.
+# Inclusion requires maintainer review and PR merge into NousResearch/hermes-agent.
+manifest_version: 1
+
+name: fire-regulations
+description: Search versioned Korean fire-safety laws and administrative rules from official-source local snapshots.
+source: https://github.com/119gpt333-sys/fire-regulations-mcp
+
+transport:
+  type: stdio
+  command: uv
+  args:
+    - run
+    - --project
+    - "${INSTALL_DIR}"
+    - --no-sync
+    - fire-mcp
+  version: "0.1.0"
+
+install:
+  type: git
+  url: https://github.com/119gpt333-sys/fire-regulations-mcp.git
+  # Full commit SHA: catalog installs must not float with a branch head.
+  # Commit dated 2026-07-26T21:58:32Z; 14-day cooldown elapsed 2026-08-09T21:58:32Z.
+  ref: 245a916fc5b793caccec4040e46088123a87fdf7
+  bootstrap:
+    - "uv sync --locked --no-dev"
+
+auth:
+  type: none
+
+tools:
+  # Tool calls only query local data; server startup initializes/migrates the SQLite DB.
+  # Sync and review operations remain separate local CLIs.
+  default_enabled:
+    - search_current_rules
+    - get_rule_as_of
+    - trace_exception_path
+    - get_source_status
+    - list_pending_changes
+
+post_install: |
+  Requires uv and Python 3.11 or later. The MCP queries local official-source
+  snapshots; installation includes no legal text or credentials. Server startup
+  creates/migrates the local SQLite database, including legacy source-URL cleanup.
+
+  Use the absolute project path recorded in mcp_servers.fire-regulations.args
+  in the active Hermes profile's config.yaml. The examples below use a POSIX shell:
+    FIRE_MCP_PROJECT='<absolute installed project path>'
+
+  Populate a small sample with the National Law Information Center's test credential:
+    LAW_API_OC=test uv run --project "$FIRE_MCP_PROJECT" --no-sync fire-mcp-sync --max-per-entry 3
+
+  For operational synchronization, obtain an OC credential through the official
+  National Law Information Center data-sharing process and pass it only at runtime:
+    LAW_API_OC='<issued value>' uv run --project "$FIRE_MCP_PROJECT" --no-sync fire-mcp-sync
+
+  Newly collected or hash-changed versions remain pending until a responsible
+  reviewer compares them with the official source and uses fire-mcp-review:
+    uv run --project "$FIRE_MCP_PROJECT" --no-sync fire-mcp-review list
+  Synchronization alone does not approve documents for operational searches.
+  The MCP does not automatically determine compliance for an individual facility.
+
+  By default, snapshots, the index and review records live in the checkout's data/
+  directory. Back up that directory before reinstalling or uninstalling: Hermes
+  removes the checkout. To use an external data directory, set the same absolute
+  FIRE_MCP_DATA_DIR in mcp_servers.fire-regulations.env and for both local CLIs.
+
+  Start a new Hermes session after synchronization and review to use the tools.

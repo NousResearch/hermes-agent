@@ -128,6 +128,14 @@ class _ManagedAttempt:
         """Provider callback handed to Relay: run ``callback`` on Relay's (possibly rewritten) request."""
         with self._recording_errors():
             raw = self.run_callback(callback, self.provider_request(next_request))
+        if inspect.isawaitable(raw):
+            # Dual-mode providers see Relay's loop even for synchronous callers.
+            # Resolve their awaitable before serializing the provider response.
+            async def resolve() -> Any:
+                with self._recording_errors(), relay_runtime.managed_callback_guard():
+                    return self._record(await raw)
+
+            return self.context.copy().run(asyncio.create_task, resolve())
         return self._record(raw)
 
     async def invoke_async(self, callback: Callable[..., Any], next_request: Any) -> Any:
@@ -960,5 +968,7 @@ def _run_awaitable(
     if not inspect.isawaitable(value):
         return value
     if _has_running_event_loop():
+        if inspect.iscoroutine(value):
+            value.close()
         raise RuntimeError(loop_error)
     return asyncio.run(value)

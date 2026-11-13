@@ -248,3 +248,57 @@ class TestMultiSelectCallbacks:
             entry = cm._entries["cidL"]
         assert entry.response == "green"
         assert entry.event.is_set()
+
+
+class _Card:
+    """Holds the markup Telegram shows; the first edit is lost (sent, timed out, never applied)."""
+
+    def __init__(self, shown):
+        self.shown, self.calls = shown, 0
+
+    async def edit(self, reply_markup=None, **_kwargs):
+        from telegram.error import BadRequest, TimedOut
+        self.calls += 1
+        markup = reply_markup
+        if self.calls == 1:
+            raise TimedOut("Timed out")
+        if markup == self.shown:
+            raise BadRequest("Bad Request: message is not modified: specified new message content and "
+                             "reply markup are exactly the same as a current content and reply markup")
+        self.shown = markup
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pre_ticked, expected", [(False, None), (True, ["red"])])
+async def test_retap_after_lost_toggle_edit_adopts_what_the_card_shows(pre_ticked, expected):
+    """A re-tap after a lost edit gets "not modified": the card shows the requested ticks, so Send
+    must submit exactly those (lost tick: nothing; lost untick: still red)."""
+    from plugins.platforms.telegram import adapter as tg
+    with patch.object(tg, "InlineKeyboardButton", lambda text, callback_data: (text, callback_data)), \
+            patch.object(tg, "InlineKeyboardMarkup", lambda rows: tuple(map(tuple, rows))):
+        await _retap_after_lost_edit(pre_ticked, expected)
+
+
+async def _retap_after_lost_edit(pre_ticked, expected):
+    from plugins.platforms.telegram.telegram_clarify_multi import multi_keyboard
+    from tools import clarify_gateway as cm
+    _clear()
+    adapter = _make_adapter()
+    msg = _prompt(adapter, "cidLost")
+    cm.register("cidLost", "sk-multi", "Pick", ["red", "green"], multi_select=True)
+    if pre_ticked:
+        await _tap(adapter, msg, "cl:cidLost:t0")
+    card = _Card(multi_keyboard(adapter, "cidLost", 2, {0} if pre_ticked else set()))
+
+    for _ in range(2):  # the lost edit, then the user's corrective re-tap
+        query = AsyncMock(data="cl:cidLost:t0", message=msg, from_user=MagicMock(id="777", first_name="T"))
+        query.edit_message_reply_markup.side_effect = card.edit
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(MagicMock(callback_query=query), MagicMock())
+    assert "Selected" in query.answer.call_args.kwargs["text"]
+    await _tap(adapter, msg, "cl:cidLost:go")
+
+    from tools.clarify_tool import _clean_answer
+    with cm._lock:
+        response = cm._entries["cidLost"].response
+    assert (None if response is None else _clean_answer(response, True)) == expected

@@ -95,7 +95,9 @@ async def _toggle(adapter: Any, query: Any, clarify_id: str, entry: Any, selecte
         adapter._clarify_multi.pop(clarify_id, None)
         await adapter._notify_clarify_expired(query, user_display)
         return
-    if failure is not None:
+    # "Not modified" proves the card already shows the requested ticks (an earlier unconfirmed edit
+    # that did not land, re-tapped): adopt them, or every later tap is refused the same way.
+    if failure is not None and "not modified" not in str(failure).lower():
         if send_error_kind(failure) not in MAY_HAVE_DELIVERED:  # refused, flood-waited or never sent
             logger.warning("Telegram clarify toggle not applied (id=%s): %s", clarify_id, failure)
             await answer_callback(query, _toast("platform.telegram.prompt.toggle_failed"))

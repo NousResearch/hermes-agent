@@ -334,12 +334,12 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     def retry_pending(self):
         with self.lock:
             results = []
-            # A single missed persist receipt (worker_receipt_timeout) on a loaded host must not
-            # poison the whole turn. The journal keeps the entry pending and replays are
-            # idempotent (the owner resolves the original receipt), so retry transient receipt
-            # timeouts before latching the sticky failure. Every other error stays sticky as
-            # designed. The rpc call drops and redials its link on any exception, so each
-            # attempt rides a fresh owner connection.
+            # A single missed persist receipt (worker_receipt_timeout) or a discovery miss
+            # (owner_unavailable) on a loaded host must not poison the whole turn. The journal
+            # keeps the entry pending and replays are idempotent (the owner resolves the
+            # original receipt), so retry transient receipt timeouts before latching the sticky
+            # failure. Every other error stays sticky as designed. The rpc call drops and
+            # redials its link on any exception, so each attempt rides a fresh owner connection.
             _RECEIPT_RETRIES = 3
             try:
                 while self.journal['pending']:
@@ -349,7 +349,9 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                         try:
                             result = self.rpc('worker.persist', **self.scope, **entry)
                             break
-                        except TimeoutError:
+                        except (TimeoutError, WorkerPersistenceError) as exc:
+                            if not _is_transient_persist_error(exc):
+                                raise
                             if attempt == _RECEIPT_RETRIES - 1:
                                 raise
                             time.sleep(0.5)
@@ -513,3 +515,14 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                 self.flush_token_counts()
             finally:
                 self._outbox_owner.close()
+
+
+def _is_transient_persist_error(exc):
+    """True for retryable owner-reachability stalls: a slow reply (receipt timeout) or a
+    discovery miss before the write was ever sent (owner_unavailable). Anything else keeps
+    the journal's sticky-failure contract."""
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, WorkerPersistenceError) and exc.args and exc.args[0] == 'owner_unavailable':
+        return True
+    return False

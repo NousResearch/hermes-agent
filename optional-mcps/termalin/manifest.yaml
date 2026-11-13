@@ -1,0 +1,68 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+manifest_version: 1
+
+name: termalin
+connector_slug: termalin
+description: Run commands, manage files, query databases and read monitoring on your own Linux servers over SSH, without handing the agent a key.
+source: https://termal.in/mcp/
+
+# Termalin ships a hosted remote MCP server over Streamable HTTP with native
+# OAuth 2.1 + Dynamic Client Registration (AS metadata at
+# https://termal.in/.well-known/oauth-authorization-server). Nothing to
+# install locally. The user's servers connect outward through a small
+# Termalin Connector; each command is signed with a short-lived SSH
+# certificate, every connection has a command policy (full / allowlist /
+# read-only) set by the user and an audit log. 23 tools: hosts_list,
+# ssh_exec, ssh_exec_many, job_start/status/stop/list, sftp_list/read/write,
+# data_tables/schema/query, server_metrics, alerts_list, backup_*, web_link_*,
+# generate_password.
+transport:
+  type: http
+  url: https://termal.in/mcp
+
+auth:
+  type: oauth
+  # Native MCP OAuth (case 1): the MCP client triggers the browser flow on the
+  # first probe / first connect; the consent page lets the user tick which
+  # enrolled servers Hermes may reach.
+
+# Write tools (ssh_exec, sftp_write, job_start, data_query with writes,
+# backup_*, web_link_*) run under the per-server policy the user set in
+# their Termalin account; a read-only policy refuses them server-side.
+tools:
+  default_enabled:
+    - hosts_list
+    - server_metrics
+    - alerts_list
+    - ssh_exec
+    - ssh_exec_many
+    - job_start
+    - job_status
+    - job_stop
+    - job_list
+    - sftp_list
+    - sftp_read
+    - sftp_write
+    - data_tables
+    - data_schema
+    - data_query
+    - generate_password
+
+suggest:
+  keywords:
+    - termalin
+    - ssh
+    - vps
+  hosts:
+    - termal.in
+
+post_install: |
+  You need a Termalin account (https://termal.in/account) with at least one
+  Linux server enrolled through its Connector (one-line install, outbound
+  only). The hosted MCP server is on the Pro plan or the 14-day trial.
+  On first connection Hermes opens a browser to sign in to Termalin and pick
+  the servers it may reach. After auth, restart your Hermes session so the
+  Termalin tools are loaded. Re-run the tool checklist any time with:
+    hermes mcp configure termalin

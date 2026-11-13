@@ -266,15 +266,23 @@ export function useModelControls({
       const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
 
       const readSnapshot = (): ModelPickSnapshot => {
-        const tileState = touchesPrimary ? undefined : $sessionStates.get()[liveSessionId!]
+        // The slice is the rollback baseline, not the composer globals: the pill
+        // renders `view.$model`, which is slice-first for a live session, so a
+        // snapshot taken from the globals would paint a model the gateway never
+        // accepted back into the pill when a switch is rejected. The globals stay
+        // as the fallback for a session that has no slice yet (cold resume);
+        // `composerSelection` pins the persisted pick separately.
+        const liveState = liveSessionId ? $sessionStates.get()[liveSessionId] : undefined
 
         return {
           composerSelection: getComposerModelSelection(),
-          model: touchesPrimary ? $currentModel.get() : (tileState?.model ?? ''),
-          provider: touchesPrimary ? $currentProvider.get() : (tileState?.provider ?? ''),
-          reasoningEffortWire: touchesPrimary
-            ? $currentReasoningEffortWire.get()
-            : (tileState?.reasoningEffortWire ?? '')
+          model: liveState ? liveState.model : touchesPrimary ? $currentModel.get() : '',
+          provider: liveState ? liveState.provider : touchesPrimary ? $currentProvider.get() : '',
+          reasoningEffortWire: liveState
+            ? (liveState.reasoningEffortWire ?? '')
+            : touchesPrimary
+              ? $currentReasoningEffortWire.get()
+              : ''
         }
       }
 
@@ -282,11 +290,34 @@ export function useModelControls({
       const composerScope = getComposerSelectionScope()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
+      // The primary live session's slice must be painted too, not just the
+      // composer globals: the collapsed pill reads the LIVE session state
+      // (state.model) and prefers it over the draft atom, so a globals-only
+      // paint leaves the pill on the old name while the expanded menu — fed by
+      // the optimistic options cache — already shows the new one. session.info
+      // confirms (and re-stamps the wire) when the switch lands.
+      const paintLiveSession = (model: string, provider: string, reasoningEffortWire: string) => {
+        if (!liveSessionId) {
+          return
+        }
+
+        sessionTileDelegate()?.updateSession(liveSessionId, state => {
+          if (state.model === model && state.provider === provider && state.reasoningEffortWire === reasoningEffortWire) {
+            return state
+          }
+
+          return { ...state, model, provider, reasoningEffortWire }
+        })
+      }
+
       const paintSelection = () => {
         if (touchesPrimary) {
           setCurrentModel(selection.model)
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
+          // The wire stamp belongs to the old route, so it is withdrawn until
+          // session.info re-stamps it.
+          paintLiveSession(selection.model, selection.provider, '')
         } else if (liveSessionId) {
           // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
           // belongs to the old route, so it is withdrawn until session.info re-stamps it.
@@ -303,15 +334,25 @@ export function useModelControls({
         updateModelOptionsCache(liveSessionId, provider, model, touchesPrimary && !liveSessionId, liveGatewayProfile)
       }
 
-      const restoreSnapshot = (snapshot: ModelPickSnapshot) => {
+      const restoreSnapshot = (snapshot: ModelPickSnapshot, repaintUi = true) => {
         if (touchesPrimary) {
-          setCurrentModel(snapshot.composerSelection.model)
-          setCurrentProvider(snapshot.composerSelection.provider)
-          setCurrentModelSource(snapshot.composerSelection.source)
-          // Restore runtime paint/stamp separately; neither is sticky launch intent.
-          setCurrentModelTransient(snapshot.model)
-          setCurrentProviderTransient(snapshot.provider)
-          setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
+          // The composer globals are what the UI currently shows, so they are
+          // only repainted while the user is still looking at this session.
+          if (repaintUi) {
+            setCurrentModel(snapshot.composerSelection.model)
+            setCurrentProvider(snapshot.composerSelection.provider)
+            setCurrentModelSource(snapshot.composerSelection.source)
+            // Restore runtime paint/stamp separately; neither is sticky launch intent.
+            setCurrentModelTransient(snapshot.model)
+            setCurrentProviderTransient(snapshot.provider)
+            setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
+          }
+
+          // The session's OWN slice is never UI: it describes which model that
+          // session runs, so a failed pick must clear its optimistic paint even
+          // after the user switched away — otherwise the stale paint survives
+          // until the next session.info and shows a model the gateway rejected.
+          paintLiveSession(snapshot.model, snapshot.provider, snapshot.reasoningEffortWire)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
@@ -321,7 +362,9 @@ export function useModelControls({
           }))
         }
 
-        cacheSelection(snapshot.provider, snapshot.model)
+        if (repaintUi) {
+          cacheSelection(snapshot.provider, snapshot.model)
+        }
       }
 
       paintSelection()
@@ -337,7 +380,8 @@ export function useModelControls({
       // failed pick repaints the newest pick still in flight, else the last
       // confirmed selection — never its own pre-pick snapshot, which may be an
       // earlier pick's optimistic paint that never applied. A primary session
-      // switch while config.set is in flight means nothing is repainted. The
+      // switch while config.set is in flight leaves the composer the user is now
+      // looking at alone (the abandoned session's slice is still restored). The
       // composer selection generation is deliberately not consulted: effort
       // steps and preset edits bump it without touching the model.
       // Per owner: another owner can hold a session with the same id (imports).
@@ -345,17 +389,24 @@ export function useModelControls({
       const pickToken = beginModelPick(pickKey, before, readSnapshot())
 
       // The snapshot to repaint after this pick failed to apply, or null to leave the paint alone.
+      // A primary switch to another session while `config.set` is in flight must not repaint the
+      // composer the user is now looking at — but the abandoned session's own slice still has to
+      // be restored, so that case returns both the snapshot and "UI only: no".
       const settleUnapplied = () => {
         const repaint = settleModelPick(pickKey, pickToken, false)
 
-        if (repaint && touchesPrimary && $activeSessionId.get() !== liveSessionId) {
-          // Its chat is no longer on screen to repaint, but the failed pick is still the saved one.
-          releaseComposerModelSelection(selection, composerScope)
-
+        if (!repaint) {
           return null
         }
 
-        return repaint
+        const movedAway = touchesPrimary && $activeSessionId.get() !== liveSessionId
+
+        if (movedAway) {
+          // Its chat is no longer on screen to repaint, but the failed pick is still the saved one.
+          releaseComposerModelSelection(selection, composerScope)
+        }
+
+        return { repaintUi: !movedAway, snapshot: repaint }
       }
 
       // The PRIMARY profile's main agent lets the gateway decide persistence
@@ -415,7 +466,15 @@ export function useModelControls({
             return false
           }
 
-          restoreSnapshot(restored)
+          restoreSnapshot(restored.snapshot, restored.repaintUi)
+
+          // The user moved on to another session: its own slice is restored
+          // above, but a dialog for a pick they abandoned would only offer to
+          // undo the one they are making now.
+          if (!restored.repaintUi) {
+            return false
+          }
+
           let retryToken: null | number = null
           // ONE shared applier for guarded switches (#95293): the same
           // confirm flow the Bots editor routes through — never fork this
@@ -432,11 +491,11 @@ export function useModelControls({
             isStale: () =>
               touchesPrimary
                 ? $activeSessionId.get() !== liveSessionId ||
-                  $currentModel.get() !== restored.model ||
-                  $currentProvider.get() !== restored.provider
+                  $currentModel.get() !== restored.snapshot.model ||
+                  $currentProvider.get() !== restored.snapshot.provider
                 : !liveSessionId ||
-                  $sessionStates.get()[liveSessionId]?.model !== restored.model ||
-                  $sessionStates.get()[liveSessionId]?.provider !== restored.provider,
+                  $sessionStates.get()[liveSessionId]?.model !== restored.snapshot.model ||
+                  $sessionStates.get()[liveSessionId]?.provider !== restored.snapshot.provider,
             model: selection.model,
             // The confirmed retry is a fresh pick in the ledger: it joins whatever is still in
             // flight, becomes the confirmed selection when it applies, and settles like any pick
@@ -456,10 +515,13 @@ export function useModelControls({
               finishSwitch(result, retryToken ?? pickToken)
             },
             rollback: () => {
-              const repaint = retryToken === null ? restored : settleModelPick(pickKey, retryToken, false)
+              const repaint = retryToken === null ? restored.snapshot : settleModelPick(pickKey, retryToken, false)
 
-              if (repaint && !(touchesPrimary && $activeSessionId.get() !== liveSessionId)) {
-                restoreSnapshot(repaint)
+              if (repaint) {
+                restoreSnapshot(
+                  repaint,
+                  retryToken === null ? restored.repaintUi : !(touchesPrimary && $activeSessionId.get() !== liveSessionId)
+                )
               }
             }
           })
@@ -491,7 +553,7 @@ export function useModelControls({
         const restored = settleUnapplied()
 
         if (restored) {
-          restoreSnapshot(restored)
+          restoreSnapshot(restored.snapshot, restored.repaintUi)
         }
 
         if (!abandoned) {

@@ -286,6 +286,11 @@ _DECISION_MESSAGES: dict[str, str] = {
         "Blocked delegate_task: this turn has already spawned {count} subagents (limit {cap}). "
         "This looks like a runaway delegation loop. Finish the work with the results you have and answer the user."
     ),
+    "replay_of_halted_call": (
+        "Blocked {tool_name}: this exact call already ended {count} earlier turn(s) in this session "
+        "with identical arguments and identical results. Replaying it is not progress; change "
+        "arguments or approach, or answer the user."
+    ),
 }
 
 _IDENTICAL_CALL_NOTICE = (
@@ -315,6 +320,19 @@ class ToolCallGuardrailController:
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
         self.reset_for_turn()
+        # Session-scoped halt memory (#146494) — deliberately NOT part of reset_for_turn().
+        # Every counter there is per-turn, so a model replaying the exact call the guardrail
+        # had ALREADY halted one turn earlier got a fresh streak, an identical halt, and the
+        # identical canned reply — forever. The controller is created once per agent
+        # (agent_init.py:1252) and lives for the whole session; these dicts survive resets.
+        # signature -> how many turn-ending halts this exact call produced this session
+        self._session_halted: dict[ToolCallSignature, int] = {}
+        # signature -> result hash observed when it was halted ("" = unknown, e.g. a loop-cap
+        # block happens before any result exists; those only ever clear on a landed mutation)
+        self._session_halted_result: dict[ToolCallSignature, str] = {}
+        # signature -> result hash of the most recent observed call, so a halt can record what
+        # the model was replaying at halt time
+        self._last_result_hash: dict[ToolCallSignature, str] = {}
 
     def reset_for_turn(self) -> None:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
@@ -342,10 +360,21 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Signatures whose first-replay-per-turn was already used (#146494 replay gate).
+        # Per-turn ON PURPOSE: the user sending `continue` is permission to try once more.
+        self._replay_attempted: set[ToolCallSignature] = set()
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
+
+    def halt_repeat_count(self, signature: ToolCallSignature) -> int:
+        """How many times this exact call has ended a turn this session (#146494).
+
+        0/1 = first halt; >1 means the model replayed a call the guardrail already
+        stopped — the user-facing reply must say so instead of repeating the canned advice.
+        """
+        return self._session_halted.get(signature, 0)
 
     def _decide(
         self, action: str, code: str, tool_name: str, count: int, signature: ToolCallSignature,
@@ -357,6 +386,11 @@ class ToolCallGuardrailController:
         decision = ToolGuardrailDecision(action, code, message, tool_name, count, signature)
         if decision.should_halt:
             self._halt_decision = decision
+            # Session memory (#146494): remember this exact call ended a turn, and what its
+            # last observed result was (unknown "" for loop-cap blocks, which end a call
+            # before any result exists).
+            self._session_halted[signature] = self._session_halted.get(signature, 0) + 1
+            self._session_halted_result.setdefault(signature, self._last_result_hash.get(signature, ""))
         return decision
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
@@ -375,6 +409,18 @@ class ToolCallGuardrailController:
         record = self._no_progress.get(signature) if self._is_idempotent(tool_name) else None
         if record is not None and record[1] >= self.config.no_progress_block_after:
             return self._decide("block", "idempotent_no_progress_block", tool_name, record[1], signature)
+        # Replay gate (#146494): this exact call already ENDED a turn earlier in this
+        # session. The FIRST replay per turn is allowed — the user sending `continue` is
+        # permission to try once more — but a second replay inside the same turn is the
+        # loop resuming with nothing changed, so it ends the turn immediately instead of
+        # rebuilding a fresh per-turn streak and halting with the identical canned reply.
+        if signature in self._session_halted:
+            if signature in self._replay_attempted:
+                return self._decide(
+                    "block", "replay_of_halted_call", tool_name,
+                    self._session_halted[signature], signature,
+                )
+            self._replay_attempted.add(signature)
         return allow
 
     def after_call(
@@ -386,6 +432,19 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
         warnings = self.config.warnings_enabled
+        result_hash = _result_hash(result, tool_name)
+
+        # Session halt memory (#146494): if this exact call was halted earlier and NOW
+        # returns a DIFFERENT result, the world changed underneath (file edited, endpoint
+        # recovered) — the halt describes a reality that no longer exists, so forget it
+        # and let the replay be a fresh experiment. A stored hash of "" (halt before any
+        # result existed, e.g. a loop-cap block) is only ever cleared by a landed
+        # mutation below.
+        stored_hash = self._session_halted_result.get(signature, "")
+        if stored_hash and isinstance(result, str) and result_hash != stored_hash:
+            self._session_halted.pop(signature, None)
+            self._session_halted_result.pop(signature, None)
+            self._replay_attempted.discard(signature)
 
         if failed:
             # An identical failing call is only a REPLAY if nothing landed in between;
@@ -432,11 +491,19 @@ class ToolCallGuardrailController:
         if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
+            # Session halt memory (#146494): a landed mutation invalidates halts for OTHER
+            # signatures — the world changed, their replays are new experiments. The
+            # mutating call's OWN signature survives: `terminal` is itself a progress-reset
+            # tool and the bug case was a SUCCESSFUL identical terminal replay, so dropping
+            # its memory on every replay would un-arm the gate and the loop would restart
+            # forever with fresh amnesia.
+            self._session_halted = {sig: n for sig, n in self._session_halted.items() if sig == signature}
+            self._session_halted_result = {sig: h for sig, h in self._session_halted_result.items() if sig == signature}
+            self._replay_attempted &= {signature}
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
-        result_hash = _result_hash(result, tool_name)
         previous = self._no_progress.get(signature)
         repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
         self._no_progress[signature] = (result_hash, repeat_count)
@@ -461,6 +528,10 @@ class ToolCallGuardrailController:
         is_plain_str = isinstance(result, str)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         result_hash = _result_hash(result, tool_name) if is_plain_str else ""
+        # Session halt memory (#146494): record what this signature last returned BEFORE any
+        # streak/cycle halt below, so a halt can remember the result the model was replaying.
+        if is_plain_str:
+            self._last_result_hash[signature] = result_hash
 
         if is_plain_str and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
             self._identical_streak_count += 1
@@ -603,6 +674,33 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
         "Try different arguments, a narrower query/path, an absolute path when relevant, "
         "or a different tool that can make progress. If the blocker is external, report "
         "the blocker after one diagnostic attempt instead of repeating the same failing path."
+    )
+
+
+def toolguard_halt_response(decision: ToolGuardrailDecision, repeat_count: int = 1) -> str:
+    """The user-facing reply when a guardrail halts a turn (run_agent delegates here).
+
+    ``repeat_count`` is the controller's session-wide count of turn-ending halts for this
+    exact call (#146494). ``> 1`` means the model REPLAYED a call the guardrail had already
+    stopped — usually because the user sent `continue` and nothing changed. Repeating the
+    identical canned advice reads to the model as fresh, untried advice and re-arms the
+    loop, so the second halt must name what happened.
+    """
+    tool = decision.tool_name or "the same tool"
+    if repeat_count > 1:
+        return (
+            f"I stopped AGAIN because {tool} was replayed even though this exact call "
+            f"already ended the previous {repeat_count - 1} turn(s) with identical "
+            "arguments and identical results. Nothing changed between attempts, so running "
+            "it once more hits the same guardrail and is not progress. The blocker is in "
+            "the last result above. Send `continue` only to have me try a genuinely "
+            "different approach — a different command, path, or tool."
+        )
+    return (
+        f"I stopped retrying because I kept running {tool} "
+        f"{decision.count} times without making progress. The last result above shows what "
+        "blocked it. Tell me how you'd like to proceed, or send `continue` and I'll try a "
+        "different approach."
     )
 
 

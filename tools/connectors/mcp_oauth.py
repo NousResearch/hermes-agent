@@ -261,8 +261,20 @@ def _pinned_redirect_uri(cfg: dict) -> str:
     return f"http://{host}:{oauth['redirect_port']}/callback"
 
 
+def refuse_pinned_client_relay(server_name: str, cfg: dict, client_redirect_uri: Optional[str]) -> None:
+    """A pre-registered client pinned to its registered loopback redirect cannot finish through a
+    client-hosted relay on another port (the vendor accepts only the registered URI), so refuse the
+    combination up front: before any attempt is replaced, flow registered or worker started, so
+    the saved tokens are never touched."""
+    if client_redirect_uri is not None and _pinned_loopback(cfg):
+        raise ValueError(
+            f"'{server_name}' uses a pre-registered OAuth client pinned to {_pinned_redirect_uri(cfg)}, "
+            f"which the Desktop relay can't use. Run `hermes mcp login {server_name}` on the gateway machine.")
+
+
 def choose_callback_receiver(flow, cfg: dict, client_redirect_uri: Optional[str] = None):
     """Set the redirect consumed by the SDK and return the optional backend HTTP receiver."""
+    refuse_pinned_client_relay(flow.server_name, cfg, client_redirect_uri)
     if _pinned_loopback(cfg):
         flow.redirect_uri = _pinned_redirect_uri(cfg)
         return None
@@ -320,6 +332,7 @@ def start(
     if not cfg.get("url"):
         raise RuntimeError(f"'{server_name}' is a stdio server: it takes env keys, not OAuth")
     cfg["auth"] = "oauth"
+    refuse_pinned_client_relay(server_name, cfg, client_redirect_uri)
     hermes_home = str(get_hermes_home().expanduser().resolve(strict=False))
     flow = DashboardOAuthFlow(
         flow_id=secrets.token_urlsafe(24), server_name=server_name, profile=None,

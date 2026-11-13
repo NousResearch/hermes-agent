@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 from tools.connectors.mcp_oauth import (
     _validate_client_redirect_uri,
     choose_callback_receiver,
+    refuse_pinned_client_relay,
     run_worker,
 )
 
@@ -68,6 +69,7 @@ def start_flow(
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
     if client_redirect_uri is not None:
         client_redirect_uri = _validate_client_redirect_uri(client_redirect_uri)
+    refuse_pinned_client_relay(server_name, cfg, client_redirect_uri)
     cutoff = time.time() - _SESSION_TTL_SECONDS  # opportunistic GC of expired sessions
     with _sessions_lock:
         for sid in [sid for sid, rec in _sessions.items() if rec["created_at"] < cutoff]:

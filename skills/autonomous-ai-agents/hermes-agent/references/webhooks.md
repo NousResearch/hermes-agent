@@ -130,7 +130,7 @@ hermes webhook subscribe github-issues \
 Then in GitHub repo Settings → Webhooks → Add webhook:
 - Payload URL: the returned webhook_url
 - Content type: application/json
-- Secret: the returned secret
+- Secret: the route's `secret` from `~/.hermes/webhook_subscriptions.json` (subscribe prints it masked), or the value you passed with `--secret`
 - Events: "Issues"
 
 ### GitHub: PR reviews

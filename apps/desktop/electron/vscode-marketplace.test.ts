@@ -5,57 +5,11 @@ import { test, vi } from 'vitest'
 
 import { __testing, extractThemes, readCentralDirectory } from './vscode-marketplace'
 
-// Build a minimal zip with stored (uncompressed) entries so the test controls
-// the bytes exactly — exercises the central-directory reader + theme extraction
-// without a deflate dependency.
+// Build a minimal zip so the test controls the bytes exactly. Entries are
+// stored (method 0) by default; any other method gets a real deflate stream,
+// which lets a test build a decompression bomb or a mislabelled method that
+// would still inflate if the reader didn't check it.
 function makeZip(entries) {
-  const locals = []
-  const centrals = []
-  let offset = 0
-
-  for (const { name, data } of entries) {
-    const nameBuf = Buffer.from(name, 'utf8')
-    const body = Buffer.from(data, 'utf8')
-
-    const local = Buffer.alloc(30 + nameBuf.length)
-    local.writeUInt32LE(0x04034b50, 0)
-    local.writeUInt16LE(0, 8) // method: stored
-    local.writeUInt32LE(body.length, 18) // compressed size
-    local.writeUInt32LE(body.length, 22) // uncompressed size
-    local.writeUInt16LE(nameBuf.length, 26)
-    nameBuf.copy(local, 30)
-
-    locals.push(local, body)
-
-    const central = Buffer.alloc(46 + nameBuf.length)
-    central.writeUInt32LE(0x02014b50, 0)
-    central.writeUInt16LE(0, 10) // method: stored
-    central.writeUInt32LE(body.length, 20)
-    central.writeUInt32LE(body.length, 24)
-    central.writeUInt16LE(nameBuf.length, 28)
-    central.writeUInt32LE(offset, 42) // local header offset
-    nameBuf.copy(central, 46)
-
-    centrals.push(central)
-    offset += local.length + body.length
-  }
-
-  const centralStart = offset
-  const centralBuf = Buffer.concat(centrals)
-
-  const eocd = Buffer.alloc(22)
-  eocd.writeUInt32LE(0x06054b50, 0)
-  eocd.writeUInt16LE(entries.length, 8)
-  eocd.writeUInt16LE(entries.length, 10)
-  eocd.writeUInt32LE(centralBuf.length, 12)
-  eocd.writeUInt32LE(centralStart, 16)
-
-  return Buffer.concat([...locals, centralBuf, eocd])
-}
-
-// Like makeZip, but supports deflated (method 8) entries so a test can build a
-// decompression bomb: a small compressed payload that inflates far larger.
-function makeZipWithDeflated(entries) {
   const locals = []
   const centrals = []
   let offset = 0
@@ -63,8 +17,6 @@ function makeZipWithDeflated(entries) {
   for (const { name, data, method = 0 } of entries) {
     const nameBuf = Buffer.from(name, 'utf8')
     const raw = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8')
-    // Any non-stored method gets a real deflate stream, so a mislabelled
-    // method would still inflate if the reader didn't check it.
     const body = method === 0 ? raw : zlib.deflateRawSync(raw)
 
     const local = Buffer.alloc(30 + nameBuf.length)
@@ -151,7 +103,7 @@ test('extractThemes skips a decompression-bomb theme entry instead of inflating 
     contributes: { themes: [{ label: 'Bomb', uiTheme: 'vs-dark', path: './themes/bomb.json' }] }
   })
 
-  const zip = makeZipWithDeflated([
+  const zip = makeZip([
     { name: 'extension/package.json', data: pkg, method: 0 },
     { name: 'extension/themes/bomb.json', data: bomb, method: 8 }
   ])
@@ -172,7 +124,7 @@ test('extractThemes skips an oversized stored theme entry instead of decoding it
     contributes: { themes: [{ label: 'Big', uiTheme: 'vs-dark', path: './themes/big.json' }] }
   })
 
-  const zip = makeZipWithDeflated([
+  const zip = makeZip([
     { name: 'extension/package.json', data: pkg, method: 0 },
     { name: 'extension/themes/big.json', data: oversized, method: 0 }
   ])
@@ -193,7 +145,7 @@ test('extractThemes skips entries with an unsupported compression method', () =>
   })
 
   // Method 12 (bzip2) must not be handed to inflateRawSync as if it were deflate.
-  const zip = makeZipWithDeflated([
+  const zip = makeZip([
     { name: 'extension/package.json', data: pkg, method: 0 },
     { name: 'extension/themes/odd.json', data: '{"colors":{}}', method: 12 },
     { name: 'extension/themes/ok.json', data: '{"colors":{}}', method: 8 }
@@ -236,7 +188,7 @@ test('extractThemes bounds the total inflated bytes across theme entries', () =>
     }
   })
 
-  const zip = makeZipWithDeflated([
+  const zip = makeZip([
     { name: 'extension/package.json', data: pkg, method: 0 },
     { name: 'extension/themes/big.json', data: big, method: 8 }
   ])
@@ -257,7 +209,7 @@ test('extractThemes stops re-inflating a bomb listed many times', () => {
     }
   })
 
-  const zip = makeZipWithDeflated([
+  const zip = makeZip([
     { name: 'extension/package.json', data: pkg, method: 0 },
     { name: 'extension/b.json', data: bomb, method: 8 }
   ])

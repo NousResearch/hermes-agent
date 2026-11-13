@@ -310,3 +310,26 @@ def test_a_loss_recorded_against_a_superseded_run_is_dropped(board):
     board.conn.commit()
     record_worker_loss(policy, "managed_worker_failed", pid=1234, bound=False)
     assert count() == 1
+
+
+# --- the owner's tool feed is not the worker's own words --------------------------------
+# ``_worker_final_output`` feeds the board diagnostic and the retry worker's context. The
+# ``[tool]`` lines the owner appends to the same file are our summary of tool calls, so they
+# must never be quoted there.
+
+def test_worker_final_output_skips_tool_feed(board):
+    log = kb.worker_log_path("t_feed")
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        "I could not finish because the provider refused the request.\n"
+        "[tool] 2026-11-09 14:03:12 start terminal: rg -n needle src/\n"
+        "[tool] 2026-11-09 14:03:13 done terminal: {\"output\": \"a web page body\"}\n",
+        encoding="utf-8",
+    )
+    output = kbd._worker_final_output("t_feed")
+    assert output == "I could not finish because the provider refused the request."
+    assert "[tool]" not in output and "a web page body" not in output
+    # The dispatcher repeats the gateway's tag as a literal (it does not import the gateway), so
+    # this binds the two: a change to either would silently stop filtering the feed.
+    from gateway.session_managed_worker_log import TASK_LOG_TAG
+    assert TASK_LOG_TAG in kbd._log_noise_prefixes()

@@ -999,7 +999,7 @@ def _exit_summary_marker() -> str:
 
 def _log_noise_prefixes() -> tuple[str, ...]:
     from agent.i18n import t
-    return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
+    return ("session_id:", "Query:", t("cli.chat.initializing_agent"), "[tool]")  # TASK_LOG_TAG
 
 
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:

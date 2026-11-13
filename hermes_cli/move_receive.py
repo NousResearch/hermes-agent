@@ -463,11 +463,12 @@ def _apply_cron(home: Path, zf: zipfile.ZipFile, ctx: dict[str, Any]) -> dict[st
 def _taken_titles(home: Path) -> set[str]:
     """Titles already used here: titles are UNIQUE in ``sessions``, and one clash aborts an import."""
     import sqlite3
+    from hermes_cli.sqlite_safe_read import connect_tracked
     db_path = home / "state.db"
     if not db_path.is_file():
         return set()
     try:
-        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        con = connect_tracked(f"file:{db_path}?mode=ro", tracking_path=db_path, uri=True)
         try:
             return {row[0] for row in con.execute("SELECT title FROM sessions WHERE title IS NOT NULL")}
         finally:

@@ -31,7 +31,7 @@ from hermes_constants import (
 )
 from hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
-from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read
+from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
 
 logger = logging.getLogger(__name__)
 
@@ -680,11 +680,7 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
-    # Full ``profile.yaml`` ``ui_meta`` block, verbatim. Bot Mode reads
-    # ``ui_meta['hermes-bots'].sectionId/.sectionName`` from here: without it the
-    # Desktop's fleet enumeration (connection-registry.profileMetadataFromApiProfiles)
-    # has no section to attach, so every bot on a SECONDARY connection renders under
-    # "Unassigned" even though its profile.yaml carries the section.
+    # Only ``{"hermes-bots": {...}}``: other plugins' ui_meta (group-chat logs, images) stays off rosters.
     ui_meta: dict = field(default_factory=dict)
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
@@ -883,26 +879,22 @@ def read_profile_meta(profile_dir: Path) -> dict:
     corrupt file on one profile must not break ``hermes profile list``."""
     def _read() -> dict:
         data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
-        ui_meta = data.get("ui_meta")
-        bot_title = ""
-        if isinstance(ui_meta, dict):
-            hermes_bots = ui_meta.get("hermes-bots")
-            if isinstance(hermes_bots, dict):
-                bot_title = str(hermes_bots.get("title") or "").strip()
+        ui_meta = data.get("ui_meta") if isinstance(data.get("ui_meta"), dict) else {}
+        bots = ui_meta.get("hermes-bots") if isinstance(ui_meta.get("hermes-bots"), dict) else {}
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
-            "bot_title": bot_title,
-            # Verbatim ui_meta: Bot Mode sections live here (see ProfileInfo.ui_meta).
-            "ui_meta": dict(ui_meta) if isinstance(ui_meta, dict) else {},
+            "bot_title": str(bots.get("title") or "").strip(),
+            "ui_meta": json_safe_dumps({"hermes-bots": bots} if bots else {}),
             "previous_names": _clean_previous_names(data.get("previous_names")),
         }
 
-    # A copy per caller (list included): the cached value is shared, and a caller that mutates
-    # its result must not poison the next reader.
+    # A copy per caller (list and ui_meta included): the cached value is shared, and a caller that
+    # mutates its result must not poison the next reader.
     meta = dict(_cached_profile_read(profile_dir / "profile.yaml", "profile-meta", _read))
     meta["previous_names"] = list(meta["previous_names"])
+    meta["ui_meta"] = json.loads(meta["ui_meta"])
     return meta
 
 

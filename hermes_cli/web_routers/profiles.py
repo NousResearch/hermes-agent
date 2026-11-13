@@ -91,10 +91,7 @@ def _profile_to_dict(info) -> dict[str, Any]:
         "description_auto": bool(attr("description_auto", False)),
         "display_name": attr("display_name", "") or "",
         "bot_title": attr("bot_title", "") or "",
-        # Bot Mode reads sections from here. The Desktop's fleet enumeration
-        # (electron/connection-registry.ts profileMetadataFromApiProfiles) only attaches
-        # section metadata to a SECONDARY connection when this field is present, so
-        # omitting it makes every bot on that connection render as "Unassigned".
+        # The Desktop's roster of a SECONDARY connection takes Bot Mode sections from here.
         "ui_meta": attr("ui_meta", {}) or {},
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),

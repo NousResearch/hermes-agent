@@ -148,9 +148,7 @@ async def test_typed_answer_from_a_discord_interaction_is_unadmitted(gateway, ki
         clear_session_vars(tokens)
     event = MessageEvent(text="red", source=SessionSource(
         platform=Platform.DISCORD, chat_id=THREAD, chat_type="thread", thread_id=THREAD, user_id=sender,
-        delivered_via_upstream_relay=True))
-    if relayed_interaction:
-        event._unadmitted_author = True
+        delivered_via_upstream_relay=True), unadmitted_author=relayed_interaction)
     try:
         if kind == "slash_confirm":
             refusal = runner._refused_slash_confirm(event, session_key, "cf1")
@@ -161,3 +159,50 @@ async def test_typed_answer_from_a_discord_interaction_is_unadmitted(gateway, ki
         clarify_gateway.clear_session(session_key)
 
     assert (refusal is not None) is refused
+
+
+@pytest.mark.asyncio
+async def test_a_pre_gateway_dispatch_rewrite_keeps_the_interaction_unadmitted(gateway, monkeypatch):
+    """A plugin hook that rewrites the text (here: to the same text) replaces the event with a copy;
+    the copy still answers only as the unadmitted sender."""
+    from hermes_cli.plugins import get_plugin_manager
+    from tests.waiting import async_wait_until
+
+    async def rewrite(event, **_kwargs):
+        return {"action": "rewrite", "text": event.text}
+
+    manager = get_plugin_manager()
+    monkeypatch.setattr(manager, "_discovered", True)
+    monkeypatch.setattr(manager, "_hooks", {**manager._hooks, "pre_gateway_dispatch": [rewrite]})
+    runner, transport, adapter = gateway
+    entry = _alice_approval(_thread_session_key(runner))
+    replies = adapter.send.await_count
+
+    await transport._handle_frame(json.dumps(_frame(2, "mallory", {"name": "approve"})))
+
+    await async_wait_until(lambda: adapter.send.await_count > replies, timeout=10)
+    assert entry.result is None
+
+
+@pytest.mark.parametrize("interaction_first", [True, False])
+def test_a_merge_with_an_interaction_stays_unadmitted_in_either_order(interaction_first):
+    """Busy-ingress coalescing (``merge_pending_message_event``) and the text debounce
+    (``absorb_reply_expected``) fold two inputs into one event: one unadmitted input taints it."""
+    from gateway.approval_actor import answer_admitted
+    from gateway.config import Platform
+    from gateway.platforms.base import merge_pending_message_event
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+
+    def make(text, unadmitted):
+        return MessageEvent(text=text, unadmitted_author=unadmitted, source=SessionSource(
+            platform=Platform.DISCORD, chat_id=THREAD, chat_type="thread", user_id="mallory"))
+
+    first, second = (make("injected", True), make("ordinary", False))[::1 if interaction_first else -1]
+    pending = {"k": first}
+    merge_pending_message_event(pending, "k", second, merge_text=True)
+    assert pending["k"] is first and answer_admitted(first) is False
+
+    head, tail = (make("injected", True), make("ordinary", False))[::1 if interaction_first else -1]
+    head.absorb_reply_expected(tail)
+    assert answer_admitted(head) is False

@@ -1,5 +1,7 @@
 """Shared production Python inventory and reasoned line markers for CI guards."""
 from __future__ import annotations
+import io
+import tokenize
 import re
 import subprocess
 from pathlib import Path
@@ -8,11 +10,16 @@ SCAN_TREES = ("agent", "cron", "gateway", "hermes_cli", "plugins", "tools", "tui
 SCAN_ROOT_FILES = ("cli.py", "run_agent.py", "hermes_state.py", "utils.py", "hermes_constants.py")
 SKIP_PARTS = {"tests", "__pycache__", "evals", "node_modules"}
 
-def marked(src_lines: list[str], lineno: int, marker: str) -> bool:
+def comment_lines(text: str, marker: str) -> set[int]:
     pattern = re.compile(re.escape(marker) + r"\s*(?:—|-+)\s*\S")
-    here = src_lines[lineno - 1] if lineno - 1 < len(src_lines) else ""
-    above = src_lines[lineno - 2] if lineno >= 2 else ""
-    return bool(pattern.search(here) or pattern.search(above))
+    return {token.start[0] for token in tokenize.generate_tokens(io.StringIO(text).readline)
+            if token.type == tokenize.COMMENT and pattern.search(token.string)}
+
+
+def marked(src_lines: list[str], lineno: int, marker: str) -> bool:
+    comments = comment_lines('\n'.join(src_lines), marker)
+    return lineno in comments or (lineno - 1 in comments and src_lines[lineno - 2].lstrip().startswith("#"))
+
 
 def tracked_files(root: Path) -> list[Path]:
     try:

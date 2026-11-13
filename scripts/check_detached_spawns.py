@@ -46,7 +46,7 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.ci.production_scan import in_scope, marked, tracked_files as _tracked_files
+from scripts.ci.production_scan import comment_lines, in_scope, marked, tracked_files as _tracked_files
 
 ROOT = Path(__file__).resolve().parent.parent
 MARKER = "detached-spawn: ok"
@@ -132,7 +132,8 @@ def scan(paths=None, root: Path | None = None) -> dict[str, list[tuple[int, str]
         except OSError:
             continue
         src = text.splitlines()
-        found = [(n, src[n - 1]) for n in detach_lines(text) if not _marked(src, n)]
+        comments = comment_lines(text, MARKER)
+        found = [(n, src[n - 1]) for n in detach_lines(text) if n not in comments and not (n - 1 in comments and src[n - 2].lstrip().startswith("#"))]
         if found:
             hits[rel] = found
     return hits

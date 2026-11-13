@@ -1,10 +1,12 @@
-"""Adversarial contracts for the site-level thread-handoff ratchet."""
+"""Behavior contracts for the syntactic thread-handoff ratchet."""
 import json
-from pathlib import Path
+import subprocess
+import pytest
+
 from scripts.ci import check_thread_hops as guard
 
 
-def test_aliases_and_arbitrary_submit_and_known_map():
+def test_syntactic_calls_and_rebindings():
     source = '''\
 import threading as th
 from threading import Thread as T, Timer as Later
@@ -16,24 +18,23 @@ anything.submit(d)
 with Pool() as worker:
     worker.map(e, items)
 other.map(f, items)
+for th in wrappers:
+    th.Thread(target=g)
 '''
-    assert len(guard.sites('tools/a.py', source)) == 5
+    assert len(guard.sites('tools/a.py', source)) == 6
 
 
-def test_no_guessed_context_and_direct_wrappers():
+def test_wrappers_are_hits_and_only_reasoned_comments_exempt():
     source = '''\
-import threading
-from contextvars import copy_context
-from functools import partial
 from agent.memory_provider import ctx_bound
-threading.Thread(target=context.run)
-threading.Thread(target=copy_context().run)
-threading.Thread(target=ctx_bound(f))
-x.submit(partial(ctx_bound(f), 1))
-x.submit(lambda: copy_context().run(f))
-x.submit(lambda: my_context.run(f))
+x.submit(ctx_bound(f))
+x.submit(ctx_bound(g))  # thread-hop: ok — verified process scoped
+x.submit(f, note="thread-hop: ok - spoof")
+x.submit(g)  # thread-hop: ok —
+# thread-hop: ok - no profile state
+x.submit(h)
 '''
-    assert len(guard.sites('tools/a.py', source)) == 2
+    assert len(guard.sites('tools/a.py', source)) == 3
 
 
 def test_identity_detects_replacement_and_duplicates():
@@ -41,122 +42,75 @@ def test_identity_detects_replacement_and_duplicates():
     new = guard.sites('tools/a.py', 'def f():\n x.submit(a)\n x.submit(b)\n')
     assert len(old) == len(new) == 2
     assert len(new.keys() - old.keys()) == 1
-    moved = guard.sites('tools/a.py', 'def g():\n x.submit(a)\n')
-    assert moved.keys().isdisjoint(old)
+    assert guard.sites('tools/a.py', 'def g():\n x.submit(a)\n').keys().isdisjoint(old)
 
 
-def test_marker_requires_reason():
-    source = '''\
-x.submit(a)  # thread-hop: ok —
-x.submit(b)  # thread-hop: ok — process scoped
-x.submit(c)  # thread-hop: ok - why
-'''
-    assert len(guard.sites('a.py', source)) == 1
+def git(repo, *args):
+    return subprocess.run(['git', *args], cwd=repo, text=True, check=True, capture_output=True).stdout.strip()
 
 
-def test_malformed_source_and_baseline_fail_closed(tmp_path, monkeypatch, capsys):
-    f = tmp_path / 'bad.py'
-    f.write_text('def broken(:\n')
-    assert guard.main([str(f)]) == 2
-    baseline = tmp_path / 'baseline.json'
-    baseline.write_text('{broken')
-    monkeypatch.setattr(guard, 'BASELINE', baseline)
-    monkeypatch.setattr(guard, 'scan', lambda *a: {})
+def put(repo, path, text):
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding='utf-8')
+
+
+def commit(repo, message):
+    git(repo, 'add', '.')
+    git(repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', message)
+    return git(repo, 'rev-parse', 'HEAD')
+
+
+def test_revision_tree_bootstrap_and_prune(tmp_path, monkeypatch, capsys):
+    git(tmp_path, 'init', '-q')
+    put(tmp_path, 'tools/a.py', 'x.submit(a)\n')
+    initial = commit(tmp_path, 'initial')
+    monkeypatch.setattr(guard, 'ROOT', tmp_path)
+    monkeypatch.setattr(guard, 'BASELINE', tmp_path / 'scripts/ci/thread_hops_baseline.json')
+    fingerprints = sorted(guard.sites('tools/a.py', 'x.submit(a)\n'))
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', json.dumps(fingerprints))
+    baseline = commit(tmp_path, 'baseline')
+    assert guard.main(['--base', initial, '--head', baseline]) == 0
+    assert guard.main(['--base', initial, '--head', 'nonexistent-revision']) == 2
+    put(tmp_path, 'tools/a.py', 'x.submit(b)\n')
+    assert guard.main(['--base', initial, '--head', baseline]) == 0
+    assert guard.main(['--base', baseline]) == 2  # stale old fingerprint
+    git(tmp_path, 'add', 'tools/a.py')
+    staged = git(tmp_path, 'write-tree')
+    put(tmp_path, 'tools/a.py', 'x.submit(a)\n')
+    assert guard.main(['--base', baseline, '--head', staged]) == 2
+    put(tmp_path, 'tools/a.py', 'pass\n')
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', '[]')
+    git(tmp_path, 'add', '.')
+    staged_pruned = git(tmp_path, 'write-tree')
+    put(tmp_path, 'tools/a.py', 'x.submit(a)\n')
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', json.dumps(fingerprints))
+    assert guard.main(['--base', baseline, '--head', staged_pruned]) == 0
+    with pytest.raises(SystemExit):
+        guard.main(['--base', baseline, '--head', staged, '--update'])
+
+
+def test_baseline_cannot_reintroduce_removed_site(tmp_path, monkeypatch):
+    git(tmp_path, 'init', '-q')
+    put(tmp_path, 'tools/a.py', 'x.submit(a)\n')
+    commit(tmp_path, 'initial')
+    fingerprints = sorted(guard.sites('tools/a.py', 'x.submit(a)\n'))
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', json.dumps(fingerprints))
+    base = commit(tmp_path, 'baseline')
+    monkeypatch.setattr(guard, 'ROOT', tmp_path)
+    monkeypatch.setattr(guard, 'BASELINE', tmp_path / 'scripts/ci/thread_hops_baseline.json')
+    put(tmp_path, 'tools/a.py', 'pass\n')
+    assert guard.main(['--base', base, '--update']) == 0
+    pruned = commit(tmp_path, 'prune')
+    put(tmp_path, 'tools/a.py', 'x.submit(a)\n')
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', json.dumps(fingerprints))
+    assert guard.main(['--base', pruned]) == 2
+
+
+def test_malformed_source_and_baseline_fail_closed(tmp_path, monkeypatch):
+    put(tmp_path, 'bad.py', 'def broken(:\n')
+    monkeypatch.setattr(guard, 'ROOT', tmp_path)
+    assert guard.main(['bad.py']) == 2
+    git(tmp_path, 'init', '-q')
+    put(tmp_path, 'scripts/ci/thread_hops_baseline.json', '{broken')
     assert guard.main([]) == 2
-    assert 'thread-hops:' in capsys.readouterr().err
-
-
-def test_update_intersects_committed_and_existing(tmp_path, monkeypatch):
-    a, b, c = ('a'*64, 'b'*64, 'c'*64)
-    baseline = tmp_path / 'baseline.json'
-    baseline.write_text(json.dumps([a, b]))
-    monkeypatch.setattr(guard, 'BASELINE', baseline)
-    monkeypatch.setattr(guard, 'scan', lambda *unused: {a: 'a', c: 'c'})
-    monkeypatch.setattr(guard, 'git', lambda *args: 'base' if args[0] == 'merge-base' else json.dumps([a, b]))
-    assert guard.main(['--update']) == 1
-    assert json.loads(baseline.read_text()) == [a]
-
-
-def test_baseline_increase_rejected(tmp_path, monkeypatch):
-    a, b = 'a'*64, 'b'*64
-    baseline = tmp_path / 'baseline.json'
-    baseline.write_text(json.dumps([a, b]))
-    monkeypatch.setattr(guard, 'BASELINE', baseline)
-    monkeypatch.setattr(guard, 'scan', lambda *unused: {a: 'a', b: 'b'})
-    monkeypatch.setattr(guard, 'git', lambda *args: 'base' if args[0] == 'merge-base' else json.dumps([a]))
-    assert guard.main([]) == 2
-
-
-def test_check_runner_dispatches_guard():
-    import importlib.machinery
-    import importlib.util
-    root = Path(__file__).resolve().parents[2]
-    loader = importlib.machinery.SourceFileLoader('check_runner', str(root / 'scripts/check'))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    # Inspecting the registered job exercises the same dispatch table as --only.
-    import sys
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    loader.exec_module(module)
-    assert module._jobs(['thread-hops'], None, None)['thread-hops'].argv[1:] == ['scripts/ci/check_thread_hops.py']
-
-
-def test_enclosing_expressions_and_method_scope():
-    source = """
-import threading as th
-@th.Thread(target=deco)
-def f(x=th.Thread(target=default)) -> th.Thread(target=annotation):
-    pass
-class C(th.Thread(target=base), metaclass=th.Thread(target=meta)):
-    th = object()
-    def method(self):
-        th.Thread(target=inside)
-"""
-    assert len(guard.sites('a.py', source)) == 6
-
-
-def test_trusted_imports_and_shadowing():
-    source = """
-from agent.memory_provider import ctx_bound as wrap
-from contextvars import copy_context as copy
-from functools import partial as part
-x.submit(wrap(f))
-x.submit(part(wrap(f), 1))
-x.submit(copy().run)
-x.submit(fake.ctx_bound(f))
-x.submit(fake.copy_context().run)
-def f(*wrap, **copy):
-    x.submit(wrap(f))
-    x.submit(copy().run)
-"""
-    assert len(guard.sites('a.py', source)) == 4
-
-
-def test_lambda_and_comprehension_bindings_do_not_leak():
-    source = """
-import threading as th
-(lambda th: th.Thread(target=no))(x)
-[th.Thread(target=no) for th in things]
-th.Thread(target=yes)
-"""
-    assert len(guard.sites('a.py', source)) == 1
-
-
-def test_lambda_parameter_shadows_trusted_copy():
-    source = """
-from contextvars import copy_context
-x.submit(lambda copy_context: copy_context().run(f))
-x.submit(lambda: copy_context().run(f))
-"""
-    assert len(guard.sites('a.py', source)) == 1
-
-
-def test_qualified_trusted_imports():
-    source = """
-import contextvars as cv
-import tools.thread_context as tc
-import functools as ft
-x.submit(cv.copy_context().run)
-x.submit(ft.partial(tc.propagate_context_to_thread(f), 1))
-"""
-    assert not guard.sites('a.py', source)

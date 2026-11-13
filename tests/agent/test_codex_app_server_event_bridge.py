@@ -326,24 +326,25 @@ def test_real_progress_keeps_watchdog_alive_but_silence_still_aborts(monkeypatch
     abort.assert_called_once()
 
 
-def test_hermes_tool_display_args_are_redacted_but_execution_args_are_not():
-    """#72298: a secret typed by a Hermes tool run through the hermes-tools MCP server must be
-    masked in every display callback, exactly like the native tool-progress path."""
-    from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+@pytest.mark.parametrize("completion_only", [False, True])
+def test_native_command_secret_is_redacted_in_display_but_not_execution(monkeypatch, completion_only):
+    """#72298: an API key in a native codex command must be masked in the progress preview and both
+    tool cards (including completion-only items), while the raw item that codex executes stays intact."""
+    from agent import redact
 
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", True)
     secret = "sk-ant-api03-" + "A1b2C3d4E5" * 4
     agent = _make_stub_agent()
     agent.tool_start_callback = MagicMock(name="tool_start_callback")
     agent.tool_complete_callback = MagicMock(name="tool_complete_callback")
-    item = {"type": "mcpToolCall", "id": "mcp-1", "server": HERMES_TOOLS_MCP_SERVER_NAME,
-            "tool": "browser_type", "arguments": {"ref": "@e3", "text": secret}}
+    item = {"type": "commandExecution", "id": "cmd", "command": "echo " + secret, "cwd": ".", "exitCode": 0}
     bridge = make_codex_app_server_event_bridge(agent)
-    bridge(_item_started(item))
-    bridge(_item_completed({**item, "result": {"ok": True}}))
+    if not completion_only:
+        bridge(_item_started(item))
+    bridge(_item_completed(item))
 
     shown = [repr(c) for cb in (agent.tool_progress_callback, agent.tool_start_callback,
                                 agent.tool_complete_callback) for c in cb.call_args_list]
-    assert agent.tool_start_callback.call_args.args[1] == "browser_type"
-    assert agent.tool_start_callback.call_args.args[2]["ref"] == "@e3"
+    assert agent.tool_complete_callback.call_args.args[2]["command"].startswith("echo ")
     assert all(secret not in s for s in shown), shown
-    assert item["arguments"]["text"] == secret
+    assert item["command"] == "echo " + secret

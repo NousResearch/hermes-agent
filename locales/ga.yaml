@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Níorbh fhéidir an ceangaltán {kind} a sheachadadh ({file_name})."
     delivery_failed_retry: "⚠️ Theip ar sheachadadh na teachtaireachta tar éis roinnt iarrachtaí. Bain triail eile as le do thoil — próiseáladh d'iarratas ach níorbh fhéidir an freagra a sheoladh."
     plain_fallback_prefix: "(Theip ar fhormáidiú an fhreagra, gnáth-théacs:)\n\n{content}"
-    turn_error_no_details: "níl aon sonraí ar fáil"
-    turn_error_detailed: "Ár leithscéal, tháinig earráid orm ({error_type}).\n{error_detail}\nBain triail eile as nó úsáid /reset chun seisiún úr a thosú."
     turn_error: "Ár leithscéal, tháinig earráid orm."
     context_injection_refused: "Diúltaíodh d'insteallta comhthéacs."
     no_home_channel: "📬 Níl aon chainéal baile socraithe do {platform}. Is é an cainéal baile an áit a seachadann Hermes torthaí tascanna cron agus teachtaireachtaí trasardáin.\n\nClóscríobh {sethome_cmd} chun an comhrá seo a dhéanamh mar chainéal baile, nó déan neamhaird de chun é a fhágáil ar lár."

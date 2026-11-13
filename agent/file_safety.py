@@ -48,6 +48,20 @@ def _hermes_dirs() -> list[Path]:
     return list(dict.fromkeys(_resolve_each((_hermes_home_path(), _hermes_root_path()))))
 
 
+def _profile_homes() -> list[Path]:
+    """Resolved ``<root>/profiles/<name>`` homes, active or not."""
+    with suppress(OSError):
+        return _resolve_each(p for p in (_hermes_root_path() / "profiles").iterdir() if p.is_dir())
+    return []
+
+
+def _credential_store_dirs() -> list[Path]:
+    """``_hermes_dirs()`` plus every named profile home. A sibling profile's auth.json,
+    .env or mcp-tokens/ is as much a credential store as the active one's, but the agent
+    has no business reading or rewriting it from this profile (#37617, #46411)."""
+    return list(dict.fromkeys([*_hermes_dirs(), *_profile_homes()]))
+
+
 def _resolve_each(paths) -> list[Path]:
     """``p.resolve()`` for each path, skipping ones that fail to resolve."""
     out: list[Path] = []
@@ -236,8 +250,8 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Secret material under HERMES_HOME, on both the active profile and the global
-    # root: overwriting the root .env leaks credentials across every profile that
+    # Secret material under HERMES_HOME, on the active profile, every sibling profile
+    # and the global root: overwriting the root .env leaks credentials across every profile that
     # inherits it, and the root Anthropic PKCE store is still read by default /
     # non-profile sessions when a profile is active. google_oauth.json is an OAuth
     # token store; SECRET_CACHE_STORES hold secret values and the Photon sidecar token.
@@ -253,7 +267,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
-        *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
+        *(str(base / f) for base in _credential_store_dirs() for f in hermes_files),
         "/etc/sudoers", "/etc/passwd", "/etc/shadow",
     ]
     return {os.path.realpath(p) for p in paths}
@@ -349,7 +363,7 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     ):
         return "credential"
 
-    for base in _hermes_dirs():
+    for base in _credential_store_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
@@ -431,7 +445,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
     Blocked: internal skill-hub caches (prompt-injection carriers), credential
-    stores under HERMES_HOME and the global root (exact files, plus anything
+    stores under HERMES_HOME, every profile home and the global root (exact files, plus anything
     under ``mcp-tokens/``, ``browser-profile/``, ``vault/`` and ``webapp/``), and project-local ``.env``
     files anywhere on disk (``.env.example`` is the documented-shape substitute).
 
@@ -451,7 +465,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     local = local_drive_spelling(path)
     lexical = sandbox_lexical_path(local)
     resolved = Path(lexical) if lexical is not None else Path(local).expanduser().resolve()
-    hermes_dirs = _hermes_dirs()
+    hermes_dirs = _credential_store_dirs()
     reason = None
     if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
         reason = (

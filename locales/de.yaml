@@ -647,8 +647,6 @@ gateway:
     media_delivery_failed_with_name: "⚠️ Der {kind}-Anhang ({file_name}) konnte nicht zugestellt werden."
     delivery_failed_retry: "⚠️ Die Zustellung der Nachricht ist nach mehreren Versuchen fehlgeschlagen. Bitte versuchen Sie es erneut — Ihre Anfrage wurde verarbeitet, aber die Antwort konnte nicht gesendet werden."
     plain_fallback_prefix: "(Formatierung der Antwort fehlgeschlagen, Klartext:)\n\n{content}"
-    turn_error_no_details: "keine Details verfügbar"
-    turn_error_detailed: "Entschuldigung, es ist ein Fehler aufgetreten ({error_type}).\n{error_detail}\nVersuchen Sie es erneut oder verwenden Sie /reset für eine neue Sitzung."
     turn_error: "Entschuldigung, es ist ein Fehler aufgetreten."
     context_injection_refused: "Kontext-Injektion abgelehnt."
     no_home_channel: "📬 Für {platform} ist kein Home-Kanal festgelegt. Im Home-Kanal liefert Hermes Cron-Job-Ergebnisse und plattformübergreifende Nachrichten ab.\n\nGeben Sie {sethome_cmd} ein, um diesen Chat zu Ihrem Home-Kanal zu machen, oder ignorieren Sie dies, um zu überspringen."

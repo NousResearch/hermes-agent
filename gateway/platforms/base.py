@@ -3810,12 +3810,12 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         return bool(done and done())
 
     def _heal_stale_session_lock(self, session_key: str) -> bool:
-        """Clear a stale session lock; True if healed. On-entry safety net: without it a split-brain
-        (guard held, nothing processing) traps the chat in "Interrupting..." until restart."""
-        if session_key not in self._active_sessions or not self._session_task_is_stale(session_key):
+        """Clear a stale session lock (split-brain: guard held, nothing processing); True if healed."""
+        from gateway.platforms.base_session_command import command_in_flight  # it settles its own guard
+        if ((guard := self._active_sessions.get(session_key)) is None
+                or not self._session_task_is_stale(session_key) or command_in_flight(guard)):
             return False
-        logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
-                       self.name, session_key)
+        logger.warning("[%s] Healing stale session lock for %s (owner task done/absent)", self.name, session_key)
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
         self._requeue_counts.pop(session_key, None)
@@ -3890,27 +3890,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             self._start_session_processing(pending_event, session_key)
 
     async def _dispatch_active_session_command(self, event: MessageEvent, session_key: str, cmd: str) -> None:
-        """Dispatch a reset-like bypass command (/stop, /new, /reset): keep a guard installed while
-        the runner handles it (follow-ups stay queued), cancel the old task AFTER the response,
-        drain once."""
-        logger.debug("[%s] Command '/%s' bypassing active-session guard for %s", self.name, cmd, session_key)
-        current_guard = self._active_sessions.get(session_key)
-        command_guard = asyncio.Event()
-        self._active_sessions[session_key] = command_guard
-        try:
-            # Send BEFORE cancelling so cancellation side effects can't drop the "/new"
-            # confirmation.
-            await self._dispatch_inline_reply(event, log_cmd=cmd)
-            await self.cancel_session_processing(session_key, release_guard=False, discard_pending=False)
-        except Exception:
-            # On failure restore the original guard so the session isn't left half-reset.
-            if self._active_sessions.get(session_key) is command_guard:
-                if session_key in self._session_tasks and current_guard is not None:
-                    self._active_sessions[session_key] = current_guard
-                else:
-                    self._release_session_guard(session_key, guard=command_guard)
-            raise
-        await self._drain_pending_after_session_command(session_key, command_guard)
+        """/stop, /new, /reset on a busy session: cancel only on the runner's verdict (#136759)."""
+        from gateway.platforms.base_session_command import dispatch_active_session_command
+        await dispatch_active_session_command(self, event, session_key, cmd)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
@@ -3983,21 +3965,16 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             from gateway.session_ingress_burst import dispatch_busy_burst
             await dispatch_busy_burst(self, event, session_key)  # main's photo/text burst merge
             return
-        # Bypass commands run inline: queued they'd leak as user text (/new) or deadlock
-        # (/approve, /deny — the agent is blocked on Event.wait).  Dispatch inline by
-        # calling the message handler directly and sending the response.  Do NOT use
-        # _process_message_background — it manages session lifecycle and its cleanup
-        # races with the running task (split-brain, see PR #4926).
-        # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
-        # runner. Without this, they are queued as pending messages and either: See #4926.
-        self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
+        # Bypass commands run inline (queued, /new would leak as user text and /approve, /deny deadlock on
+        # Event.wait); never via _process_message_background, whose cleanup races the running task (#4926).
+        src = event.source
+        self._canonicalize(src)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):
             try:
-                # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
+                # /stop, /new, /reset: response, then cancel + drain only if the runner accepted it.
                 if cmd and is_interrupt_then_dispatch(cmd):
-                    self._discard_text_debounce(session_key)
                     await self._dispatch_active_session_command(event, session_key, cmd)
                 else:
                     logger.debug("[%s] Command '/%s' bypassing active-session guard for %s",
@@ -4253,12 +4230,11 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
-            error_detail = str(e)[:300] if str(e) else t("gateway.notify.turn_error_no_details")
             # Only the policy reads bind the routed profile; the send stays in the launch scope
             # as before, so delivery bookkeeping keeps landing where boot-time recovery reads it.
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
-                    t("gateway.notify.turn_error_detailed", error_type=type(e).__name__, error_detail=error_detail),
+                    t("gateway.errors.generic_failed"),  # raw exception text can carry credentials (logged above)
                     t("gateway.notify.turn_error"),
                     logical_platform=event.source.platform, chat_id=event.source.chat_id, metadata=_thread_metadata)
             if content is None:
@@ -4394,9 +4370,9 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if result is not None:
                 delivery_attempted = True
                 delivery_succeeded = delivery_succeeded or bool(getattr(result, "success", False))
-        # Reuse the interrupt event handle_message() installed; new Event only if removed externally.
-        interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
-        self._active_sessions[session_key] = interrupt_event
+        from gateway.platforms.base_session_command import guard_under_commands  # the guard it was scheduled under
+        interrupt_event = guard_under_commands(self._active_sessions.get(session_key)) or asyncio.Event()
+        self._active_sessions.setdefault(session_key, interrupt_event)  # an in-flight command keeps its own
         _thread_metadata = _thread_metadata_for_event(event)
         _typing_metadata = typing_metadata_for_turn(  # fixed now: a later inbound must not move it
             self, event.source.chat_id, _reply_anchor_for_event(event), _thread_metadata)

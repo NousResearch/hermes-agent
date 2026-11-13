@@ -47,6 +47,10 @@ _CHECKOUT_HEURISTICS = (
     (re.compile(r"\b(?:zip|postal|postcode)\b"), "postal-code"),
     (re.compile(r"\b(?:country)\b"), "country-name"),
 )
+# "Issue date (MM / YY)" / "Start date" / "Valid from" fields (Maestro and some debit cards) share
+# the expiry's MM/YY shape but are not the expiry.
+_RE_NOT_EXPIRY = re.compile(r"\b(?:issue(?:d)?|start(?:s)?|valid\s*(?:from|since))\b")
+_RE_EXPLICIT_EXPIRY = re.compile(r"\b(?:exp(?:iry|iration)?|valid\s*thru)\b")
 
 _EXCLUDED_AUTOCOMPLETE = {"new-password", "one-time-code"}
 
@@ -187,9 +191,18 @@ def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLogin
             return ClassifiedLoginControl(control, 100, "country-name" if token == "country" else token)
     if control.type in ("password", "email"):
         return None
-    searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+    raw_text = " ".join(part for part in (control.name, control.label) if part)
+    searchable = _normalize_text(raw_text)
+    date_words = _normalize_text(re.sub(r"([a-z])([A-Z])", r"\1 \2", raw_text))
+    label_words = _normalize_text(control.label)
+    expiry = _RE_EXPLICIT_EXPIRY.search(label_words)
+    other_date = _RE_NOT_EXPIRY.search(label_words)
+    explicit_expiry = expiry is not None and (other_date is None or expiry.start() < other_date.start())
     for pattern, token in _CHECKOUT_HEURISTICS:
         if pattern.search(searchable):
+            if (token.startswith("cc-exp") and _RE_NOT_EXPIRY.search(date_words)
+                    and not explicit_expiry):
+                return None
             return ClassifiedLoginControl(control, 70, token)
     return None
 

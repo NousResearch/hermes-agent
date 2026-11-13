@@ -537,7 +537,7 @@ def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
 
 def _resolve_codex_usage_credentials(
     base_url: Optional[str], api_key: Optional[str], *, force_refresh: bool = False,
-) -> tuple[str, str, Optional[str]]:
+) -> Optional[tuple[str, str, Optional[str]]]:
     """Codex quota credentials: explicit live-agent creds → native runtime resolver (itself pool-aware) → direct
     pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
     explicit_key = str(api_key or "").strip()
@@ -583,7 +583,7 @@ def _resolve_codex_usage_credentials(
     from agent.credential_pool import load_pool
     entry = load_pool("openai-codex").select()
     if entry is None:
-        raise RuntimeError("No available openai-codex credential in credential pool")
+        return None  # no credential anywhere: the fetchers' "nothing to report" contract, not a failure
     # Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).
     return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
 
@@ -674,7 +674,10 @@ def _fetch_codex_account_usage_read_only(
 def _fetch_codex_account_usage_impl(
     base_url: Optional[str] = None, api_key: Optional[str] = None, *, read_only: bool = False,
 ) -> Optional[AccountUsageSnapshot]:
-    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
+    resolved = _resolve_codex_usage_credentials(base_url, api_key)
+    if resolved is None:
+        return None
+    token, resolved_base_url, account_id = resolved
     try:
         payload = _get_json(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
@@ -685,9 +688,12 @@ def _fetch_codex_account_usage_impl(
         if read_only:
             # Never refresh/rotate on the picker's read-only path — surface the failure.
             raise
-        token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
+        resolved = _resolve_codex_usage_credentials(
             base_url, api_key, force_refresh=True,
         )
+        if resolved is None:
+            return None
+        token, resolved_base_url, account_id = resolved
         payload = _get_json(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
         )
@@ -941,10 +947,30 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
     return None if bounded.timed_out else bounded.value
 
 
+def describe_fetch_error(exc: BaseException) -> str:
+    """Short, non-secret cause of a failed usage fetch.
+
+    httpx errors keep their message (they carry the cause: ``HTTP 401``, ``ConnectError``, and
+    every built-in fetcher's network failure is one). Any other exception — a plugin hook's, say,
+    including an ``OSError`` — contributes only its class name, so arbitrary text (an opaque
+    credential the redactor cannot recognize) never reaches the log or the CLI."""
+    from agent.redact import redact_sensitive_text
+    name = type(exc).__name__
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"{name}: HTTP {exc.response.status_code} {exc.response.reason_phrase}".rstrip()
+    if isinstance(exc, httpx.HTTPError):
+        return f"{name}: {redact_sensitive_text(str(exc), force=True)}"
+    return name
+
+
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
     read_only: bool = False, identity_id: Optional[str] = None,
+    on_error: Optional[Callable[[BaseException], None]] = None,
 ) -> Optional[AccountUsageSnapshot]:
+    """Snapshot for *provider*, or None: no credential, no usage endpoint, or an exception from
+    the fetch (fail-open — ``/usage`` shows nothing rather than breaking a turn). ``on_error``
+    receives that exception so a CLI surface can name the cause; it never changes the return."""
     from agent.account_usage_cache import remember_account_usage
 
     slug = str(provider or "").strip().lower()
@@ -964,7 +990,14 @@ def fetch_account_usage(
 
             profile = get_provider_profile(slug)
             snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
-    except Exception:
+    except Exception as exc:
+        # No handler means logging setup failed: lastResort would add a second stderr line to the
+        # CLI's one-line contract, while the caller still gets the cause through ``on_error``.
+        if logger.hasHandlers():
+            logger.warning("Account usage fetch failed for provider %r: %s",
+                           slug or "<configured>", describe_fetch_error(exc))
+        if on_error is not None:
+            on_error(exc)
         return None
     # Every fetch (``/usage``, the per-turn ``session.usage``) keeps the picker's cache current.
     # A per-credential fetch is remembered under its account slot only; the provider-wide fetch

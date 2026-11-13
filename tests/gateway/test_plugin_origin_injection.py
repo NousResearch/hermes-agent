@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
@@ -38,7 +38,7 @@ class _RecordingAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
         from hermes_agent.agent.secret_scope import get_secret
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         self.sent.append((str(chat_id), content))
         self.send_scopes.append((get_hermes_home(), get_secret("PROBE_MARKER")))
         return SendResult(success=True, message_id=str(len(self.sent)))
@@ -99,7 +99,7 @@ def gateway(tmp_path, monkeypatch):
 
     async def _fake_turn(message, context_prompt, history, source, session_id, **_kwargs):
         from hermes_agent.agent.secret_scope import get_secret
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         turns.append(SimpleNamespace(message=message, history=list(history), session_id=session_id,
                                      home=get_hermes_home(), marker=get_secret("PROBE_MARKER")))
         return {"final_response": f"reply-{len(turns)}", "messages": [], "tools": [],

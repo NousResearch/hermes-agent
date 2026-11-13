@@ -231,7 +231,7 @@ def _receipt_dir() -> Path:
     # writable from the refused/failed paths where config loading itself may be what broke
     # (#112465, #112558). The ROOT home, never a sticky profile's: an update mutates the
     # checkout every profile shares, and the Desktop and the hand-off scripts read the root.
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     return get_default_hermes_root() / "logs" / "update_receipts"
 
@@ -241,7 +241,7 @@ def _receipt_dirs() -> list[Path]:
     writes its sync receipts to ``get_hermes_home()`` and receipts from before the root move live
     there too, so readers take both and writers mirror ``latest.json`` into it (``hermes -p <name>
     pm status`` reads only that one)."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     root, profile = _receipt_dir(), get_hermes_home() / "logs" / "update_receipts"
     return [root] if profile.resolve() == root.resolve() else [root, profile]
@@ -804,7 +804,7 @@ def _bare_collection_enabled() -> Optional[bool]:
     enabled = _collection_enabled_now()
     if enabled is not None:
         return enabled
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     try:
         (get_hermes_home() / "config.yaml").stat()  # config-reader: ok — bare interpreter has no config stack; presence probe only
@@ -819,7 +819,7 @@ def _park_metric_receipt(data: dict[str, Any], enabled: Optional[bool]) -> None:
     """Keep the bounded fields for the next Hermes start (stdlib only): ``report_pending_updates``
     records them when collection is on, ``begin_process`` purges them when it is off. Collection
     known off: park nothing and purge what an earlier run parked."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.runtime_state import _atomic_bytes
 
     pending = get_hermes_home() / "telemetry" / "shared_metrics" / "pending_updates"  # = PENDING_DIRNAME

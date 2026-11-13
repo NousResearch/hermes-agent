@@ -350,7 +350,7 @@ def test_dispatch_runs_under_the_enqueuing_profile_context(tmp_path, monkeypatch
     """#108537: the enabled re-check and the spawn must run under the contextvars captured at
     enqueue (that profile's home + secret scope), not the shared dispatcher thread's ambient ones."""
     from hermes_agent.agent import secret_scope as ss
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     ambient, on_home, off_home = (tmp_path / n for n in ("ambient", "on", "off"))
     for home, gate in ((ambient, False), (on_home, True), (off_home, False)):

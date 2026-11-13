@@ -307,7 +307,7 @@ def _default_profile_secret_scope():
     from that same home. No-op for single-profile gateways.
     """
     from hermes_agent.agent.secret_scope import is_multiplex_active, reset_secret_scope, set_secret_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     if not is_multiplex_active():

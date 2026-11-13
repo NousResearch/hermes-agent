@@ -6,7 +6,7 @@ import pytest
 @pytest.fixture()
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Route dashboard cron storage to an isolated default profile."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli import profiles
 
     default_home = get_hermes_home()
@@ -29,7 +29,7 @@ def client(monkeypatch, isolated_profiles):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(

@@ -18,7 +18,7 @@ def host_gateway(tmp_path, monkeypatch):
     locks = tmp_path / "locks"
     locks.mkdir()
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(locks))
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda: root)
     # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
     assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
     hr.publish_record(hr.ROLE_GATEWAY, profiles=("default", "coder"))
@@ -92,7 +92,7 @@ def test_topology_ignores_another_tenants_record_and_reads_the_launch_homes_stat
     argus.mkdir(parents=True)
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.setenv("HERMES_HOME", str(root_b))
-    monkeypatch.setattr("hermes_constants._default_hermes_root_memo", None)
+    monkeypatch.setattr("hermes_agent.hermes_constants._default_hermes_root_memo", None)
 
     # A live owner holds the host lock for its lifetime (run.py claims before it publishes).
     assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
@@ -130,7 +130,7 @@ def test_a_live_looking_pid_with_a_free_host_lock_is_not_the_host_gateway(tmp_pa
     root.mkdir()
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.setenv("HERMES_HOME", str(root))
-    monkeypatch.setattr("hermes_constants._default_hermes_root_memo", None)
+    monkeypatch.setattr("hermes_agent.hermes_constants._default_hermes_root_memo", None)
     monkeypatch.setattr("hermes_agent.hermes_cli.gateway_multiplex_served.live_default_gateway_pid", lambda: None)
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:

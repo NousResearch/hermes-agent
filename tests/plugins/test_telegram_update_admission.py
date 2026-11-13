@@ -159,7 +159,7 @@ async def connected(monkeypatch, *, extra=None, bot_id=111, is_reconnect=False):
 async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, kind, mode, concurrent):
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     import hermes_agent.hermes_cli.lifecycle
 
     monkeypatch.setattr(hermes_agent.hermes_cli.lifecycle, "has_hook", lambda name: True)
@@ -832,7 +832,7 @@ async def test_redelivery_to_rebuilt_adapter_is_dropped(monkeypatch, tmp_path):
     """The reconnect watcher and a gateway restart both build a new adapter, and a new PTB
     Updater polls from offset 0: Telegram resends every update whose acknowledgement never
     landed. The receipt must outlive the adapter that completed the update."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from plugins.platforms.telegram.update_admission import RECEIPT_TTL_SECONDS
 
     receipts = get_hermes_home() / "telegram_update_receipts_111.json"

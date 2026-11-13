@@ -36,7 +36,7 @@ class _StubCompressor(ContextCompressor):
     """Records every summariser call; ``gate`` holds background passes only (shared with the worker copy)."""
 
     def _generate_summary(self, turns_to_summarize, focus_topic=None, memory_context="", bypass_cooldown=False):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         worker = threading.current_thread().name == "compaction-prepare"
         if worker and self.read_seconds:
@@ -196,7 +196,7 @@ def test_turn_end_pass_skipped_where_the_session_ends_with_the_turn(agent_attrs)
 
 
 def test_pass_runs_under_the_callers_profile_scope(tmp_path):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     homes = [tmp_path / "a", tmp_path / "b", tmp_path / "a"]
     compressors = []

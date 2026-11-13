@@ -23,7 +23,7 @@ def mcp_loop():
 
 
 def test_override_propagates_to_mcp_loop(tmp_path, monkeypatch, mcp_loop):
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_hermes_home,
         reset_hermes_home_override,
         set_hermes_home_override,
@@ -61,7 +61,7 @@ def test_concurrent_scopes_do_not_interfere(tmp_path, monkeypatch, mcp_loop):
     loop must each see their own home — the wrapper is task-local."""
     import threading
 
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_hermes_home,
         reset_hermes_home_override,
         set_hermes_home_override,

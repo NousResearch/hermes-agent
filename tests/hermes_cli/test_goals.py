@@ -265,7 +265,7 @@ class TestSessionDbCacheAfterProfileDelete:
 
         from hermes_agent import hermes_state
         import hermes_agent.hermes_state_registry as registry
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_agent.hermes_cli.goals import GoalState, _get_session_db, load_goal, save_goal
 
         # conftest re-points DEFAULT_DB_PATH at one fixed file; the registry must resolve the

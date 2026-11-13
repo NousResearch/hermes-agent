@@ -164,7 +164,7 @@ def test_lock_owned_serve_pids_sees_root_home_locks_from_a_profile_home(tmp_path
     """A profile backend (``HERMES_HOME=<root>/profiles/<name>``) must still see the Desktop's SSH
     locks, which live under ``<root>/desktop-ssh`` — otherwise its reaper kills the sibling
     profile's live SSH backend on every profile switch (#89811)."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     root = tmp_path / ".hermes"
     profile_home = root / "profiles" / "flocki"

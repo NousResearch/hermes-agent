@@ -54,7 +54,7 @@ def _remote_execute_code(provider, monkeypatch, payload):
 
 
 def test_execute_code_remote_stdout_never_spills_to_host(provider, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     result = _remote_execute_code(provider, monkeypatch, "TENANT-STDOUT-PRIVATE\n" * 4000)
     exec_cache = get_hermes_home() / "cache" / "exec"
     assert not (exec_cache.exists() and any("TENANT-STDOUT-PRIVATE" in p.read_text() for p in exec_cache.iterdir()))
@@ -66,7 +66,7 @@ def test_execute_code_remote_stdout_never_spills_to_host(provider, monkeypatch):
 
 
 def test_local_execute_code_stdout_still_spills_to_cache():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import code_execution_tool
     _text, meta = code_execution_tool._truncate_stdout_text("LOCAL-STDOUT\n" * 8000)
     path = Path(meta["stdout_spill_path"])
@@ -78,7 +78,7 @@ def test_local_execute_code_stdout_still_spills_to_cache():
 
 
 def _plant_skill(monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     import hermes_agent.tools.skills_tool as skills
     root = get_hermes_home() / "skills"
     skill = root / "private_probe"
@@ -122,7 +122,7 @@ def test_a_hosted_write_is_not_judged_by_this_hosts_skill_locks(provider, host_d
     """A skill locked on this host's profile changes nothing for a hosted path that names it, through a
     host symlink or literally: the path is the sandbox's, so it is neither resolved on this host nor
     refused by the host skill's name, and the write reaches the sandbox."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import skill_usage
     from hermes_agent.tools.skill_lock import skill_refusal
     skill = get_hermes_home() / "skills" / "locked_probe"
@@ -246,7 +246,7 @@ def _hosted_background(monkeypatch, command="echo TENANT-PROCESS-PRIVATE"):
 
 
 def test_background_process_metadata_and_result_stay_off_host(provider, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     r, session, release = _hosted_background(monkeypatch)
     try:
         checkpoint = get_hermes_home() / "processes.json"
@@ -266,7 +266,7 @@ def test_background_process_metadata_and_result_stay_off_host(provider, monkeypa
 
 
 def test_local_process_checkpoint_and_receipt_unchanged():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import process_registry as processes
     from hermes_agent.tools.process_registry_results import save_completed_result
     r = processes.ProcessRegistry()

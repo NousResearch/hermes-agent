@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from hermes_agent.tools import checkpoint_manager as cm
-from utils import rmtree_readonly
+from hermes_agent.utils import rmtree_readonly
 
 
 @pytest.fixture

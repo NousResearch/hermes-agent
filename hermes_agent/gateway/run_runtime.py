@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 def reserved_profile_homes(runner):
     """``(name, home)`` pairs this process reserved: launch home first, then served secondaries."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     launch = get_hermes_home().resolve()
     homes = [(getattr(runner, '_primary_profile_name', None) or 'default', launch)]
     if getattr(runner.config, 'multiplex_profiles', False):
@@ -152,7 +152,7 @@ def refuse_parked_scope(runner):
     retryably (``runtime_draining``, a 503 with ``Retry-After``), not with the final
     ``profile_mismatch`` of a profile this gateway does not serve."""
     from hermes_agent.gateway.session_authorities import served_profile_name
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     name = served_profile_name(get_hermes_home())
     if profile_parked(runner, name):
         from hermes_agent.gateway.parked_route_refusal import ParkedProfileRefusal
@@ -569,7 +569,7 @@ async def start_gateway_runtime_api(runner):
     from hermes_agent.gateway.webapp_listener import (
         STARTING, BrowserCredentialError, browser_session_token, dial_origin, listener_plan, register_control_verbs,
     )
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = get_hermes_home()
     # The bootstrap registered these before its control socket answered; a runner started without it
     # (an embedded gateway) gets them here, before the listener's slow start.

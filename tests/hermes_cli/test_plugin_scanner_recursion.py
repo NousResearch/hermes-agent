@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.plugins import PluginManager
 

@@ -28,7 +28,7 @@ import plugins.dashboard_auth.session_token as session_token_plugin
 from hermes_agent.hermes_cli.dashboard_auth import ProviderError, TokenPrincipal, clear_providers, register_provider
 from hermes_agent.hermes_cli.profiles import get_profile_dir
 from hermes_agent.hermes_cli.web_routers import peer as peer_routes
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider, _sign
 
 AGENT_KEY = "local-api-server-key-0123456789abcdef"

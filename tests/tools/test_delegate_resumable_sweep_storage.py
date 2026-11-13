@@ -52,7 +52,7 @@ def _continue_now(parent, sid, tree):
 @pytest.mark.parametrize("mode", ["classic", "archive"])
 def test_a_sweep_planned_before_a_continue_keeps_the_tree_the_continue_pinned(tmp_path, mode):
     from hermes_agent.hermes_cli import worktree_ops, worktree_sweep
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     if mode == "classic":
         (get_hermes_home() / "config.yaml").write_text(json.dumps({"worktrees": {"archive_dirty": False}}))
     parent = _parent()

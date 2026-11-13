@@ -114,7 +114,7 @@ NPM_PUBLIC_REGISTRY = "https://registry.npmjs.org/"
 
 def hermes_npmrc() -> Path | None:
     """The profile's ``$HERMES_HOME/npmrc`` when it exists."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     path = get_hermes_home() / "npmrc"
     return path if path.is_file() else None

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_hermes_home
+from hermes_agent.hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_hermes_home
 from hermes_agent.tools.connectors.gateway import files
 from hermes_agent.tools.connectors.gateway.bridge import connector_describe, run_remote
 from hermes_agent.tools.connectors.gateway.client import ConnectorClient

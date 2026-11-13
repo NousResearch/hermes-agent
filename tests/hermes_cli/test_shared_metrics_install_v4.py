@@ -14,7 +14,7 @@ import hermes_agent.hermes_cli.observability.shared_metrics_install as install
 import hermes_agent.hermes_cli.observability.shared_metrics_startup as startup
 from hermes_agent.tui_gateway import server
 from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
-from hermes_platform.host import facts
+from hermes_agent.hermes_platform.host import facts
 
 
 @pytest.fixture

@@ -233,7 +233,7 @@ def persist_agent_tool_names(agent) -> None:
 
 
 def _pinned_snapshot_key(session_id) -> tuple:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     return hermes_home_key(), str(session_id)
 
 

@@ -25,7 +25,7 @@ def test_standalone_fallback_pool_keeps_profile_scope(tmp_path, monkeypatch):
         set_multiplex_active,
         set_secret_scope,
     )
-    from hermes_constants import get_hermes_home, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, set_hermes_home_override
     import hermes_agent.cron.scheduler as sched
     import hermes_agent.tools.send_message_tool as smt
 
@@ -66,7 +66,7 @@ def test_standalone_fallback_pool_keeps_profile_scope(tmp_path, monkeypatch):
 
 def test_multiplex_ticker_profile_gate_skips_rejected_profile(tmp_path):
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     own_gateway = tmp_path / "own-gateway"
     orphan = tmp_path / "orphan"
@@ -134,7 +134,7 @@ def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, 
     monkeypatch.setattr(web_server, "resolve_cron_scheduler", lambda: _Provider(), raising=False)
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _Provider())
     monkeypatch.setattr(sp, "InProcessCronScheduler", _Provider)
-    monkeypatch.setattr("hermes_logging.enable_profile_log_routing", lambda homes: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.enable_profile_log_routing", lambda homes: None)
 
     web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
 
@@ -255,7 +255,7 @@ def test_dashboard_run_now_isolates_a_sibling_profile_fire_like_the_ticker(tmp_p
     from hermes_agent.cron.jobs import create_job
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     from hermes_agent.hermes_cli import profiles
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch = tmp_path / ".hermes"
     routed = launch / "profiles" / "ops"

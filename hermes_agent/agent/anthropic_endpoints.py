@@ -10,7 +10,7 @@ cycle.
 
 from urllib.parse import urlparse
 
-from utils import base_url_host_matches, base_url_hostname
+from hermes_agent.utils import base_url_host_matches, base_url_hostname
 
 _MINIMAX_ANTHROPIC_PREFIXES = ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
 

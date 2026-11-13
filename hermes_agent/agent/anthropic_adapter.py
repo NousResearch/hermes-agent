@@ -14,7 +14,7 @@ import subprocess
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
-from utils import normalize_proxy_env_vars
+from hermes_agent.utils import normalize_proxy_env_vars
 
 from hermes_agent.agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oauth, is_native_anthropic_host
 from hermes_agent.agent.anthropic_endpoints import (
@@ -285,7 +285,7 @@ def find_claude_code_cli(command: str) -> Optional[str]:
     agree with version detection about whether the CLI is installed under a GUI/service PATH."""
     if command not in _CLAUDE_CODE_NAMES:
         return None
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
 
     found = locate_command(command, known_dirs=_CLAUDE_CODE_PREFIXES).command
     return found[0] if found else None

@@ -31,7 +31,7 @@ def toolsets_lines(enabled) -> list[str]:
 
 def platforms_lines() -> list[str]:
     """``/platforms``: the messaging platforms the profile's gateway config enables."""
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     from hermes_agent.gateway.config import load_gateway_config, Platform
     out = ["", *_box(t("cli.gateway_status.header"), 60), ""]
     config_file = f"{display_hermes_home()}/config.yaml"

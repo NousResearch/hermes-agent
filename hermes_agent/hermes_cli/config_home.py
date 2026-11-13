@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
 
 class HomeInitializationError(RuntimeError):

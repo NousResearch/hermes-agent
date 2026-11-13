@@ -18,7 +18,7 @@ from hermes_agent.hermes_cli import kanban_db as kb
 from hermes_agent.hermes_cli import kanban_db_connect as kbc
 from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 from hermes_agent.hermes_cli import kanban_db_notify as kbn
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def served(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "docker")
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda *, home=None: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda *, home=None: root)
     set_multiplex_active(True)
     try:
         yield SimpleNamespace(root=root, alpha=alpha)

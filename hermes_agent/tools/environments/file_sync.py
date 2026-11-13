@@ -26,9 +26,9 @@ from typing import Callable
 
 import psutil
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.environments.base import _file_mtime_key
-from utils import mtime_is_racy
+from hermes_agent.utils import mtime_is_racy
 
 logger = logging.getLogger(__name__)
 

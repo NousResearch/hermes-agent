@@ -38,7 +38,7 @@ async def prepare_workspace(authority, live, payload, prepared):
     """Move to project: execution cwd and TERMINAL_CWD move together (restore_policy's invariant)."""
     import os
     from hermes_agent.gateway.session_policy import restore_policy
-    from hermes_constants import translate_cwd_for_wsl_backend
+    from hermes_agent.hermes_constants import translate_cwd_for_wsl_backend
     from hermes_agent.tui_gateway import git_probe
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
 

@@ -333,7 +333,7 @@ def _not_configured_error(platform_name, platform, entry):
     from hermes_agent.agent.secret_scope import load_env_file
     from hermes_agent.gateway.config import _getenv
     from hermes_agent.gateway.config_env import _ENV_ENABLE_CREDENTIALS
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.config_backend import config_exists
     home = get_hermes_home()
     env_names = list(_ENV_ENABLE_CREDENTIALS.get(platform) or (entry.required_env if entry else ()))
@@ -365,7 +365,7 @@ def _not_configured_error(platform_name, platform, entry):
     # never reads this profile's .env at all.
     try:
         from hermes_agent.gateway.status import read_runtime_status, runtime_status_pid_is_live
-        from hermes_constants import get_default_hermes_root, hermes_home_key
+        from hermes_agent.hermes_constants import get_default_hermes_root, hermes_home_key
         root = get_default_hermes_root()
         gateways = [(home, read_runtime_status())]
         if hermes_home_key(root) != hermes_home_key(home):

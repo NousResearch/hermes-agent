@@ -6,7 +6,7 @@ Telegram and Slack on the next gateway restart. Drives the real ``cmd_toggle`` (
 real admission.
 """
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from tests.hermes_cli.plugin_worker_support import (
     plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import

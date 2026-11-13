@@ -142,7 +142,7 @@ def _resolve_executable() -> Optional[str]:
         return None
     if os.path.isfile(exe):
         return exe
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
     found = locate_command(exe).command  # a bare command name pinned in browser.executable_path
     return found[0] if found else None
 
@@ -160,7 +160,7 @@ def _maybe_autoinstall_chromium() -> bool:
         return False
     _autoinstall_attempted = True
     from hermes_agent.hermes_cli.browser_runtime import chromium_executable
-    from hermes_constants import is_termux
+    from hermes_agent.hermes_constants import is_termux
     if running_in_docker() or is_termux() or _explicit_executable_configured(chromium_executable):
         return False
     from pm import InstallError, ensure, lazy_installs_allowed
@@ -569,7 +569,7 @@ def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir
     right before a fresh launch, inside the same cross-process step, never when attaching: a profile copy
     written there can neither race another process's copy nor land under a browser that just came up; a
     message it returns is the launch's error, as is."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     # Loaded now, not first at teardown: stopping the browser from an atexit hook must not be this module's
     # first import (Python refuses new atexit registrations during shutdown, orphaning the browser). An
     # attacher needs it too: it is the one that stops a shared browser when it is the last holder.
@@ -919,7 +919,7 @@ def _record_name(browser: LaunchedBrowser) -> str:
 
 def _write_record(browser: LaunchedBrowser) -> None:
     from hermes_agent.tools import browser_launcher_holders as holders
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     record = {"owner_pid": os.getpid(), "owner_start_time": _start_time(os.getpid()), "pid": browser.pid,
               "start_time": browser.start_time, "user_data_dir": browser.user_data_dir,
               "home_key": browser.home_key, "ephemeral": browser.ephemeral, "ns": holders.ns_identity(),
@@ -1001,7 +1001,7 @@ def _adopt_record(browser: LaunchedBrowser) -> None:
     """A crashed owner's record still names the browser this process now uses (attached after the crash):
     take the record over, or every reaper (this process's included) would kill it as an orphan. Only the owner
     changes: the launch as recorded (its ``--user-data-dir`` spelling, DevTools id) stays what verifies it."""
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     path = _record_path(browser)
     if path is None or not path.exists():
         return
@@ -1126,7 +1126,7 @@ def _reclaim_throwaway_dirs(home: str) -> None:
 
 def _served_home_keys(homes) -> set[str]:
     """The launch profile, every profile this process launched a browser for, and ``homes``."""
-    from hermes_constants import get_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_process_hermes_home, hermes_home_key
     with _lock:
         keys = set(_served_homes)
     keys.add(hermes_home_key(get_process_hermes_home()))

@@ -23,7 +23,7 @@ async def test_authenticated_token_can_create_without_identityless_permissions(t
     from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, start_gateway_runtime_api, publish_gateway_runtime_ready
     from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli import web_server as web
 
     # Session creation persists a restorable model policy, even without a turn.

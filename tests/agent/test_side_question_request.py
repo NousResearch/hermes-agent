@@ -256,7 +256,7 @@ def _usage_rows(db: SessionDB, session_id: str) -> list[dict]:
 
 
 def test_side_call_writes_only_one_usage_row(provider, issued, tmp_path):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     memories = Path(get_hermes_home()) / "memories"
     memories.mkdir(parents=True, exist_ok=True)
@@ -321,7 +321,7 @@ def test_side_call_runs_under_the_turns_profile_and_secret_scope(provider, issue
     """The plugin (of the turn's profile) redeems from its own thread, where no profile is bound;
     the request still resolves the parent turn's HERMES_HOME and secret scope."""
     from hermes_agent.agent.secret_scope import current_secret_scope_home, reset_secret_scope, set_secret_scope
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)

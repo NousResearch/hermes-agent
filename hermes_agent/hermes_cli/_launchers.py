@@ -23,8 +23,8 @@ if __name__ == "__main__":
 
 from pm.environments import owning_home_root, payload_command_dir, store_root
 
-# ``sys`` attribute a launcher sets before ``import hermes_bootstrap``: pin HERMES_HOME to the
-# install's default root once the launch-time repair ran (``hermes_bootstrap._pin_launcher_home``).
+# ``sys`` attribute a launcher sets before ``from hermes_agent import hermes_bootstrap``: pin HERMES_HOME to the
+# install's default root once the launch-time repair ran (``hermes_agent.hermes_bootstrap._pin_launcher_home``).
 PIN_DEFAULT_HOME_FLAG = "_hermes_pin_default_home"
 
 
@@ -478,7 +478,7 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
     #
     # The launch-time repair of a checkout a killed update left torn (``hermes_bootstrap`` ->
     # ``_early_recovery.restore_interrupted_pull``) runs before ANY other checkout module is
-    # imported: a merge killed while writing ``hermes_constants.py`` must not stop every launch
+    # imported: a merge killed while writing ``hermes_agent/hermes_constants.py`` must not stop every launch
     # before the repair. The default-home pin (which needs ``hermes_constants``) happens inside
     # ``hermes_bootstrap`` right after the repair (``_PIN_DEFAULT_HOME``), and here again for a
     # bootstrap that predates that hook.
@@ -802,7 +802,7 @@ def _is_home_checkout(root: Path, store: Path) -> bool:
     layout alone is not proof: a root that only borrows the checkout can match
     it through HERMES_RUNTIME_DIR=<home>/tools, so the home must also own it.
     """
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     home = get_default_hermes_root().resolve()
     return (root.parent == home and store.resolve() == (home / "tools").resolve()
             and owning_home_root(root) is None)
@@ -938,7 +938,7 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         dirs = [Path.home() / ".local" / "bin"]
         # Repair existing FHS/custom-home exposure, but never create new global
         # entries or reclaim a convenience that was repointed to another root.
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         for directory in (get_default_hermes_root() / "bin", Path("/usr/local/bin")):
             if directory not in dirs and (not create or _owns_launcher(directory / "hermes", root)):
                 dirs.append(directory)
@@ -1012,7 +1012,7 @@ def _read_environment_block(address: int) -> dict[str, str]:
 
 def new_console_hermes_root() -> Path | None:
     """The Hermes root that a newly opened console resolves, or None when Windows cannot say."""
-    from hermes_constants import hermes_root_for_environment
+    from hermes_agent.hermes_constants import hermes_root_for_environment
 
     environ = _new_console_environment()
     return None if environ is None else hermes_root_for_environment(environ)
@@ -1102,7 +1102,7 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
     place unless *root* is the home's own checkout: a review tree or worktree
     started against the home leaves the installed ``hermes`` alone.
     """
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     directory = get_default_hermes_root() / "bin"
     try:

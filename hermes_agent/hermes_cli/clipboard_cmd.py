@@ -34,7 +34,7 @@ def _mime(head: bytes) -> str:
 def extract_clipboard_image(dest: Path) -> tuple[int, dict]:
     """Write the clipboard image to *dest*; ``(exit code, JSON reply)``."""
     from hermes_agent.hermes_cli import clipboard
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
 
     dest = dest.expanduser().absolute()
     written = None

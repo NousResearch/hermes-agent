@@ -831,7 +831,7 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     """Resolved HERMES_HOME (and its realpath) -> ``~/.hermes/`` so the _HERMES_CONFIG_PATH /
     _HERMES_ENV_PATH rules match Docker/gateway deployments that spell the absolute path."""
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         home = get_hermes_home().expanduser()
         paths = [str(home), str(home.resolve(strict=False))]
     except Exception:

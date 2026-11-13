@@ -36,7 +36,7 @@ import threading
 from typing import Optional
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import hermes_agent.agent.auxiliary_client as aux
 

@@ -17,7 +17,7 @@ from hermes_agent.agent.i18n import t
 from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_agent.agent import terminal_image
 from contextlib import suppress
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from prompt_toolkit.application import Application
 from rich.markup import escape as _escape
 

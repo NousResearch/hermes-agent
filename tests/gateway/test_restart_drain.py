@@ -270,7 +270,7 @@ async def test_restart_from_served_profile_chat_restarts_the_host_gateway(monkey
     profile's home it exits 78 and nothing comes back), and stop() - which flushes pending
     messages under get_hermes_home() - runs outside the requester's profile scope."""
     from hermes_agent.agent.secret_scope import current_secret_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     launch_home = get_hermes_home()
     profile_home = launch_home / "profiles" / "research"

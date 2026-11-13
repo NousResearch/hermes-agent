@@ -17,7 +17,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlparse
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ _index_lock = threading.Lock()
 
 def _cache_dir() -> Optional[Path]:
     try:
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
         d = get_hermes_dir("cache/web", "web_cache")
         d.mkdir(parents=True, exist_ok=True)
         return d

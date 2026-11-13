@@ -44,7 +44,7 @@ async def probe():
     bee.mkdir(parents=True)
     (bee / 'config.yaml').write_text('browser:\n  cdp_url: ws://bee.invalid/devtools/browser/PROFILE-B\n')
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.tools import browser_session_cdp
 
     def resolved(profile):

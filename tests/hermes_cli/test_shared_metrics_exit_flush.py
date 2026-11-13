@@ -24,7 +24,7 @@ from hermes_agent.hermes_cli import lifecycle, plugins
 from hermes_agent.hermes_cli.observability import relay_shared_metrics
 from hermes_agent.hermes_cli.observability import shared_metrics_process as process_metrics
 from hermes_agent.hermes_cli.plugins import PluginManager
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tests.waiting import wait_until
 
 

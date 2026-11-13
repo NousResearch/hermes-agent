@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 DEFAULT_MAX_VERIFY_NUDGES = 3
 

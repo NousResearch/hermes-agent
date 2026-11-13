@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_agent.tui_gateway import server as srv
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 PROFILE_HOME = "/home/user/.hermes/profiles/work"
 
@@ -62,7 +62,7 @@ def override_calls():
     homes: list[str] = []  # get_hermes_home() as the ephemeral turn saw it
 
     def _run_conversation(*_a, **_kw):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         homes.append(str(get_hermes_home()))
         return {"final_response": "done"}
 

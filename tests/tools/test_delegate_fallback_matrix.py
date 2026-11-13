@@ -75,9 +75,9 @@ def test_declared_chain_flows_through_real_profile_config_loader(
 ):
     """The public key must survive DEFAULT_CONFIG/profile loading without
     patching ``_load_config`` and reach the child constructor."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -112,9 +112,9 @@ def test_declared_chain_flows_through_real_profile_config_loader(
 
 def test_explicit_empty_chain_survives_real_profile_config_loader(tmp_path, monkeypatch):
     """An explicit [] remains an authoritative disable after config loading."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
     token = set_hermes_home_override(tmp_path)
@@ -143,10 +143,10 @@ def test_explicit_empty_chain_survives_real_profile_config_loader(tmp_path, monk
 
 def test_pinned_review_does_not_borrow_general_worker_chain(tmp_path, monkeypatch):
     """The public /review route owns its fallback policy as well as its model."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
 
     from hermes_agent.agent.review_engine import start_review
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
     (tmp_path / "config.yaml").write_text(

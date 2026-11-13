@@ -9,11 +9,11 @@ process under ``host`` exactly as under ``in_process``. Keeping hooks out of the
 import sys
 from unittest.mock import patch
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.gateway.hooks import HookRegistry
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 MODULE = "hermes_hook_isoprobe"
 # Module body records whether it ran registered in sys.modules (forward references need that).

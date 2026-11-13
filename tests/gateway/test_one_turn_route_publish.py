@@ -308,7 +308,7 @@ def test_an_alias_runs_on_the_endpoint_the_switch_resolved_when_the_config_chang
     endpoint, so a ``config.yaml`` edit in between (its ``base_url`` removed) ran the alias's model on the
     session's endpoint and key. The route the switch resolved decides."""
     from hermes_agent.hermes_cli import model_switch
-    from hermes_constants import get_config_path
+    from hermes_agent.hermes_constants import get_config_path
     path = get_config_path()
     config = ("model:\n  default: session-model\n  provider: custom\n  base_url: " + SESSION_URL + "\n"
               "model_aliases:\n  fast:\n    model: fast-model\n    provider: custom\n")

@@ -12,7 +12,7 @@ from contextlib import redirect_stdout
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 
 
 @pytest.fixture

@@ -189,7 +189,7 @@ class TestScanSkillCommands:
         """
         import hermes_agent.agent.skill_commands as sc_mod
         from hermes_agent.agent.skill_commands import get_skill_commands
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         empty_local_dir = tmp_path / "no-local-skills"
         empty_local_dir.mkdir()
@@ -241,7 +241,7 @@ class TestScanSkillCommands:
         """
         import hermes_agent.agent.skill_commands as sc_mod
         from hermes_agent.agent.skill_commands import build_skill_invocation_message, get_skill_commands
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         profile_b = tmp_path / "profiles" / "b"
         _make_skill(profile_b / "skills", "b-only", body="Body of b-only.")

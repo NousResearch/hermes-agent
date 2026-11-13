@@ -99,7 +99,7 @@ async def test_idle_stop_and_new_cancel_the_queued_followup(monkeypatch, command
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.gateway.session_ingress import admit_message
     from hermes_agent.gateway.session_ingress_context import native_callback
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     runner, adapter, _sent = _owner(monkeypatch)

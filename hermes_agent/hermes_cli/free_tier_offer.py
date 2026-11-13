@@ -37,7 +37,7 @@ _clock = time.time  # tests swap this for a fake clock
 
 
 def _path(kind: str):
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     return get_default_hermes_root() / "free_tier" / _RECORDS[kind]
 
 
@@ -52,7 +52,7 @@ def _read(kind: str) -> dict[str, Any]:
 @contextmanager
 def _transaction(kind: str) -> Iterator[tuple[dict[str, Any], Any]]:
     from hermes_agent.hermes_cli.auth import _file_lock
-    from utils import atomic_write_text
+    from hermes_agent.utils import atomic_write_text
     path = _path(kind)
     with _file_lock(path.with_suffix(".lock"), _LOCK, 5.0, f"Timed out waiting for the sign-in offer record ({path})"):
         yield _read(kind), lambda data: atomic_write_text(path, json.dumps(data))

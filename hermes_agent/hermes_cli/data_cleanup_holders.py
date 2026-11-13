@@ -70,7 +70,7 @@ def _drain_manual_gateway(home: Path) -> None:
 
 
 def _refuse_backend_writers(home: Path) -> None:
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from hermes_agent.hermes_cli.process_identity import LEDGER_FILENAME, _read_ledger, entry_still_running
 
     root = get_default_hermes_root(home=home).resolve()
@@ -121,7 +121,7 @@ def _refuse_cron_writers(home: Path) -> None:
 
 
 def _refuse_multiplexer(home: Path) -> None:
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from hermes_agent.gateway.control_socket import identify_gateway
     from hermes_agent.gateway.status import get_running_pid_identity_strict
 

@@ -33,7 +33,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger("hermes_agent.hermes_cli.update_cmd")
 
@@ -178,9 +178,9 @@ def _named_profiles_exist() -> bool:
 
     ``profiles.list_profile_names`` suppresses enumeration errors and reads an unreadable roster as
     "default only"; here any error listing the roster or reading an entry's identity raises instead.
-    Same identity rule as ``hermes_constants.named_profile_is_live`` (stdlib only: see above).
+    Same identity rule as ``hermes_agent.hermes_constants.named_profile_is_live`` (stdlib only: see above).
     """
-    from hermes_constants import _PROFILE_IDENTITY_MARKERS, PROFILE_ID_RE, get_default_hermes_root, profile_tombstone_path
+    from hermes_agent.hermes_constants import _PROFILE_IDENTITY_MARKERS, PROFILE_ID_RE, get_default_hermes_root, profile_tombstone_path
 
     try:
         entries = list((get_default_hermes_root() / "profiles").iterdir())

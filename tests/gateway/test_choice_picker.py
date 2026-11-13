@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.config import Platform
@@ -84,7 +84,7 @@ class TestReasoningChoicePicker:
         call = adapter.calls[0]
         values = [c["value"] for c in call["choices"]]
         # Full canonical ladder + none + subcommands, in order
-        from hermes_constants import VALID_REASONING_EFFORTS
+        from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
         assert values[0] == "none"
         assert values[1:1 + len(VALID_REASONING_EFFORTS)] == list(VALID_REASONING_EFFORTS)
         assert values[-3:] == ["reset", "show", "hide"]

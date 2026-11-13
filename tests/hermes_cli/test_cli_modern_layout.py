@@ -110,7 +110,7 @@ def test_panel_rows_never_carry_a_newline():
     ({"cli_layout": "classic", "busy_input_mode": "steer"}, False, "steer"),
 ])
 def test_layout_and_busy_default_through_the_config_loader(tmp_path, monkeypatch, display, modern, busy):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent import cli
     from hermes_agent.hermes_cli.cli_modern_layout import busy_input_mode_from_config, layout_from_config
 

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-import utils
-from utils import rmtree_readonly
+from hermes_agent import utils
+from hermes_agent.utils import rmtree_readonly
 
 
 def _read_only_object_dir(root: Path) -> Path:

@@ -27,7 +27,7 @@ from hermes_agent.agent.memory_manager_tools import (inject_memory_provider_tool
                                         memory_provider_tools_exposed, normalize_tool_schema)
 from hermes_agent.agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from hermes_agent.agent.skill_commands import extract_user_instruction_from_skill_message
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from hermes_agent.tools.hook_output_spill import get_spill_config, spill_if_oversized
 from hermes_agent.tools.registry import tool_error
 
@@ -949,7 +949,7 @@ class MemoryManager:
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers, injecting ``hermes_home`` so they resolve profile-scoped paths."""
         if "hermes_home" not in kwargs:
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
         self._bound_scope = bound_scope(kwargs["hermes_home"], kwargs.get("agent_identity"))
         _context = kwargs.get("agent_context")

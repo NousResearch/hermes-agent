@@ -56,7 +56,7 @@ class TestBuildChannelDirectoryWrites:
         })
         previous = json.loads(cache_file.read_text())
 
-        import utils
+        from hermes_agent import utils
 
         def broken_dump(data, fp, *args, **kwargs):
             fp.write('{"updated_at":')

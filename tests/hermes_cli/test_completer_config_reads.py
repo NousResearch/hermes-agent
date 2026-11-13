@@ -7,7 +7,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import hermes_agent.hermes_cli.commands_completion as commands_mod
 

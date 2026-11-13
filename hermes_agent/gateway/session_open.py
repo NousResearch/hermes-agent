@@ -64,7 +64,7 @@ class _Open:
         while self.unsettled:
             await asyncio.wait(set(self.unsettled))
         from hermes_agent.hermes_cli.lifecycle import hook_known_unused
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(self.ref.profile_id)
         try:  # the owning profile's loaded plugins, read without discovery or config: no consumer, no thread
             unused = hook_known_unused('on_session_open')

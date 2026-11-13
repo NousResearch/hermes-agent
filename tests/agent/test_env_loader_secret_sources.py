@@ -158,7 +158,7 @@ def test_single_profile_scoped_load_keeps_override_behavior(tmp_path, monkeypatc
     not on the home override alone -- single-profile ``-p`` runs still load.
     """
     from hermes_agent.agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.delenv("HERMES_TEST_SHARED_ADAPTER_CONFIG", raising=False)
     other_home = tmp_path / "other"
@@ -188,7 +188,7 @@ def test_multiplex_dotenv_load_hydrates_sources_without_global_env(
     from hermes_agent.agent import secret_scope
     import hermes_agent.agent.secret_sources.bitwarden as bw_module
     from hermes_agent.agent.secret_sources import registry as reg_module
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )

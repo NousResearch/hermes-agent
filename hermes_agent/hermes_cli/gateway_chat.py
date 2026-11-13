@@ -44,7 +44,7 @@ _ENV_LAUNCH_FLAGS = (("yolo", "HERMES_YOLO_MODE"), ("ignore_rules", "HERMES_IGNO
 
 
 def env_launch_flags() -> dict:
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
     return {field: True for field, name in _ENV_LAUNCH_FLAGS if is_truthy_value(os.environ.get(name))}
 
 
@@ -314,7 +314,7 @@ def check_resume_policy(args, snapshot):
         # The owner froze the resolved id of a `-m <alias>`; the same alias again is the same route.
         from hermes_agent.gateway.session_local_route import resolve_launch_route
         from hermes_agent.hermes_cli.config_effective import load_user_config_effective
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         flags = {key: requested[key] for key in ("model", "provider", "base_url", "api_key") if key in requested}
         requested["model"] = resolve_launch_route(flags, load_user_config_effective(get_hermes_home() / "config.yaml"))["model"]
     # api_key is never durable; a repeated key is not a policy change.

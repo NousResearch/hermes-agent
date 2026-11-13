@@ -20,7 +20,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _platform_home(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_constants._get_platform_default_hermes_home", lambda: tmp_path / ".hermes")
+    monkeypatch.setattr("hermes_agent.hermes_constants._get_platform_default_hermes_home", lambda: tmp_path / ".hermes")
 
 
 def _run_apply_profile_override(

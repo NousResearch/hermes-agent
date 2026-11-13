@@ -83,7 +83,7 @@ async def config_get(connection, ref, params):
         from hermes_agent.hermes_cli.config import load_config
         from hermes_agent.hermes_cli.config_backend import config_version_or_none, version_token
         from hermes_agent.hermes_cli.config_effective import load_user_config_effective
-        from hermes_constants import DEFAULT_INDICATOR_STYLE
+        from hermes_agent.hermes_constants import DEFAULT_INDICATOR_STYLE
         from hermes_agent.tools.approval_context import _get_approval_mode
         home = Path(connection.authority.profile_id)
         with _profile_runtime_scope(home):
@@ -198,7 +198,7 @@ def _service_tier(connection, ref, policy):
 
 
 def _reasoning(agent, policy, cfg, connection=None, ref=None):
-    from hermes_constants import resolve_reasoning_config
+    from hermes_agent.hermes_constants import resolve_reasoning_config
     value = getattr(agent, 'reasoning_config', None)
     if not isinstance(value, dict) and policy is not None:
         # The next turn's level: a typed session /reasoning, else the frozen (or followed) one.

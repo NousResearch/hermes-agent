@@ -36,7 +36,7 @@ def _is_current_profile(profile: Optional[str]) -> bool:
 def _hermes_home_scope(path) -> Any:
     """Scope ``load_config``/``save_config`` (anything resolving ``get_hermes_home()`` at call
     time) to ``path`` for the block via the context-local HERMES_HOME override."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     token = set_hermes_home_override(str(path))
     try:
         yield
@@ -221,7 +221,7 @@ def _profile_scope(profile: Optional[str]):
     since #65828 its directory lookups resolve at call time through the same contextvar override set in step
     1.
     """
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools import skills_tool as _skills_tool
     from hermes_agent.tools import skill_manager_tool as _skill_mgr
     with _config_profile_scope(profile) as scoped:
@@ -261,7 +261,7 @@ def _config_profile_scope(profile: Optional[str]):
     """
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
-    from hermes_constants import get_hermes_home, get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, get_hermes_home_override
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
     process_home = get_process_hermes_home()

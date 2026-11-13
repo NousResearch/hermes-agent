@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
-import utils
-from utils import atomic_write_text
+from hermes_agent import utils
+from hermes_agent.utils import atomic_write_text
 
 
 @pytest.mark.require_symlinks

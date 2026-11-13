@@ -1,6 +1,6 @@
 """Config v50: the bundled tirith scanner left Hermes."""
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 
 class TestRetiredTirithKeys:

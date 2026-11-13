@@ -82,7 +82,7 @@ def client(monkeypatch, _isolate_hermes_home):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
@@ -96,7 +96,7 @@ def client(monkeypatch, _isolate_hermes_home):
 
 
 def _config_path():
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "ownprov.json"
 
 
@@ -158,7 +158,7 @@ def test_a_refused_write_is_a_400_with_no_secret_saved_and_no_switch(client):
 
 
 def _install(name, init, schema):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     plugin_dir = get_hermes_home() / "plugins" / name
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "__init__.py").write_text(init, encoding="utf-8")
@@ -187,7 +187,7 @@ def test_a_provider_that_fails_to_load_is_a_503_not_unknown(client):
 
 
 def test_an_unknown_storage_kind_shows_no_panel_and_writes_no_stray_file(client):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     _install("oddstore", _INIT.replace('name = "ownprov"', 'name = "oddstore"'),
              _SCHEMA.replace('name="ownprov"', 'name="oddstore"').replace("storage=STORAGE_PROVIDER", 'storage="retired_kind"'))

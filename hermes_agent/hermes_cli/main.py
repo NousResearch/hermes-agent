@@ -13,7 +13,7 @@ Usage:
 # ``hermes update`` the editable install's ``.pth`` may not list it yet; crashing
 # here would block ``hermes update``.
 try:
-    import hermes_bootstrap
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -439,7 +439,7 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     """
     if name == "default":
         return None
-    from hermes_constants import named_profile_is_live, sudo_invoker_default_home
+    from hermes_agent.hermes_constants import named_profile_is_live, sudo_invoker_default_home
 
     sudo_home = sudo_invoker_default_home()
     if sudo_home is None:
@@ -526,7 +526,7 @@ def _apply_profile_override() -> None:
             and not _startup_fast.is_desktop_ssh_backend_argv(argv)
             and not _s6_supervised_gateway_run(argv)):
         try:
-            from hermes_constants import get_default_hermes_root
+            from hermes_agent.hermes_constants import get_default_hermes_root
 
             active_path = get_default_hermes_root() / "active_profile"
             if active_path.exists():
@@ -585,7 +585,7 @@ _apply_profile_override()
 # ``-p``/active_profile re-homed the process after hermes_bootstrap ran: re-point the temp vars
 # at THIS home's scratch dir (a user-set TMPDIR is still left alone).
 try:
-    from hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
+    from hermes_agent.hermes_constants import export_scratch_tmp_env as _export_scratch_tmp_env
 
     _export_scratch_tmp_env()
 except Exception:
@@ -661,7 +661,7 @@ if server_process_argv(sys.argv[1:]):
 # Centralized file logging for every subcommand (agent.log + errors.log).
 # Dashboard entrypoints use GUI mode so gui.log captures pre-dispatch failures.
 try:
-    from hermes_logging import setup_logging as _setup_logging
+    from hermes_agent.hermes_logging import setup_logging as _setup_logging
 
     _setup_logging(
         mode=(
@@ -677,7 +677,7 @@ except Exception:
 # Apply IPv4 preference before any HTTP client is created.
 if _FORCE_IPV4_EARLY:
     try:
-        from hermes_constants import apply_ipv4_preference as _apply_ipv4
+        from hermes_agent.hermes_constants import apply_ipv4_preference as _apply_ipv4
 
         _apply_ipv4(force=True)
     except Exception:
@@ -1693,7 +1693,7 @@ def cmd_chat(args):
         # (#96900). The agent-setup mixin prints this hint too late: HermesCLI
         # construction already failed. Fast-chat launch also goes through
         # cmd_chat, so this one catch covers `hermes` / `hermes chat`.
-        from hermes_constants import emit_partial_update_hint
+        from hermes_agent.hermes_constants import emit_partial_update_hint
 
         if emit_partial_update_hint(e):
             sys.exit(1)
@@ -2394,7 +2394,7 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
     if getattr(args, "stop", False):
         # Scoped to the invoking home (`-p` applied by _apply_profile_override): another
         # install's or profile's backend on this machine is never a target (#113978).
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         own_home = str(get_hermes_home())
         if not _find_stale_dashboard_pids(scope_home=own_home):
@@ -2470,7 +2470,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.
     try:
-        from hermes_logging import setup_logging as _setup_logging_gui
+        from hermes_agent.hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
     except Exception:
         pass

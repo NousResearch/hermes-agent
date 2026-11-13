@@ -15,7 +15,7 @@ from hermes_agent.agent.memory_manager import MemoryManager
 from hermes_agent.agent.memory_provider import MemoryProvider, ctx_bound
 from hermes_agent.agent.secret_scope import is_multiplex_active
 from hermes_agent.agent.tool_executor import _resolve_sequential_dispatch, _ToolCallRef
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 _TOOL = "pw_remember"
 
@@ -239,7 +239,7 @@ class _InstanceScopedProvider(MemoryProvider):
         self._home = kwargs["hermes_home"]
 
     def _record(self, what):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         type(self).events.append((what, self._home, str(get_hermes_home())))
 
     def get_tool_schemas(self):
@@ -369,7 +369,7 @@ def test_refusals_are_written_to_gateway_log():
     import logging
 
     from hermes_agent.agent import memory_caller_scope
-    from hermes_logging import COMPONENT_PREFIXES, _ComponentFilter
+    from hermes_agent.hermes_logging import COMPONENT_PREFIXES, _ComponentFilter
     record = logging.LogRecord(memory_caller_scope.logger.name, logging.WARNING, __file__, 1, "refused", (), None)
     assert _ComponentFilter(COMPONENT_PREFIXES["gateway"]).filter(record)
 

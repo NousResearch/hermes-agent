@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 
-from hermes_platform import declaration
+from hermes_agent.hermes_platform import declaration
 from hermes_agent.tools.registry import registry
 
 

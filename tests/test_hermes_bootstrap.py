@@ -42,8 +42,8 @@ def _fresh_import():
     Drops any cached copy from sys.modules first so module-level code
     runs again and the platform check re-evaluates.
     """
-    sys.modules.pop("hermes_bootstrap", None)
-    import hermes_bootstrap  # noqa: WPS433
+    sys.modules.pop("hermes_agent.hermes_bootstrap", None)
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: WPS433, PLR0402
     return hermes_bootstrap
 
 
@@ -443,7 +443,7 @@ class TestEnableWindowsVt:
     def test_leaves_non_console_handles_and_colour_alone(self, tmp_path, monkeypatch):
         # Redirected output must neither fail nor flip Hermes to NO_COLOR.
         monkeypatch.delenv("NO_COLOR", raising=False)
-        import hermes_bootstrap
+        from hermes_agent import hermes_bootstrap
 
         with open(tmp_path / "out.txt", "w", encoding="utf-8") as stream:
             assert hermes_bootstrap.enable_windows_vt([stream]) is True

@@ -7,7 +7,7 @@ import sys
 import shlex
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
@@ -344,7 +344,7 @@ def _write_env_vars(
     atomic-write path without mutating global ``os.environ``.
     """
     from hermes_agent.hermes_cli.config import save_env_value
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     token = set_hermes_home_override(hermes_home) if hermes_home is not None else None
     try:

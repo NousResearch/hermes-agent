@@ -51,7 +51,7 @@ def where_to_set_key(env_var: str) -> str:
     it there. Says so when the variable exists only in this process's environment while a routed
     (named) profile is served: that is the copy users hit after exporting keys in an SSH shell."""
     from hermes_agent.agent.secret_scope import serves_routed_profile
-    from hermes_constants import display_hermes_home, get_hermes_home, profile_cli_selector, profile_name_for_home
+    from hermes_agent.hermes_constants import display_hermes_home, get_hermes_home, profile_cli_selector, profile_name_for_home
     profile = profile_name_for_home(get_hermes_home()) or "default"
     env_path = f"{display_hermes_home()}/.env"
     hint = (f"Add it to profile '{profile}': run `hermes {profile_cli_selector()}config set {env_var} <your key>` "
@@ -66,7 +66,7 @@ def named_profile_key_hint(env_vars) -> str:
     """``" <where_to_set_key>"`` for a registry provider's missing key while a NAMED profile is
     active, else ``""``: the default profile also reads the process environment, so the plain
     "Set X." already tells it everything."""
-    from hermes_constants import get_hermes_home, profile_name_for_home
+    from hermes_agent.hermes_constants import get_hermes_home, profile_name_for_home
     names = [str(v) for v in (env_vars or ()) if str(v or "").strip()]
     if not names or profile_name_for_home(get_hermes_home()) in (None, "default"):
         return ""

@@ -555,7 +555,7 @@ _mint_failures: dict[str, MintFailure] = {}
 
 
 def _mint_memo_key() -> str:
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     return "" if get_hermes_home_override() is None else hermes_home_key()
 
 

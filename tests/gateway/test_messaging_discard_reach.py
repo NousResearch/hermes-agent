@@ -35,7 +35,7 @@ async def test_discard_after_resume_into_a_cold_conversation_resolves_its_lost_t
     from hermes_agent.gateway.run_runtime import recover_profile_native_sessions
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import claim_session_input, get_session_admission
     from tests.gateway.test_command_bypass_active_session import _StubAdapter
 

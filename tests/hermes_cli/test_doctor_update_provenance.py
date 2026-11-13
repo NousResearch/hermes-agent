@@ -64,7 +64,7 @@ def test_mixed_provenance_diagnostic_is_read_only(tmp_path, monkeypatch, capsys)
     for name, *_, severity, remedy in cases:
         assert any(kind == severity and name in text and remedy in text + detail
                    for kind, text, detail in rows)
-    monkeypatch.setattr('hermes_constants.get_hermes_home', lambda: tmp_path)
+    monkeypatch.setattr('hermes_agent.hermes_constants.get_hermes_home', lambda: tmp_path)
     ds._check_update_provenance(False)
     output = capsys.readouterr().out
     assert all(name in output for name, *_ in cases)
@@ -77,7 +77,7 @@ def test_mixed_provenance_diagnostic_is_read_only(tmp_path, monkeypatch, capsys)
 def test_check_is_read_only(tmp_path, monkeypatch, capsys):
     """The check must not create or modify anything under HERMES_HOME —
     no plugins/ mkdir; a missing dir is informational, not a warning."""
-    import hermes_constants as config_mod
+    import hermes_agent.hermes_constants as config_mod
 
     monkeypatch.setattr(config_mod, "get_hermes_home", lambda: tmp_path, raising=False)
     ds._check_update_provenance(False)
@@ -88,7 +88,7 @@ def test_check_is_read_only(tmp_path, monkeypatch, capsys):
 
 
 def test_check_swallows_provenance_read_failure(tmp_path, monkeypatch, capsys):
-    import hermes_constants as config_mod
+    import hermes_agent.hermes_constants as config_mod
 
     monkeypatch.setattr(config_mod, "get_hermes_home", lambda: tmp_path, raising=False)
     (tmp_path / "plugins").mkdir()

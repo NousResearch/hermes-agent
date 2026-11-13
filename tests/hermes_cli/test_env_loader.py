@@ -722,7 +722,7 @@ def test_user_env_cannot_repoint_hermes_home_with_launch_value(tmp_path, monkeyp
 
     load_hermes_dotenv(load_external_secrets=False)
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     assert os.environ["HERMES_HOME"] == str(home_a)
     assert get_hermes_home() == home_a.resolve()
 

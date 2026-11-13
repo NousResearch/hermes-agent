@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
 
 
@@ -66,7 +66,7 @@ def profile_config(tmp_path, monkeypatch):
 
 
 def test_persist_publishes_only_a_complete_model_route(profile_config, monkeypatch):
-    import utils
+    from hermes_agent import utils
 
     replace = utils.atomic_replace
     published = []
@@ -86,7 +86,7 @@ def test_persist_publishes_only_a_complete_model_route(profile_config, monkeypat
 
 
 def test_failed_route_publication_leaves_original_bytes(profile_config, monkeypatch):
-    import utils
+    from hermes_agent import utils
 
     original = profile_config.read_bytes()
     replace = utils.atomic_replace

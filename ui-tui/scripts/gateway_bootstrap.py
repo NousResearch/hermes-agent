@@ -41,7 +41,7 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
         # or a damaged record (RuntimeError) reaches the ordinary failure path below, which the
         # client retries: a one-off read error must not end the TUI's gateway for its lifetime.
         raise ImportError(f"dependency environment unavailable: {exc}") from exc
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.gateway_client import gateway_ws_target
     from hermes_agent.hermes_cli.gateway_runtime import GatewayDiscovery
     from hermes_agent.hermes_cli.gateway_runtime_attach import (GatewayAttach, TicketUnavailable, attach_gateway,

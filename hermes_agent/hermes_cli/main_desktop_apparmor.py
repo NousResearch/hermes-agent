@@ -133,7 +133,7 @@ def _run(command: list[str], stdin_text: Optional[str] = None) -> Optional[subpr
 
 def _profile_parses(parser: str, text: str) -> bool:
     """Compile *text* as this user without loading it, so a bad profile never reaches /etc."""
-    from hermes_constants import get_scratch_dir
+    from hermes_agent.hermes_constants import get_scratch_dir
 
     with tempfile.TemporaryDirectory(dir=get_scratch_dir(), prefix="apparmor-") as scratch:
         candidate = Path(scratch) / "hermes-desktop.profile"
@@ -184,7 +184,7 @@ def install_profile(packaged_executable: Path) -> bool:
         print("  pattern syntax (apparmor.d(5), Globbing), so a profile could not name this binary alone.")
         print("  Move the checkout to a path without these characters, or use the setuid chrome-sandbox helper.")
         return False
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
 
     sudo = next(iter(locate_command("sudo").command), None)
     parser = next(iter(locate_command("apparmor_parser", known_dirs=("/usr/sbin", "/sbin")).command),

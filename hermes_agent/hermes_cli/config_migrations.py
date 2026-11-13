@@ -42,7 +42,7 @@ def _local_files_allowed() -> bool:
 
 def support_floor_message() -> str:
     """Human-facing explanation shown when a config is below the floor."""
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
 
     return (
         f"This config predates version {SUPPORT_FLOOR_VERSION} (~2 years old) "
@@ -581,7 +581,7 @@ def _migrate_to_41(results: dict[str, Any], quiet: bool) -> None:
     # every other session (~600 tok) and shadowed the live roster in Bot Chat itself.
     if not _local_files_allowed():
         return  # SOUL.md files only, across the whole roster
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
 
     cleaned: list[str] = []

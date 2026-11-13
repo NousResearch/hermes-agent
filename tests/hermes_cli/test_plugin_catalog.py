@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli import plugin_catalog as pc
 
@@ -186,7 +186,7 @@ def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatc
     cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [_entry("previous")], "removed": []})
     previous = cache.read_text()
 
-    import utils
+    from hermes_agent import utils
     _serve(monkeypatch, {"entries": [_entry("fresh")], "removed": []})
 
     def _dies(*_a, **_k):

@@ -156,7 +156,7 @@ def test_pooled_credential_enables_the_backend(monkeypatch, tmp_path):
 def test_one_job_keeps_one_credential_while_the_pool_rotates(monkeypatch, tmp_path):
     """A job created under one account is only visible to that account: poll and download must reuse the
     submit key even when a round-robin pool would hand out the other one next."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     (get_hermes_home() / "config.yaml").write_text("credential_pool_strategies:\n  openrouter: round_robin\n")
     _add_pooled_key("sk-or-one", "one")
     _add_pooled_key("sk-or-two", "two")
@@ -169,7 +169,7 @@ def test_multiplexed_profile_spends_its_own_key_not_the_launch_profiles(monkeypa
     """On a multiplexed gateway os.environ is the launch profile's .env; a routed turn must sign every request
     with its own profile's key and send it only to its own profile's base URL."""
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://launch.example/api/v1")
@@ -198,7 +198,7 @@ def test_multiplexed_profile_without_a_key_is_refused_not_served_on_the_launch_k
     """Absence on the routed side: a profile with no OpenRouter credential of its own must fail closed, never
     spend the launch profile's ``os.environ`` key."""
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-launch-profile")
     profile_home = tmp_path / "profile-nokey"

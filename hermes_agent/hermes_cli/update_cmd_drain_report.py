@@ -29,7 +29,7 @@ def _fmt_elapsed(seconds: object) -> str:
 def _cron_job_name(job_id: str, home: Optional[Path]) -> Optional[str]:
     """``name`` from the profile's ``jobs.json`` (None when unreadable — the id alone still identifies it)."""
     try:
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_agent.cron.jobs import load_jobs
 
         token = set_hermes_home_override(home) if home else None
@@ -86,7 +86,7 @@ def read_active_work(home: Optional[Path] = None) -> Optional[list]:
 
 def _tui_command(home: Optional[Path]) -> str:
     """The TUI command that opens *home*'s profile: a bare ``hermes`` opens the default one."""
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
 
     name = profile_name_for_home(home)
     return f"hermes -p {name} --tui" if name and name != "default" else "hermes --tui"

@@ -74,7 +74,7 @@ def issue_side_question_token(agent: Any, messages: list[dict[str, Any]], turn_i
     """Capture the finished turn and lease it under a fresh token; None (nothing captured) for an
     unattended turn (fork, cron run, subagent) or when no consented plugin is loaded. Turn thread
     only: the captured context and profile are the turn's."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     if is_unattended_turn(agent) or not _consented_plugin_loaded():
         return None
@@ -123,7 +123,7 @@ def redeem_side_question(
     ``home`` is the redeeming plugin's profile home (the active one when omitted). A lease from
     another profile is refused and left for its owner; otherwise this call consumes it whatever
     the outcome."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     home_key = hermes_home_key(home)
     with _lock:

@@ -15,7 +15,7 @@ import threading
 import time
 
 from hermes_agent.agent.i18n import t
-from hermes_constants import is_termux as _is_termux_environment
+from hermes_agent.hermes_constants import is_termux as _is_termux_environment
 from typing import Optional
 
 
@@ -472,7 +472,7 @@ class CLIVoiceMixin:
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""
         try:
-            from utils import is_truthy_value  # handles quoted YAML "false" (bool() would not)
+            from hermes_agent.utils import is_truthy_value  # handles quoted YAML "false" (bool() would not)
             return is_truthy_value(_config_section("voice").get("beep_enabled", True), default=True)
         except Exception:
             return True

@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
-from utils import atomic_json_write, unlink_files_older_than
+from hermes_agent.utils import atomic_json_write, unlink_files_older_than
 
 # Multiplexer / terminal-emulator identity env vars, checked in order when no real tty path is
 # available (e.g. stdin piped but stdout still a pty owned by a known terminal).
@@ -25,7 +25,7 @@ _SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def _breadcrumbs_dir() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "terminal-sessions"
 
 
@@ -71,7 +71,7 @@ def write_breadcrumb(session_id: str, cwd: Optional[str] = None) -> None:
         if not terminal_id:
             return
         directory = _breadcrumbs_dir()
-        from hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(directory)
         now = time.time()
         payload = {"session_id": session_id, "cwd": cwd or os.getcwd(), "ts": now}
@@ -113,7 +113,7 @@ def resolve_breadcrumb_session() -> Optional[str]:
         return None
     try:
         from hermes_agent.hermes_state import SessionDB
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
     except Exception:

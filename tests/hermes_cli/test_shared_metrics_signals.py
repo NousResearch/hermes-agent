@@ -595,7 +595,7 @@ def test_migrations_and_env_templates_are_not_user_disables(marks, monkeypatch):
 def test_diff_and_record_run_off_the_callers_lock_in_the_owning_profile(marks, monkeypatch, tmp_path):
     import threading
 
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.setattr(disabled_metrics, "_process_surface", "cli_config")
     gate, seen = threading.Event(), []
@@ -622,7 +622,7 @@ def test_diff_and_record_run_off_the_callers_lock_in_the_owning_profile(marks, m
 def test_off_thread_setup_records_in_the_owning_profile(marks, tmp_path, monkeypatch):
     seen: list[str] = []
     monkeypatch.setattr(relay_shared_metrics, "record_process_marks_saved", lambda rows: (
-        seen.append(str(__import__("hermes_constants").get_hermes_home())), len(rows))[1])
+        seen.append(str(__import__("hermes_agent.hermes_constants", fromlist=["get_hermes_home"]).get_hermes_home())), len(rows))[1])
     home_a, home_b = tmp_path / "a", tmp_path / "b"
     for home in (home_a, home_b, home_a):
         flow = setup_metrics.begin_provider_setup("dashboard", "xai", hermes_home=home)

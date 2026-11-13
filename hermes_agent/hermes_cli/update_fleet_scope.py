@@ -32,7 +32,7 @@ def update_scope_homes() -> set[Path]:
     """Resolved homes the running update owns: the invoking home, the install root and its profiles."""
     homes: set[Path] = set()
     with suppress(Exception):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         if (home := _resolved(get_hermes_home())) is not None:
             homes.add(home)
     with suppress(Exception):

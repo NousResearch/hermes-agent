@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.hermes_cli import gateway_migrate as gm
 
 # Captured before any fixture fakes the seam: the one test that drives the real service leg.
@@ -139,7 +139,7 @@ _real_preflight = gm._preflight_apply
 
 
 def _config_flag(root: Path):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     raw = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8")) or {}
     return (raw.get("gateway") or {}).get("multiplex_profiles")
 

@@ -238,7 +238,7 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
         return False, {}
     try:
         from hermes_agent.hermes_cli.config import load_config_readonly
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
         task = _task_block(load_config_readonly())
         return is_truthy_value(task.get("enabled"), default=True), task
     except Exception:
@@ -922,7 +922,7 @@ def _routed_reasoning_config(task_cfg: Optional[dict[str, Any]]) -> Optional[dic
     effort = _background_review_task_config(task_cfg).get("reasoning_effort")
     if effort is None or effort == "":
         return None
-    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+    from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
     parsed = parse_reasoning_effort(effort)
     if parsed is None:
         logger.warning(

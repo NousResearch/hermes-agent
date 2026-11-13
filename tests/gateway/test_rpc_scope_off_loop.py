@@ -20,7 +20,7 @@ def _authority(home, multiplex=True):
 
 def _bound():
     from hermes_agent.agent.secret_scope import current_secret_scope, current_secret_scope_home
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
     from hermes_agent.tools.terminal_scope import get_terminal_scope
     secrets = current_secret_scope()
     terminal = get_terminal_scope()

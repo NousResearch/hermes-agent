@@ -227,7 +227,7 @@ def test_release_under_profile_home_override_targets_acquisition_registry(
     profile home override (native multiplex runs agent cleanup under
     ``_profile_runtime_scope``). Before the fix the root entry survived and
     the session cap filled with phantom leases."""
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -265,7 +265,7 @@ def test_transfer_under_profile_home_override_targets_acquisition_registry(
 ):
     """Sibling site of #85431: transfer must also update the registry the
     lease was acquired against, not one resolved from the current override."""
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
     )

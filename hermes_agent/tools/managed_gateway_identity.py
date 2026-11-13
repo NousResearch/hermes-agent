@@ -52,7 +52,7 @@ def _platform_name() -> str:
     from hermes_agent.agent.relay_runtime import current_turn
     from hermes_agent.gateway.session_context import get_session_env
     from hermes_agent.tools.connectors.gateway.config import session_platform
-    from utils import is_truthy_value
+    from hermes_agent.utils import is_truthy_value
 
     turn = current_turn()
     if turn is not None and turn.lease.platform:
@@ -71,7 +71,7 @@ def request_surface() -> str:
 
 def user_agent() -> str:
     from hermes_agent.hermes_cli.version_info import get_version_info
-    from hermes_platform.host.facts import os_family
+    from hermes_agent.hermes_platform.host.facts import os_family
 
     os_name = _OS_FAMILY.get(os_family(), "unknown")
     return f"hermes-agent/{get_version_info().base_version} ({request_surface()}; {os_name})"

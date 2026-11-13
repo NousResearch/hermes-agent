@@ -93,7 +93,7 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
     it. Never fatal to the delete, which has already happened by this point.
     """
     if live_mux:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         root = get_default_hermes_root()
         try:
             from hermes_agent.gateway.control_socket import purge_gateway_profile_identity
@@ -115,7 +115,7 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
         return False
 
     from hermes_agent.hermes_cli.profiles import get_profile_dir
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     from hermes_agent.hermes_state_registry import acquire, release_or_close
     root = get_default_hermes_root()
     purged = True
@@ -193,7 +193,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
     checkpoint_migrated = _migrate_checkpoint_identity(old_canon, new_canon)
 
     if live_mux:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         root = get_default_hermes_root()
         try:
             from hermes_agent.gateway.control_socket import migrate_gateway_profile_identity
@@ -216,7 +216,7 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
 
     from hermes_agent.hermes_cli.profiles import get_profile_dir
     from hermes_agent.hermes_state_registry import acquire, release_or_close
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     root = get_default_hermes_root()
     migrated = checkpoint_migrated
     for db_path in (root / "state.db", get_profile_dir(new_canon) / "state.db"):

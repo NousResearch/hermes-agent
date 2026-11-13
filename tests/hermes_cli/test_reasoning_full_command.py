@@ -7,7 +7,7 @@ These assert the toggle sets the instance flag, persists to config.yaml,
 and that the clamp gate honours the flag.
 """
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 

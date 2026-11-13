@@ -337,7 +337,7 @@ class MCPOAuthManager:
 
     @staticmethod
     def _key(server_name: str, hermes_home: str | Path | None = None) -> tuple[str, str]:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         home = Path(hermes_home) if hermes_home is not None else get_hermes_home()
         return (str(home.expanduser().resolve(strict=False)), server_name)
 
@@ -383,7 +383,7 @@ class MCPOAuthManager:
     async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:
         """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh); True if so."""
         from hermes_agent.tools.mcp_oauth import _get_token_dir, _safe_filename
-        from utils import file_cache_version
+        from hermes_agent.utils import file_cache_version
         entry = self._entries.get(self._key(server_name, hermes_home))
         if entry is None or entry.provider is None:
             return False

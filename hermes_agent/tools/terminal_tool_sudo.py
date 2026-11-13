@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 
 from hermes_agent.tools.terminal_tool_sudo_askpass import SUDO_ASKPASS_PREFIX, SUDO_ASKPASS_SUFFIX
-from utils import env_var_enabled
+from hermes_agent.utils import env_var_enabled
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_agent.tools.terminal_tool")
@@ -99,7 +99,7 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     no_user = _no_sudo_user()
     if not (is_gateway or no_user) or not any(f in output for f in _SUDO_HEADLESS_FAILURES):
         return output
-    from hermes_constants import display_hermes_home as _dhh
+    from hermes_agent.hermes_constants import display_hermes_home as _dhh
     if no_user:
         return output + (
             "\n\n💡 Tip: This session cannot prompt for a sudo password. "

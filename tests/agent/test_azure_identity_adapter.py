@@ -272,7 +272,7 @@ class TestScopedCredential:
         doctor path surfaces the same refusal. Control: a standalone run keeps the ambient chain."""
         from hermes_agent.agent import secret_scope
         from hermes_agent.agent.azure_identity_adapter import EntraIdentityConfig, _probe_token, build_credential
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         home_a, home_b = tmp_path / "home-A", tmp_path / "home-B"
         for home in (home_a, home_b):

@@ -24,7 +24,7 @@ from typing import Callable, Dict, Any, List, Optional
 
 import copy
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ DEFAULT_PROVIDER = "edge"
 
 
 def _get_default_output_dir() -> str:
-    from hermes_constants import get_hermes_dir
+    from hermes_agent.hermes_constants import get_hermes_dir
     return str(get_hermes_dir("cache/audio", "audio_cache"))
 
 
@@ -120,7 +120,7 @@ def _default_output_dir() -> str:
     Same bug class as skills_tool (f8723c478) and skills_sync (#65828): long-lived multi-profile runtimes
     (dashboard console, TUI/Desktop backend, cron, kanban workers) import this module once under the launch
     HERMES_HOME and later scope requests to a different profile via
-    ``hermes_constants.set_hermes_home_override()`` — a frozen module constant keeps writing synthesized
+    ``hermes_agent.hermes_constants.set_hermes_home_override()`` — a frozen module constant keeps writing synthesized
     audio into the launch profile's cache instead of the active profile's (#98749). Keep the legacy
     ``DEFAULT_OUTPUT_DIR`` module attribute for tests and external patchers; when it has not been patched,
     re-resolve from the live profile-scoped HERMES_HOME on every call.

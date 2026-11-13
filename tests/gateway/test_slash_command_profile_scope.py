@@ -63,7 +63,7 @@ async def test_insights_opens_session_db_under_the_routed_home(
     import hermes_agent.agent.insights as insights_mod
     from hermes_agent import hermes_state
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     seen: dict = {}
 

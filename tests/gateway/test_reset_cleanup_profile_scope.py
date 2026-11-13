@@ -22,7 +22,7 @@ from hermes_agent.agent import memory_caller_scope, secret_scope
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 class _RecordingAgent:
@@ -111,7 +111,7 @@ async def test_reset_gateway_events_reach_only_the_owning_profile_hooks(tmp_path
     names the owner of the session that ended, so a source that routes elsewhere (no profile on it)
     must not move the hooks either."""
     from hermes_agent.gateway.hooks import HookRegistry, ProfileHookRegistries
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     prof_b = _profile_b(tmp_path, monkeypatch)
     key = "agent:b:telegram:dm:1"

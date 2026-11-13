@@ -365,7 +365,7 @@ async def test_a_sibling_torn_down_with_the_shared_socket_reads_its_own_grace(tm
     """A shared socket's close tears its sibling connections down under the primary profile's scope;
     each still detaches as its own owner, so the sibling's grace expands against its own ``.env``."""
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     armed = _capture_timers(monkeypatch)
     home, primary = get_hermes_home(), tmp_path / 'primary'

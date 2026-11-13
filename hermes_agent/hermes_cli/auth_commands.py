@@ -23,7 +23,7 @@ import hermes_agent.hermes_cli.auth as auth_mod
 from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_agent.hermes_cli.auth_plugin_providers import (
     canonical_registry_rows, dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
 from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 
 

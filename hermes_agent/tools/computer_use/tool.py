@@ -20,7 +20,7 @@ from collections import namedtuple
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
 from hermes_agent.agent.image_eviction_policy import image_dimensions_from_bytes
 from hermes_agent.tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
@@ -196,7 +196,7 @@ def _scoped_sid(session_id: str) -> str:
     (legacy keys byte-identical); under a multiplexed turn the routed profile's home key is appended
     so two profiles that share a session id (or a DISPLAY) never share one cua-driver (#110032).
     Every cache path — lookup, install, release — goes through this, so release finds what lookup made."""
-    from hermes_constants import get_hermes_home_override, hermes_home_key
+    from hermes_agent.hermes_constants import get_hermes_home_override, hermes_home_key
     sid = str(session_id or "")
     return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
 
@@ -825,7 +825,7 @@ def _cache_file(subdir: str, legacy: str, name: str, pattern: str = "", cap: int
     """Path for a new file under ``$HERMES_HOME/<subdir>`` (dir created owner-only, per #77579).
     With ``pattern``/``cap``, first unlinks the oldest matching files so at most ``cap - 1`` remain
     (best-effort)."""
-    from hermes_constants import get_hermes_dir  # lazy so tests can patch get_hermes_dir
+    from hermes_agent.hermes_constants import get_hermes_dir  # lazy so tests can patch get_hermes_dir
     cache_dir = get_hermes_dir(subdir, legacy)
     _secure_dir_policy(cache_dir)
     with contextlib.suppress(Exception):

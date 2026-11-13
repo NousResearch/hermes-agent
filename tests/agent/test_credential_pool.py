@@ -1291,7 +1291,7 @@ def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
 
     # Write config.yaml with a custom_providers entry
     config_path = tmp_path / "hermes" / "config.yaml"
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     config_path.write_text(yaml.safe_dump({
         "custom_providers": [
             {
@@ -1317,7 +1317,7 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1})
 
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     config_path = tmp_path / "hermes" / "config.yaml"
     config_path.write_text(yaml.safe_dump({
         "custom_providers": [

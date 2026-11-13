@@ -15,7 +15,7 @@ from hermes_agent.hermes_cli.dashboard_auth.base import (
 )
 from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_agent.hermes_cli.dashboard_auth import registry as _auth_registry
-from hermes_constants import get_process_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_process_hermes_home, hermes_home_key
 
 
 class _Stub(DashboardAuthProvider):

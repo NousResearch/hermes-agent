@@ -7,7 +7,7 @@ resolution; only child construction/run are stubbed where a test reads what they
 import json
 import types
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from pathlib import Path

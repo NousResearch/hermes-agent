@@ -54,7 +54,7 @@ def set_terminal_scope(mapping: Optional[dict[str, str]], *, profile_home: Any =
     including clearing the policy, raises ``ScopeSwitchRefused``, since the scope's home and secrets
     would stay with a policy that is not theirs. To run under another profile's policy, bind that
     profile (``hermes_agent.agent.runtime_scope.bind_profile_scope``)."""
-    from hermes_scope import ScopeSwitchRefused, current_scope, push_state
+    from hermes_agent.hermes_scope import ScopeSwitchRefused, current_scope, push_state
     scope = current_scope()
     if scope is not None:
         from hermes_agent.agent.runtime_scope import owns_bound_scope
@@ -95,7 +95,7 @@ class DeferredTerminalPolicy:
 
 def get_terminal_scope() -> Optional[dict[str, str]]:
     """The active scope mapping/refusal, or ``None`` when no scope is bound."""
-    from hermes_scope import current_state
+    from hermes_agent.hermes_scope import current_state
     policy = current_state().terminal
     return policy.resolve() if isinstance(policy, DeferredTerminalPolicy) else policy
 
@@ -277,7 +277,7 @@ def install_profile_terminal_scope(hermes_home: Any, *, env_overlay: Optional[di
     Legacy setter: new code binds a scope (``hermes_agent.agent.runtime_scope.bind_profile_scope``). With a
     scope bound, a call for another profile moves the whole scope to it (local) or raises
     ``ScopeSwitchRefused`` (hosted)."""
-    from hermes_scope import current_scope, push_state
+    from hermes_agent.hermes_scope import current_scope, push_state
     if current_scope() is not None:
         from hermes_agent.agent.runtime_scope import legacy_switch
         switched = legacy_switch(hermes_home, env_overlay=env_overlay)

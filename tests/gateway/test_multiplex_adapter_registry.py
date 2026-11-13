@@ -396,7 +396,7 @@ class TestSecondaryProfileFatalRecovery:
         redelivery_homes = []
 
         async def redeliver(platform, *, profile=None):
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
 
             redelivery_homes.append(Path(get_hermes_home()))
             return 0

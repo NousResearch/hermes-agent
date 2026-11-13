@@ -232,7 +232,7 @@ class _LogDirOnFailureHandler(logging.FileHandler):
 
     def emit(self, record: logging.LogRecord) -> None:
         if self.stream is None:
-            from hermes_constants import mkdir_under_hermes_home
+            from hermes_agent.hermes_constants import mkdir_under_hermes_home
 
             try:
                 mkdir_under_hermes_home(Path(self.baseFilename).parent)
@@ -250,7 +250,7 @@ def refresh_in_child(repo_root: str, git_dir: str, log_file: str) -> None:
     side effects a git maintenance child has no business having in a profile mid-update.
     """
     handler = _LogDirOnFailureHandler(log_file, encoding="utf-8", delay=True)
-    from hermes_logging import DisplayNameFormatter
+    from hermes_agent.hermes_logging import DisplayNameFormatter
     handler.setFormatter(DisplayNameFormatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.getLogger().addHandler(handler)
     try:
@@ -267,7 +267,7 @@ def spawn_commit_graph_refresh(repo_root: Path) -> bool:
     because the write takes seconds and must neither delay the update nor die with it. A spawn that
     fails gives the slot back, so the next update retries instead of waiting out the interval.
     """
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     git_dir = common_git_dir(repo_root)
     if git_dir is None or not (git_dir / "objects").is_dir() or not claim_commit_graph_refresh(git_dir):

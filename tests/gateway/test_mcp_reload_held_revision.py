@@ -19,7 +19,7 @@ CONFIG = ('model: {default: m1, provider: custom, base_url: "http://127.0.0.1:9/
 
 def _home(monkeypatch):
     from hermes_agent.gateway import run
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     (home / 'config.yaml').write_text(CONFIG)

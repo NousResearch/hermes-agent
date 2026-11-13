@@ -51,7 +51,7 @@ class _Kernel32:
 @pytest.fixture()
 def pipe(monkeypatch):
     """Install one pipe server's facts as the Win32 layer reports them to this client."""
-    import hermes_dir_acl
+    from hermes_agent import hermes_dir_acl
 
     def install(*, process_sid, owner=OWN, aces=((0, OWN),), readable=True, own_elevated=False,
                 own_session=1, server_session=1, client_pid=None, server_elevated=None):

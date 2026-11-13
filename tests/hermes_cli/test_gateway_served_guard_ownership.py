@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.gateway import host_attach
 from hermes_agent.gateway.host_attach import HostGateway
 

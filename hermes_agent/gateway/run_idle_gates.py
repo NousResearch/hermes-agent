@@ -18,7 +18,7 @@ logger = logging.getLogger("hermes_agent.gateway.run")
 def _profile_session_db_probe(profile_home: Path) -> Optional[Any]:
     """The goals-cached SessionDB for *profile_home*; None when unavailable."""
     from hermes_agent.hermes_cli.goals import _get_session_db
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     token = set_hermes_home_override(str(profile_home))
     try:

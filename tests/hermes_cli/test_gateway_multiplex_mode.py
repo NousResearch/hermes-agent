@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.gateway.config import GatewayConfig, load_gateway_config
 from hermes_agent.hermes_cli import gateway_migrate as gm
 from hermes_agent.hermes_cli import gateway_multiplex_mode as mode

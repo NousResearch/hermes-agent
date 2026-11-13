@@ -11,7 +11,7 @@ import os
 import pytest
 
 from hermes_agent.tools import terminal_tool
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.fixture(autouse=True)
@@ -144,7 +144,7 @@ def test_secondary_home_override_does_not_latch_ambient_env(tmp_path, monkeypatc
     one-shot latch used to write B's docker policy into process-global env and
     every later unscoped launch-profile tool call inherited it.
     """
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch_home = tmp_path / "launch"
     secondary_home = tmp_path / "profiles" / "docker-bee"

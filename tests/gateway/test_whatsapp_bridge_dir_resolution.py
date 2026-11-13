@@ -33,7 +33,7 @@ def test_readonly_install_mirrors_to_hermes_home(tmp_path, monkeypatch):
         "hermes_agent.hermes_cli._startup_fast.project_root_str", lambda: str(install_root)
     )
     monkeypatch.setattr(
-        "hermes_constants.get_hermes_home", lambda: hermes_home
+        "hermes_agent.hermes_constants.get_hermes_home", lambda: hermes_home
     )
 
     # Simulate a read-only install tree. chmod(0o555) is unreliable under
@@ -73,7 +73,7 @@ def test_existing_mirror_is_refreshed_from_the_install_tree_and_keeps_its_deps(t
     (mirror / "bridge.js").write_text("// stale bridge\n")
 
     monkeypatch.setattr("hermes_agent.hermes_cli._startup_fast.project_root_str", lambda: str(install_root))
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: hermes_home)
     _real_touch = Path.touch
 
     def _fake_touch(self, *a, **kw):

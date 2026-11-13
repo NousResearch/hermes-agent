@@ -179,7 +179,7 @@ def restore_identity(
     if existing is not None:
         return existing
     from hermes_agent.hermes_cli.profiles import get_profile_dir
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
 
     primary_profile = _name(getattr(runner, "_primary_profile_name", None)) or "default"
     runtime_name = _name(getattr(source, "profile", None)) or primary_profile
@@ -217,7 +217,7 @@ def resolve_identity(
     Raises :class:`IdentityUnresolved` under multiplexing when the route is rejected.
     """
     from hermes_agent.gateway.profile_routing import ProfileRouteRejected
-    from hermes_constants import get_hermes_home, get_process_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home, get_process_hermes_home
 
     multiplexed = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
     primary_profile = _name(getattr(runner, "_primary_profile_name", None))

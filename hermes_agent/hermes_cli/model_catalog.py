@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_agent.hermes_cli.version_info import hermes_user_agent
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ _fetch_retry_lock = threading.Lock()
 
 
 def _backoff_key(kind: str, url: str) -> tuple[str, str, str]:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     return (hermes_home_key(), kind, url)
 
 
@@ -76,7 +76,7 @@ def _note_fetch_result(kind: str, url: str, ok: bool) -> None:
 
 def clear_fetch_backoff() -> None:
     """Forget the active profile's fetch failures so an explicit refresh retries every URL."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     home = hermes_home_key()
     with _fetch_retry_lock:
         for key in [k for k in _fetch_retry_after if k[0] == home]:
@@ -118,7 +118,7 @@ def _load_catalog_config() -> dict[str, Any]:
 
 def _cache_path() -> Path:
     """Disk cache path; imported lazily so tests can monkeypatch home."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "cache" / "model_catalog.json"
 
 

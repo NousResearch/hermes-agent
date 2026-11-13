@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from datetime import UTC
 from hermes_agent.hermes_cli._startup_fast import project_root_str
 
@@ -343,7 +343,7 @@ def match_removed(
 # ── Live catalog ─────────────────────────────────────────────────────────────
 
 def _live_cache_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "cache" / "plugin-catalog.json"
 
 
@@ -449,8 +449,8 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[dict[str, Any]]:
         return _stale_live_cache(cache)
     try:
         import httpx
-        from hermes_constants import mkdir_under_hermes_home
-        from utils import atomic_write_text
+        from hermes_agent.hermes_constants import mkdir_under_hermes_home
+        from hermes_agent.utils import atomic_write_text
 
         data = json.loads(_download_live_catalog(httpx))
         if not isinstance(data, dict) or not isinstance(data.get("entries"), list):

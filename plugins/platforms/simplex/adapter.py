@@ -29,7 +29,7 @@ from hermes_agent.gateway.platforms._shared import (
     platform_gate_env as _platform_gate_env, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult, cache_image_from_url, describe_proxy_error, env_proxy_for_redaction
 from hermes_agent.gateway.platforms.helpers import cancel_task
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType

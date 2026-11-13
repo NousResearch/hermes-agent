@@ -1,7 +1,7 @@
 """Passive opt-out keeps explicit update checks available."""
 import subprocess
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 def test_explicit_check_fetches_local_origin_despite_passive_opt_out(tmp_path, monkeypatch, capsys):

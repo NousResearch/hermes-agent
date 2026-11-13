@@ -460,7 +460,7 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
         _last_auto_archive_check[key] = now
 
         from hermes_agent.hermes_cli.config import load_config as _load_full_config
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         # The config that governs a store is the one in that store's OWN home. A zero-arg
         # load_config() resolves through the PROCESS HERMES_HOME, so the dashboard swept every
@@ -501,7 +501,7 @@ def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
     """Measure chat inactivity, not socket inactivity (Desktop stays connected)."""
     import hermes_agent.tui_gateway.server as gateway
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home().resolve()
     with gateway._sessions_lock:
@@ -516,7 +516,7 @@ def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
 
 
 def _maybe_run_skill_maintenance(started_at: float) -> None:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.profiles import _check_gateway_running
 
     # A live messaging gateway already owns these chores for this profile.

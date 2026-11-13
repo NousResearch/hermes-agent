@@ -17,7 +17,7 @@ from hermes_agent.agent.secret_scope import (
     current_secret_scope,
     is_multiplex_active,
 )
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 def cron_env_setting(name: str, default: str = "") -> str:

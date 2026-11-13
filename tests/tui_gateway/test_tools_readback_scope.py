@@ -10,7 +10,7 @@ session's own profile would build with; the launch profile's session still sees 
 
 from __future__ import annotations
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.tui_gateway import server
@@ -62,7 +62,7 @@ def _sections(sid: str) -> set[str]:
 
 
 def test_tools_list_reads_back_the_sessions_own_pin_a_b_a(two_homes):
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
 
     work_first = _enabled("work")
     launch = _enabled("launch")

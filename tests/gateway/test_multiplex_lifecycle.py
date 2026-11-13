@@ -30,7 +30,7 @@ def test_cron_profile_homes_serve_every_live_profile(tmp_path, monkeypatch):
     for name in ("worker", "guest", "gone"):
         (default_home / "profiles" / name).mkdir(parents=True)
         (default_home / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
-    from hermes_constants import mark_named_profile_deleted
+    from hermes_agent.hermes_constants import mark_named_profile_deleted
     mark_named_profile_deleted(default_home / "profiles" / "gone")
 
     import hermes_agent.gateway.run as gateway_run
@@ -72,7 +72,7 @@ class TestNamedProfileMultiplexerGuard:
         from hermes_agent.hermes_cli import gateway as gw
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
         monkeypatch.setattr(
-            "hermes_constants.get_default_hermes_root", lambda: tmp_path
+            "hermes_agent.hermes_constants.get_default_hermes_root", lambda: tmp_path
         )
         # No gateway.pid in tmp_path => no running default gateway => no raise.
         gw._guard_named_profile_under_multiplexer(force=False)
@@ -84,7 +84,7 @@ class TestNamedProfileMultiplexerGuard:
 
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
         monkeypatch.setattr(
-            "hermes_constants.get_default_hermes_root", lambda: tmp_path
+            "hermes_agent.hermes_constants.get_default_hermes_root", lambda: tmp_path
         )
         import json
         import os

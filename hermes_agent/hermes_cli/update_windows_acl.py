@@ -14,18 +14,18 @@ def repair_windows_home_acl(*, elevated: bool | None = None) -> None:
     token, so grant the actual user SID explicitly on every entry under the home.
 
     The walk never descends into or grants through a junction, symlink or hard link
-    (``hermes_dir_acl.grant_tree_user_access``): ``icacls /T`` follows junctions, so a
+    (``hermes_agent.hermes_dir_acl.grant_tree_user_access``): ``icacls /T`` follows junctions, so a
     same-user junction inside the home would have turned the elevated grant into full
     control of e.g. ``C:\\Program Files\\X``.
 
     *elevated* is the host fact (default: probed; False on every host but an elevated Windows one).
     """
-    from hermes_dir_acl import grant_tree_user_access, process_is_elevated
+    from hermes_agent.hermes_dir_acl import grant_tree_user_access, process_is_elevated
     if not (process_is_elevated() if elevated is None else elevated):
         # Only an elevated update leaves Administrators-only entries, and only an elevated token
         # can rewrite them; a recursive grant over the whole home on every update costs minutes.
         return
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = get_hermes_home()
     # The home itself is the operator's choice and may be a link: pin its real directory and walk

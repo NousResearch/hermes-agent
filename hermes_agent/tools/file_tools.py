@@ -26,7 +26,7 @@ from hermes_agent.tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from hermes_agent.tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
 from hermes_agent.tools import file_state
-from hermes_platform.host import facts
+from hermes_agent.hermes_platform.host import facts
 from hermes_agent.agent.redact import _is_secret_file_arg, redact_sensitive_text
 from hermes_agent.tools.file_tools_paths import (
     _expand_tilde, _hosted_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,

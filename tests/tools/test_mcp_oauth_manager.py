@@ -17,7 +17,7 @@ pytest.importorskip(
 
 
 def test_manager_isolates_same_named_servers_by_profile_home(tmp_path, monkeypatch):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.mcp_oauth import HermesTokenStorage
     from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager
 

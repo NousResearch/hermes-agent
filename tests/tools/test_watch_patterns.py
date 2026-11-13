@@ -223,7 +223,7 @@ class TestCheckpointPersistence:
         with registry._lock:
             registry._running[session.id] = session
 
-        with patch("utils.atomic_json_write") as mock_write:
+        with patch("hermes_agent.utils.atomic_json_write") as mock_write:
             registry._write_checkpoint()
             args = mock_write.call_args
             entries = args[0][1]  # second positional arg

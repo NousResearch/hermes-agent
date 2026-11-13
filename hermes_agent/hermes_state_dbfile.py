@@ -634,7 +634,7 @@ def capture_retired_wal_generation(
             main.update(mode="header_only", file=header_file.name, bytes=len(header))
         manifest["main"] = main
         # Late import: utils pulls agent-side deps; the capture must stay dependency-light.
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         atomic_json_write(staging / RETIRED_GENERATION_MANIFEST, manifest, sort_keys=True)
         _fsync_path(staging)
         os.replace(staging, final)

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from hermes_agent.hermes_cli.gitlock import clear_stale_tmp_packs
-from utils import rmtree_readonly
+from hermes_agent.utils import rmtree_readonly
 from hermes_agent.tools.checkpoint_manager import (
     _GIT_TIMEOUT, _LEGACY_PREFIX, _PRUNE_MARKER_NAME, _REFS_PREFIX, _STORE_DIRNAME,
     _dir_size_bytes, _index_path, _list_projects, _pre_v2_shadow_repos,

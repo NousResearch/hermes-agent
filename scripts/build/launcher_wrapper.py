@@ -21,7 +21,7 @@ The wrapper replaces everything the old rust shim + its sidecar did
     the only mechanism that runs ``.pth`` files — because pywin32.pth is
     what puts win32\\lib on sys.path and therefore what makes
     ``import pywintypes`` resolve on Windows bundles (portalocker's
-    Win32Locker → concurrent-log-handler → hermes_logging.py's files),
+    Win32Locker → concurrent-log-handler → hermes_agent/hermes_logging.py's files),
   * drop inherited PYTHONPATH / PYTHONHOME so foreign installs can never
     shadow the bundle,
   * default sys.pycache_prefix to the user-level cache (%LOCALAPPDATA%

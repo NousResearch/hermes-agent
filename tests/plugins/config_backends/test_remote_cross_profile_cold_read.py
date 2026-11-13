@@ -24,7 +24,7 @@ from hermes_agent.agent.runtime_scope import bind_profile_scope
 from hermes_agent.hermes_cli.config_backend import get_config_backend
 with bind_profile_scope(home / "profiles" / "a", hydrate_secrets=False):
     get_config_backend()._state(home / "profiles" / "b")  # B's first read, while A is bound
-from hermes_scope import current_scope
+from hermes_agent.hermes_scope import current_scope
 assert current_scope() is None
 print("RESULT=" + json.dumps("ok"))
 """

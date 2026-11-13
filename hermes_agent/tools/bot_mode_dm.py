@@ -63,7 +63,7 @@ FAN_OUT_MAX = 8
 
 
 def _default_home() -> str:
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
     return str(get_process_hermes_home())
 
 
@@ -449,7 +449,7 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
         # orphans of runners that never settled are swept here too.
         locations.append((dm_dir, "*.live.json"))
         locations.append((dm_dir, "fanout-*.json"))
-    from utils import unlink_files_older_than
+    from hermes_agent.utils import unlink_files_older_than
 
     return sum(unlink_files_older_than(d, pattern, max_age_hours * 3600, now=now) for d, pattern in locations)
 
@@ -540,7 +540,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     """Pin intent before admission; retries may inspect, never change transport."""
     from hermes_agent.tools.bot_live_delivery import (PreDialError, deliver_to_live_owner, find_canonical_live_owner,
                                          read_delivery_result)
-    from utils import fsync_directory
+    from hermes_agent.utils import fsync_directory
 
     intent: dict[str, Any]
     intent_path = Path(_live_intent_file(dm_file))
@@ -1035,7 +1035,7 @@ if __name__ == "__main__":  # pragma: no cover - exercised as a background proce
     # sender's wake-up, and any other argv exits 2 before a Hermes import.
     if sys.argv[1:2] == ["--run-delivery"]:
         try:
-            import hermes_bootstrap
+            from hermes_agent import hermes_bootstrap
         except (Exception, SystemExit) as exc:
             # A pinned live intent means the sender may already have admitted this DM and was
             # told not to resend; a bare repair hint would read as "NOT delivered". Without an

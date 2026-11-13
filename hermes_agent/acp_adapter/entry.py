@@ -9,9 +9,9 @@ Usage::
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
-# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+# on Windows.  No-op on POSIX.  See hermes_agent/hermes_bootstrap.py for full rationale.
 try:
-    import hermes_bootstrap
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError as exc:
     # Partial ``hermes update`` (git-reset landed, ``uv pip install -e .`` did not).
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
@@ -32,7 +32,7 @@ import asyncio
 import logging
 import os
 import sys
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 

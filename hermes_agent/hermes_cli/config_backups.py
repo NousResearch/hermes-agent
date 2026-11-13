@@ -88,7 +88,7 @@ def load_newest_good_backup(config_path: Path) -> Optional[dict]:
     if not newest:
         return None
     try:
-        from utils import fast_safe_load
+        from hermes_agent.utils import fast_safe_load
         with newest[0].open(encoding="utf-8") as f:
             data = fast_safe_load(f)
     except Exception as exc:

@@ -60,7 +60,7 @@ def _snapshot_error(err: str) -> str:
 
 
 def _home_lock() -> threading.Lock:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     with _locks_guard:
         return _locks.setdefault(hermes_home_key(), threading.Lock())
 
@@ -68,7 +68,7 @@ def _home_lock() -> threading.Lock:
 def real_profile_key() -> str:
     """Launcher key of the CURRENT profile's real-profile browser. Per home: one process serves many profiles,
     so a consent-off profile must never stop another's browser, nor a consenting one reuse its cookie jar."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     return f"hermes-real-profile@{hermes_home_key()}"
 
 

@@ -13,7 +13,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.registry import registry, tool_error
 from hermes_agent.hermes_cli.config import cfg_get
 from hermes_agent.agent.skill_utils import (

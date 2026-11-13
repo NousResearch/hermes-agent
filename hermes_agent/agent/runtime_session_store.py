@@ -16,7 +16,7 @@ from pathlib import Path
 import queue
 import sys
 import threading
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
 
@@ -304,7 +304,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         if len(encoded) > self.max_bytes:
             self.failure = 'outbox_full'
             raise WorkerPersistenceError(self.failure)
-        from utils import atomic_write_bytes
+        from hermes_agent.utils import atomic_write_bytes
         # Owner-only journal (the dir is 0700 too); the rename and its directory entry are durable.
         atomic_write_bytes(self.path, encoded, tmp_prefix='.pending-', mode=0o600, fsync_dir=True)
 

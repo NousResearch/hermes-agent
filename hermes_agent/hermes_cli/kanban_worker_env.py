@@ -46,7 +46,7 @@ _HOST_NAMES = frozenset({
     # index). Not the XDG_ prefix: XDG_ACTIVATION_TOKEN and any user-chosen XDG_* name can be a secret.
     "XDG_RUNTIME_DIR", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "XDG_DATA_HOME",
     "XDG_DATA_DIRS", "XDG_CACHE_HOME",
-    # Termux detection (hermes_platform.host.runtime).
+    # Termux detection (hermes_agent.hermes_platform.host.runtime).
     "PREFIX", "TERMUX_VERSION",
 })
 _HOST_PREFIXES = ("LC_",)

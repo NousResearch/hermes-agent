@@ -108,7 +108,7 @@ _REPORTERS_DACL = ["/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-
 
 def _elevated() -> bool:
     sys.path.insert(0, str(_REPO))
-    from hermes_dir_acl import process_is_elevated
+    from hermes_agent.hermes_dir_acl import process_is_elevated
     return process_is_elevated()
 
 
@@ -159,7 +159,7 @@ def _require_faithful_probe(reporters_parent: Path, reporters_dir: Path) -> None
 
 
 def test_dir_made_while_elevated_stays_usable_by_the_filtered_token(reporters_parent):
-    from hermes_dir_acl import make_user_dir
+    from hermes_agent.hermes_dir_acl import make_user_dir
 
     plain = reporters_parent / "plain"
     plain.mkdir()  # inherits the reporters' SYSTEM + Administrators DACL
@@ -173,7 +173,7 @@ def test_dir_made_while_elevated_stays_usable_by_the_filtered_token(reporters_pa
 
 
 def test_elevated_rerun_repairs_a_dir_an_earlier_elevated_run_left(reporters_parent):
-    from hermes_dir_acl import make_user_dir
+    from hermes_agent.hermes_dir_acl import make_user_dir
 
     left = reporters_parent / "state"
     left.mkdir()
@@ -188,7 +188,7 @@ def test_elevated_rerun_repairs_a_dir_an_earlier_elevated_run_left(reporters_par
 def test_elevated_repair_also_reaches_an_old_lock_already_inside_the_dir(reporters_parent):
     """Review #140490: the pywin32 write does not propagate, so a token lock an earlier elevated run
     left INSIDE the dir kept the reporters' DACL after the dir itself was repaired."""
-    from hermes_dir_acl import make_user_dir
+    from hermes_agent.hermes_dir_acl import make_user_dir
 
     left = reporters_parent / "gateway-locks"
     left.mkdir()
@@ -317,7 +317,7 @@ def _dacls(paths):
 
 
 def test_elevated_grants_never_reach_a_junction_target_outside_the_home(home_with_junction_out):
-    import hermes_dir_acl
+    from hermes_agent import hermes_dir_acl
     from hermes_agent.hermes_cli import update_windows_acl
 
     home, outside, junction = home_with_junction_out

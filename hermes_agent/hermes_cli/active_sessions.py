@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home, named_profile_is_live
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 

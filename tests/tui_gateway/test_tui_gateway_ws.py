@@ -526,7 +526,7 @@ def test_legacy_fallback_requires_the_interactive_grant(monkeypatch):
 def test_legacy_fallback_keeps_the_ticket_profile_for_sessionless_scoped_handlers(monkeypatch, tmp_path):
     """A secondary-profile ticket's sessionless ``@_profile_scoped`` legacy call runs in THAT profile's
     home, not the launch profile's."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     secondary = tmp_path / "profiles" / "l106742sec"
     secondary.mkdir(parents=True)

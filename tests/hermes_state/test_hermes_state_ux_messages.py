@@ -28,7 +28,7 @@ def test_db_unavailable_is_one_line_for_chat_surfaces_by_default():
 def test_db_unavailable_commands_are_pinned_to_the_failing_profile(monkeypatch, tmp_path):
     """Both fallbacks that bypass the shared cause table (no cause; network-drive gloss) name the
     profile whose store failed, like the table's actions do."""
-    from hermes_constants import profile_cli_selector
+    from hermes_agent.hermes_constants import profile_cli_selector
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
     selector = profile_cli_selector()

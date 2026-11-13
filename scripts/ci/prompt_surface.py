@@ -81,7 +81,7 @@ def _pin_environment() -> None:
     socket.getaddrinfo = refuse  # type: ignore[assignment]
     sys.platform = "linux"  # skills index ``platforms:`` gate
 
-    import hermes_time
+    from hermes_agent import hermes_time
     hermes_time.now = lambda: FIXED_NOW  # type: ignore[assignment]
     # Every registered tool counts as available, as on a fully configured install: check_fns
     # read credentials, binaries and the tool store, which vary by host and would hide schemas.

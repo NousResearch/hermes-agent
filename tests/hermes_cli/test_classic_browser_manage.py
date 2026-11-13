@@ -156,7 +156,7 @@ def test_a_browser_one_profile_connects_never_reaches_another_profiles_session(h
     disconnect from A leaves B's own live connection standing."""
     import os
     from hermes_agent.gateway import run_api
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     server, launch, bee, url, reaps = homes
     (bee / "config.yaml").write_text("browser:\n  cdp_url: ws://bee.invalid/devtools/browser/PROFILE-B\n")
     monkeypatch.setattr(run_api, "_ACTIVE_RUNNER", types.SimpleNamespace(session_authorities=_registry(launch, bee)))

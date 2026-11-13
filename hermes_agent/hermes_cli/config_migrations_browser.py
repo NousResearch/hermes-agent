@@ -23,7 +23,7 @@ def _agent_browser_env(home) -> dict[str, str]:
     """AGENT_BROWSER_* as *home* set them: its dotenv layers, then the process env for the launch home
     only (a served profile's env is the launch profile's, not its own)."""
     from hermes_agent.hermes_cli.env_loader import resolve_home_dotenv
-    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_routing_process_hermes_home, hermes_home_key
 
     dotenv = resolve_home_dotenv(home)
     launch = hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
@@ -124,7 +124,7 @@ def agent_browser_env_pending() -> bool:
     from pathlib import Path
 
     from hermes_agent.hermes_cli.config import read_raw_config
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     config = read_raw_config()
     browser = config.get("browser") if isinstance(config.get("browser"), dict) else {}
@@ -159,7 +159,7 @@ def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
 
     from hermes_agent.hermes_cli.config_migrations import _persist_migration, read_raw_config
     from hermes_agent.hermes_cli.left_core_migration import record_core_use
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     config = read_raw_config()
     browser = config.get("browser") if isinstance(config.get("browser"), dict) else {}

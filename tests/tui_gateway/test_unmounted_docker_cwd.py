@@ -10,7 +10,7 @@ import pytest
 def test_registration_uses_the_target_profiles_mount_policy(
     tmp_path, monkeypatch, mount
 ):
-    import hermes_constants as hc
+    import hermes_agent.hermes_constants as hc
     from hermes_agent.tools import terminal_tool
     from hermes_agent.tools.terminal_scope import (
         install_and_reset_profile_terminal_scope,
@@ -127,7 +127,7 @@ def test_a_bad_unrelated_terminal_setting_does_not_drop_the_registration(tmp_pat
 def test_an_unreadable_profile_keeps_the_desktop_cwd_record(tmp_path, monkeypatch):
     """The routed profile's refusal scope raises on every terminal read; the host-side record
     (project tools read it) must still be written."""
-    import hermes_constants as hc
+    import hermes_agent.hermes_constants as hc
     from hermes_agent.tools import terminal_tool
     from hermes_agent.tui_gateway import server
 

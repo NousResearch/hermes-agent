@@ -19,7 +19,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Optional
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 #: A manifest is a few hundred bytes; never read a hostile multi-megabyte one into memory.
 _MANIFEST_MAX_BYTES = 256 * 1024
@@ -110,7 +110,7 @@ def inspect_plugin_source(identifier: str, *, catalog_name: Optional[str] = None
     stops waiting before a slow clone can finish (``plugins.clone_timeout_seconds`` reaches an hour per
     Git step); its Retry must collect that clone's answer, not start another under the same deadline.
     A failed read is never kept, so a Retry after one inspects afresh."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     key = (str(get_hermes_home()), catalog_name or "", identifier)
     now = time.monotonic()
     with _inspections_lock:
@@ -149,7 +149,7 @@ def forget_inspection(identifier: str, *, catalog_name: Optional[str] = None) ->
     """Drop the kept answer for this source in the current profile home once an install consumed it: a
     source that moved since must be read afresh when the dialog re-opens, not served for the rest of
     :data:`_RESULT_TTL_SECONDS`. A read still running is left for the requests joined to it."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     key = (str(get_hermes_home()), catalog_name or "", identifier)
     with _inspections_lock:
         if _inspections.get(key, [None, None])[1] is not None:

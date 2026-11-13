@@ -68,11 +68,11 @@ def _pinned_manifest(repo: str, sha: str, subdir: str) -> Optional[dict[str, Any
 
 
 def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
-    from hermes_platform.declaration import gpu_label
-    from hermes_platform.host import facts
-    from hermes_platform.resolver.app import AppResolver
-    from hermes_platform.resolver.availability import availability
-    from hermes_platform.resolver.base import Effort
+    from hermes_agent.hermes_platform.declaration import gpu_label
+    from hermes_agent.hermes_platform.host import facts
+    from hermes_agent.hermes_platform.resolver.app import AppResolver
+    from hermes_agent.hermes_platform.resolver.availability import availability
+    from hermes_agent.hermes_platform.resolver.base import Effort
     from hermes_agent.tools.mcp_liveness import parse_liveness
 
     available = availability(decl)
@@ -128,7 +128,7 @@ def _onboarding_catalog() -> list:
     """Catalog entries curated for onboarding (``onboarding: true``) that this OS can run."""
     from hermes_agent.hermes_cli.plugin_catalog import load_catalog_live
     from hermes_agent.hermes_cli.plugins_cmd_catalog import normalized_platforms
-    from hermes_platform.host.facts import os_family
+    from hermes_agent.hermes_platform.host.facts import os_family
 
     here = os_family()
     return [entry for entry in load_catalog_live()
@@ -165,7 +165,7 @@ def presence_for(names: list[str]) -> list[dict[str, Any]]:
 
     from hermes_agent.hermes_cli.plugin_catalog import load_catalog_live
     from hermes_agent.hermes_cli.plugins_cmd_catalog import normalized_platforms
-    from hermes_platform.host.facts import os_family
+    from hermes_agent.hermes_platform.host.facts import os_family
 
     here = os_family()
     by_name = {entry.name: entry for entry in load_catalog_live()}

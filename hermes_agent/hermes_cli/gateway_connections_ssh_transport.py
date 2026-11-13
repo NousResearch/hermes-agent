@@ -508,7 +508,7 @@ def resolve_ssh_binary() -> str:
     if sys.platform == "win32":
         raise SshReachError("unsupported-platform",
                             "Gateway SSH connections need OpenSSH ControlMaster, which Windows does not support.")
-    from hermes_platform.resolver import locate_command
+    from hermes_agent.hermes_platform.resolver import locate_command
 
     found = locate_command("ssh").command
     if not found:

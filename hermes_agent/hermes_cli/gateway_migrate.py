@@ -213,11 +213,11 @@ def _home_env(home: Path) -> Iterator[None]:
     a routed home and take only ``home``'s own secrets — with the env var swapped, the routed-home
     checks read ``home`` as the launch profile and handed the launch profile's credentials to the
     default gateway."""
-    from hermes_constants import (
+    from hermes_agent.hermes_constants import (
         get_routing_process_hermes_home, pin_process_hermes_home, process_hermes_home_is_pinned,
         reset_hermes_home_override, set_hermes_home_override,
     )
-    import hermes_constants
+    from hermes_agent import hermes_constants
     previous = os.environ.get("HERMES_HOME")
     pinned_here = not process_hermes_home_is_pinned()
     if pinned_here:
@@ -239,7 +239,7 @@ def _home_env(home: Path) -> Iterator[None]:
 
 
 def _default_home() -> Path:
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
 
 
@@ -306,7 +306,7 @@ def _installed_services(home: Path) -> list[tuple[str, bool]]:
     if gw._running_under_s6():
         from hermes_agent.hermes_cli.gateway_multiplex_s6 import named_slot_name, slot_is_up
         from hermes_agent.hermes_cli.service_manager import S6ServiceManager
-        from hermes_constants import profile_name_for_home
+        from hermes_agent.hermes_constants import profile_name_for_home
         name = profile_name_for_home(home) or "default"
         slot_dir = S6ServiceManager().scandir / named_slot_name(name)
         if slot_dir.is_dir() and (name == "default" or slot_is_up(name)):
@@ -389,7 +389,7 @@ def _s6_slot_op(verb: str, home: Path) -> None:
     registered DOWN (``down`` file) as the target of a later ``hermes -p X gateway start``, exactly
     the shape the container's boot produces. The root slot is (re)started so it re-reads its config."""
     from hermes_agent.hermes_cli.gateway_multiplex_s6 import bring_root_slot_up, park_named_slot
-    from hermes_constants import profile_name_for_home
+    from hermes_agent.hermes_constants import profile_name_for_home
     name = profile_name_for_home(home) or "default"
     if name == "default":
         if verb in ("start", "restart"):
@@ -854,7 +854,7 @@ def _manifest_not_yet_served(manifest: Optional[dict], live_served: Optional[lis
 
 
 def _write_manifest(default_home: Path, data: dict) -> None:
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
 
     atomic_json_write(_manifest_path(default_home), data)
 
@@ -862,7 +862,7 @@ def _write_manifest(default_home: Path, data: dict) -> None:
 def _reconcile_standalone_runtime(default_home: Path, secondary_names: set[str]) -> None:
     """Remove only status owned by multiplexing, without re-stamping gateway identity."""
     from hermes_agent.gateway.status import read_runtime_status
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
 
     path = default_home / "gateway_state.json"
     runtime = read_runtime_status(path)

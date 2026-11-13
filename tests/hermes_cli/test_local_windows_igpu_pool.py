@@ -16,8 +16,8 @@ from hermes_agent.hermes_cli.local_runtime import binaries
 from hermes_agent.hermes_cli.local_runtime.binaries import Engine
 from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG, select_variant
 from hermes_agent.hermes_cli.local_runtime.devices import GGML_DEVICE_IGPU
-from hermes_platform.host import gpu_adapters
-from hermes_platform.host.gpu_adapters import Adapter
+from hermes_agent.hermes_platform.host import gpu_adapters
+from hermes_agent.hermes_platform.host.gpu_adapters import Adapter
 
 GIB = 1 << 30
 RAM = int(31.5 * GIB)

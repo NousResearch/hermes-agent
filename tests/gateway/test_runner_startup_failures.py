@@ -109,7 +109,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
         def __init__(self, config):
             from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
             self.session_store._db = self._session_db
@@ -130,8 +130,8 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
 
     monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _CleanExitRunner)
 
     from hermes_agent.gateway.run import start_gateway
@@ -203,8 +203,8 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     monkeypatch.setattr("hermes_agent.gateway.run.os.kill", lambda pid, sig: None)
     monkeypatch.setattr("time.sleep", lambda _: None)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _RunnerShouldNotStart)
 
     from hermes_agent.gateway.run import start_gateway
@@ -257,7 +257,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         def __init__(self, config):
             from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
             self.session_store._db = self._session_db
@@ -313,8 +313,8 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
     )
     monkeypatch.setattr("time.sleep", lambda _: None)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _CleanExitRunner)
 
     from hermes_agent.gateway.run import start_gateway
@@ -370,8 +370,8 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
     monkeypatch.setattr("hermes_agent.gateway.status.terminate_pid", raise_permission)
     monkeypatch.setattr("hermes_agent.gateway.run.os.getpid", lambda: 100)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
 
     from hermes_agent.gateway.run import start_gateway
 
@@ -495,7 +495,7 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
         def __init__(self, config):
             from hermes_agent.gateway.session import SessionStore
             from hermes_agent.hermes_state import SessionDB
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
             self._session_db = SessionDB(get_hermes_home() / 'state.db')
             self.session_store._db = self._session_db
@@ -515,8 +515,8 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
 
     monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("hermes_agent.tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
-    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner", _FatalConfigRunner)
 
     from hermes_agent.gateway.run import start_gateway

@@ -16,7 +16,7 @@ from hermes_agent.gateway import host_attach
 from hermes_agent.gateway import host_rendezvous as hr
 from hermes_agent.gateway import status as gateway_status
 from hermes_agent.hermes_cli import gateway as gw
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 PLAIN_ARGV = ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
 

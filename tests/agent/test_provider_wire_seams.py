@@ -16,7 +16,7 @@ HOST = "https://api.wirefake.test/v1"
 def wire_profile():
     from hermes_agent import providers
     from hermes_agent.providers.base import ProviderProfile
-    from utils import base_url_host_matches
+    from hermes_agent.utils import base_url_host_matches
 
     seen_keys = []
 

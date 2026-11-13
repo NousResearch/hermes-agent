@@ -25,12 +25,12 @@ from urllib.parse import urljoin
 
 import httpx
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.url_safety import is_safe_url
 from hermes_agent.tools.url_safety import create_ssrf_safe_client
 from hermes_agent.tools.website_policy import check_website_access
 from hermes_agent.tools.skills_hub_models import _normalize_lock_install_path, _validate_skill_name
-from utils import atomic_write_text
+from hermes_agent.utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
 

@@ -25,7 +25,7 @@ def receipt_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME for receipt writes."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    # ``_receipt_dir`` resolves through ``hermes_constants.get_hermes_home`` (env var), not
+    # ``_receipt_dir`` resolves through ``hermes_agent.hermes_constants.get_hermes_home`` (env var), not
     # ``hermes_agent.hermes_cli.config`` — patch where production reads.
     monkeypatch.setenv("HERMES_HOME", str(home))
     # The open receipt is per-context; the scope isolates it from any enclosing receipt.

@@ -312,7 +312,7 @@ class TestCheckNousFreeTierCache:
 
     @patch("hermes_agent.hermes_cli.nous_account.get_nous_portal_account_info")
     def test_entitlement_cache_is_profile_scoped(self, mock_account, tmp_path):
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             hermes_home_key,
             reset_hermes_home_override,
             set_hermes_home_override,

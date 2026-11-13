@@ -60,7 +60,7 @@ def _vacuum_fails(monkeypatch):
 
 def _store(monkeypatch, tmp_path, build):
     from hermes_agent import hermes_state
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     db_path = get_hermes_home() / "state.db"
     build(db_path)

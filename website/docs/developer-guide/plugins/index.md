@@ -1285,11 +1285,11 @@ instead of keeping your own denylist:
 | `hermes_agent.agent.file_safety.raise_if_read_blocked(path)` | The same check, raising `ValueError` on a block. |
 | `hermes_agent.agent.file_safety.get_write_denied_error(path)` | An error string if Hermes's file tools would refuse to write `path`, else `None`. |
 | `hermes_agent.agent.file_safety.is_write_denied(path)` | `True` when that write would be refused. |
-| `hermes_yaml.safe_load(text)` / `hermes_yaml.safe_dump(data)` | The YAML reader and writer Hermes uses for its own config. Hermes does not ship PyYAML, so `import yaml` fails unless your plugin declares it. |
+| `hermes_agent.hermes_yaml.safe_load(text)` / `hermes_agent.hermes_yaml.safe_dump(data)` | The YAML reader and writer Hermes uses for its own config. Hermes does not ship PyYAML, so `import yaml` fails unless your plugin declares it. |
 
 ```python
 from hermes_agent.agent.file_safety import get_read_block_error
-from hermes_yaml import safe_load
+from hermes_agent.hermes_yaml import safe_load
 
 def load_recipe(path):
     if err := get_read_block_error(path):
@@ -1298,7 +1298,7 @@ def load_recipe(path):
         return safe_load(fh)
 ```
 
-Import the names themselves (`from hermes_yaml import safe_load`), as above: `hermes plugins
+Import the names themselves (`from hermes_agent.hermes_yaml import safe_load`), as above: `hermes plugins
 validate` accepts those spellings and reports a bare `import hermes_agent.agent.file_safety` as a private import.
 To read Hermes's own settings, use `load_config_readonly()` from `hermes_agent.hermes_cli.config` rather than
 parsing `config.yaml` yourself.

@@ -70,7 +70,7 @@ def find_or_start_operation(
 
 
 def _run(start: AccountOperationStart, action: str, initiator: str | None) -> None:
-    from hermes_logging import clear_session_context, set_session_context
+    from hermes_agent.hermes_logging import clear_session_context, set_session_context
 
     # Tag this thread's log lines with the operation, the way a turn thread carries its session.
     set_session_context(start.operation.session_key)

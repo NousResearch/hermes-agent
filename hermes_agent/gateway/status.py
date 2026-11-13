@@ -20,17 +20,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Iterable, NamedTuple, Optional
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
 from hermes_agent.gateway.status_inline_source import (
     command_line_runs_inline_source,
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
-from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
+from hermes_agent.hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_agent.hermes_cli._subprocess_compat import pid_exists_stdlib
 from hermes_agent.gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 if sys.platform == "win32":
     import msvcrt
@@ -285,7 +285,7 @@ def _profile_label_for_home(home: Path | str) -> Optional[str]:
         return None
     if canonical.parent.name == "profiles" and _PROFILE_LABEL_RE.match(canonical.name):
         return canonical.name
-    import hermes_constants
+    from hermes_agent import hermes_constants
     default_homes = (hermes_constants.get_default_hermes_root, _get_platform_default_hermes_home)
     for default_home in default_homes:
         with contextlib.suppress(Exception):
@@ -1283,7 +1283,7 @@ def profile_name_for_home(profile_home: Path) -> Optional[str]:
     if named:
         return named
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         if home.resolve() == Path(get_default_hermes_root()).resolve():
             return "default"
     except Exception:
@@ -1307,7 +1307,7 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     from hermes_agent.gateway.host_topology import host_gateway_topology
     from hermes_agent.hermes_cli.gateway import named_profile_served_by_running_multiplexer
     from hermes_agent.hermes_cli.gateway_multiplex_served import live_default_gateway_pid
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
     # The roster is matched by NAME, and the multiplexer only serves ``<default root>/profiles/<name>``:
     # a profile directory copied to another root (sandbox, restore-from-backup) keeps the name but is
     # not the home being served, so it must not borrow the multiplexer's PID.

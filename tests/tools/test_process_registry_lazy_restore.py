@@ -34,7 +34,7 @@ def test_first_drain_under_secondary_scope_replays_the_launch_ledger(monkeypatch
     """Under multi-profile ``hermes serve`` the first consumer is a session bound to a secondary
     profile (TUI poller / prompt_turn drain); the once-per-process replay must still read the LAUNCH
     ledger, or it is never replayed for the life of the process."""
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools import async_delegation, process_registry as pr_mod
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     ledgers = []

@@ -76,7 +76,7 @@ class TestCacheFileLocation:
     ):
         # Real path (no _cache_path monkeypatch): HERMES_HOME/cache/…, 0o600,
         # matching the discovery-cache precedent in hermes_agent/tools/registry.py.
-        import hermes_constants
+        from hermes_agent import hermes_constants
 
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
         path = msc._cache_path()

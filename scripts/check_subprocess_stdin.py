@@ -190,7 +190,7 @@ def main() -> int:
     # runs as a standalone subprocess, not as a module).
     sys.path.insert(0, str(repo_root))
     from hermes_agent.compat.paths import current_path, original_path
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     all_violations = []
 

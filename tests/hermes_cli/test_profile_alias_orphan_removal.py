@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.hermes_cli import doctor_state, gateway_migrate, profile_cmd
 from hermes_agent.hermes_cli.profiles import create_wrapper_script
 

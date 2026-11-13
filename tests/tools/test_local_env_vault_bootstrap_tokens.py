@@ -60,7 +60,7 @@ def test_launch_home_credentialed_children_keep_the_token(monkeypatch, tmp_path)
 
     from hermes_agent.agent.command_token_source import _mint
     from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     _seed(monkeypatch)
     other = tmp_path / "hermes" / "profiles" / "other"

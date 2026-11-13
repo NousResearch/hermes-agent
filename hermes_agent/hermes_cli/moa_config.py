@@ -104,7 +104,7 @@ def coerce_privacy_filter(value: Any) -> str:
 
 def _clean_reasoning_effort(value: Any) -> str | None:
     """Canonical per-slot reasoning effort, or None when unset/invalid."""
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     parsed = None if value is None or value is True else parse_reasoning_effort(value)
     if parsed is None:
         return None

@@ -57,7 +57,7 @@ def recover_left_core_at_gateway_start() -> bool:
     so a platform plugin it gets starts its adapter in the same gateway start. True when a plugin
     that ships a gateway platform was installed: platform config loaded before it lacks the platform."""
     from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE
-    from hermes_constants import get_default_hermes_root, get_hermes_home
+    from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
     # The launch home too runs in its own scope: a multiplexing config load already armed fail-closed
     # secret reads, so an unscoped install read of its own .env raised. Its sources were hydrated at boot.
     launch = Path(get_hermes_home())
@@ -200,7 +200,7 @@ class GatewayStartupMixin:
         loop = asyncio.get_running_loop()
         if getattr(self.config, "multiplex_profiles", False):
             from hermes_agent.gateway.run import _async_profile_runtime_scope
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             try:
                 async with _async_profile_runtime_scope(get_hermes_home()):
                     return await loop.run_in_executor(None, copy_context().run, fn)
@@ -1181,7 +1181,7 @@ class GatewayStartupMixin:
                 "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
             return
         from hermes_agent.gateway.run import _profile_runtime_scope
-        from hermes_constants import get_process_hermes_home
+        from hermes_agent.hermes_constants import get_process_hermes_home
         with _profile_runtime_scope(get_process_hermes_home()):
             GatewayStartupMixin._register_config_hooks(
                 "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
@@ -1212,7 +1212,7 @@ class GatewayStartupMixin:
         if not getattr(self.config, "multiplex_profiles", False):
             return 0
         from hermes_agent.gateway.run import _multiplex_profile_homes, _profile_runtime_scope
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         launch_home = get_hermes_home().resolve()
         recovered = 0
         for profile_name, profile_home in _multiplex_profile_homes(self.config):

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.tools import async_delegation as ad
 from hermes_agent.tools.process_registry import process_registry
 

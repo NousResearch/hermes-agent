@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from tests.hermes_cli.plugin_worker_support import (
     isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
     plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
@@ -58,7 +58,7 @@ def moved_repo(tmp_path, monkeypatch):
     real = plugins_cmd._clone_plugin_repo
     monkeypatch.setattr(plugins_cmd, "_clone_plugin_repo",
                         lambda dest, _url, revision, subdir=None: real(dest, repo.as_uri(), revision, subdir))
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home(), reviewed, tip, repo
 
 

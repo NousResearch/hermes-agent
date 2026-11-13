@@ -461,14 +461,14 @@ def export_scratch_tmp_env() -> None:
     re-runs it after ``--profile`` re-homes the process. Never raises.
     """
     try:
-        from hermes_constants import export_scratch_tmp_env as _export
+        from hermes_agent.hermes_constants import export_scratch_tmp_env as _export
         _export()
     except Exception:
         pass  # a missing/unwritable home just leaves the system temp dir in place
 
 
-# Apply on import — entry points just need ``import hermes_bootstrap``
-# (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
+# Apply on import — entry points just need ``from hermes_agent import hermes_bootstrap``
+# (or ``from hermes_agent.hermes_bootstrap import apply_windows_utf8_bootstrap``) at
 # the very top of their module, before importing anything else.  The
 # import side effect does the right thing.
 apply_windows_utf8_bootstrap()
@@ -564,10 +564,10 @@ _install_compat()
 def _pin_launcher_home() -> None:
     """A minted launcher (``hermes_agent.hermes_cli._launchers``) pins ``HERMES_HOME`` to the install's default
     root. That needs ``hermes_constants`` from the checkout, so the launcher asks for it here, after
-    the repair above: a merge killed while writing ``hermes_constants.py`` must not keep the repair
+    the repair above: a merge killed while writing ``hermes_agent/hermes_constants.py`` must not keep the repair
     from ever running. The flag name is ``_launchers.PIN_DEFAULT_HOME_FLAG``."""
     if getattr(sys, "_hermes_pin_default_home", False) and not os.environ.get("HERMES_HOME"):
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
 
         os.environ["HERMES_HOME"] = str(get_default_hermes_root())
 

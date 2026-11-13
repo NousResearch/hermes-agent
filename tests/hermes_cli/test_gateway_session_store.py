@@ -225,7 +225,7 @@ def test_store_is_falsy_once_the_gateway_connection_closed(store):
 def test_reader_opens_once_the_gateway_created_state_db(store, tmp_path, monkeypatch):
     """The startup maintenance probe runs before the gateway exists; that miss is not latched."""
     db, _ = store
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
     assert db.get_session("x") is None and db._reader is None
     from hermes_agent.hermes_state import SessionDB
     SessionDB(db_path=tmp_path / "state.db").close()
@@ -264,7 +264,7 @@ def test_rename_refusal_prints_mains_title_in_use_text(store, tmp_path, monkeypa
     """The owner's ValueError text never crosses the wire (bounded reason codes); the rename copy
     main prints comes from the read-only reader."""
     db, client = store
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
     from hermes_agent.hermes_state import SessionDB
     writer = SessionDB(db_path=tmp_path / "state.db")
     writer.create_session("local-other", source="local")
@@ -387,7 +387,7 @@ def test_cli_listings_include_gateway_rows_created_by_the_cli(store, tmp_path, m
     main's ``source='cli'`` listings (/resume picker, /sessions, /history, bare -c) read both labels."""
     import sqlite3
     db, _ = store
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: tmp_path)
     from hermes_agent.hermes_state import SessionDB
     writer = SessionDB(db_path=tmp_path / "state.db")
     rows = (("local-cli", "local", "cli"), ("local-tui", "local", "tui"), ("legacy", "cli", "cli"),

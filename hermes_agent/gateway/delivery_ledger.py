@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_agent.gateway.dead_targets import classify_dead_error
 from hermes_agent.hermes_cli.sqlite_util import add_column_if_missing
-from hermes_constants import get_process_hermes_home
+from hermes_agent.hermes_constants import get_process_hermes_home
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()

@@ -13,7 +13,7 @@ Coverage levels:
 import time
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from unittest.mock import patch, MagicMock
 
 from hermes_agent.agent.model_metadata import (
@@ -555,7 +555,7 @@ class TestCodexOAuthContextLength:
         base_url = "https://chatgpt.com/backend-api/codex"
         stale_key = f"gpt-5.5@{base_url}"
         other_key = "other-model@https://api.openai.com/v1/"
-        import hermes_yaml as _yaml
+        import hermes_agent.hermes_yaml as _yaml
         cache_file.write_text(_yaml.safe_dump({"context_lengths": {
             stale_key: stale_context,
             other_key: 128_000,
@@ -1705,7 +1705,7 @@ class TestContextLengthCache:
         ``os.replace`` write leaves the previous file byte-for-byte intact
         when the swap fails.
         """
-        import utils
+        from hermes_agent import utils
         import hermes_agent.agent.model_metadata as mm
 
         cache_file = tmp_path / "cache.yaml"

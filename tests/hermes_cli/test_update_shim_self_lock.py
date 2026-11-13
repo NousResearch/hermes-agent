@@ -10,7 +10,7 @@ from pathlib import Path
 
 from hermes_agent.hermes_cli import main_install_repair
 from hermes_agent.hermes_cli import main as cli_main
-from hermes_constants import venv_bin_dir
+from hermes_agent.hermes_constants import venv_bin_dir
 import pytest
 
 

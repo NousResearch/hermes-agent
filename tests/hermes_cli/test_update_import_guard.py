@@ -23,7 +23,7 @@ import pytest
 
 from hermes_agent.hermes_cli import update_cmd
 from hermes_agent.hermes_cli import update_cmd_validation
-from hermes_constants import partial_update_hint
+from hermes_agent.hermes_constants import partial_update_hint
 
 def _write_skewed_tree(root: Path, *, skewed: bool) -> None:
     """Build a tiny two-package tree that mimics the real failure.

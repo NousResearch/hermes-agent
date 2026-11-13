@@ -8,7 +8,7 @@ from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource
 from hermes_agent.hermes_cli.heartbeat import HeartbeatManager, HeartbeatState, save_heartbeat, migrate_heartbeat_to_session
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 @pytest.mark.asyncio

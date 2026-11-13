@@ -18,7 +18,7 @@ for key in list(os.environ):
         os.environ.pop(key, None)
 os.environ.update(HOME=str(home), HERMES_HOME=str(home / ".hermes"), SESSION_IDLE_MINUTES="1", SESSION_RESET_HOUR="0")
 sys.path.insert(0, str(repo))
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.gateway.config import load_gateway_config, GatewayConfig, Platform
 from hermes_agent.gateway.session import SessionStore, SessionSource
 from hermes_agent.gateway.run import GatewayRunner

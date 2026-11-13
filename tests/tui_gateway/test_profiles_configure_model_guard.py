@@ -21,7 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import hermes_agent.hermes_cli.model_selection_guards as guards
 import hermes_agent.tui_gateway.server as srv

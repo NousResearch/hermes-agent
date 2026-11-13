@@ -14,7 +14,7 @@ import types
 import pytest
 
 from hermes_agent.agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
-from hermes_yaml import safe_dump, safe_load
+from hermes_agent.hermes_yaml import safe_dump, safe_load
 from hermes_agent.tui_gateway import server
 
 

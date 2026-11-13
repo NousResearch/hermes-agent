@@ -57,7 +57,7 @@ def fresh_home(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     # Also reset hermes_constants cache so get_default_hermes_root() re-reads.
     try:
-        import hermes_constants
+        from hermes_agent import hermes_constants
         hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
     except Exception:
         pass

@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_hermes_home
-from utils import atomic_json_write
+from hermes_agent.hermes_constants import get_hermes_home
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ def _slash_review_surface() -> bool:
     if _env("HERMES_KANBAN_TASK").strip():
         return False
     try:
-        from utils import is_truthy_value
+        from hermes_agent.utils import is_truthy_value
         if is_truthy_value(_env("HERMES_CRON_SESSION")):
             return False
     except Exception:

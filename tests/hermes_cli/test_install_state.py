@@ -122,14 +122,14 @@ def test_a_file_linked_into_a_protected_folder_is_existing_without_being_opened(
 def test_a_launcher_in_a_protected_folder_names_its_folder_without_being_opened(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    import hermes_platform.resolver
+    import hermes_agent.hermes_platform.resolver
     from hermes_agent.hermes_cli import _launchers
-    from hermes_platform.resolver import known_dirs
+    from hermes_agent.hermes_platform.resolver import known_dirs
 
     protected = tmp_path / "Documents"
     launcher = protected / "hermes-src" / "hermes"
     monkeypatch.setattr(known_dirs, "mac_privacy_protected_dirs", lambda: (str(protected),))
-    monkeypatch.setattr(hermes_platform.resolver, "locate_command",
+    monkeypatch.setattr(hermes_agent.hermes_platform.resolver, "locate_command",
                         lambda _name: SimpleNamespace(command=(str(launcher),)))
 
     def opened(_target):
@@ -154,7 +154,7 @@ def test_gateway_service_definitions_name_their_homes(tmp_path, monkeypatch):
     unit.write_text(f'[Service]\nEnvironment="HERMES_HOME={home}"\n', encoding="utf-8")
     vbs = tmp_path / "Hermes_Gateway.vbs"
     vbs.write_text(f'env.Item("HERMES_HOME") = "{home}-win"\r\n', encoding="utf-8")
-    from hermes_platform.resolver import known_dirs
+    from hermes_agent.hermes_platform.resolver import known_dirs
     monkeypatch.setattr(known_dirs, "gateway_service_definition_globs", lambda: (str(tmp_path / "*Gateway*"),
                                                                                 str(tmp_path / "*gateway*")))
 
@@ -168,7 +168,7 @@ def test_a_gateway_started_by_a_scheduled_task_or_the_startup_fallback_names_its
     import sys
 
     from hermes_agent.hermes_cli import gateway_windows
-    from hermes_platform.resolver import known_dirs
+    from hermes_agent.hermes_platform.resolver import known_dirs
 
     def launcher(home: Path) -> Path:  # the .cmd wrapper _write_task_script leaves in the home, gateway.vbs beside it
         script = home / "gateway-service" / "Hermes_Gateway.cmd"
@@ -196,7 +196,7 @@ def test_a_gateway_service_counts_only_for_the_account_it_runs_as(tmp_path, monk
     when it names none): that account's gateway must not cost a new desktop user the trial."""
     import getpass
 
-    from hermes_platform.resolver import known_dirs
+    from hermes_agent.hermes_platform.resolver import known_dirs
 
     me = getpass.getuser()
     units = {"mine": f"User={me}\n", "theirs": "User=nobody\n" if me != "nobody" else "User=root\n", "root": ""}

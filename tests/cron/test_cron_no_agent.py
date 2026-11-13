@@ -27,7 +27,7 @@ def hermes_env(tmp_path, monkeypatch):
 
     # Reload modules that cache get_hermes_home() at import time.
     import importlib
-    import hermes_constants
+    from hermes_agent import hermes_constants
     importlib.reload(hermes_constants)
     import hermes_agent.cron.jobs
     importlib.reload(hermes_agent.cron.jobs)
@@ -155,7 +155,7 @@ def test_no_agent_script_gets_owning_profiles_declared_secret_never_launch_resid
     from hermes_agent.agent.secret_scope import (
         build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope)
     from hermes_agent.cron.scheduler_script import _run_job_script
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     (hermes_env / ".env").write_text("LAUNCH_ONLY_TOKEN=launch-secret\n", encoding="utf-8")
     monkeypatch.setenv("LAUNCH_ONLY_TOKEN", "launch-secret")  # what load_hermes_dotenv() did at startup
@@ -351,7 +351,7 @@ def test_a_routed_profile_script_never_receives_a_launch_only_name(hermes_env, m
     from hermes_agent.agent.secret_sources.registry import ApplyReport, SourceReport
     from hermes_agent.cron.scheduler_script import _run_job_script
     from hermes_agent.hermes_cli import env_loader
-    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     launch = get_process_hermes_home()
     (launch / ".env").write_text("LAUNCH_ONLY_VALUE=launch-only\nCUSTOM_CRON_VALUE=launch\n", encoding="utf-8")
@@ -405,7 +405,7 @@ def test_a_routed_profile_script_keeps_administrator_managed_values_over_its_own
     from hermes_agent.agent import secret_scope
     from hermes_agent.cron.scheduler_script import _run_job_script
     from hermes_agent.hermes_cli import env_loader, managed_scope
-    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     launch = get_process_hermes_home()
     managed = launch / "managed"

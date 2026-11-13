@@ -24,7 +24,7 @@ def isolated_kanban_home(monkeypatch):
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
     for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_agent.hermes_cli") or mod.startswith("hermes_agent.hermes_state") or mod == "hermes_constants":
+        if mod.startswith("hermes_agent.hermes_cli") or mod.startswith("hermes_agent.hermes_state") or mod == "hermes_agent.hermes_constants":
             del sys.modules[mod]
     yield test_home
 

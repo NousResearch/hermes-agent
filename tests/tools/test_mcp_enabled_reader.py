@@ -89,7 +89,7 @@ def _config_set(name):
 def test_enable_clears_a_legacy_disabled_so_the_server_spawns(enable, tmp_path, monkeypatch):
     """The reader lets a legacy `disabled: true` win over `enabled`, so an enable that only set
     `enabled` reported success and left the server off. Every enable writer drops the key."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, load_config
     from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
@@ -113,7 +113,7 @@ def test_enable_clears_a_legacy_disabled_so_the_server_spawns(enable, tmp_path, 
 def test_v46_turns_off_exactly_what_the_reader_reads_as_off(case, tmp_path, monkeypatch):
     """v46 runs on every pass (stamp-independent) because it resolves `disabled` as the reader
     does; a value the two parse differently (a float) would flip a server on a re-run."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.config_migrations import run_migrations
 
     config_path = tmp_path / "config.yaml"
@@ -132,7 +132,7 @@ def test_v46_turns_off_exactly_what_the_reader_reads_as_off(case, tmp_path, monk
 def test_config_set_enable_clears_disabled_on_a_dotted_server_name(key, tmp_path, monkeypatch):
     """`config set` resolves an existing dotted server name greedily; the cleanup must reach the
     same entry, or the server stays off after a printed success."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, load_config, set_config_value
     from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 

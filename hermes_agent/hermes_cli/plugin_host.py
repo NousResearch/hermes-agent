@@ -116,7 +116,7 @@ class PluginHost:
         context = contextvars.Context()
 
         def bind() -> None:
-            from hermes_constants import set_hermes_home_override
+            from hermes_agent.hermes_constants import set_hermes_home_override
             set_hermes_home_override(self._home)
             from hermes_agent.agent.secret_scope import build_profile_secret_scope, is_multiplex_active, set_secret_scope
             if is_multiplex_active():
@@ -443,7 +443,7 @@ class PluginHost:
         Sent as the plugin whose code made the call (``plugin``, in its load ``load``); False, as before
         this was forwarded, unless that load is the plugin's current one and ``plugin_id`` is its own."""
         from hermes_agent.hermes_cli.plugin_events import emit_plugin_session_event
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
         plugin = str(params.get("plugin") or "")
         ctx = self._contexts.get(plugin)
         if ctx is None or getattr(ctx, "plugin_id", None) != params.get("plugin_id") \

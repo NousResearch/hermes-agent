@@ -8,7 +8,7 @@
 
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
-    import hermes_bootstrap
+    import hermes_agent.hermes_bootstrap as hermes_bootstrap  # noqa: PLR0402
 except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -37,7 +37,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_agent.agent.session_source import CLI_FAMILY_SOURCES, session_source_for
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
@@ -137,7 +137,7 @@ from hermes_agent.agent.codex_responses_adapter import (
 )
 from hermes_agent.agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
 from hermes_agent.hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
-from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
 
 
 _MAX_TOOL_WORKERS = 8

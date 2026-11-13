@@ -7,7 +7,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.tui_gateway import server
 

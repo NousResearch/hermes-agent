@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ def _home_candidates() -> list:
     home = Path.home()
     candidates = [home / ".lightpanda" / "lightpanda", home / ".local" / "bin" / "lightpanda"]
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         candidates.append(Path(get_hermes_home()) / "bin" / "lightpanda")
     except Exception as e:  # pragma: no cover - defensive
         logger.debug("hermes home unavailable for lightpanda lookup: %s", e)
@@ -89,7 +89,7 @@ def _pick_free_loopback_port() -> int:
 
 
 def _state_dir() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     path = Path(get_hermes_home()) / "cache" / "browser-use" / "lightpanda"
     path.mkdir(parents=True, exist_ok=True)
     return path

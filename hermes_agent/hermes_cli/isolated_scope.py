@@ -28,7 +28,7 @@ def record_launch_scope(*, isolated: bool, desktop_owned: bool) -> Optional[str]
     global _LAUNCH_PROFILE
     _LAUNCH_PROFILE = None
     if isolated and not desktop_owned:
-        from hermes_constants import get_default_hermes_root, get_process_hermes_home, profile_name_for_home
+        from hermes_agent.hermes_constants import get_default_hermes_root, get_process_hermes_home, profile_name_for_home
 
         home = get_process_hermes_home().resolve()
         if home != get_default_hermes_root().resolve():

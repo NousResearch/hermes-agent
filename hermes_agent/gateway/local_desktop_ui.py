@@ -137,7 +137,7 @@ def _install_connection_hook() -> None:
         return
 
     def on_change(operation, change, snapshot):
-        from hermes_constants import hermes_home_key
+        from hermes_agent.hermes_constants import hermes_home_key
         with _lock:
             route = _process_routes.get(operation.session_key)
         live = route[0].sessions.get(route[1]) if route is not None else None

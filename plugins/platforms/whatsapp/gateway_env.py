@@ -2,7 +2,7 @@
 
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.platform_env import enable_from_env, getenv, home_step
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 
 def _enabled_flag(config: GatewayConfig) -> None:

@@ -88,7 +88,7 @@ def test_lease_reload_and_unload_do_not_cross_profiles(tmp_path):
 
 def test_real_plugin_discovery_reload_and_disable(tmp_path, monkeypatch):
     from hermes_agent.hermes_cli.plugins import PluginManager
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
     home = tmp_path / "home"
     plugin = home / "plugins" / "login_example"
     plugin.mkdir(parents=True)

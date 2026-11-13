@@ -205,7 +205,7 @@ def test_packaged_launch_opens_the_refreshed_installed_app(tmp_path, monkeypatch
     _stamped_macos_bundle(root / "apps" / "desktop" / "release" / "mac-arm64" / "Hermes.app", b"checkout build")
     installed = _stamped_macos_bundle(tmp_path / "Applications" / "Hermes.app", b"stale build")
     monkeypatch.setattr("hermes_agent.hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installed])
-    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path)  # root is its hermes-agent
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_default_hermes_root", lambda **kw: tmp_path)  # root is its hermes-agent
     monkeypatch.setattr(main_desktop, "_stage_macos_bundle_copy", lambda src, dst: shutil.copytree(src, dst, symlinks=True))
     monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", lambda: set())
     # This pins the LAUNCH contract; the real codesign signature probe is out of scope here.

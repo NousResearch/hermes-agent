@@ -43,7 +43,7 @@ def _config_for(root: Path, channel: str) -> dict:
 
 def test_dynamic_channel_parser_and_per_install_round_trip(tmp_path, monkeypatch):
     import argparse
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli.subcommands.update import build_update_parser
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -156,7 +156,7 @@ class TestSetChannel:
 
     @pytest.mark.parametrize("channel", ["stable", "canary", "main"])
     def test_set_resolve_round_trip(self, tmp_path, monkeypatch, channel):
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         home = self._home(tmp_path, monkeypatch)
         root = tmp_path / "install"
@@ -277,8 +277,8 @@ class TestSetChannelCLI:
     def test_metadata_commands_precede_managed_refusal_and_write_once(
         self, tmp_path, monkeypatch, capsys
     ):
-        import hermes_yaml as yaml
-        import utils
+        import hermes_agent.hermes_yaml as yaml
+        from hermes_agent import utils
         from hermes_agent.hermes_cli import config, main
 
         home = self._home(tmp_path, monkeypatch)

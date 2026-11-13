@@ -5,7 +5,7 @@ kept winning on every read. A managed scope that pins something else must not bl
 from types import SimpleNamespace
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 from hermes_agent.gateway.session_tui_config import _set_display, _write_profile_config

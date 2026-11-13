@@ -197,7 +197,7 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.tools.async_delegation import recover_abandoned_delegations
     from hermes_agent.tools.delegate_tool_resumable import _upsert
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     repo = tmp_path / "repo"
     repo.mkdir()

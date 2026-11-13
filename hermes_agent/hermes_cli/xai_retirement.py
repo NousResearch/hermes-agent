@@ -141,7 +141,7 @@ def apply_migration(
     if not issues:
         return unchanged
 
-    from hermes_yaml import ROUNDTRIP_YAML_WIDTH
+    from hermes_agent.hermes_yaml import ROUNDTRIP_YAML_WIDTH
     yaml = YAML(typ="rt")
     yaml.width = ROUNDTRIP_YAML_WIDTH
     yaml.preserve_quotes = True
@@ -169,7 +169,7 @@ def apply_migration(
         backup_path = backup_config(config_path, "pre-migrate-xai")
 
     from hermes_agent.hermes_cli.config import require_readable_config_before_write
-    from utils import atomic_write_text
+    from hermes_agent.utils import atomic_write_text
     require_readable_config_before_write(config_path)
     # Dump to a buffer, then atomic-write: ``open(path, "w")`` truncates before the dump runs, so a
     # crash mid-write would leave config.yaml empty (and with ``--no-backup`` that is the only

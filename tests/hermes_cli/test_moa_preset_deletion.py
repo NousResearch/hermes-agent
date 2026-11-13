@@ -269,7 +269,7 @@ def test_moa_save_refuses_transient_read_failure_without_losing_config(tmp_path,
     _seed(tmp_path, monkeypatch, _three_presets(), operator_settings={"keep": None})
     config_path = tmp_path / "config.yaml"
     before = config_path.read_bytes()
-    import utils
+    from hermes_agent import utils
 
     real_load = utils.fast_safe_load
     failed_reads = []

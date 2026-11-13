@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from hermes_agent.hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from hermes_agent.agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool
 from hermes_agent.agent.secret_scope import get_secret_str
-from utils import base_url_hostname
+from hermes_agent.utils import base_url_hostname
 
 logger = logging.getLogger("hermes_agent.hermes_cli.runtime_provider")
 

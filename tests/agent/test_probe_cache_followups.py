@@ -199,7 +199,7 @@ class TestContextCacheKeyNormalization:
 
 
     def test_invalidate_clears_both_key_shapes(self, tmp_path, monkeypatch):
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
         from hermes_agent.agent import model_metadata
 
         path = tmp_path / "context_lengths.yaml"

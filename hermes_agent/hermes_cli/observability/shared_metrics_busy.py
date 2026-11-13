@@ -134,7 +134,7 @@ def note_busy_admitting(event: Any) -> None:
 
 
 def _bind_home(tag: _Arrival) -> None:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     tag.home = str(get_hermes_home())
 
@@ -273,7 +273,7 @@ def observe_running_chats(session_keys: Any) -> None:
                 del _running[key]
             for key in keys - set(_running):
                 if home is None:
-                    from hermes_constants import get_hermes_home
+                    from hermes_agent.hermes_constants import get_hermes_home
 
                     home = _home_key(get_hermes_home())
                 _running[key] = home

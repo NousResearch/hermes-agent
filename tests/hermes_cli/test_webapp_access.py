@@ -465,7 +465,7 @@ def test_web_access_keeps_its_client_id_under_the_gateway_home_not_in_env(portal
 
     from hermes_agent.hermes_cli import webapp_access
     from hermes_agent.hermes_cli.config import load_env
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     webapp_access.register(LAN_CALLBACK)
 
@@ -481,7 +481,7 @@ def test_web_access_keeps_its_client_record_user_only(portal):
     import stat
 
     from hermes_agent.hermes_cli import webapp_access
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     webapp_access.register(LAN_CALLBACK)
     record = get_hermes_home() / "webapp" / "sign-in-registration.json"
@@ -498,7 +498,7 @@ def test_a_home_registered_on_the_dashboards_client_gets_its_own_at_the_next_sta
 
     from hermes_agent.hermes_cli import webapp_access
     from hermes_agent.hermes_cli.config import save_env_value
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", DASHBOARD_CLIENT)
     record = get_hermes_home() / "webapp" / "sign-in-registration.json"
@@ -526,7 +526,7 @@ def test_dashboard_register_leaves_web_access_and_its_client_alone(portal):
 
     from hermes_agent.hermes_cli import dashboard_register, webapp_access
     from hermes_agent.hermes_cli.config import save_env_value
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", DASHBOARD_CLIENT)
     webapp_access.register(LAN_CALLBACK)
@@ -587,7 +587,7 @@ def gateway_listeners(tmp_path, monkeypatch):
     from hermes_agent.hermes_cli import web_server
     from hermes_agent.hermes_cli.dashboard_auth import clear_providers, listener_client
     from hermes_agent.hermes_cli.dashboard_auth.registry import register_global_provider
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     for key in ("bound_host", "bound_port", "auth_required", "trusted_public_hosts"):
         monkeypatch.setattr(web_server.app.state, key, getattr(web_server.app.state, key, None), raising=False)
@@ -676,7 +676,7 @@ def test_a_disabled_nous_plugin_keeps_nous_sign_in_off_the_webapp(portal, gatewa
     from hermes_agent.gateway.webapp_listener import WebappMount, use_own_sign_in
     from hermes_agent.hermes_cli import webapp_access
     from hermes_agent.hermes_cli.dashboard_auth import get_provider
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     webapp_access.register(LAN_CALLBACK)
 

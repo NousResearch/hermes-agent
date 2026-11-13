@@ -27,7 +27,7 @@ _holder = threading.local()
 
 
 def _record_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / _RECORD_NAME
 
 
@@ -36,7 +36,7 @@ def _key(path) -> str:
 
 
 def _read() -> dict:
-    from utils import read_json_or_empty
+    from hermes_agent.utils import read_json_or_empty
     trees = read_json_or_empty(_record_path()).get("trees")
     return trees if isinstance(trees, dict) else {}
 
@@ -46,7 +46,7 @@ def record_tui_worktree(wt_info: dict) -> None:
     moved its gateway session into. Never raises."""
     try:
         from hermes_agent.hermes_cli.auth import _file_lock
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
 
         path = _record_path()
         with _file_lock(path.with_name(path.name + ".lock"), _holder, 5.0,
@@ -106,7 +106,7 @@ def recreate_tui_worktree(cwd: str, session_id: str) -> Optional[str]:
         _git_quiet,
         _retain_worktree_for_session,
     )
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     repo_root, tree, branch = entry["repo_root"], Path(entry["path"]), entry["branch"]
     if tree.exists():  # a file, or a dir that appeared since: never overwrite it

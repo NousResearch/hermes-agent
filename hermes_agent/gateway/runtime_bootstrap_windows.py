@@ -505,7 +505,7 @@ def judge_pipe_server(*, own_sid: str, process_sid: str | None, pipe: tuple[str,
 
 def _server_subject(handle, pid: int) -> str:
     """The client half of the pipe identity check: the Win32 facts for :func:`judge_pipe_server`."""
-    from hermes_dir_acl import process_elevation, process_is_elevated
+    from hermes_agent.hermes_dir_acl import process_elevation, process_is_elevated
     try:
         process_sid = _process_sid(pid)
     except PermissionError:
@@ -531,7 +531,7 @@ def _session_of(pid: int) -> int | None:
 
 def probe_refused_owner(pid: int) -> tuple[str, str] | None:
     """``(reason_code, remedy)`` naming why *pid*'s gateway refused this client, or None."""
-    from hermes_dir_acl import process_elevation, process_is_elevated
+    from hermes_agent.hermes_dir_acl import process_elevation, process_is_elevated
     own_session, owner_session = _session_of(os.getpid()), _session_of(pid)
     reason = classify_refused_owner(own_session=own_session, owner_session=owner_session,
                                     own_elevated=process_is_elevated(), owner_elevated=process_elevation(pid))

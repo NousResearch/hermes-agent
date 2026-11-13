@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_constants import get_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, hermes_home_key
 from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
 from hermes_agent.tools.thread_context import propagate_context_to_thread
 from hermes_agent.tools.async_delegation_worker import worker_ledger, require_ledger_owner
@@ -129,7 +129,7 @@ def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
     """A short-lived writer connection to a profile's ``state.db`` that never resurrects a removed named profile
     (#123265) and keeps the file and its sidecars owner-only (0600, as ``hermes_agent.hermes_state.SessionDB`` does)."""
     from hermes_agent.hermes_cli.sqlite_util import open_db
-    from hermes_constants import mkdir_under_hermes_home
+    from hermes_agent.hermes_constants import mkdir_under_hermes_home
     from hermes_agent.hermes_state import _secure_state_db_files
 
     mkdir_under_hermes_home(path.parent)

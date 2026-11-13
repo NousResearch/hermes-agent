@@ -60,7 +60,7 @@ def plane_token(home: Path) -> str:
 
 
 def _nous_token(home: Path) -> str:
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     try:
         from hermes_agent.hermes_cli.auth import resolve_nous_access_token

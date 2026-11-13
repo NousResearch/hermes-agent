@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import hermes_constants_scratch as rules
+import hermes_agent.hermes_constants_scratch as rules
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 # decide what the child imports; it gets the launcher's own ``sys.path`` (repo root, PM/venv
 # site-packages), not ``hermes_bootstrap``, whose boot hook would schedule another prune.
 _CHILD = ("import sys; sys.path[:] = sys.argv[3:]; "
-          "import hermes_constants_scratch_detach as d; d.run(*sys.argv[1:3])")
+          "import hermes_agent.hermes_constants_scratch_detach as d; d.run(*sys.argv[1:3])")
 
 
 def spawn_prune(scratch: Path) -> None:
@@ -61,7 +61,7 @@ def run(scratch: str, lineage: str) -> None:
     """Child entry: one prune of *scratch*, sparing the launcher's ancestry. Any failure is one
     line in ``scratch-prune.log``; nothing is raised (no one reads this process's stderr)."""
     try:
-        from hermes_constants import prune_scratch_dir
+        from hermes_agent.hermes_constants import prune_scratch_dir
 
         rules._launcher_lineage = None if lineage == "-" else frozenset(
             (int(pid), float(started)) for pid, started in (item.split(":") for item in lineage.split(",")))

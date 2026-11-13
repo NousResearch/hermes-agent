@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping, Optional
 
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 from hermes_agent.agent.usage_gauges import (
     BP_FULL,

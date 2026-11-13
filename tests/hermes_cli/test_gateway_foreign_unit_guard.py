@@ -31,7 +31,7 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
     monkeypatch.setattr(gateway_cli, "user_systemd_unit_dir", lambda: tmp_path / "no-user-units")
     monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
-    import hermes_constants
+    from hermes_agent import hermes_constants
     monkeypatch.setattr(hermes_constants, "_account_home", lambda: account.parent)
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     # Never reach a real systemd: preamble/privilege checks are not under test, systemctl is recorded.

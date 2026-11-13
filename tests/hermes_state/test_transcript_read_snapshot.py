@@ -4,7 +4,7 @@ write from the same thread cannot wait on its own lock; there ``consistent()`` t
 lands, this process's or another connection's."""
 import threading
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_state import SessionDB
 

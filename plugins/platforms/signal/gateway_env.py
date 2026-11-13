@@ -2,7 +2,7 @@
 
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platform_env import EnvCred, home_step
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 ENV_ENABLE_CREDENTIALS = ("SIGNAL_HTTP_URL",)
 ENV_OVERRIDES = (

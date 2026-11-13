@@ -59,7 +59,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
 
 def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True):
     """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) as one
-    change and return its token (``hermes_scope.StateToken``). The launch profile's SECRET scope is always bound — its ``.env`` over
+    change and return its token (``hermes_agent.hermes_scope.StateToken``). The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
     ``os.environ`` once a secondary context may have written to it, #107422) — so the credential
     source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
@@ -410,7 +410,7 @@ def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_gl
     AFTER ``agent.switch_model`` (which re-resolves ``reasoning_config`` from config.yaml, so an
     earlier write would be clobbered). ``--once`` restores through ``one_turn_model_restore`` —
     the snapshot's ``primary_runtime`` carries the pre-switch ``reasoning_config``."""
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     parsed = parse_reasoning_effort(effort)
     if parsed is None:
         return

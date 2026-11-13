@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.hermes_cli import gateway, gateway_windows
 from hermes_agent.hermes_cli import gateway_runtime_service as service
 from hermes_agent.hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text

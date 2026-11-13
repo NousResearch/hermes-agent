@@ -71,7 +71,7 @@ def _token_key(anon_token: str) -> str:
 
 
 def _home_key() -> str:
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     return hermes_home_key()
 
 

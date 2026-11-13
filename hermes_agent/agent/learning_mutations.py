@@ -56,7 +56,7 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     fingerprinted id resolves by the entry's text; a legacy id by position (a profile
     card's local index is its global index minus the MEMORY.md card count). Read-only
     view: mutations resolve the id again INSIDE ``_mutate_memory``'s lock."""
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.tools.memory_tool import MemoryStore
 
     source, gidx, fingerprint = _parse_memory_id(node_id)

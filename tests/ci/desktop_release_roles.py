@@ -14,7 +14,7 @@ import ast
 import re
 from pathlib import Path
 
-import hermes_yaml
+from hermes_agent import hermes_yaml
 
 from scripts.releases.desktop_targets import TARGETS
 from scripts.releases.job_groups import JOB_GROUPS

@@ -5,7 +5,7 @@ message the dispatch then drops (PLG-6). Real GatewayRunner, DiscordAdapter and 
 import asyncio
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from tests.waiting import async_wait_until
@@ -43,7 +43,7 @@ async def test_origin_injection_is_refused_up_front_until_the_chat_holds_a_human
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_results import execution_result
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")

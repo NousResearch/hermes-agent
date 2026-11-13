@@ -11,7 +11,7 @@ import pytest
 
 from hermes_agent.agent.redact import clear_vault_redaction_values
 from hermes_agent.agent.vault_store import get_vault_store
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.tools import browser_vault_tool
 from hermes_agent.tools.registry import registry
 

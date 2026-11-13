@@ -214,7 +214,7 @@ def test_bootstrap_preserves_live_cwd_and_recovers_deleted_cwd(tmp_path, remove_
         "os.chdir(sys.argv[1])\n"
         "if sys.argv[2] == 'deleted':\n"
         "    os.rmdir(sys.argv[1])\n"
-        "import hermes_bootstrap\n"
+        "from hermes_agent import hermes_bootstrap\n"
         "print(os.getcwd())\n"
     )
     env = {**os.environ, "HERMES_HOME": str(tmp_path / ".hermes"),

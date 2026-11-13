@@ -53,7 +53,7 @@ def _report_live_models(model_list, source: str) -> None:
 
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
-    from hermes_constants import OPENROUTER_BASE_URL
+    from hermes_agent.hermes_constants import OPENROUTER_BASE_URL
     from hermes_agent.hermes_cli.auth import ProviderConfig, _prompt_model_selection
 
     # OpenRouter isn't in PROVIDER_REGISTRY so we synthesize a minimal pconfig.
@@ -77,7 +77,7 @@ def _model_flow_openrouter(config, current_model=""):
 
 def _model_flow_ai_gateway(config, current_model=""):
     """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
-    from hermes_constants import AI_GATEWAY_BASE_URL
+    from hermes_agent.hermes_constants import AI_GATEWAY_BASE_URL
     from hermes_agent.hermes_cli.main_provider_setup import _prompt_api_key
     from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, _prompt_model_selection
     from hermes_agent.hermes_cli.config import get_env_value

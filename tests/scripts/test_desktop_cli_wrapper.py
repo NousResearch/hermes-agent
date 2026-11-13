@@ -92,7 +92,7 @@ def test_configure_processes_site_pth_files(tmp_path):
     Only addsitedir() runs .pth files, and pywin32.pth is load-bearing on
     Windows bundles: it puts win32\\lib on sys.path, which is what makes
     `import pywintypes` resolve (portalocker's Win32Locker →
-    concurrent-log-handler → hermes_logging.py's file handlers). The old
+    concurrent-log-handler → hermes_agent/hermes_logging.py's file handlers). The old
     raw sys.path[0:0] = entries skipped .pth processing entirely, silently
     killing file logging on Windows bundles (and any future .pth-based
     dependency on every platform).

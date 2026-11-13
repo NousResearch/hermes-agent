@@ -74,7 +74,7 @@ class TestGetActiveProvider:
 
     def test_unknown_explicit_config_fails_closed(self, tmp_path, monkeypatch):
         """A typo must not silently route a paid request to another backend."""
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(

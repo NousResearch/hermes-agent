@@ -16,7 +16,7 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
     from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
     from hermes_agent.gateway.session_automation import completion_admission
     from hermes_agent.gateway.session_ingress_context import native_callback
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
     from plugins.platforms.telegram.adapter import TelegramAdapter

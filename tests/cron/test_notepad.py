@@ -99,7 +99,7 @@ class TestNotepadCrud:
 
 class TestNotepadProfileIsolation:
     def test_profile_override_routes_writes_to_current_home(self, tmp_path):
-        from hermes_constants import (
+        from hermes_agent.hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
         )

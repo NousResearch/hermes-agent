@@ -26,9 +26,9 @@ from functools import cached_property, wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
-from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
+from hermes_agent.hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from hermes_agent.registration_lifecycle import replacement_coordinator
-from utils import env_var_enabled
+from hermes_agent.utils import env_var_enabled
 from hermes_agent.hermes_cli.config import load_config_readonly
 from hermes_agent.hermes_cli.middleware import VALID_MIDDLEWARE
 from hermes_agent.hermes_cli.plugin_capabilities import plugin_capability_granted
@@ -494,7 +494,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # Reset and reload the SAME home the process (or routed turn) resolves to: under multiplex this
             # runs at gateway boot after sibling profiles may already have hydrated, and a global clear
             # wiped their snapshots; a routed discovery must rebuild the profile it just dropped.
-            from hermes_constants import get_hermes_home
+            from hermes_agent.hermes_constants import get_hermes_home
             home = get_hermes_home()
             reset_secret_source_cache(home)
             load_hermes_dotenv(hermes_home=home)
@@ -935,7 +935,7 @@ def _plugin_toolset_keys_cache_path() -> Path:
 def _persist_plugin_toolset_keys() -> None:
     """Persist discovered plugin toolset keys + portable MCP names (best-effort)."""
     try:
-        from utils import atomic_json_write
+        from hermes_agent.utils import atomic_json_write
         keys = sorted({ts_key for ts_key, _, _ in get_plugin_toolsets()})
         try:
             portable = sorted(get_plugin_manager().get_portable_mcp_servers())

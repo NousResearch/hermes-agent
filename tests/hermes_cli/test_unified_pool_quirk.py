@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 import hermes_agent.hermes_cli.local_runtime.hardware as hw
-from hermes_platform.host import gpu_adapters
+from hermes_agent.hermes_platform.host import gpu_adapters
 
 GIB = 1 << 30
 

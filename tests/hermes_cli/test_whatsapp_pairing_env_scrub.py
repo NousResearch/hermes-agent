@@ -14,7 +14,7 @@ _OPERATOR_SECRETS = {
 
 @pytest.fixture
 def bridge_dir(tmp_path, monkeypatch):
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.gateway.platforms import whatsapp_common
 
     for key, value in _OPERATOR_SECRETS.items():

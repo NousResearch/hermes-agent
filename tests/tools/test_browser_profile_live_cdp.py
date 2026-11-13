@@ -8,7 +8,7 @@ import types
 import pytest
 
 from hermes_agent.gateway.run import _profile_runtime_scope
-from hermes_constants import hermes_home_key
+from hermes_agent.hermes_constants import hermes_home_key
 from hermes_agent.tools import browser_session as bs, browser_session_cdp as bs_cdp, browser_session_lifecycle as lifecycle
 from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
 

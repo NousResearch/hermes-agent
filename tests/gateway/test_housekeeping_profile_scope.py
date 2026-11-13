@@ -70,7 +70,7 @@ def _record_credential_chores(monkeypatch):
     """Replace the credential-reading chores with recorders of (home, Nous override) they see."""
     from hermes_agent.agent import curator
     from hermes_agent.hermes_cli.auth_nous import _nous_inference_env_override
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     seen: dict = {"curator": []}
 
@@ -90,7 +90,7 @@ def test_multiplexed_credential_chores_run_once_per_profile_in_its_own_scope(two
     A's tick reads A's override, B's reads B's (B never sees A's), and no fail-closed credential
     read fires the ``no profile secret scope`` warning. The ambient home is untouched afterwards."""
     from hermes_agent.agent.secret_scope import set_multiplex_active
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     a, b = two_homes
     seen = _record_credential_chores(monkeypatch)
@@ -184,7 +184,7 @@ def test_a_failing_profile_does_not_strand_the_profiles_after_it(two_homes, monk
     """
     import hermes_agent.hermes_state_registry as registry
     from hermes_agent.agent.secret_scope import set_multiplex_active
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
     a, b = two_homes
@@ -221,7 +221,7 @@ def test_profile_scope_setup_failure_restores_the_callers_home(two_homes, monkey
     resolving ``get_hermes_home()`` to the failed profile for every later unscoped read.
     """
     from hermes_agent.agent.secret_scope import current_secret_scope
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     a, b = two_homes
     scope_before = current_secret_scope()

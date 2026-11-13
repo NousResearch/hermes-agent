@@ -15,9 +15,9 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
-from hermes_constants import hermes_home_key, is_launch_only_env_key
+from hermes_agent.hermes_constants import hermes_home_key, is_launch_only_env_key
 from hermes_agent.hermes_cli.left_core_migration import profile_env_names
-from utils import atomic_replace, mkstemp_beside
+from hermes_agent.utils import atomic_replace, mkstemp_beside
 
 logger = logging.getLogger(__name__)
 
@@ -718,7 +718,7 @@ def load_hermes_dotenv(
         return []
     # Process home on purpose (never the per-turn override): a startup .env load must not follow a routed
     # profile — see the multiplex guard below.
-    from hermes_constants import get_process_hermes_home
+    from hermes_agent.hermes_constants import get_process_hermes_home
     home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
@@ -732,7 +732,7 @@ def load_hermes_dotenv(
     # (``is_multiplex_active()`` is also true, context-locally, for a routed cron fire in the desktop
     # backend — see ``hermes_agent.cron.scheduler_provider.routed_profile_fire``.)
     from hermes_agent.agent.secret_scope import is_multiplex_active
-    from hermes_constants import get_hermes_home, get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home, get_hermes_home_override
 
     launch_home = _process_hermes_home().resolve()
     if (is_multiplex_active() and get_hermes_home_override() is not None
@@ -1160,14 +1160,14 @@ def _process_hermes_home() -> Path:
       (mtime,size)-keyed config cache is safe to reuse; under an override it
       must fall through to an isolated parse of the scoped profile.
 
-    ``hermes_constants.get_routing_process_hermes_home()`` is the override-immune
+    ``hermes_agent.hermes_constants.get_routing_process_hermes_home()`` is the override-immune
     resolver built for exactly this; delegate to it. It is also immune to a host
     that mirrors the served profile into the live ``HERMES_HOME`` env var
     (``pin_process_hermes_home``): without that, the mirrored profile satisfied
     the guard above and bridged ITS ``terminal.*`` into the shared env.
     """
     try:
-        from hermes_constants import get_routing_process_hermes_home
+        from hermes_agent.hermes_constants import get_routing_process_hermes_home
 
         return get_routing_process_hermes_home()
     except Exception:

@@ -105,7 +105,7 @@ class TestPreUpdateBackupIntegrityGuard:
         monkeypatch.setenv("HERMES_HOME", str(root))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         for mod in list(sys.modules.keys()):
-            if mod.startswith("hermes_agent.hermes_cli.config") or mod == "hermes_constants":
+            if mod.startswith("hermes_agent.hermes_cli.config") or mod == "hermes_agent.hermes_constants":
                 del sys.modules[mod]
         return root
 

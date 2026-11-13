@@ -282,7 +282,7 @@ other.
 A hosted deployment runs many tenants' agents in one Hermes process, and each
 agent's commands, code, background processes and files live in that agent's
 own remote sandbox. A backend that provides those sandboxes sets
-`serves_hosted_scopes = True`. With a hosted `hermes_scope.Scope` bound
+`serves_hosted_scopes = True`. With a hosted `hermes_agent.hermes_scope.Scope` bound
 (a tenant other than `local`), Hermes refuses every backend without it, the
 built-ins included, so nothing a hosted agent runs ever runs on the Hermes host.
 

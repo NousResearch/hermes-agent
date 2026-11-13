@@ -300,7 +300,7 @@ def fetch_models_with_pricing(
 def fetch_ai_gateway_pricing(timeout: float = 8.0, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
     """Vercel AI Gateway /v1/models pricing, translating its ``input`` / ``output`` field names to
     the picker's ``prompt`` / ``completion`` (cache read/write names already match)."""
-    from hermes_constants import AI_GATEWAY_BASE_URL
+    from hermes_agent.hermes_constants import AI_GATEWAY_BASE_URL
 
     cache_key = AI_GATEWAY_BASE_URL.rstrip("/")
     if not force_refresh:
@@ -533,7 +533,7 @@ _FIREWORKS_PRICING_KEY = "models.dev/fireworks"
 
 
 def _ai_gateway_pricing_scope() -> str:
-    from hermes_constants import AI_GATEWAY_BASE_URL
+    from hermes_agent.hermes_constants import AI_GATEWAY_BASE_URL
     return AI_GATEWAY_BASE_URL.rstrip("/")
 
 
@@ -582,7 +582,7 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
     try:
         from hermes_agent.agent.model_metadata import _URL_TO_PROVIDER, _infer_provider_from_url
         from hermes_agent.providers import get_provider_profile
-        from utils import base_url_host_matches, base_url_hostname
+        from hermes_agent.utils import base_url_host_matches, base_url_hostname
 
         inferred = _infer_provider_from_url(base_url)
         profile = get_provider_profile(inferred) if inferred else None

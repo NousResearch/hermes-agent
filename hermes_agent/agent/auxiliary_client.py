@@ -138,8 +138,8 @@ from hermes_agent.agent.auxiliary_health import (
 from hermes_agent.agent.auxiliary_unavailable import (
     AuxiliaryClientUnavailable, clear_nous_credential_failure, missing_provider_credentials_message,
     nous_credential_failure_detail, record_nous_credential_failure)
-from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
-from utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from hermes_agent.hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
+from hermes_agent.utils import base_url_host_matches, base_url_hostname, base_url_origin, base_url_path, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -6106,7 +6106,7 @@ class CompressionFastLane(NamedTuple):
 
 def _fast_lane_config_fields(config: dict[str, Any]) -> tuple[str, str, bool]:
     """Only explicit reasoning disablement certifies a non-reasoning route."""
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     provider = str(config.get("provider") or "").strip().lower()
     model = str(config.get("model") or "").strip()
     parsed_effort = parse_reasoning_effort(config.get("reasoning_effort"))
@@ -6249,7 +6249,7 @@ def _get_task_extra_body(task: str) -> dict[str, Any]:
             task,
         )
         return result
-    from hermes_constants import parse_reasoning_effort
+    from hermes_agent.hermes_constants import parse_reasoning_effort
     parsed = parse_reasoning_effort(effort)
     if parsed is not None:
         result["reasoning"] = parsed
@@ -6297,7 +6297,7 @@ def _acquire_sync_aux_semaphore(task: Optional[str]) -> Optional[threading.Bound
     limit = _get_task_max_concurrency(task)
     if limit is None:
         return None
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     return _cached_semaphore(_aux_sync_semaphores, (hermes_home_key(), task), limit, threading.BoundedSemaphore)
 
 
@@ -6312,7 +6312,7 @@ def _acquire_async_aux_semaphore(task: Optional[str]):
     except RuntimeError:
         return None
     from hermes_agent.agent.cache_bounds import live_loop_table
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     tables = live_loop_table(_aux_async_semaphores, loop, _aux_sem_lock)
     return _cached_semaphore(tables, (hermes_home_key(), task), limit, asyncio.Semaphore)
 

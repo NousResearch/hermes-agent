@@ -68,7 +68,7 @@ def test_reporter_reproducer_explicit_invalidation_reaches_quiet_memo(mail_state
     assert get_tool_definitions(**kwargs) == []
 
     mail_state["up"] = True
-    invalidate_check_fn_cache()  # e.g. hermes_platform.declaration.on_change
+    invalidate_check_fn_cache()  # e.g. hermes_agent.hermes_platform.declaration.on_change
 
     assert _names(get_tool_definitions(**kwargs)) == {MAIL}
 
@@ -345,7 +345,7 @@ def test_selection_widened_by_a_late_connection_appends_with_the_generation_unch
     """``adopt_late_connections`` widens the selection to a server another session already
     connected in this process: nothing registers, the generation stays put, and the server's
     tools must still append between turns, as on main."""
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     from hermes_agent.tools.connectors import mcp as connectors_mcp
     from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 

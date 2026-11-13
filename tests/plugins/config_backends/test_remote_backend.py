@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from utils import fast_safe_load
+from hermes_agent.utils import fast_safe_load
 
 from plugins.config_backends import remote as remote_pkg
 from plugins.config_backends.remote import backend as backend_mod
@@ -387,7 +387,7 @@ def test_backend_edits_paths_with_the_diff_helpers():
 
 
 def test_named_profile_fetches_its_own_layer(plane):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     from hermes_agent.hermes_cli.config import load_config
     work = plane.home / "profiles" / "work"

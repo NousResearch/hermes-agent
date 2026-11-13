@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.tui_gateway import server
 
@@ -49,7 +49,7 @@ def test_describe_matches_the_runtime_once_legacy_disabled_is_migrated(profile_d
     migration turns it into the ``enabled: false`` the runtime resolver honours."""
     from hermes_agent.hermes_cli.config_migrations import run_migrations
     from hermes_agent.hermes_cli.tools_config import enabled_mcp_server_names
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     _write_mcp(profile_dir, {
         "on": {"command": "on", "enabled": True},

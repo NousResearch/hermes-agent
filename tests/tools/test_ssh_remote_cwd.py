@@ -44,7 +44,7 @@ def test_ssh_paths_resolve_on_the_remote_and_stay_guarded(monkeypatch):
         key = terminal_tool._resolve_container_task_id("sess")
         terminal_tool._active_environments[key] = SimpleNamespace(**env)
 
-    with patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME):
+    with patch("hermes_agent.hermes_constants.get_subprocess_home", return_value=HOST_HOME):
         # Without a detected remote home, ``~`` stays for the remote shell.
         assert resolve("x.txt") == "~/proj/x.txt"
         assert resolve("~/y.txt") == "~/y.txt"
@@ -71,7 +71,7 @@ def test_ssh_paths_resolve_on_the_remote_and_stay_guarded(monkeypatch):
     (HOST_HOME, "docker", HOST_HOME),
 ])
 def test_ssh_cwd_never_names_the_host_subprocess_home(cwd, env_type, expected):
-    with patch("hermes_constants.get_subprocess_home", return_value=HOST_HOME):
+    with patch("hermes_agent.hermes_constants.get_subprocess_home", return_value=HOST_HOME):
         assert coerce_ssh_remote_cwd(cwd, env_type) == expected
 
 
@@ -80,10 +80,10 @@ def image_home(tmp_path, monkeypatch):
     """The official image: HOME and HERMES_HOME are both the data dir, its ``home`` is the subprocess HOME."""
     root = os.path.join(os.path.realpath(tmp_path), "data")
     os.makedirs(os.path.join(root, "home"))
-    monkeypatch.setattr("hermes_constants.is_container", lambda: True)
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: Path(root))
-    monkeypatch.setattr("hermes_constants.get_real_home", lambda env=None: root)
-    monkeypatch.setattr("hermes_constants.get_subprocess_home", lambda env=None: os.path.join(root, "home"))
+    monkeypatch.setattr("hermes_agent.hermes_constants.is_container", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: Path(root))
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_real_home", lambda env=None: root)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_subprocess_home", lambda env=None: os.path.join(root, "home"))
     terminal_tool_config._launch_dirs.cache_clear()
     yield root
     terminal_tool_config._launch_dirs.cache_clear()
@@ -142,13 +142,13 @@ def test_files_pane_maps_a_named_profiles_dirs_in_its_own_scope(image_home, monk
     while that profile's home is bound."""
     from contextlib import contextmanager
 
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.hermes_cli import ssh_workspace_fs
     from hermes_agent.hermes_cli.web_routers import files as file_routes
 
     profile = os.path.join(image_home, "profiles", "work")
     os.makedirs(os.path.join(profile, "home"))
-    monkeypatch.setattr("hermes_constants.get_hermes_home",
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home",
                         lambda: Path(hermes_constants.get_hermes_home_override() or image_home))
 
     @contextmanager
@@ -169,7 +169,7 @@ def test_files_pane_maps_a_named_profiles_dirs_in_its_own_scope(image_home, monk
 
 
 def test_ssh_cwd_rewrites_the_hermes_home_without_a_subprocess_home(image_home, monkeypatch):
-    monkeypatch.setattr("hermes_constants.get_subprocess_home", lambda env=None: None)
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_subprocess_home", lambda env=None: None)
     assert coerce_ssh_remote_cwd(image_home, "ssh") == "~"
     assert coerce_ssh_remote_cwd(f"{image_home}/./home", "ssh") == "~"
     assert coerce_ssh_remote_cwd(f"{image_home}/proj", "ssh") == f"{image_home}/proj"
@@ -178,8 +178,8 @@ def test_ssh_cwd_rewrites_the_hermes_home_without_a_subprocess_home(image_home, 
 def test_ssh_cwd_rewrites_the_root_under_a_named_profile(image_home, monkeypatch):
     profile = os.path.join(image_home, "profiles", "work")
     os.makedirs(os.path.join(profile, "home"))
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: Path(profile))
-    monkeypatch.setattr("hermes_constants.get_subprocess_home", lambda env=None: os.path.join(profile, "home"))
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_hermes_home", lambda: Path(profile))
+    monkeypatch.setattr("hermes_agent.hermes_constants.get_subprocess_home", lambda env=None: os.path.join(profile, "home"))
     for launch in (image_home, f"{image_home}/home", profile, f"{profile}/home"):
         assert coerce_ssh_remote_cwd(launch, "ssh") == "~"
     assert coerce_ssh_remote_cwd(f"{image_home}/proj", "ssh") == f"{image_home}/proj"
@@ -187,7 +187,7 @@ def test_ssh_cwd_rewrites_the_root_under_a_named_profile(image_home, monkeypatch
 
 def test_ssh_cwd_keeps_the_hermes_home_on_a_host(image_home, monkeypatch):
     """Outside a container the SSH target may share the layout (an NFS home holding ~/.hermes)."""
-    monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_constants.is_container", lambda: False)
     assert coerce_ssh_remote_cwd(image_home, "ssh") == image_home
 
 

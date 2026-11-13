@@ -56,7 +56,7 @@ def test_worker_registers_owning_profile_config_hooks(homes, tmp_path, monkeypat
     from hermes_agent.agent import outbound_webhooks
     from hermes_agent.agent import shell_hooks
     from hermes_agent.cron import scheduler
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
 
     payload = tmp_path / "payload.json"
     payload.write_text(

@@ -5,7 +5,7 @@ import os
 import sys
 import time
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_cli import plugins as plugins_mod

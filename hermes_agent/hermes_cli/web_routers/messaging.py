@@ -27,7 +27,7 @@ from hermes_agent.gateway.status import resolve_gateway_liveness, retained_gatew
 from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
-from hermes_constants import get_process_hermes_home
+from hermes_agent.hermes_constants import get_process_hermes_home
 from hermes_agent.hermes_cli.web_deps import LateState, late
 from hermes_agent.hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_agent.hermes_cli.web_whatsapp_session import _backup_whatsapp_session
@@ -417,8 +417,8 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
     if (bridge_dir / "node_modules").exists():
         return
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
-    from utils import env_int
+    from hermes_agent.hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_agent.utils import env_int
     import pm
 
     npm = find_node_executable("npm")
@@ -451,7 +451,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
     from hermes_agent.gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
+    from hermes_agent.hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
 
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"

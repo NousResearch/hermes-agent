@@ -1044,7 +1044,7 @@ class TestVisionCpuBurstCap:
         """The pool worker runs under the caller's contextvars: a turn routed to another profile
         encodes with that profile's home, not the launch profile's."""
         import importlib
-        from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
         vt = importlib.import_module("hermes_agent.tools.vision_tools")
         token = set_hermes_home_override(str(tmp_path / "profiles" / "b"))
         try:

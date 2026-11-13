@@ -14,9 +14,9 @@ import os
 from pathlib import Path
 import time
 from typing import Optional
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 logger = logging.getLogger("hermes_agent.tools.process_registry")
 

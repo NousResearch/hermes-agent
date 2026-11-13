@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_agent.hermes_cli.config import get_hermes_home
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 CACHE_PATH = get_hermes_home() / "sticker_cache.json"
 _CACHE_PATH_AT_IMPORT = CACHE_PATH

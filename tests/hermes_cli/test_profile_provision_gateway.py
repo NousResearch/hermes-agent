@@ -343,7 +343,7 @@ def test_a_url_gateway_creates_in_this_terminals_profile(root, monkeypatch):
     _gateway(monkeypatch, rpc_error(ws_legacy_fallback._unavailable({"id": 1})["error"]))
     with pytest.raises(GatewayCreateError, match=r"cannot serve this terminal's profile \(work\); nothing was created"):
         create_through_gateway(request)
-    import hermes_constants
+    from hermes_agent import hermes_constants
     with monkeypatch.context() as patched:
         patched.setattr(hermes_constants, "profile_name_for_home", lambda home: None)  # no name resolves
         with pytest.raises(GatewayCreateError, match="not a named profile.*nothing was created"):

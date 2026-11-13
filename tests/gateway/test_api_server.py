@@ -1418,7 +1418,7 @@ class TestDeriveChatSessionId:
     def test_launch_profile_prefix_keeps_the_unprefixed_id(self, monkeypatch, tmp_path):
         """A gateway launched as ``work`` serves ``/p/work/`` and the bare route as ONE profile:
         both must derive one id, or the same conversation forks by URL."""
-        import hermes_constants
+        from hermes_agent import hermes_constants
         from hermes_agent.hermes_cli import profiles
 
         work = tmp_path / "profiles" / "work"

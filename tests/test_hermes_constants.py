@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-import hermes_constants
-from hermes_platform.host import runtime as host_runtime
-from hermes_constants import (
+from hermes_agent import hermes_constants
+from hermes_agent.hermes_platform.host import runtime as host_runtime
+from hermes_agent.hermes_constants import (
     get_default_hermes_root,
     get_hermes_dir,
     get_hermes_home,
@@ -256,7 +256,7 @@ class TestResolvePerModelReasoningEffort:
 
     def test_exact_match(self):
         """Exact model string match returns the parsed override."""
-        from hermes_constants import resolve_per_model_reasoning_effort
+        from hermes_agent.hermes_constants import resolve_per_model_reasoning_effort
         overrides = {"claude-opus-4.5": "xhigh"}
         result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
         assert result == {"enabled": True, "effort": "xhigh"}
@@ -267,7 +267,7 @@ class TestResolvePerModelReasoningEffort:
 
     def test_empty_model_returns_none(self):
         """Empty model string returns None."""
-        from hermes_constants import resolve_per_model_reasoning_effort
+        from hermes_agent.hermes_constants import resolve_per_model_reasoning_effort
         assert resolve_per_model_reasoning_effort("", {"gpt-5": "low"}) is None
 
     # --- Spelling tolerance layer ---
@@ -283,7 +283,7 @@ class TestResolvePerModelReasoningEffort:
         If both 'claude-opus-4.5' (exact) and 'claude-opus-4-5' (dashes
         variant) are keys, the exact input matches the exact key first.
         """
-        from hermes_constants import resolve_per_model_reasoning_effort
+        from hermes_agent.hermes_constants import resolve_per_model_reasoning_effort
         overrides = {"claude-opus-4.5": "high", "claude-opus-4-5": "xhigh"}
         result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
         assert result == {"enabled": True, "effort": "high"}
@@ -295,14 +295,14 @@ class TestResolvePerModelReasoningEffort:
         prefix while the documented key spelling keeps ``provider/model``; a key for a different
         model must still miss.
         """
-        from hermes_constants import resolve_per_model_reasoning_effort
+        from hermes_agent.hermes_constants import resolve_per_model_reasoning_effort
         overrides = {"ollama-local/qwen3.6:27b-q4_k_m": "low"}
         assert resolve_per_model_reasoning_effort("qwen3.6:27b-q4_k_m", overrides) == {"enabled": True, "effort": "low"}
         assert resolve_per_model_reasoning_effort("llama3.2:3b", overrides) is None
 
     def test_direct_match_wins_over_reverse_lookup(self):
         """A direct/variant key match keeps priority over a prefixed reverse match."""
-        from hermes_constants import resolve_per_model_reasoning_effort
+        from hermes_agent.hermes_constants import resolve_per_model_reasoning_effort
         overrides = {"qwen3.6:27b": "medium", "ollama-local/qwen3.6:27b": "low"}
         assert resolve_per_model_reasoning_effort("qwen3.6:27b", overrides) == {"enabled": True, "effort": "medium"}
 
@@ -326,7 +326,7 @@ class TestResolveReasoningConfig:
         }
 
     def test_per_model_override_wins(self):
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         cfg = self._cfg(overrides={"claude-opus-4.5": "xhigh"})
         result = resolve_reasoning_config(cfg, "claude-opus-4.5")
         assert result == {"enabled": True, "effort": "xhigh"}
@@ -334,7 +334,7 @@ class TestResolveReasoningConfig:
 
 
     def test_empty_model_derives_from_config_default(self):
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         cfg = self._cfg(overrides={"gpt-5": "high"}, default_model="gpt-5")
         assert resolve_reasoning_config(cfg) == {"enabled": True, "effort": "high"}
 
@@ -347,21 +347,21 @@ class TestResolveReasoningConfig:
 
     def test_malformed_sections_tolerated(self):
         """Non-dict agent/model sections must not raise."""
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         assert resolve_reasoning_config({"agent": "oops", "model": 42}) is None
         assert resolve_reasoning_config({"agent": None, "model": None}) is None
         assert resolve_reasoning_config({"agent": {"reasoning_overrides": "bad"}}) is None
 
     def test_invalid_override_value_falls_back_to_global(self):
         """A junk override value for the matching model falls through to global."""
-        from hermes_constants import resolve_reasoning_config
+        from hermes_agent.hermes_constants import resolve_reasoning_config
         cfg = self._cfg(effort="medium", overrides={"gpt-5": "turbo-max"})
         assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
 
     def test_dict_form_passes_bespoke_tier_verbatim_globally_and_per_model(self):
         """#93238: providers with custom tiers (fast/thinking) need the dict form to send their
         real level; a bare non-ladder string stays rejected so typos never reach the wire."""
-        from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+        from hermes_agent.hermes_constants import parse_reasoning_effort, resolve_reasoning_config
         cfg = self._cfg(effort={"enabled": True, "effort": "thinking"},
                         overrides={"lumo-max": {"enabled": True, "effort": "fast"}})
         assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "thinking"}
@@ -370,7 +370,7 @@ class TestResolveReasoningConfig:
 
     def test_dict_form_disabled_or_empty_effort(self):
         """enabled:false disables regardless of level; a dict without a level is 'unset'."""
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
         assert parse_reasoning_effort({"enabled": False, "effort": "low"}) == {"enabled": False}
         assert parse_reasoning_effort({"enabled": True}) is None
         assert parse_reasoning_effort({"effort": 0}) is None
@@ -383,7 +383,7 @@ class TestReasoningOverridesDefaultConfig:
 
     def test_spelling_tolerant_lookup_works_with_user_config(self):
         """resolve_per_model_reasoning_effort works with user-added overrides."""
-        from hermes_constants import resolve_per_model_reasoning_effort
+        from hermes_agent.hermes_constants import resolve_per_model_reasoning_effort
         # User config with one override, query uses different spelling
         overrides = {
             "anthropic/claude-opus-4.5": "xhigh",  # user wrote with dots

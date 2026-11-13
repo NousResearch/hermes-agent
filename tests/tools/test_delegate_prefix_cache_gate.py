@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from tests.waiting import wait_until
 from hermes_agent.tools import delegate_tool_dispatch
 from hermes_agent.tools.delegate_tool_child_run import _attach_child

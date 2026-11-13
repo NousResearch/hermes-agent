@@ -18,7 +18,7 @@ from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_platform.host.runtime import is_wsl
+from hermes_agent.hermes_platform.host.runtime import is_wsl
 from hermes_agent.tools.computer_use.backend import ActionResult, ComputerUseBackend
 from hermes_agent.tools.computer_use.cua_backend_capture import _CaptureMixin
 from hermes_agent.tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
@@ -104,7 +104,7 @@ def _manifest_is_mode_independent(path: str) -> bool:
     mode. Unreadable / unparseable -> False (forwarding one would turn a working session into a hard startup
     failure; bounded forwards unconditionally anyway)."""
     try:
-        import hermes_yaml as yaml
+        import hermes_agent.hermes_yaml as yaml
 
         with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)

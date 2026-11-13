@@ -8,7 +8,7 @@ import threading
 import time
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_agent.tools import approval_context, approval_prompt

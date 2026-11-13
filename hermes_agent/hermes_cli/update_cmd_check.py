@@ -70,7 +70,7 @@ def _refuses(git_cmd: list[str], root: Path, target: str, repository: str) -> bo
     from hermes_agent.hermes_cli.update_downgrade_guard import would_refuse
     from hermes_agent.hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
     from hermes_agent.hermes_cli.source_check import _github_predates_runtime
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     def git(*args: str) -> int:
         try:

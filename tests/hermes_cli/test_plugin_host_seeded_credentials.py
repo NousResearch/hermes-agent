@@ -4,7 +4,7 @@ ambient token it declares, exactly as it would in-process."""
 import os
 import sys
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_cli import plugins as plugins_mod
@@ -80,7 +80,7 @@ def test_a_routed_home_host_never_inherits_the_launch_shell_token(tmp_path, monk
     from hermes_agent import providers
     from hermes_agent.hermes_cli.plugin_host import _hosted_ambient_credentials
     from hermes_agent.hermes_cli.plugin_host_profiles import _profile_proxy
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.providers.base import ProviderProfile
 
     launch, coder, writer = tmp_path / "launch", tmp_path / "coder", tmp_path / "writer"

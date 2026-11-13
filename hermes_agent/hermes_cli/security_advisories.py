@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
-from hermes_constants import display_hermes_home
+from hermes_agent.hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +205,7 @@ _BANNER_REPEAT_HOURS = 24
 
 def _banner_cache_path() -> Optional[Path]:
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         cache_dir = Path(get_hermes_home()) / "cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir / _BANNER_CACHE_FILE

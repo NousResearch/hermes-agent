@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_agent.tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
-from utils import is_truthy_value
+from hermes_agent.utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 

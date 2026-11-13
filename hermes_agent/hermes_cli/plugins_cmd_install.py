@@ -178,7 +178,7 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
     if not missing:
         return
     from hermes_agent.hermes_cli.config import save_env_value
-    from hermes_constants import display_hermes_home
+    from hermes_agent.hermes_constants import display_hermes_home
     plugin_name = manifest.get("name", "this plugin")
     console.print(f"\n[bold]{plugin_name}[/bold] requires the following environment variables:\n")
     for spec in missing:
@@ -304,7 +304,7 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path, app_title:
     if not (tree / "plugin.json").is_file():
         return
     from hermes_agent.hermes_cli.agent_plugins import load_agent_plugin
-    from hermes_platform.resolver.availability import availability
+    from hermes_agent.hermes_platform.resolver.availability import availability
     from hermes_agent.tools.mcp_liveness import availability_problem, describe
 
     try:

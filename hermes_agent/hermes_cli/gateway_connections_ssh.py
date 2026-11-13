@@ -80,7 +80,7 @@ def store_root(root: Path | None = None) -> Path:
     """The gateway-connections store root: a profile home names its root (ui_preferences rule)."""
     if root is not None:
         return Path(os.path.realpath(root))
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     home = Path(os.path.abspath(get_hermes_home()))
     return (home.parent.parent if home.parent.name.lower() == "profiles" else home).resolve()

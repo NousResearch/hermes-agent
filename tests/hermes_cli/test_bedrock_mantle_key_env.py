@@ -11,7 +11,7 @@ runtime resolver then makes of it.
 
 import os
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 import hermes_agent.hermes_cli.runtime_provider as rp
 from hermes_agent.hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock_api_key
@@ -34,7 +34,7 @@ def _run_wizard(monkeypatch, selected="openai.gpt-5.6-terra"):
 
     _model_flow_bedrock_api_key({}, REGION)
 
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     return get_hermes_home(), yaml.safe_load(
         (get_hermes_home() / "config.yaml").read_text(encoding="utf-8")

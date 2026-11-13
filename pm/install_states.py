@@ -62,7 +62,7 @@ def _retention_seconds(data_root: Path) -> float | None:
     for the others: a named profile without the key would apply the default to a state the root
     opted out of reclaiming."""
     from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     token = set_hermes_home_override(data_root)
     try:

@@ -17,7 +17,7 @@ import threading
 
 from rich.markup import escape as _escape
 from hermes_agent.agent.i18n import t
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 from hermes_agent.hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def _resolve_cli_reasoning(cli) -> None:
     the launch model's effort and 400s (#112921, #96012). ``agent.switch_model`` re-resolves its own
     copy for the live-agent path."""
     from hermes_agent.cli import CLI_CONFIG
-    from hermes_constants import resolve_reasoning_config
+    from hermes_agent.hermes_constants import resolve_reasoning_config
     # getattr: tests drive /new unbound on a SimpleNamespace without ``model`` (blank -> config default).
     cli.reasoning_config = resolve_reasoning_config(CLI_CONFIG, getattr(cli, "model", None) or "")
     cli._reasoning_user_set = False
@@ -291,7 +291,7 @@ def _configured_default_route() -> tuple[str, str]:
 def _picker_reasoning_rows() -> list[tuple[str, str]]:
     """``(value, label)`` rows for the picker's effort step: the canonical ladder, the off state,
     then a keep-current row (empty value = leave the effort alone)."""
-    from hermes_constants import VALID_REASONING_EFFORTS
+    from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
     rows = [(lvl, lvl) for lvl in VALID_REASONING_EFFORTS]
     rows.append(("none", t("cli.model.effort_none")))
     rows.append(("", t("cli.model.effort_keep_current")))

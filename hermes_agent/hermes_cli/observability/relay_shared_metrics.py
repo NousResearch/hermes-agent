@@ -14,7 +14,7 @@ from time import monotonic_ns
 from typing import Any, Callable, Iterator
 
 from hermes_agent.agent import relay_runtime
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.agent.portal_tags import get_conversation_context
 from hermes_agent.hermes_cli.version_info import get_version_info
 
@@ -1405,7 +1405,7 @@ def _reconcile_send_consent_once() -> None:
     try:
         # Lazy: tests patch ``shared_metrics.SharedMetricsStore`` at its origin.
         from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         resolved = _resolved_send_config()
         # Probe WITHOUT constructing a store: the constructor creates the directory and

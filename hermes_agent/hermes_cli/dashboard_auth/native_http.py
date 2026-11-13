@@ -34,7 +34,7 @@ def grant_home_scope(grant):
     if grant is None:
         yield
         return
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     home = Path(grant['profile_id'])
     token = set_hermes_home_override(str(home))
     try:
@@ -153,7 +153,7 @@ def _check_registry_scope(request, profile_id, launch_home):
     if launch_home is None:
         # Fail closed: with no known launch home the guard below cannot tell it apart.
         raise PermissionError('profile_scope_mismatch')
-    from hermes_constants import get_default_hermes_root, hermes_home_key
+    from hermes_agent.hermes_constants import get_default_hermes_root, hermes_home_key
     # Compared by hermes_home_key, as SessionAuthorities keys homes (symlinks, case, separators).
     launch = hermes_home_key(launch_home)
     if hermes_home_key(profile_id) == launch and not (

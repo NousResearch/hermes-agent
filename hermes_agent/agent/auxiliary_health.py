@@ -9,7 +9,7 @@ def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None, model: O
     active profile home: a 402 on profile A's account must not hide the provider from profile B's
     (differently funded) account in the same multiplexed process."""
     from hermes_agent.agent.auxiliary_client import _normalize_chain_label, _normalize_resolved_model
-    from hermes_constants import hermes_home_key
+    from hermes_agent.hermes_constants import hermes_home_key
     label = _normalize_chain_label(provider)
     endpoint = normalize_route_base_url(_custom_health_base_url(provider, base_url))
     key = (hermes_home_key(), "custom-endpoint", endpoint) if endpoint else (hermes_home_key(), label)

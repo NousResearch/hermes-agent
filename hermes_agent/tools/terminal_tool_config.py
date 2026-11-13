@@ -59,7 +59,7 @@ def home_profile_name() -> str:
     container-key resolution, several times per tool call."""
     try:
         from hermes_agent.hermes_cli.profiles import get_active_profile_name
-        from hermes_constants import get_default_hermes_root, get_hermes_home
+        from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home
 
         home = get_hermes_home()
         key = (str(home), str(get_default_hermes_root()))
@@ -209,7 +209,7 @@ def _launch_dirs(home: str, native_home: str) -> frozenset[str]:
     (``native_home``, which keys the cache too); the install root is fixed per process. Cached: the shared root
     memo holds a single entry and thrashed when called once per command."""
     from hermes_agent.hermes_cli._startup_fast import project_root_str
-    from hermes_constants import get_default_hermes_root
+    from hermes_agent.hermes_constants import get_default_hermes_root
 
     root = posixpath.normpath(str(get_default_hermes_root(home=home)))
     return frozenset({home, root, posixpath.join(home, "home"), posixpath.join(root, "home"), project_root_str()})
@@ -221,7 +221,7 @@ def _is_container_launch_dir(path: str) -> bool:
     each, or the install root (``/opt/hermes``, as its real path). Those exist only in the container, never on
     an SSH target. The candidate is compared lexically: a symlink on this machine says nothing about the target.
     On a host they are left alone, since an SSH target may share the layout (``~/.hermes`` on an NFS home)."""
-    from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, is_container
+    from hermes_agent.hermes_constants import _get_platform_default_hermes_home, get_hermes_home, is_container
 
     if not is_container():
         return False
@@ -257,7 +257,7 @@ def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
         return text
     if _is_container_launch_dir(text):
         return "~"
-    from hermes_constants import get_real_home, get_subprocess_home
+    from hermes_agent.hermes_constants import get_real_home, get_subprocess_home
 
     home = get_subprocess_home()
     if not home or posixpath.normpath(home) == posixpath.normpath(get_real_home()):

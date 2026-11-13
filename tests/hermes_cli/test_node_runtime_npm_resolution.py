@@ -24,7 +24,7 @@ def test_resolve_node_runtime_npm_never_rescans_path_past_a_windows_shim(monkeyp
     monkeypatch.setenv("PATH", os.pathsep.join(["/mnt/c/Program Files/nodejs", "/mnt/data/node/bin"]))
 
     with (
-        patch("hermes_constants.find_node_executable", return_value="/mnt/c/Program Files/nodejs/npm"),
+        patch("hermes_agent.hermes_constants.find_node_executable", return_value="/mnt/c/Program Files/nodejs/npm"),
         patch("shutil.which", return_value="/mnt/data/node/bin/npm"),
     ):
         assert _resolve_node_runtime_npm() is None

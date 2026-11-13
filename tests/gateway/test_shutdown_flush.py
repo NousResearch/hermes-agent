@@ -233,7 +233,7 @@ def test_get_flush_dir_uses_get_hermes_home(tmp_path, monkeypatch):
         return tmp_path
 
     monkeypatch.setattr(
-        "hermes_constants.get_hermes_home", fake_get_hermes_home
+        "hermes_agent.hermes_constants.get_hermes_home", fake_get_hermes_home
     )
     result = mod._get_flush_dir()
     assert captured.get("called") is True

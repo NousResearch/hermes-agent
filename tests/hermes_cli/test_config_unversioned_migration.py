@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 TEMPLATE = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
 

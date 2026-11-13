@@ -23,7 +23,7 @@ import pytest
 def quiet_host(tmp_path, monkeypatch):
     """Two named profiles under one root, no gateway running anywhere, systemd units under tmp."""
     import hermes_agent.hermes_cli.gateway as gw
-    import hermes_constants
+    from hermes_agent import hermes_constants
 
     root = tmp_path / "hermes"
     (root / "config.yaml").parent.mkdir(parents=True)

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 from tests.gateway.test_surface_admission import _authority
 from tests.waiting import async_wait_until
 
@@ -217,7 +217,7 @@ def test_emit_from_a_plugin_thread_reaches_its_own_profile_on_a_multiplexed_gate
     session up in the plugin's own profile, never the launch profile's."""
     from hermes_agent.gateway import run_api
     from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
 
     launch, secondary = tmp_path / 'launch', tmp_path / 'secondary'
     runner, frames = two_profile_runner(launch, secondary)

@@ -25,7 +25,7 @@ def _connection(authority, user, *, native):
 async def test_api_created_sessions_are_local_and_the_connection_mode_marks_remote(monkeypatch):
     from hermes_agent.gateway import run
     from hermes_agent.gateway.config import Platform
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(run, '_hermes_home', home)

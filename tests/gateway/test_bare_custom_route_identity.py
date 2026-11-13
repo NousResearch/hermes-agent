@@ -24,7 +24,7 @@ SIBLINGS = {'providers': {
 @pytest.fixture
 def home(monkeypatch):
     from hermes_agent.gateway import run
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     profile = get_hermes_home()
     profile.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(run, '_hermes_home', profile)

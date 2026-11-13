@@ -372,7 +372,7 @@ def _maybe_notify_auto_prune(sid: str, profile_home: str | None) -> None:
     profile per snooze window, on session create and cold resume. The cheap gate runs inline;
     the DB estimate runs off-thread."""
     from hermes_agent.hermes_cli import prune_advisor
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     home = Path(profile_home) if profile_home else get_hermes_home()
     if not prune_advisor.notice_due(home, _AUTO_PRUNE_NOTIFIED):
         return

@@ -60,7 +60,7 @@ agent:
 
 def _resolve_cli_route():
     from hermes_agent.hermes_cli._parser import build_top_level_parser
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     _write_profile_config(get_hermes_home())
     parser, _subparsers, _chat = build_top_level_parser()

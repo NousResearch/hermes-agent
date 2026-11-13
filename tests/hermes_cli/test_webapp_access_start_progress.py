@@ -116,7 +116,7 @@ def test_a_profile_with_its_own_gateway_never_shows_another_gateways_start(resta
     """``solo`` runs a gateway of its own and ``served`` is served by the default one: while the
     default gateway's Start builds, ``served`` shows it and ``solo`` shows none."""
     from hermes_agent.hermes_cli import webapp
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from tests.hermes_cli.native_gateway_client import native_desktop_client
 
     profiles = {"solo": get_hermes_home() / "profiles" / "solo", "served": get_hermes_home() / "profiles" / "served"}

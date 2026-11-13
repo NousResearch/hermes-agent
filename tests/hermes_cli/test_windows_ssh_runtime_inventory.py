@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-import hermes_constants
+from hermes_agent import hermes_constants
 from hermes_agent.hermes_cli.windows_ssh_runtime import dispatch
 
 

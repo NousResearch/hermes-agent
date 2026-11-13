@@ -20,7 +20,7 @@ _cache_lock = threading.Lock()
 
 
 def _cache_path() -> Path:
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return get_hermes_home() / "cache" / _CACHE_FILENAME
 
 
@@ -51,7 +51,7 @@ def _load_all() -> dict[str, Any]:
 
 
 def _save_all(data: dict[str, Any]) -> None:
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
     # 0o600: the cache file is trusted input on the lazy registration path, keep it user-only.
     atomic_json_write(_cache_path(), data, mode=0o600)
 

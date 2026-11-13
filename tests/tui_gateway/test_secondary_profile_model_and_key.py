@@ -10,7 +10,7 @@ import os
 from unittest.mock import Mock, patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.tui_gateway import server
 

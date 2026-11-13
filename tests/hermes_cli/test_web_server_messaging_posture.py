@@ -40,9 +40,9 @@ def client(monkeypatch, _isolate_hermes_home):
     from starlette.testclient import TestClient
 
     from hermes_agent import hermes_state
-    import hermes_constants
+    from hermes_agent import hermes_constants
     import hermes_agent.gateway.status as _gw_status
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     home = get_hermes_home()
@@ -87,7 +87,7 @@ def test_connected_deny_all_reports_posture(client):
 
 
 def test_connected_with_allowlist_reports_allowlist(client, monkeypatch):
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "42, 43")
     payload = _test(client)
@@ -155,7 +155,7 @@ def test_profile_scoped_posture_ignores_root_env_and_reports_profile_grants(
     Regression for the false deny-all/false green in the #66055 review."""
     import hermes_agent.gateway.status as _gw_status
     from hermes_agent.hermes_cli import profiles as profiles_mod
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     default_home = get_hermes_home()
     profiles_root = default_home / "profiles"

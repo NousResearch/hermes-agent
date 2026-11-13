@@ -71,7 +71,7 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
         assert "file" in selected()
         # A second profile in the same process must not borrow this grant or
         # poison the first profile's cached schema on return.
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
         other_home = tmp_path / "profiles" / "observer"
         token = set_hermes_home_override(other_home)
         try:

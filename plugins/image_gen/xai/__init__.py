@@ -93,7 +93,7 @@ def _fetch_live_models(creds: Optional[dict[str, Any]] = None) -> dict[str, dict
 def _live_models() -> dict[str, dict[str, Any]]:
     """Cached live catalog (``{}`` when unreachable)."""
     global _LIVE_CACHE
-    from hermes_constants import get_hermes_home_override
+    from hermes_agent.hermes_constants import get_hermes_home_override
 
     if get_hermes_home_override() is None:
         if _LIVE_CACHE is not None and time.monotonic() - _LIVE_CACHE[1] < _LIVE_CACHE_TTL:

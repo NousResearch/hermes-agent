@@ -49,7 +49,7 @@ def _patch_resolution(monkeypatch, *, runtime=None, error=None):
                         lambda: {"model": {"default": "some-model", "provider": "custom:home"}, "agent": {}})
     monkeypatch.setattr("hermes_agent.hermes_cli.tools_config._get_platform_tools", lambda cfg, platform: set())
     monkeypatch.setattr("hermes_agent.hermes_cli.tools_config.enabled_mcp_server_names", lambda cfg: set())
-    monkeypatch.setattr("hermes_constants.resolve_reasoning_config", lambda cfg, model: None)
+    monkeypatch.setattr("hermes_agent.hermes_constants.resolve_reasoning_config", lambda cfg, model: None)
     monkeypatch.setattr("hermes_agent.hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build",
                         lambda **_kw: None)
     built: list[dict] = []

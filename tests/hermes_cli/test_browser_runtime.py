@@ -75,7 +75,7 @@ def test_agent_browser_env_is_not_an_override(homes, monkeypatch):
 
 
 def test_override_is_read_from_the_active_profile(homes):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     a, b = homes / "a", homes / "b"
     _write_config(a, "browser:\n  executable_path: /opt/a/chrome\n")
@@ -125,7 +125,7 @@ def test_system_chromium_only_where_pm_builds_none(homes, monkeypatch):
 
 
 def test_termux_hint_never_mentions_npm(homes, monkeypatch):
-    from hermes_platform.host import runtime
+    from hermes_agent.hermes_platform.host import runtime
 
     monkeypatch.setattr(runtime, "is_termux", lambda: True)
     hint = browser_runtime.chromium_missing_hint()

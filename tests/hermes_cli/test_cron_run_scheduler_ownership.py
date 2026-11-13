@@ -34,7 +34,7 @@ def homes(tmp_path, monkeypatch):
 
 def _claim(home: Path, job_id: str) -> dict:
     """Create + start a ledger attempt owned by THIS (live) process, inside ``home``."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.cron.executions import create_execution, mark_execution_running
 
     token = set_hermes_home_override(str(home))
@@ -119,7 +119,7 @@ def test_run_whose_owner_process_died_is_not_owned(homes, monkeypatch):
 
 
 def test_finished_attempt_and_closed_run_are_not_owned(homes, monkeypatch):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.cron.executions import finish_execution
 
     job_id = "done"

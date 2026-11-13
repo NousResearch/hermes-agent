@@ -14,7 +14,7 @@ Two invariants that a host-wide, process-lifetime view of cron state gets wrong:
 from __future__ import annotations
 
 import hermes_agent.cron.scheduler as sched
-from hermes_constants import (
+from hermes_agent.hermes_constants import (
     hermes_home_key,
     reset_hermes_home_override,
     set_hermes_home_override,

@@ -426,7 +426,7 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
 
     See #78821.
     """
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     respawned: list[list[str]] = []
     spawned: list[tuple[list[str], list[str], subprocess.Popen]] = []
     failed: list[tuple[list[str], list[str], str]] = []
@@ -541,7 +541,7 @@ def _install_hangup_protection(gateway_mode: bool = False):
         # Late-bound import so tests can monkeypatch it to simulate setup failure. The ROOT
         # home, never a sticky profile's: the update mutates the shared checkout, and the
         # Desktop and the hand-off scripts read <root>/logs/update.log.
-        from hermes_constants import get_default_hermes_root as _get_root_home
+        from hermes_agent.hermes_constants import get_default_hermes_root as _get_root_home
         logs_dir = _get_root_home() / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_file = open(logs_dir / "update.log", "a", buffering=1, encoding="utf-8")
@@ -1020,7 +1020,7 @@ def _route_named_profile_dashboard(
     # empty auto-seeded home with only the default profile and no install stamp.
     # get_default_hermes_root() strips a trailing profiles/<name> for both layouts.
     try:
-        from hermes_constants import get_default_hermes_root
+        from hermes_agent.hermes_constants import get_default_hermes_root
         env["HERMES_HOME"] = str(get_default_hermes_root())
     except Exception:
         env.pop("HERMES_HOME", None)  # prior behaviour rather than blocking the reroute

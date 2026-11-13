@@ -17,7 +17,7 @@ from typing import Any, Optional
 from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.hermes_cli.config import atomic_config_write
-from utils import base_url_host_matches
+from hermes_agent.utils import base_url_host_matches
 
 logger = logging.getLogger("hermes_agent.gateway.run")  # log-record parity with hermes_agent/gateway/run.py
 
@@ -401,7 +401,7 @@ class GatewayModelCommandsMixin:
         """Slash dispatch does not install the routed profile's scope, so a multiplexed runner binds
         the owning home for the switch row and its switch_away friction."""
         from hermes_agent.hermes_cli.observability.shared_metrics_events import record_model_switch
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         home = None
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
@@ -429,7 +429,7 @@ class GatewayModelCommandsMixin:
             # only commit, landing at the next turn boundary (this command is the running turn).
             if one_turn:
                 return t("gateway.model.error_prefix", error=t("gateway.model.err_once_local"))
-            from hermes_constants import parse_reasoning_effort
+            from hermes_agent.hermes_constants import parse_reasoning_effort
             effort = (ctx.reasoning_effort or "").strip().lower()
             level = effort if parse_reasoning_effort(effort) is not None else ""
             await asyncio.to_thread(defer_local_model_pick, authority, live, result, level)
@@ -905,7 +905,7 @@ class GatewayModelCommandsMixin:
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
     ) -> str:
         """Apply a /reasoning argument (typed or picked) and return the reply."""
-        from hermes_constants import parse_reasoning_effort
+        from hermes_agent.hermes_constants import parse_reasoning_effort
 
         value = (value or "").strip().lower()
         from hermes_agent.gateway.session_setting_commands import local_live_for_route
@@ -963,7 +963,7 @@ class GatewayModelCommandsMixin:
     async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reasoning command — manage reasoning effort and display toggle."""
         from hermes_agent.gateway.run import _platform_config_key
-        from hermes_constants import VALID_REASONING_EFFORTS
+        from hermes_agent.hermes_constants import VALID_REASONING_EFFORTS
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)

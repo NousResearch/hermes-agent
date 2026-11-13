@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
 from urllib.parse import urlparse
 import httpx
-from hermes_dir_acl import make_user_dir
+from hermes_agent.hermes_dir_acl import make_user_dir
 
 # ``hermes_agent.agent.auxiliary_client`` costs ~50 ms cold; only the handlers need it. Both names stay
 # module attributes so tests can patch ``hermes_agent.tools.vision_tools.async_call_llm`` (truthy-skip: mocks win).
@@ -34,7 +34,7 @@ def _load_auxiliary_client() -> None:
         extract_content_or_reasoning = extract_content_or_reasoning or _aux.extract_content_or_reasoning
 
 
-from hermes_constants import get_hermes_dir
+from hermes_agent.hermes_constants import get_hermes_dir
 from hermes_agent.tools.debug_helpers import DebugSession
 from hermes_agent.tools.website_policy import check_website_access
 from hermes_agent.tools.vision_tools_history_budget import (
@@ -262,7 +262,7 @@ async def _download_media(
     media_label: str, accept: str, max_bytes: int, timeout: float, retry_all: bool) -> Path:
     """SSRF-safe streaming download with exponential backoff (2s/4s/8s). ``retry_all=False`` (images)
     retries only :func:`_is_retryable_download_error` errors — a 404/403 never succeeds on retry."""
-    from utils import atomic_replace
+    from hermes_agent.utils import atomic_replace
     from hermes_agent.tools.url_safety import create_ssrf_safe_async_client
     destination.parent.mkdir(parents=True, exist_ok=True)
     last_error = None

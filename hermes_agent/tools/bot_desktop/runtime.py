@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional
 
 from hermes_agent.agent.deadline import poll_until
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.tools.bot_desktop import placement
 
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ import shutil
 import sys
 
 from hermes_agent.agent.i18n import t
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
@@ -522,7 +522,7 @@ class CLISessionMixin:
         if getattr(self, "conversation_history", None):
             return False
         try:
-            from hermes_constants import get_hermes_home as _ghh
+            from hermes_agent.hermes_constants import get_hermes_home as _ghh
             return self._session_db.delete_session_if_empty(
                 session_id, sessions_dir=_ghh() / "sessions")
         except Exception:

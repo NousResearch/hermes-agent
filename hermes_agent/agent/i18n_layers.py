@@ -73,7 +73,7 @@ def non_text_leaves(node: Any, prefix: str = "") -> list[str]:
 def parse_locale_file(path: Path) -> dict[str, str]:
     """Parse one locale YAML into a flat catalog. Raises on unreadable/unparseable input or a non-mapping
     document — the strict form for registration and validation."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     with Path(path).open("r", encoding="utf-8-sig") as handle:
         data = yaml.safe_load(handle)
     if data is None:

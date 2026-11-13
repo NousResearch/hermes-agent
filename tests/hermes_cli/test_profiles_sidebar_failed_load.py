@@ -24,7 +24,7 @@ def _uncached_sidebar(monkeypatch):
 @pytest.fixture
 def profiles_on_disk(tmp_path, monkeypatch, _isolate_hermes_home):
     from hermes_agent.hermes_cli import profiles
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     default_home = get_hermes_home()
     profiles_root = default_home / "profiles"
@@ -46,7 +46,7 @@ def client(monkeypatch, profiles_on_disk):
 
     from hermes_agent import hermes_state
     from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     http = TestClient(app)

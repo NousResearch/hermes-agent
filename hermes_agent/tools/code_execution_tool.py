@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_agent.tools.thread_context import propagate_context_to_thread
 from hermes_agent.tools.registry import registry, tool_error
 
-from hermes_time import get_timezone_name
+from hermes_agent.hermes_time import get_timezone_name
 from hermes_agent.tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from hermes_agent.tools.code_execution_rpc import (
     _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
@@ -89,7 +89,7 @@ def _spill_full_stdout(stdout_text: str, env: Any = None) -> Optional[str]:
     output is the tenant's and this host keeps none of it."""
     try:
         import hashlib
-        from hermes_constants import get_hermes_dir
+        from hermes_agent.hermes_constants import get_hermes_dir
         from hermes_agent.tools.spill_safety import write_text_exclusive
         from hermes_agent.tools.tool_result_storage import _persist_hosted
         if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:

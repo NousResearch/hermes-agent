@@ -13,7 +13,7 @@ from hermes_agent.agent.anthropic_credentials import _is_oauth_token, resolve_an
 from hermes_agent.hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_agent.hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
-from hermes_time import safe_strftime
+from hermes_agent.hermes_time import safe_strftime
 
 from hermes_agent.agent.usage_gauges import BP_FULL
 

@@ -85,7 +85,7 @@ def _head(path: Path) -> str:
 
 
 def test_catalog_platform_mismatch_refuses_before_install(world):
-    from hermes_platform.host.facts import os_family
+    from hermes_agent.hermes_platform.host.facts import os_family
     host = os_family()
     other = "linux" if host == "windows" else "windows"
     entry = pc_cat.PluginCatalogEntry(

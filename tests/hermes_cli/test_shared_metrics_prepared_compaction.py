@@ -55,7 +55,7 @@ def test_snapshot_reports_prepare_ahead_and_older_snapshots_still_package(tmp_pa
 def marks(monkeypatch):
     """Rows as the real producer emits them, with the profile and thread each was recorded under."""
     from hermes_agent.hermes_cli.observability import relay_shared_metrics
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     rows = []
     lock = threading.Lock()
@@ -85,7 +85,7 @@ def _run_pass(cc, msgs, origin):
 
 
 def test_pass_and_splice_outcomes_are_counted_in_the_owning_profile(tmp_path, marks):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     owner = tmp_path / "owner"
     token = set_hermes_home_override(owner)

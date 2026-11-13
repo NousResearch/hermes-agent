@@ -1768,7 +1768,7 @@ def _profile_buzz_extra() -> dict:
         return {}
     try:
         from hermes_agent.gateway.config_loader import platform_section
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
         from hermes_agent.hermes_cli.config import read_user_config_raw
         cfg = read_user_config_raw(Path(get_hermes_home()) / "config.yaml")
     except Exception:

@@ -11,7 +11,7 @@ import logging
 import pytest
 
 from hermes_agent.hermes_cli.logs import _line_matches_component
-from hermes_logging import COMPONENT_PREFIXES, _ComponentFilter
+from hermes_agent.hermes_logging import COMPONENT_PREFIXES, _ComponentFilter
 
 SAMPLES = {
     "gateway": ("gateway.run", "plugins.platforms.telegram.adapter", "agent.memory_caller_scope"),
@@ -56,7 +56,7 @@ def test_gateway_diagnostics_keep_their_subsystem_under_the_package_name(package
 @pytest.mark.parametrize("package", ["", "hermes_agent."])
 def test_formatted_lines_print_the_canonical_logger_name(package):
     from hermes_agent.agent.redact import RedactingFormatter
-    from hermes_logging import _LOG_FORMAT, DisplayNameFormatter
+    from hermes_agent.hermes_logging import _LOG_FORMAT, DisplayNameFormatter
 
     record = logging.makeLogRecord({"name": f"{package}gateway.run", "levelname": "INFO", "msg": "started"})
     assert RedactingFormatter(_LOG_FORMAT).format(record).endswith(" INFO gateway.run: started")

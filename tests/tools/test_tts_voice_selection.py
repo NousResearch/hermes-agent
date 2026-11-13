@@ -108,7 +108,7 @@ def test_provider_switch_reshapes_the_schema_at_once(monkeypatch):
     import os
 
     from hermes_agent import model_tools
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-test-key")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -131,7 +131,7 @@ def test_deferred_find_voices_passes_the_bridge(monkeypatch):
     """A deferred text_to_speech is validated against the schema tool_describe serves: ElevenLabs'
     find_voices carries no text and must still reach the handler through tool_call."""
     from hermes_agent import model_tools
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
 
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-test-key")
     (get_hermes_home() / "config.yaml").write_text("tts:\n  provider: elevenlabs\n")

@@ -75,7 +75,7 @@ _PROVIDERS: dict[str, tuple[frozenset, Callable[[str], tuple[dict[str, str], str
 def _plugin_roots() -> set[Path]:
     """Every plugins directory an installed plugin can live under, as given and resolved."""
     from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
-    from hermes_constants import get_default_hermes_root, get_hermes_home, get_process_hermes_home
+    from hermes_agent.hermes_constants import get_default_hermes_root, get_hermes_home, get_process_hermes_home
 
     bases = (get_hermes_home() / "plugins", get_process_hermes_home() / "plugins",
              get_default_hermes_root() / "plugins", get_bundled_plugins_dir())

@@ -58,7 +58,7 @@ class TerminalEnvironmentProvider(ProviderBase):
     as an opaque placeholder and Bot Desktop placement refuses a ``supports_streams`` backend.
 
     **Hosted scopes** (``hermes_agent/tools/environments/sandbox_scope.py``). With a hosted
-    :class:`hermes_scope.Scope` bound, the sandbox is the agent's: its identity is
+    :class:`hermes_agent.hermes_scope.Scope` bound, the sandbox is the agent's: its identity is
     ``SandboxIdentity(scope.tenant, scope.agent)`` and nothing else, so one agent has one sandbox
     whatever task or session a tool call carries. :meth:`create_environment` then also receives
     ``scope=`` (the bound scope) and ``sandbox=`` (the identity), and ``task_id`` is the identity's

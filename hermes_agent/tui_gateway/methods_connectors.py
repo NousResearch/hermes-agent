@@ -400,7 +400,7 @@ def _operation_view(operation):
 
 
 def _connection_update(operation, change, snapshot):
-    from hermes_constants import get_process_hermes_home, hermes_home_key
+    from hermes_agent.hermes_constants import get_process_hermes_home, hermes_home_key
     from hermes_agent.tui_gateway import server
     from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
 

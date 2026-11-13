@@ -168,7 +168,7 @@ def test_404_get_charge_status_maps_to_generic_billing_error(monkeypatch):
 def test_billing_token_cache_is_scoped_per_profile_home(monkeypatch, tmp_path):
     """The 30s (token, base) memo must not hand profile A's Portal bearer to profile B under a
     multiplex gateway, where the per-turn HERMES_HOME override selects the auth.json."""
-    import hermes_constants
+    from hermes_agent import hermes_constants
     from hermes_agent.hermes_cli import auth
 
     monkeypatch.setattr(nb, "_token_cache", {}, raising=False)

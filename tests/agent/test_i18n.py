@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.agent import i18n
 
@@ -105,7 +105,7 @@ def test_language_is_per_profile_under_multiplex(monkeypatch, tmp_path):
     """HERMES_LANGUAGE in the DEFAULT profile's environ must not leak into a secondary profile's
     turn, and the config-language cache must not freeze one profile's ``display.language`` for all."""
     from hermes_agent.agent import secret_scope
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     default_home = tmp_path / "default"; default_home.mkdir()
     prof_b = tmp_path / "b"; prof_b.mkdir()

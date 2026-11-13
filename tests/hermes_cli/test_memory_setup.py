@@ -63,7 +63,7 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
 
 def test_install_dependencies_prepares_declared_extra_even_if_importable(tmp_path, monkeypatch):
     """PM, not ambient importability, decides whether constraints are current."""
-    import hermes_yaml as _yaml
+    import hermes_agent.hermes_yaml as _yaml
 
     plugin_dir = tmp_path / "mem0"
     plugin_dir.mkdir()

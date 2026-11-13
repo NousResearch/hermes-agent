@@ -35,7 +35,7 @@ _hold_since: dict[str, float] = {}
 def note_held(now: Optional[float] = None) -> None:
     """Record that this tick skipped dispatch for the active cron store (a drain is holding it)."""
     from hermes_agent.cron.jobs import _current_cron_store
-    from utils import atomic_json_write
+    from hermes_agent.utils import atomic_json_write
 
     cron_dir = _current_cron_store().cron_dir
     now = time.time() if now is None else now

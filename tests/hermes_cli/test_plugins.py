@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 
 from hermes_agent.hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
@@ -223,7 +223,7 @@ class TestPluginDiscovery:
         assert manager._plugins["native"].enabled is True
         assert manager._plugins["native"].module is not None
         from hermes_agent.hermes_cli.agent_plugins import liveness_for
-        from hermes_platform import declaration
+        from hermes_agent.hermes_platform import declaration
 
         assert declaration.lookup(internal_name) is not None
         assert liveness_for(internal_name) == {"kind": "static"}
@@ -2408,11 +2408,11 @@ class TestPluginCommands:
         (``hermes_agent/gateway/run.py``'s ``_profile_scope`` context manager) and by
         subagent/embedded callers: it swaps ``HERMES_HOME`` via a
         context-local ContextVar, which — per
-        ``hermes_constants.set_hermes_home_override`` — deliberately does
+        ``hermes_agent.hermes_constants.set_hermes_home_override`` — deliberately does
         NOT touch ``os.environ``. A regression test that only flips the
         ``HERMES_HOME`` env var never exercises this path.
         """
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
         import hermes_agent.hermes_cli.plugins as plugins_mod
 
         def write_engine_plugin(home: Path) -> None:
@@ -2496,7 +2496,7 @@ class TestPluginCommands:
         leaking the previous profile's module-level state (and code) into
         the new profile.
         """
-        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        from hermes_agent.hermes_constants import set_hermes_home_override, reset_hermes_home_override
         import hermes_agent.hermes_cli.plugins as plugins_mod
 
         def write_stateful_plugin(home: Path, marker: str) -> None:

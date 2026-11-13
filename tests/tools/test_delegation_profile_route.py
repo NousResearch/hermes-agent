@@ -5,7 +5,7 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 
@@ -40,7 +40,7 @@ def two_profiles(tmp_path, monkeypatch):
 def _snapshot():
     from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.hermes_cli.config import load_config_readonly
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     return {"home": str(get_hermes_home()), "secret": get_secret("PROBE_SECRET"),
             "model": load_config_readonly()["model"]["default"]}
 

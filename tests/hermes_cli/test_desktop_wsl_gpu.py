@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 
 from hermes_agent.hermes_cli import main_desktop
-from hermes_platform.host import runtime as host_runtime
+from hermes_agent.hermes_platform.host import runtime as host_runtime
 
 
 def _launch_env(monkeypatch, tmp_path, *, wsl: bool, dxg: bool, driver: bool) -> dict:

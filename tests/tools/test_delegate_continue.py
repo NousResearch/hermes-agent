@@ -11,7 +11,7 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
-import hermes_yaml as yaml
+import hermes_agent.hermes_yaml as yaml
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
@@ -37,7 +37,7 @@ class _ScriptedModel:
         self.builds, self.turns = [], []
 
     def __call__(self, **kw):
-        from hermes_constants import get_hermes_home
+        from hermes_agent.hermes_constants import get_hermes_home
 
         child = MagicMock()
         child.session_id = kw.get("session_id") or f"child-sess-{len(self.builds)}"

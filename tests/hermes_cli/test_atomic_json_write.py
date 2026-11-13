@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from utils import atomic_json_write
+from hermes_agent.utils import atomic_json_write
 
 
 class TestAtomicJsonWrite:
@@ -20,7 +20,7 @@ class TestAtomicJsonWrite:
         original = {"preserved": True}
         target.write_text(json.dumps(original), encoding="utf-8")
 
-        with patch("utils.json.dumps", side_effect=SimulatedAbort):
+        with patch("hermes_agent.utils.json.dumps", side_effect=SimulatedAbort):
             with pytest.raises(SimulatedAbort):
                 atomic_json_write(target, {"new": True})
 

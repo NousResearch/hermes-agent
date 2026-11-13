@@ -21,7 +21,7 @@ from tests.tools.test_delegation_backends import OPTIONS, PROBE_PLUGIN, REPO_PLU
 @pytest.fixture
 def options_backend(monkeypatch):
     """``delegation.backend: probe-options`` (adds a per-task ``option``) on a fake provider."""
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.hermes_cli import plugins as plugins_mod
     from hermes_agent.hermes_cli.plugins import PluginManager
 
@@ -99,7 +99,7 @@ def test_a_now_switch_rebuilds_this_sessions_delegate_task_and_routing_for_the_n
 
 
 def test_a_plain_switch_changes_nothing_in_this_session_and_new_sessions_take_the_saved_backend(options_backend):
-    import hermes_yaml as yaml
+    import hermes_agent.hermes_yaml as yaml
     from hermes_agent.agent.delegation_backends import set_global_backend
 
     srv, home = options_backend

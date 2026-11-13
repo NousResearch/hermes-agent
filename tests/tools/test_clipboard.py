@@ -17,7 +17,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_platform.host import runtime as host_runtime
+from hermes_agent.hermes_platform.host import runtime as host_runtime
 from hermes_agent.hermes_cli.clipboard import (
     has_clipboard_image,
     _linux_save,

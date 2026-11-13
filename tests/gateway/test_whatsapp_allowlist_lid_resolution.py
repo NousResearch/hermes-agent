@@ -17,7 +17,7 @@ import json
 from unittest.mock import AsyncMock
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from hermes_constants import get_hermes_home
+from hermes_agent.hermes_constants import get_hermes_home
 
 
 PHONE = "351912345678"

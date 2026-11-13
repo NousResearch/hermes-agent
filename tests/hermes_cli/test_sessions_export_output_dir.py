@@ -24,7 +24,7 @@ class _FakeDB:
 def _export(monkeypatch, *argv):
     # Read-only observation commands short-circuit when state.db is absent; the fake DB
     # stands in for the file that would otherwise be opened read-only.
-    from hermes_constants import get_hermes_home
+    from hermes_agent.hermes_constants import get_hermes_home
     (get_hermes_home() / "state.db").touch()
     monkeypatch.setattr(hermes_state, "SessionDB", lambda **_kw: _FakeDB())
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "export", "--session-id", "sess", *argv])

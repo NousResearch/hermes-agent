@@ -140,7 +140,7 @@ def test_worker_for_another_profile_keeps_the_instance_config_deployment(profile
 def test_worker_profile_scope_reports_the_assigned_profiles_home_mode(profile_b):
     """``terminal.home_mode`` must survive the profile projection as a terminal policy value.
 
-    ``TERMINAL_HOME_MODE`` is the variable ``hermes_constants.get_subprocess_home`` reads, so a
+    ``TERMINAL_HOME_MODE`` is the variable ``hermes_agent.hermes_constants.get_subprocess_home`` reads, so a
     mode the profile pins in its own ``config.yaml`` has to reach the bound scope the dispatcher
     reads through; otherwise the profile's isolation silently is not policy at all (#146103).
     """

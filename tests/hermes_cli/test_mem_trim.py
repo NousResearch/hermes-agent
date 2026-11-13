@@ -17,7 +17,7 @@ def _reset_trim_state(monkeypatch):
 
 
 def test_config_kill_switch_overrides_force_from_config_file(monkeypatch, tmp_path):
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir()

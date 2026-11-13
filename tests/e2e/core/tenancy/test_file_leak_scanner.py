@@ -1,6 +1,7 @@
 """The tenancy file scanner checks each routing row the multiplex launch-home index holds for another
 profile as that profile's: its own data is no leak, a third profile's canary in it still is, and a
-foreign canary anywhere else in the launch home (its own session rows and routing entries) is a leak."""
+foreign canary anywhere else in the launch home (its own session rows and routing entries) is a leak.
+A foreign secret is a leak anywhere in the raw bytes, deleted rows still held in the SQLite WAL included."""
 
 from __future__ import annotations
 
@@ -56,3 +57,22 @@ def test_a_third_profiles_workdir_in_another_profiles_routing_row_is_a_leak(tmp_
     _write_launch_home(t, own_row_cwd=own, own_route_cwd=own, alpha_route_cwd=str(t["beta"].workdir))
     assert set(H.file_leaks(t)) == {"default: alpha's routing row in state.db contains beta's workdir",
                                     "default: alpha's routing row in sessions/sessions.json contains beta's workdir"}
+
+
+def test_a_deleted_foreign_credential_still_in_the_wal_is_a_leak(tmp_path: Path) -> None:
+    t = _tenants(tmp_path)
+    home = t["default"].home
+    home.mkdir(parents=True)
+    conn = sqlite3.connect(home / "state.db")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA wal_autocheckpoint=0")
+        conn.execute("CREATE TABLE sessions (id TEXT, content TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('m', ?)", (t["alpha"].provider_key,))
+        conn.commit()
+        conn.execute("DELETE FROM sessions")
+        conn.commit()
+        assert t["alpha"].provider_key.encode() in (home / "state.db-wal").read_bytes()
+        assert "default: state.db-wal contains alpha's provider_key" in H.file_leaks(t)
+    finally:
+        conn.close()

@@ -1025,7 +1025,7 @@ auxiliary:
 
 `base_url` 优先于 `provider`，因此这是将辅助任务路由到特定端点的最明确方式。对于直接端点覆盖，Hermes 使用配置的 `api_key`；它不会为该自定义端点重用 `OPENROUTER_API_KEY`。未设置时，只有当 `base_url` 与主端点的源（scheme、主机和端口）完全相同时，才会重用主模型的密钥。主端点是会话当前运行的端点（`/model` 切换后即为切换后的端点），并且只与它自己的密钥配对，绝不会使用另一个端点的密钥。`OPENAI_API_KEY` 是最后的回退，仅发送到 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之配对的 `OPENAI_BASE_URL`；其他端点需要自己的 `api_key`。
 
-通过 `hermes model` → **Configure auxiliary models** → **Custom endpoint** 或仪表盘的辅助模型选择器输入的密钥会保存到 `.env`，`config.yaml` 中只存储 `${VAR}` 引用，绝不存储密钥本身。
+通过 `hermes model` → **Configure auxiliary models** → **Custom endpoint** 或仪表盘的辅助模型选择器输入的密钥会保存到 `.env`，`config.yaml` 中只存储 `${VAR}` 引用，绝不存储密钥本身。正在运行的网关会在每轮开始时重新读取 `.env`，因此下一条消息无需重启即可使用新密钥。只在启动时读取 `.env`、且不由网关轮次驱动的进程，需要执行 `/reload` 或重启后才会读取新密钥；在此之前，该任务的辅助调用会把未展开的 `${VAR}` 文本当作密钥发送。
 
 **使用 OpenAI API 密钥进行视觉：**
 ```yaml

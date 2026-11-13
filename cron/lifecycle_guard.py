@@ -619,19 +619,43 @@ def _shlex_tokens(line: str) -> list[str]:
 
 def _split_segments(tokens: list[str], *, keep_controls: bool = False) -> Iterator[list[str]]:
     """Yield non-empty runs of *tokens* between control-operator tokens; with *keep_controls* each
-    control token is also yielded as its own segment so the line can be rebuilt in order."""
+    control token is also yielded as its own segment so the line can be rebuilt in order.
+
+    A ``<(...)`` / ``>(...)`` process substitution runs as its own segments, and after its closing
+    ``)`` the outer command's operands continue: in ``diff <(cmd) /dev/null`` the ``/dev/null`` is
+    an operand of ``diff``, not a new command (#145145)."""
     segment: list[str] = []
+    # Outer segments paused at a process substitution; None marks a plain `(` inside one.
+    paused: list[Optional[list[str]]] = []
     for token in tokens:
         if token and set(token) <= _CONTROL_CHARS:
-            if segment:
-                yield segment
-                segment = []
             if keep_controls:
+                if segment:
+                    yield segment
+                    segment = []
                 yield [token]
+                continue
+            # shlex groups adjacent punctuation (`))`, `);`), so walk it one operator char at a time.
+            for char in token:
+                if char == "(" and segment and segment[-1] in ("<", ">"):
+                    paused.append(segment)
+                    segment = []
+                    continue
+                if segment:
+                    yield segment
+                    segment = []
+                if char == "(":
+                    paused.append(None)
+                elif char == ")" and paused:
+                    segment = paused.pop() or []
             continue
         segment.append(token)
     if segment:
         yield segment
+    # An unclosed substitution must not hide the outer command from the scans.
+    for outer in paused:
+        if outer:
+            yield outer
 
 
 def _iter_command_segments(command: str) -> Iterator[list[str]]:

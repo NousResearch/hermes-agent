@@ -1,25 +1,12 @@
-"""Regression: #146428 — home-target env lookup must not raise UnscopedSecretError.
+"""Regression for #146428: recovered cron output must retain the owning home target.
 
-On a multiplexed gateway the receipt-recovery path (reconcile_pending ->
-_save_compose_deliver -> _resolve_delivery_targets -> _get_home_target_chat_id
--> _env_home_target_chat_id -> _home_env_lookup) runs with NO profile secret
-scope installed. get_secret() fails closed there (multiplex active, no scope)
-and raises UnscopedSecretError even though the call site passes a "" default —
-"absent is fine" is clearly the intent. The raise lands inside run
-finalization, so the run never reaches a terminal status: it wedges at
-status=running and re-raises on every reconcile tick, forever (a restart
-doesn't help — receipts are on disk).
-
-The trigger does not even require the platform to be configured: the mere
-presence of a bundled platform plugin with a cron_deliver_env_var is enough
-(issue reports: MATRIX_HOME_ROOM raised ~1,250x/day on an install with matrix
-never enabled).
-
-Contract: a missing scope answers "unset" ("") — it must NOT fall back to
-os.getenv, which on a multiplexed gateway can leak a SIBLING profile's value
-(the leak the get_secret read was introduced to fix, #83182). Answering "" lets
-the existing config.yaml home_channel fallback work instead of crashing.
+An unscoped multiplex lookup cannot return "unset": a deliver=origin job with
+no origin can then queue nothing and finish_completed_run unlinks its receipt.
+Recovery must bind the owner's secret scope before resolving home targets.
 """
+
+import hashlib
+import json
 
 import pytest
 
@@ -27,53 +14,116 @@ from agent import secret_scope
 
 
 @pytest.fixture()
-def multiplex_no_scope(monkeypatch):
-    """Multiplex ACTIVE, no profile scope installed — the reconcile_pending shape."""
-    monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
-    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
-    secret_scope.set_multiplex_active(True)
+def multiplex_no_scope():
     assert secret_scope.current_secret_scope() is None
+    context = secret_scope.set_multiplex_context(True)
     try:
         yield
     finally:
-        secret_scope.set_multiplex_active(False)
+        secret_scope.reset_multiplex_context(context)
 
 
-class TestHomeEnvLookupUnscoped:
-    def test_unscoped_lookup_answers_unset_instead_of_raising(self, multiplex_no_scope):
+@pytest.mark.parametrize("name", ["MATRIX_HOME_ROOM", "TELEGRAM_HOME_CHANNEL"])
+def test_unscoped_home_lookup_fails_closed(multiplex_no_scope, name):
+    from cron.scheduler_delivery import _home_env_lookup
+
+    with pytest.raises(secret_scope.UnscopedSecretError):
+        _home_env_lookup(name)
+
+
+def test_unscoped_lookup_never_reads_sibling_process_env(multiplex_no_scope, monkeypatch):
+    from cron.scheduler_delivery import _home_env_lookup
+
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "sibling-profile-room")
+    with pytest.raises(secret_scope.UnscopedSecretError):
+        _home_env_lookup("MATRIX_HOME_ROOM")
+
+
+def test_scoped_home_lookup_uses_owning_profile(tmp_path, monkeypatch):
+    from cron.scheduler_delivery import _home_env_lookup
+
+    home = tmp_path / "profiles" / "ops"
+    home.mkdir(parents=True)
+    (home / ".env").write_text('MATRIX_HOME_ROOM="owner-room"\n', encoding="utf-8")
+    monkeypatch.setenv("MATRIX_HOME_ROOM", "sibling-room")
+    scope = secret_scope.set_secret_scope(
+        secret_scope.build_profile_secret_scope(home), profile_home=str(home)
+    )
+    context = secret_scope.set_multiplex_context(True)
+    try:
+        assert _home_env_lookup("MATRIX_HOME_ROOM") == "owner-room"
+    finally:
+        secret_scope.reset_multiplex_context(context)
+        secret_scope.reset_secret_scope(scope)
+
+
+def test_reconcile_pending_resolves_owning_profile_home_target(tmp_path, monkeypatch):
+    """Drive real admission-journal recovery through its delivery-scope boundary."""
+    from cron import executions
+    import cron.scheduler as scheduler
+    import cron.scheduler_bookkeeping as bookkeeping
+    from cron.scheduler_authority import reconcile_pending
+    from gateway import session_cron
+    from hermes_cli import gateway_client
+    import hermes_constants
+    import tui_gateway.launch_profile_policy as launch_policy
+
+    home = tmp_path / "profile"
+    admission_dir = home / "cron" / "admissions"
+    admission_dir.mkdir(parents=True)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: home)
+
+    job_id, request_id = "recovery-scope-job", "recovery-scope-request"
+    digest = hashlib.sha256(json.dumps([job_id, request_id]).encode()).hexdigest()
+    (admission_dir / f"{digest}.json").write_text(
+        json.dumps({"params": {"job_id": job_id, "request_id": request_id}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(executions, "execution_owner_live", lambda *a, **kw: False)
+    monkeypatch.setattr(executions, "get_execution", lambda *a, **kw: None)
+    monkeypatch.setattr(session_cron, "owner_for_home", lambda home: None)
+    monkeypatch.setattr(
+        launch_policy,
+        "owner_secret_scope",
+        lambda home: {"TELEGRAM_HOME_CHANNEL": "owner-chat"},
+    )
+
+    terminal = {
+        "status": "terminal",
+        "job": {"id": job_id, "deliver": "origin", "origin": None},
+        "result": [True, "# Cron Job: recovered\n", "# Cron Job: recovered\n", ""],
+    }
+
+    class FakeGateway:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def rpc(self, method, **params):
+            assert method == "cron.recover"
+            return terminal
+
+    monkeypatch.setattr(gateway_client, "connect_gateway", FakeGateway)
+    captured = {}
+
+    def capture_delivery(delivery, fence, answer, output, **kwargs):
         from cron.scheduler_delivery import _home_env_lookup
 
-        # Pre-fix this raised UnscopedSecretError (issue #146428).
-        assert _home_env_lookup("MATRIX_HOME_ROOM") == ""
+        captured["bound"] = secret_scope.current_secret_scope() is not None
+        captured["target"] = _home_env_lookup("TELEGRAM_HOME_CHANNEL")
 
-    def test_env_home_target_falls_back_instead_of_raising(self, multiplex_no_scope):
-        from cron.scheduler_delivery import _env_home_target_chat_id
+    monkeypatch.setattr(scheduler, "_save_compose_deliver", capture_delivery)
+    monkeypatch.setattr(bookkeeping, "fail_empty_response", lambda *a, **kw: None)
+    monkeypatch.setattr(bookkeeping, "finish_completed_run", lambda *a, **kw: False)
 
-        assert _env_home_target_chat_id("matrix") == ""
+    context = secret_scope.set_multiplex_context(True)
+    try:
+        reconcile_pending(allow_connect=True)
+    finally:
+        secret_scope.reset_multiplex_context(context)
 
-    def test_unscoped_lookup_does_not_leak_process_env(self, multiplex_no_scope, monkeypatch):
-        """The safe shape: unset, NOT the host environ — a sibling profile may own that value."""
-        monkeypatch.setenv("MATRIX_HOME_ROOM", "sibling-profile-room")
-        from cron.scheduler_delivery import _home_env_lookup
-
-        assert _home_env_lookup("MATRIX_HOME_ROOM") == ""
-
-    def test_thread_id_lookup_also_survives_unscoped(self, multiplex_no_scope):
-        from cron.scheduler_delivery import _get_home_target_thread_id
-
-        assert _get_home_target_thread_id("matrix") is None
-
-    def test_scoped_read_still_resolves_normally(self, tmp_path, monkeypatch):
-        """A tick that DOES have the scope still resolves the owning profile's value."""
-        home = tmp_path / "profiles" / "ops"
-        home.mkdir(parents=True)
-        (home / ".env").write_text('MATRIX_HOME_ROOM="!room:example.org"\n', encoding="utf-8")
-        token = secret_scope.set_secret_scope(
-            secret_scope.build_profile_secret_scope(home)
-        )
-        try:
-            from cron.scheduler_delivery import _home_env_lookup
-
-            assert _home_env_lookup("MATRIX_HOME_ROOM") == "!room:example.org"
-        finally:
-            secret_scope.reset_secret_scope(token)
+    assert captured == {"bound": True, "target": "owner-chat"}

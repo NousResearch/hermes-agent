@@ -408,6 +408,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/devops/devops-pinggy-tunnel',
                     'user-guide/skills/optional/devops/devops-setup-wizard-generator',
                     'user-guide/skills/optional/devops/devops-watchers',
+                    'user-guide/skills/optional/devops/devops-wsl2-localhost-fetch-stalls',
                   ],
                 },
                 {

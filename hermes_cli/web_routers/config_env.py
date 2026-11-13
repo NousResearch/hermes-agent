@@ -615,7 +615,9 @@ def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, 
     if not old_url:
         return
     stored = [field for field in _ORIGIN_BOUND_FIELDS if entry.get(field)]
-    if (stored or _pooled_keys_left_on(old_url, new_url, pool_keys)) and submitted_key is None:
+    # Always run: it binds unrecorded rows to old_url, which config credentials must not short-circuit.
+    pooled_left = _pooled_keys_left_on(old_url, new_url, pool_keys)
+    if (stored or pooled_left) and submitted_key is None:
         raise HTTPException(
             status_code=400,
             detail=(f"The saved API key is for {old_url}, not {new_url}. "

@@ -126,9 +126,11 @@ def test_unrecorded_legacy_row_is_bound_to_the_entry_address_and_left_behind_by_
     assert POOLED not in {_main_key(), _aux_key(), _bare_key_at_new()}
 
 
-def test_unrecorded_legacy_row_is_bound_by_the_move_guard_even_if_never_used(client):
+@pytest.mark.parametrize("stored", [{}, {"extra_headers": {"X-Org": "a"}}, {"key_env": "MYEP_OLD_KEY"}])
+def test_unrecorded_legacy_row_is_bound_by_the_move_guard_even_if_never_used(client, stored):
+    """Config credentials on the entry must not skip the binding, or the row follows the move."""
     from hermes_constants import get_hermes_home
-    _entry()
+    _entry(**stored)
     (get_hermes_home() / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {
         "myep": [{"id": "leg002", "label": "old", "auth_type": "api_key", "priority": 0,
                   "source": "manual", "access_token": POOLED}]}}), encoding="utf-8")

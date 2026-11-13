@@ -16,31 +16,7 @@ screenshots:
   - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/quote.png
   - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/export.png
 readme: true
-description: >-
-  A Hermes back office for solo tradespeople: capture enquiries, prepare quote
-  and invoice PDFs, retain receipts and agreed extras, review follow-ups and
-  export an accountant ZIP. Customer sends require payload-bound owner approval,
-  except three template kinds approved once by hash. Disclosure — WhatsApp uses
-  Hermes' unofficial Baileys bridge and can expose the linked number to restriction
-  or ban; use a dedicated business number. Three-account live tests verified
-  text/photo/voice intake, owner-only quote approval, customer PDF receipt and
-  one reminder from two accelerated real scheduler runs. Records, evidence copies,
-  PDFs and exports persist in the active profile's SQLite database and plugin data
-  folder. Intake makes no model call, but customer text/transcript evidence can
-  reach the configured model when the owner queries a job. Owner messages/media
-  follow Hermes provider configuration, and receipt extraction explicitly sends
-  the selected cached image to the configured vision provider. Customer voice
-  is stored without automatic transcription. The plugin adds no telemetry endpoint.
-  Approved sends spawn the public hermes send CLI. A 15-minute no-agent Python
-  script runs scheduled work; Telegram uses Hermes handler integration.
-  Local Desktop API and 390px page rendering
-  were verified. Cloud/Webapp and native Desktop activation remain unverified.
-  Adds /office owner commands, a Desktop page, authenticated dashboard API,
-  Telegram approval buttons, and one recurring no-agent cron job. Installation
-  takes over non-owner WhatsApp intake. Setup requires explicit restrict_toolsets=true
-  consent on a named dedicated business profile, backs up config.yaml.bak, then
-  restricts WhatsApp, Telegram, CLI and cron toolsets. Run it as a standalone
-  gateway for this dedicated profile. No payment processing, email or jurisdiction-specific tax rules.
+description: "A Hermes back office for solo tradespeople: capture enquiries, prepare quote and invoice PDFs, retain receipts and agreed extras, review follow-ups and export an accountant ZIP. Customer sends require payload-bound owner approval, except three template kinds approved once by hash. Disclosure — Takes over WhatsApp on its dedicated profile: every non-owner WhatsApp message skips the agent and is stored (text, plus up to 30 attachments per sender per day at up to 32 MiB each) in the profile's plugin data folder, and Hermes's unofficial Baileys bridge can get the number restricted or banned, so use a dedicated business number. Customer messages go out by running `hermes send` only after the owner approves each payload, except three standing templates (enquiry acknowledgement, appointment reminder, review request) that are approved once by hash and then sent automatically. `/office setup` changes the profile's config.yaml to restrict WhatsApp, Telegram, CLI and cron to Chalkline tools (backup kept as config.yaml.bak) and creates a 15-minute no-agent cron script that sends approved and scheduled messages. Receipt photos are sent to the configured vision model."
 known_issues:
   - "Cloud deployment and native Desktop activation remain unverified."
   - "Customer voice notes are stored without automatic transcription."

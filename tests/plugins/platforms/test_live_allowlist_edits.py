@@ -218,18 +218,29 @@ def test_a_command_in_a_newly_allowed_telegram_chat_is_processed(_home):
     assert adapter._should_process_message(_group_message("/status", chat_id=-200), is_command=True) is True
 
 
-def test_telegram_topic_and_bot_gates_follow_an_edit(_home):
-    """allowed_topics and allow_bots are read from extra too; an edit must reach them without a reconnect."""
+def test_telegram_topic_and_bot_gates_follow_an_edit(tmp_path):
+    """allowed_topics and allow_bots are read from extra too; an edit must reach them without a reconnect. A
+    multiplexed profile has no bridged env to fall back on, so only the extra refresh can carry the edit."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
     from gateway.platforms._shared import mark_live_gate_baseline
+    from gateway.run import _profile_runtime_scope
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from plugins.platforms.telegram.telegram_live_gates import refresh_telegram_gates
 
-    _write(_home, telegram_cfg={"allowed_topics": ["5"], "allow_bots": "all"})
-    adapter = TelegramAdapter(load_gateway_config().platforms[Platform.TELEGRAM])
-    mark_live_gate_baseline(adapter)
-    _write(_home, telegram_cfg={"allowed_topics": ["5", "6"], "allow_bots": "none"})
-    refresh_telegram_gates(adapter)
-    assert adapter._telegram_allowed_topics() == {"5", "6"}
+    home = tmp_path / "b"
+    home.mkdir()
+    _write(home, telegram_cfg={"allowed_topics": ["5"], "allow_bots": "all"})
+    token = set_multiplex_context(True)
+    try:
+        with _profile_runtime_scope(home):
+            adapter = TelegramAdapter(load_gateway_config().platforms[Platform.TELEGRAM])
+            mark_live_gate_baseline(adapter)
+        _write(home, telegram_cfg={"allowed_topics": ["5", "6"], "allow_bots": "none"})
+        with _profile_runtime_scope(home):
+            refresh_telegram_gates(adapter)
+            assert adapter._telegram_allowed_topics() == {"5", "6"}
+    finally:
+        reset_multiplex_context(token)
     assert adapter.config.extra.get("allow_bots") == "none"
 
 

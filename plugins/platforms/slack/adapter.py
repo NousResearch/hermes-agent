@@ -2064,7 +2064,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             return SendResult(success=False, error="No Slack thread target")
         stream = self._native_task_card_streams.get(key)
         if stream is None or stream.stopped:
-            stream = _NativeTaskCardStream(team_id=key[0], channel=chat_id, thread_ts=key[2])
+            stream = _NativeTaskCardStream(team_id=key[0] or self.scope_id_for_chat(chat_id) or "", channel=chat_id, thread_ts=key[2])
             # No await between lookup and assignment, so racers share this lock.
             self._native_task_card_streams[key] = stream
         async with stream.lock:
@@ -2114,10 +2114,10 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             "task_display_mode": "plan"}
         md = metadata or {}
         recipients = (
-            ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
-            ("recipient_user_id", ("recipient_user_id", "user_id")))
-        for key, sources in recipients:
-            value = _first_truthy(md, sources)
+            ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id"), stream.team_id),
+            ("recipient_user_id", ("recipient_user_id", "user_id"), ""))
+        for key, sources, fallback in recipients:
+            value = _first_truthy(md, sources) or fallback
             if value:
                 start_payload[key] = value
         result = await client.api_call("chat.startStream", json=start_payload)

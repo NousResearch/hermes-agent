@@ -252,6 +252,10 @@ Native payloads contain `hermes-agent`, `tools`, `venv`, `pm-runtime`, `bin`,
 desktop bundles also carry the Webapp at `hermes-agent/apps/desktop/dist-webapp/`,
 which `hermes webapp` serves as shipped and never rebuilds.
 The TUI asset directory contains `entry.js` and module-mode package metadata.
+The `tools` store ships a user install's pinned PM tools, except Chromium on
+macOS: the browser tool installs it into the writable store on first use. It is left out
+because Squirrel.Mac before Electron 44.7 cannot download an update ZIP of 1 GiB
+or more, and v0.22.0 ships Electron 40.
 
 Docker keeps its existing TUI product at `/opt/hermes/ui-tui` and web output
 at `/opt/hermes/hermes_cli/web_dist`. The assembler also plants its shared TUI

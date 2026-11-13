@@ -18,12 +18,18 @@ from pm.registry import get_package, walk
 from pm.store import current_target
 from pm.testenv import DEVELOPER_TOOLS
 
-def _bundle_package_names() -> list[str]:
+# The browser tool installs it on first use; Squirrel.Mac before Electron 44.7 can't download a 1 GiB update ZIP.
+_FIRST_USE_ON_MACOS = frozenset({"chromium"})
+
+
+def _bundle_package_names(target: str | None = None) -> list[str]:
+    target = current_target() if target is None else target
+    left_out = _FIRST_USE_ON_MACOS if target.startswith("darwin-") else frozenset()
     names = [
         n
         for n in _lockfile().names()
         # Developer tools (just) are never part of a user install.
-        if (not get_package(n).internal or n == "uv") and n not in DEVELOPER_TOOLS
+        if (not get_package(n).internal or n == "uv") and n not in DEVELOPER_TOOLS and n not in left_out
     ]
     if "python" not in names:
         names.append("python")

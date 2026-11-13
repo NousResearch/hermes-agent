@@ -473,6 +473,16 @@ def test_staged_cache_skips_build_inputs_before_copying(tmp_path, monkeypatch, p
     assert all((cache / relative).read_bytes() == data for relative, data in {**waste, **kept}.items())
 
 
+def test_macos_bundles_leave_chromium_to_the_first_use_install():
+    """The browser tool installs PM's pinned Chromium on first use. Shipping it pushed the macOS update
+    ZIP past 1 GiB, which Squirrel.Mac before Electron 44.7 crashes on while downloading."""
+    mac = native._bundle_package_names("darwin-arm64")
+    assert "chromium" not in mac
+    assert {"python", "uv"} <= set(mac)
+    for target in ("win32-x64", "win32-arm64", "linux-x64"):
+        assert "chromium" in native._bundle_package_names(target)
+
+
 @pytest.mark.platforms("posix")
 def test_staged_cache_keeps_wheel_entries_as_links(tmp_path):
     """uv stores each cached wheel as a relative link into ``archive-v0/``. Following it

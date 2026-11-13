@@ -324,7 +324,13 @@ _DRAIN_SECONDS = 5
 
 def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess.CompletedProcess:
     """THE updater git runner: custody config in argv, the lock fd only into local mutators,
-    Windows job binding inside an update. ``kwargs`` are ``subprocess.run``'s."""
+    Windows job binding inside an update. ``kwargs`` are ``subprocess.run``'s.
+
+    Messages are forced to English (``LANGUAGE=C``): the updater reads git's stderr by English
+    phrases (``update_receipt.git_output_stop_class``, ``update_cmd_git._FETCH_FAILURE_RULES``), and
+    a translated git (a German ``LANG``) made every one miss. ``LANGUAGE`` changes only the message
+    catalog, so ``LC_CTYPE`` (path and hook encoding) stays the user's."""
+    kwargs["env"] = {**(os.environ if kwargs.get("env") is None else kwargs["env"]), "LANGUAGE": "C"}
     argv = git_argv(git_cmd, args)
     mutator = is_local_mutator(argv[1:])
     if mutator:

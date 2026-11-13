@@ -133,6 +133,7 @@ test('windows git spawn uses a CREATE_NO_WINDOW host and does not rewrite git ar
   assert.deepEqual(plan.args, ['C:\\hermes\\no-console-git.py', ...gitArgs])
   assert.equal(plan.env.HERMES_GIT_ARGV0, JSON.stringify(gitBin))
   assert.equal(plan.env.GIT_TERMINAL_PROMPT, '0')
+  assert.equal(plan.env.LANGUAGE, 'C')
   assert.equal(plan.windowsHide, true)
   assert.deepEqual(plan.stdio, ['ignore', 'pipe', 'pipe'])
   assert.equal(plan.creationFlags, CREATE_NO_WINDOW)
@@ -151,6 +152,7 @@ test('non-windows git spawn keeps the git binary and argv', () => {
   assert.equal(plan.command, '/usr/bin/git')
   assert.deepEqual(plan.args, ['status', '--porcelain'])
   assert.equal(plan.creationFlags, 0)
+  assert.equal(plan.env.LANGUAGE, 'C')
 })
 
 test('missing python does not rewrite git argv', () => {

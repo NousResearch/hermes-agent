@@ -27,6 +27,7 @@ from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, re
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
+from hermes_cli.backup_atomic import _atomic_output_path
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
 from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
@@ -220,31 +221,6 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
             with suppress(OSError):
                 _lock_op(unlock_flag)
         handle.close()
-
-
-@contextmanager
-def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Optional[Path]]] = None):
-    """Yield a hidden sibling path and publish it only after a clean close.
-
-    ``publish_path`` picks the destination at publish time (default ``final_path``) so a caller
-    can divert an incomplete archive elsewhere without ever touching ``final_path``; returning
-    ``None`` discards the partial instead of publishing it.
-    """
-    partial_path = final_path.with_name(f".{final_path.name}.{os.getpid()}-{threading.get_ident()}.partial")
-    partial_path.unlink(missing_ok=True)
-    try:
-        yield partial_path
-        destination = publish_path() if publish_path else final_path
-        if destination is None:
-            partial_path.unlink(missing_ok=True)
-        else:
-            # Archives carry credentials; do not inherit the umask (no-op on platforms without POSIX modes).
-            with suppress(OSError):
-                os.chmod(partial_path, 0o600)
-            os.replace(partial_path, destination)
-    except BaseException:
-        partial_path.unlink(missing_ok=True)
-        raise
 
 
 def _collect_memory_provider_external_paths() -> list[Path]:

@@ -87,9 +87,7 @@ def prime_revived_egress(adapter: Any, event: Any) -> None:
     """Warm *adapter*'s per-chat egress routing (Relay) before an event revived from durable state
     reaches it. Those caches fill only on live inbound, so after a restart the revived turn's replies
     would leave without the tenant discriminators the connector requires and be declined."""
-    # A live relayed source was captured on arrival; re-priming would only roll its anchors back.
-    if getattr(event.source, "delivered_via_upstream_relay", False) is True:
-        return
+    # Relay priming is fill-only, so a restored source with verified relay provenance is safe too.
     prime = getattr(adapter, "prime_routing_cache", None)
     if callable(prime):
         prime(event)

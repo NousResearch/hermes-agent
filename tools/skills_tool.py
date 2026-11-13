@@ -169,14 +169,19 @@ def check_skills_requirements() -> bool:
     return True  # always available: the directory is created on first use
 
 
-def _get_category_from_path(skill_path: Path) -> Optional[str]:
-    """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
-    (respects test monkeypatching), then skills.external_dirs."""
+def _category_search_dirs() -> list[Path]:
+    """Category roots in precedence order, captured once for each catalog scan."""
     dirs_to_check = [_skills_dir()]
     with suppress(Exception):
         from agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
-    for skills_dir in dirs_to_check:
+    return dirs_to_check
+
+
+def _get_category_from_path(skill_path: Path, *, roots: list[Path] | None = None) -> Optional[str]:
+    """``~/.hermes/skills/mlops/axolotl/SKILL.md`` -> ``"mlops"``; active profile dir first
+    (respects test monkeypatching), then skills.external_dirs."""
+    for skills_dir in _category_search_dirs() if roots is None else roots:
         with suppress(ValueError):
             if len(parts := skill_path.relative_to(skills_dir).parts) >= 3:
                 return parts[0]
@@ -243,6 +248,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
         # Shallow copies: callers mutate the returned dicts (web_server annotates
         # s["enabled"]/s["usage"]); handing out cached objects would poison the cache.
         return [dict(s) for s in cached[2]]
+    category_roots = _category_search_dirs()
     scanned = []
     for tier, scan_dir in roots:  # project dirs go through the quarantine chokepoint
         _iter = iter_project_skill_files if tier == TIER_PROJECT else lambda d: iter_skill_index_files(d, "SKILL.md")
@@ -258,7 +264,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                 scanned.append({
                     "name": frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH],
                     "description": _truncate_description(description),
-                    "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
+                    "category": _get_category_from_path(skill_md, roots=category_roots), "tier": tier, "root": scan_dir,
                     "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
                                                       and skill_matches_environment(frontmatter)
                                                       and skill_matches_apps(frontmatter))})

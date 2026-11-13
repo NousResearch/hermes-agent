@@ -1,0 +1,34 @@
+name: nousviz
+title: "NousViz — Agentic Analytics"
+repo: https://github.com/nousviz/nousviz-agentic-analytics
+sha: c03c706174534d1bfde09cdbabd5b208a76c795e
+version: "0.14.0"
+description: "Turn Hermes into a data analyst over your self-hosted NousViz — discover data with a live catalog, query it in natural language (read-only SQL across Postgres/ClickHouse/MySQL), and build dashboards, alerts and annotations by conversation."
+maintainer: nousviz
+tier: community
+category: tools
+docs_url: https://github.com/nousviz/nousviz-agentic-analytics#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - nousviz_catalog
+    - nousviz_insights
+    - nousviz_query
+    - nousviz_push
+    - nousviz_create_dashboard
+    - nousviz_create_alert
+    - nousviz_list_alerts
+    - nousviz_test_alert
+    - nousviz_update_alert
+    - nousviz_delete_alert
+    - nousviz_create_annotation
+    - nousviz_list_annotations
+    - nousviz_feedback
+    - nousviz_dashboard_link
+    - nousviz_share_dashboard
+  provides_hooks:
+    - post_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

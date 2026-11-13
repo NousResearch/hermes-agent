@@ -165,6 +165,7 @@ def test_message_derived_names_never_reach_the_summary():
     assert set(exceptions) == {"(other)", "ConnectionResetError", "httpx.ReadTimeout"}
     assert "john_smith" not in repr(by_logger) and "jsmith" not in repr(exceptions)
 
+
 def test_known_module_prefix_does_not_launder_message_text():
     """A fabricated class after a real package name is still message text, not a diagnosis."""
     from hermes_cli.debug_summary import _log_counts
@@ -177,3 +178,19 @@ def test_known_module_prefix_does_not_launder_message_text():
     _, exceptions, _, _ = _log_counts(log)
     assert exceptions == {"(other)": 1, "httpx.ReadTimeout": 1}
     assert private_token not in repr(exceptions)
+
+
+def test_exception_check_keeps_real_classes_and_runs_no_module_code():
+    """Hermes and dependency exception classes stay named; verifying a log-derived path must not
+    import it (``acp_adapter.__main__`` starts the ACP server on import)."""
+    import acp_adapter.entry
+    from hermes_cli.debug_summary import _exception_label
+
+    with patch.object(acp_adapter.entry, "main") as server_main:
+        assert _exception_label("acp_adapter.__main__.StartupError") == "(other)"
+    server_main.assert_not_called()
+    assert _exception_label("agent.chat_completion_helpers.ProviderStreamError") == \
+        "agent.chat_completion_helpers.ProviderStreamError"
+    assert _exception_label("openai.RateLimitError") == "openai.RateLimitError"
+    assert _exception_label("asyncio.CancelledError") == "asyncio.CancelledError"
+    assert _exception_label("agent.chat_completion_helpers.Jsmith42Error") == "(other)"

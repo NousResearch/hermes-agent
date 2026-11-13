@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import builtins
 import functools
-import importlib
 import importlib.util
 import logging
 import platform
@@ -117,23 +116,48 @@ def _config_shape(raw: dict[str, Any], schema: dict[str, Any], depth: int = 0) -
 
 
 @functools.lru_cache(maxsize=512)
-def _module_path(name: str) -> str | None:
-    """``name`` when every segment is a real module under a known root, else the longest real
-    prefix + ``.*``; ``None`` when the root is unknown. Message-derived segments (a user name, a
-    password baked into a logger or exception path) never match a file, so they never print."""
+def _resolve_module(name: str) -> tuple[str, Path | None] | None:
+    """(longest real module prefix of ``name``, its source file when the whole name resolved).
+    Located on disk only: a log-derived name is never imported, so no module code runs."""
     segments = name.split(".")
     if segments[0] not in _KNOWN_LOGGER_ROOTS:
         return None
     spec = _guarded(lambda: importlib.util.find_spec(segments[0]), None)
     dirs = [Path(d) for d in (getattr(spec, "submodule_search_locations", None) or [])]
+    origin = getattr(spec, "origin", None)
+    source = Path(origin) if origin and origin.endswith(".py") else None
     kept = [segments[0]]
     for seg in segments[1:]:
         hit = next((d / seg for d in dirs if (d / seg).is_dir() or (d / f"{seg}.py").is_file()), None)
         if hit is None:
-            return ".".join(kept) + ".*"
+            return ".".join(kept) + ".*", None
         kept.append(seg)
         dirs = [hit] if hit.is_dir() else []
-    return ".".join(kept)
+        source = hit / "__init__.py" if hit.is_dir() else hit.with_name(f"{seg}.py")
+    return ".".join(kept), source
+
+
+def _module_path(name: str) -> str | None:
+    """``name`` when every segment is a real module under a known root, else the longest real
+    prefix + ``.*``; ``None`` when the root is unknown. Message-derived segments (a user name, a
+    password baked into a logger or exception path) never match a file, so they never print."""
+    resolved = _resolve_module(name)
+    return resolved[0] if resolved else None
+
+
+@functools.lru_cache(maxsize=512)
+def _module_names(source: Path) -> frozenset[str]:
+    """Identifiers in a module's source: a class it defines or re-exports appears there. Sibling
+    ``from .x import *`` re-exports (``asyncio.CancelledError``) are followed one level."""
+    text = _source_text(source)
+    names = set(re.findall(r"[A-Za-z_]\w*", text))
+    for star in re.findall(r"^from \.(\w+) import \*", text, re.MULTILINE):
+        names.update(re.findall(r"[A-Za-z_]\w*", _source_text(source.with_name(f"{star}.py"))))
+    return frozenset(names)
+
+
+def _source_text(path: Path) -> str:
+    return _guarded(lambda: path.read_text(encoding="utf-8-sig", errors="replace"), "")
 
 
 def _logger_label(name: str) -> str:
@@ -141,17 +165,14 @@ def _logger_label(name: str) -> str:
 
 
 def _exception_label(token: str) -> str:
-    """A dotted class keeps its prefix only when that prefix is a verified module path; otherwise
-    only a builtin exception name is shown, since a bare or foreign class name can come from
-    user code or tool output in the message text."""
+    """A dotted class keeps its prefix only when that prefix is a verified module path AND the
+    class name appears in that module's source (a real prefix does not vouch for a class name
+    quoted in a log); otherwise only a builtin exception name is shown, since a bare or foreign
+    class name can come from user code or tool output in the message text."""
     prefix, _, cls = token.rpartition(".")
-    path = _module_path(prefix) if prefix else None
-    if path and not path.endswith(".*"):
-        # A real module prefix is not proof that a class name quoted in a log exists.
-        module = _guarded(lambda: importlib.import_module(prefix), None)
-        candidate = vars(module).get(cls) if module is not None else None
-        if isinstance(candidate, type) and issubclass(candidate, BaseException):
-            return token
+    resolved = _resolve_module(prefix) if prefix else None
+    if resolved and resolved[1] is not None and cls in _module_names(resolved[1]):
+        return token
     builtin = getattr(builtins, cls, None)
     return cls if isinstance(builtin, type) and issubclass(builtin, BaseException) else "(other)"
 

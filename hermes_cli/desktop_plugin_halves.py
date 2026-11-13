@@ -10,7 +10,7 @@ whenever the loader asks for the root, and on demand after an install.
 
 Both writers share the folder on a host that runs native Desktop too, so this keeps Electron's
 on-disk contract exactly: the marker's fields, the first-home-wins order, adoption of a byte-equal
-marker-less copy, a byte compare for linked dev checkouts, staged publication, and a prune that
+marker-less copy, a byte compare of the entry point, staged publication, and a prune that
 only fires when the source is really gone.
 """
 
@@ -255,12 +255,18 @@ def materialize_desktop_half(package_dir: Path, app_root: Path, name: str) -> Pa
             and not target_is_link
             and existing["source"] == str(source_dir)
             and bool(existing.get("linked")) == linked
-            and (
-                _same_file(target / "plugin.js", entry)
-                if linked
-                else existing.get("sourceMtimeMs", 0) >= marker["sourceMtimeMs"]
-            )
+            and _same_file(target / "plugin.js", entry)
         ):
+            # The copy already holds this source's bytes: current, whatever the clock says. A
+            # timestamp alone misses a ``cp -p`` / ``git stash pop`` / restore that lands the same
+            # or an older mtime on changed content, and needlessly re-copies a touch. The marker
+            # keeps ``sourceMtimeMs`` for older writers; only a corrupt one is repaired here, and
+            # best-effort, so the next pass retries the stamp instead of failing a healthy half.
+            if existing["sourceMtimeMs"] == -1:
+                try:
+                    _write_marker(target, marker)
+                except OSError as exc:
+                    logger.warning("desktop-plugins: cannot repair marker of %s: %s", name, exc)
             return None
 
     ignore = root_layout_ignore(source_dir, package_dir)

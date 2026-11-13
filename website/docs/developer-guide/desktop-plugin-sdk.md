@@ -2175,7 +2175,7 @@ is never overwritten.
 
 The app loads the **copy** in `desktop-plugins/<id>/`, not your package. An
 installed package (catalog, Git URL, `file://` path) is refreshed only when its
-source `plugin.js` is newer than the copy and something asks — **Rescan** in
+source `plugin.js` differs from the copy and something asks — **Rescan** in
 **Capabilities → Plugins**, an install/update through the app, or a restart —
 so editing `~/.hermes/plugins/<id>/desktop/plugin.js` in place does nothing
 on screen until then. Develop from a checkout linked into `plugins/` instead:
@@ -2187,7 +2187,8 @@ ln -s ~/src/my-plugin ~/.hermes/plugins/my-plugin
 A linked package's copy is marked `"linked": true`. The app watches the
 checkout's `desktop/plugin.js`; every save re-syncs the copy (by content, not
 mtime, so `git stash pop` counts) and hot-reloads the plugin. Catalog and Git
-installs keep the mtime rule.
+installs compare bytes the same way whenever a pass runs; only the live file
+watch stays linked-only.
 
 `hermes plugins doctor <path-or-id>` warns when the copy differs from your
 source and names the copy it found:

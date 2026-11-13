@@ -14,6 +14,7 @@ import shlex
 import tempfile
 import unicodedata
 
+from agent.file_safety import SHELL_RC_FILES
 from tools import approval_parser_budget as _parser_budget
 from tools.approval_parser_budget import _scan_backtick_end, _scan_dollar_paren_end, _scan_shell
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
@@ -48,7 +49,7 @@ _HERMES_CONFIG_PATH = (
 )
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)?)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
-_SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
+_SHELL_RC_FILES = rf"(?:~|\$home|\$\{{home\}})/(?:{'|'.join(re.escape(f) for f in SHELL_RC_FILES)})\b"
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
 _HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
 _SECRET_FILE = (
@@ -793,11 +794,12 @@ DANGEROUS_PATTERNS = [
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
-    # touch/mkdir/ln create or plant into the same destinations without
-    # going through write_file (which now approval-gates shell rc) or
-    # cp/sed. `touch ~/.ssh/authorized_keys` / `mkdir ~/.ssh` /
-    # `ln -s evil ~/.bashrc` were unpaired theater (#85321).
-    (rf'\b(?:touch|mkdir|ln)\b.*["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_WRITE_TARGET_BOUNDARY}', "create or link a file in a sensitive credential/SSH/shell-rc path"),
+    # touch/mkdir create, and ln plants a pointer at, the same destinations without a gated write verb
+    # (`mkdir -p ~/.ssh && touch ~/.ssh/x`, `ln -sf evil ~/.bashrc`), pairing the write_file deny (#85321).
+    # Command-position anchored so `ls -ln ~/.ssh` / `grep touch ~/.bashrc` stay out; any touch/mkdir operand
+    # counts, but for ln only the destination (last operand) does, so linking OUT of these paths stays safe.
+    (rf'{_CMDPOS}(?:touch|mkdir)\s(?:[^\n;&|]*\s)?["\']?{_SENSITIVE_WRITE_TARGET}', "create a file in a sensitive credential/SSH/shell-rc path"),
+    (rf'{_CMDPOS}ln\s[^\n;&|]*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?\s*(?:[\n;&|)`]|$)', "link a file into a sensitive credential/SSH/shell-rc path"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),

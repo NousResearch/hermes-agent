@@ -761,6 +761,27 @@ def test_lowercase_launch_only_keys_in_user_env_are_ignored(tmp_path, monkeypatc
     assert "hermes_managed_dir" in caplog.text  # the operator sees why the line had no effect
 
 
+def test_launch_only_warning_is_logged_once_per_profile_home(tmp_path, monkeypatch, caplog):
+    """The gateway reloads .env on every turn: a leftover line warns once per home, not per turn,
+    and a second profile home with the same line still gets its own warning."""
+    homes = []
+    for name in ("a", "b"):
+        home = tmp_path / name
+        home.mkdir()
+        (home / ".env").write_text(f"HERMES_MANAGED_DIR={tmp_path}/untrusted\n", encoding="utf-8")
+        homes.append(home)
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+
+    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+        for home in homes:
+            monkeypatch.setenv("HERMES_HOME", str(home))
+            for _ in range(3):
+                load_hermes_dotenv(load_external_secrets=False)
+
+    assert "HERMES_MANAGED_DIR" not in os.environ
+    assert caplog.text.count("launch-only key HERMES_MANAGED_DIR") == 2
+
+
 def test_reload_env_skips_lowercase_launch_only_key(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

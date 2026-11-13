@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
-from hermes_constants import is_launch_only_env_key
+from hermes_constants import hermes_home_key, is_launch_only_env_key
 from hermes_cli.left_core_migration import profile_env_names
 from utils import atomic_replace, mkstemp_beside
 
@@ -456,8 +456,7 @@ def _load_dotenv_with_fallback(
             if value is None or (not override and name in os.environ):
                 continue
             if is_launch_only_env_key(name):
-                logger.warning("dotenv %s: ignoring launch-only key %s — only the launch "
-                            "environment may set it", path, name)
+                _warn_launch_only_key(f"dotenv {path}", name)
                 continue  # deployment bootstrap knob (#135200, #144685)
             current = os.environ.get(name)
             record = _DOTENV_PUBLISHED.get(name)
@@ -478,6 +477,19 @@ def _load_dotenv_with_fallback(
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
+_LAUNCH_ONLY_WARNED: set[tuple[str, str, str]] = set()
+
+
+def _warn_launch_only_key(source: str, name: str) -> None:
+    """Log a skipped launch-only key once per (profile home, source, name): the gateway reloads
+    ``.env`` every turn, and a multiplex process serves several homes that each deserve the warning."""
+    marker = (hermes_home_key(), source, name)
+    if marker not in _LAUNCH_ONLY_WARNED:
+        _LAUNCH_ONLY_WARNED.add(marker)
+        logger.warning("%s: ignoring launch-only key %s — only the launch environment may set it",
+                       source, name)
+
+
 def bridge_config_scalars(cfg: dict, target) -> None:
     """Copy top-level ``config.yaml`` scalars into ``target`` (env or scope mapping) where unset.
 
@@ -487,8 +499,7 @@ def bridge_config_scalars(cfg: dict, target) -> None:
         if not isinstance(value, (str, int, float, bool)) or name in target:
             continue
         if is_launch_only_env_key(name):
-            logger.warning("config.yaml: ignoring launch-only key %s — only the launch "
-                           "environment may set it", name)
+            _warn_launch_only_key("config.yaml", name)
             continue
         target[name] = str(value)
 

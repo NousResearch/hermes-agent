@@ -7,6 +7,7 @@ it is paired with (#91308). Real config.yaml under a temp ``HERMES_HOME``, resol
 task route; HTTP is faked.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -122,3 +123,112 @@ def test_route_without_credential_falls_back_to_openai_key_never_the_main_key(
         )
 
     assert captured.get("api_key") == expected
+
+
+def _declared_entry_home(tmp_path, monkeypatch, entry):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": "openrouter", "default": "x/y"},
+        "providers": {"litellm": {"name": "my litellm", "base_url": "https://proxy.example.test/v1", **entry}},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+
+def test_cached_client_follows_a_rotated_declared_key(tmp_path, monkeypatch):
+    """The declared entry's key joins the client cache key like the borrowed main key does: once
+    its key_env value rotates, the client built with the old key must not keep serving."""
+    import agent.auxiliary_client as ac
+
+    _declared_entry_home(tmp_path, monkeypatch, {"key_env": "ROUTE_KEY"})
+    monkeypatch.setenv("ROUTE_KEY", "route-key-v1")
+    first, _ = ac._get_cached_client("custom", model="m", base_url="https://proxy.example.test/v1")
+    monkeypatch.setenv("ROUTE_KEY", "route-key-v2")
+    second, _ = ac._get_cached_client("custom", model="m", base_url="https://proxy.example.test/v1")
+
+    assert (first.api_key, second.api_key) == ("route-key-v1", "route-key-v2")
+
+
+def test_cached_client_is_reused_for_a_declared_key_cmd(tmp_path, monkeypatch):
+    """A key_cmd entry yields a fresh token source per lookup; the cache keys on its stable
+    command identity, so repeated calls reuse one client instead of building one per call."""
+    import sys
+    import agent.auxiliary_client as ac
+
+    helper = tmp_path / "mint.py"
+    helper.write_text("print('minted-token')\n", encoding="utf-8")
+    _declared_entry_home(tmp_path, monkeypatch, {"key_cmd": f'"{sys.executable}" "{helper}"'})
+    first, _ = ac._get_cached_client("custom", model="m", base_url="https://proxy.example.test/v1")
+    second, _ = ac._get_cached_client("custom", model="m", base_url="https://proxy.example.test/v1")
+    (tmp_path / ".hermes" / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": "openrouter", "default": "x/y"},
+        "providers": {"litellm": {"name": "my litellm", "base_url": "https://proxy.example.test/v1",
+                                  "key_cmd": f'"{sys.executable}" "{helper}" --rotated'}},
+    }))
+    third, _ = ac._get_cached_client("custom", model="m", base_url="https://proxy.example.test/v1")
+
+    assert first is not None and first is second
+    assert third is not first  # an edited key_cmd builds a client around the new helper
+
+
+def test_cached_client_lookup_never_selects_from_the_entry_pool(tmp_path, monkeypatch):
+    """With key_env unset the entry's key comes from its credential pool. Only the client build
+    selects from it; warm cache lookups must not advance rotation or re-select."""
+    import agent.auxiliary_client as ac
+
+    _declared_entry_home(tmp_path, monkeypatch, {"key_env": "UNSET_ROUTE_KEY"})
+    monkeypatch.delenv("UNSET_ROUTE_KEY", raising=False)
+    selects = []
+
+    class _Pool:
+        def entries(self):
+            return [SimpleNamespace(source="manual")]  # an `hermes auth add` row the entry owns
+
+        def has_credentials(self):
+            return True
+
+        def select(self, model=None):
+            selects.append(model)
+            return SimpleNamespace(runtime_api_key=f"pooled-{len(selects)}")
+
+    monkeypatch.setattr(ac, "load_pool", lambda key: _Pool())
+    clients = [ac._get_cached_client("custom", model="m", base_url="https://proxy.example.test/v1")[0] for _ in range(3)]
+
+    assert clients[0].api_key == "pooled-1"
+    assert clients[1] is clients[0] and clients[2] is clients[0]
+    assert len(selects) == 1
+
+
+def test_dual_surface_anthropic_entry_gets_its_own_key(tmp_path, monkeypatch):
+    """An entry declaring an ``/anthropic`` URL owns that URL: the plain client's base is rewritten to
+    ``/v1``, but ownership is looked up on the URL the route names, so the entry's key is sent."""
+    import agent.auxiliary_client as ac
+
+    url = "https://api.minimax.io/anthropic"
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"provider": "openrouter", "default": "x/y"},
+        "providers": {"mm-plan": {"name": "mm plan", "base_url": url, "key_env": "MM_KEY"}},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("MM_KEY", "mm-route-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    captured: dict = {}
+
+    def _capture_create(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    with patch.object(ac, "_create_openai_client", side_effect=_capture_create):
+        resolve_provider_client("custom", model="m", explicit_base_url=url, explicit_api_key=None)
+    assert captured.get("api_key") == "mm-route-key"
+
+    monkeypatch.setenv("MM_KEY", "mm-route-key-v1")
+    first, _ = ac._get_cached_client("custom", model="m", base_url=url)
+    monkeypatch.setenv("MM_KEY", "mm-route-key-v2")
+    second, _ = ac._get_cached_client("custom", model="m", base_url=url)
+    assert first is not second  # the cache keys on the same raw-URL owner the build reads

@@ -1,8 +1,9 @@
 """Credential selection for an explicit custom endpoint.
 
-The route that names a URL owns its credential: the same-origin main key or the
-``providers.<id>`` entry's own key, both ahead of the ambient ``OPENAI_API_KEY`` — ahead of
-them a live OpenAI key reached a third-party endpoint that declares its own (#145452).
+The route that names a URL owns its credential, in this order: the main key when the URL shares the
+main endpoint's origin (so it also wins over an entry owning another path on that host), then the key
+of the ``providers.<id>`` entry owning the exact URL, then the host-gated ambient ``OPENAI_API_KEY``
+(#91308), which therefore never reaches a third-party endpoint that declares its own key (#145452).
 """
 
 from __future__ import annotations
@@ -45,3 +46,23 @@ def declared_custom_key_for_base_url(base_url: str, provider: str) -> Any:
     except Exception:
         logger.debug("Declared custom credential lookup failed for %s", base_url, exc_info=True)
         return ""
+
+
+def declared_custom_credential_identity(base_url: str, provider: str) -> str:
+    """Client-cache identity of the credential the entry owning *base_url* declares, else ``""``.
+
+    Built from the entry's pointers (inline api_key, the key_env value, ``cmd:<key_cmd>``) without
+    minting a key_cmd token or selecting from its credential pool, so a cache lookup never runs a
+    helper or advances pool rotation; a rotated key_env value still changes it.
+    """
+    from agent.auxiliary_client import _scoped_key_env
+    from agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential
+
+    found = custom_entry_for_endpoint(base_url, provider)
+    if not found or not entry_declares_credential(found[1]):
+        return ""
+    entry = found[1]
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+    return "\0".join((str(entry.get("api_key") or "").strip(), _scoped_key_env(key_env) if key_env else "",
+                      f"cmd:{str(entry.get('key_cmd') or '').strip()}"))
+

@@ -33,7 +33,8 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
-from agent.auxiliary_custom_credentials import _normalize_api_key, declared_custom_key_for_base_url
+from agent.auxiliary_custom_credentials import (
+    _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url)
 from agent.errors import InvalidProviderResponseError
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
@@ -4930,12 +4931,12 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
-            # Only THIS route's credentials may reach an explicit custom URL: the same-origin main
-            # key or the owning providers: entry's own key, ahead of any ambient env key (#145452).
+            # Only THIS route's credentials (main same-origin, owning providers: entry) beat env keys (#145452).
             from hermes_cli.runtime_provider import openai_env_key_authoritative_for  # SECURITY #91308: gated as main
             paired = any(openai_env_key_authoritative_for(u, _scoped_key_env("OPENAI_BASE_URL"))  # requested URL too:
                          for u in (req.explicit_base_url, custom_base))  # _to_openai_base_url rewrites its path
             custom_key = (_normalize_api_key(req.explicit_api_key) or _read_main_api_key_if_same_origin(custom_base)
+                          or declared_custom_key_for_base_url(req.explicit_base_url, req.original_provider or provider)
                           or declared_custom_key_for_base_url(custom_base, req.original_provider or provider)
                           or (_scoped_key_env("OPENAI_API_KEY") if paired else "")
                           or "no-key-required")  # local servers don't need auth
@@ -5651,7 +5652,9 @@ def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_ke
     # Same normalization as the client build, which treats a blank explicit key as keyless.
     if _normalize_api_key(api_key):
         return ()
-    borrowed = _read_main_api_key_if_same_origin(_to_openai_base_url(base_url).strip())
+    custom_base = _to_openai_base_url(base_url).strip()  # the providers: entry's key is borrowed the same way
+    borrowed = (_read_main_api_key_if_same_origin(custom_base) or declared_custom_credential_identity(base_url, provider)
+                or declared_custom_credential_identity(custom_base, provider))  # raw URL first, as the build does
     return (_runtime_cache_discriminator("api_key", borrowed),)
 
 

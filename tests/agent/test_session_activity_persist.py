@@ -1,8 +1,12 @@
 """Durable session activity projection from AIAgent._touch_activity (#72016)."""
 
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 import run_agent
 from agent.session_activity import ActivityProvenance
 
@@ -104,6 +108,38 @@ def test_touch_activity_persist_errors_are_swallowed(monkeypatch):
 
     agent._touch_activity("tool completed: terminal (1.0s)")
     assert agent._last_activity_desc == "tool completed: terminal (1.0s)"
+
+
+@pytest.mark.asyncio
+async def test_gateway_loop_does_not_wait_for_activity_write_during_db_contention(monkeypatch):
+    agent = _agent_with_db()
+    entered, release = threading.Event(), threading.Event()
+    writes = []
+
+    def blocked_touch(_session_id, _timestamp, *, description, provenance):
+        entered.set()
+        release.wait(timeout=5)
+        writes.append(description)
+
+    agent._session_db.touch_session_activity = blocked_touch
+    agent._session_db.clear_session_activity_labels = lambda _session_id: writes.append("cleared")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    try:
+        started = time.monotonic()
+        agent._touch_activity("compression in progress")
+        assert time.monotonic() - started < 2.0
+        await asyncio.wait_for(asyncio.to_thread(entered.wait), timeout=2)
+        assert entered.is_set()
+        # A second stamp, including a terminal one, must leave the event loop free and
+        # persist after the blocked write rather than overwriting it out of order.
+        agent._touch_activity("compression finished", force_persist=True)
+        assert agent._last_activity_desc == "compression finished"
+        agent._reset_activity_labels_after_turn()
+        assert agent._last_activity_desc == ""
+    finally:
+        release.set()
+    await asyncio.wait_for(agent._session_activity_persist_task, timeout=2)
+    assert writes == ["compression in progress", "compression finished", "cleared"]
 
 
 

@@ -84,3 +84,47 @@ async def test_redelivered_media_message_returns_its_receipt_and_changed_bytes_c
         server.shutdown()
         server.server_close()
         await asyncio.to_thread(authority.db.close)
+
+
+@pytest.mark.asyncio
+async def test_slack_redelivery_ignores_receive_time_and_fetched_thread_context(monkeypatch):
+    """A reconnect refetches thread context after the original message was admitted."""
+    from gateway.config import GatewayConfig, Platform, PlatformConfig
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from gateway.session_ingress_context import native_callback
+    from hermes_constants import get_hermes_home
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
+    monkeypatch.setenv('SLACK_ALLOWED_USERS', '42')
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SlackAdapter(PlatformConfig(enabled=True, token='fixture-token', typing_indicator=False))
+    runner.adapters = {Platform.SLACK: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    runner._wire_adapter_handlers(adapter)
+    source = adapter.build_source(chat_id='C1', chat_type='group', user_id='42',
+                                  thread_id='1794551449.608979', scope_id='T1')
+
+    async def deliver(text, when, context, prompt='original channel policy'):
+        event = MessageEvent(text=text, source=source, message_id='1794555096.152069',
+                             timestamp=datetime.fromtimestamp(when, UTC), channel_context=context,
+                             channel_prompt=prompt)
+        with native_callback(runner, event, get_hermes_home()):
+            return await authority.admit_native(event)
+
+    try:
+        first = await deliver('Please fix the badge', 1794555096, 'thread before bot reply')
+        retry = await deliver('Please fix the badge', 1794555467, 'thread after bot reply')
+        assert retry.admission_id == first.admission_id
+        rows = list_session_admissions(authority.db, session_id=first.ref.session_id, pending_only=False)
+        assert [row['request_id'] for row in rows] == ['1794555096.152069']
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await deliver('Please fix a different badge', 1794555468, 'thread after bot reply')
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await deliver('Please fix the badge', 1794555469, 'thread after bot reply',
+                          prompt='changed channel policy')
+    finally:
+        await asyncio.to_thread(authority.db.close)

@@ -199,6 +199,30 @@ def ingress_fingerprint(payload, raw=None):
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _same_slack_retry_without_enrichment(retained, received):
+    """Slack's receive time and fetched thread context can change on redelivery.
+
+    Compare every other admitted field, including route, sender, text, edits, and
+    media identity. Only a legacy un-fingerprinted Slack row may use this path;
+    hook-rewritten deliveries keep their stricter ingress fingerprint contract.
+    """
+    old = retained.get('native_text_v1', {})
+    new = received.get('native_text_v1', {})
+    if (not old or old.get('ingress_sha256') is not None
+            or old.get('source', {}).get('platform') != 'slack'
+            or new.get('source', {}).get('platform') != 'slack'):
+        return False
+    event = dict(new.get('event', {}))
+    if 'channel_context' in old.get('event', {}):
+        event['channel_context'] = old['event']['channel_context']
+    else:
+        event.pop('channel_context', None)
+    candidate = {**received, 'native_text_v1': {
+        **new, 'event': event, 'timestamp': old.get('timestamp'),
+    }}
+    return candidate == retained
+
+
 def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload, raw=None):
     """A redelivered native message (lost provider ACK, Relay buffer replay) re-downloads its media
     under a fresh disposable staging name, so its captured path differs from the committed one.
@@ -208,21 +232,26 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
     changed bytes or any other changed field still conflict. A delivery committed in
     ``pre_gateway_dispatch``-rewritten form resolves to its committed payload when the resend matches
     the fingerprint recorded at ingress (``ingress_fingerprint``); a changed resend, or a row
-    committed before fingerprints, is compared exactly as above."""
+    committed before fingerprints, is compared exactly as above except for Slack's
+    receive-time stamp and fetched thread context, which are not provider content."""
     fresh = payload.get('native_text_v1', {}).get('media') or []
     with db._read_ctx() as conn:
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
-    retained = json.loads(row[1]) if row is not None else {}
+    if row is None:
+        return payload
+    retained = json.loads(row[1])
     recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
     if recorded is not None and recorded == ingress_fingerprint(payload, raw):
         resolved = retained
     else:
+        resolved = payload
         committed = retained.get('native_text_v1', {}).get('media')
-        if not fresh or not committed or [(r['sha256'], r['size']) for r in committed] != [
+        if fresh and committed and [(r['sha256'], r['size']) for r in committed] == [
                 (r['sha256'], r['size']) for r in fresh]:
-            return payload
-        resolved = {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
+            resolved = {**payload, 'native_text_v1': {**payload['native_text_v1'], 'media': committed}}
+        if _same_slack_retry_without_enrichment(retained, resolved):
+            resolved = retained
     committed = resolved['native_text_v1'].get('media', [])
     if committed and row[0] != 'terminal':
         # A live row still executes these bytes, so they must verify (a terminal one is digest evidence).

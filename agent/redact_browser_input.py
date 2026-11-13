@@ -41,10 +41,18 @@ def _literal_end(code: str, start: int) -> tuple[str, str, int] | None:
     while i < len(code):
         if code.startswith(quote, i):
             return prefix, quote, i + len(quote)
-        if code[i] == "\n" and not multiline:
+        if code[i] in "\r\n" and not multiline:  # the parser ends a line at \r, \r\n or \n
             break
         i += 2 if code[i] == "\\" else 1
     return prefix, "", i
+
+
+_COMMENT = re.compile(r"#[^\r\n]*")
+
+
+def _skip_comment(code: str, i: int) -> int:
+    """Index past the ``#`` comment at ``i`` (its line break excluded)."""
+    return _COMMENT.match(code, i).end()
 
 
 def _literal_mask(code: str, start: int) -> tuple[int, int, str] | None:
@@ -57,12 +65,15 @@ def _literal_mask(code: str, start: int) -> tuple[int, int, str] | None:
 
 def _call_end(code: str, i: int, pair: str = "()") -> int:
     """Index of the bracket closing the ``pair`` (call or dict) that ``i`` sits inside, skipping
-    string literals."""
+    string literals and comments."""
     depth, step = 1, {pair[0]: 1, pair[1]: -1}
     while i < len(code):
         lit = _literal_end(code, i) if code[i] in "'\"`\\" else None
         if lit is not None:
             i = max(lit[2], i + 1)
+            continue
+        if code[i] == "#":
+            i = _skip_comment(code, i)
             continue
         depth += step.get(code[i], 0)
         if depth == 0:
@@ -193,15 +204,24 @@ class _TypedValues(ast.NodeVisitor):
 
 
 def _literal_regions(code: str, start: int, end: int) -> list[tuple[int, int, str]]:
-    """A mask for every string literal in code[start:end], found by scanning the raw text."""
-    out, i = [], start
+    """A mask for every string literal in code[start:end], found by scanning the raw text. A literal
+    ends at a line break (\r, \r\n or \n) as the parser's does. Quoted text in a comment is masked
+    too (fail closed), and a lone quote there (``# don't``) ends with the comment; an unterminated
+    literal outside a comment leaves the scan out of step, so the rest of the region is masked."""
+    out, i, comment_end = [], start, start
     while i < end:
-        lit = _literal_mask(code, i) if code[i] in "'\"`\\" else None
+        if code[i] == "#" and i >= comment_end:
+            comment_end = _skip_comment(code, i)
+        lit = _literal_end(code, i) if code[i] in "'\"`\\" else None
         if lit is None:
             i += 1
             continue
-        out.append(lit)
-        i = max(lit[1], i + 1)
+        prefix, quote, lit_end = lit
+        if not quote and i >= comment_end:  # out of step from here on: mask the rest
+            out.append((i, max(end, lit_end), f"{prefix}***"))
+            break
+        out.append((i, lit_end, f"{prefix}{quote}***{quote}"))
+        i = max(lit_end, i + 1)
     return out
 
 

@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
+from agent.reserved_egress import assert_no_unauthorized_reserved_egress
 from hermes_cli.observability.shared_metrics_efficiency import observe_request_tools
 from utils import env_var_enabled
 
@@ -140,6 +141,9 @@ def build_request_payload(
     # Messages were scrubbed above; this walk covers the rest of the payload (tool descriptions,
     # extra_body, kwargs strings) — see sanitize_outbound_kwargs for the #50959 rationale.
     sanitize_outbound_kwargs(agent, api_kwargs)
+    # Classified vault material is a separate policy from token redaction: fail closed before
+    # middleware, hooks, debug dumps, retries, or the provider transport can observe it.
+    assert_no_unauthorized_reserved_egress(agent, api_kwargs)
     if agent.api_mode == "codex_responses":
         from agent.codex_responses_adapter import drops_replay_item_ids
 

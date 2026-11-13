@@ -216,6 +216,21 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
 
+def test_manifest_reads_are_allowed_for_every_guarded_root(tmp_path):
+    from tests.home_io_guard import HomeIOGuard
+
+    roots = [tmp_path / "default", tmp_path / "profile"]
+    for root in roots:
+        root.mkdir()
+    guard = HomeIOGuard(lambda: roots)
+
+    for root in roots:
+        guard.check(root / "manifest.json")
+
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(roots[1] / "config.yaml")
+
+
 @pytest.mark.parametrize("kind", ["environments", "test-environment"])
 def test_pm_generation_dir_around_the_running_venv_is_the_interpreter(tmp_path, kind):
     """scripts/run_tests.sh runs ``<home>/installs/<key>/<kind>/<gen>/venv`` with HOME pointed at the

@@ -230,7 +230,7 @@ context_methods = set(options["context_methods"])
 context_properties = set(options.get("context_properties", ()))
 provider_kind = options["kind"] == "model-provider"
 
-recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": [], "trusted_inbound": []}
+recorded = {"tools": [], "hooks": [], "middleware": [], "commands": [], "providers": [], "trusted_inbound": [], "memory_tools": [], "memory_tool_errors": []}
 
 
 class RecordingContext:
@@ -240,6 +240,24 @@ class RecordingContext:
 
     def register_tool(self, name, *args, **kwargs):
         recorded["tools"].append(str(name))
+
+    def register_memory_provider(self, provider):
+        # Names only. Do not call initialize(); it may open connections.
+        try:
+            found = []
+            for schema in list(provider.get_tool_schemas()):
+                if (
+                    isinstance(schema, dict)
+                    and schema.get("type") == "function"
+                    and isinstance(schema.get("function"), dict)
+                ):
+                    schema = schema["function"]
+                name = schema.get("name", "") if isinstance(schema, dict) else ""
+                if name and isinstance(name, str):
+                    found.append(name)
+            recorded["memory_tools"].extend(found)
+        except Exception as exc:
+            recorded["memory_tool_errors"].append(str(exc))
 
     def register_hook(self, hook_name, callback, *, hold_stream=False):
         recorded["hooks"].append(str(hook_name))
@@ -484,7 +502,12 @@ def _check_capabilities(
         declared = set(_declared_list(manifest, manifest_key))
         actual = set(recorded.get(kind) or [])
         undeclared = sorted(actual - declared)
-        unregistered = sorted(declared - actual)
+        # Provider tool names are not register_tool calls. Count them as seen
+        # so a declared name is not warned as missing; do not fail on them.
+        seen = actual
+        if kind == "tools":
+            seen = actual | set(recorded.get("memory_tools") or [])
+        unregistered = sorted(declared - seen)
         if undeclared:
             report.add(
                 f"declared {kind}",
@@ -499,6 +522,18 @@ def _check_capabilities(
                 f"{manifest_key} declares {', '.join(unregistered)} "
                 f"but register() did not register them"
             )
+    missing = sorted(
+        set(recorded.get("memory_tools") or [])
+        - set(_declared_list(manifest, "provides_tools"))
+    )
+    if missing:
+        report.warn(
+            "memory provider tool(s) not in provides_tools: "
+            + ", ".join(missing)
+            + ". Add them to provides_tools"
+        )
+    for message in recorded.get("memory_tool_errors") or []:
+        report.warn("memory provider get_tool_schemas() raised: " + message)
     return recorded
 
 

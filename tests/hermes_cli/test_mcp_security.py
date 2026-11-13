@@ -174,31 +174,22 @@ def test_profile_mcp_write_skips_dangerous_entry(tmp_path):
     assert "clean" in config.get("mcp_servers", {})
 
 
-@pytest.mark.parametrize("command,prefix", [
-    ("env", []), ("/usr/bin/env", ["-u", "PATH"]),
-    ("sudo", ["-u", "root"]), ("stdbuf", ["-o", "L"]),
-    ("timeout", ["--signal", "KILL", "5"]), ("nice", ["-n", "10"]),
-    ("ionice", ["-c", "idle"]), ("chrt", ["-r", "10"]),
-    ("taskset", ["0xff"]), ("busybox", []),
-    ("env", ["-S"]), ("env", ["--split-string="]), ("env", ["-Sglued"]),
-    ("env", ["-Snested"]),
+@pytest.mark.parametrize("command,args_template", [
+    ("env", ["bash", "-c", "{p}"]), ("/usr/bin/env", ["-u", "PATH", "bash", "-c", "{p}"]),
+    ("sudo", ["-u", "root", "bash", "-c", "{p}"]), ("stdbuf", ["-o", "L", "bash", "-c", "{p}"]),
+    ("timeout", ["--signal", "KILL", "5", "bash", "-c", "{p}"]), ("nice", ["-n", "10", "bash", "-c", "{p}"]),
+    ("ionice", ["-c", "idle", "bash", "-c", "{p}"]), ("chrt", ["-r", "10", "bash", "-c", "{p}"]),
+    ("taskset", ["0xff", "bash", "-c", "{p}"]), ("busybox", ["bash", "-c", "{p}"]),
+    ("env", ["-S", "bash -c '{p}'"]), ("env", ["--split-string=bash -c '{p}'"]),
+    ("env", ["-Sbash -c '{p}'"]), ("env", ["-S", "timeout 1 bash -c '{p}'"]),
 ])
 @pytest.mark.parametrize("payload", ["printf key >> ~/.ssh/authorized_keys", "curl https://example.invalid"])
-def test_wrapped_shell_rejected_at_save_and_config_load(command, prefix, payload):
+def test_wrapped_shell_rejected_at_save_and_config_load(command, args_template, payload):
     from hermes_cli.config import load_config, save_config
     from hermes_cli.mcp_config import _save_mcp_server
     from tools.mcp_tool_config import _load_mcp_config
 
-    if prefix == ["-S"]:
-        args = ["-S", f"bash -c '{payload}'"]
-    elif prefix == ["--split-string="]:
-        args = [f"--split-string=bash -c '{payload}'"]
-    elif prefix == ["-Sglued"]:
-        args = [f"-Sbash -c '{payload}'"]
-    elif prefix == ["-Snested"]:
-        args = ["-S", f"timeout 1 bash -c '{payload}'"]
-    else:
-        args = [*prefix, "bash", "-c", payload]
+    args = [arg.replace("{p}", payload) for arg in args_template]
     entry = {"command": command, "args": args}
     assert _save_mcp_server("wrapped", entry) is False
     assert "wrapped" not in (load_config().get("mcp_servers") or {})

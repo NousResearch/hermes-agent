@@ -12,6 +12,7 @@ Resolution order:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass
@@ -59,6 +60,16 @@ def _derived_version(
 
 
 def _run_git(repo_dir: Path, *args: str) -> str | None:
+    # Version provenance is best-effort; avoid a Windows Git subprocess on a
+    # managed worker's prompt-delivery path, where that child can hang.
+    if os.name == "nt":
+        try:
+            from agent.runtime_session_store import is_worker_process
+        except ImportError:
+            pass
+        else:
+            if is_worker_process():
+                return None
     try:
         result = subprocess.run(
             ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),

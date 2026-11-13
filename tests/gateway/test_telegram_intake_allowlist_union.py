@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 _EXTRA = {"allow_from": ["111"], "group_allow_from": ["222"], "group_allowed_chats": ["-1001"],
           "unauthorized_dm_behavior": "ignore"}

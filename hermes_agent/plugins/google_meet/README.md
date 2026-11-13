@@ -50,7 +50,7 @@ Without v2: the "realtime" path is skipped; transcribe runs alone.
 |---|---|
 | `plugin.yaml` | manifest |
 | `__init__.py` | `register(ctx)` — registers 5 tools + `on_session_end` hook + `hermes meet` CLI |
-| `meet_bot.py` | Playwright bot subprocess (standalone, `python -m plugins.google_meet.meet_bot`) |
+| `meet_bot.py` | Playwright bot subprocess (standalone, `python -m hermes_agent.plugins.google_meet.meet_bot`) |
 | `process_manager.py` | local bot lifecycle + `enqueue_say` |
 | `tools.py` | agent-facing tools + node-routing helper |
 | `cli.py` | `hermes meet setup / auth / join / status / transcript / say / stop / node ...` |

@@ -50,7 +50,7 @@ if sys.platform == "win32":
         # The adapter module may have bound mock names at import time — reload
         # it against the real library.
         for _name in [
-            m for m in list(sys.modules) if m.startswith("plugins.platforms.telegram")
+            m for m in list(sys.modules) if m.startswith("hermes_agent.plugins.platforms.telegram")
         ]:
             del sys.modules[_name]
 
@@ -142,7 +142,7 @@ class _LiveBotApiServer:
 
 def _make_adapter():
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     return TelegramAdapter(PlatformConfig(enabled=True, token="123456:TEST"))
 
@@ -160,7 +160,7 @@ async def test_drain_recovers_after_server_half_close_live(monkeypatch):
     from telegram.request import HTTPXRequest
     from unittest.mock import MagicMock
 
-    import plugins.platforms.telegram.adapter as tg_adapter
+    import hermes_agent.plugins.platforms.telegram.adapter as tg_adapter
 
     server = _LiveBotApiServer()
     await server.start()
@@ -225,7 +225,7 @@ async def test_drain_bounded_and_functional_when_close_wedges_live(monkeypatch):
     from telegram.request import HTTPXRequest
     from unittest.mock import MagicMock
 
-    import plugins.platforms.telegram.adapter as tg_adapter
+    import hermes_agent.plugins.platforms.telegram.adapter as tg_adapter
 
     server = _LiveBotApiServer()
     await server.start()

@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("plugins.platforms.wecom.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.wecom.adapter")
 
 APP_CMD_RESPONSE = "aibot_respond_msg"
 

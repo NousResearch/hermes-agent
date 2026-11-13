@@ -1164,7 +1164,7 @@ users' data dies with it. The sanctioned home is the per-plugin data root,
 which survives both and follows the active profile:
 
 ```python
-from plugins.plugin_storage import plugin_data_dir, plugin_db
+from hermes_agent.plugins.plugin_storage import plugin_data_dir, plugin_db
 
 # <hermes home>/plugin-data/<name>/ — created on first use
 state_file = plugin_data_dir("my-plugin") / "state.json"
@@ -1472,10 +1472,10 @@ def get_client():
 
 This is a footgun. Hermes runs multiple threads in one process (delegated tool calls, background workers, the self-improvement fork), so two threads can hit `get_client()` before `_client` is set, **both** pass the `is not None` check, **both** run the expensive build, and the second write clobbers the first — leaking whatever resource the loser opened (connection, file handle, background thread).
 
-Don't hand-roll the lock. Use the helpers in `plugins/plugin_utils.py`:
+Don't hand-roll the lock. Use the helpers in `hermes_agent/plugins/plugin_utils.py`:
 
 ```python
-from plugins.plugin_utils import lazy_singleton, SingletonSlot
+from hermes_agent.plugins.plugin_utils import lazy_singleton, SingletonSlot
 
 # Zero-arg accessor → decorate it:
 @lazy_singleton
@@ -2456,7 +2456,7 @@ optional_env:
     password: false
 ```
 
-**Full guide:** [Adding Platform Adapters](../adding-platform-adapters.md) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `plugins/platforms/irc/` for a stdlib-only working example.
+**Full guide:** [Adding Platform Adapters](../adding-platform-adapters.md) — complete `BasePlatformAdapter` contract, message routing, auth gating, setup wizard integration. Look at `hermes_agent/plugins/platforms/irc/` for a stdlib-only working example.
 
 ### Memory provider plugins — add a cross-session knowledge backend
 
@@ -2554,13 +2554,13 @@ description: Custom image generation backend
 
 **Full guide:** [Image Generation Provider Plugins](../image-gen-provider-plugin.md) — full `ImageGenProvider` ABC, `list_models()` / `get_setup_schema()` metadata, `success_response()`/`error_response()` helpers, base64 vs URL output, user overrides, pip distribution.
 
-**Reference examples:** `plugins/image_gen/openai/` (DALL-E / GPT-Image via OpenAI SDK), `plugins/image_gen/openai-codex/`, `plugins/image_gen/xai/` (Grok image gen).
+**Reference examples:** `hermes_agent/plugins/image_gen/openai/` (DALL-E / GPT-Image via OpenAI SDK), `hermes_agent/plugins/image_gen/openai-codex/`, `hermes_agent/plugins/image_gen/xai/` (Grok image gen).
 
 ### Computer-use backend plugins
 
 The `computer_use` tool talks to exactly one **driver** through the `ComputerUseBackend` ABC
 (`hermes_agent/tools/computer_use/backend.py`). `computer_use.backend` in `config.yaml` picks it; the default is the
-built-in cua-driver, which ships as an ordinary provider at `plugins/computer_use/cua/`. Another driver
+built-in cua-driver, which ships as an ordinary provider at `hermes_agent/plugins/computer_use/cua/`. Another driver
 is a provider plugin in `~/.hermes/plugins/<name>/` whose `register(ctx)` calls
 `ctx.register_computer_use_provider()`. The directory name is the value you put in `computer_use.backend`.
 Computer-use providers are single-select, like memory providers and context engines:

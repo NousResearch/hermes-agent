@@ -1,4 +1,4 @@
-"""Messaging-adapter contract, Telegram leg: the REAL gateway + REAL ``plugins/platforms/telegram`` adapter.
+"""Messaging-adapter contract, Telegram leg: the REAL gateway + REAL ``hermes_agent/plugins/platforms/telegram`` adapter.
 
 The child is ``hermes gateway run`` on a throwaway HOME; the adapter's own SDK (python-telegram-bot via ``extra.base_url``) talks to
 ``tests/fakes/platforms/telegram_standin.py``, a local stand-in shaped per the platform's published

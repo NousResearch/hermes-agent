@@ -33,7 +33,7 @@ def same_request_backoff(attempt: int) -> float:
 def send_error_kind(error: Exception) -> str:
     """One of the module constants for a failed send; ``LOST`` when the adapter is unavailable."""
     try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter as tg, _iter_exception_graph
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter as tg, _iter_exception_graph
     except ImportError:
         return LOST
     if getattr(error, "retry_after", None) is not None:

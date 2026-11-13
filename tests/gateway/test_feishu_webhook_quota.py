@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("aiohttp")
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.feishu.adapter import _FEISHU_WEBHOOK_RATE_LIMIT_MAX, FeishuAdapter
+from hermes_agent.plugins.platforms.feishu.adapter import _FEISHU_WEBHOOK_RATE_LIMIT_MAX, FeishuAdapter
 
 _SOURCE_IP = "203.0.113.7"
 _EVENT = {"header": {"event_type": "im.message.receive_v1", "token": "tok"}, "event": {"message": {"message_id": "om_1"}}}

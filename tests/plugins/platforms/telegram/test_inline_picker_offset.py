@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugins.platforms.telegram import inline_picker
+from hermes_agent.plugins.platforms.telegram import inline_picker
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ def _adapter(monkeypatch, authorized=True):
     """A TelegramAdapter with just the pieces _handle_inline_query touches."""
     import types as _types
     from hermes_agent.gateway.config import Platform
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     fake_telegram = _types.ModuleType("telegram")
     fake_telegram.InlineQueryResultArticle = _FakeArticle

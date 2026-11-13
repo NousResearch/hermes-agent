@@ -15,9 +15,9 @@ from hermes_agent.gateway.platforms.event import MessageType
 from tests.gateway.conftest import _ensure_telegram_mock
 
 _ensure_telegram_mock()
-sys.modules.pop("plugins.platforms.telegram.adapter", None)
-import plugins.platforms.telegram.telegram_topic_routing as routing
-from plugins.platforms.telegram.adapter import TelegramAdapter
+sys.modules.pop("hermes_agent.plugins.platforms.telegram.adapter", None)
+import hermes_agent.plugins.platforms.telegram.telegram_topic_routing as routing
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 CHAT, USER, NEW_TOPIC = 111, 42, 600
 T0 = datetime(2026, 10, 14, 13, 21, 2, tzinfo=UTC)

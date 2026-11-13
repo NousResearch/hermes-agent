@@ -34,8 +34,8 @@ from hermes_agent.gateway.platforms.helpers import redact_phone
 from hermes_agent.gateway.platforms.helpers import cancel_task
 from hermes_agent.gateway.platforms.media_cache import mime_for_ext
 from hermes_agent.tools.audio_container import CONTAINER_TO_EXT, sniff_container
-from plugins.platforms.signal.signal_format import markdown_to_signal
-from plugins.platforms.signal.signal_rate_limit import (
+from hermes_agent.plugins.platforms.signal.signal_format import markdown_to_signal
+from hermes_agent.plugins.platforms.signal.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)

@@ -21,7 +21,7 @@ def _make_profile(root: Path) -> Path:
 
 def test_validator_follows_override_switch(tmp_path):
     """A path under profile A is rejected while the override is profile B."""
-    from plugins.platforms.whatsapp.adapter import _is_allowed_bridge_path
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _is_allowed_bridge_path
 
     prof_a = _make_profile(tmp_path / "profA")
     prof_b = _make_profile(tmp_path / "profB")

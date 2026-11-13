@@ -24,10 +24,10 @@ from hermes_agent.hermes_cli.browser_runtime import chromium_executable
 from hermes_agent.hermes_constants import get_hermes_home
 from hermes_agent.utils import atomic_json_write
 
-from plugins.google_meet import process_manager as pm
-from plugins.google_meet.meet_bot import _is_safe_meet_url
-from plugins.google_meet.node.cli import node_command, register_cli as _register_node_cli
-from plugins.google_meet.tools import resolve_node
+from hermes_agent.plugins.google_meet import process_manager as pm
+from hermes_agent.plugins.google_meet.meet_bot import _is_safe_meet_url
+from hermes_agent.plugins.google_meet.node.cli import node_command, register_cli as _register_node_cli
+from hermes_agent.plugins.google_meet.tools import resolve_node
 
 
 def _auth_state_path() -> Path:

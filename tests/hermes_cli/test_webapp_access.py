@@ -208,7 +208,7 @@ def test_start_takes_the_public_url_as_typed(client, restarts, nous):
 def lan_browser(monkeypatch):
     """The gateway's Webapp on all interfaces behind password sign-in, and a browser on the LAN
     signed in with a cookie session."""
-    import plugins.dashboard_auth.basic as basic_plugin
+    import hermes_agent.plugins.dashboard_auth.basic as basic_plugin
     from hermes_agent.hermes_cli import web_server
     from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
     from hermes_agent.hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
@@ -558,12 +558,12 @@ async def _login_client_id(mount, origin: str) -> str:
 
 def _load_nous_plugin_as_discovery_does():
     """The bundled Nous sign-in plugin imported as plugin discovery imports it: from its folder under
-    a module name of the loader's own (``hermes_plugins.<key>``), not as ``plugins.dashboard_auth.nous``,
+    a module name of the loader's own (``hermes_plugins.<key>``), not as ``hermes_agent.plugins.dashboard_auth.nous``,
     so its module-level state is not that of any other import of it."""
     import importlib.util
     from pathlib import Path
 
-    import plugins.dashboard_auth.nous as source
+    import hermes_agent.plugins.dashboard_auth.nous as source
 
     folder = Path(source.__file__).parent
     spec = importlib.util.spec_from_file_location(

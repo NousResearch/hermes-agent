@@ -6,7 +6,7 @@ import pytest
 
 def _make_adapter():
     """Create a minimal DiscordAdapter with mocked config."""
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     adapter = object.__new__(DiscordAdapter)
     adapter.config = MagicMock()
     adapter.config.extra = {}

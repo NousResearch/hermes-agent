@@ -17,7 +17,7 @@ import pytest
 from telegram.error import BadRequest, RetryAfter
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 MARKERS = {f"{i:04d}" for i in range(180)}
 

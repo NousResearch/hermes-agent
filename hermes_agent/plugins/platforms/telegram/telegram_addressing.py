@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Iterator, Optional
 
-from plugins.platforms.telegram.telegram_entities import addressing_sources
+from hermes_agent.plugins.platforms.telegram.telegram_entities import addressing_sources
 
 _SEPARATORS = " \t\n\r,:;"
 _RAW_LEADING_HANDLE_RE = re.compile(r"(?:/[A-Za-z0-9_]+)?@([A-Za-z0-9_]{2,31})\b")

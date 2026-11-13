@@ -149,7 +149,7 @@ def _extract_timeout_seconds() -> float:
 
 
 def _backend_failed_whole_batch(results: list[dict]) -> bool:
-    from plugins.web._common import is_origin_http_error
+    from hermes_agent.plugins.web._common import is_origin_http_error
     errors = [r.get("error") for r in results]
     return bool(errors) and all(errors) and not any(is_origin_http_error(e) for e in errors)
 

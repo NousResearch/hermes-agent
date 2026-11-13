@@ -20,7 +20,7 @@ class TestWeComInboundImageExtension:
     def test_octet_stream_falls_through_to_magic_bytes(self):
         """WeCom's CDN serves images as application/octet-stream; the cached file must get the
         real image extension from magic bytes, not ".bin" (#10085)."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
         ext = WeComAdapter._guess_extension(
@@ -34,8 +34,8 @@ class TestWeComInboundImageExtension:
         octet-stream-labelled PNG is stored with an image MIME, not application/octet-stream."""
         from urllib.parse import quote
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        from plugins.platforms.wecom import media as wecom_media
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom import media as wecom_media
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         key = os.urandom(32)
         png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
@@ -81,7 +81,7 @@ class TestWeComAdapterAuthzScope:
 
     def test_scoped_construction_reads_authz_from_scope_not_environ(self, multiplex_on, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.setenv("WECOM_DM_POLICY", "pairing")
         monkeypatch.setenv("WECOM_ALLOWED_USERS", "default-user")
@@ -97,7 +97,7 @@ class TestWeComAdapterAuthzScope:
 
     def test_scoped_miss_does_not_admit_default_profiles_allowlist(self, multiplex_on, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.setenv("WECOM_DM_POLICY", "allowlist")
         monkeypatch.setenv("WECOM_ALLOWED_USERS", "default-user")
@@ -115,7 +115,7 @@ class TestWeComAdapterAuthzScope:
         own bot_id must never fall back to the default profile's os.environ
         value."""
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.setenv("WECOM_BOT_ID", "default-profile-bot-id")
         monkeypatch.setenv("WECOM_SECRET", "default-profile-secret")
@@ -131,7 +131,7 @@ class TestWeComAdapterAuthzScope:
 
     def test_scoped_miss_does_not_leak_default_profiles_bot_id(self, multiplex_on, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.wecom.adapter import DEFAULT_WS_URL, WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import DEFAULT_WS_URL, WeComAdapter
 
         monkeypatch.setenv("WECOM_BOT_ID", "default-profile-bot-id")
         monkeypatch.setenv("WECOM_WEBSOCKET_URL", "wss://default-profile.example/ws")
@@ -148,8 +148,8 @@ class TestWeComConnect:
 
     @pytest.mark.asyncio
     async def test_connect_records_handshake_failure_details(self, monkeypatch):
-        import plugins.platforms.wecom.adapter as wecom_module
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        import hermes_agent.plugins.platforms.wecom.adapter as wecom_module
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         class DummyClient:
             async def aclose(self):
@@ -182,7 +182,7 @@ class TestWeComReplyMode:
 
     @pytest.mark.asyncio
     async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._reply_req_ids["msg-1"] = "req-1"
@@ -216,7 +216,7 @@ class TestWeComReplyMode:
 class TestExtractText:
 
     def test_extracts_mixed_text(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         body = {
             "msgtype": "mixed",
@@ -236,7 +236,7 @@ class TestCallbackDispatch:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cmd", ["aibot_msg_callback", "aibot_callback"])
     async def test_dispatch_accepts_new_and_legacy_callback_cmds(self, cmd):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._on_message = AsyncMock()
@@ -253,7 +253,7 @@ class TestPolicyHelpers:
         ``extra``) must populate the DM allowlist. Otherwise ``dm_policy:
         allowlist`` runs with an empty allowlist and drops every listed user
         at intake — the documented env vars become no-ops."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         monkeypatch.setenv("WECOM_DM_POLICY", "allowlist")
         monkeypatch.setenv("WECOM_ALLOWED_USERS", "user-1, user-2")
@@ -268,7 +268,7 @@ class TestPolicyHelpers:
 
 
     def test_pairing_group_policy_blocks_without_explicit_group_allow_from(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(
             PlatformConfig(enabled=True, extra={"group_policy": "pairing"})
@@ -279,7 +279,7 @@ class TestPolicyHelpers:
 
 class TestMediaHelpers:
     def test_detect_wecom_media_type(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         assert WeComAdapter._detect_wecom_media_type("image/png") == "image"
         assert WeComAdapter._detect_wecom_media_type("video/mp4") == "video"
@@ -287,7 +287,7 @@ class TestMediaHelpers:
         assert WeComAdapter._detect_wecom_media_type("application/pdf") == "file"
 
     def test_voice_non_amr_downgrades_to_file(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         result = WeComAdapter._apply_file_size_limits(128, "voice", "audio/mpeg")
 
@@ -303,7 +303,7 @@ class TestMediaUpload:
     async def test_download_remote_bytes_blocks_connect_time_rebind(self, monkeypatch):
         import httpcore
         from httpcore._backends.auto import AutoBackend
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
         from hermes_agent.tools.url_safety import SSRFConnectionBlocked
 
         for proxy_var in (
@@ -359,7 +359,7 @@ class TestSend:
         """Regression: force_proactive_send=True must use APP_CMD_SEND to avoid
         consuming the req_id that the post-approval stream needs. Passive reply
         on the same req_id causes WeCom to render the stream seed as empty bubble."""
-        from plugins.platforms.wecom.adapter import APP_CMD_SEND, WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import APP_CMD_SEND, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         # Simulate a cached req_id from the user's /approve message
@@ -392,7 +392,7 @@ class TestSend:
         """is_approval_prompt alone (without force_proactive_send) must still use
         passive reply. The initial approval *request* prompt needs passive reply
         because groups cannot use APP_CMD_SEND."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["group-chat"] = "req-user-msg"
@@ -418,7 +418,7 @@ class TestSend:
         """Regression: force_proactive_send must NOT use APP_CMD_SEND in group chats.
         WeCom AI Bots cannot initiate APP_CMD_SEND in groups — only passive reply
         (APP_CMD_RESPONSE) bound to a req_id works."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["group-chat"] = "req-approve"
@@ -445,7 +445,7 @@ class TestSend:
     async def test_group_send_fails_early_without_req_id(self):
         """Group chats with no cached req_id must fail with a clear error
         instead of attempting APP_CMD_SEND (which WeCom will reject)."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         # No req_id cached for this group
@@ -463,7 +463,7 @@ class TestSend:
 class TestInboundMessages:
     @pytest.mark.asyncio
     async def test_on_message_builds_event(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(
             PlatformConfig(
@@ -506,7 +506,7 @@ class TestWeComZombieSessionFix:
     @pytest.mark.asyncio
     async def test_on_message_does_not_cache_blocked_sender_req_id(self):
         """Blocked chats shouldn't populate the proactive-send fallback cache."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(
             PlatformConfig(
@@ -535,7 +535,7 @@ class TestWeComZombieSessionFix:
         assert "group-blocked" not in adapter._last_chat_req_ids
 
     def test_remember_chat_req_id_is_bounded(self):
-        from plugins.platforms.wecom.adapter import DEDUP_MAX_SIZE, WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import DEDUP_MAX_SIZE, WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         for i in range(DEDUP_MAX_SIZE + 50):
@@ -551,7 +551,7 @@ class TestWeComZombieSessionFix:
         """Sending into a group without reply_to should use the last cached
         req_id via APP_CMD_RESPONSE — WeCom AI Bots cannot initiate APP_CMD_SEND
         in group chats (errcode 600039)."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["group-1"] = "inbound-req-42"
@@ -591,7 +591,7 @@ class TestTextBatchFlushRace:
         """A flush task that has been superseded must leave the event in the
         batch dict for the new task to handle."""
         from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._text_batch_delay_seconds = 0
@@ -634,7 +634,7 @@ class TestTextBatchFlushRace:
     async def test_active_task_processes_event_normally(self):
         """When the task is not superseded it must still process the event."""
         from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._text_batch_delay_seconds = 0
@@ -675,7 +675,7 @@ class TestAttachmentTextMerge:
 
     @staticmethod
     def _make_adapter(merge_delay: float = 0.15):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(
             PlatformConfig(
@@ -835,7 +835,7 @@ class TestResolveStreamReqId:
     """`_resolve_stream_req_id` precedence: reply_to → cached chat → None."""
 
     def test_prefers_explicit_reply_to(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._reply_req_ids["msg-123"] = "explicit-req"
@@ -844,7 +844,7 @@ class TestResolveStreamReqId:
         assert adapter._resolve_stream_req_id("chat-1", "msg-123") == "explicit-req"
 
     def test_falls_back_to_cached_chat_req_id(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "cached-req"
@@ -852,14 +852,14 @@ class TestResolveStreamReqId:
         assert adapter._resolve_stream_req_id("chat-1", reply_to=None) == "cached-req"
 
     def test_returns_none_when_no_anchor(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         assert adapter._resolve_stream_req_id("unknown-chat", None) is None
 
     def test_quoted_reply_to_falls_through_to_chat_cache(self):
         """``quote:msg-id`` (quote-context marker) is not a real reply anchor."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "cached-req"
@@ -902,7 +902,7 @@ class TestSendStreamFrame:
         identity-dedup), so any non-empty payload produces a content frame
         right after the seed — no min_chars / sentence-boundary gating.
         """
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -933,7 +933,7 @@ class TestSendStreamFrame:
         so this exercises stream_id continuity across frames, not chunker
         thresholds.
         """
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -960,7 +960,7 @@ class TestSendStreamFrame:
         returned yet, the next intermediate frame is skipped (returns success
         but doesn't actually send). This prevents errcode 6000 version conflict.
         """
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -983,7 +983,7 @@ class TestSendStreamFrame:
     @pytest.mark.asyncio
     async def test_finalize_sends_finish_true_and_resets_state(self):
         """Finalize frame waits for pending ack, sends finish=true, cleans up turn."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1023,7 +1023,7 @@ class TestSendStreamFrameFailures:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_no_req_id_available(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         # No reply_to, nothing in _last_chat_req_ids.
@@ -1036,7 +1036,7 @@ class TestSendStreamFrameFailures:
 
     @pytest.mark.asyncio
     async def test_returns_false_when_chat_id_missing_on_first_call(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._send_reply_request = AsyncMock()
@@ -1049,8 +1049,8 @@ class TestSendStreamFrameFailures:
     @pytest.mark.asyncio
     async def test_846608_marks_chat_expired_and_returns_false(self):
         """846608 on finalize frame marks the chat expired and returns False."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
-        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1080,7 +1080,7 @@ class TestSendStreamFrameFailures:
     async def test_subsequent_call_to_expired_chat_short_circuits(self):
         """Once a chat is in ``_stream_expired_chats``, send_stream_frame
         bails immediately for new turns without touching the WS."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._stream_expired_chats.add("chat-1")
@@ -1100,7 +1100,7 @@ class TestSendStreamFrameFailures:
     @pytest.mark.asyncio
     async def test_inbound_message_clears_expired_marker(self):
         """A fresh inbound req_id must resurrect the stream channel."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._stream_expired_chats.add("chat-1")
@@ -1119,7 +1119,7 @@ class TestSendTypingTriggersThinking:
     @pytest.mark.asyncio
     async def test_send_typing_is_noop(self):
         """send_typing must not open any stream — the consumer seed frame does."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1138,13 +1138,13 @@ class TestStreamContentTruncation:
     """Bytes (not codepoints) are truncated to MAX_STREAM_CONTENT_LENGTH."""
 
     def test_ascii_below_limit_passes_through(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         out = WeComAdapter._truncate_stream_content("hello", 1000)
         assert out == "hello"
 
     def test_ascii_above_limit_is_byte_capped(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         big = "x" * 30000
         out = WeComAdapter._truncate_stream_content(big, 20480)
@@ -1152,7 +1152,7 @@ class TestStreamContentTruncation:
 
     def test_multibyte_truncation_does_not_split_codepoints(self):
         """A 3-byte CJK char must not be sliced mid-byte and emit garbage."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         # Each "你" is 3 UTF-8 bytes.  Limit at 5 bytes — must keep one
         # full char and drop the half-cut second char rather than emit ï¿½.
@@ -1192,7 +1192,7 @@ class TestFireAndForgetFrameFlow:
 
         With no chunker, finalize uses the caller's cumulative text directly.
         """
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1219,7 +1219,7 @@ class TestFireAndForgetFrameFlow:
     async def test_duplicate_intermediate_content_is_deduped(self):
         """Identical cumulative content skips the send (pure identity-dedup),
         but still returns success."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1246,7 +1246,7 @@ class TestFinalFrameAckTimeoutSemantics:
 
     @pytest.mark.asyncio
     async def test_final_frame_ack_timeout_returns_success(self):
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._ws = MagicMock(closed=False)
@@ -1273,7 +1273,7 @@ class TestFinalFrameAckTimeoutSemantics:
         out but the ack didn't return. If ``_send_json`` itself raises, the
         upstream caller still needs to see the error.
         """
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._ws = MagicMock(closed=False)
@@ -1295,7 +1295,7 @@ async def test_oversized_cron_output_is_sent_as_successive_markdown_replies():
     instead of the tail being sliced off at 4000 chars."""
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.delivery import DeliveryRouter
-    from plugins.platforms.wecom.adapter import MAX_MESSAGE_LENGTH, WeComAdapter
+    from hermes_agent.plugins.platforms.wecom.adapter import MAX_MESSAGE_LENGTH, WeComAdapter
 
     adapter = WeComAdapter(PlatformConfig(enabled=True))
     adapter._last_chat_req_ids["group-1"] = "req-1"

@@ -2,7 +2,7 @@
 
 The CONNECTOR holds the Discord token, so the gateway declares its command set on
 the ``hello`` frame and the connector reconciles Discord's registration (idempotent,
-best-effort). MIRRORS the native tree (plugins/platforms/discord/adapter.py
+best-effort). MIRRORS the native tree (hermes_agent/plugins/platforms/discord/adapter.py
 ``_register_slash_commands``) — same names, same descriptions; interactions return
 via the passthrough plane as ordinary "/name args" COMMAND events, so a new entry
 needs NO new handler. Wire shape per entry: {name, description, options?} with

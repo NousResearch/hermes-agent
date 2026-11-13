@@ -13,7 +13,7 @@ the cap is the one case no boundary choice can solve, so it splits on line bound
 than the cap is cut by characters and logged); a split fence is closed and reopened with its
 language tag, and a split table repeats its header, so the continuation parts still render.
 
-Lives beside the adapter (not in it) because ``plugins/platforms/telegram/adapter.py`` is over the
+Lives beside the adapter (not in it) because ``hermes_agent/plugins/platforms/telegram/adapter.py`` is over the
 repo's file cap: the facade imports :func:`send_rich_parts` and stays line-neutral.
 """
 
@@ -25,7 +25,7 @@ from typing import Any, Optional, Sequence
 
 from hermes_agent.gateway.platforms.base import SendResult
 from hermes_agent.gateway.platforms.helpers import TABLE_SEPARATOR_RE
-from plugins.platforms.telegram.rich_markdown import closes_fence, fence_opener
+from hermes_agent.plugins.platforms.telegram.rich_markdown import closes_fence, fence_opener
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +312,7 @@ async def resume_rich_parts(adapter: Any, chat_id: str, result: SendResult,
     """``_resume_partial_send`` for a rich-part send stopped by a failure that proved the part
     never reached the chat (``undelivered_rich_parts``): send that part and the ones after it as
     rich messages, after the parts already shown, under the same per-chat lock and flood window."""
-    from plugins.platforms.telegram.adapter import _flood_cap_result
+    from hermes_agent.plugins.platforms.telegram.adapter import _flood_cap_result
     raw = result.raw_response
     rest = list(raw["undelivered_rich_parts"])
     sent = [SendResult(success=True, message_id=str(i)) for i in raw.get("delivered_message_ids") or ()]
@@ -413,7 +413,7 @@ def _fitting_parts(adapter: Any, content: str) -> Optional[list[str]]:
 def _legacy_chunks(adapter: Any, text: str) -> list[str]:
     """*text* as the MarkdownV2 chunks ``send()``'s legacy path sends."""
     from hermes_agent.gateway.platforms.base import utf16_len
-    from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
+    from hermes_agent.plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
     chunks = adapter.truncate_message(adapter.format_message(text), adapter.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
     if len(chunks) > 1:
         chunks = [_separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))

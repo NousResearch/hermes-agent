@@ -15,7 +15,7 @@ import pytest
 from unittest.mock import patch
 
 import pm.extras as pm_extras
-from plugins.platforms.matrix import adapter as matrix_adapter
+from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
 
 
 def _fake_mautrix_types():
@@ -59,7 +59,7 @@ def test_failed_install_returns_false_with_hint_and_never_raises(
     # must return False with the install hint — and, per the bug class, must not
     # leak anything other than ImportError out of ensure_and_bind.
     with patch.dict(sys.modules, {"mautrix": None, "mautrix.types": None}):
-        with caplog.at_level("WARNING", logger="plugins.platforms.matrix.adapter"):
+        with caplog.at_level("WARNING", logger="hermes_agent.plugins.platforms.matrix.adapter"):
             assert matrix_adapter.ensure_matrix_deps() is False
     assert any("required packages not installed" in r.message for r in caplog.records)
 

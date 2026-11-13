@@ -26,7 +26,7 @@ from typing import Any, Dict
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.photon.adapter import PhotonAdapter
+from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:

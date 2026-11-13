@@ -8,7 +8,7 @@ def test_concurrent_first_use_callers_agree_on_one_persisted_token(tmp_path: Pat
     """Gateway start and a cron delivery can both touch the session first; both must end up with THE token, 0600."""
     import os
     import stat
-    from plugins.platforms.whatsapp.adapter import _load_or_create_bridge_token, _read_bridge_token
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _load_or_create_bridge_token, _read_bridge_token
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         tokens = set(executor.map(_load_or_create_bridge_token, [tmp_path] * 8))
@@ -21,7 +21,7 @@ def test_concurrent_first_use_callers_agree_on_one_persisted_token(tmp_path: Pat
 
 def test_proof_is_bound_to_both_token_and_challenge(tmp_path: Path):
     """A replayed proof (other challenge) or a short/garbage persisted token never passes."""
-    from plugins.platforms.whatsapp.adapter import _bridge_auth_proof, _load_or_create_bridge_token
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _bridge_auth_proof, _load_or_create_bridge_token
 
     assert _bridge_auth_proof("tok", "a") != _bridge_auth_proof("tok", "b")
     assert _bridge_auth_proof("tok", "a") != _bridge_auth_proof("other", "a")

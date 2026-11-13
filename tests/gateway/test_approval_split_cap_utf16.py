@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.base import utf16_len
 from hermes_agent.gateway.platforms.base_exec_approval import send_full_command
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def test_astral_command_capped_only_in_utf16_is_not_sent_as_whole():

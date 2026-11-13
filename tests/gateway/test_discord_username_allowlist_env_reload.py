@@ -151,7 +151,7 @@ PAIRED_ID = "111222333444555666"
 def _resolved_discord_adapter(entries, members):
     """A real DiscordAdapter after connect: ``_allowed_user_ids`` holds the env entries and
     ``_resolve_allowed_usernames`` runs against fake guild members."""
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     adapter = object.__new__(DiscordAdapter)
     adapter.platform = Platform.DISCORD

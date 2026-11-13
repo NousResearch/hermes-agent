@@ -94,7 +94,7 @@ cache break — keep it the only one. Full detail:
 ## Model and provider resolution
 
 - Runtime provider/model resolution and its precedence: `website/docs/developer-guide/provider-runtime.md`.
-  Provider profiles are plugins (`plugins/model-providers/<name>/`, see `plugins/AGENTS.md`);
+  Provider profiles are plugins (`plugins/model-providers/<name>/`, see `hermes_agent/plugins/AGENTS.md`);
   `hermes_agent/agent/model_metadata.py` holds context lengths and capabilities.
 - **Auxiliary (side-LLM) work** — curator, vision, embedding, title generation, session_search,
   compression — resolves through `hermes_agent/agent/auxiliary_client.py::_resolve_auto_route`; each task can pin
@@ -123,7 +123,7 @@ validation and `_normalize_lang` accept; `SUPPORTED_LANGUAGES` stays the bundled
 
 `hermes_agent/agent/memory_provider.py` (ABC) + `hermes_agent/agent/memory_manager.py` (orchestrator) drive memory-provider
 plugins; `hermes_agent/agent/context_engine.py` drives context-engine plugins; `hermes_agent/agent/image_gen_provider.py`
-image-gen plugins (all in `plugins/AGENTS.md`). `hermes_agent/agent/curator.py` + `curator_backup.py` implement
+image-gen plugins (all in `hermes_agent/plugins/AGENTS.md`). `hermes_agent/agent/curator.py` + `curator_backup.py` implement
 the skill curator (`skills/AGENTS.md`). Cron sessions pass `skip_memory=True` by default — memory
 providers intentionally do not run during cron.
 

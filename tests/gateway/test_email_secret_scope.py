@@ -36,7 +36,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         """When a secret scope is installed, the adapter must read from it,
         not from os.environ which may hold another profile's values."""
         from hermes_agent.gateway.config import PlatformConfig, Platform
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
         scoped = {
             "EMAIL_ADDRESS": "beta@test.invalid",
@@ -66,7 +66,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         """Without a secret scope (single-profile mode), the adapter reads
         from os.environ — backward-compatible with legacy behavior."""
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
         cfg = PlatformConfig(enabled=True)
         adapter = EmailAdapter(cfg)
@@ -93,7 +93,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         ss.set_multiplex_active(True)
         token = ss.set_secret_scope(scoped)
         try:
-            from plugins.platforms.email.adapter import check_email_requirements
+            from hermes_agent.plugins.platforms.email.adapter import check_email_requirements
             self.assertTrue(check_email_requirements())
         finally:
             ss.reset_secret_scope(token)
@@ -109,7 +109,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         the adapter must NOT fall through to os.environ (which would leak
         the default profile's value)."""
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
         scoped = {
             "EMAIL_ADDRESS": "beta@test.invalid",
@@ -151,7 +151,7 @@ class TestEmailAdapterSecretScope(unittest.TestCase):
         try:
             # The dispatch gate must match the scoped list, not the environ one.
             from hermes_agent.gateway.config import PlatformConfig
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
             authenticated = {"sender_authenticated": True}
             self.assertTrue(adapter._sender_accepted("epsilon@test.invalid", authenticated))
@@ -191,7 +191,7 @@ class TestEmailAdapterUnscopedUnderMultiplex(unittest.TestCase):
         """Multiplex ON + no scope: construction must not raise and must
         read the default profile's own environ values."""
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
         ss.set_multiplex_active(True)
         cfg = PlatformConfig(enabled=True)
@@ -219,7 +219,7 @@ class TestEmailAdapterUnscopedUnderMultiplex(unittest.TestCase):
         EMAIL_POLL_INTERVAL) and EMAIL_TRUST_FROM_HEADER must resolve from
         the installed scope, not from the primary profile's environ."""
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
         scoped = {
             "EMAIL_ADDRESS": "beta@test.invalid",

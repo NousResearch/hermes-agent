@@ -36,7 +36,7 @@ def _make_adapter():
     depending on leaked env state from other tests in the same shard. These
     tests exercise voice/audio TYPE detection, not mention gating.
     """
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
     from hermes_agent.gateway.config import PlatformConfig
 
     config = PlatformConfig(
@@ -236,10 +236,10 @@ class TestMatrixSendVoiceMSC3245:
             self.adapter._client.send_message_event = mock_send_message_event
 
             with patch(
-                "plugins.platforms.matrix.adapter.transcode_to_ogg_opus",
+                "hermes_agent.plugins.platforms.matrix.adapter.transcode_to_ogg_opus",
                 return_value=converted_path,
             ) as mock_transcode, patch(
-                "plugins.platforms.matrix.adapter._matrix_voice_metadata_for_file",
+                "hermes_agent.plugins.platforms.matrix.adapter._matrix_voice_metadata_for_file",
                 return_value={"duration": 1234, "waveform": [0, 512, 1024]},
             ):
                 await self.adapter.send_voice(

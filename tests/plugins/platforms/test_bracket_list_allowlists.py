@@ -13,7 +13,7 @@ BRACKET_LIST = '["-100", "-200"]'
 
 
 def _discord(extra):
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     adapter = object.__new__(DiscordAdapter)
     adapter.platform = Platform.DISCORD
@@ -23,7 +23,7 @@ def _discord(extra):
 
 
 def _whatsapp(extra):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -32,7 +32,7 @@ def _whatsapp(extra):
 
 
 def _dingtalk(extra):
-    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+    from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
     return DingTalkAdapter(PlatformConfig(enabled=True, extra=dict(extra)))
 

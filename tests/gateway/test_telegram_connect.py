@@ -9,8 +9,8 @@ background reconnection (#31049).
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-import plugins.platforms.telegram.adapter as telegram_mod
-from plugins.platforms.telegram.adapter import TelegramAdapter
+import hermes_agent.plugins.platforms.telegram.adapter as telegram_mod
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class TestTelegramUnconfiguredNonRetryable:

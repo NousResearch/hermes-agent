@@ -210,7 +210,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
         return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
     try:
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
         return {"error": "Matrix dependencies not installed. Run: "
                 f"{install_hint('matrix')}"}

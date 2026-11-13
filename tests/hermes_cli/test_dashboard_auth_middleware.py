@@ -350,7 +350,7 @@ def test_login_non_interactive_provider_returns_404_not_500(gated_app):
     """
     import secrets
 
-    import plugins.dashboard_auth.drain as drain_plugin
+    import hermes_agent.plugins.dashboard_auth.drain as drain_plugin
 
     register_provider(
         drain_plugin.DrainSecretProvider(secret=secrets.token_urlsafe(48))

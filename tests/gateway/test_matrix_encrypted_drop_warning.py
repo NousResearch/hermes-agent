@@ -8,7 +8,7 @@ from hermes_agent.gateway.config import PlatformConfig
 
 
 def _make_adapter():
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
     config = PlatformConfig(
         enabled=True,
         token="syt_test_token",
@@ -57,7 +57,7 @@ class TestMatrixEncryptedDropWarning:
             }},
             "next_batch": "s1",
         }
-        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.platforms.matrix.adapter"):
             await adapter._absorb_sync(fake_client, sync_data)
             await adapter._absorb_sync(fake_client, sync_data)  # rate-limited: one warning per room
 
@@ -81,7 +81,7 @@ class TestMatrixEncryptedDropWarning:
                 "timeline": {"events": [{"type": "m.room.encrypted", "event_id": "$e1"}]}}}},
             "next_batch": "s1",
         }
-        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.platforms.matrix.adapter"):
             await adapter._absorb_sync(fake_client, sync_data)
 
         assert not [r for r in caplog.records if "encrypted" in r.getMessage()]

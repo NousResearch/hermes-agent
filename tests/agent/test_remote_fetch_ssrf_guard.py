@@ -86,9 +86,9 @@ SITES = {
     "provider_media.save_url(video)": lambda u, mp, tmp: importlib.import_module(
         "hermes_agent.agent.video_gen_provider").save_url_video(u, timeout=5),
     "image_gen/openai::_load_image_bytes": lambda u, mp, tmp: importlib.import_module(
-        "plugins.image_gen.openai")._load_image_bytes(u),
+        "hermes_agent.plugins.image_gen.openai")._load_image_bytes(u),
     "image_gen/openai-codex::_remote_image_to_data_url": lambda u, mp, tmp: importlib.import_module(
-        "plugins.image_gen.openai-codex")._remote_image_to_data_url(u),
+        "hermes_agent.plugins.image_gen.openai-codex")._remote_image_to_data_url(u),
     "pet/store::_http_get": lambda u, mp, tmp: importlib.import_module("hermes_agent.agent.pet.store")._http_get(u, 5),
     "pet/store::_download": lambda u, mp, tmp: importlib.import_module("hermes_agent.agent.pet.store")._download(
         u, tmp / "sheet.png", timeout=5),

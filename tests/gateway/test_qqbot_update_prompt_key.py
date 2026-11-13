@@ -6,8 +6,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from hermes_agent.gateway.config import Platform
-from plugins.platforms.qqbot.adapter import QQAdapter
-from plugins.platforms.qqbot.keyboards import InteractionEvent
+from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
+from hermes_agent.plugins.platforms.qqbot.keyboards import InteractionEvent
 from hermes_agent.gateway.session import SessionSource, build_session_key
 
 

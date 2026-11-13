@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from plugins.platforms.a2a import protocol, security
+from hermes_agent.plugins.platforms.a2a import protocol, security
 
 _real_getaddrinfo = socket.getaddrinfo
 
@@ -66,7 +66,7 @@ def _no_proxy(monkeypatch):
 def _push(monkeypatch, url: str) -> None:
     """Register *url* as a task's callback and fire the push the way a finished task does."""
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.a2a.adapter import A2AAdapter
+    from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
 
     adapter = A2AAdapter(PlatformConfig(enabled=True))
     adapter.tasks.create("t1", "c1", "peer")
@@ -108,7 +108,7 @@ def test_push_follows_the_owning_profiles_private_url_policy(monkeypatch, serve,
     profile's own ``security.allow_private_urls`` must decide, not the launch profile's."""
     from hermes_agent.agent.runtime_scope import bind_state, scope_for_profile
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.a2a.adapter import A2AAdapter
+    from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
 
     for var in ("A2A_BEARER_TOKEN", "A2A_PEER_TOKENS", "HERMES_ALLOW_PRIVATE_URLS"):
         monkeypatch.delenv(var, raising=False)

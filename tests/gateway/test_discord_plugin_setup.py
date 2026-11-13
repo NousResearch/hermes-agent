@@ -9,8 +9,8 @@ PR #58421 and extended in the follow-up.
 import hermes_agent.hermes_cli.config as config_mod
 import hermes_agent.hermes_cli.cli_output as cli_output_mod
 from hermes_agent.tools import discord_tool
-from plugins.platforms.discord import onboarding
-from plugins.platforms.discord.onboarding import interactive_setup
+from hermes_agent.plugins.platforms.discord import onboarding
+from hermes_agent.plugins.platforms.discord.onboarding import interactive_setup
 from tests.fakes.platforms.discord_standin import APP_ID, TOKEN, DiscordStandin
 
 _real_check = onboarding.check_bot_token

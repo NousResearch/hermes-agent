@@ -7,7 +7,7 @@ import pytest
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.run import _platform_has_bot_credential, _profile_runtime_scope
-from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
 def test_credentials_follow_profile_home(tmp_path):
@@ -32,7 +32,7 @@ def test_credentials_follow_profile_home(tmp_path):
 
 @pytest.mark.asyncio
 async def test_secondary_ports_and_foreign_listener(tmp_path, monkeypatch):
-    import plugins.platforms.whatsapp.adapter as module
+    import hermes_agent.plugins.platforms.whatsapp.adapter as module
     adapters = []
     listener = socket.socket()
     monkeypatch.setattr(module, "find_node_executable", lambda name: f"/usr/bin/{name}")
@@ -96,7 +96,7 @@ def test_time_wait_leftovers_are_not_a_foreign_listener(tmp_path):
     """Real kernel TIME-WAIT, no mocks: the stopped bridge closed its accepted connection first, so
     the port carries a TIME-WAIT entry and no listener. The ownership check must call it free (#139425),
     while a real listener on the same port still fails closed."""
-    from plugins.platforms.whatsapp.bridge_ownership import check_secondary_ownership, port_is_free
+    from hermes_agent.plugins.platforms.whatsapp.bridge_ownership import check_secondary_ownership, port_is_free
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -125,7 +125,7 @@ def test_time_wait_leftovers_are_not_a_foreign_listener(tmp_path):
 def test_allocation_skips_ports_recorded_by_siblings(tmp_path):
     """A sibling whose bridge is down leaves its recorded port unbound; a new profile must not take it,
     or the sibling hits a non-retryable port conflict on its next start. A corrupt record names itself."""
-    from plugins.platforms.whatsapp.bridge_ownership import port_is_free, secondary_bridge_port
+    from hermes_agent.plugins.platforms.whatsapp.bridge_ownership import port_is_free, secondary_bridge_port
     profiles = tmp_path / "profiles"
     sibling, fresh = profiles / "a", profiles / "b"
     recorded = next(p for p in range(3001, 4000) if port_is_free(p))
@@ -144,8 +144,8 @@ def test_ownership_verdicts(tmp_path):
     and this profile's pidfile names a live process by pid + kernel start time. Anything else bound
     is a fatal, so a secondary never probes or signals another profile's bridge."""
     from hermes_agent.gateway import status
-    from plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
-    from plugins.platforms.whatsapp.bridge_ownership import check_secondary_ownership
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
+    from hermes_agent.plugins.platforms.whatsapp.bridge_ownership import check_secondary_ownership
     session = tmp_path / "session"
     session.mkdir()
     (session / "bridge.pid").write_text(str(os.getpid()))  # legacy, no start time
@@ -173,8 +173,8 @@ def test_ownership_verdicts(tmp_path):
 async def test_secondary_adopts_its_own_orphaned_bridge(tmp_path, monkeypatch):
     """Gateway crash, bridge child survives on the recorded port: the restart adopts it when healthy
     instead of dying with a port conflict. Only the identity-checked pidfile path may reap it."""
-    import plugins.platforms.whatsapp.adapter as module
-    from plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
+    import hermes_agent.plugins.platforms.whatsapp.adapter as module
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
     monkeypatch.setattr(module, "find_node_executable", lambda name: f"/usr/bin/{name}")
     home = tmp_path / "c"
     home.mkdir()
@@ -204,8 +204,8 @@ async def test_secondary_adopts_its_own_orphaned_bridge(tmp_path, monkeypatch):
 async def test_live_old_bridge_does_not_authorize_a_different_port(tmp_path, monkeypatch):
     """Crash leaves this profile's bridge alive on its old port; the operator then points bridge_port at a
     port another listener holds. The live pidfile must not make that foreign endpoint "ours"."""
-    import plugins.platforms.whatsapp.adapter as module
-    from plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
+    import hermes_agent.plugins.platforms.whatsapp.adapter as module
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
     monkeypatch.setattr(module, "find_node_executable", lambda name: f"/usr/bin/{name}")
     old_sock, old_port = _hold_port()
     foreign_sock, foreign_port = _hold_port()
@@ -236,8 +236,8 @@ async def test_live_old_bridge_does_not_authorize_a_different_port(tmp_path, mon
 async def test_launch_startup_and_standalone_send_agree_after_role_change(tmp_path, monkeypatch):
     """A profile that recorded a port as a secondary and later launches its own gateway starts its bridge
     on the port `whatsapp send` resolves, instead of 3000 while sends go to the abandoned record."""
-    import plugins.platforms.whatsapp.adapter as module
-    from plugins.platforms.whatsapp.bridge_ownership import secondary_bridge_port, standalone_bridge_port
+    import hermes_agent.plugins.platforms.whatsapp.adapter as module
+    from hermes_agent.plugins.platforms.whatsapp.bridge_ownership import secondary_bridge_port, standalone_bridge_port
     monkeypatch.setattr(module, "find_node_executable", lambda name: f"/usr/bin/{name}")
     home = tmp_path / "profiles" / "e"
     home.mkdir(parents=True)

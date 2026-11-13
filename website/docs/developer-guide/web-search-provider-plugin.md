@@ -115,7 +115,7 @@ class MyBackendWebSearchProvider(WebSearchProvider):
 
 ```python
 # plugins/web/my-backend/__init__.py
-from plugins.web.my_backend.provider import MyBackendWebSearchProvider
+from hermes_agent.plugins.web.my_backend.provider import MyBackendWebSearchProvider
 
 
 def register(ctx) -> None:
@@ -244,11 +244,11 @@ Declare a third-party plugin's own dependencies in its manifest or
 
 ## Reference implementations
 
-- **`plugins/web/brave_free/`** — small, API-key-gated, search-only HTTP provider. Good starting template.
-- **`plugins/web/ddgs/`** — no-key provider that lazy-installs its SDK. Useful pattern for backends that wrap a Python package.
-- **`plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
-- **`plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
-- **`plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`hermes_agent/tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
+- **`hermes_agent/plugins/web/brave_free/`** — small, API-key-gated, search-only HTTP provider. Good starting template.
+- **`hermes_agent/plugins/web/ddgs/`** — no-key provider that lazy-installs its SDK. Useful pattern for backends that wrap a Python package.
+- **`hermes_agent/plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
+- **`hermes_agent/plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
+- **`hermes_agent/plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`hermes_agent/tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
 
 ## Distribute via pip
 

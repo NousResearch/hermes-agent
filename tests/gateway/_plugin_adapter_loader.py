@@ -3,10 +3,10 @@
 Every platform plugin under ``plugins/platforms/<name>/`` ships its own
 ``adapter.py``. If two tests independently do::
 
-    sys.path.insert(0, "plugins/platforms/irc")
+    sys.path.insert(0, "hermes_agent/plugins/platforms/irc")
     from adapter import IRCAdapter
 
-    sys.path.insert(0, "plugins/platforms/teams")
+    sys.path.insert(0, "hermes_agent/plugins/platforms/teams")
     from adapter import TeamsAdapter
 
 …then whichever collects first in a shared process wins

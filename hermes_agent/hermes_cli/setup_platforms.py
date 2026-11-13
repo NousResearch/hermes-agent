@@ -185,9 +185,9 @@ def _setup_telegram():
 
 
 # _setup_slack and _write_slack_manifest_and_instruct moved to the slack plugin:
-# plugins/platforms/slack/adapter.py::interactive_setup (registered via setup_fn and dispatched through the
+# hermes_agent/plugins/platforms/slack/adapter.py::interactive_setup (registered via setup_fn and dispatched through the
 # plugin path). #41112 / #3823.
-# _setup_bluebubbles moved to plugins/platforms/bluebubbles/adapter.py::interactive_setup (setup_fn).
+# _setup_bluebubbles moved to hermes_agent/plugins/platforms/bluebubbles/adapter.py::interactive_setup (setup_fn).
 
 
 def _setup_webhooks():

@@ -120,7 +120,7 @@ def test_skip_is_logged_with_chat_message_and_handles(caplog):
     message = _mentioning("@OtherBot add a lead")
     message.message_id = 4242
 
-    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.plugins.platforms.telegram.adapter"):
         assert adapter._explicit_bot_mentions_exclude_self(message) is True
 
     record = next(r for r in caplog.records if "addressed to other bot" in r.getMessage())
@@ -132,7 +132,7 @@ def test_no_skip_log_when_message_is_processed(caplog):
     adapter = _adapter()
     text = "Note: moved to @OtherBot, please confirm"
 
-    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.plugins.platforms.telegram.adapter"):
         assert adapter._explicit_bot_mentions_exclude_self(_mentioning(text)) is False
 
     assert not [r for r in caplog.records if "addressed to other bot" in r.getMessage()]
@@ -175,7 +175,7 @@ def test_foreign_command_target_wins_over_our_mention(text, with_entities, caplo
     rechecks = []
     adapter._schedule_bot_identity_recheck = lambda: rechecks.append(1)
     entities = _telegram_entities(text) if with_entities else []
-    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.plugins.platforms.telegram.adapter"):
         assert _dispatch(text, adapter=adapter, entities=entities) == []
     assert rechecks == [1]
     assert any("Skipping message 42 in chat -100: addressed to other bot(s)" in r.message for r in caplog.records)
@@ -209,6 +209,6 @@ def test_skip_logs_once_when_the_observe_gate_also_runs(caplog):
     adapter = _make_adapter(require_mention=True, exclusive_bot_mentions=True, allowed_chats=["-100"],
                             group_allowed_chats=["-100"], observe_unmentioned_group_messages=True)
     text = "@OtherBot add a lead"
-    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.plugins.platforms.telegram.adapter"):
         assert _dispatch(text, adapter=adapter, entities=_telegram_entities(text)) == []
     assert len([r for r in caplog.records if "addressed to other bot" in r.getMessage()]) == 1

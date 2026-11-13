@@ -1,6 +1,6 @@
 """Method factories for the Slack adapter's ``config.extra``-else-env readers.
 
-Re-exported from ``plugins.platforms.slack.adapter`` (callers and tests import them there).
+Re-exported from ``hermes_agent.plugins.platforms.slack.adapter`` (callers and tests import them there).
 """
 from typing import Callable
 

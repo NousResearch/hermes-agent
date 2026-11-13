@@ -86,7 +86,7 @@ def test_firecrawl_rows_split_by_the_credential_set(monkeypatch, env, active):
 def test_keyless_row_readiness_follows_registry_availability(monkeypatch):
     """No-key rows used to read "ready" vacuously (#132526): OpenAI Native needs an openai-codex login,
     while free-tier keyless rows really run on the public ring."""
-    import plugins.web.openai_native.provider as native
+    import hermes_agent.plugins.web.openai_native.provider as native
     from hermes_agent.hermes_cli.tools_config_providers import provider_readiness_status
 
     rows = _web_rows()

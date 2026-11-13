@@ -24,7 +24,7 @@ def pending(monkeypatch):
 
 
 def _discord_adapter():
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     sent = []
@@ -42,7 +42,7 @@ def _discord_adapter():
 async def test_discord_command_past_the_chunk_cap_gets_a_deny_only_card(pending, monkeypatch):
     """Discord's send() caps a split message at MAX_SPLIT_MESSAGES and still reports success, so the full
     command it would post is clipped: the card must not keep Allow Once."""
-    from plugins.platforms.discord.adapter import ExecApprovalView
+    from hermes_agent.plugins.platforms.discord.adapter import ExecApprovalView
 
     removed = []  # the test double for discord.ui.View has no remove_item; record what the view drops
     monkeypatch.setattr(ExecApprovalView, "remove_item", lambda self, item: removed.append(item.__name__),
@@ -87,7 +87,7 @@ async def test_whatsapp_cloud_long_reason_never_pushes_the_deadline_or_deny_noti
 
 @pytest.mark.asyncio
 async def test_qq_card_shows_the_measured_preview_and_only_offered_buttons(pending):
-    from plugins.platforms.qqbot.adapter import QQAdapter
+    from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
 
     adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))
     cards = []
@@ -107,7 +107,7 @@ async def test_qq_card_shows_the_measured_preview_and_only_offered_buttons(pendi
 
 @pytest.mark.asyncio
 async def test_matrix_deny_only_prompt_drops_the_approve_instructions(pending):
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://m.example.org"}))
     adapter._client = object()
@@ -128,7 +128,7 @@ async def test_matrix_crafted_approve_reaction_keeps_the_deny_only_card_live(pen
     request is still pending, so the owner's later ❌ has to find it."""
     from unittest.mock import MagicMock, patch
 
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://m.example.org"}))
     adapter._user_id, adapter._client = "@bot:x", MagicMock()
@@ -163,8 +163,8 @@ def test_a_forged_approve_tap_on_a_deny_only_request_resolves_nothing(pending):
 async def test_qq_forged_allow_once_tap_on_a_deny_only_card_resolves_nothing(pending, monkeypatch):
     """A forged Allow carrying the request id of a Deny-only card resolves nothing; a tap by someone other
     than the session owner is still refused before the backend is asked."""
-    from plugins.platforms.qqbot.adapter import QQAdapter
-    from plugins.platforms.qqbot.keyboards import parse_interaction_event
+    from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
+    from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
     from hermes_agent.tools.approval import restrict_gateway_approval_card_to_deny
 
     adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))

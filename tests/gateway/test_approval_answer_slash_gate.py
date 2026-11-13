@@ -100,7 +100,7 @@ def _typed_confirm(extra):
 
 
 def _telegram_button(extra):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     key = "agent:main:telegram:dm:12345"
     entry = _raise_approval(key, "telegram")

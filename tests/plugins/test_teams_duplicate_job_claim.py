@@ -5,13 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway.config import GatewayConfig, Platform
-from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
-from plugins.teams_pipeline.store import TeamsPipelineStore
+from hermes_agent.plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
+from hermes_agent.plugins.teams_pipeline.store import TeamsPipelineStore
 
 
 @pytest.mark.anyio
 async def test_duplicate_no_id_notifications_in_one_batch_run_the_job_once(monkeypatch, tmp_path):
-    from plugins.teams_pipeline import runtime as runtime_module
+    from hermes_agent.plugins.teams_pipeline import runtime as runtime_module
 
     class Adapter:
         def __init__(self):

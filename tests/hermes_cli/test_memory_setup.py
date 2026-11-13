@@ -71,7 +71,7 @@ def test_install_dependencies_prepares_declared_extra_even_if_importable(tmp_pat
         _yaml.safe_dump({"extra": "mem0"}), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "plugins.memory.find_provider_dir", lambda name: plugin_dir
+        "hermes_agent.plugins.memory.find_provider_dir", lambda name: plugin_dir
     )
 
     synced = []

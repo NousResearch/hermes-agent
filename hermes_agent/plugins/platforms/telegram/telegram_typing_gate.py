@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from plugins.platforms.telegram.telegram_draft_budget import claim_ai_action
+from hermes_agent.plugins.platforms.telegram.telegram_draft_budget import claim_ai_action
 
 # One typing call per chat per this many seconds, however many sessions refresh it (Telegram shows
 # the indicator for ~5 s; ``_keep_typing`` ticks every 2 s per session).
@@ -37,7 +37,7 @@ def typing_may_fire(adapter: Any, chat_id: Any) -> bool:
         return False
     if adapter._chat_outbound_slot_remaining(chat_id) > 0:
         return False  # a send/edit holds the chat's slot: typing never delays the reply itself
-    from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+    from hermes_agent.plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 
     last: dict[str, float] = adapter.__dict__.setdefault("_telegram_typing_last_sent", {})
     key = str(normalize_telegram_chat_id(chat_id))

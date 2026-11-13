@@ -20,8 +20,8 @@ import os
 from typing import Any, Optional
 
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from plugins.platforms.telegram.telegram_batching import adopt_routing
-from plugins.platforms.telegram.telegram_media_group import tracking_album_items
+from hermes_agent.plugins.platforms.telegram.telegram_batching import adopt_routing
+from hermes_agent.plugins.platforms.telegram.telegram_media_group import tracking_album_items
 
 # Upper bound on how long a due text flush waits for a claiming image's download.
 CLAIM_MAX_WAIT_SECONDS = 8.0

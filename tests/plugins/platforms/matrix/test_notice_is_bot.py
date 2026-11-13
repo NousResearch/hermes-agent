@@ -16,7 +16,7 @@ ROOM = "!room:example.org"
 
 
 def _make_adapter(extra=None):
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     return MatrixAdapter(PlatformConfig(enabled=True, token="syt_test_token", extra={
         "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org",

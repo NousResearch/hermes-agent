@@ -140,7 +140,7 @@ class TestAuthzAuthEnv:
 
 class TestMatrixStartupSecret:
     def _helper(self):
-        pytest.importorskip("plugins.platforms.matrix.adapter")
+        pytest.importorskip("hermes_agent.plugins.platforms.matrix.adapter")
         from hermes_agent.gateway.platforms._shared import get_scoped_secret
 
         return lambda name: (get_scoped_secret(name, "") or "").strip()

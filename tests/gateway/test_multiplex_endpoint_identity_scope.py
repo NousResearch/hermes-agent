@@ -50,7 +50,7 @@ def secondary_scope(monkeypatch):
 
 
 def test_matrix_homeserver_identity_follow_the_scoped_token(secondary_scope):
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(PlatformConfig(enabled=True))
     assert adapter._access_token == SECONDARY["MATRIX_ACCESS_TOKEN"]
@@ -61,7 +61,7 @@ def test_matrix_homeserver_identity_follow_the_scoped_token(secondary_scope):
 @pytest.mark.asyncio
 async def test_matrix_standalone_send_posts_scoped_token_to_scoped_homeserver(secondary_scope, monkeypatch):
     import aiohttp
-    from plugins.platforms.matrix import adapter as mx
+    from hermes_agent.plugins.platforms.matrix import adapter as mx
 
     seen = {}
 
@@ -100,7 +100,7 @@ def test_teams_env_enablement_seeds_scoped_identity_and_home_channel(secondary_s
 
 
 def test_dingtalk_client_id_follows_the_scoped_secret(secondary_scope):
-    from plugins.platforms.dingtalk.adapter import _credentials
+    from hermes_agent.plugins.platforms.dingtalk.adapter import _credentials
 
     assert _credentials(None) == (SECONDARY["DINGTALK_CLIENT_ID"], SECONDARY["DINGTALK_CLIENT_SECRET"])
 
@@ -108,7 +108,7 @@ def test_dingtalk_client_id_follows_the_scoped_secret(secondary_scope):
 @pytest.mark.asyncio
 async def test_dingtalk_standalone_send_posts_to_scoped_robot_webhook(secondary_scope, monkeypatch):
     import httpx
-    from plugins.platforms.dingtalk import adapter as ding
+    from hermes_agent.plugins.platforms.dingtalk import adapter as ding
 
     posted = []
 
@@ -130,7 +130,7 @@ async def test_dingtalk_standalone_send_posts_to_scoped_robot_webhook(secondary_
 
 @pytest.mark.asyncio
 async def test_telegram_connect_registers_scoped_webhook_url(secondary_scope, monkeypatch):
-    from plugins.platforms.telegram import adapter as tg
+    from hermes_agent.plugins.platforms.telegram import adapter as tg
 
     class _Builder:
         def __getattr__(self, name):

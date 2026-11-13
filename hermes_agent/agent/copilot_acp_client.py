@@ -9,7 +9,7 @@ Copilot-flavoured names keep their former defaults (launch env vars, the ``copil
 placeholder, the ``copilotEnablement`` model filter, the deprecated ``gh copilot`` extension
 diagnosis), and the generic rest is served from :mod:`hermes_agent.agent.acp_client`. The first access of
 any of these names warns once per process. Remove no sooner than two minor releases after the
-deprecation (the plugin compat contract in ``plugins/AGENTS.md``).
+deprecation (the plugin compat contract in ``hermes_agent/plugins/AGENTS.md``).
 """
 
 from __future__ import annotations

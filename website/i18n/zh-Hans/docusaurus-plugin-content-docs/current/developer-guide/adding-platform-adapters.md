@@ -445,11 +445,11 @@ LINE 两者都支持：阈值默认为 45 秒用于免费 postback 获取，`LIN
 
 ### 参考实现
 
-完整的 LINE postback 实现参见 `plugins/platforms/line/adapter.py` — 包含 `RequestCache` 状态机（`PENDING → READY → DELIVERED`，以及 `/stop` 的 `ERROR`）、在阈值时触发 Template Buttons 气泡的 `_keep_typing` 覆盖、通过缓存路由的 `send` 覆盖，以及解决孤立 PENDING 条目的 `interrupt_session_activity` 覆盖。
+完整的 LINE postback 实现参见 `hermes_agent/plugins/platforms/line/adapter.py` — 包含 `RequestCache` 状态机（`PENDING → READY → DELIVERED`，以及 `/stop` 的 `ERROR`）、在阈值时触发 Template Buttons 气泡的 `_keep_typing` 覆盖、通过缓存路由的 `send` 覆盖，以及解决孤立 PENDING 条目的 `interrupt_session_activity` 覆盖。
 
 ### 参考实现（Plugin 路径）
 
-完整的工作示例参见仓库中的 `plugins/platforms/irc/` — 一个无外部依赖的完整异步 IRC 适配器。`plugins/platforms/teams/` 涵盖 Bot Framework / Adaptive Cards，`plugins/platforms/google_chat/` 涵盖基于 OAuth 的 REST API，`plugins/platforms/line/` 涵盖带平台专属慢速 LLM UX 的 webhook 驱动消息 API。
+完整的工作示例参见仓库中的 `hermes_agent/plugins/platforms/irc/` — 一个无外部依赖的完整异步 IRC 适配器。`hermes_agent/plugins/platforms/teams/` 涵盖 Bot Framework / Adaptive Cards，`hermes_agent/plugins/platforms/google_chat/` 涵盖基于 OAuth 的 REST API，`hermes_agent/plugins/platforms/line/` 涵盖带平台专属慢速 LLM UX 的 webhook 驱动消息 API。
 
 ---
 
@@ -677,7 +677,7 @@ async def disconnect(self):
 
 | 适配器 | 模式 | 复杂度 | 适合参考的场景 |
 |---------|---------|------------|-------------------|
-| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | 中 | 简单 REST API 集成 |
-| `plugins/platforms/weixin/adapter.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
+| `hermes_agent/plugins/platforms/bluebubbles/adapter.py` | REST + webhook | 中 | 简单 REST API 集成 |
+| `hermes_agent/plugins/platforms/weixin/adapter.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
 | `wecom_callback.py` | 回调/webhook | 中 | HTTP 服务器、AES 加密、多应用 |
-| `plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |
+| `hermes_agent/plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |

@@ -2355,7 +2355,7 @@ def _coalesce_session_name_args(argv: list) -> list:
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
     if _SESSION_FLAGS.intersection(argv):  # the active memory provider registers ``hermes <name>``
-        from plugins.memory import active_memory_provider_commands
+        from hermes_agent.plugins.memory import active_memory_provider_commands
         _SUBCOMMANDS |= active_memory_provider_commands()
 
     result = []
@@ -3152,7 +3152,7 @@ def _register_plugin_cli_commands(subparsers) -> None:
     if not _plugin_cli_discovery_needed():
         return
     try:
-        from plugins.memory import discover_plugin_cli_commands
+        from hermes_agent.plugins.memory import discover_plugin_cli_commands
         from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
         from hermes_agent.hermes_cli.left_core_migration import recover_for_command
 

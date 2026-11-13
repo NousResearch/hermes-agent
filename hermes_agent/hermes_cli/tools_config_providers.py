@@ -133,7 +133,7 @@ _PLUGIN_ROW_BUILDERS = {
 def _computer_use_provider_rows() -> list[dict]:
     """Rows for installed computer-use providers other than the built-in ``cua`` (hand-written row with its
     install post-setup). Read from plugin.yaml without importing: an unselected provider stays dormant."""
-    from plugins.computer_use import DEFAULT_BACKEND, discover_computer_use_providers
+    from hermes_agent.plugins.computer_use import DEFAULT_BACKEND, discover_computer_use_providers
 
     return [{"name": name, "badge": "", "tag": desc, "env_vars": [], "computer_use_backend": name}
             for name, desc in discover_computer_use_providers() if name != DEFAULT_BACKEND]
@@ -347,7 +347,7 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
     configured = str(tiers.get(provider["web_backend"], "") or "").lower().strip()
     if configured in ("free", "paid"):
         return configured == row_tier
-    # Auto: mirror plugins.web.keyless_mcp.use_keyless — key present → paid.
+    # Auto: mirror hermes_agent.plugins.web.keyless_mcp.use_keyless — key present → paid.
     try:
         from hermes_agent.agent.web_search_provider import get_provider_env
 

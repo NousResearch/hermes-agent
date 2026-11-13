@@ -17,7 +17,7 @@ import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.session import build_session_context
 from hermes_agent.gateway.slash_commands_goals import GatewayGoalCommandsMixin
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 def _adapter(channel_id: str) -> SlackAdapter:

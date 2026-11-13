@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:
-    from plugins.platforms.feishu.adapter import RejectReason
+    from hermes_agent.plugins.platforms.feishu.adapter import RejectReason
 
 logger = logging.getLogger(__name__)
 

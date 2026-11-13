@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import plugins.image_gen.deepinfra as deepinfra_plugin
+import hermes_agent.plugins.image_gen.deepinfra as deepinfra_plugin
 
 # 1×1 transparent PNG — valid bytes for save_b64_image()
 _PNG_HEX = (

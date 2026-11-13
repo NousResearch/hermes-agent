@@ -754,7 +754,7 @@ Unlike the CLI (which uses `load_cli_config()` with hardcoded defaults), the gat
 Every messaging platform ships as a plugin adapter under `plugins/platforms/<name>/`; `hermes_agent/gateway/platforms/` keeps the base class and the HTTP ingress adapters (`api_server`, `webhook`, `msgraph_webhook`). All extend `BasePlatformAdapter` from `hermes_agent/gateway/platforms/base.py`:
 
 ```text
-plugins/platforms/                  # plugin-packaged adapters (one dir each)
+hermes_agent/plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── telegram/adapter.py     # Telegram Bot API (long polling or webhook)
 ├── discord/adapter.py      # Discord bot via discord.py
 ├── slack/adapter.py        # Slack Socket Mode

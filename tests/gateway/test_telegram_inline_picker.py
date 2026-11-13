@@ -1,6 +1,6 @@
 """Tests for the Telegram inline command picker (@botname <query>).
 
-Covers the PTB-free logic module ``plugins/platforms/telegram/inline_picker``
+Covers the PTB-free logic module ``hermes_agent/plugins/platforms/telegram/inline_picker``
 (catalog collection, ranking, pagination) and the adapter's
 ``_handle_inline_query`` (auth gate, personal caching, empty-answer on
 deny). The picker exists because the BotCommand menu is capped (60-slot
@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from plugins.platforms.telegram.inline_picker import (
+from hermes_agent.plugins.platforms.telegram.inline_picker import (
     PAGE_SIZE,
     build_inline_results,
     collect_inline_catalog,
@@ -63,7 +63,7 @@ class TestBuildInlineResults:
 
     def test_first_page_and_next_offset(self):
         with patch(
-            "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
+            "hermes_agent.plugins.platforms.telegram.inline_picker.collect_inline_catalog",
             return_value=self._fake_catalog(PAGE_SIZE + 10),
         ):
             results, next_offset = build_inline_results("", offset="")
@@ -72,7 +72,7 @@ class TestBuildInlineResults:
 
     def test_last_page_signals_stop_with_empty_offset(self):
         with patch(
-            "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
+            "hermes_agent.plugins.platforms.telegram.inline_picker.collect_inline_catalog",
             return_value=self._fake_catalog(PAGE_SIZE + 10),
         ):
             results, next_offset = build_inline_results("", offset=str(PAGE_SIZE))
@@ -81,7 +81,7 @@ class TestBuildInlineResults:
 
     def test_args_after_first_token_carry_into_message_text(self):
         with patch(
-            "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
+            "hermes_agent.plugins.platforms.telegram.inline_picker.collect_inline_catalog",
             return_value=[{"name": "plan", "description": "Plan mode"}],
         ):
             results, _ = build_inline_results("plan migrate auth to OIDC")
@@ -90,7 +90,7 @@ class TestBuildInlineResults:
 
     def test_bare_query_sends_bare_command(self):
         with patch(
-            "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
+            "hermes_agent.plugins.platforms.telegram.inline_picker.collect_inline_catalog",
             return_value=[{"name": "plan", "description": "Plan mode"}],
         ):
             results, _ = build_inline_results("plan")
@@ -98,7 +98,7 @@ class TestBuildInlineResults:
 
     def test_garbage_offset_treated_as_zero(self):
         with patch(
-            "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
+            "hermes_agent.plugins.platforms.telegram.inline_picker.collect_inline_catalog",
             return_value=self._fake_catalog(3),
         ):
             results, _ = build_inline_results("", offset="not-a-number")
@@ -107,7 +107,7 @@ class TestBuildInlineResults:
     def test_result_ids_unique_across_pages(self):
         catalog = self._fake_catalog(PAGE_SIZE * 2)
         with patch(
-            "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
+            "hermes_agent.plugins.platforms.telegram.inline_picker.collect_inline_catalog",
             return_value=catalog,
         ):
             page1, off = build_inline_results("", offset="")
@@ -155,7 +155,7 @@ class TestCollectInlineCatalog:
 # ---------------------------------------------------------------------------
 
 def _make_adapter(authorized=True):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -177,7 +177,7 @@ async def test_inline_query_authorized_answers_with_articles():
     adapter = _make_adapter(authorized=True)
     update = _inline_update(query="plan")
     with patch(
-        "plugins.platforms.telegram.inline_picker.collect_inline_catalog",
+        "hermes_agent.plugins.platforms.telegram.inline_picker.collect_inline_catalog",
         return_value=[{"name": "plan", "description": "Plan mode"}],
     ):
         await adapter._handle_inline_query(update, None)

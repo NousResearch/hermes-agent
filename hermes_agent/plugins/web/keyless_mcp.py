@@ -14,7 +14,7 @@ import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
-from plugins.web._common import (
+from hermes_agent.plugins.web._common import (
     document as _page, exa_crawl_status, is_origin_http_error, keenable_origin_error, origin_http_error, page_error as _page_error, search_fail,
     search_ok, vendor_error_entry, web_hit as _row,
 )
@@ -296,13 +296,13 @@ def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
 
 # --- Firecrawl keyless (public cloud API, no auth header) ---------------------
 def firecrawl_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
-    from plugins.web.firecrawl.provider import _KeylessFirecrawlClient, _extract_web_search_results
+    from hermes_agent.plugins.web.firecrawl.provider import _KeylessFirecrawlClient, _extract_web_search_results
     rows = lambda: _extract_web_search_results(_KeylessFirecrawlClient().search(query=query, limit=limit))
     return _search("firecrawl", rows, Exception, lambda exc: _fail_msg("firecrawl", "search", exc))
 
 
 def firecrawl_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
-    from plugins.web.firecrawl.provider import (
+    from hermes_agent.plugins.web.firecrawl.provider import (
         _KeylessFirecrawlClient, _extract_scrape_payload, _final_url, _with_scrape_status,
     )
     client = _KeylessFirecrawlClient()

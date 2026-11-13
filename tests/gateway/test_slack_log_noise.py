@@ -58,14 +58,14 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod
+import hermes_agent.plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 from hermes_agent.gateway.config import PlatformConfig
 
-ADAPTER_LOGGER = "plugins.platforms.slack.adapter"
+ADAPTER_LOGGER = "hermes_agent.plugins.platforms.slack.adapter"
 
 
 def _fake_create_task(coro, **kwargs):

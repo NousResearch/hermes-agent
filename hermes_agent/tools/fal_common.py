@@ -17,7 +17,7 @@ Stateful pieces (cache globals, ``_managed_fal_client*`` selectors,
 :mod:`hermes_agent.tools.image_generation_tool`. That module is the patch target for
 existing test suites (``tests/tools/test_image_generation.py``,
 ``tests/tools/test_managed_media_gateways.py``) and for the
-``plugins/image_gen/fal/`` plugin's ``_it`` indirection — moving the
+``hermes_agent/plugins/image_gen/fal/`` plugin's ``_it`` indirection — moving the
 caches here would silently defeat ``monkeypatch.setattr(image_tool,
 "_managed_fal_client", None)`` because the lookups would go against
 ``fal_common``'s namespace instead. See the per-rule walkthrough at

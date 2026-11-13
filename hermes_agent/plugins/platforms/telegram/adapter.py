@@ -176,45 +176,45 @@ _MEDIA_KIND_KEYS = {
     "video file": "platform.telegram.media.kind_video", "video note": "platform.telegram.media.kind_video"}
 
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from plugins.platforms.telegram.telegram_audio_meta import (
+from hermes_agent.plugins.platforms.telegram.telegram_audio_meta import (
     _coerce_duration_seconds, _probe_video_geometry, _probe_voice_duration_seconds, _video_thumbnail_jpeg, audio_player_fields)
-from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
-from plugins.platforms.telegram.telegram_entities import (
+from hermes_agent.plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
+from hermes_agent.plugins.platforms.telegram.telegram_entities import (
     addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
-from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
-from plugins.platforms.telegram.telegram_ingress import TelegramContactMixin
-from plugins.platforms.telegram.telegram_replacement import TelegramReplacementMixin
-from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
-from plugins.platforms.telegram.telegram_intake import effective_update_message
-from plugins.platforms.telegram.telegram_media_group import (
+from hermes_agent.plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
+from hermes_agent.plugins.platforms.telegram.telegram_ingress import TelegramContactMixin
+from hermes_agent.plugins.platforms.telegram.telegram_replacement import TelegramReplacementMixin
+from hermes_agent.plugins.platforms.telegram.telegram_polling_probe import TelegramPendingProbeMixin
+from hermes_agent.plugins.platforms.telegram.telegram_intake import effective_update_message
+from hermes_agent.plugins.platforms.telegram.telegram_media_group import (
     add_item_note, flush_media_group_event, inline_item_text, queue_media_group_event)
-from plugins.platforms.telegram.telegram_live_location import is_redundant_live_refresh
-from plugins.platforms.telegram.telegram_text_photo_pairing import (
+from hermes_agent.plugins.platforms.telegram.telegram_live_location import is_redundant_live_refresh
+from hermes_agent.plugins.platforms.telegram.telegram_text_photo_pairing import (
     IMAGE_EXTENSIONS as _TELEGRAM_IMAGE_EXTENSIONS, absorb_claimed_text, claim_pending_text, is_image_document, tracking_media_items,
     wait_text_flush)
-from plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
-from plugins.platforms.telegram.telegram_media_retry import unconfirmed_media_result as _unconfirmed
-from plugins.platforms.telegram import telegram_flood_window as _flood_window
-from plugins.platforms.telegram.telegram_media_fetch import (
+from hermes_agent.plugins.platforms.telegram.telegram_media_flood import TelegramMediaFloodMixin
+from hermes_agent.plugins.platforms.telegram.telegram_media_retry import unconfirmed_media_result as _unconfirmed
+from hermes_agent.plugins.platforms.telegram import telegram_flood_window as _flood_window
+from hermes_agent.plugins.platforms.telegram.telegram_media_fetch import (
     cache_replied_media, fetch_telegram_file, local_root, merged_typed_text, record_typed_text)
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
-from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
-from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
-from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
+from hermes_agent.plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
+from hermes_agent.plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
+from hermes_agent.plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, log_resolved, tap_matches_prompt
+from hermes_agent.plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
 from hermes_agent.gateway.approval_actor import picker_refusal, update_prompt_refusal
-from plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
-from plugins.platforms.telegram.telegram_network import (
+from hermes_agent.plugins.platforms.telegram.callback_answer import TOAST_LIMIT as _TOAST_LIMIT, answer_callback, answer_or_note, refuse_tap
+from hermes_agent.plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, build_ptb_requests, discover_fallback_ips, parse_fallback_ip_env,
     proxy_target_hosts, telegram_verify)
-from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
-from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
-from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
-from plugins.platforms.telegram.telegram_split import REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document
-from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
-from plugins.platforms.telegram.telegram_voice_mention import admit_media, cache_inbound_voice
-from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
-from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
-from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
+from hermes_agent.plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
+from hermes_agent.plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
+from hermes_agent.plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
+from hermes_agent.plugins.platforms.telegram.telegram_split import REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document
+from hermes_agent.plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
+from hermes_agent.plugins.platforms.telegram.telegram_voice_mention import admit_media, cache_inbound_voice
+from hermes_agent.plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
+from hermes_agent.plugins.platforms.telegram.telegram_picker_labels import model_button_labels
+from hermes_agent.plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
 from hermes_agent.utils import env_float, env_int
 
 # Max seconds a send/edit may sleep inline on a flood-control RetryAfter; longer penalties fail
@@ -291,16 +291,16 @@ def check_telegram_requirements() -> bool:
     return True
 
 
-from plugins.platforms.telegram.telegram_markdown import (
+from hermes_agent.plugins.platforms.telegram.telegram_markdown import (
     degrade_unrenderable_links, escape_rich_currency_dollars, normalize_rich_latex, to_markdown_v2)
-from plugins.platforms.telegram.rich_markdown import (
+from hermes_agent.plugins.platforms.telegram.rich_markdown import (
     RICH_EMAIL_TOKEN_RE, escape_literal_hash_prefixes, rich_normalize_linebreaks)
-from plugins.platforms.telegram.rich_parts import edit_rich_parts, resume_rich_parts, send_rich_parts
+from hermes_agent.plugins.platforms.telegram.rich_parts import edit_rich_parts, resume_rich_parts, send_rich_parts
 
 
-from plugins.platforms.telegram.telegram_chunking import (
+from hermes_agent.plugins.platforms.telegram.telegram_chunking import (
     separate_chunk_indicator_from_fence as _separate_chunk_indicator_from_fence, split_formatted_mdv2, split_raw_carrying_emphasis)
-from plugins.platforms.telegram.telegram_split import _strip_mdv2
+from hermes_agent.plugins.platforms.telegram.telegram_split import _strip_mdv2
 
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
@@ -1376,7 +1376,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if message_id is None and isinstance(msg, dict):
             message_id = (msg.get("result") or {}).get("message_id")
         if message_id is None:  # accepted with no id: delivery unknown, never proof of it (#147616)
-            from plugins.platforms.telegram.telegram_send_errors import idless_send_result
+            from hermes_agent.plugins.platforms.telegram.telegram_send_errors import idless_send_result
             return idless_send_result(self.name, chat_id, "sendRichMessage")
         await self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=str(message_id))
@@ -2696,7 +2696,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         app.add_handler(TelegramMessageHandler((filters.TEXT | rich_message_filter(filters)) & ~filters.COMMAND, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
-        from plugins.platforms.telegram.telegram_dice import handle_dice_message  # #78719
+        from hermes_agent.plugins.platforms.telegram.telegram_dice import handle_dice_message  # #78719
         app.add_handler(TelegramMessageHandler(filters.Dice.ALL, lambda u, c: handle_dice_message(self, u, c)))
         app.add_handler(TelegramMessageHandler(filters.CONTACT, self._handle_contact_message))  # #98598
         media = filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL
@@ -2929,7 +2929,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         try:
             if not self._acquire_platform_lock('telegram-bot-token', self.config.token, 'Telegram bot token'):
                 return False
-            from plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor
+            from hermes_agent.plugins.platforms.telegram.update_admission import TelegramApplication, build_update_processor
             builder = Application.builder().token(self.config.token)
             builder.application_class(TelegramApplication, {"adapter": self})
             custom_base_url = self.config.extra.get("base_url")
@@ -3008,7 +3008,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     async def _set_status_indicator(self, online: bool) -> None:
         """Bot short description as the opt-in online/offline indicator (telegram_status_indicator)."""
-        from plugins.platforms.telegram.telegram_status_indicator import set_status_indicator
+        from hermes_agent.plugins.platforms.telegram.telegram_status_indicator import set_status_indicator
         await set_status_indicator(self, online)
 
     @staticmethod
@@ -4303,7 +4303,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             authorized = False
         if not authorized:
             try:
-                from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _deny_cache
+                from hermes_agent.plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _deny_cache
                 self._accept_update()
                 await inline_query.answer([], cache_time=_deny_cache, is_personal=True)
             except Exception:
@@ -4312,7 +4312,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         try:
             from telegram import InlineQueryResultArticle, InputTextMessageContent
-            from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _CACHE, build_inline_results
+            from hermes_agent.plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _CACHE, build_inline_results
             # Per-keystroke catalog build resolves every skill path; keep it off the loop (#110707).
             results, next_offset = await asyncio.to_thread(
                 build_inline_results,
@@ -4931,7 +4931,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         is_anim = lambda url: not url.startswith("file://") and self._is_animation_url(url)
         animations = [img for img in images if is_anim(img[0])]
         photos = [img for img in images if not is_anim(img[0])]
-        from plugins.platforms.telegram.telegram_album import send_animations, send_photo_album
+        from hermes_agent.plugins.platforms.telegram.telegram_album import send_animations, send_photo_album
         delivered, ambiguous = await send_animations(self, chat_id, animations, metadata, human_delay)  # a lost GIF receipt stays unknown
         if not photos:
             return SendResult(success=delivered, error=None if delivered else "all images failed to send",
@@ -5590,7 +5590,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         bot_username = self._current_bot_username() if self._bot else None
         if not bot_username:
             return False
-        from plugins.platforms.telegram.telegram_addressing import foreign_command_target, leading_bot_handles
+        from hermes_agent.plugins.platforms.telegram.telegram_addressing import foreign_command_target, leading_bot_handles
         target = foreign_command_target(message, bot_username)
         addressed = {target} if target else leading_bot_handles(message, lambda h: h == bot_username or bool(self._FOREIGN_BOT_HANDLE_RE.fullmatch(h)))
         if not addressed or (not target and bot_username in self._extract_bot_mention_usernames(message, bot_username)):
@@ -5611,7 +5611,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return self._chat_type_str(message.chat) != "channel" and self._telegram_guest_mode() and self._message_mentions_bot(message)
 
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
-        from plugins.platforms.telegram.telegram_addressing import clean_bot_trigger_text
+        from hermes_agent.plugins.platforms.telegram.telegram_addressing import clean_bot_trigger_text
         return clean_bot_trigger_text(text, self._current_bot_username())
 
     def _bot_sender_suppressed(self, message: Message) -> bool:
@@ -5724,7 +5724,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str, *, retype: bool = True) -> None:
         """Append a cached attachment to the event (with ``retype``, the first one's kind sets the message type)."""
-        from plugins.platforms.telegram.telegram_batching import pad_inline_flags
+        from hermes_agent.plugins.platforms.telegram.telegram_batching import pad_inline_flags
         event.media_text_inlined = pad_inline_flags(event) + [False]
         event.media_urls.append(cached.path)
         event.media_types.append(cached.media_type)
@@ -5913,7 +5913,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _build_triggered_event(self, msg, update, msg_type: MessageType) -> MessageEvent:
         """Event for an addressed text/command: trigger text cleaned (sole addressee only), replied-to
         media cached, attribution applied."""
-        from plugins.platforms.telegram.telegram_context import group_trigger_text
+        from hermes_agent.plugins.platforms.telegram.telegram_context import group_trigger_text
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
         event.text = group_trigger_text(self, msg, event.text)
         await self._cache_replied_media(msg, event)
@@ -6084,7 +6084,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
 
     def _merge_into_pending(self, pending: dict, key: str, event: MessageEvent) -> str:
         """Merge ``event`` into ``pending[key]`` (media, caption, reply expectation) or seed it; return the lane used."""
-        from plugins.platforms.telegram.telegram_batching import merge_batched_event, resolve_routing
+        from hermes_agent.plugins.platforms.telegram.telegram_batching import merge_batched_event, resolve_routing
         resolve_routing(self, event)  # routed BEFORE it may join a batch: one resolved session key per batch
         return merge_batched_event(pending, key, event, merge_caption=self._merge_caption,
                                    route_key=lambda ev: ev.source and self._event_session_key(ev),
@@ -6258,7 +6258,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
         if msg.caption:
-            from plugins.platforms.telegram.telegram_context import group_trigger_text
+            from hermes_agent.plugins.platforms.telegram.telegram_context import group_trigger_text
             event.text = group_trigger_text(self, msg, expand_link_entities(msg))
         # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
         if msg.sticker:
@@ -6493,7 +6493,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             is_bot=bool(getattr(user, "is_bot", False)) if user else False)
         reply_to_id, reply_to_text = self._reply_context(message)
         from hermes_agent.gateway.platforms.base import resolve_channel_prompt  # per-channel/topic ephemeral prompt
-        from plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected
+        from hermes_agent.plugins.platforms.telegram.telegram_context import group_identity_prompt, group_reply_expected
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(

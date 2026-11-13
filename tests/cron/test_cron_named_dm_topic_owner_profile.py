@@ -17,7 +17,7 @@ def test_shared_bot_named_topic_is_persisted_in_the_bot_owners_config(tmp_path, 
     from tests.gateway.conftest import _ensure_telegram_mock
 
     _ensure_telegram_mock()
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     owner, satellite = tmp_path / "owner", tmp_path / "satellite"
     for home in (owner, satellite):

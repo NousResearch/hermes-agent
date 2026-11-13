@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from plugins.platforms.photon import adapter as adapter_mod
-from plugins.platforms.photon import sidecar_paths
+from hermes_agent.plugins.platforms.photon import adapter as adapter_mod
+from hermes_agent.plugins.platforms.photon import sidecar_paths
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ def test_fix_logs_warning_when_httpx_missing(
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
     (tmp_path / "node_modules").mkdir()
 
-    with caplog.at_level(logging.WARNING, logger="plugins.platforms.photon.adapter"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.platforms.photon.adapter"):
         result = adapter_mod.check_requirements()
 
     assert result is False

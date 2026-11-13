@@ -24,7 +24,7 @@ private vision check.
 
 For custom/local-only tools do NOT edit core: create `~/.hermes/plugins/<name>/plugin.yaml` +
 `__init__.py` and call `ctx.register_tool(...)`; plugin toolsets are discovered automatically and
-toggled without touching `hermes_agent/tools/` or `hermes_agent/toolsets.py` (`plugins/AGENTS.md`).
+toggled without touching `hermes_agent/tools/` or `hermes_agent/toolsets.py` (`hermes_agent/plugins/AGENTS.md`).
 
 1. `hermes_agent/tools/your_tool.py`:
    ```python
@@ -164,7 +164,7 @@ delegation provider (`hermes_agent/agent/delegation_provider.py`, `ctx.register_
 `delegation.backends.<name>`) that answers each task's route (`hermes_agent/tools/delegate_tool_routes.py`: model/provider fields
 resolved like the `delegation` section, `service_tier` checked like `/fast` in `delegate_tool_tuning.py`, or `profile` →
 the child is built, leases and converses inside that profile's scope) and may add enum-checked per-task schema params; it
-never owns lifecycle. The `default` strategy is the bundled `plugins/delegation/default` plugin (no core special case
+never owns lifecycle. The `default` strategy is the bundled `hermes_agent/plugins/delegation/default` plugin (no core special case
 beyond selecting it). Fails closed: an unusable backend is a tool error naming it (never a silent `default`), an
 unroutable task is refused alone (`TaskRoute.error`), as is a task sending a parameter its backend lacks. A session routes on the backend its `delegate_task` was built from (`agent._delegation_backend`, pinned with its tools), so a save applies at `/new` or `--now` (`hermes_agent/agent/delegation_backends.py`). Internal `credentials_cfg` callers (/review) and the lifecycle API bypass it. **Child processes:** a child's background
 processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`

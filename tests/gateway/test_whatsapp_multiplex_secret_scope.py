@@ -28,7 +28,7 @@ class TestWhatsAppEnvViaSecretScope:
     def test_wenv_reads_scope_under_multiplex(self, tmp_path, monkeypatch):
         """When multiplexing is active and a scope is installed, the profile's
         .env values are returned — not the global os.environ values."""
-        from plugins.platforms.whatsapp.adapter import _wenv
+        from hermes_agent.plugins.platforms.whatsapp.adapter import _wenv
 
         # Set a misleading value in os.environ that would be returned by
         # os.getenv("WHATSAPP_MODE", "self-chat") if the bug was present.
@@ -52,7 +52,7 @@ class TestWhatsAppEnvViaSecretScope:
 
     def test_wenv_fallback_when_scope_absent(self, monkeypatch):
         """When no scope is installed and multiplex is off, _wenv returns default."""
-        from plugins.platforms.whatsapp.adapter import _wenv
+        from hermes_agent.plugins.platforms.whatsapp.adapter import _wenv
 
         monkeypatch.delenv("WHATSAPP_MODE", raising=False)
         result = _wenv("WHATSAPP_MODE", "self-chat")
@@ -60,7 +60,7 @@ class TestWhatsAppEnvViaSecretScope:
 
     def test_wenv_does_not_leak_cross_profile(self, tmp_path, monkeypatch):
         """Two different profiles under the same process see their own values."""
-        from plugins.platforms.whatsapp.adapter import _wenv
+        from hermes_agent.plugins.platforms.whatsapp.adapter import _wenv
 
         ss.set_multiplex_active(True)
 
@@ -143,7 +143,7 @@ class TestWhatsAppCloudAdapterUsesSecretScope:
         (tmp_path / ".env").write_text("WHATSAPP_DM_POLICY=allowlist\n")
         tok = ss.set_secret_scope(ss.build_profile_secret_scope(tmp_path))
         try:
-            from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+            from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
             # Cloud adapter won't fully init without creds, but we can at least
             # verify the dm_policy assignment path doesn't crash under scope.

@@ -68,7 +68,7 @@ def whatsapp_bridge(monkeypatch):
 
     from hermes_agent.gateway.config import Platform
     from hermes_agent.hermes_cli.plugins import discover_plugins
-    from plugins.platforms.whatsapp.adapter import _bridge_auth_proof
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _bridge_auth_proof
 
     token = "standalone-test-token-0123456789abcdef"
     calls = []

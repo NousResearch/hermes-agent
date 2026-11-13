@@ -28,7 +28,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-import plugins.dashboard_auth.self_hosted as oidc_plugin
+import hermes_agent.plugins.dashboard_auth.self_hosted as oidc_plugin
 from hermes_agent.hermes_cli.dashboard_auth import (
     InvalidCodeError,
     ProviderError,
@@ -226,7 +226,7 @@ class TestDiscovery:
         p = self._provider()
         mock_resp = self._mock_get(200, dict(_DISCOVERY_DOC))
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.get", return_value=mock_resp
         ) as mock_get:
             disco1 = p._get_discovery()
             disco2 = p._get_discovery()
@@ -252,7 +252,7 @@ class TestDiscovery:
             200, forged, url="https://attacker.example/openid-configuration"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
         ):
             with pytest.raises(ProviderError, match="origin"):
                 p._fetch_discovery()
@@ -263,7 +263,7 @@ class TestDiscovery:
             200, dict(_DISCOVERY_DOC), url="http://auth.example.com/discovery"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
         ):
             with pytest.raises(ProviderError, match="origin"):
                 p._fetch_discovery()
@@ -276,7 +276,7 @@ class TestDiscovery:
             url="https://auth.example.com/.well-known/openid-configuration/application/o/hermes",
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
         ):
             disco = p._fetch_discovery()
         assert disco["token_endpoint"] == f"{_ISSUER}/token"
@@ -288,7 +288,7 @@ class TestDiscovery:
             200, dict(_DISCOVERY_DOC), url="https://auth.example.com:443/x"
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.get", return_value=resp
         ):
             assert p._fetch_discovery()["issuer"] == _ISSUER
 
@@ -484,7 +484,7 @@ class TestCompleteLogin:
             },
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -507,7 +507,7 @@ class TestCompleteLogin:
             200, {"id_token": id_token, "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
         ):
             session = provider.complete_login(
                 code="abc",
@@ -522,7 +522,7 @@ class TestCompleteLogin:
             200, {"access_token": "opaque", "token_type": "Bearer"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
         ):
             with pytest.raises(ProviderError, match="id_token"):
                 provider.complete_login(
@@ -535,7 +535,7 @@ class TestCompleteLogin:
     def test_400_raises_invalid_code(self, provider):
         mock_resp = _mock_post(400, {"error": "invalid_grant"})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
         ):
             with pytest.raises(InvalidCodeError, match="invalid_grant"):
                 provider.complete_login(
@@ -573,7 +573,7 @@ class TestConfidentialClient:
         id_token = _mint_id_token(rsa_keypair)
         mock_resp = _mock_post(200, {"id_token": id_token, **_GOOD_TOKEN_RESP_KEYS})
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
         ) as mock_post:
             provider.complete_login(
                 code="the-code",
@@ -645,7 +645,7 @@ class TestConfidentialClient:
             200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
         ) as mock_post:
             provider.refresh_session(refresh_token="rt_old")
         _, kwargs = mock_post.call_args
@@ -699,7 +699,7 @@ class TestVerifySession:
     def test_failure_message_surfaces_claims(self, provider, rsa_keypair, caplog):
         import logging
         token = _mint_id_token(rsa_keypair, iss="https://evil.example")
-        with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.dashboard_auth._shared"):
             assert provider.verify_session(access_token=token) is None
         msg = caplog.text
         assert "'https://evil.example'" in msg
@@ -715,7 +715,7 @@ class TestVerifySession:
             200, {"id_token": id_token, "token_type": "Bearer", "refresh_token": "rt2"}
         )
         with patch(
-            "plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth.self_hosted.httpx.post", return_value=mock_resp
         ):
             with pytest.raises(RefreshExpiredError, match="verification failed"):
                 provider.refresh_session(refresh_token="rt_old")

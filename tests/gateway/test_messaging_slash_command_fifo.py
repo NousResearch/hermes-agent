@@ -19,7 +19,7 @@ def _owner(monkeypatch, mode=None):
     from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
     from hermes_agent.gateway.platforms.base import SendResult
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     runner = GatewayRunner(GatewayConfig())

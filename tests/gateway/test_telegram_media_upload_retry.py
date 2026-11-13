@@ -14,7 +14,7 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _network_error(cause=None, text=None):
@@ -161,7 +161,7 @@ async def test_local_error_before_the_request_is_still_a_failure(adapter, tmp_pa
 @pytest.mark.asyncio
 async def test_standalone_sender_repeats_unsent_and_never_resends_a_lost_upload(tmp_path, monkeypatch):
     """The out-of-process sender (send_message tool, cron) follows the same policy."""
-    from plugins.platforms.telegram import standalone
+    from hermes_agent.plugins.platforms.telegram import standalone
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
     path = tmp_path / "package.zip"
     path.write_bytes(b"zip-bytes")

@@ -33,9 +33,9 @@ from unittest.mock import MagicMock
 import httpx
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg_adapter
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.telegram_network import TelegramFallbackTransport
+from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.telegram_network import TelegramFallbackTransport
 
 
 class _StopConnect(Exception):
@@ -139,7 +139,7 @@ def _assert_keepalive_tight(instances):
 def _assert_updates_pool_never_reuses(instance):
     """Windows never reuses a long-poll socket (#87057); elsewhere one socket is reused so polls
     stop burning an ephemeral port each into TIME_WAIT (#107880)."""
-    from plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
+    from hermes_agent.plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
     limits = instance.kwargs.get("httpx_kwargs", {}).get("limits")
     assert isinstance(limits, httpx.Limits)
     assert limits.max_keepalive_connections == getupdates_keepalive_connections()
@@ -164,7 +164,7 @@ def test_all_ptb_clients_share_the_platform_ssl_context(monkeypatch):
         asyncio.run(transport.aclose())
 
     # The DoH discovery client verifies with the same context.
-    from plugins.platforms.telegram import telegram_network as tg_net
+    from hermes_agent.plugins.platforms.telegram import telegram_network as tg_net
     seen = {}
 
     def _record_client(**kwargs):
@@ -220,7 +220,7 @@ def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
         if index == 0:
             assert limits.max_keepalive_connections >= 1
         else:
-            from plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
+            from hermes_agent.plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
             assert limits.max_keepalive_connections == getupdates_keepalive_connections()
 
     for instance in instances:

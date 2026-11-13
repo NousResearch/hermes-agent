@@ -53,7 +53,7 @@ def _connectable_adapter(host, tmp_path, monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
     from hermes_agent.gateway.config import Platform
-    from plugins.platforms.whatsapp import adapter as wa
+    from hermes_agent.plugins.platforms.whatsapp import adapter as wa
 
     monkeypatch.setattr(wa, "find_node_executable", lambda name: sys.executable)
     monkeypatch.setattr(wa.asyncio, "to_thread", AsyncMock(return_value=True))  # preflight + reaps

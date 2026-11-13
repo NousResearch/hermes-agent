@@ -359,7 +359,7 @@ replace the account-usage behavior for a built-in provider. The hook runs under 
 renders nothing for that turn rather than stalling `/usage`, so give your own HTTP calls a shorter
 timeout.
 
-The bundled `plugins/model-providers/opencode-zen/` profile implements this hook for the
+The bundled `hermes_agent/plugins/model-providers/opencode-zen/` profile implements this hook for the
 OpenCode Go plan windows; every `/usage` surface (CLI `hermes usage` and `/usage`, the messaging
 gateway, the TUI/Desktop usage feed) renders the snapshot through the same core formatter.
 
@@ -459,13 +459,13 @@ Look at these bundled plugins for idioms:
 
 | Plugin | Why look |
 |---|---|
-| `plugins/model-providers/openrouter/` | Aggregator with provider preferences, public model catalog |
-| `plugins/model-providers/gemini/` | `thinking_config` translation (native + OpenAI-compat nested forms) |
-| `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`, `extra_body.thinking`, top-level `reasoning_effort` |
-| `plugins/model-providers/qwen-oauth/` | Message normalization, `cache_control` injection, VL high-res |
-| `plugins/model-providers/nous/` | Attribution tags, "omit reasoning when disabled" |
-| `plugins/model-providers/custom/` | Ollama `num_ctx` + `think: false` quirks |
-| `plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`, `fetch_models` returns None (no REST endpoint) |
+| `hermes_agent/plugins/model-providers/openrouter/` | Aggregator with provider preferences, public model catalog |
+| `hermes_agent/plugins/model-providers/gemini/` | `thinking_config` translation (native + OpenAI-compat nested forms) |
+| `hermes_agent/plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`, `extra_body.thinking`, top-level `reasoning_effort` |
+| `hermes_agent/plugins/model-providers/qwen-oauth/` | Message normalization, `cache_control` injection, VL high-res |
+| `hermes_agent/plugins/model-providers/nous/` | Attribution tags, "omit reasoning when disabled" |
+| `hermes_agent/plugins/model-providers/custom/` | Ollama `num_ctx` + `think: false` quirks |
+| `hermes_agent/plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`, `fetch_models` returns None (no REST endpoint) |
 
 ## User overrides — replace a built-in without editing the repo
 

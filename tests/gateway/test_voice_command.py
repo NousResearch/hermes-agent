@@ -371,7 +371,7 @@ class TestVoiceReceiver:
     """Test VoiceReceiver silence detection, SSRC mapping, and lifecycle."""
 
     def _make_receiver(self):
-        from plugins.platforms.discord.adapter import VoiceReceiver
+        from hermes_agent.plugins.platforms.discord.adapter import VoiceReceiver
         mock_vc = MagicMock()
         mock_vc._connection.secret_key = [0] * 32
         mock_vc._connection.dave_session = None
@@ -412,7 +412,7 @@ class TestVoiceReceiver:
 
     def test_ffmpeg_resolver_finds_winget_install_when_not_on_path(self, monkeypatch, tmp_path):
         """Windows winget installs ffmpeg outside PATH; Discord voice should still find it."""
-        from plugins.platforms.discord import ffmpeg_utils
+        from hermes_agent.plugins.platforms.discord import ffmpeg_utils
 
         ffmpeg = (
             tmp_path
@@ -660,7 +660,7 @@ class TestDiscordVoiceChannelMethods:
     """Test DiscordAdapter voice channel methods (join, leave, play, etc.)."""
 
     def _make_adapter(self):
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         from hermes_agent.gateway.config import Platform, PlatformConfig
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -768,7 +768,7 @@ class TestDiscordVoiceChannelMethods:
         assert adapter._voice_timeout_tasks == {}
 
     def test_discord_voice_timeout_config_loaded(self):
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         with patch("hermes_agent.hermes_cli.config.read_raw_config", return_value={
@@ -790,7 +790,7 @@ class TestDiscordVoiceChannelMethods:
 
         timeout = await adapter._playback_timeout_for_audio("/tmp/long.mp3")
 
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         assert timeout == pytest.approx(180.5 + DiscordAdapter.PLAYBACK_TIMEOUT_PADDING)
 
 
@@ -818,7 +818,7 @@ class TestDiscordVoiceChannelMethods:
 
         pcm_data = b"\x00" * 96000
 
-        with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
+        with patch("hermes_agent.plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("hermes_agent.tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Hello"}), \
              patch("hermes_agent.tools.voice_mode_transcript.is_whisper_hallucination", return_value=False):
@@ -950,7 +950,7 @@ class TestStopAcquiresLock:
 
     @staticmethod
     def _make_receiver():
-        from plugins.platforms.discord.adapter import VoiceReceiver
+        from hermes_agent.plugins.platforms.discord.adapter import VoiceReceiver
         vc = MagicMock()
         vc._connection.secret_key = [0] * 32
         vc._connection.dave_session = None
@@ -1017,7 +1017,7 @@ class TestVoiceTimeoutCleansRunnerState:
 
     @staticmethod
     def _make_discord_adapter():
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         from hermes_agent.gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -1076,7 +1076,7 @@ class TestPlaybackTimeout:
 
     @staticmethod
     def _make_discord_adapter():
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         from hermes_agent.gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -1101,7 +1101,7 @@ class TestPlaybackTimeout:
     @pytest.mark.asyncio
     async def test_playback_timeout_fires(self):
         """When done event is never set, playback times out gracefully."""
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         adapter = self._make_discord_adapter()
 
         mock_vc = MagicMock()
@@ -1136,7 +1136,7 @@ class TestVoiceChannelAwareness:
     """Tests for get_voice_channel_info() and get_voice_channel_context()."""
 
     def _make_adapter(self):
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         from hermes_agent.gateway.config import PlatformConfig
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -1205,7 +1205,7 @@ class TestVoiceReception:
 
     @staticmethod
     def _make_receiver(allowed_ids=None, members=None, dave=False, bot_id=9999):
-        from plugins.platforms.discord.adapter import VoiceReceiver
+        from hermes_agent.plugins.platforms.discord.adapter import VoiceReceiver
         vc = MagicMock()
         vc._connection.secret_key = [0] * 32
         vc._connection.dave_session = MagicMock() if dave else None
@@ -1285,7 +1285,7 @@ class TestVoiceReception:
 
     def _make_receiver_with_nacl(self, dave_session=None, mapped_ssrcs=None):
         """Create a receiver that can process _on_packet with mocked NaCl + Opus."""
-        from plugins.platforms.discord.adapter import VoiceReceiver
+        from hermes_agent.plugins.platforms.discord.adapter import VoiceReceiver
         vc = MagicMock()
         vc._connection.secret_key = [0] * 32
         vc._connection.dave_session = dave_session
@@ -1350,7 +1350,7 @@ class TestVoiceTTSPlayback:
 
     @staticmethod
     def _make_discord_adapter():
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         from hermes_agent.gateway.config import PlatformConfig, Platform
         config = PlatformConfig(enabled=True, extra={})
         config.token = "fake-token"
@@ -1449,7 +1449,7 @@ class TestUDPKeepalive:
     @pytest.mark.asyncio
     async def test_keepalive_sends_silence_frame(self):
         """Listen loop sends silence frame via send_packet after interval."""
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         from hermes_agent.gateway.config import PlatformConfig, Platform
 
         config = PlatformConfig(enabled=True, extra={})
@@ -1471,7 +1471,7 @@ class TestUDPKeepalive:
         adapter._voice_clients[111] = mock_vc
         mock_vc._connection = mock_conn
 
-        from plugins.platforms.discord.adapter import VoiceReceiver
+        from hermes_agent.plugins.platforms.discord.adapter import VoiceReceiver
         mock_receiver_vc = MagicMock()
         mock_receiver_vc._connection.secret_key = [0] * 32
         mock_receiver_vc._connection.dave_session = None
@@ -1643,7 +1643,7 @@ class TestPcmToWav:
         import struct
         import wave
 
-        from plugins.platforms.discord.adapter import VoiceReceiver
+        from hermes_agent.plugins.platforms.discord.adapter import VoiceReceiver
 
         frames = 48000  # 1s @ 48kHz stereo
         pcm = b"".join(

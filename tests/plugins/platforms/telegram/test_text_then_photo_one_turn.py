@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_file_obj, _make_message, _make_photo
 from tests.waiting import async_wait_until
 
@@ -53,7 +53,7 @@ def _slow_photo(release: asyncio.Event, user_id: int = 1):
 
 async def _text_then_photo(adapter, *, photo_user: int):
     release = asyncio.Event()
-    with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
+    with patch("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
         await adapter._handle_text_message(_update(_text("Is this a real study?")), MagicMock())
         photo = asyncio.create_task(adapter._handle_media_message(_update(_slow_photo(release, photo_user)), MagicMock()))
         await asyncio.sleep(0.6)  # health: allow HX013 -- a download outlasting the 0.18 s text delay IS the race
@@ -102,7 +102,7 @@ async def test_photo_in_another_topic_does_not_hold_the_question():
     release = asyncio.Event()
     question, photo_msg = _text("Is this a real study?"), _slow_photo(release)
     question.message_thread_id, photo_msg.message_thread_id = 10, 20
-    with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
+    with patch("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
         await adapter._handle_text_message(_update(question), MagicMock())
         photo = asyncio.create_task(adapter._handle_media_message(_update(photo_msg), MagicMock()))
         try:
@@ -177,7 +177,7 @@ async def test_recovered_question_keeps_its_topic_when_a_newer_topic_binds_durin
     photo_msg = _slow_photo(release)
     photo_msg.media_group_id = "album-1" if album else None
     try:
-        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
+        with patch("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
             await adapter._handle_text_message(_update(_text("Is this a real study?")), MagicMock())
             photo = asyncio.create_task(adapter._handle_media_message(_update(photo_msg), MagicMock()))
             await asyncio.sleep(0.4)  # health: allow HX013 -- a download outlasting the 0.18 s text delay IS the race
@@ -198,7 +198,7 @@ async def test_two_question_photo_pairs_in_one_burst_keep_their_own_topics(tmp_p
     adapter._media_batch_delay_seconds = 0.8  # production burst window
     bind("10")
     try:
-        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
+        with patch("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async", new=AsyncMock(return_value="/tmp/post.jpg")):
             for question in ("first-q", "second-q"):
                 release = asyncio.Event()
                 await adapter._handle_text_message(_update(_text(question)), MagicMock())
@@ -223,7 +223,7 @@ async def test_burst_across_the_first_topic_binding_is_one_turn(tmp_path, album)
     adapter, db, bind, routed = _topic_mode_rig(tmp_path)
     adapter._media_batch_delay_seconds = 0.8  # production burst window
     try:
-        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+        with patch("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
                    new=AsyncMock(side_effect=lambda data, **_kw: f"/cache/{data.decode()}.jpg")):
             for name in ("p1", "p2"):
                 msg = _make_message(photo=[_make_photo(_make_file_obj(name.encode()))], media_group_id=album)

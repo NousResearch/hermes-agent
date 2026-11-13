@@ -43,10 +43,10 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod
+import hermes_agent.plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +501,7 @@ async def test_block_extraction_debug_log_does_not_include_message_preview(caplo
         ],
     }
 
-    with caplog.at_level(logging.DEBUG, logger="plugins.platforms.slack.adapter"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.plugins.platforms.slack.adapter"):
         await adapter._handle_slack_message(event)
 
     assert "extracted additional text from blocks" in caplog.text
@@ -523,7 +523,7 @@ async def test_block_extraction_debug_log_does_not_include_message_preview(caplo
 # Tests: Block-Kit-only mention detection (#52387)
 # ---------------------------------------------------------------------------
 
-from plugins.platforms.slack.adapter import _slack_mention_detection_text
+from hermes_agent.plugins.platforms.slack.adapter import _slack_mention_detection_text
 
 
 def _blockkit_mention_event(bot_user_id=BOT_USER_ID, flat_text="Release notification"):

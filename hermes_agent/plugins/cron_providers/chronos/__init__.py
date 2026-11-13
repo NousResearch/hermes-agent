@@ -203,5 +203,5 @@ class ChronosCronScheduler(CronScheduler):
 
 
 def register(ctx) -> None:
-    """Plugin entrypoint — plugins/cron_providers discovery collects the provider here."""
+    """Plugin entrypoint — hermes_agent/plugins/cron_providers discovery collects the provider here."""
     ctx.register_cron_scheduler(ChronosCronScheduler())

@@ -197,7 +197,7 @@ def _provider_from_config(home: Path, config: dict[str, Any], *, installing: Pat
 
 def _parked(plugin_dir: Path, config: dict[str, Any]) -> bool:
     """Whether plugins.disabled names this provider plugin. The provider loader honours the same
-    spellings (plugins.memory._explicitly_disabled), so a parked provider is never loaded and
+    spellings (hermes_agent.plugins.memory._explicitly_disabled), so a parked provider is never loaded and
     installing its dependencies could only fail the generation for nothing."""
     disabled = (config.get("plugins") or {}).get("disabled") or []
     return bool(plugin_spellings(plugin_dir) & set(disabled))

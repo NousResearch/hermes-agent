@@ -25,9 +25,9 @@ from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource, build_session_context
 from hermes_agent.gateway.session_context import get_session_env
 from tests.waiting import async_wait_until
-from plugins.platforms.telegram import adapter as tg_adapter, telegram_media_fetch
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
+from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter, telegram_media_fetch
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.update_admission import DEFAULT_MAX_CONCURRENT_UPDATES, PerChatUpdateProcessor
 
 
 class NoNetwork(BaseRequest):
@@ -167,7 +167,7 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
     download = AsyncMock(return_value=SimpleNamespace(
         file_path="offline.png", download_as_bytearray=AsyncMock(return_value=bytearray(b"offline"))))
     monkeypatch.setattr(PhotoSize, "get_file", download)
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", AsyncMock(return_value=str(tmp_path / "photo.png")))
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async", AsyncMock(return_value=str(tmp_path / "photo.png")))
     async with connected(monkeypatch, extra={"observe_unmentioned_group_messages": True, "require_mention": True,
                                             "allowed_chats": ["42"], "group_allowed_chats": ["42"]}) as (adapter, app, delivered):
         observer = adapter._platform_event_handler = AsyncMock()
@@ -277,7 +277,7 @@ async def _check_sticker_handoff(monkeypatch, adapter, app, delivered, stage):
             await asyncio.Event().wait()
         return json.dumps({"success": True, "analysis": "an offline sticker"})
 
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.cache_image_from_bytes_async", cache_image)
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async", cache_image)
     monkeypatch.setattr(vision_tools, "vision_analyze_tool", vision)
     payload = update(app.bot, kind="media").to_dict()
     payload["message"]["sticker"]["is_animated"] = False
@@ -297,7 +297,7 @@ async def _check_sticker_handoff(monkeypatch, adapter, app, delivered, stage):
 async def _check_caught_preparation(monkeypatch, tmp_path, adapter, app, stage):
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
-    from plugins.platforms.telegram import inline_picker
+    from hermes_agent.plugins.platforms.telegram import inline_picker
     import sqlite3
 
     if stage == "observed_prepare":
@@ -833,7 +833,7 @@ async def test_redelivery_to_rebuilt_adapter_is_dropped(monkeypatch, tmp_path):
     Updater polls from offset 0: Telegram resends every update whose acknowledgement never
     landed. The receipt must outlive the adapter that completed the update."""
     from hermes_agent.hermes_constants import get_hermes_home
-    from plugins.platforms.telegram.update_admission import RECEIPT_TTL_SECONDS
+    from hermes_agent.plugins.platforms.telegram.update_admission import RECEIPT_TTL_SECONDS
 
     receipts = get_hermes_home() / "telegram_update_receipts_111.json"
     async with connected(monkeypatch) as (adapter, app, delivered):
@@ -1027,7 +1027,7 @@ async def test_unserved_update_not_receipted_and_logs_field_names(monkeypatch, c
         },
     }
     async with connected(monkeypatch) as (adapter, app, delivered):
-        caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
+        caplog.set_level(stdlib_logging.INFO, logger="hermes_agent.plugins.platforms.telegram.update_admission")
         unserved = Update.de_json(unserved_payload, app.bot)
         await app.process_update(unserved)
         assert not delivered  # no core handler serves a title change
@@ -1052,7 +1052,7 @@ async def test_core_refusal_still_receipts_and_failure_is_not_reported_unserved(
     import logging as stdlib_logging
 
     async with connected(monkeypatch) as (adapter, app, delivered):
-        caplog.set_level(stdlib_logging.INFO, logger="plugins.platforms.telegram.update_admission")
+        caplog.set_level(stdlib_logging.INFO, logger="hermes_agent.plugins.platforms.telegram.update_admission")
         await app.process_update(update(app.bot, 20, user=99))
         assert not delivered
         assert f"{app.bot.id}:20" in adapter._seen_update_ids

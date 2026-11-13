@@ -201,7 +201,7 @@ def test_an_unknown_storage_kind_shows_no_panel_and_writes_no_stray_file(client)
 def test_a_schema_that_fails_to_load_logs_its_traceback_once(client, caplog):
     _install("oldschema", _INIT.replace('name = "ownprov"', 'name = "oldschema"'),
              "from plugins.memory.config_schema import NO_SUCH_NAME\n")
-    with caplog.at_level("ERROR", logger="plugins.memory.config_schema"):
+    with caplog.at_level("ERROR", logger="hermes_agent.plugins.memory.config_schema"):
         for _ in range(3):
             assert client.get("/api/memory/providers/oldschema/config?surface=declared").status_code == 200
     assert sum("failed to load config schema" in r.getMessage() for r in caplog.records if r.levelname == "ERROR") == 1

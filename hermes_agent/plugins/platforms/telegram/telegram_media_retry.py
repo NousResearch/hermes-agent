@@ -19,9 +19,9 @@ import logging
 from typing import Any, Awaitable, Callable, Optional
 
 from hermes_agent.gateway.platforms.base import SendResult
-from plugins.platforms.telegram import telegram_send_errors as kinds
+from hermes_agent.plugins.platforms.telegram import telegram_send_errors as kinds
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 _RETRYABLE = (kinds.UNSENT, kinds.SERVER_ERROR)
 # Set on an error the upload request itself raised: only those can mean "it may be in the chat".
@@ -41,7 +41,7 @@ async def send_media_retrying(
             if attempt >= kinds.SAME_REQUEST_ATTEMPTS - 1 or kinds.send_error_kind(exc) not in _RETRYABLE:
                 setattr(exc, _REQUEST_ERROR_ATTR, True)
                 raise
-            from plugins.platforms.telegram.adapter import _redact_telegram_error_text
+            from hermes_agent.plugins.platforms.telegram.adapter import _redact_telegram_error_text
             delay = kinds.same_request_backoff(attempt)
             logger.warning("[Telegram] %s not sent (attempt %d/%d), retrying in %.0fs: %s", what, attempt + 1,
                            kinds.SAME_REQUEST_ATTEMPTS, delay, _redact_telegram_error_text(exc))
@@ -64,7 +64,7 @@ def unconfirmed_media_result(error: Exception, what: str, *, as_failure: bool = 
     a URL send), marked uncertain and notice-suppressed instead of falling back to a re-upload."""
     if not request_may_have_delivered(error):
         return None
-    from plugins.platforms.telegram.adapter import _redact_telegram_error_text
+    from hermes_agent.plugins.platforms.telegram.adapter import _redact_telegram_error_text
     safe_error = _redact_telegram_error_text(error)
     logger.warning("[Telegram] %s unconfirmed (it may already be in the chat, not resending): %s", what, safe_error)
     if as_failure:

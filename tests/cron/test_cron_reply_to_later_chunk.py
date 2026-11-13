@@ -146,7 +146,7 @@ def test_an_unreadable_sent_index_leaves_ordinary_replies_working(tmp_path, monk
 def test_telegram_standalone_sender_reports_every_chunk_id(monkeypatch):
     """The out-of-gateway sender exposes all chunk ids, not only the last one."""
     from tests.tools.test_telegram_send_message_chunk_mdv2 import _install_telegram_mock, _no_proxy
-    from plugins.platforms.telegram.standalone import _send_telegram
+    from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
 
     _no_proxy(monkeypatch)
     sent = iter(range(500, 510))
@@ -163,7 +163,7 @@ def test_a_partial_standalone_split_send_frames_replies_to_its_landed_chunks(mon
     A reply to 502 quotes a continuation chunk without the header, so it is framed as a past report
     only if the failed send's landed ids were tagged."""
     from tests.tools.test_telegram_send_message_chunk_mdv2 import _install_telegram_mock, _no_proxy
-    from plugins.platforms.telegram.standalone import _send_telegram
+    from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
     from hermes_agent.gateway.inbound_reply_context import reply_pointer
 
     _no_proxy(monkeypatch)

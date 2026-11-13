@@ -13,7 +13,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from plugins.platforms.discord.adapter import _remember_channel_is_forum, _standalone_send
+from hermes_agent.plugins.platforms.discord.adapter import _remember_channel_is_forum, _standalone_send
 
 
 def _resp(status, json_data=None, text_data=None):

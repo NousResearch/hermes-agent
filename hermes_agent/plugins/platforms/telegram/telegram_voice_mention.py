@@ -17,7 +17,7 @@ from hermes_agent.gateway.platforms.helpers import spoken_mention_clips, voice_m
 if TYPE_CHECKING:
     from hermes_agent.gateway.platforms.event import MessageEvent
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 
 async def admit_media(adapter: Any, msg: Any) -> Optional[list[str]]:
@@ -33,7 +33,7 @@ async def admit_media(adapter: Any, msg: Any) -> Optional[list[str]]:
     allowed, _note = adapter._telegram_media_size_allowed(voice, "voice message")
     if not allowed:
         return None
-    from plugins.platforms.telegram.telegram_media_fetch import fetch_telegram_file
+    from hermes_agent.plugins.platforms.telegram.telegram_media_fetch import fetch_telegram_file
     try:
         _file, data = await fetch_telegram_file(voice, "user voice")
         path = await cache_audio_from_bytes_async(data, ext=".ogg")

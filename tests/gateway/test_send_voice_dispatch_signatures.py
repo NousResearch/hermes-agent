@@ -20,7 +20,7 @@ async def test_media_dispatch_delivers_audio_through_mattermost_send_voice(tmp_p
     from hermes_agent.gateway.platforms.base import SendResult
     from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_agent.gateway.session import Platform, SessionSource
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
     adapter = MattermostAdapter(PlatformConfig(enabled=True, token="mm-token", extra={"url": "https://mm.example"}))
     adapter._send_local_file = AsyncMock(return_value=SendResult(success=True, message_id="post-1"))

@@ -2,7 +2,7 @@
 
 Run as ``python webapp_gated_sign_out_peer.py <port>`` with an isolated ``HERMES_HOME``. The listener binds
 loopback only; a public URL engages the sign-in gate (``engage_sign_in_gate``), and the bundled password
-provider (``plugins/dashboard_auth/basic``) is configured with a throwaway password. Writes ``receipt.json``
+provider (``hermes_agent/plugins/dashboard_auth/basic``) is configured with a throwaway password. Writes ``receipt.json``
 there (the gateway redirects stdout). No external inference: the model points at a closed port.
 """
 import asyncio
@@ -24,7 +24,7 @@ def engage_sign_in_gate(config: dict, public_url: str) -> None:
 
 
 def write_config(home: Path, port: int) -> None:
-    from plugins.dashboard_auth.basic import hash_password
+    from hermes_agent.plugins.dashboard_auth.basic import hash_password
 
     config = {
         "gateway": {"multiplex_profiles": False},

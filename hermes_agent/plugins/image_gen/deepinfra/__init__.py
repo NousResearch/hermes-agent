@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_agent.agent.secret_scope import get_secret
 from hermes_agent.agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
-from plugins.image_gen._common import (
+from hermes_agent.plugins.image_gen._common import (
     StaticImageGenProvider, error_factory, import_openai, load_image_gen_config, materialize_image,
     prompt_required_error, size_for)
 

@@ -27,7 +27,7 @@ class _EchoingSession:
 
 @pytest.mark.parametrize("no_proxy", [".googleapis.com", "googleapis.com", "chat.googleapis.com,oauth2.googleapis.com,pubsub.googleapis.com,www.googleapis.com"])
 def test_download_uri_error_hides_the_env_proxy_secret_when_no_proxy_skips_only_the_api(monkeypatch, caplog, no_proxy):
-    from plugins.platforms.google_chat.adapter import GoogleChatAdapter
+    from hermes_agent.plugins.platforms.google_chat.adapter import GoogleChatAdapter
 
     for name in ENV_PROXY_VARS:
         monkeypatch.delenv(name, raising=False)
@@ -43,7 +43,7 @@ def test_download_uri_error_hides_the_env_proxy_secret_when_no_proxy_skips_only_
 
 
 def test_download_uri_error_keeps_its_text_when_no_proxy_bypasses_the_fetched_host(monkeypatch, caplog):
-    from plugins.platforms.google_chat.adapter import GoogleChatAdapter
+    from hermes_agent.plugins.platforms.google_chat.adapter import GoogleChatAdapter
 
     for name in ENV_PROXY_VARS:
         monkeypatch.delenv(name, raising=False)

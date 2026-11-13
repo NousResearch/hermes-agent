@@ -58,7 +58,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 from hermes_agent.gateway.platforms.event import MessageType
 from datetime import UTC
 
@@ -133,10 +133,10 @@ class TestCacheDiscordImage:
         att = _make_attachment_with_read(b"<html>forbidden</html>")
 
         with patch(
-            "plugins.platforms.discord.adapter.cache_image_from_bytes_async",
+            "hermes_agent.plugins.platforms.discord.adapter.cache_image_from_bytes_async",
             new=AsyncMock(side_effect=ValueError("not a valid image")),
         ), patch(
-            "plugins.platforms.discord.adapter.cache_image_from_url",
+            "hermes_agent.plugins.platforms.discord.adapter.cache_image_from_url",
             new_callable=AsyncMock,
             return_value="/tmp/fallback.png",
         ) as mock_url:
@@ -157,10 +157,10 @@ class TestCacheDiscordAudio:
         att = _make_attachment_with_read(_OGG_BYTES)
 
         with patch(
-            "plugins.platforms.discord.adapter.cache_audio_from_bytes_async",
+            "hermes_agent.plugins.platforms.discord.adapter.cache_audio_from_bytes_async",
             new=AsyncMock(return_value="/tmp/voice.ogg"),
         ) as mock_bytes, patch(
-            "plugins.platforms.discord.adapter.cache_audio_from_url",
+            "hermes_agent.plugins.platforms.discord.adapter.cache_audio_from_url",
             new_callable=AsyncMock,
         ) as mock_url:
             result = await adapter._cache_discord_audio(att, ".ogg")
@@ -188,7 +188,7 @@ class TestCacheDiscordDocument:
         att = _make_attachment_without_read()  # no .read → forces fallback
 
         with patch(
-            "plugins.platforms.discord.adapter.is_safe_url", return_value=False
+            "hermes_agent.plugins.platforms.discord.adapter.is_safe_url", return_value=False
         ) as mock_safe, patch("aiohttp.ClientSession") as mock_session:
             with pytest.raises(ValueError, match="SSRF"):
                 await adapter._cache_discord_document(att, ".pdf")
@@ -216,10 +216,10 @@ class TestHandleMessageUsesAuthenticatedRead:
         adapter.handle_message = AsyncMock()
 
         with patch(
-            "plugins.platforms.discord.adapter.cache_image_from_bytes_async",
+            "hermes_agent.plugins.platforms.discord.adapter.cache_image_from_bytes_async",
             new=AsyncMock(return_value="/tmp/img_from_read.png"),
         ), patch(
-            "plugins.platforms.discord.adapter.cache_image_from_url",
+            "hermes_agent.plugins.platforms.discord.adapter.cache_image_from_url",
             new_callable=AsyncMock,
         ) as mock_url_download:
             att = SimpleNamespace(
@@ -238,7 +238,7 @@ class TestHandleMessageUsesAuthenticatedRead:
 
             # Patch the DMChannel isinstance check so our fake counts as DM.
             monkeypatch.setattr(
-                "plugins.platforms.discord.adapter.discord.DMChannel",
+                "hermes_agent.plugins.platforms.discord.adapter.discord.DMChannel",
                 _FakeDMChannel,
             )
             chan = _FakeDMChannel()

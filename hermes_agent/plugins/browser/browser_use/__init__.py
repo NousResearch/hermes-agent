@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
+from hermes_agent.plugins.browser.browser_use.provider import BrowserUseBrowserProvider
 
 
 def register(ctx) -> None:

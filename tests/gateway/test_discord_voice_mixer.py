@@ -1,7 +1,7 @@
 """Tests for the Discord continuous voice mixer (ambient + ducked speech)
 and the verbal-ack-before-tool-calls hook.
 
-The mixer (plugins/platforms/discord/voice_mixer.py) is pure-PCM and has no
+The mixer (hermes_agent/plugins/platforms/discord/voice_mixer.py) is pure-PCM and has no
 discord.py dependency, so its core is tested directly.  The adapter
 integration (install on join, play routing, ack) is tested with the standard
 ``object.__new__(DiscordAdapter)`` helper used elsewhere in the voice suite.
@@ -63,7 +63,7 @@ class TestVoiceMixerCore:
 # =====================================================================
 
 def _make_adapter(fx_cfg=None):
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     from hermes_agent.gateway.config import Platform, PlatformConfig
     config = PlatformConfig(enabled=True, extra={})
     config.token = "fake-token"

@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, search_fail, search_ok, setup_schema, with_origin_status
+from hermes_agent.plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, search_fail, search_ok, setup_schema, with_origin_status
 from hermes_agent.tools import managed_tool_gateway as _gateway
 from hermes_agent.tools import tool_backend_helpers as _backend_helpers
 from hermes_agent.tools.url_safety import is_safe_url
@@ -87,7 +87,7 @@ def _get_direct_firecrawl_config() -> Optional[tuple]:
 
 
 def _is_explicit_firecrawl_selection() -> bool:
-    from plugins.web.keyless_mcp import _web_config_selects
+    from hermes_agent.plugins.web.keyless_mcp import _web_config_selects
     return _web_config_selects("firecrawl")
 
 
@@ -97,7 +97,7 @@ def _use_keyless_ring(capability: Optional[str] = None) -> bool:
     if _env("FIRECRAWL_API_KEY") or _env("FIRECRAWL_API_URL"):
         return False
     from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_web_capability_selection
-    from plugins.web.keyless_mcp import use_keyless
+    from hermes_agent.plugins.web.keyless_mcp import use_keyless
     # Both probes are optional layers: a failing probe never blocks the ring.
     for probe in (lambda: read_web_capability_selection(capability) == NOUS_MANAGED_PROVIDER,
                   lambda: _is_tool_gateway_ready() and not _is_explicit_firecrawl_selection()):

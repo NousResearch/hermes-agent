@@ -105,10 +105,10 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
 @pytest.mark.parametrize(
     "module_path, class_name",
     [
-        ("plugins.platforms.wecom.adapter", "WeComAdapter"),
-        ("plugins.platforms.weixin.adapter", "WeixinAdapter"),
-        ("plugins.platforms.qqbot.adapter", "QQAdapter"),
-        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+        ("hermes_agent.plugins.platforms.wecom.adapter", "WeComAdapter"),
+        ("hermes_agent.plugins.platforms.weixin.adapter", "WeixinAdapter"),
+        ("hermes_agent.plugins.platforms.qqbot.adapter", "QQAdapter"),
+        ("hermes_agent.plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ],
 )
 def test_own_policy_adapters_declare_the_flag(module_path, class_name):
@@ -238,10 +238,10 @@ def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, pla
 @pytest.mark.parametrize(
     "module_path, class_name, dm_helper",
     [
-        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_allowed"),
-        ("plugins.platforms.wecom.adapter", "WeComAdapter", "_is_dm_allowed"),
-        ("plugins.platforms.weixin.adapter", "WeixinAdapter", "_is_dm_allowed"),
-        ("plugins.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
+        ("hermes_agent.plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_allowed"),
+        ("hermes_agent.plugins.platforms.wecom.adapter", "WeComAdapter", "_is_dm_allowed"),
+        ("hermes_agent.plugins.platforms.weixin.adapter", "WeixinAdapter", "_is_dm_allowed"),
+        ("hermes_agent.plugins.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
     ],
 )
 def test_pairing_dm_policy_strict_intake_auth_denies_unknown(

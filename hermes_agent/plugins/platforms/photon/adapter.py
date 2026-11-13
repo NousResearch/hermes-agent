@@ -357,7 +357,7 @@ def _markdown_enabled() -> bool:
     return _get_scoped_secret("PHOTON_MARKDOWN", "true").strip().lower() not in {"false", "0", "no"}
 
 
-# Mirrors URL_RE in plugins/platforms/photon/sidecar/send-format.mjs. Keep the
+# Mirrors URL_RE in hermes_agent/plugins/platforms/photon/sidecar/send-format.mjs. Keep the
 # two in sync: the sidecar owns the builder choice, this owns the payload that
 # choice implies.
 _SIDECAR_URL_RE = re.compile(r"https?://[^\s)'\"<>]+", re.IGNORECASE)

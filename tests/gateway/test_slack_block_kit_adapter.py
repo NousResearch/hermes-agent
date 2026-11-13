@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 def _make_adapter(extra=None):

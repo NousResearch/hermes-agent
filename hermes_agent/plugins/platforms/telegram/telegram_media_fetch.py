@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 # Backoff (seconds) before each further attempt of one inbound file fetch.
 FETCH_RETRY_DELAYS = (2.0, 5.0)
@@ -68,7 +68,7 @@ def local_bot_api_path(file_path: Any, root: str) -> Path | None:
 def is_retryable_fetch_error(exc: Exception) -> bool:
     """A transport failure (PTB ``NetworkError``/``TimedOut`` or a bare httpx/OS error) other than a
     Bot API refusal or a pool timeout (the local pool is exhausted; an immediate replay stalls too)."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter as tg
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter as tg
     if tg._is_bad_request_error(exc) or tg._looks_like_auth_error(exc) or tg._looks_like_pool_timeout(exc):
         return False
     return tg._looks_like_network_error(exc) or type(exc).__name__ in {
@@ -79,7 +79,7 @@ async def fetch_telegram_file(source: Any, what: str, local_root: str | None = N
     """``(file_obj, bytes)`` for one attachment. ``get_file()`` and the download retry as one unit:
     a half-read download is not resumable. ``local_root`` (``extra.local_bot_api_root``): where a
     ``--local`` server's storage is mounted on this host (``local_bot_api_path``)."""
-    from plugins.platforms.telegram.adapter import _redact_telegram_error_text
+    from hermes_agent.plugins.platforms.telegram.adapter import _redact_telegram_error_text
     delays = list(FETCH_RETRY_DELAYS)
     attempt = 0
     while True:

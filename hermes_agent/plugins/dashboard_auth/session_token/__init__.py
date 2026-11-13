@@ -28,7 +28,7 @@ from typing import Optional
 
 from hermes_agent.hermes_cli.dashboard_auth import (
     DashboardAuthProvider, RefreshExpiredError, Session)
-from plugins.dashboard_auth._shared import (
+from hermes_agent.plugins.dashboard_auth._shared import (
     NonInteractiveMixin, SkipRegistration, load_config_section, register_provider)
 
 logger = logging.getLogger(__name__)

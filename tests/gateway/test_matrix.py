@@ -305,7 +305,7 @@ class TestMatrixConfigLoading:
 
 def _make_adapter():
     """Create a MatrixAdapter with mocked config."""
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
     config = PlatformConfig(
         enabled=True,
         token="syt_test_token",
@@ -331,7 +331,7 @@ class TestMatrixTypingIndicator:
     @pytest.mark.asyncio
     async def test_stop_typing_clears_matrix_typing_state(self):
         """stop_typing() should send typing=false instead of waiting for timeout expiry."""
-        from plugins.platforms.matrix.adapter import RoomID
+        from hermes_agent.plugins.platforms.matrix.adapter import RoomID
 
         await self.adapter.stop_typing("!room:example.org")
 
@@ -463,7 +463,7 @@ class TestMatrixBangCommandAlias:
         return captured_event
 
     def test_known_bang_command_normalizes_to_slash_command(self):
-        from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+        from hermes_agent.plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
 
         assert _normalize_matrix_bang_command("!model") == "/model"
         assert (
@@ -497,7 +497,7 @@ class TestMatrixBangCommandAlias:
         with patch.object(
             skill_commands_mod, "get_skill_commands", return_value=fake_skills
         ):
-            from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+            from hermes_agent.plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
 
             # is_gateway_known_command won't know these; the skill branch must.
             assert _normalize_matrix_bang_command("!arxiv") == "/arxiv"
@@ -670,7 +670,7 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
         monkeypatch.setenv("MATRIX_ENCRYPTION", "true")
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
              patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is False
@@ -682,7 +682,7 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_E2EE_MODE", "optional")
         monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
              patch("pm.extras.missing", return_value=()), \
              patch("pm.extras.ensure_and_bind", return_value=True):
@@ -694,7 +694,7 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
         monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False), \
              patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
@@ -705,7 +705,7 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
         monkeypatch.setenv("MATRIX_ENCRYPTION", "true")
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
              patch("pm.extras.missing", return_value=()):
             assert matrix_mod.check_matrix_requirements() is True
@@ -720,7 +720,7 @@ class TestMatrixRequirements:
         a confusing ``No module named 'asyncpg'`` deep in
         ``MatrixAdapter.connect()``.
         """
-        from plugins.platforms.matrix.adapter import _check_e2ee_deps
+        from hermes_agent.plugins.platforms.matrix.adapter import _check_e2ee_deps
         import builtins
         real_import = builtins.__import__
 
@@ -738,7 +738,7 @@ class TestMatrixRequirements:
         Mautrix's ``Database.create("sqlite:///...")`` driver lookup imports
         aiosqlite lazily — without it, connect fails at ``crypto_db.start()``.
         """
-        from plugins.platforms.matrix.adapter import _check_e2ee_deps
+        from hermes_agent.plugins.platforms.matrix.adapter import _check_e2ee_deps
         import builtins
         real_import = builtins.__import__
 
@@ -762,7 +762,7 @@ class TestMatrixRequirements:
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
         monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
 
         # Simulate "mautrix installed, asyncpg missing" → extras.missing
         # returns a non-empty tuple → ensure_and_bind MUST be called.
@@ -792,7 +792,7 @@ class TestMatrixAccessTokenAuth:
     @pytest.mark.asyncio
     async def test_connect_with_access_token_and_encryption(self):
         """connect() should call whoami, set user_id/device_id, set up crypto."""
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -846,7 +846,7 @@ class TestMatrixAccessTokenAuth:
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -898,7 +898,7 @@ class TestMatrixE2EEHardFail:
 
     @pytest.mark.asyncio
     async def test_connect_fails_when_encryption_true_but_no_e2ee_deps(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -925,7 +925,7 @@ class TestMatrixE2EEHardFail:
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
@@ -935,7 +935,7 @@ class TestMatrixE2EEHardFail:
 
     @pytest.mark.asyncio
     async def test_connect_continues_when_e2ee_optional_but_no_deps(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -972,7 +972,7 @@ class TestMatrixE2EEHardFail:
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(matrix_mod, "_create_matrix_session", return_value=MagicMock()):
@@ -991,7 +991,7 @@ class TestMatrixDeviceId:
     def test_device_id_config_takes_precedence_over_env(self, monkeypatch):
         monkeypatch.setenv("MATRIX_DEVICE_ID", "FROM_ENV")
 
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -1016,7 +1016,7 @@ class TestMatrixDeviceId:
         preferred when whoami reports no device, and is still recorded on the
         adapter, which is what this test pins.
         """
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -1063,7 +1063,7 @@ class TestMatrixDeviceId:
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -1084,7 +1084,7 @@ class TestMatrixPasswordLoginDeviceId:
 
     @pytest.mark.asyncio
     async def test_password_login_uses_device_id(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -1292,7 +1292,7 @@ class TestMatrixSyncLoop:
     @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):
         """A DM delivered by initial sync should reach the message handler after connect."""
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         adapter = MatrixAdapter(
             PlatformConfig(
@@ -1359,7 +1359,7 @@ class TestMatrixSyncLoop:
         mock_client.handle_sync = MagicMock(side_effect=handle_sync)
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.dict("sys.modules", fake_mautrix_mods):
             with patch.object(matrix_mod, "_create_matrix_session", return_value=MagicMock()):
                 with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
@@ -1430,7 +1430,7 @@ class TestMatrixUploadAndSend:
 
 class TestMatrixDiagnostics:
     def test_diagnostics_redacts_credentials_and_reports_status(self, monkeypatch):
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
 
         monkeypatch.setenv("MATRIX_RECOVERY_KEY", "secret recovery key")
         adapter = _make_adapter()
@@ -1465,7 +1465,7 @@ class TestMatrixDiagnostics:
         monkeypatch,
         caplog,
     ):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         output_path = tmp_path / "matrix-recovery-key.txt"
         output_path.write_text("existing\n")
@@ -1517,7 +1517,7 @@ class TestMatrixDiagnostics:
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -1572,7 +1572,7 @@ class TestMatrixEncryptedSendFallback:
 class TestJoinedRoomsReference:
     def test_joined_rooms_reference_preserved_after_reassignment(self):
         """_CryptoStateStore must see updates after initial sync populates rooms."""
-        from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
+        from hermes_agent.plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
 
         joined = set()
         store = _CryptoStateStore(MagicMock(), joined)
@@ -1593,7 +1593,7 @@ class TestJoinedRoomsReference:
 class TestMatrixEncryptedEventHandler:
     @pytest.mark.asyncio
     async def test_connect_registers_encrypted_event_handler_when_encryption_on(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -1639,7 +1639,7 @@ class TestMatrixEncryptedEventHandler:
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -1699,7 +1699,7 @@ class TestMatrixMarkdownHtmlSecurity:
     """Tests for HTML injection prevention in _markdown_to_html_fallback."""
 
     def setup_method(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
         self.convert = MatrixAdapter._markdown_to_html_fallback
 
     def test_script_injection_in_header(self):
@@ -1734,7 +1734,7 @@ class TestMatrixMarkdownHtmlFormatting:
     """Tests for new formatting capabilities in _markdown_to_html_fallback."""
 
     def setup_method(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
         self.convert = MatrixAdapter._markdown_to_html_fallback
 
     def test_fenced_code_block(self):
@@ -1765,12 +1765,12 @@ class TestMatrixMarkdownHtmlFormatting:
 
 class TestMatrixLinkSanitization:
     def test_safe_https_url(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
         assert MatrixAdapter._sanitize_link_url("https://example.com") == "https://example.com"
 
 
     def test_quotes_escaped(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
         result = MatrixAdapter._sanitize_link_url('http://x"y')
         assert '"' not in result
         assert "&quot;" in result
@@ -2242,7 +2242,7 @@ class TestMatrixRequireMention:
 
     @pytest.mark.asyncio
     async def test_require_mention_false_allows_unmentioned_group_message(self):
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -2340,7 +2340,7 @@ class TestMatrixClockSkewWarning:
         # Server events are dated 2h before startup_ts (skewed clock).
         skewed_event_ts_ms = int((self.adapter._startup_ts - 7200) * 1000)
 
-        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.platforms.matrix.adapter"):
             for i in range(5):
                 ev = self._mk_event(
                     sender=f"@alice{i}:example.org", ts_ms=skewed_event_ts_ms
@@ -2354,7 +2354,7 @@ class TestMatrixClockSkewWarning:
         # assertion.
         skew_warnings = [
             r for r in caplog.records
-            if r.name == "plugins.platforms.matrix.adapter"
+            if r.name == "hermes_agent.plugins.platforms.matrix.adapter"
             and r.levelname == "WARNING"
             and "set-ntp" in r.getMessage()
         ]
@@ -2379,7 +2379,7 @@ class TestMatrixClockSkewWarning:
         self.adapter._startup_ts = now - 1
         old_ts_ms = int((self.adapter._startup_ts - 3600) * 1000)
 
-        with caplog.at_level(logging.WARNING, logger="plugins.platforms.matrix.adapter"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.platforms.matrix.adapter"):
             for i in range(5):
                 ev = self._mk_event(
                     sender=f"@alice{i}:example.org", ts_ms=old_ts_ms
@@ -2390,7 +2390,7 @@ class TestMatrixClockSkewWarning:
         assert self.adapter._clock_skew_warned is False
         skew_warnings = [
             r for r in caplog.records
-            if r.name == "plugins.platforms.matrix.adapter"
+            if r.name == "hermes_agent.plugins.platforms.matrix.adapter"
             and "set-ntp" in r.getMessage()
         ]
         assert skew_warnings == []
@@ -2446,7 +2446,7 @@ class TestMatrixProxyConfig:
             for k, v in proxy_env.items():
                 monkeypatch.setenv(k, v)
         with patch.dict("sys.modules", _make_fake_mautrix()):
-            from plugins.platforms.matrix.adapter import MatrixAdapter
+            from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
             cfg = PlatformConfig(enabled=True, token="syt_test",
                                  extra={"homeserver": "https://matrix.example.org",
                                         "user_id": "@bot:example.org"})
@@ -2466,7 +2466,7 @@ class TestCreateMatrixSession:
     @pytest.mark.asyncio
     async def test_no_proxy_returns_trust_env_session(self):
         with patch.dict("sys.modules", _make_fake_mautrix()):
-            from plugins.platforms.matrix.adapter import _create_matrix_session
+            from hermes_agent.plugins.platforms.matrix.adapter import _create_matrix_session
             session = _create_matrix_session(None)
             try:
                 assert session.trust_env is True
@@ -2530,7 +2530,7 @@ class TestDeviceIdNoneResolution:
     @pytest.mark.asyncio
     async def test_none_device_id_resolved_via_query_keys(self):
         """query_keys({mxid: []}) with exactly one device should adopt that ID."""
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -2585,7 +2585,7 @@ class TestDeviceIdNoneResolution:
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -2690,7 +2690,7 @@ class TestDeviceIdRecoveryOnReconnect:
         """Same adapter, first connect fails to resolve, second succeeds. Flag
         must be False afterward and server verification must run on the second
         call."""
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -2738,7 +2738,7 @@ class TestDeviceIdRecoveryOnReconnect:
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client1)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm1)
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -2904,7 +2904,7 @@ class TestCryptoStoreResetOnDeviceChange:
         must win, and the store must be reset.
         """
         import logging
-        from plugins.platforms.matrix.adapter import MatrixAdapter
+        from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
             enabled=True,
@@ -2982,7 +2982,7 @@ class TestCryptoStoreResetOnDeviceChange:
             return_value=mock_olm
         )
 
-        import plugins.platforms.matrix.adapter as matrix_mod
+        import hermes_agent.plugins.platforms.matrix.adapter as matrix_mod
 
         with caplog.at_level(logging.WARNING), patch.object(
             matrix_mod, "_check_e2ee_deps", return_value=True

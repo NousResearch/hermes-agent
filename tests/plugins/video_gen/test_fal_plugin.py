@@ -23,7 +23,7 @@ def test_kling_v3_standard_and_pro_payload_shape():
     """Kling 3.0 (v3 standard/pro): start_image_url on i2v, aspect_ratio
     dropped on i2v (schema derives it from the image), no seed/resolution
     keys, string duration 3-15, generate_audio + negative_prompt real."""
-    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
     for fid in ("kling-v3", "kling-v3-pro"):
         meta = FAL_FAMILIES[fid]
@@ -71,7 +71,7 @@ def test_kling_v3_standard_and_pro_payload_shape():
 def test_minimax_h3_int_duration_and_resolution_alias():
     """MiniMax H3 requires duration as a JSON integer and uses the
     768P/2K/4K resolution enum — the tool's 720p/1080p values must map."""
-    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
     meta = FAL_FAMILIES["minimax-h3"]
     payload = _build_payload(
@@ -101,7 +101,7 @@ def test_minimax_h3_int_duration_and_resolution_alias():
 def test_h3_max_turbo_static_key_and_1080p_alias():
     """H3 Max Turbo requires prompt_expansion_mode on both endpoints, adds a real
     1080P tier (unlike Max, which caps at 768P), and its i2v drops aspect_ratio."""
-    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
     meta = FAL_FAMILIES["minimax-h3-max-turbo"]
     t2v = _build_payload(
@@ -125,7 +125,7 @@ def test_h3_max_turbo_static_key_and_1080p_alias():
 def test_image_drop_keys_strips_aspect_ratio_on_i2v():
     """Seedance 2.5 / MiniMax H3 / Grok 1.5 i2v endpoints derive the
     aspect ratio from the input image; sending the key is rejected."""
-    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
     for fid in ("seedance-2.5", "minimax-h3", "grok-imagine-1.5"):
         meta = FAL_FAMILIES[fid]
@@ -147,7 +147,7 @@ def test_image_drop_keys_strips_aspect_ratio_on_i2v():
 def test_wan_30_audio_toggle_uses_family_key_and_start_image_url():
     """Wan 3.0's schema names the audio toggle `audio` (not `generate_audio`), takes
     `start_image_url` on i2v and an integer duration; veo3.1 keeps `generate_audio`."""
-    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
     kw = dict(prompt="x", duration=7, aspect_ratio="16:9", resolution="720p", negative_prompt=None, audio=True, seed=None)
     p = _build_payload(FAL_FAMILIES["wan-3.0"], image_url="https://i.png", **kw)
@@ -159,7 +159,7 @@ def test_wan_30_audio_toggle_uses_family_key_and_start_image_url():
 def test_wan_27_payload_matches_live_schema():
     """Wan 2.7 (fal-ai/wan/v2.7/*): integer duration clamped to 2..15, aspect_ratio on t2v only,
     seed + negative_prompt on both, and no audio toggle key (audio is auto-generated)."""
-    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
     kw = dict(prompt="x", duration=20, aspect_ratio="16:9", resolution="720p", negative_prompt="blurry", audio=True, seed=7)
     t2v = _build_payload(FAL_FAMILIES["wan-2.7"], image_url=None, **kw)
@@ -173,8 +173,8 @@ def test_text_only_job_errors_cleanly_for_i2v_only_family(monkeypatch):
     """Catalog-shape guard: a family without a text endpoint must error cleanly
     instead of submitting to a None endpoint. Every cataloged family is now
     dual-modality, so the guard is exercised with a synthetic family."""
-    from plugins.video_gen import fal as fal_plugin
-    from plugins.video_gen.fal import FALVideoGenProvider, _family
+    from hermes_agent.plugins.video_gen import fal as fal_plugin
+    from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider, _family
 
     synthetic = _family("Synthetic i2v", "~1s", "cheap", "test", None, "example/i2v-only/image-to-video", durations=(3, 10), duration_int=True)
     monkeypatch.setattr(fal_plugin, "_fal_video_available", lambda: True)
@@ -190,7 +190,7 @@ def test_text_only_job_errors_cleanly_for_i2v_only_family(monkeypatch):
 def test_every_family_has_required_metadata():
     """Invariant: every family entry carries the picker-facing metadata and
     at least one endpoint."""
-    from plugins.video_gen.fal import FAL_FAMILIES
+    from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES
 
     for fid, meta in FAL_FAMILIES.items():
         assert meta.get("display"), fid
@@ -225,7 +225,7 @@ class TestFamilyRouting:
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
         # Reset the lazy global so it picks up our stub
-        from plugins.video_gen import fal as fal_plugin
+        from hermes_agent.plugins.video_gen import fal as fal_plugin
         fal_plugin._fal_client = None
         # Also reset the managed client cache
         fal_plugin._managed_fal_video_client = None
@@ -237,7 +237,7 @@ class TestFamilyRouting:
         return captured
 
     def test_text_to_video_routes_to_text_endpoint(self, with_fake_fal):
-        from plugins.video_gen.fal import FALVideoGenProvider
+        from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider
 
         result = FALVideoGenProvider().generate(
             "a dog running",
@@ -250,7 +250,7 @@ class TestFamilyRouting:
         assert "image_url" not in with_fake_fal["arguments"]
 
     def test_image_to_video_routes_to_image_endpoint(self, with_fake_fal):
-        from plugins.video_gen.fal import FALVideoGenProvider
+        from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider
 
         result = FALVideoGenProvider().generate(
             "animate this dog",
@@ -264,7 +264,7 @@ class TestFamilyRouting:
 
     def test_default_family_text_routing(self, with_fake_fal):
         """No model arg → DEFAULT_MODEL → text-to-video endpoint."""
-        from plugins.video_gen.fal import FALVideoGenProvider, FAL_FAMILIES, DEFAULT_MODEL
+        from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider, FAL_FAMILIES, DEFAULT_MODEL
 
         result = FALVideoGenProvider().generate("a dog")
         assert result["success"] is True
@@ -273,7 +273,7 @@ class TestFamilyRouting:
 
 
     def test_unknown_family_falls_back_to_default(self, with_fake_fal):
-        from plugins.video_gen.fal import FALVideoGenProvider, FAL_FAMILIES, DEFAULT_MODEL
+        from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider, FAL_FAMILIES, DEFAULT_MODEL
 
         result = FALVideoGenProvider().generate(
             "x",
@@ -289,7 +289,7 @@ class TestFamilyKeyNormalization:
         """A configured endpoint path must resolve to the family that declares
         it. The segment scan alone reads the "seedance-2.0" in
         ".../seedance-2.0/mini/..." and bills the full-price family."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _normalize_family_key
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _normalize_family_key
 
         for fid, meta in FAL_FAMILIES.items():
             for key in ("text_endpoint", "image_endpoint"):
@@ -298,7 +298,7 @@ class TestFamilyKeyNormalization:
                     assert _normalize_family_key(endpoint) == fid, endpoint
 
     def test_bare_and_prefixed_ids_still_resolve(self):
-        from plugins.video_gen.fal import _normalize_family_key
+        from hermes_agent.plugins.video_gen.fal import _normalize_family_key
 
         assert _normalize_family_key("seedance-2.5") == "seedance-2.5"
         assert _normalize_family_key("bytedance/seedance-2.5") == "seedance-2.5"
@@ -307,7 +307,7 @@ class TestFamilyKeyNormalization:
 
     def test_truncated_endpoint_stems_resolve(self):
         """Config often stores the FAL app path without the modality leaf."""
-        from plugins.video_gen.fal import _normalize_family_key
+        from hermes_agent.plugins.video_gen.fal import _normalize_family_key
 
         assert _normalize_family_key("bytedance/seedance-2.0/mini") == "seedance-2.0-mini"
         assert _normalize_family_key("bytedance/seedance-2.0") == "seedance-2.0"
@@ -323,8 +323,8 @@ class TestFamilyKeyNormalization:
         (resolution failure) must still span the 30s ceiling."""
         from unittest.mock import patch as _patch
 
-        import plugins.video_gen.fal as _fp
-        from plugins.video_gen.fal import FAL_FAMILIES, FALVideoGenProvider
+        import hermes_agent.plugins.video_gen.fal as _fp
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, FALVideoGenProvider
 
         # Active model resolved → that family's actual window.
         meta = FAL_FAMILIES["seedance-2.5"]
@@ -352,7 +352,7 @@ class TestFamilyKeyNormalization:
 class TestPayloadBuilder:
     def test_drops_unsupported_keys(self):
         """Veo enum-clamps duration, supports aspect+resolution+audio+neg."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         meta = FAL_FAMILIES["veo3.1"]
         p = _build_payload(
@@ -390,7 +390,7 @@ class TestPayloadBuilder:
     def test_seed_dropped_for_families_without_seed_support(self, family_id):
         """These FAL endpoints declare no `seed`; the gateway forwards whatever
         we send, so an unknown key would reach the vendor."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         p = _build_payload(
             FAL_FAMILIES[family_id],
@@ -408,7 +408,7 @@ class TestPayloadBuilder:
 
     def test_audio_only_sent_for_families_that_declare_it(self):
         """minimax-h3 and the i2v-only families have no generate_audio field."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         for family_id in ("minimax-h3", "grok-imagine-1.5", "gemini-omni-flash"):
             p = _build_payload(
@@ -434,7 +434,7 @@ class TestPayloadBuilder:
         ],
     )
     def test_duration_is_emitted_in_the_form_fal_declares(self, family_id, expected):
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         p = _build_payload(
             FAL_FAMILIES[family_id],
@@ -447,7 +447,7 @@ class TestPayloadBuilder:
     def test_every_family_declares_both_endpoints(self):
         """Catalog invariant: since Gemini Omni Flash 1.1 every family is
         dual-modality — both endpoints must be non-empty strings."""
-        from plugins.video_gen.fal import FAL_FAMILIES
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES
 
         for fid, meta in FAL_FAMILIES.items():
             assert meta.get("text_endpoint"), fid
@@ -456,7 +456,7 @@ class TestPayloadBuilder:
     def test_ltx_omits_duration_aspect_resolution(self):
         """LTX 2.3 doesn't declare duration/aspect/resolution enums —
         the payload should NOT include those keys (let FAL default)."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         meta = FAL_FAMILIES["ltx-2.3"]
         p = _build_payload(
@@ -480,7 +480,7 @@ class TestPayloadBuilder:
     def test_range_families_omit_duration_when_unspecified(self):
         """Range-based families must omit `duration` when the caller doesn't
         specify one so FAL applies its endpoint default, not the minimum."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         for family_id in ("pixverse-v6", "seedance-2.0", "kling-v3-4k"):
             meta = FAL_FAMILIES[family_id]
@@ -503,7 +503,7 @@ class TestPayloadBuilder:
 
     def test_ltx_25_payload(self):
         """LTX 2.5: integer duration enum, 4K alias, no seed key."""
-        from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+        from hermes_agent.plugins.video_gen.fal import FAL_FAMILIES, _build_payload
 
         meta = FAL_FAMILIES["ltx-2.5"]
         p = _build_payload(
@@ -573,7 +573,7 @@ class TestUpscalePass:
         fake.submit = _submit  # type: ignore
         monkeypatch.setitem(sys.modules, "fal_client", fake)
 
-        from plugins.video_gen import fal as fal_plugin
+        from hermes_agent.plugins.video_gen import fal as fal_plugin
         fal_plugin._fal_client = None
         fal_plugin._managed_fal_video_client = None
         fal_plugin._managed_fal_video_client_config = None
@@ -583,7 +583,7 @@ class TestUpscalePass:
         return captured
 
     def test_upscale_chains_seedvr(self, with_fake_fal):
-        from plugins.video_gen.fal import FALVideoGenProvider, UPSCALER_ENDPOINT
+        from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider, UPSCALER_ENDPOINT
 
         result = FALVideoGenProvider().generate(
             "a dog", model="pixverse-v6", upscale=True,
@@ -600,7 +600,7 @@ class TestUpscalePass:
         assert upscale_args["upscale_mode"] == "factor"
 
     def test_no_upscale_by_default(self, with_fake_fal):
-        from plugins.video_gen.fal import FALVideoGenProvider
+        from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider
 
         result = FALVideoGenProvider().generate("a dog", model="pixverse-v6")
         assert result["success"] is True
@@ -609,8 +609,8 @@ class TestUpscalePass:
         assert len(with_fake_fal["calls"]) == 1
 
     def test_upscale_failure_falls_back_to_native(self, with_fake_fal, monkeypatch):
-        from plugins.video_gen import fal as fal_plugin
-        from plugins.video_gen.fal import FALVideoGenProvider
+        from hermes_agent.plugins.video_gen import fal as fal_plugin
+        from hermes_agent.plugins.video_gen.fal import FALVideoGenProvider
 
         monkeypatch.setattr(
             fal_plugin,
@@ -625,7 +625,7 @@ class TestUpscalePass:
         assert result["upscaled"] is False
 
     def test_managed_upscale_binds_the_source_request(self, monkeypatch):
-        from plugins.video_gen import fal as fal_plugin
+        from hermes_agent.plugins.video_gen import fal as fal_plugin
 
         captured = {}
 
@@ -660,7 +660,7 @@ class TestUpscalePass:
         assert captured["arguments"]["source_request_id"] == "source-request-1"
 
     def test_managed_upscale_without_source_request_falls_back(self, monkeypatch):
-        from plugins.video_gen import fal as fal_plugin
+        from hermes_agent.plugins.video_gen import fal as fal_plugin
 
         submit = Mock()
         monkeypatch.setattr(

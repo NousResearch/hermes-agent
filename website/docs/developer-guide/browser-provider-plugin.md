@@ -52,7 +52,7 @@ provides_browser_providers:
 `__init__.py`:
 
 ```python
-from plugins.browser.my_backend.provider import MyBackendProvider
+from hermes_agent.plugins.browser.my_backend.provider import MyBackendProvider
 
 
 def register(ctx) -> None:
@@ -140,7 +140,7 @@ browser:
 
 ## Reference implementations
 
-The three bundled providers under `plugins/browser/` are the canonical examples, in ascending complexity: `firecrawl` (simplest), `browser_use`, and `browserbase` (stealth/proxy/keep-alive feature flags with graceful fallback when paid features are unavailable). Copy the closest one.
+The three bundled providers under `hermes_agent/plugins/browser/` are the canonical examples, in ascending complexity: `firecrawl` (simplest), `browser_use`, and `browserbase` (stealth/proxy/keep-alive feature flags with graceful fallback when paid features are unavailable). Copy the closest one.
 
 ## Checklist
 

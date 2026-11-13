@@ -14,7 +14,7 @@ import asyncio
 from collections import deque
 from typing import Any
 
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from hermes_agent.plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 
 _WINDOWS = ((5.0, 20), (30.0, 40))  # (seconds, max calls) per peer
 _LONGEST = max(seconds for seconds, _ in _WINDOWS)

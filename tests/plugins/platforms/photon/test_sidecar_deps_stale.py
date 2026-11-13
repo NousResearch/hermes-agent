@@ -12,8 +12,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import plugins.platforms.photon.adapter as photon_adapter
-from plugins.platforms.photon import sidecar_paths
+import hermes_agent.plugins.platforms.photon.adapter as photon_adapter
+from hermes_agent.plugins.platforms.photon import sidecar_paths
 
 
 def _seed(sidecar: Path, *, lock_mtime: float, marker_mtime: float | None) -> None:

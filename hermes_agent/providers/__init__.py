@@ -122,7 +122,7 @@ _COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None
 # profiles that cannot cross the host boundary are imported here: its hosted siblings stay hosted.
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
 
-# Repo-root ``plugins/model-providers/`` — populated at discovery time.
+# Repo-root ``hermes_agent/plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = get_bundled_plugins_dir() / "model-providers"
 
 
@@ -509,7 +509,7 @@ def _skipped_plugin_enabled(layer: _HomeLayer) -> bool:
 
 
 def _plugin_dir_stamps(home: Path) -> tuple:
-    """mtimes of ``plugins/`` and ``plugins/model-providers/``: they change when a child is added."""
+    """mtimes of ``plugins/`` and ``hermes_agent/plugins/model-providers/``: they change when a child is added."""
     def stamp(path: Path):
         try:
             return os.stat(path).st_mtime_ns

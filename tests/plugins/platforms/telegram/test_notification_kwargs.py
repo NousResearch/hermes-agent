@@ -5,7 +5,7 @@ indistinguishable from "no prompt" and costs the full approvals.timeout before t
 
 import pytest
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.mark.parametrize("mode,metadata,expected", [

@@ -21,10 +21,10 @@ from contextvars import ContextVar
 from typing import Any, Awaitable, Callable, Optional
 
 from hermes_agent.gateway.platforms.base import SendResult
-from plugins.platforms.telegram.telegram_media_budget import media_sources, scaled_budgets
-from plugins.platforms.telegram.telegram_media_retry import send_media_retrying, unconfirmed_media_result
+from hermes_agent.plugins.platforms.telegram.telegram_media_budget import media_sources, scaled_budgets
+from hermes_agent.plugins.platforms.telegram.telegram_media_retry import send_media_retrying, unconfirmed_media_result
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 _FLOOD_TEXT_RE = re.compile(r"retry\s+(?:in|after)\s+(\d+(?:\.\d+)?)", re.IGNORECASE)
 
@@ -104,7 +104,7 @@ class TelegramMediaFloodMixin:
         reset_media: Optional[Any] = None, **media_kwargs: Any) -> Any:
         """Send one native media payload with thread routing + DM-topic anchor retry; a failure Telegram
         provably never posted repeats (``telegram_media_retry``)."""
-        from plugins.platforms.telegram.adapter import _MEDIA_SEND_DEADLINE, _MEDIA_SEND_READ_TIMEOUT
+        from hermes_agent.plugins.platforms.telegram.adapter import _MEDIA_SEND_DEADLINE, _MEDIA_SEND_READ_TIMEOUT
         budget, deadline = scaled_budgets(media_sources(media_kwargs), _MEDIA_SEND_DEADLINE, _MEDIA_SEND_READ_TIMEOUT)  # #133093
         _, kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
         return await send_media_retrying(lambda: self._send_with_dm_topic_reply_anchor_retry(
@@ -150,7 +150,7 @@ class TelegramMediaFloodMixin:
         """Recover a media send refused by flood control. ``None``: not a flood, or recovery is
         exhausted (the caller then reports the failure; a deferred re-upload first sleeps out the
         new window so that report can land)."""
-        from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS, _flood_cap_result
+        from hermes_agent.plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS, _flood_cap_result
         wait = flood_wait_seconds(error)
         if wait is None:
             return None
@@ -184,7 +184,7 @@ class TelegramMediaFloodMixin:
         without spending its remaining attempt: the inline one only up to the inline cap (past it, it
         is deferred too), the deferred re-upload at most ``_MAX_WINDOW_WAITS`` times, then it is refused
         without a request (never sent inside a known window)."""
-        from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
+        from hermes_agent.plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
         stage = _FLOOD_STAGE.get()
         waits = 0
         while True:

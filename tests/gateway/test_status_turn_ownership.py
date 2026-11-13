@@ -13,7 +13,7 @@ import pytest
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.run_turn_runner import TurnRunner
 from hermes_agent.gateway.turn_context import TurnContext
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture

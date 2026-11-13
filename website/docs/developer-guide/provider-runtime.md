@@ -57,7 +57,7 @@ That ordering matters because Hermes treats the saved model/provider choice as t
 
 ## Providers
 
-Current provider families include (see `plugins/model-providers/` for the complete bundled set):
+Current provider families include (see `hermes_agent/plugins/model-providers/` for the complete bundled set):
 
 - AI Gateway (Vercel)
 - OpenRouter

@@ -12,12 +12,12 @@ from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes
 
 
 def _a2a_conversation(home):
-    from plugins.platforms.a2a import protocol
+    from hermes_agent.plugins.platforms.a2a import protocol
     return protocol._conv_path("peer-x")
 
 
 def _photon_auth(home):
-    from plugins.platforms.photon import auth
+    from hermes_agent.plugins.platforms.photon import auth
     return auth._auth_json_path()
 
 

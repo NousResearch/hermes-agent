@@ -52,7 +52,7 @@ async def _open_reasoning_picker(adapter):
 
 
 async def _tap_telegram(tapper, monkeypatch):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra=EXTRA))
@@ -68,7 +68,7 @@ async def _tap_telegram(tapper, monkeypatch):
 
 
 async def _tap_discord(tapper, monkeypatch):
-    import plugins.platforms.discord.adapter as discord_mod
+    import hermes_agent.plugins.platforms.discord.adapter as discord_mod
 
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
     sent = {}
@@ -131,7 +131,7 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
         reply = runner._hm_update_prompt_reply(typed, key)
         assert (reply is not None) is (sender == "alice")
     else:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t", extra=EXTRA))

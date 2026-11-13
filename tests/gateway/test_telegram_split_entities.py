@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.fakes.platforms.telegram_standin import BotApiError, _check_text
 
 UNITS = (
@@ -92,7 +92,7 @@ async def test_overflow_edit_split_leaves_literal_markers_and_a_final_backslash_
 def _scanned_chars(monkeypatch, content: str) -> tuple[int, list[str], list[str]]:
     """Characters the raw split's emphasis tokenizer reads to split *content* (work done, not time)."""
     from hermes_agent.gateway.platforms.base import BasePlatformAdapter, utf16_len
-    from plugins.platforms.telegram import telegram_chunking
+    from hermes_agent.plugins.platforms.telegram import telegram_chunking
 
     scanned = [0]
     tokens = telegram_chunking._raw_emphasis_tokens
@@ -179,7 +179,7 @@ def test_standalone_send_split_never_breaks_an_inline_entity(monkeypatch):
     import sys
     from types import SimpleNamespace
 
-    from plugins.platforms.telegram.standalone import _send_telegram
+    from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
 
     for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(var, raising=False)

@@ -58,7 +58,7 @@ def local_gateway(monkeypatch):
             )
             return response.json()
 
-    monkeypatch.setattr("plugins.web.firecrawl.provider.Firecrawl", FirecrawlSDK)
+    monkeypatch.setattr("hermes_agent.plugins.web.firecrawl.provider.Firecrawl", FirecrawlSDK)
     monkeypatch.setattr("hermes_agent.tools.web_tools._firecrawl_client", None, raising=False)
     try:
         yield requests

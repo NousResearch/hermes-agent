@@ -1,4 +1,4 @@
-"""Tests for the xAI Web Search provider (plugins/web/xai/).
+"""Tests for the xAI Web Search provider (hermes_agent/plugins/web/xai/).
 
 Covers:
 - XAIWebSearchProvider.is_available() — cheap probe (env var + auth.json)
@@ -68,14 +68,14 @@ class TestXAIProviderIsAvailable:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "auth.json").write_text("not json at all }{")
 
-        from plugins.web.xai.provider import XAIWebSearchProvider
+        from hermes_agent.plugins.web.xai.provider import XAIWebSearchProvider
         assert XAIWebSearchProvider().is_available() is False
 
     def test_is_available_does_not_call_resolver(self, monkeypatch):
         """Regression guard: ``is_available()`` must NEVER touch the resolver,
         because the OAuth resolver can trigger a network refresh."""
         monkeypatch.setenv("XAI_API_KEY", "sk-xai-test")
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         with patch.object(
             xai_provider, "resolve_xai_http_credentials",
@@ -99,7 +99,7 @@ class TestXAIProviderSearchJSONPath:
     })
 
     def test_happy_path_normalizes_results(self):
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
              patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
@@ -120,7 +120,7 @@ class TestXAIProviderSearchJSONPath:
 
     def test_parses_json_with_leading_prose(self):
         """Reasoning models sometimes narrate before the JSON block; we tolerate it."""
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         text = "Here are the results:\n" + self._GROK_JSON
         with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
@@ -132,7 +132,7 @@ class TestXAIProviderSearchJSONPath:
         assert len(result["data"]["web"]) == 3
 
     def test_drops_rows_without_url(self):
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         bad_json = json.dumps({
             "results": [
@@ -155,7 +155,7 @@ class TestXAIProviderSearchJSONPath:
 class TestXAIProviderSearchFallbacks:
     def test_falls_back_to_annotations_when_json_missing(self):
         """If Grok ignores the JSON instruction, derive results from url_citation annotations."""
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         body = "xAI is an AI company founded in 2023. They make Grok."
         annotations = [
@@ -187,7 +187,7 @@ class TestXAIProviderSearchFallbacks:
 
 
     def test_empty_response_returns_empty_success(self):
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         payload = _responses_payload("", citations=[])
         with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
@@ -206,7 +206,7 @@ class TestXAIProviderSearchFallbacks:
 
 class TestXAIProviderRequestShape:
     def test_posts_to_responses_endpoint_with_bearer_token(self):
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         captured: dict = {}
 
@@ -236,7 +236,7 @@ class TestXAIProviderRequestShape:
 
     def test_allowed_domains_capped_at_five(self):
         """xAI caps domain filters at 5; we trim silently to avoid 400s."""
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         captured: dict = {}
 
@@ -261,7 +261,7 @@ class TestXAIProviderRequestShape:
 
 class TestXAIProviderSearchErrors:
     def test_missing_creds_returns_failure(self):
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds("")):
             result = xai_provider.XAIWebSearchProvider().search("q", limit=5)
@@ -270,7 +270,7 @@ class TestXAIProviderSearchErrors:
         assert "xAI" in result["error"]
 
     def test_mutually_exclusive_domain_filters_rejected_locally(self):
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         cfg = {"allowed_domains": ["a.com"], "excluded_domains": ["b.com"]}
         with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
@@ -291,7 +291,7 @@ class TestXAIProviderSearchErrors:
         ``httpx.post`` to be called twice with two different Bearer tokens.
         """
         import httpx
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         bad = MagicMock()
         bad.status_code = 401
@@ -333,7 +333,7 @@ class TestXAIProviderSearchErrors:
     def test_401_on_env_var_path_does_not_retry(self):
         """Env-var (XAI_API_KEY) creds can't be refreshed — must not retry."""
         import httpx
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         bad = MagicMock()
         bad.status_code = 401
@@ -368,7 +368,7 @@ class TestXAIProviderSearchErrors:
         overloaded, refusal, etc.). Must be surfaced as a failure rather
         than silently masked as success-with-empty-results.
         """
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         payload = {"error": {"message": "model overloaded", "type": "server_error"}}
         with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
@@ -442,7 +442,7 @@ class TestXAIProviderOAuthPath:
     """
 
     def test_search_uses_oauth_bearer_token_and_base_url(self, monkeypatch, tmp_path):
-        from plugins.web.xai import provider as xai_provider
+        from hermes_agent.plugins.web.xai import provider as xai_provider
 
         # Force the env-var fallback to fail so resolution must go via OAuth.
         monkeypatch.delenv("XAI_API_KEY", raising=False)

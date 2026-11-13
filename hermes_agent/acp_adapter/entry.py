@@ -154,7 +154,7 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
 
 def _warm_memory_provider_import(logger: logging.Logger) -> None:
     """Import ``memory.provider``'s module + numpy (no provider instance) before the ACP threads start."""
-    from plugins.memory import import_memory_provider_module
+    from hermes_agent.plugins.memory import import_memory_provider_module
 
     if not import_memory_provider_module():
         logger.debug("memory provider not warmed (none configured or import failed; agent init reports that)")

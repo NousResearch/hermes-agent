@@ -1,6 +1,6 @@
 """Discovery parity for out-of-tree memory providers.
 
-Upstream policy closed ``plugins/memory/`` to new providers, so every new
+Upstream policy closed ``hermes_agent/plugins/memory/`` to new providers, so every new
 memory backend now lives outside this tree. These tests cover the two sources
 that reach it — project-local directories and pip entry points — and the
 integration points a directory install gets for free but a pip install
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-import plugins.memory as memory_plugins
+import hermes_agent.plugins.memory as memory_plugins
 
 PROVIDER_SOURCE = """\
 from hermes_agent.agent.memory_provider import MemoryProvider

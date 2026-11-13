@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.fakes.platforms.telegram_standin import mdv2_error
 
 
@@ -78,6 +78,6 @@ async def test_rich_send_maps_bare_macros_and_keeps_math_for_the_client():
      "[plot](https://example.com/f(x)?q=\\alpha)", "\\alpha\\beta\\data", "\\alpha\\beta-file"],
 )
 def test_rich_latex_keeps_paths_and_link_targets(markdown):
-    from plugins.platforms.telegram.telegram_markdown import normalize_rich_latex
+    from hermes_agent.plugins.platforms.telegram.telegram_markdown import normalize_rich_latex
 
     assert normalize_rich_latex(markdown) == markdown

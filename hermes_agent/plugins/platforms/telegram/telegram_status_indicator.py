@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     from .adapter import TelegramAdapter
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 _STATE_FILE = "telegram_status_description.json"
 _TELEGRAM_SHORT_DESCRIPTION_CAP = 120

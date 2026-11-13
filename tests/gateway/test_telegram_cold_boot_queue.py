@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter(extra=None) -> TelegramAdapter:
@@ -87,7 +87,7 @@ async def test_webhook_cold_boot_honors_the_knob_and_logs_the_decision(monkeypat
     set_webhook, which drop Telegram's stored updates."""
     adapter = _make_adapter(extra={"drop_pending_on_cold_boot": False})
 
-    with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.plugins.platforms.telegram.adapter"):
         captured = await _capture_webhook_drop_pending(
             adapter, monkeypatch, is_reconnect=False
         )

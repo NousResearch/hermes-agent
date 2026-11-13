@@ -115,7 +115,7 @@ class MyBackendWebSearchProvider(WebSearchProvider):
 
 ```python
 # plugins/web/my-backend/__init__.py
-from plugins.web.my_backend.provider import MyBackendWebSearchProvider
+from hermes_agent.plugins.web.my_backend.provider import MyBackendWebSearchProvider
 
 
 def register(ctx) -> None:
@@ -241,11 +241,11 @@ web:
 
 ## 参考实现
 
-- **`plugins/web/brave_free/`** — 小型、需要 API key 的纯搜索 HTTP 提供商。适合作为起始模板。
-- **`plugins/web/ddgs/`** — 无需 key、懒加载 SDK 的提供商。适用于封装 Python 包的后端。
-- **`plugins/web/firecrawl/`** — 完整的多能力提供商（搜索 + 提取 + 爬取），支持多种格式模式。
-- **`plugins/web/searxng/`** — 自托管、通过 URL 配置、无需认证的后端。
-- **`plugins/web/xai/`** — 通过 Grok 服务端 `web_search` 工具实现的 LLM 驱动搜索。展示了如何复用现有的 OAuth/环境变量凭据（`hermes_agent/tools/xai_http.py`）而无需新增环境变量，以及如何编写遵守无网络调用约定的轻量 `is_available()`。
+- **`hermes_agent/plugins/web/brave_free/`** — 小型、需要 API key 的纯搜索 HTTP 提供商。适合作为起始模板。
+- **`hermes_agent/plugins/web/ddgs/`** — 无需 key、懒加载 SDK 的提供商。适用于封装 Python 包的后端。
+- **`hermes_agent/plugins/web/firecrawl/`** — 完整的多能力提供商（搜索 + 提取 + 爬取），支持多种格式模式。
+- **`hermes_agent/plugins/web/searxng/`** — 自托管、通过 URL 配置、无需认证的后端。
+- **`hermes_agent/plugins/web/xai/`** — 通过 Grok 服务端 `web_search` 工具实现的 LLM 驱动搜索。展示了如何复用现有的 OAuth/环境变量凭据（`hermes_agent/tools/xai_http.py`）而无需新增环境变量，以及如何编写遵守无网络调用约定的轻量 `is_available()`。
 
 ## 通过 pip 分发
 

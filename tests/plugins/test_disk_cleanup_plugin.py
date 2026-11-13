@@ -1,6 +1,6 @@
 """Tests for the disk-cleanup plugin.
 
-Covers the bundled plugin at ``plugins/disk-cleanup/``:
+Covers the bundled plugin at ``hermes_agent/plugins/disk-cleanup/``:
 
   * ``disk_cleanup`` library: track / forget / dry_run / quick / status,
     ``is_safe_path`` and ``guess_category`` filtering.
@@ -700,7 +700,7 @@ class TestBundledDiscovery:
         assert loaded.error == "listed in both plugins.enabled and plugins.disabled — disabled wins"
 
     def test_memory_and_context_engine_subdirs_skipped(self, _isolate_env):
-        """Bundled scan must NOT pick up plugins/memory or plugins/context_engine
+        """Bundled scan must NOT pick up hermes_agent/plugins/memory or hermes_agent/plugins/context_engine
         as top-level plugins — they have their own discovery paths."""
         self._write_enabled_config(
             _isolate_env, ["memory", "context_engine", "disk-cleanup"]

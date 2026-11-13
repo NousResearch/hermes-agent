@@ -20,7 +20,7 @@ def reply_message_count(adapter: Any, content: str, metadata: Optional[dict[str,
     """Messages ``send(content)`` would post: its rich parts when it goes out rich, else its
     MarkdownV2 chunks (escaping can push a raw-sized text past 4,096 UTF-16 units)."""
     from hermes_agent.gateway.platforms.base import utf16_len
-    from plugins.platforms.telegram.rich_parts import rich_part_count
+    from hermes_agent.plugins.platforms.telegram.rich_parts import rich_part_count
     parts = rich_part_count(adapter, content, metadata)
     if parts is not None:
         return parts
@@ -40,7 +40,7 @@ async def send_reply_document(adapter: Any, chat_id: str, file_path: str, captio
     one fails, and the deferred re-upload it schedules does nothing: the reply has already gone out
     as messages by then."""
     from hermes_agent.gateway.platforms.base import SendResult
-    from plugins.platforms.telegram.telegram_media_flood import _FLOOD_STAGE
+    from hermes_agent.plugins.platforms.telegram.telegram_media_flood import _FLOOD_STAGE
 
     def build(handle: Any) -> dict[str, Any]:
         return {"document": handle, "filename": file_name or file_path.rsplit("/", 1)[-1],

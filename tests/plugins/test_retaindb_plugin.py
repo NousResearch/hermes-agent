@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
-# Imports — guarded since plugins/memory lives outside the standard test path
+# Imports — guarded since hermes_agent/plugins/memory lives outside the standard test path
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
@@ -37,7 +37,7 @@ def _cap_retaindb_sleeps(monkeypatch):
     own ``time.sleep`` stays real since it uses a different reference.
     """
     try:
-        from plugins.memory import retaindb as _retaindb
+        from hermes_agent.plugins.memory import retaindb as _retaindb
     except ImportError:
         return
 
@@ -56,7 +56,7 @@ _repo_root = str(Path(__file__).resolve().parents[2])
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
-from plugins.memory.retaindb import (
+from hermes_agent.plugins.memory.retaindb import (
     _Client,
     _WriteQueue,
     _build_overlay,
@@ -269,7 +269,7 @@ class TestPrefetch:
     def test_queue_prefetch_skips_without_client(self, monkeypatch):
         spawned = []
         monkeypatch.setattr(
-            "plugins.memory.retaindb.spawn_context_thread",
+            "hermes_agent.plugins.memory.retaindb.spawn_context_thread",
             lambda *a, **k: spawned.append(k.get("name")),
         )
         p = RetainDBMemoryProvider()

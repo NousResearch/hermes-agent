@@ -11,7 +11,7 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_multiple_users_concurrent_streaming(self):
         """Multiple users (different chats) streaming concurrently don't interfere."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:
@@ -64,7 +64,7 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_concurrent_turns_same_chat_isolated(self):
         """Two concurrent consumers in same chat maintain independent streams."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:
@@ -106,8 +106,8 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_one_user_expired_others_unaffected(self):
         """User A hits stream expired; Users B and C continue normally."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
-        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:
@@ -156,8 +156,8 @@ class TestPerTurnStreamIsolation:
     @pytest.mark.asyncio
     async def test_one_turn_expired_other_continues(self):
         """When one turn hits stream expired, other concurrent turns can continue."""
-        from plugins.platforms.wecom.adapter import WeComAdapter
-        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
+        from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
+        from hermes_agent.plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         try:

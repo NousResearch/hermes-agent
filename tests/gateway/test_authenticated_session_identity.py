@@ -14,7 +14,7 @@ from starlette.websockets import WebSocket
 
 @pytest.fixture
 def oidc():
-    from plugins.dashboard_auth.self_hosted import SelfHostedOIDCProvider
+    from hermes_agent.plugins.dashboard_auth.self_hosted import SelfHostedOIDCProvider
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key()))
     jwk.update(kid='test-key', use='sig', alg='RS256')
@@ -76,7 +76,7 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_cli.web_server_sessions import _session_mutation_context
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
-    from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
+    from hermes_agent.plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

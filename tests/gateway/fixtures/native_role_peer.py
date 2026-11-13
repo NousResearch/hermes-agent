@@ -19,7 +19,7 @@ async def probe(peer):
     from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session_authority import initialize_session_authority
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     class Guild:

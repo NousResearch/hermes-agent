@@ -118,7 +118,7 @@ def test_plugin_db_wal_goes_through_the_shared_fallback(monkeypatch, tmp_path):
     plugin databases must obey the same rules as every core store."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_agent import hermes_state_wal
-    from plugins import plugin_storage
+    from hermes_agent.plugins import plugin_storage
 
     seen = []
     real = hermes_state_wal.apply_wal_with_fallback

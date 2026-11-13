@@ -14,7 +14,7 @@ pytest.importorskip("tornado")
 from telegram.ext import Application
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.fakes.platforms.telegram_standin import TelegramStandin
 
 pytestmark = pytest.mark.platforms("posix")

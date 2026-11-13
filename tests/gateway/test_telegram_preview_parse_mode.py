@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import adapter as tg
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _adapter() -> TelegramAdapter:
@@ -53,7 +53,7 @@ async def test_final_edit_after_short_flood_wait_retries_in_markdown(monkeypatch
     flood.retry_after = 2.0
     adapter._bot.edit_message_text.side_effect = [flood, None]
     sleep = AsyncMock()
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
 
     result = await adapter.edit_message("123", "456", "Done: **bold**", finalize=True)
 

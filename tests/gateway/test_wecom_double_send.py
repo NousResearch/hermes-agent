@@ -118,7 +118,7 @@ def _make_real_wecom_adapter(*, resolve_finalize_ack: bool):
       * ``resolve_finalize_ack=True``  → finalize ack returns at once → the
         consumer finishes finalize and sets its flags before any join fires.
     """
-    from plugins.platforms.wecom.adapter import WeComAdapter
+    from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
     from hermes_agent.gateway.config import PlatformConfig
 
     adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -304,7 +304,7 @@ def _make_manual_ack_adapter():
     auto-resolves any ack, so the test can orchestrate the exact interleaving
     of intermediate-ack arrival vs. finalize registration by hand.
     """
-    from plugins.platforms.wecom.adapter import WeComAdapter
+    from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
     from hermes_agent.gateway.config import PlatformConfig
 
     adapter = WeComAdapter(PlatformConfig(enabled=True))

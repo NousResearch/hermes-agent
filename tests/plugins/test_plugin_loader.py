@@ -8,7 +8,7 @@ import sys
 import threading
 from types import SimpleNamespace
 
-from plugins.plugin_loader import load_plugin_module
+from hermes_agent.plugins.plugin_loader import load_plugin_module
 
 
 def test_failed_sibling_is_removed_before_init_handles_missing_import(tmp_path):
@@ -76,7 +76,7 @@ def test_successful_sibling_remains_available_on_loaded_module(tmp_path):
 def test_concurrent_load_waits_for_the_first_load(tmp_path, monkeypatch):
     """A second caller never receives the half-built shell published mid-load. An agent build waits
     out a slow first import; a per-turn caller in bounded_load_wait() refuses after the bound instead."""
-    import plugins.plugin_loader as loader
+    import hermes_agent.plugins.plugin_loader as loader
 
     monkeypatch.setattr(loader, "_CONCURRENT_LOAD_WAIT_SECS", 0.3)
     plugin_dir = tmp_path / "plugin"

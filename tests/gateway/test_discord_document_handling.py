@@ -57,8 +57,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import plugins.platforms.discord.adapter as discord_platform
-from plugins.platforms.discord.adapter import DiscordAdapter
+import hermes_agent.plugins.platforms.discord.adapter as discord_platform
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 # ---------------------------------------------------------------------------

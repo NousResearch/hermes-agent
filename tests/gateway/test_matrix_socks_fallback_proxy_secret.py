@@ -17,14 +17,14 @@ PASSWORD = "MatrixQzxPassword"
 
 def test_whoami_failure_through_the_env_proxy_after_socks_fallback_hides_its_secret(monkeypatch, caplog, tmp_path):
     pytest.importorskip("aiohttp")
-    from plugins.platforms.matrix import adapter as matrix_adapter
+    from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
 
     for name in list(__import__("os").environ):
         if name.lower().endswith("_proxy"):
             monkeypatch.delenv(name)
     monkeypatch.setitem(sys.modules, "aiohttp_socks", None)
     monkeypatch.setattr(matrix_adapter, "gateway_trust_env", lambda: True)
-    monkeypatch.setattr("plugins.platforms.matrix.session_proxy.gateway_trust_env", lambda: True)
+    monkeypatch.setattr("hermes_agent.plugins.platforms.matrix.session_proxy.gateway_trust_env", lambda: True)
     monkeypatch.setenv("MATRIX_PROXY", "socks5://127.0.0.1:1080")
     monkeypatch.setenv("HTTPS_PROXY", f"http://bob:{PASSWORD}#x@127.0.0.1:1")
     adapter = matrix_adapter.MatrixAdapter(PlatformConfig(

@@ -81,7 +81,7 @@ async def test_telegram_long_followup_uses_send_time_before_default_batch_flush(
     from datetime import UTC, datetime
 
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
     monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", raising=False)

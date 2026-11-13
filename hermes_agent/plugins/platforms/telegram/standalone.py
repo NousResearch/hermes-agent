@@ -14,8 +14,8 @@ import re
 from types import SimpleNamespace
 
 from hermes_agent.agent.redact import redact_sensitive_text
-from plugins.platforms.telegram.rich_code_regions import strip_code
-from plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
+from hermes_agent.plugins.platforms.telegram.rich_code_regions import strip_code
+from hermes_agent.plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
 from pm import install_hint
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     ``retry_after`` wins; a connect or pool failure (the request never left) and Telegram's own 5xx
     JSON answer back off; a timeout, a 504, a reset after the write or an unreadable 5xx body may
     have posted the message, and a refusal or a local error will not change, so both are final."""
-    from plugins.platforms.telegram import telegram_send_errors as kinds
+    from hermes_agent.plugins.platforms.telegram import telegram_send_errors as kinds
     kind = kinds.send_error_kind(exc)
     if kind == kinds.FLOOD:
         try:
@@ -82,7 +82,7 @@ async def _send_telegram_message_with_retry(bot, *, attempts: int = SAME_REQUEST
     ``DeliveryOutcome``) records every failed try that may have posted the message (Telegram's own
     5xx is retried, yet may follow a committed send), so a later connect failure cannot read as
     "nothing sent"."""
-    from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
+    from hermes_agent.plugins.platforms.telegram.telegram_send_errors import may_have_delivered
     for attempt in range(attempts):
         try:
             return await bot.send_message(**kwargs)
@@ -111,7 +111,7 @@ def _telegram_fallback_ips(extra):
     ``[]`` when ``HERMES_TELEGRAM_DISABLE_FALLBACK_IPS`` opts out, as for the gateway."""
     if os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}:
         return []
-    from plugins.platforms.telegram.telegram_network import SEED_FALLBACK_IPS, parse_fallback_ip_env
+    from hermes_agent.plugins.platforms.telegram.telegram_network import SEED_FALLBACK_IPS, parse_fallback_ip_env
     # TELEGRAM_FALLBACK_IPS reaches ``extra["fallback_ips"]`` through the gateway env bridge.
     configured = extra.get("fallback_ips") or ""
     if not isinstance(configured, str):
@@ -133,7 +133,7 @@ def _telegram_bot(token, extra=None):
     urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
     try:
         from telegram.request import HTTPXRequest
-        from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts, telegram_verify
+        from hermes_agent.plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts, telegram_verify
         fallback_ips = [] if base_url else _telegram_fallback_ips(extra)  # a custom server is reached directly
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_target_hosts(base_url, fallback_ips),
                                   configured=extra.get("proxy_url"))
@@ -155,7 +155,7 @@ def _telegram_thread_kwargs(thread_id):
     if thread_id is None:
         return {}
     try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
         effective = TelegramAdapter._message_thread_id_for_send(str(thread_id))
     except Exception:  # adapter import failed (python-telegram-bot missing): explicit mapping
         effective = None if str(thread_id) == "1" else int(thread_id)
@@ -165,7 +165,7 @@ def _telegram_thread_kwargs(thread_id):
 def _strip_mdv2_safe(text):
     """Strip MarkdownV2 escapes for the plain-text fallback; identity if unavailable."""
     try:
-        from plugins.platforms.telegram.adapter import _strip_mdv2
+        from hermes_agent.plugins.platforms.telegram.adapter import _strip_mdv2
         return _strip_mdv2(text)
     except Exception:
         return text
@@ -226,7 +226,7 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                                         if caption is not None and not voice_note else {})}
     if voice_note or ext in _TELEGRAM_SEND_AUDIO_EXTS:
         with contextlib.suppress(Exception):
-            from plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
+            from hermes_agent.plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
             duration = await asyncio.to_thread(_probe_voice_duration_seconds, media_path)
             if duration is not None:
                 media_kwargs["duration"] = duration
@@ -237,18 +237,18 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
         # Keyed on the extension because ``_telegram_send_media`` routes every video extension to
         # ``sendVideo`` regardless of ``force_document`` (which only forces images to documents).
         with contextlib.suppress(Exception):
-            from plugins.platforms.telegram.adapter import _probe_video_geometry, _video_thumbnail_jpeg
+            from hermes_agent.plugins.platforms.telegram.adapter import _probe_video_geometry, _video_thumbnail_jpeg
             geometry = await asyncio.to_thread(_probe_video_geometry, media_path)
             if geometry:
                 media_kwargs.update(geometry)
                 thumb_path = await asyncio.to_thread(_video_thumbnail_jpeg, media_path, geometry.get("duration"))
                 if thumb_path:
                     media_kwargs["thumbnail"] = thumb_path
-    from plugins.platforms.telegram.telegram_media_budget import scaled_budgets
+    from hermes_agent.plugins.platforms.telegram.telegram_media_budget import scaled_budgets
     # The adapter's media budgets (#133164): the Bot's 20s read timeout cuts off Telegram's
     # post-upload processing, so a delivered file came back "Timed out" and got resent.
     media_kwargs.update(scaled_budgets([media_path, thumb_path], 0.0)[0])
-    from plugins.platforms.telegram.telegram_media_retry import send_media_retrying
+    from hermes_agent.plugins.platforms.telegram.telegram_media_retry import send_media_retrying
     try:
         with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
             def upload():  # a failure Telegram provably never posted repeats, as in the adapter (#62079)
@@ -334,7 +334,7 @@ def _telegram_mdv2(text, *, max_units=None):
     unavailable or the escaped text exceeds ``max_units`` UTF-16 units."""
     from hermes_agent.gateway.platforms.base import utf16_len
     try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     except ImportError:
         return None
     formatted = TelegramAdapter.__new__(TelegramAdapter).format_message(text)
@@ -343,7 +343,7 @@ def _telegram_mdv2(text, *, max_units=None):
 
 def _record_media_failure(error, media_path, warnings, last_msg):
     """Warn about a failed upload; one that may have landed counts as sent (never a resend)."""
-    from plugins.platforms.telegram.telegram_media_retry import request_may_have_delivered
+    from hermes_agent.plugins.platforms.telegram.telegram_media_retry import request_may_have_delivered
     maybe = request_may_have_delivered(error)
     warnings.append(_sanitize_error_text(
         f"Failed to send media {media_path}: {error}" + (" (Telegram may still deliver it; do not resend)" if maybe else "")))
@@ -380,14 +380,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     # may have. ``last_msg`` is the final receipt for the success envelope.
     last_msg, outcome = None, DeliveryOutcome()
     try:
-        from plugins.platforms.telegram.telegram_outbound import (
+        from hermes_agent.plugins.platforms.telegram.telegram_outbound import (
             is_visually_empty, notification_kwargs, resolve_notifications_mode, send_album_standalone,
             send_rich_standalone)
         if is_visually_empty(message):
             message = ""  # invisible-only text would land as an empty bubble
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token, extra)
-        from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+        from hermes_agent.plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from hermes_agent.gateway.platforms.base import BasePlatformAdapter, utf16_len
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.
         # See #13206.
@@ -416,7 +416,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         else:
             # Same split as the live adapter: entities cut by a split are closed and reopened, and the
             # " (1/2)" markers come back MarkdownV2-escaped (#74004).
-            from plugins.platforms.telegram.telegram_chunking import split_formatted_mdv2
+            from hermes_agent.plugins.platforms.telegram.telegram_chunking import split_formatted_mdv2
             chunks = split_formatted_mdv2(formatted, 4096, BasePlatformAdapter.truncate_message, utf16_len)
         for chunk in chunks:
             last_msg = await _telegram_send_text_chunk(
@@ -464,7 +464,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return {"error": "python-telegram-bot not installed. Run: "
                 f"{install_hint('telegram')}", "retryable": True}
     except Exception as e:
-        from plugins.platforms.telegram import telegram_send_errors as kinds
+        from hermes_agent.plugins.platforms.telegram import telegram_send_errors as kinds
         # Nothing sent (cron may replay it) only when this request never left or was refused, no
         # receipt came back (``last_msg``: a chunk or the album) and ``outcome`` saw no earlier try
         # that may have posted it.

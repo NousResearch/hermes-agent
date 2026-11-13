@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from plugins import plugin_loader as _loader
+from hermes_agent.plugins import plugin_loader as _loader
 
 logger = logging.getLogger(__name__)
 

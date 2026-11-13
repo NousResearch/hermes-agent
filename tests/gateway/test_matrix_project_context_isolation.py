@@ -33,7 +33,7 @@ SENDER = "@alice:example.org"
 
 
 def _make_adapter():
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(
         PlatformConfig(

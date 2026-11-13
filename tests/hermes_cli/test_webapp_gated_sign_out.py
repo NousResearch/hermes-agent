@@ -33,7 +33,7 @@ def gated(tmp_path, monkeypatch):
     from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
     from hermes_agent.hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
     from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests
-    from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
+    from hermes_agent.plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
     webapp = serve_webapp(tmp_path, monkeypatch)
@@ -222,7 +222,7 @@ def test_two_gateways_with_their_own_sign_in_on_one_hostname_keep_their_logins_a
     with its own provider secret) keep their own logins in one browser: signing in to one leaves the
     other signed in, and signing out of one in the browser leaves the other."""
     from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
-    from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
+    from hermes_agent.plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
 
     state = gated.server.app.state
     providers = {port: BasicAuthProvider(username=USER, password_hash=hash_password(PASSWORD), secret=secret * 32)
@@ -282,7 +282,7 @@ def clock(monkeypatch):
     """Moves the password provider's clock forward, as time passes between a login and its renewal."""
     import time
 
-    from plugins.dashboard_auth import basic
+    from hermes_agent.plugins.dashboard_auth import basic
 
     offset = [0]
     monkeypatch.setattr(basic, "time", SimpleNamespace(time=lambda: time.time() + offset[0]))
@@ -479,7 +479,7 @@ def test_a_login_in_the_second_of_a_native_sign_in_keeps_its_tokens_to_its_cooki
     restart, and the native app stays signed in."""
     import time
 
-    from plugins.dashboard_auth import basic
+    from hermes_agent.plugins.dashboard_auth import basic
 
     frozen = time.time()
     monkeypatch.setattr(basic, "time", SimpleNamespace(time=lambda: frozen))

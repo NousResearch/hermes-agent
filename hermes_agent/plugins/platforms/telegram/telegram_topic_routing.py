@@ -17,7 +17,7 @@ import logging
 import time
 from typing import Any, Optional
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 
 class TelegramTopicRoutingMixin:
@@ -172,7 +172,7 @@ class TelegramTopicRoutingMixin:
 
     def _apply_topic_recovery(self, event: Any) -> None:
         """Topic recovery plus the recovered topic's own prompt inputs (#131232)."""
-        from plugins.platforms.telegram.telegram_topic_transfer import apply_topic_recovery_with_inputs
+        from hermes_agent.plugins.platforms.telegram.telegram_topic_transfer import apply_topic_recovery_with_inputs
         apply_topic_recovery_with_inputs(self, event, super()._apply_topic_recovery)
 
     def configured_channels(self) -> list[dict[str, Any]]:

@@ -529,7 +529,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         _facade().logger.info("Plugin '%s' registered context reference: @%s:", self.manifest.name, provider.prefix)
 
     def register_memory_provider(self, provider) -> None:
-        """Record a memory provider (inert). Activation is owned by ``plugins/memory`` via
+        """Record a memory provider (inert). Activation is owned by ``hermes_agent/plugins/memory`` via
         ``memory.provider``; a provider reaching here was loaded by the general manager, and
         without this method its ``register()`` would fail on a missing attribute."""
         from hermes_agent.agent.memory_provider import MemoryProvider

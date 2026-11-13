@@ -37,7 +37,7 @@ class _Runner:
 
 
 def _line_adapter(secret: str, profile: str):
-    from plugins.platforms.line.adapter import LineAdapter
+    from hermes_agent.plugins.platforms.line.adapter import LineAdapter
     adapter = LineAdapter(PlatformConfig(enabled=True, extra={
         "channel_access_token": f"tok-{profile}", "channel_secret": secret, "port": 1}))
     adapter._shared_listener_profile = profile

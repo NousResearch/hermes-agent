@@ -65,7 +65,7 @@ async def _busy_owner(monkeypatch, adapter, source, config=None, **wiring):
 
 
 def _signal(monkeypatch):
-    from plugins.platforms.signal.adapter import SignalAdapter
+    from hermes_agent.plugins.platforms.signal.adapter import SignalAdapter
     monkeypatch.setenv('SIGNAL_ALLOWED_USERS', '+15550001')
     adapter = SignalAdapter(PlatformConfig(enabled=True, extra={'account': '+15559999'}))
     return adapter, adapter.build_source(chat_id='+15550001', chat_type='dm', user_id='+15550001')
@@ -162,7 +162,7 @@ async def test_new_waits_for_a_burst_still_committing(monkeypatch, tmp_path):
 async def test_held_burst_survives_a_refused_stop_in_a_shared_group(monkeypatch, sender, runs):
     """A shared Signal group: the owner's held follow-up B, then /stop. A stranger's /stop is refused
     by the runner and must not drop B (#136759); the owner's /stop still cancels it."""
-    from plugins.platforms.signal.adapter import SignalAdapter
+    from hermes_agent.plugins.platforms.signal.adapter import SignalAdapter
     monkeypatch.setenv('SIGNAL_ALLOWED_USERS', '+155****0001')
     monkeypatch.setenv('SIGNAL_GROUP_ALLOWED_USERS', '*')
     adapter = SignalAdapter(PlatformConfig(enabled=True, extra={'account': '+155****9999',
@@ -321,7 +321,7 @@ async def test_buzz_split_text_merges_through_the_reader(monkeypatch):
 def _buzz(monkeypatch):
     from collections import OrderedDict
 
-    from plugins.platforms.buzz.adapter import BuzzAdapter
+    from hermes_agent.plugins.platforms.buzz.adapter import BuzzAdapter
 
     monkeypatch.setenv('BUZZ_ALLOWED_USERS', 'aa11bb22')
     adapter = BuzzAdapter(PlatformConfig(enabled=True))

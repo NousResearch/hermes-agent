@@ -202,7 +202,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         silently take over, and the request must hit api.firecrawl.dev.
         """
         from hermes_agent.tools import web_tools
-        from plugins.web.firecrawl import provider as fc
+        from hermes_agent.plugins.web.firecrawl import provider as fc
 
         self._clear_web_creds(monkeypatch)
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
@@ -325,7 +325,7 @@ class TestDispatchersTriggerPluginDiscovery:
 
             # Simulate "plugin discovery loads the firecrawl plugin": the
             # wrapped helper registers the provider, mirroring what
-            # ``plugins/web/firecrawl/__init__.py:register`` does at
+            # ``hermes_agent/plugins/web/firecrawl/__init__.py:register`` does at
             # real-process startup. Wrapping with ``MagicMock`` lets us
             # also assert the dispatcher actually invoked the hook — if
             # a future refactor accidentally drops the call the regression

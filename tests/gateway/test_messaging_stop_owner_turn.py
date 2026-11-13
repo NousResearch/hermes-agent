@@ -15,7 +15,7 @@ from tests.waiting import async_wait_until
 def _owner(monkeypatch):
     from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     runner = GatewayRunner(GatewayConfig())

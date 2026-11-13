@@ -81,7 +81,7 @@ def _http_date_in(seconds: int) -> str:
 
 
 def test_slack_retry_after_understands_http_date():
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
     exc = SimpleNamespace(response=SimpleNamespace(headers={"Retry-After": _http_date_in(90)}))
     seconds = SlackAdapter._retry_after_from_exc(exc)
     assert seconds is not None and 80 <= seconds <= 90
@@ -89,7 +89,7 @@ def test_slack_retry_after_understands_http_date():
 
 
 def test_discord_retry_after_understands_http_date_and_reset_after():
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     extract = DiscordAdapter._extract_discord_retry_after
     dated = SimpleNamespace(response=SimpleNamespace(headers={"retry-after": _http_date_in(90)}))
     seconds = extract(dated)

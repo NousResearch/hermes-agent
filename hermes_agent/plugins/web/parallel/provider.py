@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Any, Dict, List
 
-from plugins.web._common import (
+from hermes_agent.plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, cached_sdk_client, document, keyless_extract, keyless_search,
     keyless_variant_schema, provider_env, run_extract_async, run_search, search_ok, use_keyless, vendor_error_entry, web_hit,
 )

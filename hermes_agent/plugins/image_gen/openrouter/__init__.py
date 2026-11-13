@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_agent.agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO, ImageGenProvider, error_response, resolve_aspect_ratio, save_b64_image,
     save_url_image, success_response)
-from plugins.image_gen._common import error_factory, load_image_gen_config, post_json, record_token_usage
+from hermes_agent.plugins.image_gen._common import error_factory, load_image_gen_config, post_json, record_token_usage
 
 logger = logging.getLogger(__name__)
 

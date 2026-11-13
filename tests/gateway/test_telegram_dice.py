@@ -16,7 +16,7 @@ def _dice_update(**msg_kw):
 
 @pytest.mark.parametrize(("require_mention", "delivered"), [(False, True), (True, False)])
 def test_dice_follows_group_gate(require_mention, delivered):
-    from plugins.platforms.telegram.telegram_dice import handle_dice_message
+    from hermes_agent.plugins.platforms.telegram.telegram_dice import handle_dice_message
 
     adapter = _make_adapter(require_mention=require_mention, group_allowed_chats=["-100"])
     adapter.handle_message = AsyncMock()
@@ -27,7 +27,7 @@ def test_dice_follows_group_gate(require_mention, delivered):
 
 
 def test_observed_dice_keeps_its_roll_without_a_turn():
-    from plugins.platforms.telegram.telegram_dice import handle_dice_message
+    from hermes_agent.plugins.platforms.telegram.telegram_dice import handle_dice_message
 
     adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], group_allowed_chats=["-100"],
                             observe_unmentioned_group_messages=True)

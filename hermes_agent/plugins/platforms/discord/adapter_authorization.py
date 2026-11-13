@@ -12,7 +12,7 @@ def is_automated_message(message) -> bool:
 
 class DiscordAuthorizationMixin:
     async def reauthorize_native_roles(self, source):
-        from plugins.platforms.discord.adapter import _read_dm_role_auth_guild
+        from hermes_agent.plugins.platforms.discord.adapter import _read_dm_role_auth_guild
         from hermes_agent.gateway.config import Platform, PlatformConfig, load_gateway_config
         from discord import HTTPException
 

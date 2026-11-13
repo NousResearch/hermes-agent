@@ -6,11 +6,11 @@ must be stable for the life of a session (username only — never a per-message 
 
 from typing import TYPE_CHECKING, Optional
 
-from plugins.platforms.telegram.telegram_entities import addressing_text
+from hermes_agent.plugins.platforms.telegram.telegram_entities import addressing_text
 
 if TYPE_CHECKING:
     from telegram import Message
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") -> bool:

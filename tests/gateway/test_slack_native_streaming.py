@@ -38,7 +38,7 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 class _StreamExpiredError(Exception):

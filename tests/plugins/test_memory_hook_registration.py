@@ -5,7 +5,7 @@ import textwrap
 import pytest
 
 from hermes_agent.hermes_cli.plugins import get_plugin_manager
-from plugins.memory import load_memory_provider
+from hermes_agent.plugins.memory import load_memory_provider
 
 
 def _install(home, monkeypatch, *, label="first", enabled=True):

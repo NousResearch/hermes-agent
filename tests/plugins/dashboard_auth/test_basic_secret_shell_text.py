@@ -14,7 +14,7 @@ import secrets
 
 import pytest
 
-from plugins.dashboard_auth import basic
+from hermes_agent.plugins.dashboard_auth import basic
 
 LITERAL = "$(openssl rand -base64 32)"
 

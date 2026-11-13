@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-import plugins.platforms.discord.adapter as discord_platform
+import hermes_agent.plugins.platforms.discord.adapter as discord_platform
 from hermes_agent.gateway.config import PlatformConfig
 
 

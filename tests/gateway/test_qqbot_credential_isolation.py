@@ -17,7 +17,7 @@ import pytest
 
 from hermes_agent.agent import secret_scope as ss
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.qqbot.adapter import QQAdapter
+from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
 
 
 @pytest.fixture(autouse=True)

@@ -104,7 +104,7 @@ class TestDynamicParamGating(unittest.TestCase):
     def test_managed_krea_model_advertises_krea_edit_args_and_upscale(self):
         """provider nous + a Krea model id is served by the Krea gateway, so the
         schema must advertise what the Krea plugin declares, not the FAL catalog."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         with patch.object(ig, "_read_configured_image_provider",
                           return_value="nous"), \
@@ -121,7 +121,7 @@ class TestDynamicParamGating(unittest.TestCase):
 
     def test_creative_controls_follow_the_active_backend(self):
         """A managed Krea model renders exactly the controls the Krea plugin declares; FAL renders none."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         with patch.object(ig, "_read_configured_image_provider", return_value="nous"), \
              patch.object(ig, "_read_configured_image_model", return_value="krea-2-medium"):
@@ -148,7 +148,7 @@ class TestDynamicParamGating(unittest.TestCase):
     def test_krea_3_advertises_edit_wording_and_its_own_controls(self):
         """Krea 3 edits the pictures it is given, so the edit wording applies with the plugin's
         reference cap, and the schema offers Krea 3's controls and none of Krea 2's."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         # The tool and the plugin read the same stored selection, no env override needed.
         home = Path(os.environ["HERMES_HOME"])

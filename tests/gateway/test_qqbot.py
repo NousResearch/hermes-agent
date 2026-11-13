@@ -32,7 +32,7 @@ def _make_config(**extra):
 
 class TestQQAdapterInit:
     def _make(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
 
@@ -62,7 +62,7 @@ class TestQQAdapterInit:
 
 class TestCoerceList:
     def _fn(self, value):
-        from plugins.platforms.qqbot.utils import coerce_list as _coerce_list
+        from hermes_agent.plugins.platforms.qqbot.utils import coerce_list as _coerce_list
         return _coerce_list(value)
 
     def test_none(self):
@@ -78,7 +78,7 @@ class TestCoerceList:
 
 class TestIsVoiceContentType:
     def _fn(self, content_type, filename):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter._is_voice_content_type(content_type, filename)
 
 
@@ -95,16 +95,16 @@ class TestIsVoiceContentType:
 
 class TestVoiceAttachmentSSRFProtection:
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
 
     def test_connect_uses_redirect_guard_hook(self):
         from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
 
         client = mock.AsyncMock()
-        with mock.patch("plugins.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
+        with mock.patch("hermes_agent.plugins.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
             adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
             adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
 
@@ -123,7 +123,7 @@ class TestVoiceAttachmentSSRFProtection:
 
 class TestVoiceAttachmentTempCleanup:
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
     def _setup_download_mocks(self, adapter, content=b"RIFFmock-wav-audio-data"):
@@ -167,7 +167,7 @@ class TestVoiceAttachmentTempCleanup:
 class TestQQWebSocketProxy:
     @pytest.mark.asyncio
     async def test_open_ws_honors_proxy_env(self, monkeypatch):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
 
         for key in (
             "WSS_PROXY",
@@ -197,7 +197,7 @@ class TestQQWebSocketProxy:
                 seen_ws_kwargs.update(kwargs)
                 return mock.AsyncMock(closed=False)
 
-        with mock.patch("plugins.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
+        with mock.patch("hermes_agent.plugins.platforms.qqbot.adapter.aiohttp.ClientSession", side_effect=FakeSession):
             await adapter._open_ws("wss://api.sgroup.qq.com/websocket")
 
         assert seen_session_kwargs.get("trust_env") is True
@@ -209,7 +209,7 @@ class TestQQWebSocketProxy:
 
 class TestStripAtMention:
     def _fn(self, content):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter._strip_at_mention(content)
 
     def test_removes_mention(self):
@@ -223,7 +223,7 @@ class TestStripAtMention:
 
 class TestDmAllowed:
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
 
@@ -245,7 +245,7 @@ class TestDmAllowed:
 
 class TestGroupAllowed:
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
 
@@ -266,7 +266,7 @@ class TestGroupAllowed:
 
 class TestResolveSTTConfig:
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
     def test_no_config(self):
@@ -313,7 +313,7 @@ class TestResolveSTTConfig:
 
 class TestDispatchPayload:
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         adapter = QQAdapter(_make_config(**extra))
         return adapter
 
@@ -338,7 +338,7 @@ class TestDispatchPayload:
 
 class TestReadyHandling:
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
     def test_ready_stores_session(self):
@@ -357,7 +357,7 @@ class TestReadyHandling:
 
 class TestParseJson:
     def _fn(self, raw):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter._parse_json(raw)
 
 
@@ -372,7 +372,7 @@ class TestParseJson:
 
 class TestBuildTextBody:
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
     def test_plain_text(self):
@@ -396,7 +396,7 @@ class TestWaitForReconnection:
     """Test that send() waits for reconnection instead of silently dropping."""
 
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(**extra))
 
     @pytest.mark.asyncio
@@ -440,13 +440,13 @@ class TestQQTimeoutErrorNormalization:
     delivery plain-text fallback."""
 
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
 
     @pytest.mark.asyncio
     async def test_send_chunk_preserves_read_timeout_type(self, monkeypatch):
         from hermes_agent.gateway.platforms.base import BasePlatformAdapter
-        import plugins.platforms.qqbot.adapter as qq_adapter_mod
+        import hermes_agent.plugins.platforms.qqbot.adapter as qq_adapter_mod
 
         # Skip the real 1s+2s retry backoff.
         monkeypatch.setattr(qq_adapter_mod.asyncio, "sleep", mock.AsyncMock())
@@ -478,7 +478,7 @@ class TestQQTimeoutErrorNormalization:
 class TestChunkedUploadHelpers:
 
     def test_read_chunk_short_read_raises(self, tmp_path):
-        from plugins.platforms.qqbot.chunked_upload import _read_file_chunk
+        from hermes_agent.plugins.platforms.qqbot.chunked_upload import _read_file_chunk
         f = tmp_path / "x.bin"
         f.write_bytes(b"hi")
         with pytest.raises(IOError):
@@ -486,7 +486,7 @@ class TestChunkedUploadHelpers:
 
 
     def test_parse_prepare_response_wrapped_in_data(self):
-        from plugins.platforms.qqbot.chunked_upload import _parse_prepare_response
+        from hermes_agent.plugins.platforms.qqbot.chunked_upload import _parse_prepare_response
         raw = {
             "data": {
                 "upload_id": "uid-42",
@@ -517,7 +517,7 @@ class TestChunkedUploaderFlow:
 
     @pytest.mark.asyncio
     async def test_full_upload_two_parts_success(self, tmp_path):
-        from plugins.platforms.qqbot.chunked_upload import ChunkedUploader
+        from hermes_agent.plugins.platforms.qqbot.chunked_upload import ChunkedUploader
 
         # Two-part file.
         f = tmp_path / "vid.mp4"
@@ -584,7 +584,7 @@ class TestChunkedUploaderFlow:
     @pytest.mark.asyncio
     async def test_group_paths(self, tmp_path):
         """Group uploads hit /v2/groups/... instead of /v2/users/..."""
-        from plugins.platforms.qqbot.chunked_upload import ChunkedUploader
+        from hermes_agent.plugins.platforms.qqbot.chunked_upload import ChunkedUploader
 
         f = tmp_path / "a.bin"
         f.write_bytes(b"x" * 100)
@@ -629,27 +629,27 @@ class TestChunkedUploaderFlow:
 
 class TestApprovalButtonData:
     def test_parse_allow_once(self):
-        from plugins.platforms.qqbot.keyboards import parse_approval_button_data
+        from hermes_agent.plugins.platforms.qqbot.keyboards import parse_approval_button_data
         result = parse_approval_button_data("approve:agent:main:qqbot:c2c:UID:allow-once")
         assert result == ("agent:main:qqbot:c2c:UID", "allow-once")
 
 
     def test_parse_empty_returns_none(self):
-        from plugins.platforms.qqbot.keyboards import parse_approval_button_data
+        from hermes_agent.plugins.platforms.qqbot.keyboards import parse_approval_button_data
         assert parse_approval_button_data("") is None
         assert parse_approval_button_data(None) is None  # type: ignore[arg-type]
 
 
 class TestUpdatePromptButtonData:
     def test_parse_yes(self):
-        from plugins.platforms.qqbot.keyboards import parse_update_prompt_button_data
+        from hermes_agent.plugins.platforms.qqbot.keyboards import parse_update_prompt_button_data
         assert parse_update_prompt_button_data("update_prompt:y") == "y"
 
 
 class TestBuildApprovalKeyboard:
 
     def test_button_data_embeds_session_key(self):
-        from plugins.platforms.qqbot.keyboards import build_approval_keyboard
+        from hermes_agent.plugins.platforms.qqbot.keyboards import build_approval_keyboard
         kb = build_approval_keyboard("agent:main:qqbot:c2c:UID")
         datas = [b.action.data for b in kb.content.rows[0].buttons]
         assert datas[0] == "approve:agent:main:qqbot:c2c:UID:allow-once"
@@ -663,7 +663,7 @@ class TestBuildApprovalText:
 
 
     def test_truncates_long_commands(self):
-        from plugins.platforms.qqbot.keyboards import (
+        from hermes_agent.plugins.platforms.qqbot.keyboards import (
             ApprovalRequest, build_approval_text,
         )
         long = "x" * 1000
@@ -680,7 +680,7 @@ class TestBuildApprovalText:
 
 class TestInteractionEventParsing:
     def test_parse_c2c_interaction(self):
-        from plugins.platforms.qqbot.keyboards import parse_interaction_event
+        from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
         raw = {
             "id": "interaction-42",
             "chat_type": 2,
@@ -707,7 +707,7 @@ class TestAdapterInteractionDispatch:
     """End-to-end verification of _on_interaction including ACK + callback."""
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
     @pytest.mark.asyncio
@@ -753,7 +753,7 @@ class TestProcessQuotedContext:
     """Verify the quoted-message pipeline: text + voice STT + images + files."""
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
     @pytest.mark.asyncio
@@ -837,7 +837,7 @@ class TestDefaultInteractionDispatch:
     """Verify the adapter's default INTERACTION_CREATE router."""
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
     def test_default_callback_installed_on_init(self):
@@ -864,7 +864,7 @@ class TestDefaultInteractionDispatch:
         orig = hermes_agent.tools.approval.resolve_gateway_approval
         hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
-            from plugins.platforms.qqbot.keyboards import parse_interaction_event
+            from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
                 "id": "i",
                 "chat_type": 2,
@@ -891,7 +891,7 @@ class TestDefaultInteractionDispatch:
         orig = hermes_agent.tools.approval.resolve_gateway_approval
         hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
-            from plugins.platforms.qqbot.keyboards import parse_interaction_event
+            from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
@@ -915,7 +915,7 @@ class TestDefaultInteractionDispatch:
             lambda: hermes_home,
         )
 
-        from plugins.platforms.qqbot.keyboards import parse_interaction_event
+        from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
         event = parse_interaction_event({
             "id": "i", "chat_type": 2, "user_openid": "u-1",
             "data": {"resolved": {"button_data": "update_prompt:y"}},
@@ -939,12 +939,12 @@ class TestProfileNamespaceApprovalAuthz:
     """
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
     @staticmethod
     def _parse(key):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter._parse_gateway_session_key(key)
 
     def test_parse_accepts_named_profile_namespace(self):
@@ -983,7 +983,7 @@ class TestProfileNamespaceApprovalAuthz:
         orig = hermes_agent.tools.approval.resolve_gateway_approval
         hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
-            from plugins.platforms.qqbot.keyboards import parse_interaction_event
+            from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
                 "id": "i",
                 "chat_type": 2,
@@ -1011,7 +1011,7 @@ class TestProfileNamespaceApprovalAuthz:
         orig = hermes_agent.tools.approval.resolve_gateway_approval
         hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
-            from plugins.platforms.qqbot.keyboards import parse_interaction_event
+            from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
@@ -1039,7 +1039,7 @@ class TestProfileNamespaceApprovalAuthz:
         orig = hermes_agent.tools.approval.resolve_gateway_approval
         hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
-            from plugins.platforms.qqbot.keyboards import parse_interaction_event
+            from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
                 "id": "i", "chat_type": 1,
                 "group_openid": "g-1",
@@ -1059,7 +1059,7 @@ class TestSendUpdatePrompt:
     """Verify the cross-adapter send_update_prompt signature + behaviour."""
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
     @pytest.mark.asyncio
@@ -1100,7 +1100,7 @@ class TestIdentifyIntents:
     """Verify the WebSocket identify payload includes the INTERACTION intent bit."""
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
     @pytest.mark.asyncio
@@ -1140,7 +1140,7 @@ class TestProcessAttachmentsPathExposure:
     """Verify that video and file attachments include the cached local path."""
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
     @pytest.mark.asyncio
@@ -1179,7 +1179,7 @@ class TestOp7ServerReconnect:
     """Verify op 7 triggers WS close (which triggers reconnect in outer loop)."""
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
     def test_op7_closes_websocket(self):
@@ -1207,7 +1207,7 @@ class TestOp9InvalidSession:
     """Verify op 9 handles resumable vs non-resumable sessions."""
 
     def _make_adapter(self):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b"))
 
 
@@ -1244,7 +1244,7 @@ class TestReadEventsClosedWsGuard:
     busy-looping at 100% CPU (issues #31193 / #31771)."""
 
     def _make_adapter(self, **extra):
-        from plugins.platforms.qqbot.adapter import QQAdapter
+        from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
         return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
 
     def test_read_events_raises_when_ws_closed_on_entry(self):

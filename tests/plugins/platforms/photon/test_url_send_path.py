@@ -7,7 +7,7 @@ plain text for messages containing URLs so iMessage can auto-link them without
 hitting the data-detection failure path.
 
 The routing decision lives in
-``plugins/platforms/photon/sidecar/send-format.mjs`` (imported by index.mjs's
+``hermes_agent/plugins/platforms/photon/sidecar/send-format.mjs`` (imported by index.mjs's
 ``/send`` handler). These tests *execute* that real module under node and
 assert the chosen builder for representative payloads — they do not read the
 sidecar source.

@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.platforms.helpers import caption_is_command
-from plugins.platforms.telegram.telegram_media_group import CAPTION_TEXT_ATTR, caption_text, item_notes
+from hermes_agent.plugins.platforms.telegram.telegram_media_group import CAPTION_TEXT_ATTR, caption_text, item_notes
 
 
 def pad_inline_flags(event: MessageEvent) -> list[Optional[bool]]:

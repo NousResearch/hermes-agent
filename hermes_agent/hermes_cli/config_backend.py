@@ -340,13 +340,13 @@ def get_config_backend() -> ConfigBackend:
     return _backend_for(os.environ.get(BACKEND_ENV, "").strip().lower() or "file")
 
 
-# A kind is one package name under plugins/config_backends/: never a dotted or relative path.
+# A kind is one package name under hermes_agent/plugins/config_backends/: never a dotted or relative path.
 _KIND_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _BACKENDS_PACKAGE = "plugins.config_backends"
 
 
 def _backend_for(kind: str) -> ConfigBackend:
-    """``file``, or the instance ``plugins.config_backends.<kind>.get_backend()`` returns. The
+    """``file``, or the instance ``hermes_agent.plugins.config_backends.<kind>.get_backend()`` returns. The
     package is imported directly, never through the general plugin loader (which reads config, D11)."""
     if kind == "file":
         return _FILE_BACKEND

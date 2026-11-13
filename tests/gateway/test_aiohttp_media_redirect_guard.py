@@ -33,7 +33,7 @@ class _LoopbackResolver(AbstractResolver):
 
 
 async def _mattermost_fetch(session, url):
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
     adapter = MattermostAdapter(PlatformConfig(enabled=True, token="t", extra={"url": "http://127.0.0.1:9"}))
     adapter._session, uploaded = session, []
 
@@ -55,7 +55,7 @@ async def _mattermost_fetch(session, url):
 
 
 async def _weixin_fetch(session, url):
-    from plugins.platforms.weixin.adapter import WeixinAdapter
+    from hermes_agent.plugins.platforms.weixin.adapter import WeixinAdapter
     adapter = WeixinAdapter(PlatformConfig(enabled=True, token="t", extra={}))
     adapter._send_session = session
     try:
@@ -67,7 +67,7 @@ async def _weixin_fetch(session, url):
 
 async def _weixin_cdn_fetch(session, url):
     """Inbound media: ``full_url`` passes the CDN host allowlist, then the CDN answers 302."""
-    from plugins.platforms.weixin import adapter as weixin
+    from hermes_agent.plugins.platforms.weixin import adapter as weixin
     try:
         return [await weixin._download_and_decrypt_media(
             session, cdn_base_url=weixin.WEIXIN_CDN_BASE_URL, encrypted_query_param=None, aes_key_b64=None,
@@ -200,7 +200,7 @@ async def test_redirect_does_not_forward_session_authorization_to_another_public
 async def test_weixin_cdn_media_downloads_when_a_fake_ip_resolver_answers_the_cdn(monkeypatch):
     """Inbound CDN URLs are vetted by the allowlist or the configured CDN base, never by DNS; a local
     fake-ip proxy (198.18.0.0/15) answering the CDN host must not drop the media."""
-    from plugins.platforms.weixin import adapter as weixin
+    from hermes_agent.plugins.platforms.weixin import adapter as weixin
 
     async def cdn(_request):
         return web.Response(body=b"cdn-bytes")

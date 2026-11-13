@@ -41,7 +41,7 @@ def _make_event(
 
 def _make_discord_adapter():
     """Create a minimal DiscordAdapter for testing text batching."""
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(DiscordAdapter)
@@ -101,7 +101,7 @@ class TestDiscordTextBatching:
 
 def _make_matrix_adapter():
     """Create a minimal MatrixAdapter for testing text batching."""
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(MatrixAdapter)
@@ -155,7 +155,7 @@ class TestMatrixTextBatching:
 
 def _make_wecom_adapter():
     """Create a minimal WeComAdapter for testing text batching."""
-    from plugins.platforms.wecom.adapter import WeComAdapter
+    from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(WeComAdapter)

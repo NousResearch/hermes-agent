@@ -121,16 +121,16 @@ def register_all_web_providers():
     test classes that need the registry populated for dispatch checks.
     """
     from hermes_agent.agent.web_search_registry import register_provider, _reset_for_tests
-    from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
-    from plugins.web.ddgs.provider import DDGSWebSearchProvider
-    from plugins.web.exa.provider import ExaWebSearchProvider
-    from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
-    from plugins.web.parallel.provider import ParallelWebSearchProvider
-    from plugins.web.keenable.provider import KeenableWebSearchProvider
-    from plugins.web.tavily.provider import TavilyWebSearchProvider
-    from plugins.web.perplexity.provider import PerplexityWebSearchProvider
-    from plugins.web.searxng.provider import SearXNGWebSearchProvider
-    from plugins.web.xai.provider import XAIWebSearchProvider
+    from hermes_agent.plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+    from hermes_agent.plugins.web.ddgs.provider import DDGSWebSearchProvider
+    from hermes_agent.plugins.web.exa.provider import ExaWebSearchProvider
+    from hermes_agent.plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
+    from hermes_agent.plugins.web.parallel.provider import ParallelWebSearchProvider
+    from hermes_agent.plugins.web.keenable.provider import KeenableWebSearchProvider
+    from hermes_agent.plugins.web.tavily.provider import TavilyWebSearchProvider
+    from hermes_agent.plugins.web.perplexity.provider import PerplexityWebSearchProvider
+    from hermes_agent.plugins.web.searxng.provider import SearXNGWebSearchProvider
+    from hermes_agent.plugins.web.xai.provider import XAIWebSearchProvider
 
     _reset_for_tests()
     for cls in (

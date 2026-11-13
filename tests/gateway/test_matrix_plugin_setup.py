@@ -10,7 +10,7 @@ clear-on-blank behavior added in the follow-up to PR #58421.
 import hermes_agent.hermes_cli.config as config_mod
 import hermes_agent.hermes_cli.cli_output as cli_output_mod
 import pm as pm_mod
-from plugins.platforms.matrix.adapter import interactive_setup
+from hermes_agent.plugins.platforms.matrix.adapter import interactive_setup
 
 
 def _patch_setup_io(monkeypatch, prompts, yes_no_responses, saved, removed, existing):

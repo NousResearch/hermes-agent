@@ -15,7 +15,7 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from plugins.platforms.feishu import adapter as feishu_adapter
+from hermes_agent.plugins.platforms.feishu import adapter as feishu_adapter
 
 
 def _inject_fake_lark_module(monkeypatch, connect=None):

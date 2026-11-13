@@ -8,7 +8,7 @@ from typing import Optional
 
 from hermes_agent.gateway.platforms.base import SendResult
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 
 class TelegramReplacementMixin:

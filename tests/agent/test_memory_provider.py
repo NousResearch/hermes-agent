@@ -633,25 +633,25 @@ class TestMemoryManager:
         assert results == {"a": "session a memory", "b": "session b memory"}
 
 class TestPluginMemoryDiscovery:
-    """Memory providers are discovered from plugins/memory/ directory."""
+    """Memory providers are discovered from hermes_agent/plugins/memory/ directory."""
 
     def test_discover_finds_providers(self):
         """discover_memory_providers returns available providers."""
-        from plugins.memory import discover_memory_providers
+        from hermes_agent.plugins.memory import discover_memory_providers
         providers = discover_memory_providers()
         names = [name for name, _, _ in providers]
         assert "byterover" in names  # bundled
 
     def test_load_provider_by_name(self):
         """load_memory_provider returns a working provider instance."""
-        from plugins.memory import load_memory_provider
+        from hermes_agent.plugins.memory import load_memory_provider
         p = load_memory_provider("byterover")
         assert p is not None
         assert p.name == "byterover"
 
     def test_load_nonexistent_returns_none(self):
         """load_memory_provider returns None for unknown names."""
-        from plugins.memory import load_memory_provider
+        from hermes_agent.plugins.memory import load_memory_provider
         assert load_memory_provider("nonexistent_provider") is None
 
 
@@ -659,7 +659,7 @@ class TestUserInstalledProviderDiscovery:
     """Memory providers installed to $HERMES_HOME/plugins/ should be found.
 
     Regression test for issues #4956 and #9099: load_memory_provider() and
-    discover_memory_providers() only scanned the bundled plugins/memory/
+    discover_memory_providers() only scanned the bundled hermes_agent/plugins/memory/
     directory, ignoring user-installed plugins.
     """
 
@@ -686,10 +686,10 @@ class TestUserInstalledProviderDiscovery:
 
     def test_load_user_plugin(self, tmp_path, monkeypatch):
         """load_memory_provider() can load from $HERMES_HOME/plugins/."""
-        from plugins.memory import load_memory_provider
+        from hermes_agent.plugins.memory import load_memory_provider
         self._make_user_memory_plugin(tmp_path, "myexternal")
         monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
+            "hermes_agent.plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / "plugins",
         )
         p = load_memory_provider("myexternal")
@@ -699,7 +699,7 @@ class TestUserInstalledProviderDiscovery:
 
     def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
         """Bundled provider wins when user plugin has the same name."""
-        from plugins.memory import load_memory_provider, discover_memory_providers
+        from hermes_agent.plugins.memory import load_memory_provider, discover_memory_providers
         # Create user plugin named "byterover" (same as bundled)
         plugin_dir = tmp_path / "plugins" / "byterover"
         plugin_dir.mkdir(parents=True)
@@ -715,7 +715,7 @@ class TestUserInstalledProviderDiscovery:
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
         , encoding="utf-8")
         monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
+            "hermes_agent.plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / "plugins",
         )
         # Load should return bundled (name "byterover"), not user (name "byterover-FAKE")
@@ -767,11 +767,11 @@ class TestUserInstalledProviderCli:
 
     def _activate(self, tmp_path, monkeypatch, name):
         monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
+            "hermes_agent.plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / "plugins",
         )
         monkeypatch.setattr(
-            "plugins.memory._get_active_memory_provider",
+            "hermes_agent.plugins.memory._get_active_memory_provider",
             lambda: name,
         )
 
@@ -779,7 +779,7 @@ class TestUserInstalledProviderCli:
         self, tmp_path, monkeypatch
     ):
         """discover_plugin_cli_commands() loads a user provider's cli.py."""
-        from plugins.memory import discover_plugin_cli_commands
+        from hermes_agent.plugins.memory import discover_plugin_cli_commands
         self._make_plugin_with_cli(tmp_path, "extcli")
         self._activate(tmp_path, monkeypatch, "extcli")
         commands = discover_plugin_cli_commands()
@@ -794,7 +794,7 @@ class TestUserInstalledProviderCli:
         relative imports in cli.py; _load_provider_from_dir() must load the
         real plugin module instead of reusing that shell.
         """
-        from plugins.memory import discover_plugin_cli_commands, load_memory_provider
+        from hermes_agent.plugins.memory import discover_plugin_cli_commands, load_memory_provider
         self._make_plugin_with_cli(tmp_path, "extcliload")
         self._activate(tmp_path, monkeypatch, "extcliload")
         assert len(discover_plugin_cli_commands()) == 1
@@ -865,8 +865,8 @@ class TestEntryPointMemoryProviderDiscovery:
         return module_name, exposure
 
     def test_discover_finds_entry_point_provider(self, tmp_path, monkeypatch):
-        from plugins.memory import discover_memory_providers
-        import plugins.memory as memory_plugins
+        from hermes_agent.plugins.memory import discover_memory_providers
+        import hermes_agent.plugins.memory as memory_plugins
 
         module_name, exposure = self._make_entrypoint_module(tmp_path)
         monkeypatch.syspath_prepend(str(tmp_path))
@@ -885,8 +885,8 @@ class TestEntryPointMemoryProviderDiscovery:
 
     @pytest.mark.parametrize("exposure", ["register", "Provider", "make_provider"])
     def test_load_entry_point_provider(self, tmp_path, monkeypatch, exposure):
-        from plugins.memory import load_memory_provider
-        import plugins.memory as memory_plugins
+        from hermes_agent.plugins.memory import load_memory_provider
+        import hermes_agent.plugins.memory as memory_plugins
 
         module_name, exposure = self._make_entrypoint_module(tmp_path, exposure=exposure)
         monkeypatch.syspath_prepend(str(tmp_path))
@@ -907,7 +907,7 @@ class TestEntryPointMemoryProviderDiscovery:
 
     def test_active_entry_point_provider_registers_skill(self, tmp_path, monkeypatch):
         from hermes_agent.tools.skills_tool import skill_view
-        import plugins.memory as memory_plugins
+        import hermes_agent.plugins.memory as memory_plugins
 
         module_name, exposure = self._make_entrypoint_module(
             tmp_path,
@@ -939,8 +939,8 @@ class TestEntryPointMemoryProviderDiscovery:
         self, tmp_path, monkeypatch
     ):
         from hermes_agent.hermes_cli.plugins import get_plugin_manager
-        from plugins.memory import load_memory_provider
-        import plugins.memory as memory_plugins
+        from hermes_agent.plugins.memory import load_memory_provider
+        import hermes_agent.plugins.memory as memory_plugins
 
         module_name, exposure = self._make_entrypoint_module(
             tmp_path,
@@ -972,7 +972,7 @@ class TestEntryPointMemoryProviderDiscovery:
     ):
         from hermes_agent.hermes_cli.plugins import get_plugin_manager
         from hermes_agent.tools.skills_tool import skill_view
-        import plugins.memory as memory_plugins
+        import hermes_agent.plugins.memory as memory_plugins
 
         module_name, exposure = self._make_entrypoint_module(
             tmp_path,

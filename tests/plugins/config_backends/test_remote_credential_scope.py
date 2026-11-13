@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
-from plugins.config_backends.remote import credentials
+from hermes_agent.plugins.config_backends.remote import credentials
 
 STAGING = "https://portal.staging-nousresearch.com"
 OTHER = "https://portal.other-nousresearch.com"

@@ -8,7 +8,7 @@ import logging
 import time
 from typing import Dict
 
-logger = logging.getLogger("plugins.platforms.wecom.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.wecom.adapter")
 
 
 class ChatSendQueueMixin:

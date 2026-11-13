@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from hermes_agent.agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
-from plugins.image_gen._common import (
+from hermes_agent.plugins.image_gen._common import (
     StaticImageGenProvider, catalog_rows, collect_source_images, error_factory,
     load_image_gen_config, materialize_image, post_json)
 from hermes_agent.tools.xai_http import (

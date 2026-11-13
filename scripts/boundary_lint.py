@@ -5,12 +5,12 @@
   published plugin API (``hermes_agent/hermes_cli/data/plugin_api.json``), e.g. ``hermes_agent.gateway.run``. The rule is the one
   ``hermes plugins validate`` warns with (``plugin_validate_private_imports.private_import_findings``),
   so the lint and the plugin-author warning cannot drift.
-* **core -> module**: core code imports a specific module (``plugins.platforms.discord.adapter``)
+* **core -> module**: core code imports a specific module (``hermes_agent.plugins.platforms.discord.adapter``)
   instead of reaching it through discovery and the plugin contracts.
 
 A *module* is a directory under ``plugins/`` with a ``plugin.yaml`` manifest, or a ``plugins/<name>/``
 with a ``dashboard/manifest.json``. Everything else under ``plugins/`` (``plugin_loader``,
-``plugin_utils``, ``plugins/memory/__init__.py`` discovery, ...) is core plugin plumbing. *Core* is
+``plugin_utils``, ``hermes_agent/plugins/memory/__init__.py`` discovery, ...) is core plugin plumbing. *Core* is
 every other file of the shipped packages (pyproject ``packages.find``) and the root ``*.py`` modules;
 tests, scripts, docs and skills are neither.
 
@@ -67,7 +67,7 @@ def module_dirs(root: Path = ROOT) -> list[Path]:
 
 def module_to_core(root: Path = ROOT) -> list[str]:
     """``["plugins/<module>/<rel>:<line> <target>", ...]`` for every module import of a core internal.
-    An in-tree module's full-path import of itself (``plugins.web.exa.provider``) or of another module
+    An in-tree module's full-path import of itself (``hermes_agent.plugins.web.exa.provider``) or of another module
     is not a core import, so it is left out."""
     modules = module_dirs(root)
     hits = [(d, *hit.split(" ", 1)) for d in modules for hit in private_import_findings(d)]

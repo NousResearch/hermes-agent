@@ -49,7 +49,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 import discord
-from plugins.platforms.discord.adapter import (
+from hermes_agent.plugins.platforms.discord.adapter import (
     DiscordAdapter,
     _apply_yaml_config,
 )

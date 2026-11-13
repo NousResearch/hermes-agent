@@ -401,7 +401,7 @@ async def test_a_message_during_a_refusal_after_the_owner_finished_keeps_the_hel
     """A shared Signal group: the owner's held burst B, a stranger's refused /stop still replying when
     the owner's turn ends, then the stranger's message Z. Z's stale-lock heal must not drop B: the
     replying command settles the session itself."""
-    from plugins.platforms.signal.adapter import SignalAdapter
+    from hermes_agent.plugins.platforms.signal.adapter import SignalAdapter
     from tests.gateway.test_busy_burst_serial_reader import _busy_owner
     monkeypatch.setenv("SIGNAL_ALLOWED_USERS", "+155****0001")
     monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", "*")

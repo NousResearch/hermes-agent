@@ -16,7 +16,7 @@ def _reset_registry():
 
 @pytest.mark.asyncio
 async def test_video_input_from_public_url_uses_url_field():
-    from plugins.video_gen.xai import _video_input_from_public_url
+    from hermes_agent.plugins.video_gen.xai import _video_input_from_public_url
 
     url = "https://files-cdn.x.ai/kRQVP6PRQlioVAUNC3GAdg/file_1faca9c3-9411-46ad-bb41-b9b8527789e6.mp4"
     result = await _video_input_from_public_url(
@@ -28,7 +28,7 @@ async def test_video_input_from_public_url_uses_url_field():
 
 
 def test_xai_video_image_input_blocks_credential_store_symlink(tmp_path, monkeypatch):
-    from plugins.video_gen.xai import _image_ref_to_xai_input
+    from hermes_agent.plugins.video_gen.xai import _image_ref_to_xai_input
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

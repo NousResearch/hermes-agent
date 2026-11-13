@@ -1,6 +1,6 @@
 """Tests for the ByteRover memory provider config gates."""
 
-from plugins.memory.byterover import ByteRoverMemoryProvider
+from hermes_agent.plugins.memory.byterover import ByteRoverMemoryProvider
 
 
 def test_auto_extract_false_skips_sync_turn(monkeypatch):
@@ -8,7 +8,7 @@ def test_auto_extract_false_skips_sync_turn(monkeypatch):
     provider = ByteRoverMemoryProvider({"auto_extract": False})
     provider.initialize("session-1")
 
-    monkeypatch.setattr("plugins.memory.byterover._run_brv", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr("hermes_agent.plugins.memory.byterover._run_brv", lambda *args, **kwargs: calls.append((args, kwargs)))
 
     provider.sync_turn("please remember this detail", "acknowledged")
 

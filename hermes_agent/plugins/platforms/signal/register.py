@@ -8,10 +8,10 @@ from hermes_agent.gateway.platforms._shared import config_connected_extra
 from hermes_agent.gateway.platforms.send_targets import NOT_EXPLICIT, StandaloneSendPolicy
 
 # Absolute imports (see __init__.py): one canonical module per file.
-from plugins.platforms.signal.adapter import (
+from hermes_agent.plugins.platforms.signal.adapter import (
     MAX_MESSAGE_LENGTH, SignalAdapter, check_signal_requirements, validate_signal_config)
-from plugins.platforms.signal.setup import interactive_setup
-from plugins.platforms.signal.standalone import standalone_send
+from hermes_agent.plugins.platforms.signal.setup import interactive_setup
+from hermes_agent.plugins.platforms.signal.standalone import standalone_send
 
 logger = logging.getLogger(__name__)
 

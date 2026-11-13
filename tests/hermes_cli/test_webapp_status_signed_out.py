@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
-import plugins.dashboard_auth.basic as basic_plugin
+import hermes_agent.plugins.dashboard_auth.basic as basic_plugin
 from hermes_agent.hermes_cli import web_server
 from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_agent.hermes_cli.dashboard_auth.routes import _reset_password_rate_limit

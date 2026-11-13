@@ -16,7 +16,7 @@ OWNER, STRANGER = "+15550000001", "+15550000002"
 def signal(tmp_path, monkeypatch):
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.signal.adapter import SignalAdapter
+    from hermes_agent.plugins.platforms.signal.adapter import SignalAdapter
 
     for key in ("GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "SIGNAL_ALLOW_ALL_USERS"):
         monkeypatch.delenv(key, raising=False)

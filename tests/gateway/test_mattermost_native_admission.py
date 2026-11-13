@@ -28,7 +28,7 @@ def _posted_event(post_id, message, file_ids=()):
 @pytest.mark.asyncio
 async def test_real_mattermost_posts_run_a_turn_through_native_admission(tmp_path, monkeypatch):
     """Contract: V1, V2"""
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
     monkeypatch.setenv('MATTERMOST_ALLOWED_USERS', SENDER)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = MattermostAdapter(PlatformConfig(enabled=True, token='test-token',

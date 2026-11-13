@@ -133,7 +133,7 @@ def test_credentialed_catalog_probe_failure_is_not_cached_across_keys(monkeypatc
     catalog for the TTL."""
     import requests
 
-    import plugins.image_gen.openrouter as orp
+    import hermes_agent.plugins.image_gen.openrouter as orp
 
     def fake_get(url, headers=None, timeout=None, **_kw):
         if (headers or {}).get("Authorization") == "Bearer good-key":
@@ -152,7 +152,7 @@ def test_credentialed_catalog_probe_failure_is_not_cached_across_keys(monkeypatc
 def test_memory_provider_skill_prune_only_touches_the_active_home(homes, monkeypatch):
     """Pruning under profile B (whose active provider differs) must leave profile A's registered
     provider skill in place; A's own later prune still retracts it."""
-    import plugins.memory as mem
+    import hermes_agent.plugins.memory as mem
     from hermes_agent.hermes_cli.plugins import _reset_plugin_managers_for_tests, get_plugin_manager
 
     a, b = homes

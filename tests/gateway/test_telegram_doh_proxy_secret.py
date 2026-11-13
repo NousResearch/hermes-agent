@@ -27,7 +27,7 @@ class _PTBLikeRequest:
 
 
 def _connect(monkeypatch, caplog, proxy, **env):
-    from plugins.platforms.telegram import adapter as tg
+    from hermes_agent.plugins.platforms.telegram import adapter as tg
 
     for name in ("TELEGRAM_PROXY", "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "TELEGRAM_FALLBACK_IPS", "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)

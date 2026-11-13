@@ -12,7 +12,7 @@ ALLOWED = "alice@example.com"
 
 
 def _adapter(auth_check):
-    from plugins.platforms.google_chat.adapter import GoogleChatAdapter
+    from hermes_agent.plugins.platforms.google_chat.adapter import GoogleChatAdapter
 
     adapter = GoogleChatAdapter(PlatformConfig(enabled=True, extra={"project_id": "p"}))
     adapter.replies = []

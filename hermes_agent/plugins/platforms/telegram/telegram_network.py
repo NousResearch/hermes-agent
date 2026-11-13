@@ -17,7 +17,7 @@ from typing import Iterable, Optional
 import httpx
 
 from hermes_agent.agent.ssl_verify import platform_ssl_context
-from plugins.platforms.telegram.telegram_pool import MAX_FALLBACK_IPS, PoolGeneration, fd_bounded_limits
+from hermes_agent.plugins.platforms.telegram.telegram_pool import MAX_FALLBACK_IPS, PoolGeneration, fd_bounded_limits
 
 logger = logging.getLogger(__name__)
 

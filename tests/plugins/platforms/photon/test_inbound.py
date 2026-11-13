@@ -15,7 +15,7 @@ import pytest
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from plugins.platforms.photon.adapter import PhotonAdapter
+from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
@@ -206,7 +206,7 @@ def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    from plugins.platforms.photon import adapter as adapter_mod
+    from hermes_agent.plugins.platforms.photon import adapter as adapter_mod
 
     monkeypatch.setenv("PATH", "")
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-store"))

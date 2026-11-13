@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import plugins.dashboard_auth.drain as drain_plugin
+import hermes_agent.plugins.dashboard_auth.drain as drain_plugin
 from hermes_agent.hermes_cli.dashboard_auth import TokenPrincipal, assert_protocol_compliance
 from hermes_agent.hermes_cli.dashboard_auth import token_auth
 

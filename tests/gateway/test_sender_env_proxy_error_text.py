@@ -23,7 +23,7 @@ ENV_PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http
 
 def _feishu(monkeypatch):
     requests = pytest.importorskip("requests")
-    from plugins.platforms.feishu import adapter as fs
+    from hermes_agent.plugins.platforms.feishu import adapter as fs
 
     def _create(request):  # the SDK's transport: a plain requests call that reads HTTPS_PROXY
         requests.post("https://open.feishu.cn/open-apis/im/v1/messages", json={}, timeout=5)
@@ -38,7 +38,7 @@ def _feishu(monkeypatch):
 
 def _google_chat(monkeypatch):
     pytest.importorskip("google.auth.transport.requests")
-    from plugins.platforms.google_chat import adapter as gc
+    from hermes_agent.plugins.platforms.google_chat import adapter as gc
 
     monkeypatch.setattr(gc, "service_account", object())
     monkeypatch.setattr(gc, "_load_sa_credentials_from", lambda value: SimpleNamespace(refresh=lambda req: None, token="t"))
@@ -46,14 +46,14 @@ def _google_chat(monkeypatch):
 
 
 def _teams(monkeypatch):
-    from plugins.platforms.teams import adapter as teams
+    from hermes_agent.plugins.platforms.teams import adapter as teams
 
     extra = {"client_id": "c", "client_secret": "s", "tenant_id": "t1"}
     return teams._standalone_send(SimpleNamespace(extra=extra), "19:abc@thread.v2", "hi")
 
 
 def _weixin(monkeypatch):
-    from plugins.platforms.weixin import adapter as wx
+    from hermes_agent.plugins.platforms.weixin import adapter as wx
 
     if not wx.check_weixin_requirements():
         pytest.skip("weixin needs aiohttp + cryptography")
@@ -62,39 +62,39 @@ def _weixin(monkeypatch):
 
 
 def _line(monkeypatch):
-    from plugins.platforms.line import adapter as line
+    from hermes_agent.plugins.platforms.line import adapter as line
 
     return line._standalone_send(SimpleNamespace(extra={"channel_access_token": "tok"}), "U123", "hi")
 
 
 def _ntfy(monkeypatch):
-    from plugins.platforms.ntfy import adapter as ntfy
+    from hermes_agent.plugins.platforms.ntfy import adapter as ntfy
 
     return ntfy._standalone_send(SimpleNamespace(extra={"server": "https://ntfy.example.com", "topic": "t"}), "t", "hi")
 
 
 def _dingtalk(monkeypatch):
-    from plugins.platforms.dingtalk import adapter as dt
+    from hermes_agent.plugins.platforms.dingtalk import adapter as dt
 
     return dt._standalone_send(SimpleNamespace(extra={"webhook_url": "https://oapi.dingtalk.com/robot/send"}), "c", "hi")
 
 
 def _simplex(monkeypatch):
     pytest.importorskip("websockets")
-    from plugins.platforms.simplex import adapter as sx
+    from hermes_agent.plugins.platforms.simplex import adapter as sx
 
     return sx._standalone_send(SimpleNamespace(extra={"ws_url": "ws://127.0.0.1:5225"}), "@alice", "hi")
 
 
 def _signal(monkeypatch):
-    from plugins.platforms.signal import standalone as sig
+    from hermes_agent.plugins.platforms.signal import standalone as sig
 
     return sig.standalone_send(SimpleNamespace(extra={"http_url": "http://127.0.0.1:9", "account": "+15550000000"}),
                                "+15550000001", "hi")
 
 
 def _qqbot(monkeypatch):
-    from plugins.platforms.qqbot import send as qq
+    from hermes_agent.plugins.platforms.qqbot import send as qq
 
     return qq.send_qqbot(SimpleNamespace(token="secret", extra={"app_id": "1"}), "c2c:abc", "hi")
 
@@ -199,7 +199,7 @@ def test_a_padded_star_no_proxy_still_redacts(monkeypatch, caplog, sender, no_pr
 def test_simplex_trailing_dot_host_is_not_bypassed_by_its_bare_name(monkeypatch, caplog):
     # No library strips the trailing dot: ``localhost.`` is proxied, and websockets echoes a proxy with a path.
     pytest.importorskip("websockets")
-    from plugins.platforms.simplex import adapter as sx
+    from hermes_agent.plugins.platforms.simplex import adapter as sx
 
     secret = "http://bob:qzxqzxqzx@127.0.0.1:1/p"
     for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
@@ -218,7 +218,7 @@ def test_simplex_trailing_dot_host_is_not_bypassed_by_its_bare_name(monkeypatch,
 def test_simplex_idna_host_is_never_treated_as_bypassed(monkeypatch, caplog, no_proxy, ws_url):
     # urllib compares NO_PROXY raw; websockets/httpx/aiohttp IDNA-encode the host first, so they disagree.
     pytest.importorskip("websockets")
-    from plugins.platforms.simplex import adapter as sx
+    from hermes_agent.plugins.platforms.simplex import adapter as sx
 
     secret = "http://bob:qzxqzxqzx@127.0.0.1:1/p"
     for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
@@ -251,7 +251,7 @@ def test_an_oddly_cased_no_proxy_alone_is_not_a_bypass(monkeypatch):
 def test_feishu_media_download_failure_log_carries_no_proxy_secret(monkeypatch, caplog):
     from hermes_agent.gateway.config import PlatformConfig
     from hermes_agent.gateway.platforms.base import SendResult as _SendResult
-    from plugins.platforms.feishu import adapter as fs
+    from hermes_agent.plugins.platforms.feishu import adapter as fs
 
     for name in (*ENV_PROXY_VARS, "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)

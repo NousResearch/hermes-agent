@@ -2,7 +2,7 @@
 
 The ``_ensure_telegram_mock`` helper guarantees that a minimal mock of
 the ``telegram`` package is registered in :data:`sys.modules` **before**
-any test file triggers ``from plugins.platforms.telegram.adapter import ...``.
+any test file triggers ``from hermes_agent.plugins.platforms.telegram.adapter import ...``.
 
 Without this, pytest sessions that happen to collect
 ``test_telegram_caption_merge.py`` (bare top-level import, no per-file
@@ -95,7 +95,7 @@ def _bind_lark_sdk_globals_when_installed():
         yield
         return
     try:
-        from plugins.platforms.feishu.adapter import _load_lark_oapi
+        from hermes_agent.plugins.platforms.feishu.adapter import _load_lark_oapi
 
         _load_lark_oapi()
     except Exception:
@@ -400,7 +400,7 @@ def _scan_for_plugin_adapter_antipattern(source: str) -> list[str]:
     """Return a list of offending-line descriptions, or [] if clean.
 
     Flags two things:
-    1. ``sys.path.insert(..., <something mentioning 'plugins/platforms'>)``
+    1. ``sys.path.insert(..., <something mentioning 'hermes_agent/plugins/platforms'>)``
     2. ``import adapter`` or ``from adapter import ...`` at module level.
     """
     try:

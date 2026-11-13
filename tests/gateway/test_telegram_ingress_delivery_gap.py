@@ -12,8 +12,8 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource
-from plugins.platforms.telegram import adapter as tg_adapter
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 _DEAF = "healthy but deaf"
 

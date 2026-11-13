@@ -11,7 +11,7 @@ reconnect is a reliable hung-poll signature.
 import asyncio
 import logging
 from hermes_agent.gateway.config import Platform
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _bare_adapter():
@@ -43,7 +43,7 @@ class TestPollingHealthConfirmation:
         a = _bare_adapter()
         a._polling_generation = 2
         a._polling_progress_event = asyncio.Event()
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.plugins.platforms.telegram.adapter"):
             a._record_polling_progress(1)
         assert not [rec for rec in caplog.records if rec.levelno == logging.INFO]
         assert not a._polling_progress_event.is_set()

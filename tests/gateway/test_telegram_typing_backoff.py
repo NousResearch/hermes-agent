@@ -10,7 +10,7 @@ _repo = str(Path(__file__).resolve().parents[2])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter():
@@ -23,7 +23,7 @@ def _make_adapter():
 async def test_typing_transient_failure_enters_cooldown(monkeypatch):
     adapter = _make_adapter()
     now = {"value": 1000.0}
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: now["value"]})())
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: now["value"]})())
     monkeypatch.setattr(adapter, "_telegram_typing_cooldown_seconds", 30.0, raising=False)
 
     async def fail_once(**kwargs):
@@ -48,7 +48,7 @@ async def test_typing_transient_failure_enters_cooldown(monkeypatch):
 @pytest.mark.asyncio
 async def test_typing_dm_topic_fallback_success_does_not_cool_down(monkeypatch):
     adapter = _make_adapter()
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: 10.0})())
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: 10.0})())
 
     calls = []
 
@@ -72,7 +72,7 @@ async def test_typing_dm_topic_fallback_success_does_not_cool_down(monkeypatch):
 async def test_typing_bad_thread_failure_does_not_cool_down(monkeypatch):
     adapter = _make_adapter()
     now = {"value": 10.0}
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: now["value"]})())
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.asyncio.get_running_loop", lambda: type("Loop", (), {"time": lambda self: now["value"]})())
 
     async def bad_request(**kwargs):
         raise ValueError("message thread not found")

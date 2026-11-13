@@ -24,7 +24,7 @@ from hermes_agent.hermes_cli import web_server
 import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
 from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests
-import plugins.dashboard_auth.session_token as session_token_plugin
+import hermes_agent.plugins.dashboard_auth.session_token as session_token_plugin
 
 
 @pytest.fixture

@@ -15,8 +15,8 @@ from tests.waiting import async_wait_until
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import Platform, SessionSource
-from plugins.platforms.telegram import adapter as tg_adapter
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class RetryAfter(Exception):
@@ -292,7 +292,7 @@ async def test_cancel_during_the_private_copy_leaves_no_orphaned_attachment(floo
     import shutil
     import threading
 
-    from plugins.platforms.telegram import telegram_media_flood as flood
+    from hermes_agent.plugins.platforms.telegram import telegram_media_flood as flood
 
     adapter, doc = flooded
     monkeypatch.setattr(flood.tempfile, "tempdir", str(tmp_path))
@@ -328,7 +328,7 @@ async def test_cancel_during_the_private_copy_leaves_no_orphaned_attachment(floo
 async def test_failed_private_copy_still_posts_the_promised_notice(flooded, tmp_path, monkeypatch):
     """The private copy fails (disk full) and the caller deletes its temp file on return: nothing is
     left to re-upload, so the failure notice the result promised is posted once after the window."""
-    from plugins.platforms.telegram import telegram_media_flood as flood
+    from hermes_agent.plugins.platforms.telegram import telegram_media_flood as flood
 
     adapter, _doc = flooded
     clip = tmp_path / "reply.ogg"
@@ -385,7 +385,7 @@ async def test_every_lost_file_in_a_flooded_batch_gets_its_notice(flooded, tmp_p
 async def test_promised_notice_survives_a_sibling_refused_as_it_goes_out(flooded, tmp_path, monkeypatch):
     """The deferred task owes a notice (its file is gone); a sibling send is refused by Telegram right
     as that notice goes out. The notice must wait out the new window, not be refused locally and lost."""
-    from plugins.platforms.telegram import telegram_media_flood as flood
+    from hermes_agent.plugins.platforms.telegram import telegram_media_flood as flood
 
     adapter, _doc = flooded
     del adapter.send  # the real send(): its local refusal inside a window is what loses the notice
@@ -426,7 +426,7 @@ async def test_lost_upload_notice_checks_the_window_after_its_last_wait(flooded,
                                                                         open_checks, notices):
     """The notice loop is capped at _MAX_WINDOW_WAITS waits, but a window that clears during the last
     wait still gets its notice; only a window open on the check after it gives up."""
-    from plugins.platforms.telegram import telegram_media_flood as flood
+    from hermes_agent.plugins.platforms.telegram import telegram_media_flood as flood
 
     adapter, _doc = flooded
     clip = tmp_path / "reply.ogg"

@@ -42,7 +42,7 @@ def _dingtalk():
 
 
 def _photon():
-    from plugins.platforms.photon.adapter import PhotonAdapter
+    from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
     a = PhotonAdapter(PlatformConfig(enabled=True, extra={}))
     wire = []
 

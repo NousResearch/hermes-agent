@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-logger = logging.getLogger("plugins.platforms.slack.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.slack.adapter")
 
 
 class SlackSocketLifecycleMixin:

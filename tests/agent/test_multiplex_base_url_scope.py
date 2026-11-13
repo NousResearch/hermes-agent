@@ -27,9 +27,9 @@ def secondary_scope(monkeypatch):
 
 def test_base_urls_follow_the_scoped_key_not_default_environ(monkeypatch, secondary_scope, tmp_path):
     import hermes_agent.agent.auxiliary_client as aux
-    import plugins.browser.browserbase.provider as browserbase
-    import plugins.browser.firecrawl.provider as firecrawl
-    import plugins.video_gen.xai as xai_video
+    import hermes_agent.plugins.browser.browserbase.provider as browserbase
+    import hermes_agent.plugins.browser.firecrawl.provider as firecrawl
+    import hermes_agent.plugins.video_gen.xai as xai_video
     from hermes_agent.gateway.run_turn import GatewayTurnMixin
     from hermes_agent.hermes_cli import auth_nous
 

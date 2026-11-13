@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.photon.adapter import PhotonAdapter
+from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> PhotonAdapter:
@@ -69,7 +69,7 @@ def test_note_activity_resets_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     (["recent", "hung"], 0, 1),
 ])
 async def test_watchdog_decisions(monkeypatch, sequence, respawns, failures):
-    import plugins.platforms.photon.adapter as module
+    import hermes_agent.plugins.platforms.photon.adapter as module
 
     adapter = _make_adapter(monkeypatch, probe_max_failures=3)
     adapter._watchdog_running = True

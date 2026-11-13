@@ -4,8 +4,8 @@ Coverage:
   _get_firecrawl_client() — configuration matrix, singleton caching,
   constructor failure recovery, return value verification, edge cases.
   _get_backend() — backend selection logic with env var combinations.
-  plugins.web.parallel.provider._get_sync_client() — Parallel client configuration, singleton caching.
-  plugins.web._common.cached_sdk_client() — Parallel/Exa clients follow the currently resolved key.
+  hermes_agent.plugins.web.parallel.provider._get_sync_client() — Parallel client configuration, singleton caching.
+  hermes_agent.plugins.web._common.cached_sdk_client() — Parallel/Exa clients follow the currently resolved key.
   check_web_api_key() — unified availability check across all web backends.
 """
 
@@ -66,9 +66,9 @@ class TestFirecrawlClientConfig:
 
     def test_no_config_raises_with_helpful_message(self):
         """Neither key nor URL → ValueError with guidance."""
-        with patch("plugins.web.firecrawl.provider.Firecrawl"):
+        with patch("hermes_agent.plugins.web.firecrawl.provider.Firecrawl"):
             with patch("hermes_agent.tools.managed_tool_gateway.read_nous_access_token", return_value=None):
-                from plugins.web.firecrawl.provider import _get_firecrawl_client
+                from hermes_agent.plugins.web.firecrawl.provider import _get_firecrawl_client
                 with pytest.raises(ValueError, match="FIRECRAWL_API_KEY"):
                     _get_firecrawl_client()
 
@@ -76,8 +76,8 @@ class TestFirecrawlClientConfig:
         """Shared gateway domain should derive the Firecrawl vendor hostname."""
         with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}):
             with patch("hermes_agent.tools.managed_tool_gateway.read_nous_access_token", return_value="nous-token"):
-                with patch("plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
-                    from plugins.web.firecrawl.provider import _get_firecrawl_client
+                with patch("hermes_agent.plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
+                    from hermes_agent.plugins.web.firecrawl.provider import _get_firecrawl_client
                     result = _get_firecrawl_client()
                     mock_fc.assert_called_once_with(
                         api_key="nous-token",
@@ -93,9 +93,9 @@ class TestFirecrawlClientConfig:
         """If Firecrawl() raises, next call should retry (not return None)."""
         import hermes_agent.tools.web_tools
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
-            with patch("plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
+            with patch("hermes_agent.plugins.web.firecrawl.provider.Firecrawl") as mock_fc:
                 mock_fc.side_effect = [RuntimeError("init failed"), MagicMock()]
-                from plugins.web.firecrawl.provider import _get_firecrawl_client
+                from hermes_agent.plugins.web.firecrawl.provider import _get_firecrawl_client
 
                 with pytest.raises(RuntimeError):
                     _get_firecrawl_client()
@@ -110,20 +110,20 @@ class TestFirecrawlClientConfig:
     def test_empty_string_key_no_url_raises(self):
         """FIRECRAWL_API_KEY='' with no URL → should raise."""
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": ""}):
-            with patch("plugins.web.firecrawl.provider.Firecrawl"):
+            with patch("hermes_agent.plugins.web.firecrawl.provider.Firecrawl"):
                 with patch("hermes_agent.tools.managed_tool_gateway.read_nous_access_token", return_value=None):
-                    from plugins.web.firecrawl.provider import _get_firecrawl_client
+                    from hermes_agent.plugins.web.firecrawl.provider import _get_firecrawl_client
                     with pytest.raises(ValueError):
                         _get_firecrawl_client()
 
     def test_explicit_firecrawl_config_without_creds_uses_keyless_client(self):
         """Explicit Firecrawl config should build the keyless cloud client."""
-        from plugins.web.firecrawl import provider as firecrawl_provider
+        from hermes_agent.plugins.web.firecrawl import provider as firecrawl_provider
 
         with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
             with patch("hermes_agent.tools.managed_tool_gateway.read_nous_access_token", return_value=None):
-                with patch("plugins.web.firecrawl.provider.Firecrawl", side_effect=AssertionError("SDK path should not run")):
-                    from plugins.web.firecrawl.provider import _get_firecrawl_client
+                with patch("hermes_agent.plugins.web.firecrawl.provider.Firecrawl", side_effect=AssertionError("SDK path should not run")):
+                    from hermes_agent.plugins.web.firecrawl.provider import _get_firecrawl_client
 
                     result = _get_firecrawl_client()
 
@@ -132,7 +132,7 @@ class TestFirecrawlClientConfig:
 
     def test_keyless_firecrawl_search_omits_authorization_header(self, monkeypatch):
         """Keyless Firecrawl search must not send a bearer header."""
-        from plugins.web.firecrawl import provider as firecrawl_provider
+        from hermes_agent.plugins.web.firecrawl import provider as firecrawl_provider
 
         captured = {}
 
@@ -163,7 +163,7 @@ class TestFirecrawlClientConfig:
 
     def test_keyless_firecrawl_scrape_omits_authorization_header(self, monkeypatch):
         """Keyless Firecrawl scrape must not send a bearer header."""
-        from plugins.web.firecrawl import provider as firecrawl_provider
+        from hermes_agent.plugins.web.firecrawl import provider as firecrawl_provider
 
         captured = {}
 
@@ -196,7 +196,7 @@ class TestFirecrawlClientConfig:
         """_scrape_one passes the SDK's ``timeout`` kwarg; the keyless client must accept and forward it."""
         import asyncio
 
-        from plugins.web.firecrawl import provider as firecrawl_provider
+        from hermes_agent.plugins.web.firecrawl import provider as firecrawl_provider
 
         captured = {}
 
@@ -449,7 +449,7 @@ class TestParallelClientConfig:
     def test_creates_client_with_key(self):
         """PARALLEL_API_KEY set → creates Parallel client."""
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
-            from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
+            from hermes_agent.plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
             from parallel import Parallel
             client = _get_parallel_client()
             assert client is not None
@@ -457,14 +457,14 @@ class TestParallelClientConfig:
 
     def test_no_key_raises_with_helpful_message(self):
         """No PARALLEL_API_KEY → ValueError with guidance."""
-        from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
+        from hermes_agent.plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
         with pytest.raises(ValueError, match="PARALLEL_API_KEY"):
             _get_parallel_client()
 
     def test_singleton_returns_same_instance(self):
         """Second call returns cached client."""
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
-            from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
+            from hermes_agent.plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
             client1 = _get_parallel_client()
             client2 = _get_parallel_client()
             assert client1 is client2
@@ -473,7 +473,7 @@ class TestParallelClientConfig:
         """/reload (reload_env) fixing or removing the key reaches the next call: the client built
         with the old key is never handed out again."""
         from hermes_agent.hermes_cli.config import get_env_path, reload_env
-        from plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
+        from hermes_agent.plugins.web.parallel.provider import _get_sync_client as _get_parallel_client
         with patch.dict(os.environ):
             get_env_path().write_text("PARALLEL_API_KEY=typo-key\n")
             reload_env()
@@ -521,14 +521,14 @@ class TestExaClientConfig:
         """One process serving two profiles: each turn's search goes out with its own profile's key, and a
         profile WITHOUT a key is refused — never served on the launch profile's ``os.environ`` key."""
         from hermes_agent.agent import secret_scope
-        from plugins.web.exa.provider import ExaWebSearchProvider
+        from hermes_agent.plugins.web.exa.provider import ExaWebSearchProvider
         homes = {}
         for name, line in (("a", "EXA_API_KEY=key-a\n"), ("b", "EXA_API_KEY=key-b\n"), ("nokey", "")):
             homes[name] = tmp_path / name
             homes[name].mkdir()
             (homes[name] / ".env").write_text(line)
         monkeypatch.setenv("EXA_API_KEY", "key-launch")
-        monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
+        monkeypatch.setattr("hermes_agent.plugins.web.keyless_mcp.keyless_enabled", lambda: False)
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
 
         def sent_with(name):
@@ -547,9 +547,9 @@ class TestExaClientConfig:
 
     def test_single_profile_process_env_still_serves_the_key(self, monkeypatch):
         """Control: no profile scope bound (plain CLI / systemd-injected env) keeps reading os.environ."""
-        from plugins.web.exa.provider import ExaWebSearchProvider
+        from hermes_agent.plugins.web.exa.provider import ExaWebSearchProvider
         monkeypatch.setenv("EXA_API_KEY", "key-env")
-        monkeypatch.setattr("plugins.web.keyless_mcp.keyless_enabled", lambda: False)
+        monkeypatch.setattr("hermes_agent.plugins.web.keyless_mcp.keyless_enabled", lambda: False)
         result = ExaWebSearchProvider().search("q")
         assert result["success"], result
         assert result["data"]["web"][0]["description"] == "key-env"
@@ -564,7 +564,7 @@ class TestWebSearchSchema:
         import hermes_agent.tools.web_tools
 
         # After the web-provider plugin migration, _parallel_search lives in
-        # plugins.web.parallel.provider.ParallelWebSearchProvider.search; the
+        # hermes_agent.plugins.web.parallel.provider.ParallelWebSearchProvider.search; the
         # tool dispatcher resolves a provider from the registry and calls
         # provider.search(query, limit). Mock the provider lookup so we can
         # assert the limit is clamped before reaching the backend.
@@ -594,7 +594,7 @@ class TestWebSearchErrorHandling:
         import hermes_agent.tools.web_tools
 
         # After the web-provider plugin migration, the firecrawl client lives
-        # at plugins.web.firecrawl.provider._get_firecrawl_client. We mock the
+        # at hermes_agent.plugins.web.firecrawl.provider._get_firecrawl_client. We mock the
         # registry's get_provider to return a fake provider whose .search()
         # raises so we can verify error sanitization.
         fake_provider = MagicMock(
@@ -889,7 +889,7 @@ class TestFirecrawlEnvResolution:
             "hermes_agent.hermes_cli.config.get_env_value",
             side_effect=lambda k: fake_key if k == "FIRECRAWL_API_KEY" else None,
         ):
-            from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
+            from hermes_agent.plugins.web.firecrawl.provider import _get_direct_firecrawl_config
 
             result = _get_direct_firecrawl_config()
             assert result is not None, "get_env_value fallback should find the key"
@@ -907,7 +907,7 @@ class TestFirecrawlEnvResolution:
             "hermes_agent.hermes_cli.config.get_env_value",
             side_effect=lambda k: fake_url if k == "FIRECRAWL_API_URL" else None,
         ):
-            from plugins.web.firecrawl.provider import _get_direct_firecrawl_config
+            from hermes_agent.plugins.web.firecrawl.provider import _get_direct_firecrawl_config
 
             result = _get_direct_firecrawl_config()
             assert result is not None
@@ -965,7 +965,7 @@ class TestSiblingProvidersEnvResolution:
         ), patch(
             "requests.post", return_value=mock_response
         ) as mock_post:
-            from plugins.web.keenable.provider import KeenableWebSearchProvider
+            from hermes_agent.plugins.web.keenable.provider import KeenableWebSearchProvider
 
             KeenableWebSearchProvider().search("q", limit=2)
             headers = mock_post.call_args.kwargs["headers"]
@@ -984,9 +984,9 @@ class TestSiblingProvidersEnvResolution:
             "hermes_agent.hermes_cli.config.get_env_value",
             side_effect=lambda k: "tvly-from-dotenv" if k == "TAVILY_API_KEY" else None,
         ), patch(
-            "plugins.web.tavily.provider.httpx.post", return_value=mock_response
+            "hermes_agent.plugins.web.tavily.provider.httpx.post", return_value=mock_response
         ) as mock_post:
-            from plugins.web.tavily.provider import _tavily_request
+            from hermes_agent.plugins.web.tavily.provider import _tavily_request
 
             _tavily_request("search", {"query": "q"})
             headers = mock_post.call_args.kwargs["headers"]
@@ -1010,7 +1010,7 @@ def test_xai_only_gate_agrees_with_dispatcher_when_web_xai_plugin_loaded(monkeyp
     (#116175 review follow-up). Module-level on purpose: TestCheckWebApiKey neutralizes the
     registry path with get_active_*_provider -> None."""
     from hermes_agent.agent import web_search_registry as registry
-    from plugins.web.xai.provider import XAIWebSearchProvider
+    from hermes_agent.plugins.web.xai.provider import XAIWebSearchProvider
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")

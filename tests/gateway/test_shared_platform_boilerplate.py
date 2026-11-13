@@ -31,7 +31,7 @@ def _multiplex_off():
 def test_env_enablement_reads_only_through_scoped_getter(plugin, monkeypatch):
     """A secondary profile is seeded only from its own scope: every var the hook consults must go through
     ``_shared.get_scoped_secret`` (a fake scope answers them) and never through a raw env read."""
-    mod = importlib.import_module(f"plugins.platforms.{plugin}.adapter")
+    mod = importlib.import_module(f"hermes_agent.plugins.platforms.{plugin}.adapter")
     # Anything the plugin resolves through raw env would be visible here; the scoped reader hides it.
     for var in list(os.environ):
         if var.startswith(plugin.upper().replace("GOOGLE_CHAT", "GOOGLE")):
@@ -84,7 +84,7 @@ def test_home_channel_name_defaults_to_home_everywhere(monkeypatch):
 def test_buzz_yaml_bridge_seeds_extra_for_a_secondary_profile(monkeypatch):
     """Under a secondary profile's scope the env write is skipped, so the hook MUST return the values for
     ``PlatformConfig.extra`` — a ``None`` return left a secondary Buzz profile with neither."""
-    import plugins.platforms.buzz.adapter as buzz
+    import hermes_agent.plugins.platforms.buzz.adapter as buzz
 
     for var in ("BUZZ_RELAY_URL", "BUZZ_REPLY_TO_MODE", "BUZZ_CHANNELS", "BUZZ_REQUIRE_MENTION"):
         monkeypatch.delenv(var, raising=False)

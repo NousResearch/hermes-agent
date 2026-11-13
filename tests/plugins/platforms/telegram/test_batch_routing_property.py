@@ -101,7 +101,7 @@ async def _run(tmp_path, steps):
         rebind("10")
 
     try:
-        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+        with patch("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
                    new=AsyncMock(side_effect=lambda data, **_kw: f"/cache/{data.decode()}.jpg")):
             for index, step in enumerate(steps):
                 rebind(step["bind"])

@@ -38,7 +38,7 @@ os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="cron_dm_e2e_")
 import hermes_agent.cron.scheduler as sched
 from hermes_agent.gateway.config import PlatformConfig, Platform
 from hermes_agent.gateway.session import build_session_key, SessionSource
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 DM_CHAT = "D_TESTDM"
 BOT = "U_TESTBOT"

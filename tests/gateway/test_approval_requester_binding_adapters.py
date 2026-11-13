@@ -61,7 +61,7 @@ def test_feishu_card_click(approvers, allowed, monkeypatch):
 @pytest.mark.parametrize(("approvers", "allowed"), CASES)
 async def test_teams_card_click(approvers, allowed, monkeypatch):
     import tests.gateway.test_teams
-    from plugins.platforms.teams import adapter as teams_mod
+    from hermes_agent.plugins.platforms.teams import adapter as teams_mod
 
     write_approvers(approvers)
     entry = pending_from("aad-alice", "Alice", "sess-t", platform="teams")

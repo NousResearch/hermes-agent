@@ -14,7 +14,7 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from plugins.platforms.photon.adapter import PhotonAdapter
+from hermes_agent.plugins.platforms.photon.adapter import PhotonAdapter
 
 _EYES = "\U0001f440"
 _THUMBS_UP = "\U0001f44d"

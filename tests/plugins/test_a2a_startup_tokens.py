@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from plugins.platforms.a2a import security
+from hermes_agent.plugins.platforms.a2a import security
 
 
 def test_token_in_the_profile_env_only_turns_auth_on(tmp_path, monkeypatch):
@@ -60,7 +60,7 @@ def test_unusable_peer_tokens_preserve_shared_bearer_and_warn(monkeypatch, caplo
     adapter, base = _make_live_adapter(monkeypatch)
 
     async def exercise():
-        with caplog.at_level(logging.ERROR, logger="plugins.platforms.a2a.adapter"):
+        with caplog.at_level(logging.ERROR, logger="hermes_agent.plugins.platforms.a2a.adapter"):
             assert await adapter.connect() is True
         try:
             def unauthenticated_status():
@@ -82,7 +82,7 @@ def test_unusable_peer_tokens_preserve_shared_bearer_and_warn(monkeypatch, caplo
     asyncio.run(exercise())
     errors = [
         rec.getMessage() for rec in caplog.records
-        if rec.name == "plugins.platforms.a2a.adapter" and rec.levelno >= logging.ERROR
+        if rec.name == "hermes_agent.plugins.platforms.a2a.adapter" and rec.levelno >= logging.ERROR
     ]
     assert any("only the shared A2A_BEARER_TOKEN is accepted" in msg for msg in errors)
     assert not any("every request is refused" in msg for msg in errors)
@@ -91,7 +91,7 @@ def test_unusable_peer_tokens_preserve_shared_bearer_and_warn(monkeypatch, caplo
 def test_setup_refuses_to_save_peer_tokens_the_runtime_cannot_parse(monkeypatch):
     """The wizard must not persist a value that ``capture()`` turns into refuse-every-caller."""
     import hermes_agent.hermes_cli.setup as setup_mod
-    from plugins.platforms import a2a
+    from hermes_agent.plugins.platforms import a2a
 
     for answer, expected in (("vibe_abc123", None), ("alice:tok-a", "alice:tok-a")):
         saved: dict[str, str] = {}
@@ -111,7 +111,7 @@ def test_setup_refuses_to_save_peer_tokens_the_runtime_cannot_parse(monkeypatch)
 def test_setup_rerun_does_not_claim_localhost_only_over_a_stored_token(monkeypatch, stored):
     """Enter at every prompt over a stored token: it stays in .env, so the wizard can't say localhost-only."""
     import hermes_agent.hermes_cli.setup as setup_mod
-    from plugins.platforms import a2a
+    from hermes_agent.plugins.platforms import a2a
 
     warnings: list[str] = []
     monkeypatch.setattr(setup_mod, "prompt", lambda _q, default=None, **_kw: default or "")

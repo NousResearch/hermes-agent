@@ -221,8 +221,8 @@ def npm_consumers(npm_probe, tmp_path, monkeypatch):
     from hermes_agent.gateway.config import PlatformConfig
     from hermes_agent.hermes_cli.main_platform_setup import _whatsapp_install_bridge
     from hermes_agent.hermes_cli.web_routers.messaging import _ensure_whatsapp_bridge_dependencies
-    from plugins.platforms.photon import adapter as photon, cli
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.photon import adapter as photon, cli
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     home, _node, _binary, _publish = npm_probe
     bridge = tmp_path / "bridge"
@@ -299,8 +299,8 @@ def test_runtime_npm_refusal_never_falls_back_to_literal_npm(npm_probe, npm_cons
 
 @pytest.mark.parametrize("allowed", [False, True])
 def test_adapter_availability_never_provisions_missing_node(tmp_path, monkeypatch, allowed):
-    from plugins.platforms.photon import adapter as photon
-    from plugins.platforms.whatsapp import adapter as whatsapp
+    from hermes_agent.plugins.platforms.photon import adapter as photon
+    from hermes_agent.plugins.platforms.whatsapp import adapter as whatsapp
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "missing-tools"))

@@ -19,7 +19,7 @@ if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
@@ -132,11 +132,11 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         buttons = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "hermes_agent.plugins.platforms.telegram.adapter.InlineKeyboardButton",
             lambda text, callback_data: buttons.append(text) or text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+            "hermes_agent.plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
         )
 
         await adapter.send_exec_approval(
@@ -155,11 +155,11 @@ class TestTelegramExecApproval:
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         captured_rows = []
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            "hermes_agent.plugins.platforms.telegram.adapter.InlineKeyboardButton",
             lambda text, callback_data: text,
         )
         monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            "hermes_agent.plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
             lambda rows: captured_rows.extend(rows) or rows,
         )
 

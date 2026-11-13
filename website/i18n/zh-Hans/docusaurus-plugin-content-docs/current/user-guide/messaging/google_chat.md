@@ -141,7 +141,7 @@ GOOGLE_CHAT_MAX_BYTES=16777216                  # 16 MiB — 在途消息字节�
 通过适配器维护的安装程序安装 Google Chat 依赖。该程序会应用与运行时检查相同的固定安全版本：
 
 ```bash
-python -m plugins.platforms.google_chat.oauth --install-deps
+python -m hermes_agent.plugins.platforms.google_chat.oauth --install-deps
 ```
 
 `--install-deps` 通过 PM 将 `google-chat` extra 加入受管理的 Python 环境；完成后重启 gateway。Docker / hosted 镜像中的 venv 只读，且禁用了按需安装，无法在容器内执行此步骤。发布镜像已预装 `[google-chat]` extra。

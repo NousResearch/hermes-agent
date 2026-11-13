@@ -45,7 +45,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.mark.asyncio
@@ -270,7 +270,7 @@ async def test_send_video_uses_path_based_files_kwarg(tmp_path, monkeypatch):
     message with zero attachments after an earlier image batch on the same
     channel — silent drop from the user's perspective.
     """
-    import plugins.platforms.discord.adapter as discord_platform
+    import hermes_agent.plugins.platforms.discord.adapter as discord_platform
 
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
@@ -314,7 +314,7 @@ async def test_send_video_uses_path_based_files_kwarg(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_send_video_fails_loud_when_message_has_no_attachments(tmp_path, monkeypatch):
     """If Discord accepts the message but attaches nothing, fail loud (#66797)."""
-    import plugins.platforms.discord.adapter as discord_platform
+    import hermes_agent.plugins.platforms.discord.adapter as discord_platform
 
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"fake-mp4")
@@ -367,7 +367,7 @@ async def test_send_file_attachment_forum_uses_files_kwarg(tmp_path, monkeypatch
     """Forum-parent delivery must also route the path-based file through the
     plural ``files=[...]`` kwarg (#66797), so the create_thread starter message
     carries the attachment rather than silently dropping it."""
-    import plugins.platforms.discord.adapter as discord_platform
+    import hermes_agent.plugins.platforms.discord.adapter as discord_platform
 
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"fake-mp4")
@@ -426,7 +426,7 @@ def _fake_getsize(monkeypatch, oversized: Path, size: int):
 
 
 def test_discord_upload_limit_uses_guild_filesize_limit():
-    from plugins.platforms.discord.adapter_media import (
+    from hermes_agent.plugins.platforms.discord.adapter_media import (
         _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES,
         DiscordMediaMixin,
     )
@@ -452,7 +452,7 @@ def test_discord_upload_limit_uses_guild_filesize_limit():
 async def test_oversized_upload_rejected_before_send(tmp_path, monkeypatch, method, path_kw, name):
     """Oversized local files never reach channel.send(file(s)=...) (#50846): the caller gets an
     actionable error (name, size, limit), the user a notice, and the base fallback never runs."""
-    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+    from hermes_agent.plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
 
     big = tmp_path / name
     big.write_bytes(b"x")
@@ -482,7 +482,7 @@ async def test_oversized_upload_rejected_before_send(tmp_path, monkeypatch, meth
 async def test_send_video_under_guild_boost_limit_uploads(tmp_path, monkeypatch):
     """A boosted guild's higher cap is honored: a file over the default but under the guild
     limit is uploaded, not rejected."""
-    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+    from hermes_agent.plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
 
     video = tmp_path / "ok.mp4"
     video.write_bytes(b"fake-video-bytes")
@@ -503,7 +503,7 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     """Sibling site of #50846: an oversized local image used to 413 the whole chunk and dump
     its siblings into the per-image fallback. It is skipped up front, the rest of the chunk is
     delivered with a notice appended; an all-oversized chunk still sends the notice alone."""
-    from plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+    from hermes_agent.plugins.platforms.discord.adapter_media import _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
 
     small = tmp_path / "small.png"
     small.write_bytes(b"ok")

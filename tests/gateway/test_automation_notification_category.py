@@ -118,7 +118,7 @@ async def test_display_kind_is_a_closed_producer_set(tmp_path, monkeypatch):
 async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, category):
     from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_agent.gateway.session_envelope import restore_native
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     runner, authority = await _authority(tmp_path, monkeypatch)
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token='fixture-token', typing_indicator=False))
     runner.adapters = {Platform.DISCORD: adapter}
@@ -159,7 +159,7 @@ _SOURCE = dict(chat_id='42', chat_type='dm', user_id='42', user_name='human')
 
 async def _native_owner(tmp_path, monkeypatch, human_message_id, fields=_SOURCE, **config):
     from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     runner, authority = await _authority(tmp_path, monkeypatch)
     vars(runner.session_store.config).update(config)
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
@@ -216,7 +216,7 @@ async def test_native_completion_wake_refuses_another_route(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypatch):
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     _runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
     try:
         stranger = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))

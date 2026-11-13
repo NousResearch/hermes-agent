@@ -15,7 +15,7 @@ from hermes_agent.gateway import delivery_ledger as dl
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.session import SessionSource
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 pytest.importorskip("telegram")
 

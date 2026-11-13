@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from plugins.platforms.telegram.telegram_network import build_ptb_requests
+from hermes_agent.plugins.platforms.telegram.telegram_network import build_ptb_requests
 
 
 class _Recorder:

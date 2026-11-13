@@ -1,4 +1,4 @@
-"""Tests for plugins.google_meet.audio_bridge (v2).
+"""Tests for hermes_agent.plugins.google_meet.audio_bridge (v2).
 
 Covers the platform gating and pactl / system_profiler plumbing
 without actually invoking those tools on the host.
@@ -34,7 +34,7 @@ def _linux_pactl_result(stdout: str) -> MagicMock:
 
 
 def test_setup_linux_loads_null_sink_and_virtual_source():
-    from plugins.google_meet.audio_bridge import AudioBridge
+    from hermes_agent.plugins.google_meet.audio_bridge import AudioBridge
 
     calls: list[list[str]] = []
 
@@ -48,9 +48,9 @@ def test_setup_linux_loads_null_sink_and_virtual_source():
             return _linux_pactl_result("43\n")
         raise AssertionError(f"unexpected pactl invocation: {argv}")
 
-    with patch("plugins.google_meet.audio_bridge.platform.system",
+    with patch("hermes_agent.plugins.google_meet.audio_bridge.platform.system",
                return_value="Linux"), \
-         patch("plugins.google_meet.audio_bridge.subprocess.run",
+         patch("hermes_agent.plugins.google_meet.audio_bridge.subprocess.run",
                side_effect=_fake_run):
         br = AudioBridge()
         info = br.setup()
@@ -79,16 +79,16 @@ def test_setup_linux_loads_null_sink_and_virtual_source():
 
 
 def test_teardown_linux_unloads_modules_in_reverse_order():
-    from plugins.google_meet.audio_bridge import AudioBridge
+    from hermes_agent.plugins.google_meet.audio_bridge import AudioBridge
 
     def _setup_run(argv, **kwargs):
         if "module-null-sink" in argv:
             return _linux_pactl_result("42\n")
         return _linux_pactl_result("43\n")
 
-    with patch("plugins.google_meet.audio_bridge.platform.system",
+    with patch("hermes_agent.plugins.google_meet.audio_bridge.platform.system",
                return_value="Linux"), \
-         patch("plugins.google_meet.audio_bridge.subprocess.run",
+         patch("hermes_agent.plugins.google_meet.audio_bridge.subprocess.run",
                side_effect=_setup_run):
         br = AudioBridge()
         br.setup()
@@ -99,7 +99,7 @@ def test_teardown_linux_unloads_modules_in_reverse_order():
         unload_calls.append(list(argv))
         return _linux_pactl_result("")
 
-    with patch("plugins.google_meet.audio_bridge.subprocess.run",
+    with patch("hermes_agent.plugins.google_meet.audio_bridge.subprocess.run",
                side_effect=_teardown_run):
         br.teardown()
 
@@ -109,7 +109,7 @@ def test_teardown_linux_unloads_modules_in_reverse_order():
     assert unload_calls[1][2] == "42"
 
     # Second teardown is a no-op.
-    with patch("plugins.google_meet.audio_bridge.subprocess.run") as run_mock:
+    with patch("hermes_agent.plugins.google_meet.audio_bridge.subprocess.run") as run_mock:
         br.teardown()
     run_mock.assert_not_called()
 
@@ -139,7 +139,7 @@ _BH_ABSENT = (
 
 
 def test_property_access_before_setup_raises():
-    from plugins.google_meet.audio_bridge import AudioBridge
+    from hermes_agent.plugins.google_meet.audio_bridge import AudioBridge
 
     br = AudioBridge()
     with pytest.raises(RuntimeError):

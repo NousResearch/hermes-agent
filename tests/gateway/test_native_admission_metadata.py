@@ -50,7 +50,7 @@ BRIDGE_SHAPES = [
 
 @pytest.mark.asyncio
 async def test_real_whatsapp_bridge_events_run_a_turn_through_native_admission(tmp_path, monkeypatch):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={
@@ -86,7 +86,7 @@ async def test_real_whatsapp_bridge_events_run_a_turn_through_native_admission(t
 
 @pytest.mark.asyncio
 async def test_native_codec_closed_metadata_contract_and_reply_expected(tmp_path, monkeypatch):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))

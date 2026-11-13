@@ -48,7 +48,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ class TestSlackSendRetryable:
         client.chat_update = AsyncMock(side_effect=error)
         adapter._get_client = lambda cid, team_id="": client
 
-        with caplog.at_level("ERROR", logger="plugins.platforms.slack.adapter"):
+        with caplog.at_level("ERROR", logger="hermes_agent.plugins.platforms.slack.adapter"):
             result = await adapter.edit_message("C123", "123.456", "hello")
 
         assert result.success is False

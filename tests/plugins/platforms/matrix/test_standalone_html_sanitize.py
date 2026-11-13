@@ -17,7 +17,7 @@ pytest.importorskip("markdown")
 def test_standalone_payload_formatted_body_is_sanitized(message):
     from html.parser import HTMLParser
 
-    from plugins.platforms.matrix.adapter import _standalone_payloads
+    from hermes_agent.plugins.platforms.matrix.adapter import _standalone_payloads
 
     html = "".join(p.get("formatted_body", "") for p in _standalone_payloads(message)).lower()
     for needle in ("<img", "onerror", "<script", "javascript:", "data:"):
@@ -33,7 +33,7 @@ def test_standalone_payload_formatted_body_is_sanitized(message):
 
 
 def test_standalone_payload_keeps_safe_formatting():
-    from plugins.platforms.matrix.adapter import _standalone_payloads
+    from hermes_agent.plugins.platforms.matrix.adapter import _standalone_payloads
 
     (payload,) = _standalone_payloads("# Title\n\n**bold** [site](https://example.com) $x^2$")
     html = payload["formatted_body"]
@@ -45,7 +45,7 @@ def test_standalone_payload_keeps_safe_formatting():
 
 def _adapter_html(message):
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     adapter = MatrixAdapter(PlatformConfig(
         enabled=True, token="syt_test_token",
@@ -54,7 +54,7 @@ def _adapter_html(message):
 
 
 def _standalone_html(message):
-    from plugins.platforms.matrix.adapter import _standalone_payloads
+    from hermes_agent.plugins.platforms.matrix.adapter import _standalone_payloads
 
     return "".join(p.get("formatted_body", "") for p in _standalone_payloads(message))
 

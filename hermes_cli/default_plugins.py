@@ -33,14 +33,19 @@ _BACKOFF = "default-plugins"  # memory_provider_migration failure-stamp name, in
 
 
 def default_entries() -> list:
-    """Catalog entries marked default that this OS and this Hermes can run (live catalog, else in-tree)."""
-    from hermes_cli.plugin_catalog import load_catalog_live
-    from hermes_cli.plugins_cmd_catalog import catalog_hermes_error, normalized_platforms
-    from hermes_platform.host.facts import os_family
-    host = os_family()
-    return [entry for entry in load_catalog_live()
-            if entry.default and (not entry.platforms or host in normalized_platforms(entry.platforms))
-            and catalog_hermes_error(entry) is None]
+    """Catalog entries marked default that this OS and this Hermes can run (live catalog, else in-tree).
+    The tier is checked here too: the live/in-tree merge can carry ``default`` onto a community entry."""
+    from hermes_cli.plugin_catalog import DEFAULT_TIERS, load_catalog_live
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_cli.plugins_cmd_catalog import refuse_incompatible_catalog_entry
+
+    def runs_here(entry) -> bool:
+        try:
+            refuse_incompatible_catalog_entry(entry)  # the install gate's own platform/version verdict
+        except PluginOperationError:
+            return False
+        return True
+    return [entry for entry in load_catalog_live() if entry.default and entry.tier in DEFAULT_TIERS and runs_here(entry)]
 
 
 def _recorded(home: Path) -> set[str]:
@@ -75,21 +80,29 @@ def _installed_dir(home: Path, entry) -> Optional[Path]:
 
 
 def _settled(home: Path, entry) -> bool:
-    """*home* has *entry* installed and enabled, or installed and disabled by the user. A tree in neither
-    list never got enabled (a refused enable leaves it on disk), so the install is retried."""
+    """*home* already has *entry*: a tree the user put there (enabled or not, it is theirs), or one an
+    earlier automatic attempt left that someone has since enabled or disabled. A tree a refused enable
+    left behind (stamped by that attempt, in neither list) is retried."""
     from hermes_cli.left_core_migration import _plugins_listed
+    from hermes_cli.memory_provider_migration import _failure_stamp
     target = _installed_dir(home, entry)
     if target is None:
         return False
-    manifest = target / "plugin.yaml"
+    if not _failure_stamp(home, _attempt(entry)).exists():
+        return True
     names = {entry.name, target.name}
     try:
         from hermes_yaml import safe_load
-        names.add(str((safe_load(manifest.read_text(encoding="utf-8-sig")) or {}).get("name") or ""))
+        names.add(str((safe_load((target / "plugin.yaml").read_text(encoding="utf-8-sig")) or {}).get("name") or ""))
     except (OSError, ValueError, AttributeError):  # no or malformed manifest: the dir names count
         pass
     enabled, disabled = _plugins_listed(home, tuple(names - {""}))
     return enabled or disabled
+
+
+def _attempt(entry) -> str:
+    """Failure-stamp name of this home's automatic install of *entry*."""
+    return f"default-{entry.name}"
 
 
 def fetch_allowed(home: Path) -> bool:
@@ -111,7 +124,7 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
     """Install and enable every default plugin *home* never had. ``installed`` lists what this call
     installed, ``owed`` what is still to fetch (a failed install). One plugin's failure never raises."""
     from hermes_cli.left_core_migration import _first_cause, _install_into
-    from hermes_cli.memory_provider_migration import _home_label
+    from hermes_cli.memory_provider_migration import _home_label, _note_failure, _note_success
     result: dict = {"installed": [], "owed": []}
     if not fetch_allowed(home):
         return {**result, "skipped": "lazy-installs-disabled"}
@@ -127,11 +140,13 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
         except Exception as exc:  # health: allow BLE001 -- network, uv or kill list: reported per plugin, never raised
             outcome = {"ok": False, "error": str(exc)}
         if outcome.get("ok"):
+            _note_success(home, _attempt(entry))
             have.add(entry.name)
             result["installed"].append(entry.name)
             say(f"  ✓ Installed default plugin '{entry.name}' for {_home_label(home)}")
             continue
         result["owed"].append(entry.name)
+        _note_failure(home, _attempt(entry))  # marks a tree it left as ours to retry, not the user's
         say(f"  ⚠ Default plugin '{entry.name}' could not be installed for {_home_label(home)}: "
             f"{_first_cause(str(outcome.get('error') or ''))}. Hermes retries at a later start; "
             f"`hermes plugins install {entry.name}` installs it now.")
@@ -144,10 +159,15 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
     """Every profile home sharing this install (the default home plus each live profile). The catalog is
     read once; one home's failure never stops the next. Waits up to *wait* seconds for another installer
     to finish (``TimeoutError`` past that)."""
+    from hermes_cli.plugin_catalog import fetch_live_catalog
     from pm.plugins_state import dependency_homes
     summary: dict = {"installed": [], "owed": []}
     homes = [home for home in dependency_homes() if fetch_allowed(home)]
     entries = default_entries() if homes else []  # no catalog read (or fetch) where nothing may install
+    if homes and fetch_live_catalog() is None:
+        # Offline: the in-tree defaults still install, but one the live catalog added since this release
+        # is unknown, so the pass is owed until the live catalog is read.
+        summary["owed"].append("live catalog")
     if not entries:
         return summary
     with _machine_lock(wait):  # never two installers in one home (an update tail beside a detached child)
@@ -235,6 +255,8 @@ def install_and_record(*, say: Callable[[str], None] = print, wait: float = 900.
     outcome = install_defaults_all_homes(say=say, wait=wait)
     if outcome["owed"]:
         _note_failure(root, _BACKOFF)
+        # A later pass (a profile created after this revision settled) can fail too: owed again.
+        _state(root, "settled").unlink(missing_ok=True)
         return outcome
     _note_success(root, _BACKOFF)
     _state(root, "settled").parent.mkdir(parents=True, exist_ok=True)

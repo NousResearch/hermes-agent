@@ -239,6 +239,47 @@ async def test_a_session_open_when_the_gateway_stopped_ends_after_boot(tmp_path,
         assert authority.db.get_session(sid)['end_reason'] == 'startup_orphan_reap'
 
 
+def _compress(db, parent, child):
+    assert db.try_acquire_compression_lock(parent, 'fixture')
+    try:
+        db.publish_compression_child(parent_session_id=parent, child_session_id=child, source='gui',
+                                     messages=[{'role': 'user', 'content': 'summary'}],
+                                     compression_lock_holder='fixture')
+    finally:
+        db.release_compression_lock(parent, 'fixture')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pinned_segment', ['live', 'compressed_parent'])
+async def test_a_pinned_session_open_when_the_gateway_stopped_stays_open_after_boot(
+        tmp_path, monkeypatch, pinned_segment):
+    """Automatic sweeps spare pinned conversations (#60609); the startup orphan close must too,
+    including the unpinned compression continuation a pinned segment covers."""
+    from gateway.session_local_recovery import recover_local_sessions
+
+    armed = _capture_timers(monkeypatch)
+    _stale_rows(monkeypatch)
+    first, _ = await _owner(tmp_path, monkeypatch)
+    sid = _create(first).session_id
+    first.db.set_session_pinned(sid, True)
+    if pinned_segment == 'compressed_parent':
+        _compress(first.db, sid, 'continuation')
+        # A store from before pins covered the lineage: only the earlier segment carries the pin.
+        first.db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET pinned = 0 WHERE id = 'continuation'"))
+        assert first.db.get_session(sid)['pinned'] and not first.db.get_session('continuation')['pinned']
+    await _attach(first, sid)
+
+    authority, finalized = await _owner(tmp_path, monkeypatch)
+    recover_local_sessions(authority, schedule=True)
+    for _, fire in armed:
+        fire()
+    await asyncio.sleep(0)
+    live = 'continuation' if pinned_segment == 'compressed_parent' else sid
+    assert armed == [] and finalized == []
+    assert authority.db.get_session(live)['ended_at'] is None
+
+
 @pytest.mark.asyncio
 async def test_a_session_active_before_the_restart_is_kept_for_its_idle_classic_cli(tmp_path, monkeypatch):
     """An idle classic CLI redials only on its next call: boot must not end its session in minutes."""

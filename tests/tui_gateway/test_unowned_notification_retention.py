@@ -241,6 +241,103 @@ def test_the_orphan_sweep_counts_a_parked_delegation_as_live_until_the_park_lets
         ad._reset_for_tests()
 
 
+@pytest.mark.parametrize("evt", [
+    {"type": "async_delegation", "delegation_id": "deleg_gw1", "session_key": "agent:main:telegram:dm:12345", "results": []},
+    {"type": "async_delegation", "delegation_id": "deleg_gw2", "session_key": "agent:main:local:dm:local-abc", "results": []},
+    {"type": "async_delegation", "delegation_id": "deleg_gw3", "session_key": "agent:trader:discord:channel:99", "results": [], "restored": True},
+    {"type": "async_delegation", "delegation_id": "deleg_gw4", "session_key": "agent:main:telegram:dm:12345", "task_failure_notice": True, "results": [{"task_index": 0, "status": "failed"}]},
+    {"type": "watch_match", "session_id": "proc_gw1", "session_key": "agent:main:telegram:dm:12345", "pattern": "ERR", "output": "boom"},
+    {"type": "watch_disabled", "session_id": "proc_gw1", "session_key": "agent:main:telegram:dm:12345", "message": "capped"},
+    {"type": "heartbeat", "session_id": "proc_gw1", "session_key": "agent:main:telegram:dm:12345", "seq": 1, "output": "tick"},
+    {"type": "async_delegation", "delegation_id": "deleg_api1", "session_key": "raw-api-sid", "origin_session_id": "raw-api-sid", "results": []},
+], ids=["telegram_dm", "local_dm", "restored_named_profile", "task_failure_notice", "watch_match", "watch_disabled", "heartbeat", "api_server_origin"])
+def test_embedded_tui_poller_leaves_gateway_owned_events_on_the_shared_queue(monkeypatch, evt):
+    """When an in-process GatewayRunner is live, embedded TUI pollers must requeue gateway-routed events
+    instead of parking them in ``notification_park`` (which starves ``_async_delegation_watcher`` for 600s
+    and silently drops ``restored=True`` orphan-sweep replays)."""
+    import sys
+    from tools import async_delegation
+
+    other = _session(OTHER_KEY)
+    monkeypatch.setattr(server, "_sessions", {"other-sid": other})
+    monkeypatch.setattr(server, "time", SimpleNamespace(sleep=lambda _s: None, time=time.time, monotonic=time.monotonic))
+    registry = _registry()
+    runner = SimpleNamespace(_running=True, _gateway_loop=SimpleNamespace(is_running=lambda: True))
+    fake_run_mod = SimpleNamespace(_gateway_runner_ref=lambda: runner)
+    monkeypatch.setitem(sys.modules, "gateway.run", fake_run_mod)
+
+    server._notif_handle_ready("other-sid", other, [evt], set(), registry, lambda _evt: "text", None)
+
+    assert _parked() == []
+    assert not async_delegation._held_copies
+    assert _drain(registry.completion_queue) == [evt]
+
+    # During shutdown drain (deferred list provided), the event is also handed back to the queue, never parked.
+    deferred: list = []
+    server._notif_handle_ready("other-sid", other, [evt], set(), registry, lambda _evt: "text", deferred)
+    assert _parked() == []
+    assert deferred == [evt]
+
+
+def test_resumed_tui_session_does_not_steal_in_flight_api_server_delegation(monkeypatch):
+    """An api_server delegation carries ``origin_session_id`` (no ``origin_ui_session_id``) and must be
+    persisted as a delivery row by the gateway without starting a model wake, even if a TUI tab later
+    resumes the same raw session id (poller and post-turn ``drained_for`` paths alike)."""
+    import sys
+    from tools.process_registry import ProcessRegistry
+    from tools.process_registry_awaiting import drained_for
+
+    raw_sid = "raw-api-sid"
+    resumed = _session(raw_sid)
+    monkeypatch.setattr(server, "_sessions", {"tui-sid": resumed})
+    monkeypatch.setattr(server, "time", SimpleNamespace(sleep=lambda _s: None, time=time.time, monotonic=time.monotonic))
+    runner = SimpleNamespace(_running=True, _gateway_loop=SimpleNamespace(is_running=lambda: True))
+    monkeypatch.setitem(sys.modules, "gateway.run", SimpleNamespace(_gateway_runner_ref=lambda: runner))
+
+    api_evt = {
+        "type": "async_delegation", "delegation_id": "deleg_api_resumed",
+        "session_key": raw_sid, "origin_session_id": raw_sid, "results": [],
+    }
+    registry = _registry()
+    registry.completion_queue.put(api_evt)
+
+    owns = lambda e: ProcessRegistry._owns_event(
+        e, raw_sid, lambda evt: server._session_owns_notification_event("tui-sid", resumed, evt), True)
+    with drained_for(registry, owns) as mine:
+        assert mine == []
+    assert _drain(registry.completion_queue) == [api_evt]
+
+    server._notif_handle_ready("tui-sid", resumed, [api_evt], set(), registry, lambda _evt: "text", None)
+    assert _parked() == []
+    assert _drain(registry.completion_queue) == [api_evt]
+
+
+def test_inactive_gateway_runner_does_not_claim_unowned_events(monkeypatch):
+    """A stopped GatewayRunner (or process completion not drained from completion_queue by the gateway)
+    must not cause TUI pollers to requeue-spin unowned events."""
+    import sys
+
+    other = _session(OTHER_KEY)
+    monkeypatch.setattr(server, "_sessions", {"other-sid": other})
+    registry = _registry()
+    stopped_runner = SimpleNamespace(_running=False, _gateway_loop=SimpleNamespace(is_running=lambda: False))
+    monkeypatch.setitem(sys.modules, "gateway.run", SimpleNamespace(_gateway_runner_ref=lambda: stopped_runner))
+
+    deleg = _delegation("deleg_stopped", session_key="agent:main:telegram:dm:12345", origin_ui_session_id="")
+    server._notif_handle_ready("other-sid", other, [deleg], set(), registry, lambda _evt: "text", None)
+    assert registry.completion_queue.empty()
+    assert _parked() == [deleg]
+
+    notification_park.unhold(_parked())
+    monkeypatch.setattr(notification_park, "_parked", [])
+    live_runner = SimpleNamespace(_running=True, _gateway_loop=SimpleNamespace(is_running=lambda: True))
+    monkeypatch.setitem(sys.modules, "gateway.run", SimpleNamespace(_gateway_runner_ref=lambda: live_runner))
+    proc_comp = _completion("proc_gw", key="agent:main:telegram:dm:12345")
+    server._notif_handle_ready("other-sid", other, [proc_comp], set(), registry, lambda _evt: "text", None)
+    assert registry.completion_queue.empty()
+    assert _parked() == [proc_comp]
+
+
 def _drain(q) -> list:
     out = []
     while not q.empty():

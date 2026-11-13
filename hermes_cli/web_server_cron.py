@@ -79,7 +79,9 @@ def _validate_dashboard_cron_security(
     present. A mapping scopes the prompt/deliver checks to touched fields —
     mirroring the tool's update path — while ``base_url`` always checks the
     EFFECTIVE pair so an unrelated edit cannot leave an unsafe
-    provider+endpoint combination schedulable.
+    provider+endpoint combination schedulable. A ``pinned`` update is resolved
+    into ``updates`` here (popped, provider/model written), so the pair checked
+    is the pair ``update_job`` stores.
 
     The base_url check reads ``providers:`` and stored secrets, so it runs in the
     OWNING profile's config+secret scope: the launch profile's same-named provider
@@ -95,6 +97,12 @@ def _validate_dashboard_cron_security(
 
     prompt = _cron_optional_text(effective.get("prompt"))
     with _config_profile_scope(profile):
+        if updates and "pinned" in updates:
+            # Resolve ``pinned`` into provider/model HERE, in the owning profile's scope, so
+            # update_job stores exactly the pair checked below instead of re-resolving it unscoped.
+            from cron.jobs import _apply_pin_update
+            _apply_pin_update(effective, updates)
+            effective = {**effective, **updates}
         base_url_error = _validate_cron_base_url(effective.get("provider"), effective.get("base_url"))
     error = (
         (_touched("prompt") and prompt and _scan_cron_prompt(prompt))

@@ -1655,6 +1655,32 @@ async def test_update_cron_job_rechecks_effective_base_url(isolated_profiles):
 
 
 @pytest.mark.asyncio
+async def test_update_cron_job_rechecks_stored_base_url_on_unrelated_edit(isolated_profiles):
+    """A job stored before the guard with an unsafe pair can't be kept schedulable by an
+    edit that leaves provider/base_url alone; clearing base_url remediates it."""
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="managed by named profile", schedule="every 1h", name="legacy-pair",
+        base_url="https://attacker.invalid/v1",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.update_cron_job(
+            job["id"], _web_models.CronJobUpdate(updates={"name": "renamed"}),
+            profile="worker_alpha",
+        )
+    assert exc.value.status_code == 400
+    assert "base_url" in exc.value.detail
+
+    updated = await _rt_cron.update_cron_job(
+        job["id"], _web_models.CronJobUpdate(updates={"name": "renamed", "base_url": ""}),
+        profile="worker_alpha",
+    )
+    assert updated["name"] == "renamed"
+    assert not updated.get("base_url")
+
+
+@pytest.mark.asyncio
 async def test_update_cron_job_scans_new_prompt(isolated_profiles):
     from hermes_cli import web_server
 
@@ -1803,3 +1829,45 @@ async def test_update_cron_job_validates_list_valued_bot_chat_deliver(isolated_p
     )
     stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
     assert stored[field] == "bot-chat:worker_alpha,local"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pin_update", [{"pinned": False}, {"pinned": True}])
+async def test_update_cron_job_checks_base_url_after_pin_resolution(isolated_profiles, pin_update):
+    """``pinned`` rewrites provider/model inside update_job; the pairing check must see the
+    provider the job will actually be stored with, not the one it had before the pin."""
+    isolated_profiles["worker_alpha"].joinpath("config.yaml").write_text(
+        "model:\n  default: some-model\n  provider: openrouter\n"
+        "providers:\n  myproxy:\n    base_url: https://real.example/v1\n", encoding="utf-8")
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="managed by named profile", schedule="every 1h", name="pin-pair",
+        provider="myproxy", base_url="https://real.example/v1",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _rt_cron.update_cron_job(
+            job["id"], _web_models.CronJobUpdate(updates=pin_update), profile="worker_alpha")
+    assert exc.value.status_code == 400
+    assert "base_url" in exc.value.detail
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert stored["provider"] == "myproxy"
+
+
+@pytest.mark.asyncio
+async def test_update_cron_job_pins_the_main_model_of_the_jobs_profile(isolated_profiles):
+    """pinned=True stores the owning profile's main model and provider: the pair the
+    pairing check validated, not a second resolution outside that profile's scope."""
+    isolated_profiles["worker_alpha"].joinpath("config.yaml").write_text(
+        "model:\n  default: some-model\n  provider: openrouter\n", encoding="utf-8")
+    job = _web_server_cron._call_cron_for_profile(
+        "worker_alpha", "create_job",
+        prompt="managed by named profile", schedule="every 1h", name="pin-main",
+    )
+
+    await _rt_cron.update_cron_job(
+        job["id"], _web_models.CronJobUpdate(updates={"pinned": True}), profile="worker_alpha")
+
+    stored = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job["id"])
+    assert (stored["provider"], stored["model"]) == ("openrouter", "some-model")
+    assert "pinned" not in stored

@@ -476,6 +476,14 @@ def _url_end(url: str) -> int:
     return end
 
 
+def _escaped(text: str, pos: int) -> bool:
+    """True when text[pos] follows an odd run of backslashes."""
+    slash = pos
+    while slash > 0 and text[slash - 1] == "\\":
+        slash -= 1
+    return (pos - slash) % 2 == 1
+
+
 def _prose_follows(url: str, end: int) -> bool:
     nxt = url[end:end + 1]
     return not nxt or nxt in _URL_PROSE_AFTER or not nxt.isascii()
@@ -593,9 +601,13 @@ class _UrlEmphasisScan:
         for run in _URL_MARK_RUN_RE.finditer(url):
             if not _prose_follows(url, run.end()):
                 continue
-            openers = self._innermost(m.start() + run.start(), run.group())
+            # A backslash-escaped mark is URL text (``https://x/a\**``): only the marks after it may close.
+            start = run.start() + _escaped(url, run.start())
+            if start == run.end():
+                continue
+            openers = self._innermost(m.start() + start, url[start:run.end()])
             if openers:
-                fallback = [True, m.start(), m.start() + _url_end(url[:run.start()])]
+                fallback = [True, m.start(), m.start() + _url_end(url[:start])]
                 for opener in openers:
                     opener.close = fallback
                 return

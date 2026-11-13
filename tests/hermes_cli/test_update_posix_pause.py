@@ -217,3 +217,89 @@ def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_pa
         assert pid() and pid() != first, "the restart did not bring the job back under launchd"
     finally:
         subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True, check=False)
+
+
+@pytest.mark.platforms("macos")
+def test_a_launchd_job_restarted_in_another_domain_discharges_its_pause_record(
+    monkeypatch,
+):
+    """A newer process for the label in another launchd domain already fulfilled the restart debt."""
+    from hermes_cli import gateway
+    from hermes_cli.update_cmd_posix_pause import resume_paused_set
+
+    label = "ai.hermes.gateway-p2probe"
+    job = {
+        "kind": "launchd",
+        "label": label,
+        "domain": "user/501",
+        "plist": "/tmp/gateway.plist",
+        "pid": 42,
+    }
+    token = {
+        "posix_units": [job],
+        "unmapped": [],
+        "resume_needed": True,
+        "posix_stopped": True,
+    }
+    monkeypatch.setattr(
+        gateway, "_locate_launchd_gateway_service", lambda _label: ("gui/501", 84)
+    )
+    monkeypatch.setattr(
+        gateway,
+        "_launchctl_bootstrap",
+        lambda *args, **kwargs: pytest.fail("bootstrapped a running job"),
+    )
+    monkeypatch.setattr(
+        gateway.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("kickstarted a running job"),
+    )
+
+    resume_paused_set(token)
+
+    assert token["posix_units"] == []
+    assert token["resume_needed"] is False
+    assert token["posix_stopped"] is False
+
+
+@pytest.mark.platforms("macos")
+def test_a_launchd_job_bootstraps_in_its_probed_domain(monkeypatch):
+    """A stale recorded domain is replaced by the domain selected for the current launchd session."""
+    from hermes_cli import gateway
+    from hermes_cli.update_cmd_posix_pause import _start_job
+
+    label = "ai.hermes.gateway-p2probe"
+    job = {
+        "kind": "launchd",
+        "label": label,
+        "domain": "user/501",
+        "plist": "/tmp/gateway.plist",
+        "pid": 42,
+    }
+    bootstrapped = []
+    commands = []
+    monkeypatch.setattr(
+        gateway, "_locate_launchd_gateway_service", lambda _label: (None, None)
+    )
+    monkeypatch.setattr(
+        gateway, "_probe_launchd_domain_for_label", lambda _label: "gui/501"
+    )
+    monkeypatch.setattr(gateway, "get_launchd_label", lambda: "another-label")
+    monkeypatch.setattr(gateway, "refresh_launchd_plist_if_needed", lambda: False)
+    monkeypatch.setattr(
+        gateway,
+        "_launchctl_bootstrap",
+        lambda *args, **kwargs: bootstrapped.append(args),
+    )
+    monkeypatch.setattr(
+        gateway, "_wait_for_launchd_service_pid", lambda *args, **kwargs: True
+    )
+    monkeypatch.setattr(
+        gateway.subprocess, "run", lambda cmd, **kwargs: commands.append(cmd)
+    )
+
+    _start_job(job)
+
+    assert bootstrapped == [("gui/501", job["plist"], label)]
+    assert commands == [["launchctl", "kickstart", f"gui/501/{label}"]]
+    assert job["domain"] == "gui/501"

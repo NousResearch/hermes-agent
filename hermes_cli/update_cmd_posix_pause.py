@@ -389,13 +389,30 @@ def _start_job(job: dict) -> None:
     """Load and start *job*. The invoking profile's plist is regenerated first, as the restart it
     replaces does (``launchd_restart``); that refresh also loads it."""
     from hermes_cli.gateway import (
-        _launchctl_bootstrap, _wait_for_launchd_service_pid, get_launchd_label, refresh_launchd_plist_if_needed,
+        _launchctl_bootstrap,
+        _locate_launchd_gateway_service,
+        _probe_launchd_domain_for_label,
+        _wait_for_launchd_service_pid,
+        get_launchd_label,
+        refresh_launchd_plist_if_needed,
     )
+
+    domain, pid = _locate_launchd_gateway_service(job["label"])
+    if pid and pid != job["pid"]:
+        return  # another recovery path already restarted this label; discharge the stale debt
+    job["domain"] = domain or _probe_launchd_domain_for_label(job["label"])
     if not (job["label"] == get_launchd_label() and refresh_launchd_plist_if_needed()):
         _launchctl_bootstrap(job["domain"], job["plist"], job["label"])
-    subprocess.run(["launchctl", "kickstart", f"{job['domain']}/{job['label']}"],
-                   capture_output=True, text=True, encoding="utf-8", errors="replace",
-                   stdin=subprocess.DEVNULL, timeout=30, check=False)
+    subprocess.run(
+        ["launchctl", "kickstart", f"{job['domain']}/{job['label']}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
     if not _wait_for_launchd_service_pid(job["label"], old_pid=job["pid"], timeout=15.0, domain=job["domain"]):
         raise RuntimeError(f"{job['label']} did not come back under launchd")
 

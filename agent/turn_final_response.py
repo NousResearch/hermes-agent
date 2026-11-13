@@ -213,10 +213,10 @@ def finish_text_response(
     # heal threshold, deliver the queued notice through the status/warning callback — the normal out-of-band
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
-    from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
+    from agent.agent_runtime_intent import (
+        intent_ack_continuation_mode, promoted_reasoning_announces_action, trailing_continue_intent,
     )
+    from agent.agent_runtime_helpers import looks_like_degenerate_final, tool_results_this_turn
 
     _ack_mode = intent_ack_continuation_mode(agent)
     # Said-continue-but-stopped guard: no tool calls but the short reply TAILS with an

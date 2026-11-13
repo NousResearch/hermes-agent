@@ -33,7 +33,7 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 - **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_attach`, `kanban_attach_url`, `kanban_attachments`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
 
-Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
+Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. Most CLI task verbs have a tool-call equivalent; the administrative retry-hold inspection and resolution commands below are intentionally human CLI-only, not model tools. The rest of this page shows CLI examples because they're easy to copy-paste.
 
 This is the shape that covers the workloads `delegate_task` can't:
 
@@ -620,10 +620,53 @@ budget counts only *consecutive* clean-exit protocol violations — interleaved
 rate-limited requeues are neutral, and any other failure kind resets the
 streak — and a per-task `max_retries` overrides the bound. A card blocked by
 this budget stays blocked (it is not auto-promoted like a below-`failure_limit`
-breaker block) until `hermes kanban unblock <id>`, which also grants a fresh
-retry budget. This usually means
+breaker block) until `hermes kanban unblock <id>`. That command does not reset
+the separate protocol-violation streak: one manual unblock buys another attempt,
+and a repeated violation can trip the same limit again. This usually means
 the model wrote a plain-text answer and exited without using the Kanban tool
 surface.
+
+#### Opt-in protocol retry holds
+
+By default, exhausting this consecutive-violation
+budget still emits `gave_up` and leaves the task sticky-blocked. An operator may
+explicitly set `kanban.protocol_violation_actions` to
+`{board_slug: {assignee_profile: "block"|"defer"}}`; only the exact `defer`
+action creates a hold, and omitted or invalid policy fails closed to the existing
+block. At the same protocol limit, a configured task becomes `scheduled` with one
+`protocol_retry_held` event and a durable hold bound to the failed run, source
+event, current task/body/assignee and event snapshot. This state is **not** a
+normal timer schedule: dispatch, automatic ready recomputation, ordinary unblock,
+and direct claim cannot release it. The original failed runs, failure error and
+protocol events remain intact.
+
+A human operator can inspect active holds and the token needed for an explicit
+resolution:
+
+```bash
+hermes kanban holds list [--json]
+hermes kanban holds resolve <task> --action resume|retire --expected-hold-token <tok> --reason <code>
+```
+
+`resume` uses the normal parent gate (`ready` when parents are complete, otherwise
+`todo`) and records the release boundary. `retire` archives the task as a non-grade
+outcome and refuses when unresolved dependents would be released. Repeating the
+same resolution with the same token is idempotent. A stale token is refused; list
+again and review the current task state before deciding.
+
+The CLI calls the existing fenced core API; it does not add a model-facing tool.
+This is **manual or domain-owned recovery**, not automatic retry-on-cause-clear:
+there is no hold timer, health probe, or cause detector in this capability. A
+domain-owned recovery process can use the same core API after its own source and
+route checks. Cause-cleared automatic retry is the separate #108942 half; the two
+changes compose, and this hold API alone does not claim to complete that recovery
+story. `adopt_protocol_failure` can adopt only an unchanged legacy protocol
+`gave_up`; `get_retry_hold` returns the active hold and its current concurrency
+token; and `resolve_retry_hold` accepts only `resume` or `retire` with that token
+and an audited reason code. Neither wall-clock age, a successful run elsewhere,
+nor configuration changes reset these budgets. Hold and resolution metadata contain
+only bounded trusted identifiers and receipts—never prompts, outputs, tool arguments or provider
+credentials.
 
 The lifecycle plus the load-bearing reference details (workspace kinds, deliverable `artifacts`, claiming created cards) ship in that system-prompt block, so every worker has them regardless of which profile it runs under — no per-profile skill setup required.
 
@@ -1013,12 +1056,14 @@ All commands are also available as a slash command in the interactive CLI and in
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
+| `kanban.protocol_violation_actions` | `{}` | Per-board/per-assignee protocol-violation action (`block` or `defer`). Only an exact `defer` opts that pair into durable retry holds; omitted, malformed or invalid policy keeps the existing sticky block. Holds are not released by age, ordinary unblock or automatic recomputation. See [Opt-in protocol retry holds](#opt-in-protocol-retry-holds). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
 ```yaml
 kanban:
   max_in_progress: 2
+  protocol_violation_actions: {}
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```

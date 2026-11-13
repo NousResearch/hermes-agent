@@ -17,6 +17,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_retry_holds as retry_holds
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER, exit_single_query
 
 
@@ -77,7 +78,7 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
         assert kb._json_dict(run["metadata"]).get("exit_code") == rc
         if rc == 0:
             assert kb._json_dict(run["metadata"]).get("protocol_violation") is True
-            assert kbd._protocol_violation_streak(conn, tid) == 1
+            assert retry_holds._protocol_violation_streak(conn, tid) == 1
             assert KANBAN_WORKER_EXIT_TRAILER not in (run["error"] or "")
         else:
             assert run["outcome"] == "rate_limited"

@@ -783,12 +783,24 @@ def disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None
         _persist_migration(config)
 
 
-def _qwen_meant_the_cli_login(_model: dict[str, Any]) -> bool:
+def _qwen_meant_the_cli_login(slot: dict[str, Any]) -> bool:
     """A saved bare ``qwen`` named the Qwen CLI login until v54 made it an Alibaba DashScope alias.
-    Keep it on the login only when that login exists and nothing else answers for ``qwen``: no
-    DashScope key and no configured provider of that name."""
+
+    A slot with its own key (inline ``api_key`` or ``key_env``) sent that key to the Qwen portal, so
+    it keeps that route unless it plainly targets DashScope (a DashScope ``base_url``, or a
+    ``key_env`` naming DASHSCOPE). Any other slot keeps the login only when the login exists and
+    nothing else answers for ``qwen``: no DashScope key and no configured provider of that name."""
     from hermes_cli.auth import _qwen_cli_auth_path, has_usable_secret, read_credential_pool
+    from hermes_cli.fallback_config import resolve_entry_api_key
     from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
+    from utils import base_url_host_matches
+
+    if named_custom_provider_config_path("qwen", read_raw_config()) is not None:
+        return False
+    key_env = str(slot.get("key_env") or slot.get("api_key_env") or "").strip()
+    if has_usable_secret(str(slot.get("api_key") or "").strip()) or (key_env and resolve_entry_api_key(slot)):
+        return not ("DASHSCOPE" in key_env.upper()
+                    or base_url_host_matches(str(slot.get("base_url") or ""), "aliyuncs.com"))
 
     def pool_has_secret(provider: str, fields: tuple[str, ...]) -> bool:
         return any(
@@ -796,16 +808,9 @@ def _qwen_meant_the_cli_login(_model: dict[str, Any]) -> bool:
             for entry in read_credential_pool(provider)
         )
 
-    key_env = str(_model.get("key_env") or _model.get("api_key_env") or "").strip()
-    dashscope_key = _cfg().get_env_value_prefer_dotenv("DASHSCOPE_API_KEY")
-    pointed_key = _cfg().get_env_value_prefer_dotenv(key_env) if key_env else None
-    oauth_exists = (_qwen_cli_auth_path().is_file()
-                    or pool_has_secret("qwen-oauth", ("access_token", "refresh_token")))
-    return (oauth_exists
-            and not has_usable_secret(dashscope_key)
-            and not has_usable_secret(pointed_key)
-            and not pool_has_secret("alibaba", ("access_token", "runtime_api_key"))
-            and named_custom_provider_config_path("qwen", read_raw_config()) is None)
+    return ((_qwen_cli_auth_path().is_file() or pool_has_secret("qwen-oauth", ("access_token", "refresh_token")))
+            and not has_usable_secret(_cfg().get_env_value_prefer_dotenv("DASHSCOPE_API_KEY"))
+            and not pool_has_secret("alibaba", ("access_token", "runtime_api_key")))
 
 
 def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
@@ -826,18 +831,28 @@ def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
             add(task)
             add(task.get("fallback_chain"))
     moa = _dict_at(config, "moa")  # the top-level block and each preset carry the same two slots
+    encoded_refs: list[tuple[dict[str, Any], list[Any]]] = []  # hand-edited JSON-string advisors
     for block in (moa, *_dict_at(moa, "presets").values()):
         if isinstance(block, dict):
             add(block.get("aggregator"))
-            add(block.get("reference_models"))
+            refs = block.get("reference_models")
+            if isinstance(refs, str):
+                from hermes_cli.moa_config import _reference_slots
+                refs = _reference_slots(refs)
+                encoded_refs.append((block, refs))
+            add(refs)
 
-    changed = False
+    rewritten = []
     for entry in entries:
         if (isinstance(entry, dict) and _lower_is("qwen")(entry.get("provider"))
                 and _qwen_meant_the_cli_login(entry)):
             entry["provider"] = "qwen-oauth"
-            changed = True
-    if changed:
+            rewritten.append(entry)
+    for block, refs in encoded_refs:  # re-encode only a string whose advisors changed
+        if any(ref is entry for ref in refs for entry in rewritten):
+            import json
+            block["reference_models"] = json.dumps(refs)
+    if rewritten:
         _commit(config, results, quiet, "Qwen CLI provider selectors migrated to qwen-oauth",
                 "  ✓ Qwen CLI provider selectors: qwen → qwen-oauth (bare qwen now means Alibaba DashScope).")
 

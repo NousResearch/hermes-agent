@@ -115,12 +115,43 @@ def test_provider_selectors_migrate_without_touching_models_or_payloads(home):
 
 def test_guard_applies_to_each_provider_selector(home, monkeypatch):
     raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
-    raw["fallback_providers"] = [{"provider": "qwen", "key_env": "OTHER_KEY"}, {"provider": "qwen"}]
-    monkeypatch.setenv("OTHER_KEY", "sk-custom-secret")
+    raw["fallback_providers"] = [{"provider": "qwen", "key_env": "MY_DASHSCOPE_KEY"}, {"provider": "qwen"}]
+    monkeypatch.setenv("MY_DASHSCOPE_KEY", "sk-custom-secret")
     (home / "config.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
     out = _migrate(home)
     assert out["fallback_providers"][0]["provider"] == "qwen"
     assert out["fallback_providers"][1]["provider"] == "qwen-oauth"
+
+
+@pytest.mark.parametrize("slot", [
+    {"key_env": "QWEN_TOKEN"},
+    {"api_key": "qwen-portal-token"},
+], ids=["key-env", "inline-key"])
+def test_a_slot_with_its_own_qwen_key_keeps_the_portal_route(home, monkeypatch, tmp_path, slot):
+    """Before v54 a slot's own key went to the Qwen portal; the rewrite keeps that, login or not."""
+    (tmp_path / ".qwen" / "oauth_creds.json").unlink()
+    monkeypatch.setenv("QWEN_TOKEN", "qwen-portal-token")
+    raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    raw["fallback_providers"] = [{"provider": "qwen", "model": "qwen3-coder-plus", **slot},
+                                 {"provider": "qwen", "model": "qwen3-coder-plus", **slot,
+                                  "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"}]
+    (home / "config.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+    out = _migrate(home)
+    assert [e["provider"] for e in out["fallback_providers"]] == ["qwen-oauth", "qwen"]
+
+
+@pytest.mark.parametrize("where", ["top-level", "preset"])
+def test_json_string_moa_advisors_are_migrated(home, where):
+    """``reference_models`` may be a hand-edited JSON string; its advisors move and it stays a string."""
+    refs = json.dumps([{"provider": "qwen", "model": "qwen3-coder-plus"}])
+    block = {"aggregator": {"provider": "qwen", "model": "qwen3-coder-plus"}, "reference_models": refs}
+    raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    raw["moa"] = block if where == "top-level" else {"presets": {"saved": block}}
+    (home / "config.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+    out = _migrate(home)
+    saved = out["moa"] if where == "top-level" else out["moa"]["presets"]["saved"]
+    assert isinstance(saved["reference_models"], str)
+    assert json.loads(saved["reference_models"]) == [{"provider": "qwen-oauth", "model": "qwen3-coder-plus"}]
 
 
 def test_cron_and_gateway_channel_overrides_are_not_migrated(home):

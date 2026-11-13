@@ -174,6 +174,24 @@ def _normalize_choice(value: Any, choices: set, default: str) -> str:
     return normalized if normalized in choices else default
 
 
+_REPLY_TO_MODES = frozenset({"off", "first", "all"})
+
+
+def _reply_to_mode_choice(value: Any) -> str:
+    """``reply_to_mode`` as one of off/first/all. YAML 1.1 reads a bare ``off`` as ``False`` (and
+    ``hermes config set ... off`` writes it that way), so ``False`` means ``off``; an unknown value
+    warns and keeps the ``first`` default rather than passing a non-mode to the adapters."""
+    if value is None:
+        return "first"
+    if value is False:
+        return "off"
+    mode = value.strip().lower() if isinstance(value, str) else None
+    if mode in _REPLY_TO_MODES:
+        return mode
+    logger.warning("Ignoring invalid reply_to_mode %r (expected one of: off, first, all); using 'first'", value)
+    return "first"
+
+
 def _dict_slot(container: dict, key: str) -> dict:
     """Get-or-create ``container[key]`` as a dict, replacing a non-dict value with ``{}``."""
     value = container.setdefault(key, {})
@@ -280,7 +298,8 @@ class Platform(Enum):
         manifest ``name:`` keys that differ from their directory (alias -> directory name). Aliases
         never shadow a directory name, so the directory stays the canonical platform value."""
         try:
-            platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
+            from hermes_cli.plugins import get_bundled_plugins_dir
+            platforms_dir = get_bundled_plugins_dir() / "platforms"
             dirs = [
                 child for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
                 if child.is_dir() and (child / "__init__.py").exists()
@@ -473,7 +492,7 @@ class PlatformConfig:
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
-            reply_to_mode=data.get("reply_to_mode", "first"),
+            reply_to_mode=_reply_to_mode_choice(data.get("reply_to_mode")),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion

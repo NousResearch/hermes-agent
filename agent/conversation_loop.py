@@ -1241,10 +1241,10 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     if len(content) == 1:
         content[0]["text"] = effective
         return True
-    if len(content) == 2:
-        head = content[0].get("text") or ""
-        if head and effective.startswith(head) and effective[len(head):]:
-            content[1]["text"] = effective[len(head):]
+    if len(content) in (2, 3):  # [static, volatile] or [static, session rest, ephemeral tail]
+        head = "".join(part.get("text") or "" for part in content[:-1])
+        if all(part.get("text") for part in content[:-1]) and effective.startswith(head) and effective[len(head):]:
+            content[-1]["text"] = effective[len(head):]
             return True
     return False
 
@@ -1325,6 +1325,7 @@ def _redecorate_prompt_cache_for_provider(
             cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
+            session_system_prompt=agent._cached_system_prompt,
             direct_native_tool_cache=getattr(
                 agent, "_direct_native_anthropic_tool_cache_capability", lambda: False
             )(),
@@ -1830,7 +1831,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
-    from agent.turn_finalizer import settle_held_final
+    from agent.turn_finalizer import fence_result_reply, settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1859,6 +1860,7 @@ def run_conversation(
             )
         finally:
             end_voice_turn_route(agent)
+    fence_result_reply(result)
     settle_held_final(agent, result)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):

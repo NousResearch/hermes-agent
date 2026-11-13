@@ -8,6 +8,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+PAYLOAD_TOOLS = ("python", "node", "uv", "npm", "ffmpeg", "ripgrep")
+
 
 def write_facts(payload: Path, lock_path: Path, build_set: Path, tui: Path) -> None:
     from pm.lock import Lockfile
@@ -18,7 +20,7 @@ def write_facts(payload: Path, lock_path: Path, build_set: Path, tui: Path) -> N
 
     payload = payload.resolve()
     target = "linux-arm64-bionic"
-    record_tools(payload, lock_path, target, {name: name for name in ("python", "node", "uv", "npm", "ffmpeg", "ripgrep")})
+    record_tools(payload, lock_path, target, {name: name for name in PAYLOAD_TOOLS})
     natives = [line.strip() for line in build_set.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
     (payload / "native-wheels.json").write_text(json.dumps(natives) + "\n", encoding="utf-8")
     # This is the target pin, never the host's sys.version_info or sysconfig.

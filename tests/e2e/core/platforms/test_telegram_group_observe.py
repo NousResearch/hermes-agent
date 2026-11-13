@@ -80,3 +80,40 @@ def test_observed_group_command_resets_shared_session_and_tools_see_the_sender(t
         gw.stop()
         llm.stop()
         drv.stop()
+
+
+_PNG = bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d494441"
+                     "5478da63fccfc0500f000485018084a98c210000000049454e44ae426082")
+
+
+def test_observed_group_photo_points_the_next_addressed_turn_at_the_cached_file(tmp_path) -> None:
+    """Observed context stays text-only, but the agent learns where the photo is and how to look at it."""
+    drv = TelegramDriver()
+    drv.start()
+    director = Director()
+    llm = FakeLLMServer(director)
+    llm.start()
+    gid = drv.group_chat_id
+    cfg = C.merge(drv.gateway_config(), {"platforms": {"telegram": {"extra": {
+        "observe_unmentioned_group_messages": True, "group_allowed_chats": [gid]}}}})
+    gw = GatewayUnderTest(tmp_path / "rig", llm_base_url=llm.base_url, config=cfg,
+                          env={**drv.gateway_env(), "TELEGRAM_GROUP_ALLOWED_USERS": drv.user_id}, ready=drv.connected)
+    try:
+        gw.start()
+        drv.standin.files["ph-1"], drv.standin.file_paths["ph-1"] = _PNG, "photos/desk.png"
+        drv.standin._inbound({"id": int(gid), "type": "supergroup", "title": "Standin Group"}, int(drv.user_id),
+                             photo=[{"file_id": "ph-1", "file_unique_id": "u-ph-1", "width": 1, "height": 1,
+                                     "file_size": len(_PNG)}], caption="desk sheet")
+        wait_until(lambda: "Cached observed group image" in gw.tail(), "the unmentioned photo was observed")
+        drv.group("what was in that image? [in:p1]", mention=True)
+        _await_turn(director, "p1")
+        user = [m for m in director.requests["p1"][0]["messages"] if m.get("role") == "user"][-1]
+        assert isinstance(user["content"], str), "observed media must not ride inline"
+        cached = re.search(r"saved at: (\S+\.png)\] \(not attached inline; to look at it use vision_analyze with "
+                           r"this path as image_url\)", user["content"])
+        assert cached, user["content"]
+        assert open(cached[1], "rb").read() == _PNG
+    finally:
+        gw.stop()
+        llm.stop()
+        drv.stop()

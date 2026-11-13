@@ -1,0 +1,32 @@
+name: nyx-wiki-recall
+title: NyxWikiRecall
+repo: https://github.com/blacksmithFF/NyxWikiRecall
+sha: 7d8d26378d9da57e0eaae8016baa6fc03f9c6f01
+version: "0.1.0"
+description: "Attach short wiki glimpses chosen by a decision model, and write a daily Markdown transcript of every turn. A local Markdown wiki (starter layout shipped) is scored per message through OpenRouter's Decisions API; matching glimpses are injected before the model answers, and wiki_read opens the full article. Transcripts are written by the plugin itself into HERMES_HOME/plugin-data/nyx-wiki-recall/ with no extra setup (transcript = yes and finalize = yes are the shipped values). Each day runs from finalize.after to finalize.after (default 02:00). Scheduled (cron) jobs are recorded under a Scheduled job heading; only subagent turns are skipped by default. A day is finished at finalize.after the next morning. The files are what a wiki is built from. Ships Clotho's wiki-archivist skill. Default provider=no runs as a hook beside any memory provider; provider=yes can serve as Hermes's memory provider when memory.provider also says so. Disclosure — for each message that passes the skip rules (not empty, not a slash command; cron turns skipped by default), HTTPS POSTs go to openrouter.ai/api/alpha/decisions (decisions.url, default that URL; model typesafe/jev-1.13) with OPENROUTER_API_KEY (via agent.secret_scope.get_secret), carrying the recent conversation (context.turns, default 2) trimmed to message.chars (default 20,000 characters) and the titles, paths and glimpses of the wiki folders and pages being asked about (up to three requests per message, within budget.seconds); nothing else is sent anywhere and there is no telemetry. Reads the wiki folder (wiki_path), Hermes config read-only, and the gateway-bound HERMES_SESSION_* values via gateway.session_context.get_session_env; in memory-provider mode only, also opens HERMES_HOME/state.db read-only for the last 40 messages of the current session. Writes a journal and daily Markdown transcript of every turn (user messages, replies and short tool-call summaries such as terminal commands and file paths, after pattern-based secret redaction, with default file permissions) only under HERMES_HOME/plugin-data/nyx-wiki-recall/ (or transcript.folder), plus suggestions, finalized.json and lock files. Deletes nothing by default; with keep.days > 0, only its own finished journal/ and suggestions/ day files. Runs one day-finishing background thread per Hermes process and one short-lived transcript thread after each reply; runs no shell commands and stores no credentials."
+maintainer: blacksmithFF
+tier: community
+category: memory
+# Catalog card image: 1200x600 (2:1) PNG at docs/banner.png, pinned to this sha.
+# Host is raw.githubusercontent.com, as required by the catalog README and validator.
+image: https://raw.githubusercontent.com/blacksmithFF/NyxWikiRecall/7d8d26378d9da57e0eaae8016baa6fc03f9c6f01/docs/banner.png
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/blacksmithFF/NyxWikiRecall#readme
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+known_issues:
+  - "Install with `hermes plugins install blacksmithFF/NyxWikiRecall --no-enable` then `hermes plugins enable nyx-wiki-recall`. Hermes 0.22.5 `plugins install --enable` (or answering yes) sets memory.provider and skips plugins.enabled for plugins that register a memory provider, so the transcript and glimpse hooks never run. If that already happened, enable the plugin and set memory.provider back."
+  - "`hermes plugins validate` warns once on a private core import of gateway.session_context.get_session_env (transcript.py). That is the documented session-identity reader in Hermes 0.22.5's plugin guide; the import is wrapped and falls back to transcript.user.name if it goes away."
+  - "Cron turns get no wiki lookup by default (lookups.on_cron = no). Transcripts record scheduled (cron) jobs under a Scheduled job heading, and skip only subagent turns by default (transcript.skip.platforms = subagent)."
+capabilities:
+  provides_tools:
+    - wiki_read
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env:
+    - OPENROUTER_API_KEY

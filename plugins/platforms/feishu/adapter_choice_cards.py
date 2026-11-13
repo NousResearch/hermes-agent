@@ -9,12 +9,12 @@ it answers anything.
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 from typing import Any, Optional
 
 from agent.i18n import t
+from gateway.platforms.helpers import prompt_id_counter
 from gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ class FeishuChoiceCardsMixin:
         self._clarify_state: dict[str, dict[str, str]] = {}
         # picker_id -> {session_key, message_id, chat_id, body, choices, on_choice_selected, metadata}
         self._choice_picker_state: dict[int, dict[str, Any]] = {}
-        self._choice_picker_counter = itertools.count(1)
+        self._choice_picker_counter = prompt_id_counter()
 
     # --- clarify ---
     async def send_clarify(
@@ -198,6 +198,9 @@ class FeishuChoiceCardsMixin:
         checked = self._validate_card_action(event=event, state=state, label="choice picker", ident=picker_id)
         if checked is None:
             return self._card_response()
+        from gateway.approval_actor import picker_refusal, refusal_text
+        if requester := picker_refusal(state["on_choice_selected"], checked[3] or checked[0], extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # another member's tap: only they see it, card stays open
         token = str(action_value.get("hermes_choice_picker_action") or "")
         choices = state["choices"]
         if not (token.isdigit() and int(token) < len(choices)):

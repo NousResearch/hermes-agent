@@ -1,0 +1,26 @@
+name: smb-growth-agent
+title: SMB Growth Agent
+repo: https://github.com/jcolano/hermes-hackathon
+sha: 500ea25782a931a685f2210b23a6c90b13438dcd
+version: "1.0.0"
+description: "Local-first growth diagnosis, explainable opportunity ranking, 30-day plans and approval-gated simulated actions for small businesses. Includes two fictional demo businesses and nine tools. No outbound network calls, external execution, credentials, telemetry, or payments. Uses locally stored profile and action state only."
+maintainer: jcolano
+tier: community
+category: tools
+docs_url: https://github.com/jcolano/hermes-hackathon
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - growth_list_businesses
+    - growth_upsert_business
+    - growth_diagnose
+    - growth_opportunities
+    - growth_plan
+    - growth_propose_action
+    - growth_approve_action
+    - growth_execute_action
+    - growth_action_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

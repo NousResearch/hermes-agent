@@ -1,5 +1,6 @@
 /** The `hermes --tui` launcher's environment as `session.create` options and the launch tool-progress
  *  pin: Ink's launch contract, read here and handed to the shared gateway client. */
+import type { GatewayRpc } from './app/interfaces.js'
 import { t } from './i18n/runtime.js'
 
 export function localCreationOptions(env = process.env): Record<string, unknown> {
@@ -47,6 +48,20 @@ export function localCreationOptions(env = process.env): Record<string, unknown>
   }
 
   return options
+}
+
+/** Whether the launch's own `--provider` route can carry a session on a profile `setup.status` calls
+ *  unconfigured (a keyless `providers:` endpoint saves no `model:` block). The owner's
+ *  `setup.runtime_check` resolves that provider; it counts only with a model, the launch's `-m` or the
+ *  profile's, since a session created without one cannot be restored (#146478). */
+export async function launchRouteServes(rpc: GatewayRpc, env = process.env): Promise<boolean> {
+  const { model, provider } = localCreationOptions(env)
+
+  if (!provider) { return false }
+
+  const check = await rpc<{ model?: null | string; ok?: boolean }>('setup.runtime_check', { provider })
+
+  return Boolean(check?.ok && (model || check.model))
 }
 
 function parseClientEnv(raw?: string): Record<string, string> | undefined {

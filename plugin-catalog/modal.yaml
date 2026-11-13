@@ -1,0 +1,15 @@
+name: modal
+repo: https://github.com/modal-projects/modal-hermes
+sha: 4d6bfd79ff3bcdd13eec04f39681d05f0c235d3e
+description: Modal Endpoints for OpenAI-compatible APIs
+maintainer: modal-labs
+category: models
+docs_url: https://github.com/modal-projects/modal-hermes#readme
+version: "1.0.0"
+requires_hermes: ">=0.23.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MODAL_PROXY_TOKEN

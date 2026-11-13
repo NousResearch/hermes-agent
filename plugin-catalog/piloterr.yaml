@@ -1,0 +1,19 @@
+name: piloterr
+title: Piloterr
+repo: https://github.com/piloterr/hermes-plugin-piloterr
+sha: 04551c3bf4ac474c2ae58a91fd320175243d6bb1
+version: "1.0.0"
+description: "Fetch web pages for the built-in web_extract tool through the Piloterr web scraping API, with optional JavaScript rendering or anti-bot unblocking. Extract only; pair it with a search backend for web_search. Disclosure — sends each URL to api.piloterr.com with your PILOTERR_API_KEY, and calls can use Piloterr credits. Reads the key only through Hermes's secret scope. Registers no tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+maintainer: piloterr
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/piloterr/hermes-plugin-piloterr#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - PILOTERR_API_KEY

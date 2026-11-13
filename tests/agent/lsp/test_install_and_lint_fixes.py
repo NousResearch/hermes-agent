@@ -119,3 +119,21 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
 
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
+
+
+def test_every_auto_install_spec_is_version_bound():
+    """Auto-install must never resolve an unbounded / ``@latest`` spec from the registry (#25017)."""
+    import re
+
+    from agent.lsp.install import INSTALL_RECIPES
+
+    unbounded = []
+    for key, recipe in INSTALL_RECIPES.items():
+        if recipe["strategy"] == "manual":
+            continue
+        for spec in [recipe["pkg"], *recipe.get("extra_pkgs", [])]:
+            name, _, version = spec[1:].rpartition("@")
+            exact_go_tag = re.fullmatch(r"v\d+\.\d+\.\d+", version)
+            if not name or version in ("", "latest") or (recipe["strategy"] == "go" and not exact_go_tag):
+                unbounded.append(f"{key}: {spec}")
+    assert not unbounded, unbounded

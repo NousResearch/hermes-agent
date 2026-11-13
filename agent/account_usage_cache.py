@@ -223,9 +223,12 @@ def _refresh_entries(requests: list[dict]) -> None:
         provider = request["provider"]
         key = _key(provider, request["identity_id"])
         try:
-            fetch_account_usage(
+            snapshot = fetch_account_usage(
                 provider, base_url=request.get("base_url"), api_key=request.get("api_key"),
                 read_only=True, identity_id=request["identity_id"],
             )
+            if request.get("persist_usage"):
+                from agent.credential_pool_usage import remember_usage
+                remember_usage(request["identity_id"], snapshot)
         finally:
             _release_refresh(key)

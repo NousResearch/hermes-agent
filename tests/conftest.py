@@ -1139,6 +1139,11 @@ def _processes_with_hermes_home_under(roots) -> list[int]:
             home = proc.environ().get("HERMES_HOME")
         except (psutil.Error, OSError):
             continue
+        except SystemError as exc:
+            # macOS psutil can return a C result with PermissionError still set.
+            if not isinstance(exc.__cause__, PermissionError):
+                raise
+            continue
         if not home:
             continue
         try:

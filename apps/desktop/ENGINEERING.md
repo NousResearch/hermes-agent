@@ -212,6 +212,9 @@ reopens the gesture-less forced-navigation class the advisory closed.
 
 - Live transcript navigation reads the session store; the shared navigation
   context carries only the selected historical page, not every streamed delta.
+- Stable markdown adapters preserve block identity when streaming finishes.
+  Rich-fence error boundaries must retry on that transition even when the source
+  is unchanged: listing cards deliberately reject incomplete streamed input.
 - Hidden terminals stay mounted and keep parsing output. Suppress only their
   DOM rows, not the measurable host/helpers or terminal state. Do not reduce
   scrollback or replace parser state to save painting work. Unchanged retained

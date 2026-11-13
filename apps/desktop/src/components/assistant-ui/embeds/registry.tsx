@@ -32,7 +32,7 @@ export function RichCodeBlock({ code, fallback, language, streaming }: RichCodeB
   }
 
   return (
-    <RichBoundary fallback={fallback} resetKey={code}>
+    <RichBoundary fallback={fallback} resetKey={code} streaming={streaming}>
       <Suspense fallback={fallback}>
         <Renderer code={code} streaming={streaming} />
       </Suspense>

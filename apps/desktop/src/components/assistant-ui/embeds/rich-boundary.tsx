@@ -6,6 +6,8 @@ interface Props {
   fallback: ReactNode
   /** Changing this clears a caught error (e.g. new source for a re-parse). */
   resetKey?: string
+  /** A parser can reject an unfinished stream even when its final source is unchanged. */
+  streaming?: boolean
 }
 
 /**
@@ -23,7 +25,7 @@ export class RichBoundary extends Component<Props, { failed: boolean }> {
   }
 
   componentDidUpdate(prev: Props) {
-    if (this.state.failed && prev.resetKey !== this.props.resetKey) {
+    if (this.state.failed && (prev.resetKey !== this.props.resetKey || (prev.streaming && !this.props.streaming))) {
       this.setState({ failed: false })
     }
   }

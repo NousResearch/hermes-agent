@@ -534,14 +534,20 @@
 }
 
 /* ── Global Settings ("Prod - Desktop" 06 · Settings/Account, 16292:16447) ──
-   Only Settings renders the overlay split's main column in the redesign. Its header, section heads
-   and card rows share one 32px text inset inside the centred column; cards lift off the page with no
-   stroke, radius 15, 16px over and under their rows; row labels in the 16px body, descriptions in
-   the mono signal font. */
-:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] :is(.portal-page-header, [data-slot='page-description']) {
-  padding-inline: var(--portal-settings-inset);
+   Only Settings renders the overlay split's main column in the redesign. The column's content box
+   is the text column (portal-layout.css); a card primitive bleeds out of it by the text inset to the
+   column's edges and pads its rows back in by the same inset, so every line of text on the page,
+   in a card or not, starts at one x. A card nested in another (a disclosure's card) stays put.
+   Cards lift off the page with no stroke, radius 15, 16px over and under their rows; row labels in
+   the 16px body, descriptions in the mono signal font. */
+:root[data-shell='portal']
+  [data-page-surface]
+  [data-slot='overlay-main']
+  :is(.global-settings-card, .global-settings-disclosure, [data-slot='empty-state']):not(
+    :is(.global-settings-card, .global-settings-disclosure) *
+  ) {
+  margin-inline: calc(-1 * var(--portal-settings-inset));
 }
-
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .portal-page-header-title > h1 {
   letter-spacing: var(--portal-settings-h1-tracking);
   line-height: var(--portal-settings-h1-line);
@@ -553,10 +559,6 @@
   :is(.portal-page-header-description, [data-slot='page-description']) {
   color: var(--ui-text-quaternary);
   font-family: var(--portal-settings-meta-font);
-}
-
-:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-section-head {
-  padding-inline: var(--portal-settings-inset);
 }
 
 :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] .global-settings-section-head h3 {

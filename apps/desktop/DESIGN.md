@@ -401,8 +401,10 @@ left-anchored at every window width, never centred, with one max width per page 
 catalogs, lists and tables. Every H1 (or agent hero) tops out at the same y; header actions end
 at the column's right edge. Global Settings is the exception ("Prod - Desktop" 06 · Settings/Account,
 16292:16447): a 640px column centred in the stage, its H1 (Oswald Light 40/48, -1px) 104px under the
-stage's top with a mono description; the header, section heads (14 SemiBold at .8) and card rows
-share a 32px text inset; cards are radius 15, borderless, white .02 / black .50 / blue .10, 16px over
+stage's top with a mono description; the column's content box is its text column, 32px inside
+the 640 (the header and the scroller pad to it), so the header, section heads (14 SemiBold at .8),
+forms and every page's own content start at one x, and only the card primitives (SettingsCard,
+SettingsDisclosure, the empty block) bleed out to the column's edges with their rows padded back in; cards are radius 15, borderless, white .02 / black .50 / blue .10, 16px over
 and under their rows, rows 12px with 16px Regular labels and mono descriptions. Its panel (16292:16359)
 titles "Settings" on a 30px inset with the settings search at its end (the band's pill is gone; typing
 and ⌘K still open the palette), 40px rows 4px apart in SemiBold with no stroke on the selected one, and

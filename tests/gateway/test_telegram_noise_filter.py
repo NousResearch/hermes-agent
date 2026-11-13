@@ -335,15 +335,25 @@ def test_telegram_final_response_sanitizes_unexpected_status_auth_error():
 
     sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
 
-    assert "authentication failed" in sanitized.lower()
+    assert "sign-in" in sanitized.lower()
     assert "Missing bearer" not in sanitized
     assert "401 Unauthorized" not in sanitized
+
+
+def test_telegram_final_response_sanitizes_other_unexpected_status_envelopes():
+    """The envelope shape is status-agnostic: non-auth codes get the generic provider reply."""
+    raw = "unexpected status 503 Service Unavailable: upstream connect error req_xyz"
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "req_xyz" not in sanitized
+    assert "upstream connect error" not in sanitized
 
 
 def test_telegram_final_response_keeps_prose_about_unexpected_status():
     """Long explanatory prose mentioning unexpected status codes is normal text."""
     answer = (
-        "Unexpected status 401 Unauthorized: this means the supplied credentials "
+        "An unexpected status 401 Unauthorized means the supplied credentials "
         "were rejected. Check whether your Authorization header was sent and "
         "whether the token has expired before retrying the request."
     )

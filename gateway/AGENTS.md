@@ -182,9 +182,10 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 - **`multiplex_profiles: false` is not "no scope ever".** A native hosted room serving a second
   profile flips the process-wide guard (`tui_gateway/launch_profile_policy.py::
   activate_multi_profile_hosting`) inside the gateway process, after the adapters were wired; every
-  standalone entry point (`run_turn.py::_profile_scope_for_source`, the primary adapter's message /
-  busy / platform-event handlers via `run_adapters.py::_standalone_scoped`) then binds the launch
-  profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
+  standalone entry point (`run_turn_profile_scope.py::_profile_scope_for_source`, the primary
+  adapter's message / busy / platform-event handlers via `run_adapters.py::_standalone_scoped`)
+  then binds the launch profile's OWN scope through
+  `run_turn_profile_scope.py::_standalone_launch_scope` — `.env` over the env frozen at
   activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
   `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
 - **Hooks and observers register per served profile.** `agent/shell_hooks.py::register_from_config`

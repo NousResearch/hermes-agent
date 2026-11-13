@@ -879,3 +879,59 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
         assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
         assert "\x1b[" not in text
         assert "make -j8 all" in text
+
+
+class TestBuildProcessCompletionEventTruncation:
+    """#152075: the 2000-char tail snap must not drop a single-line payload.
+
+    ``_build_process_completion_event`` snaps the retained window to the first newline so the
+    notification never starts mid-line (#23284).  When the payload is a single line ending in
+    a newline, that newline is the last char of the window, so snapping at it used to discard
+    the whole tail and report ``showing last 0 chars``.
+    """
+
+    @staticmethod
+    def _session(output: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            output_buffer=output,
+            command="run",
+            exit_code=0,
+            task_id="",
+            owner_task_id="",
+            started_at=None,
+            completion_reason="exited",
+            termination_source="",
+            parent_session_id="",
+        )
+
+    def test_single_line_payload_keeps_whole_tail(self):
+        from gateway.run_notifications import GatewayNotificationsMixin
+
+        payload = "x" * 4000 + "\n"
+        event = GatewayNotificationsMixin._build_process_completion_event(
+            _watcher_dict(), self._session(payload), "proc_single")
+        out = event["output"]
+        assert "showing last 0 chars" not in out
+        assert "x" * 500 in out
+        assert out.startswith("[… output truncated — showing last ")
+
+    def test_multi_line_payload_still_snaps_to_line_boundary(self):
+        from gateway.run_notifications import GatewayNotificationsMixin
+
+        payload = ("y" * 100 + "\n") * 40  # 4040 chars, newline every 101 chars
+        event = GatewayNotificationsMixin._build_process_completion_event(
+            _watcher_dict(), self._session(payload), "proc_multi")
+        out = event["output"]
+        assert "showing last 0 chars" not in out
+        tail = out.split("\n", 1)[1]
+        # A partial leading line was trimmed at an interior newline, so the tail is shorter
+        # than the full 2000-char window and contains only whole lines.
+        assert 0 < len(tail) < 2000
+        assert set(tail.split("\n")) <= {"", "y" * 100}
+
+    def test_short_output_is_not_truncated(self):
+        from gateway.run_notifications import GatewayNotificationsMixin
+
+        event = GatewayNotificationsMixin._build_process_completion_event(
+            _watcher_dict(), self._session("hello\n"), "proc_short")
+        assert event["output"] == "hello\n"

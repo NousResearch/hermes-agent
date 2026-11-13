@@ -996,6 +996,21 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
+# Dispatcher-owned Kanban workers cannot finish with a prose-only answer. After
+# length truncation they still need valid tool calls and a terminal board handoff.
+# Keep this separate from ordinary chat continuations so non-worker behavior stays
+# byte-identical (including crash-resumed synthetic nudge classification).
+_LENGTH_CONTINUATION_KANBAN_OUTPUT_LIMIT = (
+    "[System: Your previous response was truncated by the output length limit. "
+    "You are still a Hermes Kanban worker; your tools remain available. "
+    "Continue the task with REAL tool calls and complete required arguments "
+    "(including the content argument for write_file). Split large file writes "
+    "into smaller tool calls if needed. Do not merely describe future actions. "
+    "After verifying deliverables, invoke a terminal action: kanban_complete "
+    "(or kanban_request_review for code review; kanban_request_changes if "
+    "reviewing and returning rework; kanban_schedule if parking; or "
+    "kanban_block if blocked). Plain-text promises are not terminal Kanban actions.]"
+)
 # Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
 _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
     "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
@@ -1006,6 +1021,14 @@ _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list[str]] = None) -> str:
+    """Return a recovery prompt for a network stub or output-limit truncation.
+
+    For a partial network stub, nonempty ``dropped_tools`` selects instructions
+    to split oversized arguments, naming at most the first three tools. Other
+    partial stubs receive the standard network recovery prompt. Output-limit
+    prompts require a terminal handoff for dispatcher-owned Kanban workers and
+    direct answer continuation for other sessions.
+    """
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
@@ -1016,7 +1039,15 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[list
             "arguments must be under ~8K tokens to avoid stream timeouts. The cut was a transport "
             "interruption, not a capability change — your tools remain fully available.]"
         )
-    return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
+    if is_partial_stub:
+        return _LENGTH_CONTINUATION_NETWORK_STUB
+    # A truncated worker response must not be told to "finish the answer
+    # directly": that biases the model away from mandatory lifecycle tools.
+    from agent.delegation_context import owned_kanban_task
+
+    if owned_kanban_task():
+        return _LENGTH_CONTINUATION_KANBAN_OUTPUT_LIMIT
+    return _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
 
 # Codex/Responses turns that returned only internal reasoning: a bare retry would be

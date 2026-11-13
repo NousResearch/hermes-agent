@@ -1,0 +1,35 @@
+name: Hermes Kanban handoff PR validation
+
+on:
+  pull_request:
+    paths:
+      - 'agent/context_compressor.py'
+      - 'agent/conversation_loop.py'
+      - 'agent/kanban_stop.py'
+      - 'agent/turn_final_response.py'
+      - 'agent/turn_stop_gates.py'
+      - 'tests/agent/test_kanban_handoff_exhausted.py'
+      - 'tests/agent/test_kanban_length_continuation.py'
+      - '.github/workflows/kanban-handoff-pr-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install test dependencies
+        run: python -m pip install ruamel.yaml
+      - name: Compile touched modules
+        run: python -m py_compile agent/conversation_loop.py agent/kanban_stop.py agent/turn_stop_gates.py agent/turn_final_response.py agent/context_compressor.py
+      - name: Run focused worker handoff tests
+        run: python -m unittest -v tests.agent.test_kanban_handoff_exhausted tests.agent.test_kanban_length_continuation

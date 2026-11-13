@@ -8,7 +8,8 @@ AppContainer, which Windows keeps off loopback unless it is exempted. The fetch 
 package." for a package it never downloaded. Installs from the public feed are unaffected.
 
 -Action Add returns $true when it added the exemption and $false when one already existed, so the
-caller removes only an exemption it added.
+caller removes only an exemption it added. Both actions re-read the exemption list and throw when it
+did not change: Windows PowerShell 5.1 ignores CheckNetIsolation's exit code.
 #>
 param([Parameter(Mandatory = $true)][ValidateSet('Add', 'Remove')][string]$Action)
 
@@ -20,6 +21,7 @@ function Test-AppInstallerLoopbackExempt {
 
 if ($Action -eq 'Remove') {
     CheckNetIsolation.exe LoopbackExempt -d "-n=$family" | Out-Null
+    if (Test-AppInstallerLoopbackExempt) { throw "Could not remove App Installer's loopback exemption" }
     return
 }
 if (Test-AppInstallerLoopbackExempt) { return $false }

@@ -190,7 +190,11 @@ try {
     if ($mock -and -not $mock.HasExited) { Stop-Process -Id $mock.Id -ErrorAction SilentlyContinue }
     if ($oldDriver -and -not $oldDriver.HasExited) { Stop-Process -Id $oldDriver.Id -ErrorAction SilentlyContinue }
     if (-not $server.HasExited) { Stop-Process -Id $server.Id -ErrorAction SilentlyContinue }
-    if ($loopbackExempted) { & (Join-Path $Assets 'windows-appinstaller-loopback.ps1') -Action Remove }
+    if ($loopbackExempted) {
+        # A teardown error must not replace the leg's own or skip the package removal below.
+        try { & (Join-Path $Assets 'windows-appinstaller-loopback.ps1') -Action Remove }
+        catch { Write-Host "::warning::$($_.Exception.Message)" }
+    }
     # Disposable runner teardown only, scoped to the package installed by this leg.
     if ($installed) {
         $pkg = Get-AppxPackage -Name $m.old.identity

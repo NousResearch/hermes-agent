@@ -193,9 +193,10 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                 _record_finished_child(batch, entry, honor_parent_interrupt)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
                 if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
-                        and len(results) < n_here):
+                        and len(results) < n_here and not isinstance(entry.get("auto_resume"), dict)):
                     # Detached unit, a sibling is still running: tell the parent NOW, not when the last one finishes.
-                    # Non-durable and separate from the unit's final result (which is still delivered once).
+                    # Non-durable and separate from the unit's final result (which is still delivered once). A child
+                    # promised an automatic resume is not failed: it reports once, later (delegate_tool_auto_resume).
                     with _quiet("task failure notice failed", exc_info=True):
                         from tools.async_delegation import push_task_failure_notice
                         _i = entry.get("task_index", -1)

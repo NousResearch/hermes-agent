@@ -1158,33 +1158,21 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         _prune_completed_locked()
 
 
-def _push_completion_event(record: dict[str, Any], result: dict[str, Any], status: str) -> None:
-    """Push a type='async_delegation' event onto the shared completion queue. Batch records
-    (``is_batch``) carry the per-task ``results`` list (plus live transcript paths, the
-    full-fidelity record of each child's run) instead of a single summary. Best-effort: failure
-    must not crash the worker, but it WOULD mean a silently-lost result, so we log loudly.
-
-    The queued event is the parent's in-process copy and honours ``security.redact_secrets: false``;
-    ``_persist_completion`` re-scrubs with force for the durable row (and the worker IPC)."""
+def completion_event(record: dict[str, Any], result: dict[str, Any], status: str) -> tuple[dict, dict, bool]:
+    """``(event, result, silent)`` for a finished unit: the type='async_delegation' event, the result it carries,
+    and whether every child waits on a promised automatic resume (the parent then hears nothing)."""
     result = redact_child_result(result, force=False)
     if record.get("_stall_stopped") and "stall_grace_seconds" not in result:
         # Its runner unwound on the stall monitor's stop inside the grace window: the children read as
         # interrupted, exactly like a user stop. The stall context says which one it was.
         result = {**result, **_stall_meta(record)}
     is_batch = bool(record.get("is_batch"))
-    label = " batch" if is_batch else ""
     children = result.get("results") or ([] if is_batch else [result])
     waiting = [r for r in children if isinstance(r.get("auto_resume"), dict)]
     silent = bool(children) and len(waiting) == len(children)  # every child will resume: the parent hears nothing
     if waiting and not silent:  # a mixed unit: the promised child reads as waiting, not failed
         result = {**result, "results": [{**r, "status": "waiting_to_resume"} if r in waiting else r
                                         for r in children]}
-    try:
-        from tools.process_registry import process_registry
-    except Exception as exc:  # pragma: no cover
-        logger.error(f"Async delegation{label} %s finished but process_registry import failed; "
-                     "result lost: %s", record.get("delegation_id"), exc)
-        return
     dispatched_at = record.get("dispatched_at") or time.time()
     completed_at = record.get("completed_at") or time.time()
     if is_batch:
@@ -1213,6 +1201,25 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
+    return evt, result, silent
+
+
+def _push_completion_event(record: dict[str, Any], result: dict[str, Any], status: str) -> None:
+    """Push a type='async_delegation' event onto the shared completion queue. Batch records
+    (``is_batch``) carry the per-task ``results`` list (plus live transcript paths, the
+    full-fidelity record of each child's run) instead of a single summary. Best-effort: failure
+    must not crash the worker, but it WOULD mean a silently-lost result, so we log loudly.
+
+    The queued event is the parent's in-process copy and honours ``security.redact_secrets: false``;
+    ``_persist_completion`` re-scrubs with force for the durable row (and the worker IPC)."""
+    label = " batch" if record.get("is_batch") else ""
+    try:
+        from tools.process_registry import process_registry
+    except Exception as exc:  # pragma: no cover  # health: allow BLE001 -- a worker thread logs the lost result
+        logger.error(f"Async delegation{label} %s finished but process_registry import failed; "
+                     "result lost: %s", record.get("delegation_id"), exc)
+        return
+    evt, result, silent = completion_event(record, result, status)
     try:
         _persist_completion(evt, result, delivery="delivered" if silent else "pending")
     except Exception as exc:

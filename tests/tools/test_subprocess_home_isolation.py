@@ -303,3 +303,25 @@ def test_bound_profile_home_mode_beats_the_launch_profiles_bridged_value(tmp_pat
     with bind_profile_scope(served):
         assert hermes_constants.get_subprocess_home() == str(served / "home")
         assert _make_run_env({})["HOME"] == str(served / "home")
+
+
+def test_policy_frozen_before_home_mode_keeps_the_bridged_mode(tmp_path, monkeypatch):
+    """A session policy frozen before ``home_mode`` reached the terminal policy carries no key. It keeps
+    the mode the process bridged from the profile's config, never drops ``home_mode: profile`` to
+    ``auto`` (the real ``$HOME``) until the session's policy is refreshed (#146103)."""
+    from agent.runtime_scope import bind_terminal_policy
+    from tools.terminal_scope import build_profile_terminal_scope
+
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+    launch = tmp_path / "fakehome" / ".hermes"
+    (launch / "home").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "fakehome"))
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")  # the gateway's bridge of home_mode: profile
+    frozen = {k: v for k, v in build_profile_terminal_scope(launch).items() if k != "TERMINAL_HOME_MODE"}
+
+    token = bind_terminal_policy(frozen, profile_home=str(launch))
+    try:
+        assert hermes_constants.get_subprocess_home() == str(launch / "home")
+    finally:
+        token.reset()

@@ -193,6 +193,7 @@ def test_block_explicit_kind_is_respected(conn, monkeypatch):
 # 4. Worker termination reaches the whole process group
 # --------------------------------------------------------------------------- #
 
+@pytest.mark.platforms("posix")
 def test_signal_worker_tree_signals_group_and_pid(monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setattr(kbd.os, "getpgid", lambda pid: 4242)
@@ -208,6 +209,7 @@ def test_signal_worker_tree_signals_group_and_pid(monkeypatch):
     assert ("pid", 4242, signal.SIGTERM) in calls
 
 
+@pytest.mark.platforms("posix")
 def test_signal_worker_tree_falls_back_to_pid(monkeypatch):
     calls: list[tuple] = []
 
@@ -222,3 +224,16 @@ def test_signal_worker_tree_falls_back_to_pid(monkeypatch):
 
     assert delivered is True
     assert calls == [("pid", 4242, signal.SIGKILL)]
+
+def test_signal_worker_tree_without_posix_group_api_uses_pid(monkeypatch):
+    """Without process-group APIs, reclaim must still signal the worker PID."""
+    for name in ("getpgid", "getpgrp", "killpg"):
+        monkeypatch.delattr(kbd.os, name, raising=False)
+
+    signalled = []
+    delivered = kbd._signal_worker_tree(
+        lambda pid, sig: signalled.append((pid, sig)), 4242, signal.SIGTERM
+    )
+
+    assert delivered is True
+    assert signalled == [(4242, signal.SIGTERM)]

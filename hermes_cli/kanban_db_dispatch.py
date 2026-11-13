@@ -446,13 +446,16 @@ def _signal_worker_tree(kill, pid: int, sig: int) -> bool:
     minutes after its card was blocked). Returns True when a signal landed.
     """
     delivered = False
+    getpgid = getattr(os, "getpgid", None)
+    getpgrp = getattr(os, "getpgrp", None)
+    killpg = getattr(os, "killpg", None)
     try:
-        pgid = os.getpgid(int(pid))
+        pgid = getpgid(int(pid)) if getpgid is not None else None
     except (ProcessLookupError, OSError):
         pgid = None
-    if pgid and pgid > 1 and pgid != os.getpgrp():
+    if pgid and pgid > 1 and getpgrp is not None and killpg is not None and pgid != getpgrp():
         try:
-            os.killpg(pgid, sig)
+            killpg(pgid, sig)
             delivered = True
         except (ProcessLookupError, OSError):
             pass

@@ -21,6 +21,8 @@ _VALUE_ASSIGN = re.compile(r"\.value\s*=(?!=)\s*")
 _INSERT_TEXT = re.compile(r"insertText")
 _TEXT_KEY = re.compile(r"""(?:\\?["']text\\?["']\s*:\s*|\btext\s*=\s*)""")
 _NAME_ARG = re.compile(r"[A-Za-z_]\w*(?=\s*[,)])")
+# a pre-built dict handed to insertText: **params, {**params} or a positional params
+_DICT_ARG = re.compile(r"(?:\*\*\s*|,\s*)([A-Za-z_]\w*)(?=\s*[,)}])")
 _STR_PREFIX = re.compile(r"[fFrRbBuU]{1,2}(?=[\"'`\\])")
 _QUOTES = ("'''", '"""', "\\'", '\\"', "\\`", "'", '"', "`")
 
@@ -60,15 +62,16 @@ def _fill_input_values(code: str):
             yield sep.end()
 
 
-def _call_end(code: str, i: int) -> int:
-    """Index of the ``)`` closing the call that ``i`` sits inside, skipping string literals."""
-    depth = 1
+def _call_end(code: str, i: int, pair: str = "()") -> int:
+    """Index of the bracket closing the ``pair`` (call or dict) that ``i`` sits inside, skipping
+    string literals."""
+    depth, step = 1, {pair[0]: 1, pair[1]: -1}
     while i < len(code):
         lit = _literal_end(code, i) if code[i] in "'\"`\\" else None
         if lit is not None:
             i = max(lit[2], i + 1)
             continue
-        depth += {"(": 1, ")": -1}.get(code[i], 0)
+        depth += step.get(code[i], 0)
         if depth == 0:
             return i
         i += 1
@@ -82,6 +85,17 @@ def _insert_text_values(code: str):
             start += 1  # the quote closing the 'Input.insertText' method literal
         window = code[:_call_end(code, start)]
         yield from (k.end() for k in _TEXT_KEY.finditer(window, start))
+        args = _DICT_ARG.finditer(code, start, len(window) + 1)  # + the closing ")"
+        for name in {a.group(1) for a in args}:
+            yield from _dict_text_values(code, name)
+
+
+def _dict_text_values(code: str, name: str):
+    """Value starts of the ``text`` keys in each dict literal assigned to ``name``."""
+    assign = re.compile(rf"(?<![\w.]){re.escape(name)}\s*=(?!=)\s*\{{")
+    for m in assign.finditer(code):
+        window = code[:_call_end(code, m.end(), "{}")]
+        yield from (k.end() for k in _TEXT_KEY.finditer(window, m.end()))
 
 
 def _typed_value_starts(code: str) -> list[int]:

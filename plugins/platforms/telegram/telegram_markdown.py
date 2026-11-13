@@ -417,22 +417,39 @@ def _url_end(url: str, closers: str = '') -> int:
     return end
 
 
-def _emphasis_closers(text: str, start: int, end: int) -> str:
-    """Marks that may close emphasis at the URL spanning *start*:*end*: the line before it leaves an
-    odd number of that mark's runs open, and the mark does not occur again after it on the line."""
-    before = text[text.rfind('\n', 0, start) + 1:start]
-    line_end = text.find('\n', end)
-    after = text[end:] if line_end < 0 else text[end:line_end]
-    return ''.join(ch for ch in _URL_PATH_MARKS
-                   if ch not in after and len(re.findall(re.escape(ch) + '+', before)) % 2)
+class _MarkRuns:
+    """Run start offsets of each emphasis mark and the newline offsets of *text*, found once so each
+    URL's closer check is a few bisects instead of a rescan of its line."""
+
+    def __init__(self, text: str):
+        self.newlines = [m.start() for m in re.finditer('\n', text)]
+        self.runs = {ch: [m.start() for m in re.finditer(re.escape(ch) + '+', text)] for ch in _URL_PATH_MARKS}
+        self.size = len(text)
+
+    def closers(self, start: int, end: int) -> str:
+        """Marks that close emphasis at the URL spanning *start*:*end*: an odd number of that mark's
+        runs precede it on its line (one is left open) and an even number follow it (they pair up)."""
+        i = bisect.bisect_left(self.newlines, start)
+        line_start = self.newlines[i - 1] + 1 if i else 0
+        j = bisect.bisect_left(self.newlines, end)
+        line_end = self.newlines[j] if j < len(self.newlines) else self.size
+        out = ''
+        for ch, runs in self.runs.items():
+            before = bisect.bisect_left(runs, start) - bisect.bisect_left(runs, line_start)
+            after = bisect.bisect_left(runs, line_end) - bisect.bisect_left(runs, end)
+            if before % 2 and not after % 2:
+                out += ch
+        return out
 
 
 def _stash_bare_urls(text: str, stash) -> str:
     """Stash bare URLs escaped whole, so a ``*``, ``~~`` or ``||`` inside one stays literal URL text
     instead of pairing into italic/strike/spoiler marks that drop characters or hide the URL."""
+    marks = _MarkRuns(text)
+
     def _one(m) -> str:
         url = m.group(0)
-        end = _url_end(url, _emphasis_closers(text, m.start(), m.end()))
+        end = _url_end(url, marks.closers(m.start(), m.end()))
         return stash(_escape_mdv2(url[:end])) + url[end:]
 
     return _BARE_URL_RE.sub(_one, text)

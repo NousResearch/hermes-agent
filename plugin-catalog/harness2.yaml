@@ -1,6 +1,6 @@
 name: harness2
 repo: https://github.com/shrinedogg/harness2-hermes
-sha: 51acf027903332ca52516f602a2c47fd348dc0cb
+sha: 941fee06d1e6c70c97061cd2e079e38e96bed206
 version: "1.0.0"
 description: >-
   The Harness^2 self-improvement loop for Hermes profiles: refines the agent's
@@ -18,9 +18,11 @@ description: >-
   one-shot `hermes -p harness2-<task>-<probe> chat` subprocesses; each probe
   is a full agent session billed to the configured model, wall-clock capped
   (default 900 s, plugin setting). Creates and refreshes probe profiles named
-  harness2-* (config is the active profile's deep-merged with the harness
-  overlay, .env inherited, approvals pinned to mode: smart,
-  redact_secrets: true). Reads/writes only its own plugin data directory and
+  harness2-* (the clone carries the active profile's config and .env once,
+  under Hermes' clone policy; overlay keys are applied per key via
+  `hermes -p config set` - never by rewriting the profile's config or
+  touching its .env; approvals pinned to mode: smart with single_query_mode
+  and cron_mode denied, redact_secrets: true). Reads/writes only its own plugin data directory and
   the probe profile directories; the installed plugin tree is never written
   to. No telemetry and no third-party network calls of its own; probes
   inherit the profile's full tool access (including web) like any profile.
@@ -29,10 +31,10 @@ tier: community
 category: automation
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/shrinedogg/harness2-hermes#readme
-image: https://raw.githubusercontent.com/shrinedogg/harness2-hermes/51acf027903332ca52516f602a2c47fd348dc0cb/docs/shots/loop.png
+image: https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/loop.png
 screenshots:
-- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/51acf027903332ca52516f602a2c47fd348dc0cb/docs/shots/loop.png
-- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/51acf027903332ca52516f602a2c47fd348dc0cb/docs/shots/library.png
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/loop.png
+- https://raw.githubusercontent.com/shrinedogg/harness2-hermes/941fee06d1e6c70c97061cd2e079e38e96bed206/docs/shots/library.png
 capabilities:
   provides_tools:
   - harness2_init

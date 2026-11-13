@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools import mcp_tool
-from tools import mcp_tool_content as _mcp_content
-from tools import mcp_tool_handlers as _mcp_handlers
+from hermes_agent.tools import mcp_tool
+from hermes_agent.tools import mcp_tool_content as _mcp_content
+from hermes_agent.tools import mcp_tool_handlers as _mcp_handlers
 
 class _FakeContentBlock:
     """Minimal content block with .text and .type attributes."""
@@ -58,7 +58,7 @@ def _patch_mcp_server():
     # fresh loop that _fake_run_on_mcp_loop spins up, not at fixture import.
     fake_server = SimpleNamespace(session=fake_session, _rpc_lock=None)
     with patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
-         patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
+         patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
         yield fake_session
 
 class TestStructuredContentPreservation:

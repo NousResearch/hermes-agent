@@ -30,7 +30,7 @@ from unittest.mock import MagicMock
 import pytest
 
 pytest.importorskip("mcp")
-from tools import mcp_tool_loop as _mcp_loop
+from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
 
 def _success_result():
@@ -96,8 +96,8 @@ def test_precall_dead_children_respawn_and_retry(monkeypatch, tmp_path):
     """Dead-at-call-time subprocess (the gateway-restart case): respawn,
     retry once, and hand the model a normal result — no error at all."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     called = {"n": 0}
     alive = {"v": False}
@@ -136,8 +136,8 @@ def test_precall_dead_children_respawn_and_retry(monkeypatch, tmp_path):
 def test_midcall_child_exit_reconnects_without_replay(monkeypatch, tmp_path):
     """An in-flight side effect may have completed, so reconnect but do not replay it."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     alive = {"v": True}
     effects = {"n": 0}
@@ -186,8 +186,8 @@ def test_sdk_first_transport_close_midcall_is_uncertain_without_replay(monkeypat
     surface as uncertain, never reach the session-expired recoverer, which would replay the call."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     anyio = pytest.importorskip("anyio")
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     effects = {"n": 0}
 
@@ -234,8 +234,8 @@ def test_dead_child_never_returning_is_not_reported_as_a_timeout(
     old "failing the call fast instead of waiting 300s" wording sent the
     investigation into a healthy remote backend)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     monkeypatch.setattr(mcp_tool, "_STDIO_RESPAWN_WAIT_SEC", 1.0)
     called = {"n": 0}
@@ -270,9 +270,9 @@ def test_child_dying_again_after_respawn_does_not_hot_cycle(
     retry per call, not an endless respawn loop — run()'s rapid-drop budget
     is what parks it, and this path must not fight that."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool
-    from tools import mcp_tool_loop as _mcp_loop
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_loop as _mcp_loop
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     monkeypatch.setattr(mcp_tool, "_STDIO_RESPAWN_WAIT_SEC", 1.0)
     called = {"n": 0}

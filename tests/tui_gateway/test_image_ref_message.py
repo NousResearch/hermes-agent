@@ -29,7 +29,7 @@ def test_never_calls_vision_on_submit_path(img):
     def _boom(*a, **k):  # pragma: no cover - must never run
         raise AssertionError("submit path called the vision tool")
 
-    with patch("tools.vision_tools.vision_analyze_tool", _boom):
+    with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", _boom):
         out = _build_image_ref_message("what is this?", [str(img)])
 
     assert "what is this?" in out

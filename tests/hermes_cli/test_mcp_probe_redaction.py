@@ -196,8 +196,8 @@ class TestRedactMcpProbeText:
 
 class TestProbeHelperRedactsBeforeRaise:
     def test_probe_exception_leaving_helper_is_already_safe(self, monkeypatch):
-        import tools.mcp_tool_lifecycle as mcp_lifecycle
-        import tools.mcp_tool_loop as mcp_loop
+        import hermes_agent.tools.mcp_tool_lifecycle as mcp_lifecycle
+        import hermes_agent.tools.mcp_tool_loop as mcp_loop
         from hermes_cli.mcp_config import _probe_single_server
 
         monkeypatch.setattr(mcp_loop, "_ensure_mcp_loop", lambda: None)
@@ -215,8 +215,8 @@ class TestProbeHelperRedactsBeforeRaise:
         assert "Bearer ***" in str(caught.value)
 
     def test_probe_exception_redacts_opaque_api_key(self, monkeypatch):
-        import tools.mcp_tool_lifecycle as mcp_lifecycle
-        import tools.mcp_tool_loop as mcp_loop
+        import hermes_agent.tools.mcp_tool_lifecycle as mcp_lifecycle
+        import hermes_agent.tools.mcp_tool_loop as mcp_loop
         from hermes_cli.mcp_config import _probe_single_server
 
         monkeypatch.setattr(mcp_loop, "_ensure_mcp_loop", lambda: None)
@@ -234,8 +234,8 @@ class TestProbeHelperRedactsBeforeRaise:
         assert "X-Api-Key: ***" in str(caught.value)
 
     def test_probe_exception_redacts_digest_response_first(self, monkeypatch):
-        import tools.mcp_tool_lifecycle as mcp_lifecycle
-        import tools.mcp_tool_loop as mcp_loop
+        import hermes_agent.tools.mcp_tool_lifecycle as mcp_lifecycle
+        import hermes_agent.tools.mcp_tool_loop as mcp_loop
         from hermes_cli.mcp_config import _probe_single_server
 
         monkeypatch.setattr(mcp_loop, "_ensure_mcp_loop", lambda: None)
@@ -256,8 +256,8 @@ class TestProbeHelperRedactsBeforeRaise:
         assert "Digest ***" in str(caught.value)
 
     def test_probe_exception_redacts_python_mapping_api_key(self, monkeypatch):
-        import tools.mcp_tool_lifecycle as mcp_lifecycle
-        import tools.mcp_tool_loop as mcp_loop
+        import hermes_agent.tools.mcp_tool_lifecycle as mcp_lifecycle
+        import hermes_agent.tools.mcp_tool_loop as mcp_loop
         from hermes_cli.mcp_config import _probe_single_server
 
         monkeypatch.setattr(mcp_loop, "_ensure_mcp_loop", lambda: None)
@@ -464,7 +464,7 @@ class TestSiblingProbeConsumersRedact:
 
         monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", boom)
         monkeypatch.setattr(
-            "tools.mcp_oauth.humanize_oauth_registration_error",
+            "hermes_agent.tools.mcp_oauth.humanize_oauth_registration_error",
             lambda *a, **k: None,
         )
         from hermes_cli.mcp_config import cmd_mcp_login

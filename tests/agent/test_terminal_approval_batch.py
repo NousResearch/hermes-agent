@@ -12,8 +12,8 @@ import pytest
 
 from run_agent import AIAgent
 from hermes_agent.gateway.session_context import clear_session_vars
-from tools import approval
-from tools.thread_context import propagate_context_to_thread
+from hermes_agent.tools import approval
+from hermes_agent.tools.thread_context import propagate_context_to_thread
 
 
 def _call(call_id, command):
@@ -22,14 +22,14 @@ def _call(call_id, command):
 
 
 def _agent():
-    from tools.terminal_tool import TERMINAL_SCHEMA
-    from tools.file_tools import READ_FILE_SCHEMA
+    from hermes_agent.tools.terminal_tool import TERMINAL_SCHEMA
+    from hermes_agent.tools.file_tools import READ_FILE_SCHEMA
     with (
-        patch("model_tools.get_tool_definitions", return_value=[
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[
             {"type": "function", "function": schema}
             for schema in (TERMINAL_SCHEMA, READ_FILE_SCHEMA)
         ]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
@@ -40,13 +40,13 @@ def _agent():
 @pytest.mark.parametrize("read_count", [0, 2])
 @pytest.mark.parametrize("threaded_middleware", [False, True])
 def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path, monkeypatch, read_count, threaded_middleware):
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-    from tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_mode", lambda: "manual")
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     nested = tmp_path / "nested"
     nested.mkdir()
@@ -147,11 +147,11 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
 
 
 def test_cancelled_preparation_drains_requests_without_reusing_once(tmp_path, monkeypatch):
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-    from tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
 
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_mode", lambda: "manual")
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     key = "cancelled-terminal-batch"
     command = "rm -rf absent; printf executed > effect.txt"
@@ -237,14 +237,14 @@ def test_failed_command_re_gates_later_prepared_approvals(tmp_path, monkeypatch)
     ones describes a world that no longer holds: the prepared decision must be
     discarded and the guard re-run live (a fresh approval request), instead of being
     consumed as though nothing had failed."""
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-    from tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
 
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_mode", lambda: "manual")
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     key = "regate-terminal-batch"
     # First command fails (exit 1); second would succeed if allowed to run.
@@ -324,11 +324,11 @@ def test_failed_command_re_gates_later_prepared_approvals(tmp_path, monkeypatch)
 
 def test_switching_yolo_off_mid_batch_re_gates_later_commands(tmp_path, monkeypatch):
     """A prepared approval nobody answered is policy: the policy in force at execution governs."""
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
-    from tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
 
     monkeypatch.setenv("HERMES_EXEC_ASK", "1")
-    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_mode", lambda: "manual")
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     key = "yolo-off-terminal-batch"
     agent = _agent()

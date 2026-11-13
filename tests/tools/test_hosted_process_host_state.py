@@ -9,7 +9,7 @@ import time
 
 from tests.tools.test_sandbox_scope_conformance import A
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
-from tools.environments import sandbox_conformance as conformance
+from hermes_agent.tools.environments import sandbox_conformance as conformance
 
 provider = _conformance_provider
 
@@ -37,7 +37,7 @@ def test_a_hosted_background_start_and_kill_leave_the_host_checkpoint_alone(prov
 def test_hosted_process_manage_does_not_load_or_prune_host_receipts(provider, monkeypatch):
     from hermes_agent.gateway.session_context import scoped_current_session_id
     from hermes_constants import get_hermes_home
-    from tools import process_registry_results as results
+    from hermes_agent.tools import process_registry_results as results
 
     directory = get_hermes_home() / "logs" / "process-results"
     directory.mkdir(parents=True, exist_ok=True)
@@ -65,7 +65,7 @@ def test_hosted_process_manage_does_not_load_or_prune_host_receipts(provider, mo
 
 def test_a_local_background_start_still_writes_the_checkpoint(tmp_path):
     from hermes_constants import get_hermes_home
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
     ckpt = get_hermes_home() / "processes.json"
     registry = ProcessRegistry()
     session = registry.spawn_local("sleep 30", cwd=str(tmp_path), task_id="t")
@@ -80,8 +80,8 @@ def test_a_remote_kernel_command_on_a_later_turn_runs_under_that_turns_scope():
     sandbox runs its kernel commands under its own scope (and fence), not the spawning turn's."""
     from agent.runtime_scope import bind_state
     from hermes_scope import Fence
-    from tools.code_kernel_remote import RemoteKernel
-    from tools.environments.sandbox_scope import ScopedEnvironment, sandbox_identity
+    from hermes_agent.tools.code_kernel_remote import RemoteKernel
+    from hermes_agent.tools.environments.sandbox_scope import ScopedEnvironment, sandbox_identity
 
     turn1, turn2 = A.for_turn("s", "turn-1", Fence(1, 1)), A.for_turn("s", "turn-2", Fence(1, 2))
     reached = []

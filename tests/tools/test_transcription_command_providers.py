@@ -28,8 +28,8 @@ from unittest.mock import patch
 import pytest
 
 
-from tools.transcription_common import BUILTIN_STT_PROVIDERS
-from tools.transcription_command import (
+from hermes_agent.tools.transcription_common import BUILTIN_STT_PROVIDERS
+from hermes_agent.tools.transcription_command import (
     DEFAULT_COMMAND_STT_LANGUAGE,
     DEFAULT_COMMAND_STT_OUTPUT_FORMAT,
     DEFAULT_COMMAND_STT_TIMEOUT_SECONDS,
@@ -40,7 +40,7 @@ from tools.transcription_command import (
     _resolve_command_stt_provider_config,
     _transcribe_command_stt,
 )
-from tools.transcription_tools import (
+from hermes_agent.tools.transcription_tools import (
     transcribe_audio,
 )
 
@@ -270,7 +270,7 @@ class TestTranscribeAudioDispatchToCommandProvider:
         cfg = self._config_with_command_provider(
             "fake-cli", _python_emit_command("dispatched via command")
         )
-        with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=cfg):
             result = transcribe_audio(str(audio))
         assert result["success"] is True
         assert result["transcript"] == "dispatched via command"
@@ -280,7 +280,7 @@ class TestTranscribeAudioDispatchToCommandProvider:
     def test_unknown_provider_no_command_falls_through_to_error(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "audio.wav")
         cfg = {"provider": "unknown-cli"}
-        with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=cfg):
             result = transcribe_audio(str(audio))
         assert result["success"] is False
         # Explicitly-configured unknown providers now get a named
@@ -334,7 +334,7 @@ class TestCommandWinsOverPlugin:
         _reset_for_tests()
         try:
             register_provider(FakePlugin())
-            with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
+            with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=cfg):
                 result = transcribe_audio(str(audio))
         finally:
             _reset_for_tests()
@@ -367,7 +367,7 @@ class TestCommandWinsOverPlugin:
         _reset_for_tests()
         try:
             register_provider(FakePlugin())
-            with patch("tools.transcription_tools._load_stt_config", return_value=cfg):
+            with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=cfg):
                 result = transcribe_audio(str(audio))
         finally:
             _reset_for_tests()
@@ -391,7 +391,7 @@ class TestNormalizeCommandSTTInput:
     """
 
     def test_normalize_false_passes_original_file(self, tmp_path):
-        import tools.transcription_command as mod
+        import hermes_agent.tools.transcription_command as mod
 
         audio = _make_silent_wav(tmp_path / "input.wav")
         cfg = {"type": "command", "command": _python_echo_input_command()}
@@ -402,7 +402,7 @@ class TestNormalizeCommandSTTInput:
         assert Path(result["transcript"]) == audio
 
     def test_normalize_true_passes_transcoded_file(self, tmp_path):
-        import tools.transcription_command as mod
+        import hermes_agent.tools.transcription_command as mod
 
         audio = _make_silent_wav(tmp_path / "input.wav")
         converted = tmp_path / "converted" / "input-stt.m4a"
@@ -423,7 +423,7 @@ class TestNormalizeCommandSTTInput:
         assert audio.read_bytes() != b"fake m4a"
 
     def test_normalize_transcode_failure_returns_error(self, tmp_path):
-        import tools.transcription_command as mod
+        import hermes_agent.tools.transcription_command as mod
 
         audio = _make_silent_wav(tmp_path / "input.wav")
         cfg = {
@@ -439,7 +439,7 @@ class TestNormalizeCommandSTTInput:
         assert "ffmpeg was not found" in result["error"]
 
     def test_normalize_string_false_passes_original_file(self, tmp_path):
-        import tools.transcription_command as mod
+        import hermes_agent.tools.transcription_command as mod
 
         audio = _make_silent_wav(tmp_path / "input.wav")
         cfg = {

@@ -70,7 +70,7 @@ def emitted_event_names() -> set[str]:
     for src in (REPO / current_path("tools")).glob("delegate_tool*.py"):
         names.update(_SUBAGENT_RELAY.findall(_read(src)))
     names.discard("subagent.text")  # mirrored into the watch window as message.delta, never emitted
-    from tools.registry import _tool_module_candidates
+    from hermes_agent.tools.registry import _tool_module_candidates
 
     for src in _tool_module_candidates(REPO / current_path("tools")):
         names.update(_DESKTOP_UI_EMIT.findall(_read(src)))

@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import tts_tool, tts_tool_openai
+from hermes_agent.tools import tts_tool, tts_tool_openai
 
 
 class TestResolveOpenaiAudioClientConfig:

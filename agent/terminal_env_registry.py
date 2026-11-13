@@ -2,7 +2,7 @@
 
 Central map of registered pluggable terminal backends, populated by plugins via
 :meth:`PluginContext.register_terminal_environment_provider` and consumed by
-:func:`tools.terminal_tool_backends._create_environment` plus the classification helpers across the
+:func:`hermes_agent.tools.terminal_tool_backends._create_environment` plus the classification helpers across the
 terminal/file/approval/prompt surfaces. Unlike the image/video/web/browser registries there
 is **no active-provider resolution**: the active backend is whatever ``TERMINAL_ENV`` /
 ``terminal.backend`` names. Built-in names are reserved (registration raises) so a plugin can
@@ -21,7 +21,7 @@ from agent.terminal_env_provider import TerminalEnvironmentProvider
 logger = logging.getLogger(__name__)
 
 
-#: Names owned by in-tree backends in tools/environments/ — never
+#: Names owned by in-tree backends in hermes_agent/tools/environments/ — never
 #: registrable by plugins. Includes internal-mode aliases (managed_modal).
 BUILTIN_BACKEND_NAMES = frozenset({
     "local", "docker", "modal", "managed_modal",

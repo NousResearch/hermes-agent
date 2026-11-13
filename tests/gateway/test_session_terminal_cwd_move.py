@@ -9,7 +9,7 @@ from tests.gateway.test_session_resume_config_refresh import (
 
 @pytest.mark.asyncio
 async def test_a_workspace_move_after_a_cd_runs_the_next_command_in_the_new_folder(tmp_path, monkeypatch):
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     built = []
     monkeypatch.setattr(terminal_tool, '_active_environments', {})
     monkeypatch.setattr(terminal_tool, '_session_cwd', {})

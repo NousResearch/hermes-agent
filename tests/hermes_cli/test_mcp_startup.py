@@ -73,18 +73,18 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_rl(monkeypatch):
         types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
     )
     # Stub mcp_oauth so the background thread doesn't pay the real (cold,
-    # ~0.75s) ``tools.mcp_oauth`` import before calling discovery. This test
+    # ~0.75s) ``hermes_agent.tools.mcp_oauth`` import before calling discovery. This test
     # asserts the *backgrounding contract* (main thread returns fast, discovery
     # runs off-thread), not OAuth suppression — the unrelated import latency
     # would otherwise blow the polling deadline on a loaded CI runner.
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
+        "hermes_agent.tools.mcp_oauth",
         types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "hermes_agent.tools.mcp_tool_discovery",
         types.SimpleNamespace(discover_mcp_tools=_blocking_discover),
     )
 
@@ -114,7 +114,7 @@ def test_chat_client_never_spawns_mcp_servers_the_gateway_owns(monkeypatch, comm
                         lambda **_kwargs: calls.__setitem__("background", calls["background"] + 1))
     monkeypatch.setitem(sys.modules, "hermes_cli.plugins", types.SimpleNamespace(
         discover_plugins=lambda: None, start_background_plugin_discovery=lambda: None))
-    monkeypatch.setitem(sys.modules, "tools.mcp_tool_discovery", types.SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.mcp_tool_discovery", types.SimpleNamespace(
         discover_mcp_tools=lambda **_k: calls.__setitem__("inline", calls["inline"] + 1)))
     main_mod._prepare_agent_startup(_agent_args(command=command))
     assert calls == {"background": 0, "inline": 0}
@@ -157,7 +157,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "hermes_agent.tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
         ),
@@ -192,14 +192,14 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
+        "hermes_agent.tools.mcp_oauth",
         types.SimpleNamespace(
             suppress_interactive_oauth=lambda: SuppressInteractiveOAuth(),
         ),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "hermes_agent.tools.mcp_tool_discovery",
         types.SimpleNamespace(discover_mcp_tools=_discover),
     )
 
@@ -229,12 +229,12 @@ def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
+        "hermes_agent.tools.mcp_oauth",
         types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "hermes_agent.tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: seen.append(dict(current_secret_scope() or {})),
         ),
@@ -296,12 +296,12 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict, status: s
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
+        "hermes_agent.tools.mcp_oauth",
         types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "hermes_agent.tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
             get_mcp_status=lambda: [{"name": "demo", "connected": connected, "status": status}],
@@ -342,10 +342,10 @@ def test_set_mcp_server_filter_normalizes(_reset_mcp_server_filter, toolsets, ex
 def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
     """The filter must narrow the spawn set before any server is connected;
     built-in toolset names in the list are ignored."""
-    from tools import mcp_tool
-    from tools import mcp_tool_config as _mcp_config
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_loop as _mcp_loop
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_config as _mcp_config
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
     servers = {
         "code-mcp": {"command": "true"},
@@ -394,12 +394,12 @@ def test_background_discovery_honors_server_filter(monkeypatch, _reset_mcp_serve
     calls: list = []
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
+        "hermes_agent.tools.mcp_tool_discovery",
         types.SimpleNamespace(discover_mcp_tools=lambda allowed_mcp_names=None: calls.append(allowed_mcp_names)),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
+        "hermes_agent.tools.mcp_oauth",
         types.SimpleNamespace(suppress_interactive_oauth=nullcontext),
     )
     mcp_startup.set_mcp_server_filter("terminal,code-mcp")
@@ -449,8 +449,8 @@ def test_server_added_after_discovery_is_connected_by_the_next_agent_build(monke
     ``github`` live, so the re-entry every agent build makes returned early and the new server's
     tools never reached a new session. It must run discovery again, and only while something
     configured is still unconnected."""
-    from tools import mcp_tool
-    from tools import mcp_tool_config as _config
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_config as _config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("mcp_servers:\n  github:\n    url: https://mcp.example.test/gh\n")

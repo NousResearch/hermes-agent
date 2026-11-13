@@ -12,10 +12,10 @@ _CDP_SCHEMES = {"http", "https", "ws", "wss"}
 
 def _resolve_browser_cdp_url() -> str:
     """Configured browser CDP override without network I/O (``/browser status`` must be fast;
-    ``tools.browser_session_cdp.get_cdp_override`` HTTP-probes discovery URLs): the browser session's own
+    ``hermes_agent.tools.browser_session_cdp.get_cdp_override`` HTTP-probes discovery URLs): the browser session's own
     read (this profile's live connect, env, then the effective ``browser.cdp_url``) minus WS resolution; the
     next browser session normalizes it."""
-    from tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
     return get_cdp_override_raw()
 
 
@@ -88,14 +88,14 @@ def _reap_profile_browsers() -> None:
     """Close the current profile's browsers only: the live connection is per profile, so other
     profiles' sessions on a multiplexed gateway keep theirs."""
     from hermes_constants import hermes_home_key
-    from tools.browser_session_lifecycle import cleanup_profile_browsers
+    from hermes_agent.tools.browser_session_lifecycle import cleanup_profile_browsers
     cleanup_profile_browsers(hermes_home_key())
 
 
 def _browser_connect(rid, params: dict) -> dict:
     import platform
     from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
-    from tools.browser_session_cdp import set_live_cdp_override
+    from hermes_agent.tools.browser_session_cdp import set_live_cdp_override
     from urllib.parse import urlparse
     raw_url = params.get("url")
     if raw_url is not None and not isinstance(raw_url, str):
@@ -158,7 +158,7 @@ def _browser_connect(rid, params: dict) -> dict:
 
 def _browser_disconnect(rid) -> dict:
     # Reap, drop this profile's override, reap again — same swap window as ``_browser_connect``.
-    from tools.browser_session_cdp import set_live_cdp_override
+    from hermes_agent.tools.browser_session_cdp import set_live_cdp_override
 
     def reap() -> None:
         with contextlib.suppress(Exception):

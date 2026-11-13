@@ -9,11 +9,11 @@ import pytest
 @pytest.mark.no_isolate
 def test_reconcile_tears_down_server_dropped_from_config(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool
-    from tools import mcp_tool_config as _config
-    from tools import mcp_tool_discovery as disc
-    from tools import mcp_tool_loop as _loop
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_config as _config
+    from hermes_agent.tools import mcp_tool_discovery as disc
+    from hermes_agent.tools import mcp_tool_loop as _loop
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     configured = {"linear": {"url": "https://mcp.example.test/mcp", "auth": "oauth"}}
     monkeypatch.setattr(_config, "_load_mcp_config", lambda: dict(configured))
@@ -53,11 +53,11 @@ def test_disabled_lazy_and_connecting_entries(monkeypatch, tmp_path):
     """``enabled: false`` counts as dropped; a schema-cache (lazy) registration loses its cached
     tools; a server still mid-connect is reported ``pending`` (torn down on a later pass)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool
-    from tools import mcp_tool_config as _config
-    from tools import mcp_tool_discovery as disc
-    from tools import mcp_tool_lifecycle as _lifecycle
-    from tools import mcp_tool_registration as _registration
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_config as _config
+    from hermes_agent.tools import mcp_tool_discovery as disc
+    from hermes_agent.tools import mcp_tool_lifecycle as _lifecycle
+    from hermes_agent.tools import mcp_tool_registration as _registration
 
     monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"linear": {"url": "https://x/mcp", "enabled": False}})
     torn_down: list = []
@@ -94,10 +94,10 @@ def test_reconcile_retries_failed_first_connect_only_after_cooldown(monkeypatch,
     discovery lock and logs a failed pass every tick), and must retry once the cooldown lapsed; a
     discovery-pass timeout stamps that cooldown too, else the next tick spawns a second attempt
     beside the one still running on the MCP loop."""
-    from tools import mcp_tool
-    from tools import mcp_tool_config as _config
-    from tools import mcp_tool_discovery as disc
-    from tools import mcp_tool_loop as _loop
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_config as _config
+    from hermes_agent.tools import mcp_tool_discovery as disc
+    from hermes_agent.tools import mcp_tool_loop as _loop
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"ghost": {"url": "https://x/mcp"}})
@@ -135,9 +135,9 @@ def test_reconcile_counts_adopted_shared_connection_as_live(monkeypatch, tmp_pat
     owner A with B in ``_server_tool_scopes``). ``x`` IS live for B — the same resolution
     ``_select_new_servers`` uses — so the every-tick reconcile must not re-enter discovery and log
     ``added=['x']`` forever for a server that already serves this profile."""
-    from tools import mcp_tool
-    from tools import mcp_tool_config as _config
-    from tools import mcp_tool_discovery as disc
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_config as _config
+    from hermes_agent.tools import mcp_tool_discovery as disc
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"x": {"url": "https://x/mcp"}})

@@ -15,8 +15,8 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from tools.computer_use import cua_backend
-from tools.computer_use import cua_backend_driver
+from hermes_agent.tools.computer_use import cua_backend
+from hermes_agent.tools.computer_use import cua_backend_driver
 
 
 class TestNoOverlayFlag:
@@ -161,7 +161,7 @@ class TestMcpInvocationUsesResolvedCommand:
         ``driver_cmd`` parameter.
         """
         from unittest.mock import patch
-        from tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
+        from hermes_agent.tools.computer_use.cua_backend_driver import _resolve_mcp_invocation
 
         manifest = (
             '{"mcp_invocation":'
@@ -229,7 +229,7 @@ class TestMcpArgsOverlayFlag:
 class TestEmbeddedDaemonOverlayFlag:
     @pytest.mark.platforms("not macos")
     def test_serve_process_disables_overlay_when_policy_requires_it(self):
-        from tools.computer_use import cua_backend_daemon
+        from hermes_agent.tools.computer_use import cua_backend_daemon
 
         daemon = cua_backend._EmbeddedCuaDaemon("/usr/bin/cua-driver", "unrestricted")
         process = MagicMock()

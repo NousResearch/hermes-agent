@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from tools.image_source import (
+from hermes_agent.tools.image_source import (
     ResolveContext, SourceNotFound, resolve_image_source,
 )
 
@@ -30,8 +30,8 @@ def _resolve(path):
 
 
 def test_flattened_screenshot_name_opens_in_vision_video_and_generation(tmp_path, monkeypatch):
-    from tools.image_generation_tool import _confine_source_images
-    from tools.vision_tools import _materialize_video
+    from hermes_agent.tools.image_generation_tool import _confine_source_images
+    from hermes_agent.tools.vision_tools import _materialize_video
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
     real = tmp_path / "Screenshot 2026-07-10 at 9.23.58\u202fAM.png"
@@ -56,5 +56,5 @@ def test_twins_and_missing_files_are_never_guessed(tmp_path, monkeypatch):
         _resolve(tmp_path / "a b.png")
     with pytest.raises(SourceNotFound):
         _resolve(tmp_path / "other.png")
-    from tools.image_source import local_source_spelling
+    from hermes_agent.tools.image_source import local_source_spelling
     assert local_source_spelling(str(tmp_path / "a b.png")) == str(tmp_path / "a b.png")

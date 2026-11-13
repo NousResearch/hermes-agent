@@ -14,9 +14,9 @@ from hermes_agent.gateway.run import (
 )
 from hermes_agent.gateway.session_context import set_session_vars
 from hermes_agent.gateway.session_state import SessionState
-from model_tools import handle_function_call
-from tools.approval_context import set_current_session_key
-from tools.process_registry import process_registry
+from hermes_agent.model_tools import handle_function_call
+from hermes_agent.tools.approval_context import set_current_session_key
+from hermes_agent.tools.process_registry import process_registry
 
 
 class _IdleAgent:
@@ -433,7 +433,7 @@ def test_dump_wedged_turn_stacks_never_raises(monkeypatch):
 @pytest.fixture
 def _plain_spawn(monkeypatch):
     """The systemd-run --user --scope wrapper is irrelevant here and stalls under pytest."""
-    import tools.process_registry as _pr
+    import hermes_agent.tools.process_registry as _pr
     monkeypatch.setattr(_pr, "_SYSTEMD_SCOPE_AVAILABLE", False)
 
 

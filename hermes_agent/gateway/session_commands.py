@@ -402,7 +402,7 @@ def _session_workspace(runner, source):
     from agent.runtime_cwd import reset_session_cwd, set_session_cwd
     from hermes_agent.gateway.session_policy import policy_for_source
     from agent.runtime_scope import bind_terminal_policy
-    from tools.terminal_scope import reset_terminal_scope
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope
     policy = policy_for_source(runner, source)
     if policy is None:
         yield

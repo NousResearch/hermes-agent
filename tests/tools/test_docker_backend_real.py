@@ -47,28 +47,28 @@ def docker_task(monkeypatch):
 def _env_key(task_id) -> str:
     # Without a session key, persistent Docker collapses every task onto the profile's
     # container key ("default" here), exactly as a CLI run does.
-    from tools.terminal_tool import _resolve_container_task_id
+    from hermes_agent.tools.terminal_tool import _resolve_container_task_id
 
     return _resolve_container_task_id(task_id)
 
 
 def _teardown(task_id):
-    from tools.environments.docker import DockerEnvironment
-    from tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools.environments.docker import DockerEnvironment
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
 
     cleanup_vm(_env_key(task_id), force_remove=True)
     assert DockerEnvironment.wait_for_all_teardowns(timeout=60)
 
 
 def _run(command, task_id, **kwargs):
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     return json.loads(terminal_tool(command, task_id=task_id, **kwargs))
 
 
 def _container_id(task_id) -> str | None:
     """The live env's container, confirmed running by the daemon itself."""
-    from tools.terminal_tool import _active_environments
+    from hermes_agent.tools.terminal_tool import _active_environments
 
     env = _active_environments.get(_env_key(task_id))
     cid = getattr(env, "_container_id", None)
@@ -126,7 +126,7 @@ def test_quoting_survives_the_docker_exec_hop(docker_task):
 
 
 def test_file_tools_write_and_read_inside_the_container(docker_task):
-    from tools.file_tools import read_file_tool, write_file_tool
+    from hermes_agent.tools.file_tools import read_file_tool, write_file_tool
 
     content = "first line\nsecond: ünïcödé ✓\n"
     wrote = json.loads(write_file_tool("/workspace/notes.txt", content, task_id=docker_task))
@@ -161,10 +161,10 @@ def test_desktop_workspace_selection_and_recreation(
 ):
     """Desktop shares CLI's original sandbox unless a host workspace is actually selected for mounting."""
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import terminal_tool
-    from tools.file_tools import read_file_tool
-    from tools.terminal_tool_lifecycle import cleanup_vm
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.file_tools import read_file_tool
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
     from hermes_agent.tui_gateway import server
 
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")

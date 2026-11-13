@@ -492,7 +492,7 @@ class TestGatherBackgroundProcessesOwnership:
                     {"session_id": "proc_done", "status": "exited", "owner_task_id": "root-sid", "task_id": "default"},
                 ]
 
-        import tools.process_registry as pr
+        import hermes_agent.tools.process_registry as pr
         monkeypatch.setattr(pr, "process_registry", _Reg())
         assert [p["session_id"] for p in goals.gather_background_processes()] == ["proc_mine", "proc_child"]
         assert [p["session_id"] for p in goals.gather_background_processes(owner_task_id="root-sid")] == ["proc_mine"]
@@ -636,7 +636,7 @@ class TestSessionTriggerBarrier:
     @staticmethod
     def _inject(sid, *, watch_patterns=None, exited=False):
         import time as _t
-        from tools.process_registry import process_registry, ProcessSession
+        from hermes_agent.tools.process_registry import process_registry, ProcessSession
         s = ProcessSession(id=sid, command="watcher.sh", task_id="t",
                            session_key="", cwd="/tmp", started_at=_t.time())
         if watch_patterns:

@@ -851,7 +851,7 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     """
     _assert_windows()
     argv, working_dir, env_overlay = _build_gateway_argv(home)
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
     # home=None is this process's own gateway, not a forced jump to the default root.
     # served_profile_child_env overlays that home's secrets instead of os.environ.copy().
     target = home if home is not None else _hermes_home()

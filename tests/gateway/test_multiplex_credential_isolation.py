@@ -43,7 +43,7 @@ class TestMcpInterpolationUsesScope:
     """MCP config ${VAR} interpolation resolves through the secret scope."""
 
     def test_interpolation_reads_scope(self, monkeypatch):
-        from tools.mcp_tool_config import _interpolate_env_vars
+        from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
         monkeypatch.setenv("MY_MCP_TOKEN", "global-token")
         ss.set_multiplex_active(True)
         tok = ss.set_secret_scope({"MY_MCP_TOKEN": "profile-token"})
@@ -75,7 +75,7 @@ class TestProfilePathResolutionUnderMultiplexScope:
 
     def test_skills_dir_follows_multiplex_scope(self, tmp_path):
         from hermes_agent.gateway.run import _profile_runtime_scope
-        import tools.skills_hub as sh
+        import hermes_agent.tools.skills_hub as sh
 
         prof_a, prof_b = self._profiles(tmp_path)
         with _profile_runtime_scope(prof_a):

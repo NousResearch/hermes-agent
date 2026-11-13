@@ -1,7 +1,7 @@
 """Main's process dock, status-bar ``⚙ N`` and ``/stop`` read the gateway session's processes.
 
 Rewired, ``terminal(background=true)`` runs in the gateway, so the CLI process's own
-``tools.process_registry`` is empty. ``hermes_cli.gateway_tools`` answers main's registry calls from
+``hermes_agent.tools.process_registry`` is empty. ``hermes_cli.gateway_tools`` answers main's registry calls from
 ``process.list`` / ``process.kill`` / ``process.stop`` (scripted fake gateway, no live gateway).
 """
 import asyncio

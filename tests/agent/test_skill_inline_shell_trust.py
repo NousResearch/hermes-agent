@@ -25,7 +25,7 @@ def _make_skill(skills_root, rel, body=SNIPPET):
 
 def _record_hub_install(install_path: str, trust_level: str):
     """Write a hub lock entry the way ``install_from_quarantine`` does."""
-    from tools.skills_hub import HubLockFile
+    from hermes_agent.tools.skills_hub import HubLockFile
 
     HubLockFile().record_install(
         name=install_path.rsplit("/", 1)[-1], source="github", identifier=f"o/r/{install_path}",
@@ -37,7 +37,7 @@ def test_community_hub_install_does_not_expand(tmp_path):
     """A community-trust hub lock entry means the snippet must NOT run on view."""
     skill_dir = _make_skill(tmp_path, "mlops/hubskill")
     _record_hub_install("mlops/hubskill", "community")
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+    with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
         rendered = preprocess_skill_content(SNIPPET, skill_dir, skills_cfg=dict(CFG))
     assert rendered == SNIPPET  # raw DSL preserved — nothing executed
 
@@ -46,7 +46,7 @@ def test_trusted_hub_install_still_expands(tmp_path):
     """Trusted/builtin hub installs keep the operator's opt-in contract."""
     skill_dir = _make_skill(tmp_path, "mlops/hubskill")
     _record_hub_install("mlops/hubskill", "trusted")
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+    with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
         rendered = preprocess_skill_content(SNIPPET, skill_dir, skills_cfg=dict(CFG))
     assert rendered == "Dynamic: SENTINEL"
 
@@ -54,7 +54,7 @@ def test_trusted_hub_install_still_expands(tmp_path):
 def test_local_skill_without_hub_entry_still_expands(tmp_path):
     """Bundled-synced and user-created skills carry no lock entry and keep expanding."""
     skill_dir = _make_skill(tmp_path, "mlops/my-own")
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+    with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
         rendered = preprocess_skill_content(SNIPPET, skill_dir, skills_cfg=dict(CFG))
     assert rendered == "Dynamic: SENTINEL"
 
@@ -67,7 +67,7 @@ def test_slash_invocation_leaves_community_snippet_raw(tmp_path):
     _make_skill(tmp_path, "dyn-comm")
     _record_hub_install("dyn-comm", "community")
     with (
-        patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+        patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
         patch("agent.skill_commands._load_skills_config",
               return_value={"template_vars": True, "inline_shell": True,
                             "inline_shell_timeout": 5}),
@@ -108,6 +108,6 @@ def test_community_provenance_follows_the_owning_lock(tmp_path, lock_text, viewe
     owner = _community_bundle_home(tmp_path / "owner", lock_text)
     active = owner if viewer == "owner" else (tmp_path / "other" / "skills")
     active.mkdir(parents=True, exist_ok=True)
-    with patch("tools.skills_tool.SKILLS_DIR", active):
+    with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", active):
         rendered = preprocess_skill_content(SNIPPET, owner / rel, skills_cfg=dict(CFG))
     assert rendered == ("Dynamic: SENTINEL" if expands else SNIPPET)

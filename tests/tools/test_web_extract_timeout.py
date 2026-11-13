@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from tools import web_tools_extract as wte
+from hermes_agent.tools import web_tools_extract as wte
 
 
 class _HangingAsyncProvider:

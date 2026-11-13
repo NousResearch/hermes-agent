@@ -507,7 +507,7 @@ event("notification.clear", NotificationClearPayload, doc="Withdraw the notice w
 
 
 class TipShowPayload(Payload):
-    """``tools/tip_tool.py``."""
+    """``hermes_agent/tools/tip_tool.py``."""
 
     selector: str
     text: str
@@ -625,7 +625,7 @@ event("preview.restart.progress", PreviewRestartProgressPayload, doc="Progress l
 
 
 class SubagentOutputTailEntry(Payload):
-    """``tools/delegate_tool_results.py::_extract_output_tail`` row."""
+    """``hermes_agent/tools/delegate_tool_results.py::_extract_output_tail`` row."""
 
     tool: str
     preview: str
@@ -712,14 +712,14 @@ event("moa.phase", MoaPhasePayload, doc="MoA phase transition (currently only ``
 
 
 class PreviewOpenPayload(Payload):
-    """``tools/open_preview_tool.py``."""
+    """``hermes_agent/tools/open_preview_tool.py``."""
 
     url: str
     label: str = ""
 
 
 class PreviewClosePayload(Payload):
-    """``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab."""
+    """``hermes_agent/tools/preview_tool.py`` / ``hermes_agent/tools/close_preview_tool.py``; ``url`` '' closes every tab."""
 
     url: str = ""
 
@@ -729,7 +729,7 @@ event("preview.close", PreviewClosePayload, doc="Close the preview pane or one t
 
 
 class PaneRevealPayload(OpenPayload):
-    """``tools/focus_pane_tool.py``."""
+    """``hermes_agent/tools/focus_pane_tool.py``."""
 
     pane: str
 
@@ -738,7 +738,7 @@ event("pane.reveal", PaneRevealPayload, doc="Focus / reveal a named desktop pane
 
 
 class MessageReactionPayload(Payload):
-    """``tools/react_to_message_tool.py``."""
+    """``hermes_agent/tools/react_to_message_tool.py``."""
 
     row_id: int
     reactions: list[MessageReaction]

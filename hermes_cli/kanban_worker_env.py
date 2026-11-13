@@ -57,7 +57,7 @@ def worker_client_env(env: Mapping[str, str], assignee_home: str | Path) -> dict
     from the host. The launch profile's ``.env`` / source residue goes first: an allowlisted name it
     defines (an ``HTTPS_PROXY`` with credentials in the URL) is that profile's, not the host's."""
     from hermes_cli.config_backend import deployment_env_names
-    from tools.environments.local import strip_launch_profile_env
+    from hermes_agent.tools.environments.local import strip_launch_profile_env
     host = strip_launch_profile_env(dict(env), assignee_home)
     # The config backend's deployment (which backend, plane and instance) is the instance's, not a
     # profile's; without it the assignee's gateway reads its config from the file backend. Its

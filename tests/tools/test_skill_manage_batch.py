@@ -29,7 +29,7 @@ class TestSkillManageBatch(unittest.TestCase):
         # Re-import against the temp home (module caches SKILLS_DIR).
         import importlib
 
-        import tools.skill_manager_tool as smt
+        import hermes_agent.tools.skill_manager_tool as smt
         importlib.reload(smt)
         self.smt = smt
 
@@ -58,7 +58,7 @@ class TestSkillManageBatch(unittest.TestCase):
     def test_advisory_findings_ride_on_the_op_result(self):
         # operations[] is the only call shape, so a finding the per-op handler attaches must
         # survive into the batch row or the linter is silent for every model call.
-        from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
+        from hermes_agent.tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
         r = self._call("probe", [{"action": "patch", "old_string": "Step 1.",
                                   "new_string": "- rule; why.\n" * (_BODY_SOFT_BUDGET_CHARS // 12 + 1)}])
@@ -292,7 +292,7 @@ class TestSkillManageBatch(unittest.TestCase):
             staged.update(payload=payload, summary=summary)
             return {"id": "pend_1"}
 
-        import tools.write_approval as wa
+        import hermes_agent.tools.write_approval as wa
 
         with _patch.object(wa, "evaluate_gate", return_value=_Decision()), \
              _patch.object(wa, "stage_write", side_effect=fake_stage_write):

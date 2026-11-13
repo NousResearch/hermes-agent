@@ -19,8 +19,8 @@ with tempfile.TemporaryDirectory(prefix="async-report-producer-") as temporary:
     from hermes_agent.cron.jobs import create_job, save_job_output
     from hermes_agent.gateway.wake import persist_delegation_delivery
     from hermes_agent.hermes_state import SessionDB
-    from tools.cronjob_tools import _manual_run_completion
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.cronjob_tools import _manual_run_completion
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
 
     report = "# Generated inspection\n\n**Conclusion:** attention needed.\n\n| Strategy | Status |\n|---|---|\n| Canary | running |\n\nFirst line  \nSecond line\n\n```python\nvalue = 1  \nvalue = 2 \n```"
     job = create_job(prompt="Offline fixture; never run", schedule="0 0 * * *", name="Markdown probe", deliver="local")

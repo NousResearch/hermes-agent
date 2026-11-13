@@ -72,9 +72,9 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-cross-profile")
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
-    monkeypatch.setattr("tools.process_registry._worker_memory_max_bytes", lambda: 536_870_912)
+    monkeypatch.setattr("hermes_agent.tools.process_registry._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.process_registry._systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.process_registry._worker_memory_max_bytes", lambda: 536_870_912)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
     assert kbd._default_spawn(task, str(workspace)) == 4242
@@ -101,8 +101,8 @@ def test_managed_gateway_worker_spawn_fails_closed_without_scope(
     popen_calls: list[list[str]] = []
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: popen_calls.append(list(cmd)))
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.process_registry._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.process_registry._systemd_run_user_scope_available", lambda: False)
 
     with pytest.raises(RuntimeError, match="restart-safe systemd scope"):
         kbd._default_spawn(task, str(workspace))
@@ -115,8 +115,8 @@ def test_managed_gateway_scope_builder_fails_closed_if_binary_disappears(
 ) -> None:
     workspace, task = worker_setup
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: True)
-    monkeypatch.setattr("tools.process_registry._systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.process_registry._is_supervised_gateway_process", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.process_registry._systemd_run_user_scope_available", lambda: True)
     monkeypatch.setattr("shutil.which", lambda _name: None)
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("unsafe direct spawn"))
 
@@ -136,9 +136,9 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     # Standalone = no systemd unit at all (CI runners inherit INVOCATION_ID).
     monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
-    monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.process_registry._is_supervised_gateway_process", lambda: False)
     monkeypatch.setattr(
-        "tools.process_registry._systemd_run_user_scope_available",
+        "hermes_agent.tools.process_registry._systemd_run_user_scope_available",
         lambda: pytest.fail("scope probe must not run outside managed gateway"),
     )
 
@@ -156,7 +156,7 @@ def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     spawn still happens (the unit's ``KillMode``/lifetime is unknowable, a
     long-lived sequencer keeps working) but the operator is told exactly why the
     workers may die. A cron caller under the same unit is unchanged."""
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     workspace, task = worker_setup
     spawned: list[list[str]] = []
@@ -197,7 +197,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
     request,
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     if not process_registry._systemd_run_user_scope_available():
         pytest.skip("systemd-run --user --scope is unavailable on this host")

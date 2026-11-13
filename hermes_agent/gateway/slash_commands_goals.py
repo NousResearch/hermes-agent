@@ -243,7 +243,7 @@ class GatewayGoalCommandsMixin:
             error = None
         if error:
             return error
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
         def _dispatch():
             from agent.review_engine import start_review

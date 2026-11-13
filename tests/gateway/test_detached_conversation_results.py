@@ -73,7 +73,7 @@ def _chat_started(kind, lane, a):
 async def test_a_result_the_chat_started_on_the_old_conversation_lands_in_it_once_the_app_used_it(monkeypatch, kind):
     """N2b: the app's turn reopened A after the chat's ``/new``. A result of work the chat's turn on A
     started lands in A once (a note, no viewer), never in the chat, and is not refused on every retry."""
-    import tools.async_delegation as ad
+    import hermes_agent.tools.async_delegation as ad
     runner, _adapter, authority, _source, sent, ran, _gates, lane, ref_a = await _moved_on(monkeypatch)
     a = ref_a.session_id
     assert await _app_turn(authority, ref_a, 'app on A') == ('terminal', 'completed')

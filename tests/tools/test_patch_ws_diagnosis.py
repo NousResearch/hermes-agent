@@ -2,7 +2,7 @@
 
 
 
-from tools.fuzzy_match import (
+from hermes_agent.tools.fuzzy_match import (
     find_closest_lines,
     fuzzy_find_and_replace,
 )
@@ -46,7 +46,7 @@ class TestEndToEndHint:
         new = "    def run(self):\n        start_engine()\n        return 3"
         _c, count, _s, err = fuzzy_find_and_replace(content, old, new)
         assert count == 0
-        from tools.fuzzy_match import format_no_match_hint
+        from hermes_agent.tools.fuzzy_match import format_no_match_hint
         hint = format_no_match_hint(err, count, old, content)
         assert "Did you mean" in hint
         assert "Whitespace difference detected" in hint

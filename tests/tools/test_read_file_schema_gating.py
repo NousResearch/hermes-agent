@@ -29,7 +29,7 @@ class TestReadFileSchemaStatic(unittest.TestCase):
     def test_hosted_ocr_available_gate_states(self):
         """Maintainer decision: ONLY a direct FIRECRAWL_API_KEY unlocks —
         not config true, not the Nous gateway."""
-        import tools.read_extract as rx
+        import hermes_agent.tools.read_extract as rx
 
         # direct key → True
         with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
@@ -57,7 +57,7 @@ class TestReadFileSchemaStatic(unittest.TestCase):
         """_hosted_ocr_config never resolves the Nous gateway: api_url is
         always None (anydoc defaults to api.firecrawl.dev) and enabled
         tracks the key."""
-        import tools.read_extract as rx
+        import hermes_agent.tools.read_extract as rx
 
         with patch.dict(rx.os.environ, {"FIRECRAWL_API_KEY": "fc-x"}):
             with patch("hermes_cli.config.load_config_readonly",
@@ -109,7 +109,7 @@ class TestNeedsOcrPath(unittest.TestCase):
         return mod, calls
 
     def test_hosted_success_returns_ocr_text(self):
-        from tools import read_extract as rx
+        from hermes_agent.tools import read_extract as rx
 
         mod, calls = self._fake_mod(hosted_result="OCR TEXT")
         with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
@@ -119,7 +119,7 @@ class TestNeedsOcrPath(unittest.TestCase):
         self.assertEqual(calls[1].get("ocr"), "hosted")
 
     def test_hosted_failure_warns_and_prefers_local_skills(self):
-        from tools import read_extract as rx
+        from hermes_agent.tools import read_extract as rx
 
         mod, _ = self._fake_mod(hosted_exc=RuntimeError("HTTP 500"))
         with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
@@ -129,7 +129,7 @@ class TestNeedsOcrPath(unittest.TestCase):
         self.assertIn("pages 2, 3", out)
 
     def test_disabled_warns_without_attempt(self):
-        from tools import read_extract as rx
+        from hermes_agent.tools import read_extract as rx
 
         mod, calls = self._fake_mod()
         with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",

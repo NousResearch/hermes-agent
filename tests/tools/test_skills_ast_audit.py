@@ -1,8 +1,8 @@
-"""Tests for tools.skills_ast_audit — opt-in AST diagnostic scanner."""
+"""Tests for hermes_agent.tools.skills_ast_audit — opt-in AST diagnostic scanner."""
 
 import sys
 
-from tools.skills_ast_audit import ast_scan_path, format_ast_report
+from hermes_agent.tools.skills_ast_audit import ast_scan_path, format_ast_report
 
 
 def _pids(findings):

@@ -1,4 +1,4 @@
-"""Tests for tools.hook_output_spill."""
+"""Tests for hermes_agent.tools.hook_output_spill."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools import hook_output_spill as hos
+from hermes_agent.tools import hook_output_spill as hos
 
 
 class GetSpillConfigTests(unittest.TestCase):

@@ -17,8 +17,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.cronjob_tools import cronjob, _execute_job_now
-from tools.environments.base import set_activity_callback
+from hermes_agent.tools.cronjob_tools import cronjob, _execute_job_now
+from hermes_agent.tools.environments.base import set_activity_callback
 
 _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
         "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
@@ -28,10 +28,10 @@ class TestCronjobRunExecutesImmediately:
         """action='run' must claim the job then fire it through run_one_job."""
         ran = {"job": "after-run", "last_status": "ok", "last_error": None}
         claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed) as m_claim, \
+        with patch("hermes_agent.tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value=claimed) as m_claim, \
              patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=ran):
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=ran):
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
 
         assert out["success"] is True
@@ -50,12 +50,12 @@ class TestCronjobRunExecutesImmediately:
         order = []
         ran = {"id": "job-run-1", "last_status": "ok", "last_error": None}
         claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
+        with patch("hermes_agent.tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
              patch("hermes_agent.cron.scheduler.run_one_job",
                    side_effect=lambda *a, **kw: order.append("run") or True), \
-             patch("tools.cronjob_tools.get_job", return_value=ran), \
-             patch("tools.cronjob_tools._notify_provider_jobs_changed_safe",
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=ran), \
+             patch("hermes_agent.tools.cronjob_tools._notify_provider_jobs_changed_safe",
                    side_effect=lambda: order.append("notify")) as m_notify:
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
 
@@ -70,12 +70,12 @@ class TestCronjobRunExecutesImmediately:
         provider must be reconciled even when the execution itself fails."""
         failed = {"id": "job-run-1", "last_status": "error", "last_error": "provider 500"}
         claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
+        with patch("hermes_agent.tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
              patch("hermes_agent.cron.scheduler.run_one_job", side_effect=RuntimeError("boom")), \
-             patch("tools.cronjob_tools.mark_job_run"), \
-             patch("tools.cronjob_tools.get_job", return_value=failed), \
-             patch("tools.cronjob_tools._notify_provider_jobs_changed_safe") as m_notify:
+             patch("hermes_agent.tools.cronjob_tools.mark_job_run"), \
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=failed), \
+             patch("hermes_agent.tools.cronjob_tools._notify_provider_jobs_changed_safe") as m_notify:
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
 
         assert out["job"]["executed"] is True
@@ -84,11 +84,11 @@ class TestCronjobRunExecutesImmediately:
 
     def test_run_skips_when_claim_lost(self):
         """If the scheduler already holds the fire claim, do NOT double-run."""
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=False), \
+        with patch("hermes_agent.tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value=False), \
              patch("hermes_agent.cron.scheduler.run_one_job") as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools._notify_provider_jobs_changed_safe") as m_notify:
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=dict(_JOB)), \
+             patch("hermes_agent.tools.cronjob_tools._notify_provider_jobs_changed_safe") as m_notify:
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
 
         assert out["success"] is True
@@ -102,10 +102,10 @@ class TestCronjobRunExecutesImmediately:
         """A failed run is reported via the re-read job's last_status/last_error."""
         failed = {"id": "job-run-1", "last_status": "error", "last_error": "provider 500"}
         claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
-        with patch("tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
-             patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
+        with patch("hermes_agent.tools.cronjob_tools.resolve_job_ref", return_value=dict(_JOB)), \
+             patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
              patch("hermes_agent.cron.scheduler.run_one_job", return_value=True), \
-             patch("tools.cronjob_tools.get_job", return_value=failed):
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=failed):
             out = json.loads(cronjob(action="run", job_id="job-run-1"))
 
         assert out["job"]["executed"] is True
@@ -119,10 +119,10 @@ class TestCronjobRunExecutesImmediately:
         runner = SimpleNamespace(adapters=adapters, _gateway_loop=gateway_loop)
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
 
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+        with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner), \
              patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=completed):
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["success"] is True
@@ -148,11 +148,11 @@ class TestCronjobRunExecutesImmediately:
         )
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
 
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+        with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner), \
              patch("hermes_constants.get_hermes_home", return_value=Path("/srv/hermes/profiles/work")), \
              patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=completed):
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["success"] is True
@@ -177,12 +177,12 @@ class TestCronjobRunExecutesImmediately:
         route = ProfileRoute(name="ops", platform="telegram", profile="keeper", chat_id="-100")
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
 
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+        with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner), \
              patch("hermes_constants.get_hermes_home", return_value=Path("/srv/hermes/profiles/keeper")), \
              patch("hermes_agent.cron.scheduler_preflight._primary_profile_routes_for_current_home", return_value=[route]), \
              patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=completed):
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["success"] is True
@@ -203,11 +203,11 @@ class TestCronjobRunExecutesImmediately:
         runner = SimpleNamespace(adapters=default_adapters, _gateway_loop=object(),
                                  _adapters_for_profile=boom)
 
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+        with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=runner), \
              patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run, \
-             patch("tools.cronjob_tools.mark_job_run") as m_mark, \
-             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
+             patch("hermes_agent.tools.cronjob_tools.mark_job_run") as m_mark, \
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=dict(_JOB)):
             res = _execute_job_now(dict(_JOB))
 
         assert res["claimed"] is True
@@ -221,10 +221,10 @@ class TestCronjobRunExecutesImmediately:
         """CLI-only runs retain the standalone delivery path."""
         completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
 
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+        with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch.dict(sys.modules, {"hermes_agent.gateway.run": None}), \
              patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run, \
-             patch("tools.cronjob_tools.get_job", return_value=completed):
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=completed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["success"] is True
@@ -238,10 +238,10 @@ class TestCronjobRunExecutesImmediately:
     def test_execute_job_now_marks_failure_on_exception(self):
         """An exception during fire is captured, marked failed, not propagated."""
         claimed = {**_JOB, "fire_claim": {"by": "manual-owner"}}
-        with patch("tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
+        with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value=claimed), \
              patch("hermes_agent.cron.scheduler.run_one_job", side_effect=RuntimeError("boom")), \
-             patch("tools.cronjob_tools.mark_job_run") as m_mark, \
-             patch("tools.cronjob_tools.get_job", return_value=dict(_JOB)):
+             patch("hermes_agent.tools.cronjob_tools.mark_job_run") as m_mark, \
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=dict(_JOB)):
             res = _execute_job_now(dict(_JOB))
         assert res["claimed"] is True
         assert res["success"] is False
@@ -272,10 +272,10 @@ class TestCronjobRunExecutesImmediately:
                 assert heartbeat_seen.wait(timeout=5.0), "no heartbeat within 5s"
                 return True
 
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
-                 patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
+            with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+                 patch("hermes_agent.tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
                  patch("hermes_agent.cron.scheduler.run_one_job", side_effect=slow_run) as m_run, \
-                 patch("tools.cronjob_tools.get_job",
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _execute_job_now(dict(_JOB))
 
@@ -304,11 +304,11 @@ class TestCronjobRunExecutesImmediately:
                 time.sleep(0.2)
                 return True
 
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
-                 patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
-                 patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_CEILING", 0.0), \
+            with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+                 patch("hermes_agent.tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
+                 patch("hermes_agent.tools.cronjob_tools._CRON_RUN_HEARTBEAT_CEILING", 0.0), \
                  patch("hermes_agent.cron.scheduler.run_one_job", side_effect=slow_run), \
-                 patch("tools.cronjob_tools.get_job",
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _execute_job_now(dict(_JOB))
             assert res["success"] is True, res
@@ -337,10 +337,10 @@ class TestCronjobRunExecutesImmediately:
                     "heartbeat stopped after one callback exception"
                 return True
 
-            with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
-                 patch("tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
+            with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+                 patch("hermes_agent.tools.cronjob_tools._CRON_RUN_HEARTBEAT_INTERVAL", 0.05), \
                  patch("hermes_agent.cron.scheduler.run_one_job", side_effect=slow_run), \
-                 patch("tools.cronjob_tools.get_job",
+                 patch("hermes_agent.tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _execute_job_now(dict(_JOB))
             assert res["success"] is True, res
@@ -360,10 +360,10 @@ class TestManualRunReportsDeliveryFailure:
             "last_error": None,
             "last_delivery_error": "live adapter send failed: 502 (target telegram:123)",
         }
-        with patch("tools.cronjob_tools.claim_job_for_fire",
+        with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire",
                    return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
              patch("hermes_agent.cron.scheduler.run_one_job", return_value=True), \
-             patch("tools.cronjob_tools.get_job", return_value=refreshed):
+             patch("hermes_agent.tools.cronjob_tools.get_job", return_value=refreshed):
             res = _execute_job_now(dict(_JOB))
 
         assert res["claimed"] is True

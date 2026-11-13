@@ -9,9 +9,9 @@ Inspired by Mercury Agent's permission-hardened blocklist.
 
 import pytest
 
-from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, detect_hardline_command, disable_session_yolo, enable_session_yolo
-from tools.approval_context import reset_current_session_key, set_current_session_key
-from tools import approval_context
+from hermes_agent.tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command, detect_hardline_command, disable_session_yolo, enable_session_yolo
+from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
+from hermes_agent.tools import approval_context
 
 
 # -------------------------------------------------------------------------
@@ -593,7 +593,7 @@ def test_session_yolo_cannot_bypass_hardline(clean_session):
 def test_approvals_mode_off_cannot_bypass_hardline(clean_session, monkeypatch, tmp_path):
     """config approvals.mode=off (yolo-equivalent) must not bypass hardline."""
     # _get_approval_mode() reads from hermes config; simplest path: monkeypatch the helper.
-    from tools import approval_context
+    from hermes_agent.tools import approval_context
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "off")
 
     result = check_all_command_guards("rm -rf /", "local")
@@ -686,7 +686,7 @@ _SUDO_STDIN_BLOCK_YOLO = [
 
 def test_sudo_stdin_guard_detects_without_password():
     """sudo -S is dangerous when SUDO_PASSWORD is not configured."""
-    import tools.approval as approval_mod
+    import hermes_agent.tools.approval as approval_mod
 
     for cmd in _SUDO_STDIN_BLOCK:
         is_blocked, desc = approval_mod._check_sudo_stdin_guard(cmd)

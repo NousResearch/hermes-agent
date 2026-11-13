@@ -73,7 +73,7 @@ def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
     from hermes_platform.resolver.app import AppResolver
     from hermes_platform.resolver.availability import availability
     from hermes_platform.resolver.base import Effort
-    from tools.mcp_liveness import parse_liveness
+    from hermes_agent.tools.mcp_liveness import parse_liveness
 
     available = availability(decl)
     if available.state == "no_requirements":

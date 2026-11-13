@@ -11,7 +11,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-from tools import approval_context, approval_prompt
+from hermes_agent.tools import approval_context, approval_prompt
 
 
 def _manifest(name: str = "fixture-approval") -> PluginManifest:
@@ -269,7 +269,7 @@ def _configure_manual_guard(monkeypatch, approval_module, manager, *, fallback=N
 
 
 def test_cli_selected_transport_replaces_builtin_prompt(monkeypatch):
-    from tools import approval
+    from hermes_agent.tools import approval
 
     manager = PluginManager()
     seen = []
@@ -293,8 +293,8 @@ def test_cli_selected_transport_replaces_builtin_prompt(monkeypatch):
 
 
 def test_gateway_selected_transport_does_not_require_gateway_notifier(monkeypatch):
-    from tools import approval
-    import tools.approval_context as tools_approval_context
+    from hermes_agent.tools import approval
+    import hermes_agent.tools.approval_context as tools_approval_context
 
     manager = PluginManager()
     seen = []
@@ -315,8 +315,8 @@ def test_gateway_selected_transport_does_not_require_gateway_notifier(monkeypatc
 
 
 def test_execute_code_gateway_uses_selected_transport(monkeypatch):
-    from tools import approval
-    import tools.approval_context as tools_approval_context
+    from hermes_agent.tools import approval
+    import hermes_agent.tools.approval_context as tools_approval_context
 
     manager = PluginManager()
     seen = []
@@ -350,7 +350,7 @@ def test_execute_code_gateway_uses_selected_transport(monkeypatch):
 
 
 def test_transport_failure_denies_without_builtin_fallback(monkeypatch):
-    from tools import approval
+    from hermes_agent.tools import approval
 
     manager = PluginManager()
     _context(manager).register_approval_transport("phone", lambda request: {"choice": "once"})
@@ -369,7 +369,7 @@ def test_transport_failure_denies_without_builtin_fallback(monkeypatch):
 
 
 def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, caplog):
-    from tools import approval
+    from hermes_agent.tools import approval
 
     monkeypatch.setattr(
         approval_context, "_get_approval_transport_config", lambda: ("phone", None)
@@ -398,7 +398,7 @@ def test_transport_resolution_error_does_not_log_plugin_exception(monkeypatch, c
 
 def test_redaction_failure_denies_before_transport_callback(monkeypatch):
     import agent.redact
-    from tools import approval
+    from hermes_agent.tools import approval
 
     manager = PluginManager()
     calls = []
@@ -423,7 +423,7 @@ def test_redaction_failure_denies_before_transport_callback(monkeypatch):
 
 
 def test_explicit_builtin_fallback_uses_existing_surface(monkeypatch):
-    from tools import approval
+    from hermes_agent.tools import approval
 
     manager = PluginManager()
     _context(manager).register_approval_transport("phone", lambda request: {"choice": "once"})
@@ -445,7 +445,7 @@ def test_live_temp_home_fixture_plugin_routes_and_hardline_stays_core_owned(
 ):
     """Real discovery + config + guard path under an isolated HERMES_HOME."""
     import hermes_cli.plugins as plugins_module
-    from tools import approval
+    from hermes_agent.tools import approval
 
     home = tmp_path / "hermes-home"
     plugin_dir = home / "plugins" / "fixture-approval"
@@ -544,8 +544,8 @@ def register(ctx):
 
 
 def test_hardline_blocks_before_selected_transport(monkeypatch):
-    from tools import approval
-    from tools import approval_detection
+    from hermes_agent.tools import approval
+    from hermes_agent.tools import approval_detection
 
     manager = PluginManager()
     calls = []

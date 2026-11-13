@@ -47,7 +47,7 @@ def client(monkeypatch, isolated_profiles):
 
 @pytest.fixture(autouse=True)
 def _clean_leases():
-    from tools import tts_tool_lifecycle, tts_tool_local
+    from hermes_agent.tools import tts_tool_lifecycle, tts_tool_local
 
     tts_tool_lifecycle._reset_tts_leases_for_tests()
     for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
@@ -59,7 +59,7 @@ def _clean_leases():
 
 
 def test_active_acquires_and_warms(client, monkeypatch):
-    from tools import tts_tool_lifecycle
+    from hermes_agent.tools import tts_tool_lifecycle
 
     warmed = []
     monkeypatch.setattr(
@@ -87,7 +87,7 @@ def _write_tts_config(home, tts):
 
 
 def test_inactive_releases_and_unloads_when_last(client, monkeypatch, isolated_profiles):
-    from tools import tts_tool_lifecycle, tts_tool_local
+    from hermes_agent.tools import tts_tool_lifecycle, tts_tool_local
 
     _write_tts_config(isolated_profiles["default"], {"keep_warm_seconds": 0})
     monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "piper"})
@@ -108,7 +108,7 @@ def test_inactive_releases_and_unloads_when_last(client, monkeypatch, isolated_p
 
 def test_last_release_keeps_model_warm_by_default(client, monkeypatch):
     """#118037: with the shipped config the last release parks the unload instead of evicting now."""
-    from tools import tts_tool_lifecycle, tts_tool_local
+    from hermes_agent.tools import tts_tool_lifecycle, tts_tool_local
 
     monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "loaded", "warmed": True, "provider": "piper"})
     client.post("/api/audio/tts-lease", json={"lease": "desktop:conversation:abc", "active": True})
@@ -121,7 +121,7 @@ def test_last_release_keeps_model_warm_by_default(client, monkeypatch):
 
 
 def test_release_reads_keep_warm_from_the_requesting_profile(client, monkeypatch, isolated_profiles):
-    from tools import tts_tool_lifecycle, tts_tool_local
+    from hermes_agent.tools import tts_tool_lifecycle, tts_tool_local
 
     _write_tts_config(isolated_profiles["worker_beta"], {"keep_warm_seconds": 0})
     monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "loaded", "warmed": True, "provider": "piper"})
@@ -136,7 +136,7 @@ def test_release_reads_keep_warm_from_the_requesting_profile(client, monkeypatch
 
 
 def test_release_for_a_deleted_profile_still_drops_the_lease(client, monkeypatch):
-    from tools import tts_tool_lifecycle
+    from hermes_agent.tools import tts_tool_lifecycle
 
     monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "piper"})
     client.post("/api/audio/tts-lease", json={"lease": "desktop:read-aloud", "active": True})
@@ -149,7 +149,7 @@ def test_release_for_a_deleted_profile_still_drops_the_lease(client, monkeypatch
 
 def test_keep_warm_window_from_config_unloads_after_it_elapses(client, monkeypatch, isolated_profiles):
     import time
-    from tools import tts_tool_lifecycle, tts_tool_local
+    from hermes_agent.tools import tts_tool_lifecycle, tts_tool_local
 
     _write_tts_config(isolated_profiles["default"], {"keep_warm_seconds": 0.1})
     monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "loaded", "warmed": True, "provider": "piper"})
@@ -164,7 +164,7 @@ def test_keep_warm_window_from_config_unloads_after_it_elapses(client, monkeypat
 
 
 def test_warm_failure_is_reported_not_an_http_error(client, monkeypatch):
-    from tools import tts_tool_lifecycle
+    from hermes_agent.tools import tts_tool_lifecycle
 
     def _boom(cfg=None, provider=None):
         raise RuntimeError("engine exploded")
@@ -184,7 +184,7 @@ def test_blank_lease_rejected(client):
 
 
 def test_active_default_true(client, monkeypatch):
-    from tools import tts_tool_lifecycle
+    from hermes_agent.tools import tts_tool_lifecycle
 
     monkeypatch.setattr(tts_tool_lifecycle, "warm_tts_provider", lambda cfg=None, provider=None: {"action": "noop", "warmed": False, "provider": "x"})
     resp = client.post("/api/audio/tts-lease", json={"lease": "tui:x"})
@@ -195,7 +195,7 @@ def test_active_default_true(client, monkeypatch):
 def test_acquire_resolves_provider_inside_target_profile(client, isolated_profiles, monkeypatch):
     """Warm-up must read the REQUESTING profile's tts config, like /api/audio/speak."""
     import hermes_yaml as yaml
-    from tools import tts_tool, tts_tool_lifecycle
+    from hermes_agent.tools import tts_tool, tts_tool_lifecycle
 
     (isolated_profiles["worker_beta"] / "config.yaml").write_text(
         yaml.safe_dump({"tts": {"provider": "kittentts"}}), encoding="utf-8"

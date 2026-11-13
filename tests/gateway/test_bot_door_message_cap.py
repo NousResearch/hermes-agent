@@ -18,7 +18,7 @@ KEY = 'e' * 32
 async def test_long_cron_report_is_admitted_and_relayed_dm_stays_capped(bot):
     from hermes_agent.cron.scheduler_delivery import bot_chat_message
     from hermes_agent.gateway.session_bot import deliver
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     report = '\n'.join(f'- item {i}: status ok, details recorded' for i in range(480))
     message = bot_chat_message({'id': 'daily', 'name': 'Daily report'}, report)
     assert len(message) > 16200

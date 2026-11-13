@@ -257,7 +257,7 @@ def test_feishu_media_download_failure_log_carries_no_proxy_secret(monkeypatch, 
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HTTPS_PROXY", "http://bob:qzxqzxqzx#x@127.0.0.1:1")
     monkeypatch.setenv("HTTP_PROXY", "http://bob:qzxqzxqzx#x@127.0.0.1:1")
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda url: True)
     adapter = fs.FeishuAdapter(PlatformConfig(enabled=True, extra={"app_id": "cli_x", "app_secret": "s"}))
 
     async def _send(**_kwargs):

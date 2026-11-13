@@ -115,7 +115,7 @@ async def test_subscription_state_changes_do_not_strand_an_admitted_run(home):
     # The durable admission pins a digest of the route config, and the reply leg refuses a route
     # that changed since. The cursor and the grant change all the time, so they must live outside it.
     from hermes_agent.gateway.platforms.webhook_delivery import retained_destination
-    from tools import mcp_tool_events as events
+    from hermes_agent.tools import mcp_tool_events as events
     routes = _routes(home)
     routes[ROUTE].update(deliver="telegram", deliver_extra={"chat_id": "42"})
     (home / "webhook_subscriptions.json").write_text(json.dumps(routes))
@@ -150,7 +150,7 @@ async def test_an_unknown_control_envelope_is_acknowledged_without_a_run(home):
 
 @pytest.mark.asyncio
 async def test_the_event_payload_reaches_the_prompt_whole(home):
-    from tools.mcp_tool_events import _event_prompt
+    from hermes_agent.tools.mcp_tool_events import _event_prompt
     routes = _routes(home)
     routes[ROUTE]["prompt"] = _event_prompt("ambush", "feed.emission.created", "Explain it.")
     (home / "webhook_subscriptions.json").write_text(json.dumps(routes))

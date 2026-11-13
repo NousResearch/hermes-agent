@@ -52,7 +52,7 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
     runner._has_setup_skill = lambda: False
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={
             "success": True,
             "transcript": "hello from a captionless voice note",
@@ -82,7 +82,7 @@ async def test_enrich_message_with_transcription_guards_empty_transcript():
     runner._has_setup_skill = lambda: False
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={"success": True, "transcript": "   \n\t", "provider": "local_command"},
     ):
         result, transcripts = await runner._enrich_message_with_transcription(
@@ -112,7 +112,7 @@ async def test_successful_transcription_keeps_the_audio_path():
     runner._has_setup_skill = lambda: False
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={
             "success": True,
             "transcript": "two cartons please",
@@ -149,7 +149,7 @@ async def test_successful_transcription_uses_the_media_placeholder_grammar():
     runner._has_setup_skill = lambda: False
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={"success": True, "transcript": "hello", "provider": "local"},
     ):
         result, _ = await runner._enrich_message_with_transcription(
@@ -177,7 +177,7 @@ async def test_transcript_precedes_the_media_marker():
     runner._has_setup_skill = lambda: False
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={"success": True, "transcript": "send fifty", "provider": "local"},
     ):
         result, _ = await runner._enrich_message_with_transcription(
@@ -203,7 +203,7 @@ async def test_empty_transcript_still_emits_no_media_marker():
     runner._has_setup_skill = lambda: False
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={"success": True, "transcript": "   ", "provider": "local"},
     ):
         result, transcripts = await runner._enrich_message_with_transcription(
@@ -241,7 +241,7 @@ async def test_each_clip_in_a_batch_keeps_its_own_path():
             "provider": "local",
         }
 
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
         result, transcripts = await runner._enrich_message_with_transcription(
             "",
             list(transcripts_by_path),

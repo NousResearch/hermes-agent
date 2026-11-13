@@ -49,7 +49,7 @@ class TestDisplayHermesHomePosix(unittest.TestCase):
     def test_no_serving_schema_carries_tilde_backslash_chimera(self):
         """Fleet guard: no served tool schema string may combine '~/' with
         a backslash — the class of bug, not the one site."""
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
 
         offenders = []
 

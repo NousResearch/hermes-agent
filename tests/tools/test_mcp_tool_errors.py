@@ -1,4 +1,4 @@
-"""Invariants for ``tools/mcp_tool_errors._format_connect_error`` on malformed exception chains.
+"""Invariants for ``hermes_agent/tools/mcp_tool_errors._format_connect_error`` on malformed exception chains.
 
 ``__cause__``/``__context__`` can form a cycle (the same OAuth error re-raised on the SSE fallback,
 a raised-and-caught pair) and stdio failures can nest deeper than the recursion limit; either used
@@ -6,7 +6,7 @@ to turn ``hermes mcp test`` into a RecursionError that hid the real connect erro
 """
 import sys
 
-from tools.mcp_tool_errors import _format_connect_error
+from hermes_agent.tools.mcp_tool_errors import _format_connect_error
 
 
 def test_format_connect_error_reports_real_messages_on_cyclic_chain():

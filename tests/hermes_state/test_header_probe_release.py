@@ -172,7 +172,7 @@ def test_spillover_reader_starting_after_the_final_scan_waits_for_the_probe_clos
     """Session auto-prune's spillover reader can start between the final scan and the close.
     Closing the probe under an open reader would drop the reader's SQLite lock mid-query, so the
     reader must not open SQLite until the probe is closed."""
-    from tools.tool_result_storage import referenced_spillover_names
+    from hermes_agent.tools.tool_result_storage import referenced_spillover_names
 
     home, db_path = _home(tmp_path, "pruning")
     _probe(db_path)

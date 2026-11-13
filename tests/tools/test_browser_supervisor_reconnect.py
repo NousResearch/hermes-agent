@@ -8,7 +8,7 @@ import asyncio
 import pytest
 import websockets
 
-from tools import browser_supervisor as bs
+from hermes_agent.tools import browser_supervisor as bs
 
 
 class _ClosingWebSocket:
@@ -55,7 +55,7 @@ def test_post_attach_reconnects_stop_at_budget_and_unregister(monkeypatch, unreg
     monkeypatch.setattr(supervisor, "_read_loop", _noop)
     monkeypatch.setattr(bs.asyncio, "sleep", fast_sleep)
 
-    with caplog.at_level("WARNING", logger="tools.browser_supervisor"):
+    with caplog.at_level("WARNING", logger="hermes_agent.tools.browser_supervisor"):
         asyncio.run(asyncio.wait_for(supervisor._run(), timeout=2.0))
 
     assert dials == budget + 1  # attach + budgeted reconnects

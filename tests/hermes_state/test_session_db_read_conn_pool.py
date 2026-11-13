@@ -471,7 +471,7 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
 # And Hermes's SQLite descriptors are only ever a share of the fd table: the
 # #98573 report is a process where ~20 state.db handles were the share that
 # pushed httpx sockets and terminal subprocess pipes past 256, and the EMFILE
-# surfaced in tools/terminal_tool.py, not here.
+# surfaced in hermes_agent/tools/terminal_tool.py, not here.
 
 
 @pytest.mark.requires_wal

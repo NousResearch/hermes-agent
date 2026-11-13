@@ -119,7 +119,7 @@ _ENV_DETECT_CACHE: dict[str, bool] = {}
 
 
 def _detect_kanban() -> bool:
-    # Mirror tools/kanban_tools.py: a dispatcher-spawned worker (env vars, but
+    # Mirror hermes_agent/tools/kanban_tools.py: a dispatcher-spawned worker (env vars, but
     # only when this execution OWNS the task — delegate children / in-process
     # cron see the worker's vars) or a profile opted into the kanban toolset.
     if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
@@ -131,7 +131,7 @@ def _detect_kanban() -> bool:
         if owned:
             return True
     try:
-        from tools.kanban_tools import _profile_has_kanban_toolset
+        from hermes_agent.tools.kanban_tools import _profile_has_kanban_toolset
         return bool(_profile_has_kanban_toolset())
     except Exception:
         return False
@@ -644,7 +644,7 @@ def is_quarantined_project_skill(skill_md) -> bool:
     if key in _PROJECT_QUARANTINE_CACHE:
         return _PROJECT_QUARANTINE_CACHE[key]
     try:
-        from tools.skills_guard import scan_skill_cached
+        from hermes_agent.tools.skills_guard import scan_skill_cached
         from hermes_constants import get_hermes_home
         cache_dir = get_hermes_home() / "cache" / "project_skill_scans"
         result, _prov = scan_skill_cached(skill_dir, source=_PROJECT_SCAN_SOURCE, cache_dir=cache_dir)
@@ -674,13 +674,13 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     identifier_path = Path(raw_identifier).expanduser()
     if not identifier_path.is_absolute():
         return raw_identifier.lstrip("/")
-    # Resolve the primary root via tools.skills_tool at CALL time: tests patch
-    # ``tools.skills_tool.SKILLS_DIR`` and skill_view() enforces ``_skills_dir()``
+    # Resolve the primary root via hermes_agent.tools.skills_tool at CALL time: tests patch
+    # ``hermes_agent.tools.skills_tool.SKILLS_DIR`` and skill_view() enforces ``_skills_dir()``
     # (which follows the live profile-scoped HERMES_HOME), so normalization
     # must agree with that exact root. Import deferred (cycle).
     try:
         # See #67277.
-        from tools import skills_tool as _skills_tool
+        from hermes_agent.tools import skills_tool as _skills_tool
         primary_root = _skills_tool._skills_dir()
     except Exception:
         primary_root = get_skills_dir()

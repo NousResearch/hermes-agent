@@ -9,10 +9,10 @@ profile has no such provider) and keeps billing until the provider's own timeout
 import pytest
 
 from hermes_constants import get_hermes_home
-from tools import browser_launcher as launcher
-from tools import browser_session as bs
-from tools import browser_session_cloud
-from tools import browser_session_lifecycle as lifecycle
+from hermes_agent.tools import browser_launcher as launcher
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_cloud
+from hermes_agent.tools import browser_session_lifecycle as lifecycle
 
 
 @pytest.fixture

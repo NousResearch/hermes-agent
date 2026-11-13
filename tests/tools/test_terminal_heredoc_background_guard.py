@@ -14,7 +14,7 @@ triggers:
 - ``osascript <<'EOF' ... set x to "a" & b ... EOF``  (AppleScript concat)
 - ``python3 <<'EOF' ... z = a & b ... EOF``            (Python bitwise-and)
 
-The fix masks heredoc bodies via ``tools.shell_heredoc`` — conservatively.
+The fix masks heredoc bodies via ``hermes_agent.tools.shell_heredoc`` — conservatively.
 The guard may ignore ampersands only in quoted heredoc bodies sent to known
 non-shell interpreters. Unknown, expandable (unquoted delimiter), nested,
 backgrounded, or shell-consumed bodies stay visible so process-management
@@ -24,8 +24,8 @@ hiding a real background operator is not.
 
 import pytest
 
-from tools.shell_heredoc import strip_inert_heredoc_bodies
-from tools.terminal_tool import (
+from hermes_agent.tools.shell_heredoc import strip_inert_heredoc_bodies
+from hermes_agent.tools.terminal_tool import (
     _foreground_background_guidance as guidance,
 )
 

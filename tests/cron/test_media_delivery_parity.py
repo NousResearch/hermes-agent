@@ -69,7 +69,7 @@ def _install_fake_slack_sender(monkeypatch, result_factory):
 
     entry = reg_mod.platform_registry.get("slack")
     if entry is None:
-        # Populate the registry the same way tools/send_message_tool does.
+        # Populate the registry the same way hermes_agent/tools/send_message_tool does.
         import hermes_cli.plugins as hp_boot
 
         hp_boot.discover_plugins()

@@ -20,7 +20,7 @@ class TestGetToolEmoji:
             import sys
             mock_module = MagicMock()
             mock_module.registry = mock_reg
-            with mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
+            with mock_patch.dict(sys.modules, {"hermes_agent.tools.registry": mock_module}):
                 result = get_tool_emoji("x", default="⚙️")
                 assert result == "⚙️"
 
@@ -34,7 +34,7 @@ class TestGetToolEmoji:
         mock_module = MagicMock()
         mock_module.registry = mock_reg
         with mock_patch("agent.display._get_skin", return_value=skin), \
-             mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
+             mock_patch.dict(sys.modules, {"hermes_agent.tools.registry": mock_module}):
             assert get_tool_emoji("terminal") == "⚔"  # skin override
             assert get_tool_emoji("web_search") == "🔍"  # registry fallback
 

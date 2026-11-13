@@ -242,7 +242,7 @@ def test_in_process_turn_keeps_the_user_stop_when_shutdown_interrupts_it_again(u
     from hermes_agent.gateway.session_settlement_recovery import owner_stop_notice
     from run_agent import AIAgent
     from tests.gateway.restart_test_helpers import make_restart_runner
-    from tools.interrupt import set_interrupt
+    from hermes_agent.tools.interrupt import set_interrupt
 
     agent = AIAgent.__new__(AIAgent)
     agent._interrupt_requested = False
@@ -293,7 +293,7 @@ def test_restart_after_a_pending_redirect_still_gets_the_restart_notice():
     """A mid-request correction is not a Stop: the restart drops it and is the turn's cause."""
     from hermes_agent.gateway.session_settlement_recovery import owner_stop_notice
     from tests.gateway.restart_test_helpers import make_restart_runner
-    from tools.interrupt import set_interrupt
+    from hermes_agent.tools.interrupt import set_interrupt
     agent = _redirect_agent()
     runner, _ = make_restart_runner()
     runner._restart_requested = True

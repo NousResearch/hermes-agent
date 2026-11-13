@@ -73,7 +73,7 @@ class TestPerCapabilityBackendSelection:
     """_get_search_backend and _get_extract_backend read per-capability config."""
 
     def test_search_backend_overrides_generic(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
             "backend": "firecrawl",
@@ -84,7 +84,7 @@ class TestPerCapabilityBackendSelection:
 
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
             "backend": "keenable",
@@ -111,7 +111,7 @@ class TestWebSearchUsesSearchBackend:
     """web_search_tool dispatches through _get_search_backend not _get_backend."""
 
     def test_search_tool_calls_search_backend(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         called_with = []
         original_get_search = web_tools._get_search_backend
@@ -178,7 +178,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         on, a zero-credential install routes to the keyless tier instead of
         erroring (covered in test_web_keyless_fallback.py).
         """
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         from agent import web_search_registry
 
         self._clear_web_creds(monkeypatch)
@@ -201,7 +201,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         keyless cloud client (PR #50659 salvage) — a keyless ring peer must not
         silently take over, and the request must hit api.firecrawl.dev.
         """
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         from plugins.web.firecrawl import provider as fc
 
         self._clear_web_creds(monkeypatch)
@@ -259,7 +259,7 @@ class TestDispatchersTriggerPluginDiscovery:
     even when the user has both the config key set AND the API key
     exported.
 
-    Mirrors :func:`tools.browser_session_cloud._ensure_browser_plugins_loaded` —
+    Mirrors :func:`hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded` —
     every other plugin-backed dispatcher (image_gen, video_gen, browser,
     skills) already does this.
     """
@@ -297,7 +297,7 @@ class TestDispatchersTriggerPluginDiscovery:
         from unittest.mock import MagicMock
         from agent.web_search_provider import WebSearchProvider
         from agent import web_search_registry
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         restore = self._clear_registry()
         try:
@@ -335,7 +335,7 @@ class TestDispatchersTriggerPluginDiscovery:
                     web_search_registry.register_provider(FakeFirecrawl())
 
             mock_hook = MagicMock(wraps=_register_fake)
-            # Patch the helper on ``tools.web_tools`` directly rather than the
+            # Patch the helper on ``hermes_agent.tools.web_tools`` directly rather than the
             # underlying ``hermes_cli.plugins._ensure_plugins_discovered`` so
             # the test stays valid even if the import inside the helper is
             # later moved to module scope or renamed.
@@ -381,7 +381,7 @@ class TestDispatchersTriggerPluginDiscovery:
         from unittest.mock import MagicMock
         from agent.web_search_provider import WebSearchProvider
         from agent import web_search_registry
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         restore = self._clear_registry()
         try:
@@ -484,7 +484,7 @@ class TestDisabledPluginDiagnostic:
 
 
     def test_search_tool_reports_disabled_plugin(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         restore = self._clear_registry()
         try:

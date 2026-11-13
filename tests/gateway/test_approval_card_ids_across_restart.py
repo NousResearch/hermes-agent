@@ -49,7 +49,7 @@ async def test_old_card_tapped_after_restart_does_not_resolve_the_new_card():
 
     resolve = MagicMock(return_value=1)
     with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False), \
-            patch("tools.approval.resolve_gateway_approval_card", resolve):
+            patch("hermes_agent.tools.approval.resolve_gateway_approval_card", resolve):
         await after._handle_callback_query(_tap(old_card), MagicMock())
         resolve.assert_not_called()
         await after._handle_callback_query(_tap(new_card), MagicMock())  # control: the new card answers

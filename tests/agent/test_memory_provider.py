@@ -219,7 +219,7 @@ class TestMemoryManager:
         """Provider-ranked recall stays intact unless both spill switches permit it (#130974)."""
         from agent.turn_context import _collect_pre_llm_call_context
         from hermes_cli.config import atomic_config_write
-        from tools.hook_output_spill import DEFAULT_MAX_CHARS
+        from hermes_agent.tools.hook_output_spill import DEFAULT_MAX_CHARS
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         atomic_config_write(tmp_path / "config.yaml", {
@@ -906,7 +906,7 @@ class TestEntryPointMemoryProviderDiscovery:
         assert provider.is_available()
 
     def test_active_entry_point_provider_registers_skill(self, tmp_path, monkeypatch):
-        from tools.skills_tool import skill_view
+        from hermes_agent.tools.skills_tool import skill_view
         import plugins.memory as memory_plugins
 
         module_name, exposure = self._make_entrypoint_module(
@@ -971,7 +971,7 @@ class TestEntryPointMemoryProviderDiscovery:
         self, tmp_path, monkeypatch
     ):
         from hermes_cli.plugins import get_plugin_manager
-        from tools.skills_tool import skill_view
+        from hermes_agent.tools.skills_tool import skill_view
         import plugins.memory as memory_plugins
 
         module_name, exposure = self._make_entrypoint_module(

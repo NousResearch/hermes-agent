@@ -165,7 +165,7 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     if override:
         return override
     try:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         return registry.get_emoji(tool_name, default="") or default
     except Exception:
         return default
@@ -554,7 +554,7 @@ def bridge_generating_phrase(tool_name: str) -> str | None:
 
 def tool_labels_for_call(tool_name: str, args: dict | None) -> list:
     try:
-        from tools.tool_labels import labels_for_call
+        from hermes_agent.tools.tool_labels import labels_for_call
         labels = labels_for_call(tool_name, args or {})
     except Exception as exc:
         logger.debug("bridge labels failed for %s: %s", tool_name, exc)
@@ -654,7 +654,7 @@ def _resolve_skill_manage_paths(args: dict) -> list[Path]:
     name = args.get("name")
     if not action or not name:
         return []
-    from tools.skill_manager_tool import _find_skill, _resolve_skill_dir
+    from hermes_agent.tools.skill_manager_tool import _find_skill, _resolve_skill_dir
 
     if action == "create":
         return [_resolve_skill_dir(name, args.get("category")) / "SKILL.md"]
@@ -678,7 +678,7 @@ def _resolve_local_edit_paths(tool_name: str, function_args: dict | None, task_i
         return _resolve_skill_manage_paths(function_args)
     path = function_args.get("path") if tool_name in {"write_file", "patch"} else None
     if path and task_id is not None:
-        from tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
+        from hermes_agent.tools.file_tools_paths import _resolve_path_for_task, _terminal_env_type_for_task
 
         # A remote target may happen to exist on this host too. Never persist a
         # preview of that unrelated file; patch can still supply its own diff.
@@ -1011,7 +1011,7 @@ def _degraded_suffix(data: dict) -> str:
 # agent. Renderers show these rows neutrally; the failure still reaches the model and the loop
 # guardrail unchanged (display-only).
 NEUTRAL_FAILURE_TOOLS = frozenset({"skill_manage"})
-# Except a batch whose rollback failed (tools/skill_manager_batch.py::_rollback): partial changes
+# Except a batch whose rollback failed (hermes_agent/tools/skill_manager_batch.py::_rollback): partial changes
 # are left on disk, which the user does have to see.
 _UNSAFE_FAILURE_MARKER = "ROLLBACK FAILED"
 

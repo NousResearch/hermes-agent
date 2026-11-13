@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db_dispatch
-from tools.terminal_scope import get_terminal_scope
+from hermes_agent.tools.terminal_scope import get_terminal_scope
 
 
 class _StopSpawn(Exception):
@@ -48,7 +48,7 @@ def test_worker_profile_scope_installs_the_assigned_profiles_terminal_policy(pro
 def _spawn_env_for_profile_b(monkeypatch, tmp_path):
     """Run ``_default_spawn`` far enough to capture the worker env, never spawning anything."""
     from hermes_cli.kanban_db import Task
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     captured: list[dict] = []
 
@@ -87,7 +87,7 @@ def test_launch_profiles_own_worker_keeps_its_credentials(tmp_path, monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "dispatcher-launch-key")
 
     from hermes_cli.kanban_db import Task
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     captured: list[dict] = []
 
@@ -153,7 +153,7 @@ def test_served_child_env_for_another_profile_drops_the_launch_home_mode(profile
     """A child acting for B (``hermes -p b`` workers, ``key_cmd`` helpers, browser drivers) must not
     inherit the LAUNCH profile's bridged ``TERMINAL_HOME_MODE``: B's child bridges its own
     ``terminal.home_mode``, and an inherited one wins wherever B's config leaves it unset (#146103)."""
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
 
     monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")  # what the dispatcher's bridge exported
     env = served_profile_child_env(target_home=str(profile_b))

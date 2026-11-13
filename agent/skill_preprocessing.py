@@ -50,7 +50,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     of raising, so one bad snippet can't wreck the whole skill message."""
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     from agent.delegation_context import delegated_child_subprocess_env
-    from tools.hosted_tool_policy import host_feature_refusal
+    from hermes_agent.tools.hosted_tool_policy import host_feature_refusal
     if refusal := host_feature_refusal("skill_inline_shell", "Inline skill shell"):
         return f"[inline-shell refused: {refusal}]"
     try:
@@ -58,7 +58,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
         if IS_WINDOWS:
             # CreateProcess searches System32 before PATH and may pick WSL's
             # launcher. Reuse the terminal's native Git Bash resolution.
-            from tools.environments.local import _find_bash
+            from hermes_agent.tools.environments.local import _find_bash
             bash = _find_bash()
         completed = subprocess.run(
             [bash, "-c", command],
@@ -115,8 +115,8 @@ def _is_community_hub_skill(skill_dir: Path | None) -> bool:
     if skill_dir is None:
         return False
     try:
-        from tools.skills_hub import HubLockFile
-        from tools.skills_tool import _skills_dir
+        from hermes_agent.tools.skills_hub import HubLockFile
+        from hermes_agent.tools.skills_tool import _skills_dir
 
         target = skill_dir.resolve()
         locks = {HubLockFile().path.resolve(): _skills_dir().resolve()}

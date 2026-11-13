@@ -29,7 +29,7 @@ def _assert_hermes_identity_headers(headers):
 
 def test_search_dispatch_maps_search_api_shape():
     """web_search on backend=perplexity hits /search with Bearer auth and maps snippet→description."""
-    import tools.web_tools as wt
+    import hermes_agent.tools.web_tools as wt
 
     register_all_web_providers()
     payload = {
@@ -64,7 +64,7 @@ def test_extract_dispatch_snippets_per_url_and_missing_key(public_dns):
     """web_extract on backend=perplexity posts every URL to /sdk/content/snippets;
     a URL the backend failed carries ``error`` instead of content; no key → error, no HTTP.
     ``public_dns`` serves the SSRF guard's lookups of tokio.rs / docs.rs."""
-    import tools.web_tools as wt
+    import hermes_agent.tools.web_tools as wt
 
     register_all_web_providers()
     urls = ["https://tokio.rs/tokio/tutorial", "https://docs.rs/smol"]

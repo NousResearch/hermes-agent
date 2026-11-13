@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from tools.terminal_tool import terminal_tool
+from hermes_agent.tools.terminal_tool import terminal_tool
 
 
 @pytest.fixture
 def small_cap(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_constants import hermes_home_key
-    import tools.tool_output_limits as lim
+    import hermes_agent.tools.tool_output_limits as lim
     monkeypatch.setattr(lim, "_cached_limits", {hermes_home_key(): {
         "max_bytes": 2000, "max_lines": 2000, "max_line_length": 2000,
     }})

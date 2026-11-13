@@ -1,4 +1,4 @@
-"""Tests for tools.tool_output_limits.
+"""Tests for hermes_agent.tools.tool_output_limits.
 
 Covers:
 1. Default values when no config is provided.
@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import tool_output_limits as tol
+from hermes_agent.tools import tool_output_limits as tol
 
 
 @pytest.fixture(autouse=True)
@@ -120,7 +120,7 @@ class TestIntegrationReadPagination:
     """normalize_read_pagination uses get_max_lines() — verify the plumbing."""
 
     def test_pagination_limit_clamped_by_config_value(self):
-        from tools.file_operations import normalize_read_pagination
+        from hermes_agent.tools.file_operations import normalize_read_pagination
         cfg = {"tool_output": {"max_lines": 50}}
         with patch("hermes_cli.config.load_config", return_value=cfg):
             offset, limit = normalize_read_pagination(offset=1, limit=1000)
@@ -129,7 +129,7 @@ class TestIntegrationReadPagination:
         assert offset == 1
 
     def test_pagination_default_when_config_missing(self):
-        from tools.file_operations import normalize_read_pagination
+        from hermes_agent.tools.file_operations import normalize_read_pagination
         with patch("hermes_cli.config.load_config", return_value={}):
             offset, limit = normalize_read_pagination(offset=10, limit=100000)
         # Clamped to default MAX_LINES (2000).

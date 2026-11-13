@@ -1,7 +1,7 @@
 """``hermes approvals test`` — dry-run approval verdict for a command.
 
 Answers "what would the approval system do with this command?" WITHOUT running it, prompting anyone,
-or persisting anything. It composes the REAL runtime evaluators from ``tools.approval`` in the same
+or persisting anything. It composes the REAL runtime evaluators from ``hermes_agent.tools.approval`` in the same
 order the runtime guard (``check_all_command_guards``) applies them:
 
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
@@ -32,8 +32,8 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     carries ``verdict``, ``exit_code``, ``rule``, ``detail`` and ``normalized_variants`` (the
     de-obfuscated forms the detectors actually evaluated).
     """
-    from tools import approval
-    from tools import approval_context, approval_detection, approval_floors
+    from hermes_agent.tools import approval
+    from hermes_agent.tools import approval_context, approval_detection, approval_floors
     # Sync config-persisted "always" patterns so the allowlist check below sees what the runtime
     # would see (load is read-only).
     try:

@@ -7,7 +7,7 @@ import os
 from collections import Counter
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from tools.ansi_strip import sanitize_display_text
+from hermes_agent.tools.ansi_strip import sanitize_display_text
 
 _RECENT_TURN_WINDOW = 20  # user/assistant turns considered "recent activity"
 _PROMPT_PREVIEW_CHARS = 140

@@ -12,7 +12,7 @@ def _td(name: str, description: str) -> dict[str, Any]:
 
 
 def _register(toolset: str, names_and_descs: list[tuple[str, str]]) -> list[dict[str, Any]]:
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     defs = []
     for name, desc in names_and_descs:
@@ -25,7 +25,7 @@ def _register(toolset: str, names_and_descs: list[tuple[str, str]]) -> list[dict
 def test_collapsing_one_huge_server_leaves_the_others_their_descriptions():
     """An 800-tool server collapses to one summary line; a small server that fits in full
     keeps its one-line descriptions instead of dropping to bare names."""
-    from tools.tool_search_catalog import build_catalog_listing_with_form
+    from hermes_agent.tools.tool_search_catalog import build_catalog_listing_with_form
 
     defs = _register("mcp-layouthuge", [(f"layouthuge_op_{i:04d}", "Do a huge-server thing.")
                                         for i in range(800)])
@@ -43,7 +43,7 @@ def test_collapsing_one_huge_server_leaves_the_others_their_descriptions():
 def test_single_tool_groups_render_without_a_count_heading():
     """A one-tool group is its tool line alone, placed before the multi-tool groups so it cannot
     read as a member of the group above it."""
-    from tools.tool_search_catalog import build_catalog_listing_with_form
+    from hermes_agent.tools.tool_search_catalog import build_catalog_listing_with_form
 
     defs = _register("mcp-layoutpair", [("layoutpair_b", "Second paired tool."),
                                         ("layoutpair_a", "First paired tool.")])

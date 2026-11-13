@@ -17,7 +17,7 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from tools.code_execution_env import is_secret_env_name
+from hermes_agent.tools.code_execution_env import is_secret_env_name
 
 # What main's CLI read per process and the gateway otherwise reads daemon-wide.
 BEHAVIOUR_ENV = ('HERMES_EPHEMERAL_SYSTEM_PROMPT', 'HERMES_PREFILL_MESSAGES_FILE', 'HERMES_INFERENCE_PROVIDER',
@@ -58,7 +58,7 @@ def client_env_rules(config, *, local=True) -> dict:
     """The normalisation rules (plain data) a session's map is filtered by, frozen with it: an exact retry
     is judged by these, never by the profile's allowlist or the secret policy as they are later. A client
     not proven ``local`` keeps only the values that name nothing on this host (prompt, provider request)."""
-    from tools.code_execution_env import _SECRET_SUBSTRINGS
+    from hermes_agent.tools.code_execution_env import _SECRET_SUBSTRINGS
     return {'behaviour': [n for n in BEHAVIOUR_ENV if local or n not in HOST_BEHAVIOUR],
             'names': sorted(set(TOOL_ENV) | configured_names(config)) if local else [],
             'prefixes': list(TOOL_ENV_PREFIXES) if local else [], 'secret': list(_SECRET_SUBSTRINGS)}

@@ -12,7 +12,7 @@ import pytest
 
 from hermes_agent.cron.scheduler import _deliver_result
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from tools.cronjob_tools import _manual_run_completion
+from hermes_agent.tools.cronjob_tools import _manual_run_completion
 
 GOOD, BAD = "-100111", "-100222"
 
@@ -30,12 +30,12 @@ def _run_and_complete(deliver):
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("tools.send_message_tool._send_to_platform", _send), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", _send), \
          patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "THE REPORT")
     refreshed = {**stored, "last_delivery_error": error}
-    with patch("tools.cronjob_tools.get_job", return_value=refreshed), \
-         patch("tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
+    with patch("hermes_agent.tools.cronjob_tools.get_job", return_value=refreshed), \
+         patch("hermes_agent.tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
         return error, _manual_run_completion({"success": True}, "j1", "nightly", deliver, 0.0)["summary"]
 
 
@@ -77,12 +77,12 @@ def test_a_partial_standalone_split_send_counts_as_reached(monkeypatch):
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("tools.send_message_tool._send_to_platform", _send), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", _send), \
          patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "status line ok\n" * 700)
     assert error and bot.send_message.await_count == 3
-    with patch("tools.cronjob_tools.get_job", return_value={**stored, "last_delivery_error": error}), \
-         patch("tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
+    with patch("hermes_agent.tools.cronjob_tools.get_job", return_value={**stored, "last_delivery_error": error}), \
+         patch("hermes_agent.tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
         summary = _manual_run_completion({"success": True}, "j1", "nightly", deliver, 0.0)["summary"]
     assert "THE REPORT" not in summary
 
@@ -118,13 +118,13 @@ def test_a_report_whose_delivery_answer_was_lost_is_not_echoed(monkeypatch, lost
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("tools.send_message_tool._send_to_platform", _send), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", _send), \
          patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "THE REPORT")
     assert error
     if lost == "ack":
         assert results[0].get("delivery") == "uncertain"
-    with patch("tools.cronjob_tools.get_job", return_value={**stored, "last_delivery_error": error}), \
-         patch("tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
+    with patch("hermes_agent.tools.cronjob_tools.get_job", return_value={**stored, "last_delivery_error": error}), \
+         patch("hermes_agent.tools.cronjob_tools._latest_job_output_excerpt", return_value="THE REPORT"):
         summary = _manual_run_completion({"success": True}, "j1", "nightly", deliver, 0.0)["summary"]
     assert "THE REPORT" not in summary

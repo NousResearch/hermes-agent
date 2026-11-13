@@ -1,5 +1,5 @@
 """A whole-tree /rollback undoes the turn that made (or followed) the checkpoint, never a turn kept before it."""
-from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
+from hermes_agent.tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
 
 
 def test_the_exact_take_time_separates_the_turn_that_made_the_checkpoint_from_one_kept_before_it():

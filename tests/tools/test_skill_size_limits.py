@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from tools.skill_manager_tool import (
+from hermes_agent.tools.skill_manager_tool import (
     MAX_SKILL_CONTENT_CHARS,
     _validate_content_size,
     skill_manage,
@@ -21,8 +21,8 @@ def isolate_skills(tmp_path, monkeypatch):
     """Redirect SKILLS_DIR to a temp directory."""
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
-    monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
-    monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+    monkeypatch.setattr("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills_dir)
+    monkeypatch.setattr("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     return skills_dir
 
@@ -160,7 +160,7 @@ class TestHandPlacedSkillsNoLimit:
 
     def test_oversized_handplaced_skill_loads(self, isolate_skills, tmp_path):
         """A hand-placed 200k skill can still be read via skill_view."""
-        from tools.skills_tool import skill_view
+        from hermes_agent.tools.skills_tool import skill_view
 
         skill_dir = tmp_path / "skills" / "manual-giant"
         skill_dir.mkdir(parents=True)

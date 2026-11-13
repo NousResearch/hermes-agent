@@ -22,7 +22,7 @@ AUTHOR = {'id': 'bot:scribe', 'name': 'scribe', 'is_bot': True}
 async def test_cancel_after_a_transient_failure_withdraws_the_retry_for_good(bot, monkeypatch):
     from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     from hermes_agent.gateway.session_bot_cancel import cancel
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     admit = bot.authority.admit_automation
     blocked, full = [], [True]
 

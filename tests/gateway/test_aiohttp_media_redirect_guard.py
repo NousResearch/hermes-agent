@@ -14,7 +14,7 @@ from aiohttp.abc import AbstractResolver
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.helpers import ssrf_checked_aiohttp_get
-from tools import url_safety
+from hermes_agent.tools import url_safety
 
 PUBLIC_HOST = "redirector.test"
 WEIXIN_CDN_HOST = "novac2c.cdn.weixin.qq.com"

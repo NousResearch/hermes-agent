@@ -620,7 +620,7 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_preserves_thread
             return _FakeResponse()
 
     adapter._bot = SimpleNamespace(send_photo=mock_send_photo)
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     monkeypatch.setattr(url_safety, "is_safe_url", lambda _url: True)
     monkeypatch.setattr(
@@ -769,7 +769,7 @@ async def test_slash_confirm_forum_callback_followup_keeps_existing_thread_behav
     async def resolve(_session_key, _confirm_id, _choice):
         return "done"
 
-    from tools import slash_confirm
+    from hermes_agent.tools import slash_confirm
 
     monkeypatch.setattr(slash_confirm, "resolve", resolve)
     adapter._bot = SimpleNamespace(send_message=mock_send_message)

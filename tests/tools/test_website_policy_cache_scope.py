@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import hermes_yaml as yaml
-from tools import website_policy
+from hermes_agent.tools import website_policy
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 

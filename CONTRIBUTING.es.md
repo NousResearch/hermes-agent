@@ -122,11 +122,27 @@ Para JavaScript, ejecuta `pnpm install --frozen-lockfile` en la raíz del reposi
 hermes-agent/
 ├── run_agent.py              # Clase AIAgent — bucle de conversación central, despacho de herramientas, persistencia de sesión
 ├── cli.py                    # Clase HermesCLI — TUI interactiva, integración prompt_toolkit
-├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
-├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 ├── hermes_agent/             # el paquete de Python
+│   ├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
+│   ├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
 │   ├── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
+│   │
+│   ├── tools/                    # Implementaciones de herramientas (auto-registradas)
+│   │   ├── registry.py               # Registro central de herramientas (esquemas, manejadores, despacho)
+│   │   ├── approval.py               # Detección de comandos peligrosos + aprobación por sesión
+│   │   ├── terminal_tool.py          # Orquestación del terminal (sudo, ciclo de vida del entorno, backends)
+│   │   ├── file_operations.py        # read_file, write_file, búsqueda, patch, etc.
+│   │   ├── web_tools.py              # web_search, web_extract (Paralelo/Firecrawl + resumición Gemini)
+│   │   ├── vision_tools.py           # Análisis de imágenes a través de modelos multimodales
+│   │   ├── delegate_tool.py          # Lanzamiento de subagentes y ejecución paralela de tareas
+│   │   ├── code_execution_tool.py    # Python sandboxado con acceso a herramientas vía RPC
+│   │   ├── session_search_tool.py    # Búsqueda en conversaciones pasadas con FTS5 + ventanas ancladas
+│   │   ├── cronjob_tools.py          # Gestión de tareas programadas
+│   │   ├── skill_tools.py            # Búsqueda, carga y gestión de habilidades
+│   │   └── environments/             # Backends de ejecución del terminal
+│   │       ├── base.py                   # ABC BaseEnvironment
+│   │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │   │
 │   └── gateway/                  # Gateway de mensajería
 │       ├── run.py                    # GatewayRunner — ciclo de vida de plataformas, enrutamiento de mensajes, cron
@@ -155,22 +171,6 @@ hermes-agent/
 │   ├── doctor.py                 # Diagnósticos
 │   ├── skills_hub.py             # CLI del Skills Hub + comando de barra /skills
 │   └── skin_engine.py            # Motor de skins/temas — personalización visual de CLI basada en datos
-│
-├── tools/                    # Implementaciones de herramientas (auto-registradas)
-│   ├── registry.py               # Registro central de herramientas (esquemas, manejadores, despacho)
-│   ├── approval.py               # Detección de comandos peligrosos + aprobación por sesión
-│   ├── terminal_tool.py          # Orquestación del terminal (sudo, ciclo de vida del entorno, backends)
-│   ├── file_operations.py        # read_file, write_file, búsqueda, patch, etc.
-│   ├── web_tools.py              # web_search, web_extract (Paralelo/Firecrawl + resumición Gemini)
-│   ├── vision_tools.py           # Análisis de imágenes a través de modelos multimodales
-│   ├── delegate_tool.py          # Lanzamiento de subagentes y ejecución paralela de tareas
-│   ├── code_execution_tool.py    # Python sandboxado con acceso a herramientas vía RPC
-│   ├── session_search_tool.py    # Búsqueda en conversaciones pasadas con FTS5 + ventanas ancladas
-│   ├── cronjob_tools.py          # Gestión de tareas programadas
-│   ├── skill_tools.py            # Búsqueda, carga y gestión de habilidades
-│   └── environments/             # Backends de ejecución del terminal
-│       ├── base.py                   # ABC BaseEnvironment
-│       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │
 ├── scripts/                  # Scripts del instalador y puente
 │   ├── install.sh                # Instalador Linux/macOS
@@ -223,7 +223,7 @@ Mensaje del usuario → AIAgent._run_agent_loop()
 
 ### Patrones de Diseño Clave
 
-- **Herramientas auto-registradas**: Cada archivo de herramienta llama a `registry.register()` en el momento de importación. `model_tools.py` activa el descubrimiento importando todos los módulos de herramientas.
+- **Herramientas auto-registradas**: Cada archivo de herramienta llama a `registry.register()` en el momento de importación. `hermes_agent/model_tools.py` activa el descubrimiento importando todos los módulos de herramientas.
 - **Agrupación en toolsets**: Las herramientas se agrupan en toolsets (`web`, `terminal`, `file`, `browser`, etc.) que pueden habilitarse/deshabilitarse por plataforma.
 - **Persistencia de sesión**: Todas las conversaciones se almacenan en SQLite (`hermes_agent/hermes_state.py`) con búsqueda de texto completo y títulos de sesión únicos.
 - **Inyección efímera**: Los prompts del sistema y los mensajes de relleno se inyectan en el momento de la llamada API, nunca se persisten en la base de datos ni en los logs.
@@ -251,7 +251,7 @@ Las herramientas se auto-registran en el registro central. Cada archivo de herra
 """my_tool — Breve descripción de lo que hace esta herramienta."""
 
 import json
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 def my_tool(param1: str, param2: int = 10, **kwargs) -> str:
@@ -292,11 +292,11 @@ registry.register(
 ```
 
 **Conectar a un toolset (requerido):** Las herramientas integradas se auto-descubren: cualquier
-archivo `tools/*.py` que contenga una llamada de nivel superior `registry.register(...)` es
-importado por `discover_builtin_tools()` en `tools/registry.py` cuando `model_tools`
-se carga. **No** hay una lista de importaciones manual en `model_tools.py` que mantener.
+archivo `hermes_agent/tools/*.py` que contenga una llamada de nivel superior `registry.register(...)` es
+importado por `discover_builtin_tools()` en `hermes_agent/tools/registry.py` cuando `model_tools`
+se carga. **No** hay una lista de importaciones manual en `hermes_agent/model_tools.py` que mantener.
 
-Todavía debes añadir el nombre de la herramienta a la lista apropiada en `toolsets.py`
+Todavía debes añadir el nombre de la herramienta a la lista apropiada en `hermes_agent/toolsets.py`
 (por ejemplo `_HERMES_CORE_TOOLS` o un toolset dedicado); de lo contrario la herramienta
 se registra pero nunca se expone al agente.
 
@@ -479,10 +479,10 @@ Hermes tiene acceso al terminal. La seguridad importa.
 | Capa | Implementación |
 |------|---------------|
 | **Piping de contraseña sudo** | Usa `shlex.quote()` para prevenir inyección de shell |
-| **Detección de comandos peligrosos** | Patrones regex en `tools/approval.py` con flujo de aprobación del usuario |
-| **Inyección de prompts en cron** | Escáner en `tools/cronjob_tools.py` bloquea patrones de anulación de instrucciones |
+| **Detección de comandos peligrosos** | Patrones regex en `hermes_agent/tools/approval.py` con flujo de aprobación del usuario |
+| **Inyección de prompts en cron** | Escáner en `hermes_agent/tools/cronjob_tools.py` bloquea patrones de anulación de instrucciones |
 | **Lista de denegación de escritura** | Rutas protegidas resueltas a través de `os.path.realpath()` para prevenir bypass de enlaces simbólicos |
-| **Skills Guard** | Escáner de seguridad para habilidades instaladas desde el hub (`tools/skills_guard.py`) |
+| **Skills Guard** | Escáner de seguridad para habilidades instaladas desde el hub (`hermes_agent/tools/skills_guard.py`) |
 | **Sandbox de ejecución de código** | El proceso hijo `execute_code` se ejecuta con claves API eliminadas del entorno |
 | **Fortalecimiento de contenedor** | Docker: todas las capacidades eliminadas, sin escalada de privilegios, límites de PID, tmpfs de tamaño limitado |
 

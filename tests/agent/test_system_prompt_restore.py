@@ -176,8 +176,8 @@ class TestSurfaceSwitch:
         from unittest.mock import patch
 
         with (
-            patch("tools.mcp_tool_agent.restore_agent_tool_prefix") as pin,
-            patch("tools.mcp_tool_agent.persist_agent_tool_names") as persist,
+            patch("hermes_agent.tools.mcp_tool_agent.restore_agent_tool_prefix") as pin,
+            patch("hermes_agent.tools.mcp_tool_agent.persist_agent_tool_names") as persist,
         ):
             self._restore(stored="desktop", current="tui", tool_names='["desktop_ui_tool"]')
         pin.assert_called_once()
@@ -195,7 +195,7 @@ class TestSurfaceSwitch:
             agent.tools = [self._tool("read_file"), self._tool("focus_pane")]
             return True
 
-        with patch("tools.mcp_tool_agent.restore_agent_tool_prefix", _carry_desktop_tool):
+        with patch("hermes_agent.tools.mcp_tool_agent.restore_agent_tool_prefix", _carry_desktop_tool):
             agent = self._restore(stored="desktop", current="tui", tool_names='["focus_pane"]',
                                   tools=[self._tool("read_file")])
         assert "focus_pane" in agent._surface_switch_note
@@ -285,7 +285,7 @@ class TestStoredPromptReuse:
         from unittest.mock import patch as _patch
 
         from hermes_agent.hermes_state import SessionDB
-        from tools.mcp_tool_agent import tool_pin_version
+        from hermes_agent.tools.mcp_tool_agent import tool_pin_version
 
         def _tool(name):
             return {"type": "function", "function": {"name": name, "description": f"{name} v1", "parameters": {}}}
@@ -300,7 +300,7 @@ class TestStoredPromptReuse:
             agent._bot_mode_protocol = False
             agent.tools = [_tool("read_file"), _tool("terminal")]  # the -q footprint pruned skill_manage
             registered = [SimpleNamespace(name=t["function"]["name"]) for t in pinned]
-            with _patch("tools.registry.registry.get_all_entries", return_value=registered):
+            with _patch("hermes_agent.tools.registry.registry.get_all_entries", return_value=registered):
                 _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
 
             agent._build_system_prompt.assert_called_once()
@@ -620,7 +620,7 @@ def test_null_stored_prompt_does_not_take_the_stale_probe_path(tmp_path):
         session_id="test-session-id",
     )
     with patch(
-        "tools.bot_mode_probe.stored_prompt_capability_stale", return_value=False
+        "hermes_agent.tools.bot_mode_probe.stored_prompt_capability_stale", return_value=False
     ) as probe:
         assert _bot_chat_prompt_stale(agent, None) is False
         probe.assert_not_called()
@@ -631,7 +631,7 @@ def test_null_stored_prompt_does_not_take_the_stale_probe_path(tmp_path):
         assert row is not None and row["system_prompt"] is None
         restoring = _make_agent(session_db=db, prebuilt_prompt="BUILT")
         with patch(
-            "tools.bot_mode_probe.stored_prompt_capability_stale", return_value=False
+            "hermes_agent.tools.bot_mode_probe.stored_prompt_capability_stale", return_value=False
         ) as probe:
             _restore_or_build_system_prompt(
                 restoring, None, [{"role": "user", "content": "hi"}]

@@ -705,7 +705,7 @@ def _schedule_check_fn_probe(fn) -> Optional[threading.Thread]:
 
     def _probe():
         try:
-            from tools.registry import _check_fn_cached
+            from hermes_agent.tools.registry import _check_fn_cached
 
             _check_fn_cached(fn)
         except Exception:
@@ -732,7 +732,7 @@ def _plugin_auth_hint(name: str, provides_tools: list) -> tuple:
     inline (which would starve the root event loop), so the short hub TTL picks it up.
     """
     try:
-        from tools.registry import get_cached_check_fn_result, registry
+        from hermes_agent.tools.registry import get_cached_check_fn_result, registry
         for tname in provides_tools:
             entry = registry.get_entry(tname)
             if not entry or not entry.check_fn:

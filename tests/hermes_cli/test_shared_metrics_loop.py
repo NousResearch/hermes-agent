@@ -37,14 +37,14 @@ def home(direct_runtime, tmp_path):
 
 
 def _memory_store():
-    from tools.memory_tool import load_on_disk_store
+    from hermes_agent.tools.memory_tool import load_on_disk_store
 
     return load_on_disk_store()
 
 
 def test_memory_tool_counts_each_operation_with_its_outcome_and_origin(home):
-    from tools.memory_tool import memory_tool
-    from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
+    from hermes_agent.tools.memory_tool import memory_tool
+    from hermes_agent.tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
 
     store = _memory_store()
     assert json.loads(memory_tool("add", content="prefers tabs", store=store))["success"]
@@ -72,8 +72,8 @@ def test_memory_tool_counts_each_operation_with_its_outcome_and_origin(home):
 
 def test_memory_failure_class_names_each_store_refusal_and_never_its_text(home):
     """Each built-in refusal/failure return reports its own closed class; the row carries no memory text."""
-    from tools.memory_tool import memory_tool
-    from tools.memory_tool_store import MemoryStore
+    from hermes_agent.tools.memory_tool import memory_tool
+    from hermes_agent.tools.memory_tool_store import MemoryStore
 
     store = MemoryStore(memory_char_limit=60)
     store.load_from_disk()
@@ -134,7 +134,7 @@ def test_disabled_shared_metrics_record_no_loop_rows(home, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.read_raw_config_readonly", lambda: {"telemetry": {"shared_metrics": {"enabled": False}}},
     )
-    from tools.memory_tool import memory_tool
+    from hermes_agent.tools.memory_tool import memory_tool
 
     memory_tool("add", content="x", store=_memory_store())
     loop.record_execution_backend("terminal", "local", '{"exit_code": 0, "error": null}')
@@ -199,7 +199,7 @@ def test_delegation_fanout_split_into_units_is_one_row_in_the_parent_profile(hom
 def test_delegate_task_call_is_one_row_however_many_children(home, monkeypatch):
     import types
 
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     statuses = iter(["completed", "failed", "completed"])
     monkeypatch.setattr(dt, "_run_single_child", lambda task_index, goal, child=None, parent_agent=None, **kw: {
@@ -222,7 +222,7 @@ def test_delegate_task_call_is_one_row_however_many_children(home, monkeypatch):
 
 
 def test_terminal_calls_count_against_the_configured_backend(home):
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     assert json.loads(terminal_tool("echo hi"))["exit_code"] == 0
     assert json.loads(terminal_tool("exit 3"))["exit_code"] == 3  # the command failed, the backend did not
@@ -234,7 +234,7 @@ def test_terminal_calls_count_against_the_configured_backend(home):
 
 
 def test_foreground_terminal_timeout_is_a_failed_timeout(home):
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     assert json.loads(terminal_tool("sleep 5", timeout=1))["exit_code"] == 124
 
@@ -244,8 +244,8 @@ def test_foreground_terminal_timeout_is_a_failed_timeout(home):
 
 
 def test_background_review_fork_terminal_calls_are_not_backend_usage(home):
-    import tools.skill_provenance as provenance
-    from tools.terminal_tool import terminal_tool
+    import hermes_agent.tools.skill_provenance as provenance
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     token = provenance.set_current_write_origin(provenance.BACKGROUND_REVIEW)
     try:
@@ -261,7 +261,7 @@ def test_background_review_fork_terminal_calls_are_not_backend_usage(home):
 
 def test_path_completion_listing_is_not_user_backend_work(home):
     import hermes_agent.tui_gateway.methods_complete as mc
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     for _ in range(3):  # three keystrokes of `@file:` on a non-local backend each list the directory
         assert mc._backend_dir_entries(str(home), "sess-1") is not None
@@ -274,7 +274,7 @@ def test_path_completion_listing_is_not_user_backend_work(home):
 
 def test_every_shipped_terminal_backend_has_its_own_bucket():
     from hermes_cli.observability import shared_metrics_contract as contract
-    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+    from hermes_agent.tools.terminal_tool_config import _BUILTIN_BACKENDS
 
     schema = json.loads(
         (Path(contract.__file__).parent / "schemas" / "hermes.shared_metrics.v4.schema.json").read_text()
@@ -316,10 +316,10 @@ def browser_exec_route(monkeypatch):
     import subprocess
     from types import SimpleNamespace
 
-    import tools.browser_session as bs
-    import tools.browser_session_cloud as bs_cloud
-    import tools.browser_supervisor as supervisor
-    import tools.browser_use_cli as bu
+    import hermes_agent.tools.browser_session as bs
+    import hermes_agent.tools.browser_session_cloud as bs_cloud
+    import hermes_agent.tools.browser_supervisor as supervisor
+    import hermes_agent.tools.browser_use_cli as bu
 
     route = SimpleNamespace(fallback=False, features={"local": True})
 
@@ -351,7 +351,7 @@ def test_browser_exec_counts_against_the_browser_that_actually_served_it(home, m
     """A call the configured provider served names it; a hybrid ``::local`` sidecar call (private URL) or a
     call the session layer fell back to local Chromium for ran locally and must not; a `/browser connect`
     published mid-session is read at call time."""
-    from tools.browser_use_cli import _handle_browser_exec
+    from hermes_agent.tools.browser_use_cli import _handle_browser_exec
 
     def call(code, task_id):
         assert json.loads(_handle_browser_exec({"code": code}, task_id=task_id))["success"] is True
@@ -370,8 +370,8 @@ def test_browser_exec_counts_against_the_browser_that_actually_served_it(home, m
 def test_a_local_call_names_the_engine_that_served_it_not_the_one_configured_now(home, browser_exec_route):
     """The label comes from the session the call ran on, never from ``browser.engine`` read afterwards: a Chromium
     session that outlived a switch to Lightpanda counts as Chromium, and a Lightpanda session as Lightpanda."""
-    import tools.browser_session_cloud as bs_cloud
-    from tools.browser_use_cli import _handle_browser_exec
+    import hermes_agent.tools.browser_session_cloud as bs_cloud
+    from hermes_agent.tools.browser_use_cli import _handle_browser_exec
 
     def call_with_engine_configured(engine, task_id):
         (home / "config.yaml").write_text(f"browser:\n  engine: {engine}\n")

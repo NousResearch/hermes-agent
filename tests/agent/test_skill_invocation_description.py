@@ -14,7 +14,7 @@ import pytest
 
 from agent import skill_bundles
 from agent import skill_commands
-from tools import skills_tool
+from hermes_agent.tools import skills_tool
 from agent.skill_commands import (
     SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE,

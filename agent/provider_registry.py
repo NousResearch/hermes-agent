@@ -202,7 +202,7 @@ def configured_provider_name(section: str, logger: logging.Logger) -> Optional[s
         logger.debug("Could not read %s.provider from config: %s", section, exc)
     if configured:
         try:
-            from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+            from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
             if configured.lower() == NOUS_MANAGED_PROVIDER:
                 configured = "fal"
         except Exception:  # pragma: no cover — helpers are in-repo

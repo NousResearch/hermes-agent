@@ -1,4 +1,4 @@
-"""Tests for tools/tool_result_storage.py -- 3-layer tool result persistence."""
+"""Tests for hermes_agent/tools/tool_result_storage.py -- 3-layer tool result persistence."""
 
 import json
 import os
@@ -8,11 +8,11 @@ import sys
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.budget_config import (
+from hermes_agent.tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
 )
-from tools.tool_result_storage import (
+from hermes_agent.tools.tool_result_storage import (
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
     STORAGE_DIR,
@@ -130,7 +130,7 @@ class TestWriteToSandbox:
         comparison to UTF-8 bytes (170 here, 130 chars), on both the sandbox and host paths."""
         import os
 
-        from tools.tool_result_storage import _write_to_spillover
+        from hermes_agent.tools.tool_result_storage import _write_to_spillover
 
         content = "héllo wörld ✓" * 10
         assert len(content.encode("utf-8")) == 170 != len(content)
@@ -143,7 +143,7 @@ class TestWriteToSandbox:
                     return type("S", (), {"st_size": probed})()
                 return real_stat(p, *a, **kw)
 
-            with patch("tools.tool_result_storage.os.stat", side_effect=fake_stat):
+            with patch("hermes_agent.tools.tool_result_storage.os.stat", side_effect=fake_stat):
                 path = _write_to_spillover(content, filename)
             assert (path is not None) is ok
             assert (get_spillover_dir() / filename).exists() is ok
@@ -296,7 +296,7 @@ class TestMaybePersistToolResult:
         cmd = env.execute.call_args_list[1][0][0]
         target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
 
-        from tools.tool_result_storage import STORAGE_DIR
+        from hermes_agent.tools.tool_result_storage import STORAGE_DIR
 
         assert f"Full output saved to: {STORAGE_DIR}/outside_whoami_x_" in result
         assert f"{STORAGE_DIR}/../" not in result
@@ -369,9 +369,9 @@ class TestPerToolThresholds:
 
     def test_read_file_registry_cap_is_finite(self):
         """read_file must keep a finite registry cap (Layer 2 safety net)."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         try:
-            import tools.file_tools
+            import hermes_agent.tools.file_tools
             val = registry.get_max_result_size("read_file")
             # float('inf') disables the Layer 2 result-size guard.
             assert 0 < val < float("inf"), val
@@ -379,9 +379,9 @@ class TestPerToolThresholds:
             pytest.skip("file_tools not importable in test env")
 
     def test_search_files_threshold(self):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         try:
-            import tools.file_tools
+            import hermes_agent.tools.file_tools
             val = registry.get_max_result_size("search_files")
             assert 0 < val < float("inf"), val
         except ImportError:
@@ -394,7 +394,7 @@ class TestSpillover:
     def _isolated_home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         # Reset the once-per-process prune flag so each test is independent.
-        import tools.tool_result_storage as trs
+        import hermes_agent.tools.tool_result_storage as trs
         monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
         yield
 
@@ -418,7 +418,7 @@ class TestSpillover:
 
     def test_local_env_persists_to_spillover_not_sandbox(self):
         """LocalEnvironment routes host-side: no env.execute() shell-out."""
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.environments.local import LocalEnvironment
 
         env = MagicMock(spec=LocalEnvironment)
         env.uses_host_filesystem = LocalEnvironment.uses_host_filesystem
@@ -480,7 +480,7 @@ class TestSpillover:
         assert (get_spillover_dir() / "tc_remote_2.txt").exists()
 
     def test_spillover_write_failure_falls_back_to_inline(self, monkeypatch):
-        import tools.tool_result_storage as trs
+        import hermes_agent.tools.tool_result_storage as trs
         monkeypatch.setattr(trs, "_write_to_spillover", lambda *a, **k: None)
         content = "w" * 60_000
         result = maybe_persist_tool_result(
@@ -518,7 +518,7 @@ class TestSpillover:
         import os
         import time as _time
 
-        import tools.tool_result_storage as trs
+        import hermes_agent.tools.tool_result_storage as trs
         from hermes_agent.gateway.run_housekeeping_disk import housekeeping_media_caches
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
@@ -536,7 +536,7 @@ class TestSpillover:
 
     def test_retention_hours_reads_session_retention_days(self, monkeypatch):
         import hermes_cli.config
-        import tools.tool_result_storage as trs
+        import hermes_agent.tools.tool_result_storage as trs
 
         monkeypatch.setattr(
             hermes_cli.config, "load_config_readonly",
@@ -545,7 +545,7 @@ class TestSpillover:
 
     def test_retention_hours_defaults_and_falls_back(self, monkeypatch):
         import hermes_cli.config
-        import tools.tool_result_storage as trs
+        import hermes_agent.tools.tool_result_storage as trs
 
         monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
         assert trs._spillover_retention_hours() == 90 * 24
@@ -587,7 +587,7 @@ class TestSpillover:
         import os
         import time as _time
 
-        import tools.tool_result_storage as trs
+        import hermes_agent.tools.tool_result_storage as trs
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "ancient.txt"
@@ -614,7 +614,7 @@ class TestSpillover:
         an ordinary missing file keeps the plain not-found result."""
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         monkeypatch.chdir(tmp_path)
-        from tools.file_tools import read_file_tool
+        from hermes_agent.tools.file_tools import read_file_tool
         out = maybe_persist_tool_result(content="z" * 50_000, tool_name="terminal",
                                         tool_use_id="tc_expired_1", env=None, threshold=30_000)
         path = extract_persisted_path(out)
@@ -667,7 +667,7 @@ class TestMcpEnvelopeSpillover:
     @pytest.fixture(autouse=True)
     def _isolated_home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-        import tools.tool_result_storage as trs
+        import hermes_agent.tools.tool_result_storage as trs
         monkeypatch.setattr(trs, "_spillover_pruned_homes", set())
         yield
 

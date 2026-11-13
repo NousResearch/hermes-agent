@@ -27,7 +27,7 @@ def test_hidden_content_becomes_visible_and_clean_text_is_untouched():
 
 def test_cli_and_gateway_prompts_render_the_sanitized_copy():
     from hermes_agent.gateway.run import _redact_approval_command
-    from tools.approval_prompt import prompt_dangerous_approval
+    from hermes_agent.tools.approval_prompt import prompt_dangerous_approval
 
     raw = "rm -rf ./build\u200b\u202e; " + _TAIL
     seen = []
@@ -75,8 +75,8 @@ def test_first_render_surfaces_get_the_display_copy_while_values_stay_raw(monkey
     from types import SimpleNamespace
 
     from agent.display import build_tool_preview
-    from tools import approval_context, approval_prompt
-    from tools.clarify_tool import clarify_tool
+    from hermes_agent.tools import approval_context, approval_prompt
+    from hermes_agent.tools.clarify_tool import clarify_tool
 
     raw = "rm -rf ./build\u200b-cache" + "\u2028" * 60 + "; " + _TAIL
     # Selected plugin transport: command and description arrive as the display copy.

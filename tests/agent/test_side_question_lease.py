@@ -259,8 +259,8 @@ def test_post_llm_call_hook_redeems_its_token_end_to_end(monkeypatch):
     client.chat.completions.create.side_effect = lambda **kw: (requests.append(kw), replies.pop(0))[1]
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
@@ -314,8 +314,8 @@ def _observed_turn_with_side_question(monkeypatch, side_reply) -> list[dict]:
     client.chat.completions.create.side_effect = lambda **kw: replies.pop(0)
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
     ):

@@ -78,7 +78,7 @@ def effective_runtime_provider(
     that persist ``runtime["provider"]`` as the agent identity therefore label
     sessions/billing rows ``custom`` instead of the configured provider name —
     while the manual ``/model`` switch path correctly persists the named id
-    (#98739). Same class as the delegation fix in ``tools/delegate_tool.py``.
+    (#98739). Same class as the delegation fix in ``hermes_agent/tools/delegate_tool.py``.
 
     Returns the entry's requested identity when the resolved provider is the
     bare ``custom`` class; a genuinely ad-hoc endpoint (requested provider IS

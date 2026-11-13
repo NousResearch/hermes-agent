@@ -44,7 +44,7 @@ async def test_queued_voice_transcript_marker_follows_the_rehomed_recording(two_
                          media_urls=[str(clip)], media_types=["audio/ogg"])
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=True)
-    with patch("tools.transcription_tools.transcribe_audio",
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio",
                return_value={"success": True, "transcript": "two cartons", "provider": "local"}):
         await runner._transcribe_pending_audio_event_once(event)  # queued: still on the launch home
     assert str(clip) in event._gateway_pending_stt_text

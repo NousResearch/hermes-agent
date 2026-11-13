@@ -32,7 +32,7 @@ from hermes_scope import (
     TurnScope,
     current_scope,
 )
-from tools.terminal_scope import (
+from hermes_agent.tools.terminal_scope import (
     build_profile_terminal_scope,
     get_terminal_scope,
     install_profile_terminal_scope,
@@ -416,7 +416,7 @@ def test_legacy_switch_builds_the_target_policy_on_first_read_only(two_profiles,
     terminal policy on its first read: a caller that only redirects file paths (a credential reader
     inside the profile's first config load) never reads the profile's config. The policy, once
     read, is the same one an eager bind builds."""
-    from tools import terminal_scope
+    from hermes_agent.tools import terminal_scope
 
     a, b = two_profiles
     built = []
@@ -461,7 +461,7 @@ def test_a_bind_hydrates_the_target_profile_under_its_own_home(two_profiles, mon
 def test_a_deferred_policy_keeps_the_overlay_it_was_bound_with(two_profiles):
     """The terminal policy a legacy switch defers is built from the overlay passed at the switch; a
     caller changing its own mapping afterwards changes nothing."""
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
     a, b = two_profiles
     (b / "config.yaml").write_text("terminal: {}\n")

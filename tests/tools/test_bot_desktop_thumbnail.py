@@ -8,7 +8,7 @@ import threading
 
 from PIL import Image, ImageGrab
 
-from tools.bot_desktop import runtime, thumbnail
+from hermes_agent.tools.bot_desktop import runtime, thumbnail
 
 
 def test_concurrent_grabs_each_see_their_own_xauthority(monkeypatch):

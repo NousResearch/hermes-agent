@@ -22,7 +22,7 @@ LAUNCH = object()  # the client's host launch folder
 ])
 def test_terminal_cwd_follows_the_backend(tmp_path, monkeypatch, terminal, params, expected):
     from hermes_agent.gateway.session_policy import build_policy, policy_scope, restore_policy
-    from tools.terminal_tool import _get_env_config
+    from hermes_agent.tools.terminal_tool import _get_env_config
 
     home = tmp_path / "home"
     home.mkdir()

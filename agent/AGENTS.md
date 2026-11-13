@@ -50,7 +50,7 @@ in `assistant_msg["reasoning"]`.
 
 **Agent-level tools** (`todo`, `memory`, ...) are intercepted by `agent/tool_executor.py` through the
 `INLINE_TOOL_EXECUTORS` table in `agent/inline_tool_executors.py` before `handle_function_call()`.
-Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool.py` is the pattern.
+Adding one: register in that table (no `if name == ...` chain); `hermes_agent/tools/todo_tool.py` is the pattern.
 
 ## Message-flow invariants (every change is reviewed against these)
 
@@ -70,8 +70,8 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   (`CONTEXT_FILE_MAX_CHARS` / dynamic cap from the context window / `context_file_max_chars`).
   Never load an install-tree `AGENTS.md` as project context (PR #64611); subdirectory hints reject
   paths outside the working dir so `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` never mix in.
-- **`_last_resolved_tool_names` is a process-global in `model_tools.py`.** `_run_single_child()`
-  in `tools/delegate_tool.py` saves/restores it around subagent execution; code reading it may see
+- **`_last_resolved_tool_names` is a process-global in `hermes_agent/model_tools.py`.** `_run_single_child()`
+  in `hermes_agent/tools/delegate_tool.py` saves/restores it around subagent execution; code reading it may see
   a temporarily stale value during child runs.
 
 ## Compression (`agent/compression_facade.py`, `conversation_compression.py`, `turn_context_compaction.py`)

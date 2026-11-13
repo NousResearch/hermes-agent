@@ -41,7 +41,7 @@ def _decoded_size(data_url: str):
 
 class TestCropImageRegion:
     def test_crop_applied(self, tmp_path):
-        from tools.vision_tools import _crop_image_region
+        from hermes_agent.tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
         cropped_path, _mime, err = _crop_image_region(src, [10, 10, 60, 40])
@@ -51,7 +51,7 @@ class TestCropImageRegion:
             assert img.size == (50, 30)
 
     def test_out_of_bounds_clamped_to_image(self, tmp_path):
-        from tools.vision_tools import _crop_image_region
+        from hermes_agent.tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
         cropped_path, _mime, err = _crop_image_region(src, [-10, -10, 200, 200])
@@ -60,7 +60,7 @@ class TestCropImageRegion:
             assert img.size == (100, 50)
 
     def test_zero_area_rejected_with_actual_dims_in_error(self, tmp_path):
-        from tools.vision_tools import _crop_image_region
+        from hermes_agent.tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
         cropped_path, _mime, err = _crop_image_region(src, [200, 200, 300, 300])
@@ -70,7 +70,7 @@ class TestCropImageRegion:
         assert "100" in err and "50" in err
 
     def test_inverted_coords_rejected_with_dims(self, tmp_path):
-        from tools.vision_tools import _crop_image_region
+        from hermes_agent.tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
         cropped_path, _mime, err = _crop_image_region(src, [60, 40, 10, 10])
@@ -78,7 +78,7 @@ class TestCropImageRegion:
         assert "100" in err and "50" in err
 
     def test_malformed_region_rejected(self, tmp_path):
-        from tools.vision_tools import _crop_image_region
+        from hermes_agent.tools.vision_tools import _crop_image_region
 
         src = _make_png(tmp_path / "src.png", 100, 50)
         for bad in ([1, 2, 3], "10,10,60,40", [1, 2, 3, "x"], None):
@@ -92,7 +92,7 @@ class TestCropImageRegion:
 
 class TestNativePathRegion:
     def test_region_crops_before_embed(self, tmp_path):
-        from tools.vision_tools import _vision_analyze_native
+        from hermes_agent.tools.vision_tools import _vision_analyze_native
 
         src = _make_png(tmp_path / "img.png", 100, 50)
         result = asyncio.get_event_loop().run_until_complete(
@@ -107,7 +107,7 @@ class TestNativePathRegion:
         assert _decoded_size(url) == (50, 30)
 
     def test_no_region_behavior_unchanged(self, tmp_path):
-        from tools.vision_tools import _vision_analyze_native
+        from hermes_agent.tools.vision_tools import _vision_analyze_native
 
         src = _make_png(tmp_path / "img.png", 100, 50)
         result = asyncio.get_event_loop().run_until_complete(
@@ -124,7 +124,7 @@ class TestNativePathRegion:
     def test_zero_area_region_returns_error_with_dims(self, tmp_path):
         import json
 
-        from tools.vision_tools import _vision_analyze_native
+        from hermes_agent.tools.vision_tools import _vision_analyze_native
 
         src = _make_png(tmp_path / "img.png", 100, 50)
         result = asyncio.get_event_loop().run_until_complete(
@@ -140,7 +140,7 @@ class TestNativePathRegion:
         """The crop happens BEFORE _resize_image_for_vision, so a small region
         of a huge image survives at native resolution instead of being
         downscaled with the rest."""
-        from tools.vision_tools import _EMBED_MAX_DIMENSION, _vision_analyze_native
+        from hermes_agent.tools.vision_tools import _EMBED_MAX_DIMENSION, _vision_analyze_native
 
         # Taller than the embed long-edge cap — full shot would be downscaled.
         big = tmp_path / "big.png"
@@ -166,8 +166,8 @@ class TestNativePathRegion:
 class TestSchemaAndHandler:
 
     def test_handler_passes_region_to_native_path(self, tmp_path, monkeypatch):
-        from tools import vision_tools
-        from tools.vision_tools import _handle_vision_analyze
+        from hermes_agent.tools import vision_tools
+        from hermes_agent.tools.vision_tools import _handle_vision_analyze
 
         src = _make_png(tmp_path / "img.png", 100, 50)
         seen = {}

@@ -13,7 +13,7 @@ from hermes_cli.dashboard_auth import ws_tickets
 
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):
     from hermes_constants import get_hermes_home
-    from tools.bot_desktop import install, runtime
+    from hermes_agent.tools.bot_desktop import install, runtime
     from hermes_agent.tui_gateway import server
 
     named = tmp_path / "profiles" / "named"
@@ -39,7 +39,7 @@ def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch)
 
 @pytest.fixture
 def _fresh_lease():
-    from tools.bot_desktop import lease
+    from hermes_agent.tools.bot_desktop import lease
     lease._reset_for_tests()
     yield lease
     lease._reset_for_tests()
@@ -53,7 +53,7 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
     """The Desktop polls thumbnails on a timer; while a human drives the screen that grab would ship
     whatever they are typing to every connected client, so it must not touch the framebuffer at all."""
     from hermes_agent.tui_gateway import server
-    from tools.bot_desktop import thumbnail
+    from hermes_agent.tools.bot_desktop import thumbnail
 
     grabs = []
     monkeypatch.setattr(thumbnail, "thumbnail_data_url", lambda: grabs.append(1) or "data:image/jpeg;base64,SECRET")
@@ -69,7 +69,7 @@ def test_release_without_viewer_id_cannot_yank_another_viewers_lease(monkeypatch
     """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
     must be refused unless it forces; the holder's own (minted) viewer id and force keep working."""
     from hermes_agent.tui_gateway import server
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
     mine = _call(server, "display.observe", {})["result"]["viewer_id"]
@@ -91,7 +91,7 @@ def test_a_viewer_opened_from_a_browser_tab_signs_out_with_that_tab(monkeypatch,
     import asyncio
 
     from hermes_cli import browser_credential, web_server, web_session_sockets
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
     from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
@@ -129,7 +129,7 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
     """A client cannot choose its viewer id (it would impersonate the holder and co-drive or release
     their lease), and no snapshot or broadcast carries the raw holder id — only a hash the holder
     itself can match."""
-    from tools.bot_desktop import lease, runtime
+    from hermes_agent.tools.bot_desktop import lease, runtime
     from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
@@ -172,7 +172,7 @@ def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _f
     """display.stop released the lease unconditionally before stopping Xvnc: any authenticated caller
     could yank a human mid-login and kill the screen under them. Same rule as display.lease.release."""
     from hermes_agent.tui_gateway import server
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
 
     stops = []
     monkeypatch.setattr(runtime, "stop", lambda: stops.append(1) or True)
@@ -208,7 +208,7 @@ def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monk
     made-up id (evicting the human) or release with a guessed one. Both must insist on an id that
     display.observe minted for THIS connection."""
     from hermes_agent.tui_gateway import server
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
 
@@ -240,7 +240,7 @@ def test_a_takeover_counts_as_use_of_an_idle_screen(monkeypatch, tmp_path, _fres
     import time
 
     from hermes_agent.tui_gateway import server
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
@@ -273,7 +273,7 @@ def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
     masked password card into ANOTHER window's chat; the wire contract now refuses the key outright
     (4000), and the request the handler sends carries no session either way."""
     from hermes_agent.tui_gateway import server
-    from tools.bot_desktop import install, runtime
+    from hermes_agent.tools.bot_desktop import install, runtime
 
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
     monkeypatch.setattr(runtime, "install_command", lambda: "sudo apt-get install -y x")
@@ -305,7 +305,7 @@ def test_thumbnail_grabbed_across_a_takeover_is_suppressed(monkeypatch, _fresh_l
     is being read means the returned frame may already show the human's session. The lease epoch
     must match before and after the grab or the frame is dropped."""
     from hermes_agent.tui_gateway import server
-    from tools.bot_desktop import thumbnail
+    from hermes_agent.tools.bot_desktop import thumbnail
 
     def grab_while_human_takes_over():
         _fresh_lease.acquire("viewer-1")
@@ -322,7 +322,7 @@ def test_switch_sandbox_image_decides_only_a_pending_switch(monkeypatch, tmp_pat
     status rides back."""
     from hermes_agent.tui_gateway import server
     from hermes_cli import sandbox_image_switch as sw
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(sw, "pending", lambda: None)

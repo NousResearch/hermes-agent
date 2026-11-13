@@ -3,8 +3,8 @@
 import unittest
 from unittest.mock import patch
 
-from tools.skills_hub_models import SkillMeta
-from tools.skills_hub_sources import BrowseShSource
+from hermes_agent.tools.skills_hub_models import SkillMeta
+from hermes_agent.tools.skills_hub_sources import BrowseShSource
 
 
 # Catalog shape mirrors the real ``GET https://browse.sh/api/skills`` response:

@@ -152,7 +152,7 @@ class ToolLabelKind(WireEnum):
 
 
 class ToolLabel(Payload):
-    """``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is,
+    """``hermes_agent.tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is,
     in words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse
     the tool name themselves."""
 
@@ -187,7 +187,7 @@ class TranscriptMessage(OpenModel):
 
 
 class SubagentStatus(WireEnum):
-    """Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` /
+    """Lifecycle of one delegated child (``hermes_agent/tools/delegate_tool_child_run.py``); ``failed`` /
     ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal."""
 
     queued = "queued"
@@ -206,7 +206,7 @@ TERMINAL_SUBAGENT_STATUSES = frozenset({
 
 
 class PendingApproval(OpenModel):
-    """One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload``
+    """One unresolved ``hermes_agent/tools/approval.py`` gateway queue entry as ``server._approval_request_payload``
     renders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool."""
 
     request_id: str | None = None

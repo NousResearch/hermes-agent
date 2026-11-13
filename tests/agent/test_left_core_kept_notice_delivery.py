@@ -33,7 +33,7 @@ class Agent(StatusOutputMixin):
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    import model_tools
+    from hermes_agent import model_tools
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(lcm, "_attempted", set())
     monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)

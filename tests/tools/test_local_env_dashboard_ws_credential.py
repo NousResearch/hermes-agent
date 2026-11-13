@@ -9,7 +9,7 @@ working ``/api/ws`` login."""
 import pytest
 
 from tests.tools._child_env_fixtures import child_env, observe_child
-from tools.environments import local
+from hermes_agent.tools.environments import local
 
 TUI_URL_VARS = ["HERMES_TUI_SIDECAR_URL", "HERMES_TUI_GATEWAY_URL"]
 URL = "ws://127.0.0.1:9119/api/pub?token=0123456789abcdef0123456789abcdef&channel=c1"

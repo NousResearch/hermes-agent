@@ -48,7 +48,7 @@ async def gateway(tmp_path, monkeypatch):
     from hermes_agent.gateway.relay.ws_transport import WebSocketRelayTransport
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from tests.gateway.relay.test_relay_passthrough import _desc
-    from tools import approval
+    from hermes_agent.tools import approval
 
     write_approvers(["*"])
     monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
@@ -84,8 +84,8 @@ def _thread_session_key(runner):
 
 def _alice_approval(session_key):
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     tokens = set_session_vars(platform="discord", user_id="alice", user_name="Alice", chat_type="thread",
                               session_key=session_key)
@@ -143,7 +143,7 @@ async def test_typed_answer_from_an_unadmitted_discord_sender_is_refused(gateway
     from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_agent.gateway.session import SessionSource
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import clarify_gateway, slash_confirm
+    from hermes_agent.tools import clarify_gateway, slash_confirm
 
     runner, _transport, _adapter = gateway
     session_key = _thread_session_key(runner)

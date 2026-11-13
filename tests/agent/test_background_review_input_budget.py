@@ -75,8 +75,8 @@ def _tool_definition() -> dict:
 
 def _make_loop_agent():
     with (
-        patch("model_tools.get_tool_definitions", return_value=[_tool_definition()]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[_tool_definition()]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("agent.model_metadata.get_model_context_length", return_value=256_000),
         patch("agent.context_compressor.get_model_context_length", return_value=256_000),

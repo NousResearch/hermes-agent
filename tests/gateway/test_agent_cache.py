@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from tools import browser_session_lifecycle as bt_lifecycle
+from hermes_agent.tools import browser_session_lifecycle as bt_lifecycle
 
 def _make_runner():
     """Create a minimal GatewayRunner with just the cache infrastructure."""
@@ -192,7 +192,7 @@ class TestExtractCacheBustingConfig:
 
     def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
         from hermes_agent.gateway.run import GatewayRunner
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         monkeypatch.setattr(registry, "_generation", 12345)
 
@@ -511,7 +511,7 @@ class TestAgentCacheIdleResume:
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
         from run_agent import AIAgent
-        from tools import terminal_tool_lifecycle as _tt
+        from hermes_agent.tools import terminal_tool_lifecycle as _tt
 
         agent = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
@@ -575,7 +575,7 @@ class TestAgentCacheIdleResume:
 
         vm_calls: list = []
         # AIAgent.close() calls the ``cleanup_vm`` name bound into
-        # ``run_agent`` at import time, not ``tools.terminal_tool_lifecycle.cleanup_vm``
+        # ``run_agent`` at import time, not ``hermes_agent.tools.terminal_tool_lifecycle.cleanup_vm``
         # directly — so patch the ``run_agent`` reference.
         original_vm = _ra.cleanup_vm
         _ra.cleanup_vm = lambda tid: vm_calls.append(tid)

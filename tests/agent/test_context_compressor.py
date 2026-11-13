@@ -449,10 +449,10 @@ def _refusals():
     envelope (its error reads "Blocked:", not "BLOCKED"), a pending gateway approval, and a
     successful kanban_block (``status`` "blocked" with no error, which is not a refusal). ``expected`` lists substrings the summary must
     contain; empty means it must not read as refused."""
-    from tools import approval
-    from tools.kanban_tools import _ok
-    from tools.terminal_tool import _error_json
-    from tools.terminal_tool_guards import _validate_workdir
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.kanban_tools import _ok
+    from hermes_agent.tools.terminal_tool import _error_json
+    from hermes_agent.tools.terminal_tool_guards import _validate_workdir
 
     gate = approval._COMMAND_GATE
     no_consent = ["BLOCKED, not run", "did NOT consent"]

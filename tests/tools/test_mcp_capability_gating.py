@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool import MCPServerTask
 
 
 def _caps(tools=None, prompts=None, resources=None):
@@ -100,7 +100,7 @@ class TestKeepaliveProbe:
                 tasks, timeout=0.5, return_when=return_when or asyncio.FIRST_COMPLETED
             )
 
-        import tools.mcp_tool as mcp_mod
+        import hermes_agent.tools.mcp_tool as mcp_mod
         orig = mcp_mod.asyncio.wait
         mcp_mod.asyncio.wait = fake_wait
         try:
@@ -170,8 +170,8 @@ class TestKeepaliveInterval:
                 tasks, timeout=0.5, return_when=return_when or asyncio.FIRST_COMPLETED
             )
 
-        import tools.mcp_tool as mcp_mod
-        import tools.mcp_tool_server_run as run_mod
+        import hermes_agent.tools.mcp_tool as mcp_mod
+        import hermes_agent.tools.mcp_tool_server_run as run_mod
         orig, orig_time = mcp_mod.asyncio.wait, run_mod.time
         mcp_mod.asyncio.wait = fake_wait
         run_mod.time = SimpleNamespace(monotonic=lambda: orig_time.monotonic() + elapsed[0])
@@ -189,7 +189,7 @@ class TestKeepaliveInterval:
 
     @pytest.mark.asyncio
     async def test_default_interval_when_unset(self):
-        from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
+        from hermes_agent.tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
         assert await self._captured_interval({}) == _DEFAULT_KEEPALIVE_INTERVAL
         # An explicit interval is honoured on stdio too (where there is no default).
         _task, timeouts = await self._run_lifecycle_cycles(
@@ -198,7 +198,7 @@ class TestKeepaliveInterval:
 
     @pytest.mark.asyncio
     async def test_interval_clamped_to_floor(self):
-        from tools.mcp_tool import _MIN_KEEPALIVE_INTERVAL
+        from hermes_agent.tools.mcp_tool import _MIN_KEEPALIVE_INTERVAL
         # A sub-floor value must clamp up, never busy-loop the keepalive.
         assert (
             await self._captured_interval({"keepalive_interval": 0.1})
@@ -211,7 +211,7 @@ class TestKeepaliveInterval:
         full default interval idle must still prove the session (clears the rapid-drop budget);
         once proven, the loop waits without any timeout. An earlier wake caused by a shorter
         idle limit is NOT proof: the budget stays armed until the full interval has passed."""
-        from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
+        from hermes_agent.tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
         task, timeouts = await self._run_lifecycle_cycles({"command": "example-mcp"})
 
         assert timeouts[0] == pytest.approx(_DEFAULT_KEEPALIVE_INTERVAL, abs=0.05)
@@ -259,12 +259,12 @@ class TestMethodNotFoundDetection:
 
     @pytest.mark.usefixtures("require_mcp_2_sdk")
     def test_structural_code_match(self):
-        from tools.mcp_tool_errors import _is_method_not_found_error
+        from hermes_agent.tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(_mcp_error(-32601)) is True
 
 
     def test_unrelated_exception_is_not_match(self):
-        from tools.mcp_tool_errors import _is_method_not_found_error
+        from hermes_agent.tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(TimeoutError()) is False
         assert _is_method_not_found_error(Exception("session terminated")) is False
 

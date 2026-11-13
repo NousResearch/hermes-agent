@@ -5,8 +5,8 @@ detached env died with the interpreter and left a stopped, labeled container beh
 import subprocess
 import threading
 
-import tools.environments.docker as docker_env
-from tools import terminal_tool
+import hermes_agent.tools.environments.docker as docker_env
+from hermes_agent.tools import terminal_tool
 
 def _env_with_slow_teardown(monkeypatch, release: threading.Event, seen: list):
     docker_env._cgroup_limits_ok = True

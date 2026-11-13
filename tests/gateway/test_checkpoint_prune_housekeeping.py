@@ -21,7 +21,7 @@ class _OneTickStopEvent:
 
 
 def test_gateway_housekeeping_runs_the_checkpoint_prune(monkeypatch):
-    import tools.checkpoint_maintenance as cm
+    import hermes_agent.tools.checkpoint_maintenance as cm
 
     calls = []
     monkeypatch.setattr(cm, "auto_prune_from_config", lambda: calls.append(True) or {"skipped": False})

@@ -36,14 +36,14 @@ def chat_choices(runner, source, session_key: str):
 
 def _ask_chat(runner, source, session_key, loop, question, labels) -> Optional[str]:
     from hermes_agent.gateway.run_turn_runner_clarify_delivery import _clarify_send_then_wait, text_fallback_coro
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
     adapter = runner._delivery_adapter_for(source)
     if adapter is None:
         return None
     clarify_id = uuid.uuid4().hex[:10]
     send = dict(chat_id=source.chat_id, question=question, choices=labels, clarify_id=clarify_id,
                 session_key=session_key, metadata=runner._thread_metadata_for_source(source))
-    from tools.approval_context import prompt_authority
+    from hermes_agent.tools.approval_context import prompt_authority
     # Asked on the command's executor thread: the command's sender is the requester.
     clarify_gateway.register(clarify_id, session_key, question, labels, authority=prompt_authority(
         source.user_id or "", source.user_name or "", source.chat_type or ""))
@@ -71,7 +71,7 @@ def viewer_choices(live, session_id: str):
 
 def _ask_viewers(live, session_id, question, labels) -> Optional[str]:
     from hermes_agent.gateway.session_server_requests import ask_viewer_result
-    from tools.clarify_gateway import get_clarify_timeout
+    from hermes_agent.tools.clarify_gateway import get_clarify_timeout
     timeout = get_clarify_timeout()
     result = ask_viewer_result(live.event_stream, session_id, "clarify",
                                {"questions": [{"qid": "q0", "question": question, "choices": labels,

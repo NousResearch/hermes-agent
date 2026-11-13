@@ -2,7 +2,7 @@
 
 Under a non-local terminal backend, model-supplied local paths passed to
 image_generate / video_generate must resolve through the sandbox-aware media
-resolver (tools.image_source) and reach providers as data: URLs — the same
+resolver (hermes_agent.tools.image_source) and reach providers as data: URLs — the same
 boundary vision/video analysis enforce. URLs pass through untouched and the
 local backend is a no-op.
 """
@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-import tools.image_generation_tool as igt
+import hermes_agent.tools.image_generation_tool as igt
 
 PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
@@ -22,7 +22,7 @@ PNG = base64.b64decode(
 
 @pytest.fixture(autouse=True)
 def _no_real_sandbox(monkeypatch):
-    import tools.terminal_tool as tt
+    import hermes_agent.tools.terminal_tool as tt
 
     monkeypatch.setattr(tt, "ensure_task_env", lambda *a, **k: None)
 
@@ -53,7 +53,7 @@ class TestConfineSourceImages:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
 
-        import tools.image_source as isrc
+        import hermes_agent.tools.image_source as isrc
 
         b64 = base64.b64encode(PNG).decode()
         monkeypatch.setattr(
@@ -74,7 +74,7 @@ class TestConfineSourceImages:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
 
-        import tools.image_source as isrc
+        import hermes_agent.tools.image_source as isrc
 
         monkeypatch.setattr(isrc, "_get_active_env", lambda tid: None)
 
@@ -94,7 +94,7 @@ class TestConfineSourceImages:
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
 
-        import tools.image_source as isrc
+        import hermes_agent.tools.image_source as isrc
 
         monkeypatch.setattr(isrc, "_get_active_env", lambda tid: None)
 
@@ -114,12 +114,12 @@ class TestConfineSourceImages:
     def test_video_generate_uses_same_chokepoint(self, monkeypatch, tmp_path):
         """video_generate's handler routes its image sources through the
         shared confinement helper too."""
-        import tools.video_generation_tool as vgt
+        import hermes_agent.tools.video_generation_tool as vgt
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
 
-        import tools.image_source as isrc
+        import hermes_agent.tools.image_source as isrc
 
         monkeypatch.setattr(isrc, "_get_active_env", lambda tid: None)
 

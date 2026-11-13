@@ -376,7 +376,7 @@ _NO_GIT_REVISION_FILES = frozenset({
 })
 _NO_GIT_REVISION_DIRS = frozenset({"dashboard", "desktop", "skills", "sidecar", "node_modules"})
 # JS module/JSX variants the guard does not classify as code. Kept local: adding them to
-# tools.plugin_guard.CODE_FILE_EXTENSIONS would exempt them from env-secret scan patterns.
+# hermes_agent.tools.plugin_guard.CODE_FILE_EXTENSIONS would exempt them from env-secret scan patterns.
 _NO_GIT_REVISION_EXTENSIONS = frozenset({".mjs", ".cjs", ".jsx", ".tsx"})
 
 
@@ -387,7 +387,7 @@ def _skip_preserve(name: str) -> bool:
 
 def _revision_owned_without_git(rel: Path) -> bool:
     """True for plugin code/control surfaces an update must never resurrect from the old tree."""
-    from tools.plugin_guard import CODE_FILE_EXTENSIONS
+    from hermes_agent.tools.plugin_guard import CODE_FILE_EXTENSIONS
     suffix = rel.suffix.lower()
     return (
         suffix in CODE_FILE_EXTENSIONS
@@ -444,12 +444,12 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[
     tree are carried while executable/declarative plugin surfaces remain revision-owned. If a
     user-owned path cannot be represented safely in the new tree (a layout clash, or a symlink in a
     git checkout's untracked/ignored set), fail before publication rather than silently dropping it.
-    Dirs in ``tools.plugin_guard.EXCLUDED_DIRS`` (``.venv/``, ``node_modules/``, tool caches) are
+    Dirs in ``hermes_agent.tools.plugin_guard.EXCLUDED_DIRS`` (``.venv/``, ``node_modules/``, tool caches) are
     install artefacts: they are neither carried nor inspected, so links inside them never stop an update.
     Returns the carried paths (POSIX, relative to the tree) so a later scan block can name them.
     """
     from hermes_cli.plugins_cmd import PluginOperationError
-    from tools.plugin_guard import EXCLUDED_DIRS
+    from hermes_agent.tools.plugin_guard import EXCLUDED_DIRS
 
     keep = {Path(rel) for rel in local or ()}
     linked: list[str] = []

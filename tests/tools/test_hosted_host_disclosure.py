@@ -16,7 +16,7 @@ import pytest
 
 from tests.tools.test_sandbox_scope_conformance import A
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
-from tools.environments import sandbox_conformance as c
+from hermes_agent.tools.environments import sandbox_conformance as c
 
 provider = _conformance_provider  # the recording-sandbox fixture, by its name
 
@@ -46,7 +46,7 @@ def test_a_failed_hosted_terminal_call_returns_no_host_traceback(provider, monke
 
 
 def test_a_failed_local_terminal_call_still_returns_its_traceback(monkeypatch):
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     monkeypatch.setenv("TERMINAL_ENV", "nosuchbackend_zz")
     result = json.loads(terminal_tool.terminal_tool("echo hi", task_id="t-local-fail"))
     assert result["status"] == "error" and "Unknown environment type" in result["error"]
@@ -92,7 +92,7 @@ def test_a_hosted_config_yaml_read_never_resolves_its_path_on_this_host(provider
     host_cwd.mkdir()
     monkeypatch.chdir(host_cwd)
     _serve_file(monkeypatch)
-    from tools.file_tools import _resolve_path_for_task
+    from hermes_agent.tools.file_tools import _resolve_path_for_task
     with c._bind(A):
         c.call_tool("terminal", {"command": "true"}, task_id="t")  # the sandbox is up
         # Where the read lands in the sandbox (a relative path: against the sandbox's working directory).
@@ -118,7 +118,7 @@ def test_a_hosted_read_under_a_hermes_directory_is_still_a_secret_file(provider,
 def test_a_local_config_yaml_under_the_hermes_home_is_still_recognized():
     from agent.redact import _is_under_hermes_home
     from hermes_constants import get_hermes_home
-    from tools.file_tools import read_file_tool
+    from hermes_agent.tools.file_tools import read_file_tool
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(CONFIG, encoding="utf-8")

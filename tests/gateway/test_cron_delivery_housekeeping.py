@@ -216,7 +216,7 @@ def test_primary_drain_delivers_credentialless_satellite_queue_row_through_prima
     runner = SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True), _profile_adapters={"satellite": {}})
     monkeypatch.setattr(gateway_run, "_handoff_watch_scopes", lambda _r: [("satellite", satellite_home)])
     try:
-        with patch("tools.send_message_tool._send_to_platform", _standalone), \
+        with patch("hermes_agent.tools.send_message_tool._send_to_platform", _standalone), \
              patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
             gateway_run._drain_restart_safe_cron_deliveries({Platform.DISCORD: PrimaryDiscord()}, loop, runner)
     finally:

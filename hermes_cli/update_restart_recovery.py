@@ -118,7 +118,7 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     launch = _launch_profile()
     target = profile if profile is not None else launch
     if target == "default" and launch != "default":
-        from tools.environments.local import host_gateway_child_env
+        from hermes_agent.tools.environments.local import host_gateway_child_env
         _adopt_parent_provenance()
         env = host_gateway_child_env()
     else:

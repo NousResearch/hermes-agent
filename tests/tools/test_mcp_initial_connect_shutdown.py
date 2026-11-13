@@ -6,13 +6,13 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from tools import mcp_tool_discovery as _mcp_discovery
-from tools import mcp_tool_lifecycle as _mcp_lifecycle
-from tools import mcp_tool_loop as _mcp_loop
+from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
+from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
 
 def _reset_mcp_state(mcp_tool) -> None:
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers()
     with mcp_tool._lock:
         mcp_tool._servers.clear()
@@ -21,8 +21,8 @@ def _reset_mcp_state(mcp_tool) -> None:
 
 
 def _cleanup_mcp_state(mcp_tool, extra_servers=()) -> None:
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    from tools.mcp_tool_loop import _run_on_mcp_loop
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_loop import _run_on_mcp_loop
     with mcp_tool._lock:
         loop = mcp_tool._mcp_loop
     if loop is not None and loop.is_running():
@@ -41,7 +41,7 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
     """Normal discovery must retain the parked task for clean shutdown."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     _reset_mcp_state(mcp_tool)
     created = []
@@ -112,9 +112,9 @@ def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp
     """A cached parked failure must revive through register_mcp_servers()."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.registry import ToolRegistry
-    import tools.registry as registry_module
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.registry import ToolRegistry
+    import hermes_agent.tools.registry as registry_module
 
     _reset_mcp_state(mcp_tool)
     created = []
@@ -213,9 +213,9 @@ def test_initial_auth_failure_is_retained_and_reaped(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools import mcp_tool_errors as _mcp_errors
-    from tools import mcp_tool_lifecycle as _mcp_lifecycle
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_errors as _mcp_errors
+    from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
     _reset_mcp_state(mcp_tool)
     created = []
@@ -258,9 +258,9 @@ def test_standalone_failed_connect_is_reaped_without_global_owner(monkeypatch, t
     """Probe-only _connect_server failures must not publish parked servers."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_loop as _mcp_loop
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
     _reset_mcp_state(mcp_tool)
     created = []

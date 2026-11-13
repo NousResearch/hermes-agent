@@ -118,7 +118,7 @@ class TestRegistryLookupsDoNotHitTheDisk:
         # The reason this cache exists. ToolRegistry.current_scope_key() runs
         # on every registry lookup, so it must not resolve the home path on
         # the filesystem every time.
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         calls = {"n": 0}
         real_resolve = Path.resolve

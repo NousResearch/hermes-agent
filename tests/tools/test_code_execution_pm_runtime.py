@@ -9,14 +9,14 @@ from pathlib import Path
 import pytest
 
 from pm.environments import install_state_dir, runtime_facts_path, site_packages, venv_python
-from tools import code_execution_env, code_execution_tool
-from tools.code_kernel import shutdown_all_kernels
+from hermes_agent.tools import code_execution_env, code_execution_tool
+from hermes_agent.tools.code_kernel import shutdown_all_kernels
 
 
 @pytest.fixture
 def runtime_dependency(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "h"))
-    root = Path(code_execution_env.__file__).resolve().parents[1]
+    root = Path(code_execution_env.__file__).resolve().parents[2]
     generation = install_state_dir(root) / "environments" / "fixture" / "venv"
     generation.mkdir(parents=True)
     (generation / "pyvenv.cfg").write_text(

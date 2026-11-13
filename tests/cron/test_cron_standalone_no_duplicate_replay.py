@@ -61,7 +61,7 @@ def _queued_rows(t, content):
 
 
 def _telegram_bot(monkeypatch, bot):
-    from tools.send_message_senders import _plugin_standalone_sender
+    from hermes_agent.tools.send_message_senders import _plugin_standalone_sender
     sender, _ = _plugin_standalone_sender("telegram")  # the module the registry really calls
     mod = sys.modules[sender.__module__]
     monkeypatch.setattr(mod, "_telegram_bot", lambda token, extra=None: bot)
@@ -168,7 +168,7 @@ def test_router_keeps_the_retryable_verdict_of_dict_and_object_results(loop, res
 def test_chunked_send_drops_nothing_sent_once_a_chunk_landed():
     """The shared chunk loop: a sender's ``retryable`` (nothing sent) holds for chunk 1 only; after a
     landed chunk the payload is partly on screen, so the failure must not read as replayable."""
-    from tools.send_message_tool import _send_chunks
+    from hermes_agent.tools.send_message_tool import _send_chunks
 
     def run(fail_at):
         async def send_one(chunk, is_last):
@@ -285,7 +285,7 @@ def test_a_maybe_delivered_attempt_is_never_erased_by_a_later_connect_failure(mo
         pytest.importorskip("telegram")
         attempts, send_message = _server_error_then_connect_error()
         _telegram_bot(monkeypatch, type("Bot", (), {"send_message": staticmethod(send_message)})())
-        from tools.send_message_senders import _plugin_standalone_sender
+        from hermes_agent.tools.send_message_senders import _plugin_standalone_sender
         mod = sys.modules[_plugin_standalone_sender("telegram")[0].__module__]
         monkeypatch.setattr(mod, "_telegram_retry_delay", lambda exc, attempt: 0)  # the real retry policy, no sleep
         t = _target(loop)

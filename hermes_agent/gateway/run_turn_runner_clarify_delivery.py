@@ -221,7 +221,7 @@ def clarify_card_still_wanted(runner, entry) -> bool:
         return False
     if entry is None:
         return True
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
     return not (entry.event.is_set() and entry.response == clarify_gateway.CANCELLED)
 
 

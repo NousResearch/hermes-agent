@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent import auxiliary_client
-from tools.approval_smart import _smart_approve
+from hermes_agent.tools.approval_smart import _smart_approve
 
 LOCAL = "http://127.0.0.1:18434/v1"
 

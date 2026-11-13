@@ -317,7 +317,7 @@ async def test_local_delivery_into_the_peer_minted_bot_chat_keeps_its_transient_
     from hermes_agent.gateway.session_authorities import served_profile_name
     from hermes_agent.gateway.session_bot import deliver
     from tests.waiting import async_wait_until
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     session_id = await _peer_minted(headless)
     texts = []
 
@@ -356,7 +356,7 @@ async def test_a_receipt_without_recorded_operator_access_retries_as_before(head
     from hermes_agent.gateway.session_authorities import served_profile_name
     from hermes_agent.gateway.session_bot import deliver
     from tests.waiting import async_wait_until
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     await _peer_minted(headless)
     texts = []
 

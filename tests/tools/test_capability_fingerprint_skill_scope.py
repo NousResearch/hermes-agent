@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from tools import bot_mode_probe
+from hermes_agent.tools import bot_mode_probe
 
 
 @pytest.fixture

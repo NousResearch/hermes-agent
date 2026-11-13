@@ -14,7 +14,7 @@ import tempfile
 
 import pytest
 
-from tools.environments.local import LocalEnvironment, _cwd_usable, _resolve_safe_cwd
+from hermes_agent.tools.environments.local import LocalEnvironment, _cwd_usable, _resolve_safe_cwd
 
 
 @pytest.fixture

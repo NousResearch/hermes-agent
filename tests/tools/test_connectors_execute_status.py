@@ -7,12 +7,12 @@ import logging
 
 import pytest
 
-from tools.connectors.gateway import client as client_module
-from tools.connectors.gateway.client import ConnectorClient
-from tools.connectors.gateway.errors import GatewayAuthError
-from tools.connectors.gateway.merge import partition_calls, splice_remote_results
-from tools.connectors.gateway.wire import EXECUTE_ERROR_CODES
-from tools.connectors.turn import CARD, LINK, SIDE, scoped_connection_surface
+from hermes_agent.tools.connectors.gateway import client as client_module
+from hermes_agent.tools.connectors.gateway.client import ConnectorClient
+from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError
+from hermes_agent.tools.connectors.gateway.merge import partition_calls, splice_remote_results
+from hermes_agent.tools.connectors.gateway.wire import EXECUTE_ERROR_CODES
+from hermes_agent.tools.connectors.turn import CARD, LINK, SIDE, scoped_connection_surface
 
 
 class FakeResponse:

@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools.fuzzy_match import GUTTER_STRIPPED_NOTE, fuzzy_find_and_replace
+from hermes_agent.tools.fuzzy_match import GUTTER_STRIPPED_NOTE, fuzzy_find_and_replace
 
 FILE = "def foo():\n    x = 1\n\n    return x\n"
 

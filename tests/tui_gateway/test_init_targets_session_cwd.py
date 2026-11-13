@@ -9,7 +9,7 @@ stale terminal record straight through as ``cwd`` — cannot slip past the build
 
 from __future__ import annotations
 
-from tools.terminal_tool import clear_session_cwd, record_session_cwd
+from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 from hermes_agent.tui_gateway import server
 
 

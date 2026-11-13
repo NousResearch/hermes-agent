@@ -16,7 +16,7 @@ import logging
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool import MCPServerTask
 
 
 # ── Jitter ───────────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ def test_retry_attempts_log_debug_transitions_warn(monkeypatch, tmp_path, caplog
     degraded→parked transition logs exactly one WARNING."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 2)
 
@@ -65,7 +65,7 @@ def test_retry_attempts_log_debug_transitions_warn(monkeypatch, tmp_path, caplog
         task = _Task("noisy")
         task._registered_tool_names = ["noisy__tool"]
 
-        with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.mcp_tool"):
             run_task = asyncio.ensure_future(task.run({"command": "x"}))
             for _ in range(1000):
                 await _real_sleep(0)
@@ -107,7 +107,7 @@ def test_initial_retry_attempts_log_debug(monkeypatch, tmp_path, caplog):
     (connecting→parked) is a WARNING."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     _real_sleep = asyncio.sleep
 
@@ -132,7 +132,7 @@ def test_initial_retry_attempts_log_debug(monkeypatch, tmp_path, caplog):
 
         task = _Task("startup")
 
-        with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.mcp_tool"):
             run_task = asyncio.ensure_future(task.run({"command": "x"}))
             for _ in range(1000):
                 await _real_sleep(0)

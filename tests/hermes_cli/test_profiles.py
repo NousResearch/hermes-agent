@@ -363,7 +363,7 @@ class TestCreateProfile:
         assert (foo / "SKILL.md").read_text(encoding="utf-8-sig") == "# external foo\n"
         assert (clone / "skills" / "local" / "SKILL.md").is_file()
         assert not (clone / "skills" / "gone").exists()
-        from tools.skills_tool import _collect_skill_candidates
+        from hermes_agent.tools.skills_tool import _collect_skill_candidates
         assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
     @pytest.mark.platforms("windows")
@@ -376,7 +376,7 @@ class TestCreateProfile:
         foo = clone / "skills" / "foo"
         assert os.lstat(foo).st_reparse_tag == profiles.stat.IO_REPARSE_TAG_MOUNT_POINT
         assert foo.resolve() == (external / "foo").resolve()
-        from tools.skills_tool import _collect_skill_candidates
+        from hermes_agent.tools.skills_tool import _collect_skill_candidates
         assert len(_collect_skill_candidates("foo", None, [clone / "skills", external])) == 1
 
     def test_sync_imports_requires_a_clone_source(self, profile_env):
@@ -427,7 +427,7 @@ class TestCreateProfile:
         """Copied Chromium markers must not route the clone through the source profile's CDP port."""
         import http.server
         import threading
-        from tools.browser_launcher import running_instance
+        from hermes_agent.tools.browser_launcher import running_instance
 
         default_home = profile_env / ".hermes"
         (default_home / "config.yaml").write_text("model: test", encoding="utf-8")
@@ -1822,7 +1822,7 @@ def _live_bot_desktop_launcher(profile_dir: Path):
     """A synthetic Bot Desktop launcher for ``profile_dir``: its own session (like launcher.sh) with the
     identity file + env runtime.status() reads, so the profile op sees a running screen."""
     import subprocess
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
 
     proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
     sd = profile_dir / "bot-desktop"
@@ -1839,7 +1839,7 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
     Xvnc/Xfce session otherwise keeps running against a directory that no longer exists (or now belongs to
     another name), holding its display number and an rfb.sock nobody can reach through status()."""
     import time
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
 
     profile_dir = create_profile("coder", no_alias=True)
     proc = _live_bot_desktop_launcher(profile_dir)

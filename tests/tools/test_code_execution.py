@@ -39,7 +39,7 @@ def _fresh_kernel_registry():
     """Session kernels are always on: dispose them per-test so a lingering
     kernel child can't outlive the run (hangs pytest at exit) or leak one
     test's interpreter state into the next."""
-    from tools.code_kernel import shutdown_all_kernels
+    from hermes_agent.tools.code_kernel import shutdown_all_kernels
 
     shutdown_all_kernels()
     yield
@@ -49,7 +49,7 @@ import threading
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools.code_execution_tool import (
+from hermes_agent.tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
     execute_code,
     generate_hermes_tools_module,
@@ -59,7 +59,7 @@ from tools.code_execution_tool import (
     _execute_remote,
     _format_interrupted_output,
 )
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
@@ -91,12 +91,12 @@ class TestSandboxRequirements(unittest.TestCase):
 
 class TestInterruptedOutput(unittest.TestCase):
     def tearDown(self):
-        from tools.interrupt import set_interrupt
+        from hermes_agent.tools.interrupt import set_interrupt
 
         set_interrupt(False)
 
     def test_uses_recorded_interrupt_source(self):
-        from tools.interrupt import set_interrupt
+        from hermes_agent.tools.interrupt import set_interrupt
 
         set_interrupt(True, reason="superseded by a new live turn")
 
@@ -140,10 +140,10 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         env = FakeEnv()
         fake_thread = MagicMock()
 
-        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
-             patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
-             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+        with patch("hermes_agent.tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("hermes_agent.tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
+             patch("hermes_agent.tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
+             patch("hermes_agent.tools.code_execution_tool.threading.Thread", return_value=fake_thread):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")
@@ -192,12 +192,12 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
 
         malicious_tz = "US/Eastern; echo PWNED"
 
-        with patch("tools.code_execution_tool._load_config",
+        with patch("hermes_agent.tools.code_execution_tool._load_config",
                    return_value={"timeout": 30, "max_tool_calls": 5}), \
-             patch("tools.code_execution_tool._get_or_create_env",
+             patch("hermes_agent.tools.code_execution_tool._get_or_create_env",
                    return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
-             patch("tools.code_execution_tool.threading.Thread",
+             patch("hermes_agent.tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
+             patch("hermes_agent.tools.code_execution_tool.threading.Thread",
                    return_value=fake_thread), \
              patch.dict(os.environ, {"HERMES_TIMEZONE": malicious_tz}):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
@@ -240,12 +240,12 @@ class TestRemoteSharedHostLockdown(unittest.TestCase):
                 return {"output": "", "returncode": 0}
 
         env = FakeEnv()
-        with patch("tools.code_execution_tool._load_config",
+        with patch("hermes_agent.tools.code_execution_tool._load_config",
                    return_value={"timeout": 30, "max_tool_calls": 5}), \
-             patch("tools.code_execution_tool._get_or_create_env",
+             patch("hermes_agent.tools.code_execution_tool._get_or_create_env",
                    return_value=(env, "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
-             patch("tools.code_execution_tool.threading.Thread",
+             patch("hermes_agent.tools.code_execution_tool._ship_file_to_remote") as ship_mock, \
+             patch("hermes_agent.tools.code_execution_tool.threading.Thread",
                    return_value=MagicMock()):
             result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
 
@@ -305,7 +305,7 @@ class TestExecuteCode(unittest.TestCase):
 
     def _run(self, code, enabled_tools=None):
         """Helper: run code with mocked handle_function_call."""
-        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=_mock_handle_function_call):
             result = execute_code(
                 code=code,
                 task_id="test-task",
@@ -396,7 +396,7 @@ else:
                 function_name, function_args, task_id=task_id, user_task=user_task
             )
 
-        with patch("model_tools.handle_function_call", side_effect=slow_mock):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=slow_mock):
             raw = execute_code(
                 code=code,
                 task_id="test-concurrent",
@@ -471,7 +471,7 @@ except ValueError as e:
 
 class TestStubSchemaDrift(unittest.TestCase):
     """Verify that _TOOL_STUBS in code_execution_tool.py stay in sync with
-    the real tool schemas registered in tools/registry.py.
+    the real tool schemas registered in hermes_agent/tools/registry.py.
 
     If a tool gains a new parameter but the sandbox stub isn't updated,
     the LLM will try to use the parameter (it sees it in the system prompt)
@@ -487,12 +487,12 @@ class TestStubSchemaDrift(unittest.TestCase):
         """Every user-facing parameter in the real schema must appear in the
         corresponding _TOOL_STUBS entry."""
         import re
-        from tools.code_execution_tool import _TOOL_STUBS
+        from hermes_agent.tools.code_execution_tool import _TOOL_STUBS
 
         # Import the registry and trigger tool registration
-        from tools.registry import registry
-        import tools.file_tools
-        import tools.web_tools
+        from hermes_agent.tools.registry import registry
+        import hermes_agent.tools.file_tools
+        import hermes_agent.tools.web_tools
 
         for tool_name, (sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)
@@ -604,8 +604,8 @@ class TestEnvVarFiltering(unittest.TestCase):
         try:
             if extra_env:
                 os.environ.update(extra_env)
-            with patch("model_tools.handle_function_call", return_value='{}'), \
-                 patch("tools.code_execution_tool._load_config",
+            with patch("hermes_agent.model_tools.handle_function_call", return_value='{}'), \
+                 patch("hermes_agent.tools.code_execution_tool._load_config",
                        return_value={"timeout": 10, "max_tool_calls": 50}):
                 # reset=True: a session kernel's env is frozen at spawn, so
                 # env-building rules are only observable on a FRESH kernel —
@@ -684,7 +684,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         """Mirror recovery: terminal(code=...) names the stray argument and
         redirects to execute_code, instead of the opaque
         'Invalid command: expected string, got NoneType'."""
-        from tools.terminal_tool import _handle_terminal
+        from hermes_agent.tools.terminal_tool import _handle_terminal
         result = json.loads(_handle_terminal({"code": "print(1)"}, task_id="test"))
         self.assertIn("error", result)
         self.assertIn("'code' parameter", result["error"])
@@ -726,7 +726,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         execute_code now works on Windows via loopback TCP, so the
         error is only emitted when SANDBOX_AVAILABLE is explicitly
         flipped off (e.g. for future platform-specific disables)."""
-        with patch("tools.code_execution_tool.SANDBOX_AVAILABLE", False):
+        with patch("hermes_agent.tools.code_execution_tool.SANDBOX_AVAILABLE", False):
             result = json.loads(execute_code("print('hi')", task_id="test"))
             self.assertIn("error", result)
             self.assertIn("unavailable", result["error"].lower())
@@ -740,7 +740,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
             "from hermes_tools import terminal\n"
             "print('fallback ok')\n"
         )
-        with patch("model_tools.handle_function_call",
+        with patch("hermes_agent.model_tools.handle_function_call",
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(
                 code, task_id="test-nonoverlap",
@@ -758,7 +758,7 @@ class TestLoadConfig(unittest.TestCase):
 
 
     def test_does_not_import_interactive_cli(self):
-        from tools.code_execution_tool import _load_config
+        from hermes_agent.tools.code_execution_tool import _load_config
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
         with patch.dict("sys.modules", {"cli": mock_cli}), \
@@ -776,7 +776,7 @@ class TestInterruptHandling(unittest.TestCase):
     def test_interrupt_event_stops_execution(self):
         """When interrupt is set for the execution thread, execute_code should stop."""
         code = "import time; time.sleep(60); print('should not reach')"
-        from tools.interrupt import set_interrupt
+        from hermes_agent.tools.interrupt import set_interrupt
 
         # Capture the main thread ID so we can target the interrupt correctly.
         # execute_code runs in the current thread; set_interrupt needs its ID.
@@ -791,9 +791,9 @@ class TestInterruptHandling(unittest.TestCase):
         t.start()
 
         try:
-            with patch("model_tools.handle_function_call",
+            with patch("hermes_agent.model_tools.handle_function_call",
                         return_value=json.dumps({"ok": True})), \
-                 patch("tools.code_execution_tool._load_config",
+                 patch("hermes_agent.tools.code_execution_tool._load_config",
                        return_value={"timeout": 30, "max_tool_calls": 50}):
                 result = json.loads(execute_code(
                     code, task_id="test-interrupt",
@@ -810,7 +810,7 @@ class TestHeadTailTruncation(unittest.TestCase):
     """Tests for head+tail truncation of large stdout in execute_code."""
 
     def _run(self, code):
-        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=_mock_handle_function_call):
             result = execute_code(
                 code=code,
                 task_id="test-task",
@@ -845,10 +845,10 @@ class TestHeadTailTruncation(unittest.TestCase):
 
         fake_thread = MagicMock()
 
-        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
-             patch("tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
-             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+        with patch("hermes_agent.tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("hermes_agent.tools.code_execution_tool._get_or_create_env", return_value=(FakeEnv(), "ssh")), \
+             patch("hermes_agent.tools.code_execution_tool._ship_file_to_remote"), \
+             patch("hermes_agent.tools.code_execution_tool.threading.Thread", return_value=fake_thread):
             result = json.loads(_execute_remote("print('large')", "task-1", ["terminal"]))
 
         self.assertEqual(result["status"], "success")
@@ -884,7 +884,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         Sends each dict in *requests* as a newline-delimited JSON message
         and returns the list of decoded JSON responses.
         """
-        from tools.code_execution_rpc import _rpc_server_loop
+        from hermes_agent.tools.code_execution_rpc import _rpc_server_loop
 
         # socketpair gives us a connected client end and a "server" end we
         # can hand to accept() by wrapping it in a tiny listener shim.
@@ -913,7 +913,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
         def _run():
             with patch(
-                "model_tools.handle_function_call",
+                "hermes_agent.model_tools.handle_function_call",
                 side_effect=_mock_handle_function_call,
             ):
                 _rpc_server_loop(

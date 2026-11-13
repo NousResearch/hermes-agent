@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tools.file_tools import search_tool
+from hermes_agent.tools.file_tools import search_tool
 
 
 @pytest.fixture
@@ -157,7 +157,7 @@ class TestZeroMatchProbeEngineParity:
 
     @pytest.mark.parametrize("engine", ["rg", "grep"])
     def test_hint_is_attached_on_each_search_engine(self, proj, monkeypatch, engine):
-        from tools.file_tools import _get_file_ops
+        from hermes_agent.tools.file_tools import _get_file_ops
 
         ops = _get_file_ops(task_id=f"t-parity-{engine}")
         if not ops._has_command(engine):
@@ -179,7 +179,7 @@ class TestZeroMatchProbeEngineParity:
         )
 
     def test_hint_not_attached_when_matches_exist(self, proj, monkeypatch):
-        from tools.file_tools import _get_file_ops
+        from hermes_agent.tools.file_tools import _get_file_ops
 
         ops = _get_file_ops(task_id="t-parity-hit")
         monkeypatch.setattr(ops, "_zero_match_probe", lambda *a, **k: "SENTINEL_HINT")
@@ -194,7 +194,7 @@ class TestZeroMatchProbeEngineParity:
         explanation must not be attached on the rg path. A fix that merely
         deleted the early return would regress this.
         """
-        from tools.file_tools import _get_file_ops
+        from hermes_agent.tools.file_tools import _get_file_ops
 
         ops = _get_file_ops(task_id="t-parity-nl")
         if not ops._has_command("rg"):
@@ -241,7 +241,7 @@ class TestSymlinkedRootOnTheFilesLane:
     @pytest.mark.parametrize("engine", ["find", "rg"])
     @pytest.mark.parametrize("lane", ["linkdir", "link.md"])
     def test_symlinked_root_lists_the_target_files(self, linked, monkeypatch, engine, lane):
-        from tools.file_tools import _get_file_ops
+        from hermes_agent.tools.file_tools import _get_file_ops
 
         ops = _get_file_ops(task_id=f"t-symlink-files-{engine}-{lane.replace('.', '-')}")
         if not ops._has_command(engine):
@@ -255,7 +255,7 @@ class TestSymlinkedRootOnTheFilesLane:
 
     def test_plain_and_empty_roots_keep_their_answer(self, linked, monkeypatch):
         """Following the operand must not invent matches or move an ordinary root."""
-        from tools.file_tools import _get_file_ops
+        from hermes_agent.tools.file_tools import _get_file_ops
 
         ops = _get_file_ops(task_id="t-symlink-files-guards")
         self._pin_engine(monkeypatch, ops, "find")
@@ -274,7 +274,7 @@ class TestSymlinkedRootOnTheFilesLane:
         ``find <link> -type f`` returned no files on every platform, so the pipeline was
         byte-identical to "no match"; ``find -H`` follows the operand.
         """
-        from tools.file_tools import _get_file_ops
+        from hermes_agent.tools.file_tools import _get_file_ops
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         hidden = tmp_path / ".dot"
@@ -297,9 +297,9 @@ class TestSymlinkedRootOnTheFilesLane:
 
     def test_a_symlinked_root_pointing_at_home_is_still_refused(self, tmp_path, monkeypatch):
         """The no-rg breadth guard must classify the link's target (#116270)."""
-        from tools import file_operations
-        from tools.environments.local import LocalEnvironment
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools import file_operations
+        from hermes_agent.tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.file_operations import ShellFileOperations
 
         home = tmp_path / "home"
         home.mkdir()

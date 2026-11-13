@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from tools.patch_parser import (
+from hermes_agent.tools.patch_parser import (
     OperationType,
     apply_v4a_operations,
     parse_v4a_patch,
@@ -559,7 +559,7 @@ class TestApplyDelete:
 
 class TestCountOccurrences:
     def test_basic(self):
-        from tools.patch_parser import _count_occurrences
+        from hermes_agent.tools.patch_parser import _count_occurrences
         assert _count_occurrences("aaa", "a") == 3
         assert _count_occurrences("aaa", "aa") == 2
         assert _count_occurrences("hello world", "xyz") == 0
@@ -899,7 +899,7 @@ class TestV4ABomRoundTrip:
         ``file_path``, simulating BOM-preserving behaviour like the real
         ``FileOperations.write_file`` (which probes disk for the marker)."""
         from pathlib import Path
-        from tools.file_operations import _has_bom, _UTF8_BOM
+        from hermes_agent.tools.file_operations import _has_bom, _UTF8_BOM
 
         target = Path(file_path)
         _bom = self.BOM  # capture for inner class
@@ -930,7 +930,7 @@ class TestV4ABomRoundTrip:
 
     def test_update_preserves_bom(self, tmp_path):
         """A V4A UPDATE on a BOM-bearing file keeps the BOM."""
-        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+        from hermes_agent.tools.patch_parser import parse_v4a_patch, apply_v4a_operations
 
         target = tmp_path / "bom_config.py"
         original = self.BOM + "setting = 'old'\n"
@@ -960,7 +960,7 @@ class TestV4ABomRoundTrip:
 
     def test_update_no_bom_when_original_had_none(self, tmp_path):
         """A V4A UPDATE on a plain file must NOT inject a BOM."""
-        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+        from hermes_agent.tools.patch_parser import parse_v4a_patch, apply_v4a_operations
 
         target = tmp_path / "plain.py"
         original = "print('hello')\n"

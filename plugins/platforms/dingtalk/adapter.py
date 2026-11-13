@@ -769,7 +769,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:  # httpx reads HTTPS_PROXY itself: the text may echo it
         try:  # send_message_tool._error redacts access_token from webhook URLs (lazy import avoids a circular)
-            from tools.send_message_tool import _error as _redact_error
+            from hermes_agent.tools.send_message_tool import _error as _redact_error
             return _redact_error(f"DingTalk send failed: {describe_proxy_error(e, env_proxy_for_redaction(webhook_url)) or e}")
         except Exception:
             return send_error(f"DingTalk send failed: {describe_proxy_error(e, env_proxy_for_redaction(webhook_url)) or e}")

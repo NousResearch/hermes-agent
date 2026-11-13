@@ -55,7 +55,7 @@ def test_retired_constants_reload_handoffs_old_gateway_recovery(fresh_child, mon
 
 @pytest.mark.parametrize("prompt", [True, False])
 def test_retired_ensure_reports_unavailable_without_installing(prompt, no_external_work):
-    from tools.lazy_deps import ensure
+    from hermes_agent.tools.lazy_deps import ensure
 
     # Dependency-unavailable callers must not mistake a no-op for readiness.
     with pytest.raises(ImportError, match="relaunch"):

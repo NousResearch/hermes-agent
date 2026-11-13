@@ -25,8 +25,8 @@ def isolated_home(tmp_path, monkeypatch):
     from agent import skill_utils as su
     su._external_dirs_cache_clear()
 
-    from tools import skills_tool
-    import tools.skill_manager_tool as smt
+    from hermes_agent.tools import skills_tool
+    import hermes_agent.tools.skill_manager_tool as smt
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", home / "skills")
     monkeypatch.setattr(smt, "SKILLS_DIR", home / "skills")
     yield home
@@ -97,8 +97,8 @@ class TestDisplaySkillCreateDir:
 
 
 def test_tool_schema_stays_stable_when_skill_creation_home_changes(isolated_home, tmp_path):
-    from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
-    from tools.registry import registry
+    from hermes_agent.tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
+    from hermes_agent.tools.registry import registry
 
     _write_config(isolated_home, f"skills:\n  create_dir: {tmp_path / 'first-brain'}\n")
     first = registry.get_definitions({"skill_manage"})[0]
@@ -138,7 +138,7 @@ class TestDiscovery:
 
 class TestCreateRouting:
     def test_create_lands_in_create_dir(self, isolated_home, tmp_path):
-        from tools.skill_manager_tool import skill_manage
+        from hermes_agent.tools.skill_manager_tool import skill_manage
         brain = tmp_path / "brain-skills"
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
         res = json.loads(skill_manage("", "", operations=[{
@@ -157,7 +157,7 @@ class TestCreateRouting:
         assert str(brain / "routed-skill-flat") == res_flat["path"]
 
     def test_create_with_category(self, isolated_home, tmp_path):
-        from tools.skill_manager_tool import skill_manage
+        from hermes_agent.tools.skill_manager_tool import skill_manage
         brain = tmp_path / "brain-skills"
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
         res = json.loads(skill_manage("", "", operations=[{
@@ -168,7 +168,7 @@ class TestCreateRouting:
         assert (brain / "devops" / "cat-skill" / "SKILL.md").exists()
 
     def test_default_create_still_local(self, isolated_home):
-        from tools.skill_manager_tool import skill_manage
+        from hermes_agent.tools.skill_manager_tool import skill_manage
         _write_config(isolated_home, "skills: {}\n")
         res = json.loads(skill_manage("", "", operations=[{
             "action": "create", "name": "local-skill",
@@ -178,7 +178,7 @@ class TestCreateRouting:
         assert (isolated_home / "skills" / "local-skill" / "SKILL.md").exists()
 
     def test_created_skill_is_findable_and_patchable(self, isolated_home, tmp_path):
-        from tools.skill_manager_tool import skill_manage, _find_skill
+        from hermes_agent.tools.skill_manager_tool import skill_manage, _find_skill
         brain = tmp_path / "brain-skills"
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
         json.loads(skill_manage("", "", operations=[{

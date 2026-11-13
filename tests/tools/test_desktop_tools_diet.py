@@ -18,10 +18,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 class TestPreviewHandler(unittest.TestCase):
     def test_open_and_close_route_through_desktop_ui(self):
-        from tools import preview_tool
+        from hermes_agent.tools import preview_tool
 
         sent = []
-        with patch("tools.desktop_ui.emit", side_effect=lambda ev, p: sent.append((ev, p)) or True):
+        with patch("hermes_agent.tools.desktop_ui.emit", side_effect=lambda ev, p: sent.append((ev, p)) or True):
             r = json.loads(preview_tool._handle_preview({"action": "open", "url": "www.cnn.com"}))
             self.assertTrue(r["success"])
             self.assertEqual(r["url"], "https://www.cnn.com")  # normalizer kept
@@ -30,7 +30,7 @@ class TestPreviewHandler(unittest.TestCase):
         self.assertEqual([e for e, _ in sent], ["preview.open", "preview.close"])
 
     def test_read_outside_desktop_session_teaches(self):
-        from tools import preview_tool
+        from hermes_agent.tools import preview_tool
 
         r = json.loads(preview_tool._handle_preview({"action": "read"}))
         self.assertFalse(r.get("success", False))

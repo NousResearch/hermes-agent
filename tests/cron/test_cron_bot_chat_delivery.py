@@ -83,7 +83,7 @@ def test_preflight_still_blocks_unknown_platforms():
 # ── create-time validation ───────────────────────────────────────────────────
 
 def test_create_validation_rejects_unknown_profile():
-    from tools.cronjob_tools import _validate_bot_chat_deliver
+    from hermes_agent.tools.cronjob_tools import _validate_bot_chat_deliver
 
     with mock.patch("hermes_cli.profiles.profile_exists", return_value=False):
         err = _validate_bot_chat_deliver("bot-chat:ghost")
@@ -91,7 +91,7 @@ def test_create_validation_rejects_unknown_profile():
 
 
 def test_create_validation_accepts_bare_and_existing():
-    from tools.cronjob_tools import _validate_bot_chat_deliver
+    from hermes_agent.tools.cronjob_tools import _validate_bot_chat_deliver
 
     assert _validate_bot_chat_deliver("bot-chat") is None
     assert _validate_bot_chat_deliver(None) is None
@@ -104,7 +104,7 @@ def test_create_validation_accepts_bare_and_existing():
 
 def test_deliver_message_carries_cron_attribution(tmp_path, monkeypatch):
     """The admitted turn self-identifies as scheduled output, not the user."""
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     captured = {}
@@ -124,7 +124,7 @@ def test_deliver_message_carries_cron_attribution(tmp_path, monkeypatch):
 def test_failure_notice_reaches_the_owner_as_a_diagnostic(tmp_path, monkeypatch):
     """A delivered ``for_failure`` notice keeps ``notification_category="diagnostic"`` through
     the owner transport (R1/R2 minor: the category was accepted but dropped)."""
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen = []
@@ -146,7 +146,7 @@ def test_failure_notice_reaches_the_owner_as_a_diagnostic(tmp_path, monkeypatch)
 def test_deliver_without_authority_is_parked_not_a_second_writer(tmp_path, monkeypatch):
     """No running authority → parked for a later tick (explicit queued status); never a local CLI turn."""
     import subprocess
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(subprocess, "run", mock.Mock(side_effect=AssertionError("no local inference fallback")))
@@ -160,7 +160,7 @@ def test_failure_notice_to_a_profile_hiding_warnings_is_suppressed_not_sent(tmp_
     """A ``for_failure`` notice whose TARGET profile hides warning notifications is booked as a
     durable ``suppressed`` disposition (flagged on the job), never admitted to the owner; a
     requested (non-failure) result is never gated."""
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n")
@@ -211,7 +211,7 @@ def test_tick_hands_legacy_pending_records_to_the_live_owner_once(tmp_path, monk
     import hermes_agent.cron.jobs as J
     import hermes_agent.cron.scheduler as S
     from hermes_agent.cron import scheduler_authority
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(J, "HERMES_DIR", tmp_path)

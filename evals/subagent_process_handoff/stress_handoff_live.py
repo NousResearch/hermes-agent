@@ -14,10 +14,10 @@ import time
 
 WORKTREE = os.environ["HERMES_WORKTREE"]
 sys.path.insert(0, WORKTREE)
-import tools.process_registry as pr
+import hermes_agent.tools.process_registry as pr
 pr._SYSTEMD_SCOPE_AVAILABLE = False
-from tools.process_registry import process_registry
-import tools.async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
+import hermes_agent.tools.async_delegation as ad
 from run_agent import AIAgent
 
 MODEL = os.environ.get("LIVE_MODEL", "openai/gpt-5.6-terra")

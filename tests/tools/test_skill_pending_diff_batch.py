@@ -28,9 +28,9 @@ class TestSkillPendingDiffBatch(unittest.TestCase):
                   encoding="utf-8") as f:
             f.write(SK.format(n="probe"))
         # Re-import against the temp home (skill lookup caches SKILLS_DIR).
-        import tools.skill_manager_tool as smt
+        import hermes_agent.tools.skill_manager_tool as smt
         importlib.reload(smt)
-        import tools.write_approval as wa
+        import hermes_agent.tools.write_approval as wa
         importlib.reload(wa)
         self.wa = wa
 

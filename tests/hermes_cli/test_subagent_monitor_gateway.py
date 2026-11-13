@@ -1,7 +1,7 @@
 """CLI-12: the Ctrl+T monitor and dock read the gateway session's subagents.
 
 Rewired, delegate_task children run in the gateway, so the CLI process's own
-``tools.delegate_tool_registry`` is empty. The monitor lists, tails, steers and stops them through
+``hermes_agent.tools.delegate_tool_registry`` is empty. The monitor lists, tails, steers and stops them through
 the session's ``subagent.list`` / ``subagent.tail`` / ``subagent.steer`` / ``subagent.interrupt``
 verbs (scripted fake gateway, no live gateway).
 """
@@ -54,7 +54,7 @@ class FakeClient:
 
 @pytest.fixture
 def gateway(monkeypatch):
-    from tools import delegate_tool_registry as registry
+    from hermes_agent.tools import delegate_tool_registry as registry
     monkeypatch.setattr(registry, "_active_subagents", {})  # the CLI process runs no children
     client = FakeClient()
 

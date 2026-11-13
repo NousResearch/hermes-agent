@@ -2,7 +2,7 @@
 
 import json
 
-from tools import read_window_tool as rw
+from hermes_agent.tools import read_window_tool as rw
 
 
 

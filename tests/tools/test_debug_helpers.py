@@ -1,10 +1,10 @@
-"""Tests for tools/debug_helpers.py — DebugSession class."""
+"""Tests for hermes_agent/tools/debug_helpers.py — DebugSession class."""
 
 import json
 import os
 from unittest.mock import patch
 
-from tools.debug_helpers import DebugSession
+from hermes_agent.tools.debug_helpers import DebugSession
 
 
 class TestDebugSessionDisabled:

@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from tools.environments.base_processes import LongLivedProcessMixin
+from hermes_agent.tools.environments.base_processes import LongLivedProcessMixin
 
 
 def _alive(pid: int) -> bool:

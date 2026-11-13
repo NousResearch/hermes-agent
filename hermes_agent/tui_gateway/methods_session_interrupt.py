@@ -63,7 +63,7 @@ def _recover_unreachable_compute_host_turn(sid: str, session: dict, inflight_at_
     _clear_pending(sid)
     with contextlib.suppress(Exception):
         _announce_cancelled_gateway_approvals(session, "interrupt", session_id=sid)
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
 
 

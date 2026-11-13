@@ -587,7 +587,7 @@ class TestRegistryDispatchConvention:
     def test_register_then_dispatch_via_registry(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(tools, "_load_config", dict)
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         class _Ctx:
             def register_tool(self, name, toolset, schema, handler, **kw):

@@ -25,7 +25,7 @@ class SessionTodoResultMixin:
         if not session_id:
             return None
         if max_chars is None:
-            from tools.todo_tool import MAX_TODO_RESULT_CHARS
+            from hermes_agent.tools.todo_tool import MAX_TODO_RESULT_CHARS
             max_chars = MAX_TODO_RESULT_CHARS
         session_ids = self._resume_lineage_ids(session_id)
         with self._read_ctx() as conn:

@@ -83,8 +83,8 @@ def test_background_text_prompt_whose_receipt_times_out_stays_pending(monkeypatc
     import asyncio
     from concurrent.futures import TimeoutError as FutureTimeout
 
-    from tools import approval
-    from tools.approval_gateway_wait import _await_gateway_decision
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
 
     sent = []
 

@@ -165,7 +165,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
                return_value={"cron": {"wrap_response": False, **(cron_cfg or {})}}), \
          patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification", side_effect=_record_verification), \
          patch("hermes_agent.gateway.delivery.DeliveryRouter", return_value=router), \
-         patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
         error = _deliver_result(job, content, adapters=_adapters(relay), loop=loop)
     return error, router_calls, standalone_calls
@@ -371,7 +371,7 @@ class TestStandaloneSendIsBounded:
              patch("hermes_agent.cron.scheduler.load_config",
                    return_value={"cron": {"wrap_response": False, **cron_cfg}}), \
              patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \
-             patch("tools.send_message_tool._send_to_platform", sender):
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", sender):
             return _deliver_result(_job(), "Nightly report.")
 
     def test_hung_send_is_released_at_the_configured_bound(self, caplog):
@@ -405,7 +405,7 @@ class TestStandaloneSendIsBounded:
              patch("hermes_agent.cron.scheduler.load_config", return_value={
                  "cron": {"wrap_response": False, "standalone_send_timeout_seconds": 1}}), \
              patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \
-             patch("tools.send_message_tool._send_to_platform", _slow_upload), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", _slow_upload), \
              caplog.at_level(logging.INFO, logger="hermes_agent.cron.scheduler"):
             error = _deliver_result(_job(), f"Nightly report.\nMEDIA:{media}")
 

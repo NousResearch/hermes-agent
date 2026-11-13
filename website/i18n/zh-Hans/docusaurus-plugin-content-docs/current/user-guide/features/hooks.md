@@ -422,7 +422,7 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 | `args` | `dict` | 模型传递给工具的参数 |
 | `task_id` | `str` | 会话/任务标识符。未设置时为空字符串。 |
 
-**触发位置：** `model_tools.py` 中的 `handle_function_call()` 内，工具处理器运行前。每次工具调用触发一次——若模型并行调用 3 个工具，则触发 3 次。
+**触发位置：** `hermes_agent/model_tools.py` 中的 `handle_function_call()` 内，工具处理器运行前。每次工具调用触发一次——若模型并行调用 3 个工具，则触发 3 次。
 
 **返回值——阻断或要求审批：**
 
@@ -486,7 +486,7 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str,
 | `task_id` | `str` | 会话/任务标识符。未设置时为空字符串。 |
 | `duration_ms` | `int` | 工具分发耗时，单位毫秒（使用 `time.monotonic()` 在 `registry.dispatch()` 前后测量）。 |
 
-**触发位置：** `model_tools.py` 中的 `handle_function_call()` 内，工具处理器返回后。每次工具调用触发一次。若工具抛出未处理异常，**不会**触发（错误被捕获并以错误 JSON 字符串返回，`post_tool_call` 以该错误字符串作为 `result` 触发）。
+**触发位置：** `hermes_agent/model_tools.py` 中的 `handle_function_call()` 内，工具处理器返回后。每次工具调用触发一次。若工具抛出未处理异常，**不会**触发（错误被捕获并以错误 JSON 字符串返回，`post_tool_call` 以该错误字符串作为 `result` 触发）。
 
 **返回值：** 忽略。
 
@@ -845,7 +845,7 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | `child_status` | `str` | `"completed"`、`"failed"`、`"interrupted"` 或 `"error"` |
 | `duration_ms` | `int` | 运行子 agent 的挂钟时间，单位毫秒 |
 
-**触发位置：** `tools/delegate_tool.py` 中，`ThreadPoolExecutor.as_completed()` 排空所有子 future 后。触发被编排到父线程，因此 hook 作者无需考虑并发回调执行问题。
+**触发位置：** `hermes_agent/tools/delegate_tool.py` 中，`ThreadPoolExecutor.as_completed()` 排空所有子 future 后。触发被编排到父线程，因此 hook 作者无需考虑并发回调执行问题。
 
 **返回值：** 忽略。
 

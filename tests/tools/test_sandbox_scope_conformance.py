@@ -1,6 +1,6 @@
 """Sandbox conformance: a hosted scope's tools address only that agent's sandbox.
 
-The checks live in ``tools/environments/sandbox_conformance.py`` so a hosted backend plugin runs the
+The checks live in ``hermes_agent/tools/environments/sandbox_conformance.py`` so a hosted backend plugin runs the
 same ones against its own provider; here they run against the recording stub, through the real tool
 registry, with hosted scopes bound by ``agent.runtime_scope.bind_state``. Local behaviour is covered
 by the existing terminal/file/process suites, which run with no hosted scope bound.
@@ -14,8 +14,8 @@ import pytest
 
 from agent import terminal_env_registry as reg
 from hermes_scope import Principal, Scope
-from tools.environments import sandbox_conformance as conformance
-from tools.environments.sandbox_scope import (
+from hermes_agent.tools.environments import sandbox_conformance as conformance
+from hermes_agent.tools.environments.sandbox_scope import (
     CrossAgentHandleRefused, HostedSandboxRequired, SandboxIdentity, ScopedEnvironment, sandbox_identity,
 )
 
@@ -26,8 +26,8 @@ OTHER_TENANT_A = Scope("globex", "agent-a", Principal("u1"), owner=Principal("u1
 
 @pytest.fixture
 def provider(monkeypatch):
-    import model_tools  # registers the tools the checks dispatch through the registry
-    from tools import file_tools, process_registry, terminal_tool
+    from hermes_agent import model_tools  # registers the tools the checks dispatch through the registry
+    from hermes_agent.tools import file_tools, process_registry, terminal_tool
 
     reg._reset_for_tests()
     stub = conformance.RecordingSandboxProvider()
@@ -80,7 +80,7 @@ def test_a_hosted_scope_with_a_host_backend_runs_nothing_here(provider, monkeypa
 
 def test_a_builtin_backend_is_refused_in_a_hosted_scope(monkeypatch, provider):
     from agent.runtime_scope import bind_state
-    from tools.terminal_tool_backends import _create_environment
+    from hermes_agent.tools.terminal_tool_backends import _create_environment
 
     with bind_state(A):
         with pytest.raises(HostedSandboxRequired):
@@ -100,7 +100,7 @@ def test_an_environment_with_no_scope_bound_is_refused(provider):
 
 
 def test_local_long_lived_process_round_trip(tmp_path):
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
     stream = env.start_process("echo", ["cat"])
@@ -119,12 +119,12 @@ def test_a_cached_environment_of_another_agent_is_refused_not_used(provider):
     """Even if another agent's sandbox ended up under this agent's cache key, it is refused and never
     reached: the guard checks the environment's own identity, not where it was found."""
     from agent.runtime_scope import bind_state
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
 
     with bind_state(B):
         conformance.call_tool("terminal", {"command": "true"}, task_id="t")
         env_b = conformance._env_for("t")
-    from tools.terminal_tool_lifecycle import get_active_env
+    from hermes_agent.tools.terminal_tool_lifecycle import get_active_env
 
     terminal_tool._active_environments[sandbox_identity(A).key] = env_b
     seen = len(provider.calls)
@@ -141,7 +141,7 @@ def test_another_agents_process_never_makes_a_prefix_ambiguous(provider):
     it neither resolves nor turns this agent's own lookup into an ambiguous miss (which would reveal
     that it exists)."""
     from agent.runtime_scope import bind_state
-    from tools.process_registry import ProcessSession, process_registry
+    from hermes_agent.tools.process_registry import ProcessSession, process_registry
 
     own = ProcessSession(id="proc_abcdef000001", command="own", sandbox_key=sandbox_identity(B).key, exited=True)
     other = ProcessSession(id="proc_abcdef000002", command="other", sandbox_key=sandbox_identity(A).key, exited=True)
@@ -157,7 +157,7 @@ def test_local_long_lived_process_dies_with_hermes_until_stopped(tmp_path, monke
     """A long-lived local process is owned (its group is covered by the owner-death supervisor, so a
     SIGKILLed Hermes takes it down) from start until ``stop_process`` releases it."""
     from hermes_cli import process_identity
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     owned, released = [], []
     monkeypatch.setattr(process_identity, "own_process_groups", lambda pgids: owned.extend(pgids))
@@ -175,7 +175,7 @@ def test_every_hosted_operation_receives_the_bound_scope():
     """A backend whose operations take ``**kwargs`` still receives the scope; one that cannot take it
     at all is refused when its sandbox is created, never silently handed no authority."""
     from agent.runtime_scope import bind_state
-    from tools.environments.sandbox_scope import require_hosted_interface
+    from hermes_agent.tools.environments.sandbox_scope import require_hosted_interface
 
     class KwargsBackend:
         def execute(self, command, **kwargs):
@@ -228,7 +228,7 @@ def test_an_idle_sandbox_is_suspended_under_its_owners_scope(provider):
 
 
 def test_cleanup_stops_every_long_lived_process(tmp_path):
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     env = LocalEnvironment(cwd=str(tmp_path), timeout=10)
     env.start_process("one", ["cat"])
@@ -251,7 +251,7 @@ def test_stopping_an_exited_leader_still_stops_its_descendants(tmp_path, monkeyp
     psutil = pytest.importorskip("psutil")
     from hermes_cli import process_identity
     from tests.waiting import wait_until
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     pid_file = tmp_path / "child.pid"
     real_spawn_owned = process_identity.spawn_owned
@@ -310,7 +310,7 @@ def test_a_tui_poller_leaves_another_agents_event_for_it():
     """The TUI notification poller under B, sharing A's session key, hands A's event back rather than
     rendering or consuming it."""
     from agent.runtime_scope import bind_state
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     from hermes_agent.tui_gateway.session_notifications import _notif_handle_event
 
     evt = {"type": "completion", "session_id": "proc_tui_private", "session_key": "shared",
@@ -330,7 +330,7 @@ def test_a_hosted_process_is_never_checkpointed_and_a_recovered_one_stays_its_ag
     import os
     from unittest.mock import patch
     from agent.runtime_scope import bind_state
-    from tools.process_registry import ProcessRegistry, ProcessSession
+    from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
     registry = ProcessRegistry()
     key = sandbox_identity(A).key
@@ -338,7 +338,7 @@ def test_a_hosted_process_is_never_checkpointed_and_a_recovered_one_stays_its_ag
         id="proc_hosted_ckpt", command="sleep 600", task_id=key, sandbox_key=key, pid=os.getpid(),
         pid_scope="host", host_start_time=1.0)
     checkpoint = tmp_path / "procs.json"
-    with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+    with patch("hermes_agent.tools.process_registry.CHECKPOINT_PATH", checkpoint):
         registry._write_checkpoint()
         assert json.loads(checkpoint.read_text()) == []
         checkpoint.write_text(json.dumps([{"session_id": "proc_hosted_ckpt", "command": "sleep 600",
@@ -363,9 +363,9 @@ def test_media_is_never_read_on_host_with_a_host_backend_configured(provider, mo
     so they fail closed)."""
     import asyncio
     from agent.runtime_scope import bind_state
-    from tools.image_generation_tool import _confine_source_images
-    from tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
-    from tools.vision_tools import _materialize_video
+    from hermes_agent.tools.image_generation_tool import _confine_source_images
+    from hermes_agent.tools.image_source import ImageResolutionError, ResolveContext, resolve_image_source
+    from hermes_agent.tools.vision_tools import _materialize_video
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
     image, video = host_dir / "photo.png", host_dir / "clip.mp4"
@@ -388,8 +388,8 @@ def test_local_scopes_build_byte_identical_environments(monkeypatch):
     import types
     from contextlib import nullcontext
     from agent.runtime_scope import bind_state
-    from tools import terminal_tool_backends as backends
-    from tools.environments import local, sandbox_scope
+    from hermes_agent.tools import terminal_tool_backends as backends
+    from hermes_agent.tools.environments import local, sandbox_scope
 
     attrs = {"local": "_LocalEnvironment", "docker": "_DockerEnvironment", "ssh": "_SSHEnvironment"}
 
@@ -423,7 +423,7 @@ def test_an_acquired_stream_is_refused_under_another_scope():
     stay A's, whoever holds the object (round-2 finding 16)."""
     import io
     from agent.runtime_scope import bind_state
-    from tools.environments.sandbox_scope import ProcessRef, ProcessStream
+    from hermes_agent.tools.environments.sandbox_scope import ProcessRef, ProcessStream
 
     class Backend:
         def start_process(self, *args, **kwargs):
@@ -448,7 +448,7 @@ def test_an_acquired_stream_is_refused_under_another_scope():
 
 def _buffered_stream_env():
     import io
-    from tools.environments.sandbox_scope import ProcessRef, ProcessStream
+    from hermes_agent.tools.environments.sandbox_scope import ProcessRef, ProcessStream
 
     class Backend:
         def start_process(self, *a, **k):

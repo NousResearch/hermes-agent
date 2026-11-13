@@ -56,7 +56,7 @@ def _exit_cron_context(tokens, extra):
     clear_session_vars(tokens)
 
 def _create(deliver=None):
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
 
     return json.loads(
         cronjob(
@@ -124,7 +124,7 @@ class TestCronContextUpdatePath:
         """The update action must apply the same resolution as create — a
         cron agent updating deliver='origin' would otherwise recreate the
         dangling literal-origin shape on an origin-less job."""
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         from hermes_agent.cron.jobs import get_job
 
         tokens, extra = _enter_cron_context("telegram", "-100123456", "17")
@@ -142,7 +142,7 @@ class TestCronContextUpdatePath:
         assert stored == "telegram:-100123456:17"
 
     def test_update_deliver_outside_cron_context_unchanged(self, temp_cron_home):
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         from hermes_agent.cron.jobs import get_job
 
         created = _create(deliver="local")

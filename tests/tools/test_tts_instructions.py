@@ -26,10 +26,10 @@ class TestOpenaiBackendInstructions:
         mock_client.audio.speech.create.return_value = MagicMock()
         mock_cls = MagicMock(return_value=mock_client)
 
-        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
+        with patch("hermes_agent.tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("hermes_agent.tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)):
-            from tools.tts_tool import _generate_openai_tts
+            from hermes_agent.tools.tts_tool import _generate_openai_tts
             kwargs = {}
             if instructions is not None:
                 kwargs["instructions"] = instructions
@@ -64,12 +64,12 @@ class TestToolLevelInstructions:
 
         mock_cls = MagicMock(return_value=mock_client)
 
-        with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
+        with patch("hermes_agent.tools.tts_tool._import_openai_client", return_value=mock_cls), \
+             patch("hermes_agent.tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)), \
-             patch("tools.tts_tool._load_tts_config",
+             patch("hermes_agent.tools.tts_tool._load_tts_config",
                    return_value={"provider": "openai"}):
-            from tools.tts_tool import text_to_speech_tool
+            from hermes_agent.tools.tts_tool import text_to_speech_tool
             kwargs = {"output_path": str(tmp_path / "out.mp3")}
             if instructions is not None:
                 kwargs["instructions"] = instructions

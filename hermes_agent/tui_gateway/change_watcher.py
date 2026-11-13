@@ -359,7 +359,7 @@ def _bot_relay_outbox_sig():
     """Newest mtime across pending bot-relay outbox envelopes (monotone). Written by the AGENT
     process, so the files are the only shared signal; the Desktop reacts with a debounced drain.
 
-    Envelopes are written by the AGENT process (``message_agent`` → ``tools.bot_relay.enqueue_envelope``) —
+    Envelopes are written by the AGENT process (``message_agent`` → ``hermes_agent.tools.bot_relay.enqueue_envelope``) —
     a different process that never touches this gateway's transports — so the files are the only shared
     signal, exactly like the pairing store. See #92760, #93091.
     """

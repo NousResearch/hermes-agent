@@ -1,6 +1,6 @@
 """Regression tests for host-path cwd sanitization on container backends.
 
-Two code paths in ``tools/terminal_tool.py`` must reject a host (or relative)
+Two code paths in ``hermes_agent/tools/terminal_tool.py`` must reject a host (or relative)
 working directory before it reaches ``docker run -w``:
 
   1. ``_get_env_config()`` sanitizes the ``TERMINAL_CWD``-derived ``config["cwd"]``.
@@ -17,7 +17,7 @@ Both paths now share ``_is_unusable_container_cwd()``; these tests pin its
 behaviour so neither path can regress.
 """
 
-import tools.terminal_tool as tt
+import hermes_agent.tools.terminal_tool as tt
 
 class TestIsUnusableContainerCwd:
     def test_windows_backslash_host_path_rejected(self):
@@ -75,7 +75,7 @@ class TestOverrideCwdSanitizedAtCallSite:
         monkeypatch.setattr(tt, "_get_env_config", lambda: config)
         monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
         monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: {"approved": True})
-        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
+        monkeypatch.setattr("hermes_agent.tools.terminal_tool_backends._create_environment", fake_create_environment)
         # Force a fresh environment build so _create_environment is invoked.
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})
@@ -117,8 +117,8 @@ class TestFileOpsCwdSanitizedAtCallSite:
         override registered, and return the cwd that reached
         ``_create_environment`` (i.e. the cwd passed to ``docker run -w``).
         """
-        import tools.terminal_tool as tt
-        import tools.file_tools as ft
+        import hermes_agent.tools.terminal_tool as tt
+        import hermes_agent.tools.file_tools as ft
 
         captured = {}
 
@@ -162,7 +162,7 @@ class TestFileOpsCwdSanitizedAtCallSite:
 
         monkeypatch.setattr(tt, "_get_env_config", lambda: config)
         monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
-        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
+        monkeypatch.setattr("hermes_agent.tools.terminal_tool_backends._create_environment", fake_create_environment)
         # Force a fresh environment build.
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})

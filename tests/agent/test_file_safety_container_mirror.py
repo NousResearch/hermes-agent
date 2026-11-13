@@ -72,7 +72,7 @@ class TestFileToolIntegration:
     """file_tools must catch the mirror path before creating DockerEnvironment."""
 
     def test_guard_uses_current_docker_config_before_env_exists(self, monkeypatch):
-        import tools.file_tools_write_guards as file_tools
+        import hermes_agent.tools.file_tools_write_guards as file_tools
 
         monkeypatch.setattr(
             file_tools,

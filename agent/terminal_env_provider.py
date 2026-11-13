@@ -2,8 +2,8 @@
 
 Pluggable-backend interface for terminal execution environments (cloud sandboxes, remote
 runners). Providers register via :meth:`PluginContext.register_terminal_environment_provider`;
-:func:`tools.terminal_tool_backends._create_environment` consults the registry for any ``TERMINAL_ENV``
-/ ``terminal.backend`` value that is not a built-in (built-ins stay in ``tools/environments/``;
+:func:`hermes_agent.tools.terminal_tool_backends._create_environment` consults the registry for any ``TERMINAL_ENV``
+/ ``terminal.backend`` value that is not a built-in (built-ins stay in ``hermes_agent/tools/environments/``;
 third-party sandbox vendors do NOT have to live in core). :meth:`create_environment` returns
 any ``BaseEnvironment`` duck type (``execute()``, ``cleanup()`` …); the factory stamps
 ``_hermes_backend_name`` on the result so file-path resolution can identify plugin backends.
@@ -57,7 +57,7 @@ class TerminalEnvironmentProvider(ProviderBase):
     work for in-process plugins only; under ``plugins.isolation: host`` the environment reaches Hermes
     as an opaque placeholder and Bot Desktop placement refuses a ``supports_streams`` backend.
 
-    **Hosted scopes** (``tools/environments/sandbox_scope.py``). With a hosted
+    **Hosted scopes** (``hermes_agent/tools/environments/sandbox_scope.py``). With a hosted
     :class:`hermes_scope.Scope` bound, the sandbox is the agent's: its identity is
     ``SandboxIdentity(scope.tenant, scope.agent)`` and nothing else, so one agent has one sandbox
     whatever task or session a tool call carries. :meth:`create_environment` then also receives

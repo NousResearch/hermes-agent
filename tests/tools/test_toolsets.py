@@ -1,8 +1,8 @@
-"""Tests for toolsets.py — toolset resolution, validation, and composition."""
+"""Tests for hermes_agent/toolsets.py — toolset resolution, validation, and composition."""
 
-import toolsets as toolsets_mod
-from tools.registry import ToolRegistry
-from toolsets import (
+import hermes_agent.toolsets as toolsets_mod
+from hermes_agent.tools.registry import ToolRegistry
+from hermes_agent.toolsets import (
     TOOLSETS,
     get_toolset,
     resolve_toolset,
@@ -33,7 +33,7 @@ class TestGetToolset:
             handler=_dummy_handler,
         )
 
-        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr("hermes_agent.tools.registry.registry", reg)
 
         ts = get_toolset("web")
         assert ts is not None
@@ -49,7 +49,7 @@ class TestGetToolset:
             reg.register(name="mcp__mergetest_call", toolset="mcp-_mergetest",
                          schema=_make_schema("mcp__mergetest_call", "Call"), handler=_dummy_handler)
             reg.register_toolset_alias("_mergetest", "mcp-_mergetest")
-            monkeypatch.setattr("tools.registry.registry", reg)
+            monkeypatch.setattr("hermes_agent.tools.registry.registry", reg)
 
             ts = get_toolset("_mergetest")
             assert {"builtin_tool_a", "mcp__mergetest_call"} <= set(ts["tools"])
@@ -87,7 +87,7 @@ class TestResolveToolset:
             handler=_dummy_handler,
         )
 
-        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr("hermes_agent.tools.registry.registry", reg)
 
         assert resolve_toolset("plugin_example") == ["plugin_a", "plugin_b"]
 
@@ -106,7 +106,7 @@ class TestValidateToolset:
         )
         reg.register_toolset_alias("dynserver", "mcp-dynserver")
 
-        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr("hermes_agent.tools.registry.registry", reg)
 
         assert validate_toolset("dynserver") is True
         assert validate_toolset("mcp-dynserver") is True
@@ -145,7 +145,7 @@ class TestRegistryOwnedToolsets:
             handler=_dummy_handler,
         )
 
-        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr("hermes_agent.tools.registry.registry", reg)
 
         assert validate_toolset("test-live-toolset") is True
         assert get_toolset("test-live-toolset")["tools"] == ["test_live_toolset_tool"]
@@ -170,7 +170,7 @@ class TestPluginToolsets:
             handler=_dummy_handler,
         )
 
-        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr("hermes_agent.tools.registry.registry", reg)
 
         all_toolsets = get_all_toolsets()
         assert "plugin_bundle" in all_toolsets
@@ -181,7 +181,7 @@ class TestResolveToolsetIncludeRegistry:
     by platform reverse-mapping. Regression harness for issue #49622."""
 
     def test_include_registry_false_excludes_registry_tools(self):
-        from tools.registry import discover_builtin_tools, registry
+        from hermes_agent.tools.registry import discover_builtin_tools, registry
         discover_builtin_tools()
 
         # Register a tool into `terminal` at runtime, the way plugins and MCP
@@ -220,7 +220,7 @@ class TestResolveToolsetMemo:
 
     def test_generation_bump_invalidates_memo(self, monkeypatch):
         """A registry mutation (generation bump) must force a fresh resolve."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         toolsets_mod._resolve_toolset_memo.clear()
         get_toolset_calls = {"n": 0}

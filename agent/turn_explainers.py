@@ -62,7 +62,7 @@ def _file_mutation_identity(path: str, task_id: Optional[str]) -> str:
     on case-insensitive hosts. A failure recorded as ``notes.md`` and the write that later
     lands as ``/repo/notes.md`` (or ``Notes.md`` on Windows) must meet on the same key."""
     try:
-        from tools.file_tools_paths import _resolve_path_for_task
+        from hermes_agent.tools.file_tools_paths import _resolve_path_for_task
 
         resolved = str(_resolve_path_for_task(path, task_id or "default"))
     except Exception:
@@ -122,7 +122,7 @@ class TurnExplainersMixin:
         failure time. A later success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
-        from tools.hosted_tool_policy import host_feature_enabled
+        from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
         if tool_name not in _FILE_MUTATING_TOOLS or not host_feature_enabled("file_mutation_bookkeeping"):
             return  # hosted: the target is in the agent's sandbox; it is never resolved or stat'd here
         state = getattr(self, "_turn_failed_file_mutations", None)
@@ -141,7 +141,7 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                from tools.file_tools_paths import container_backend_for_task
+                from hermes_agent.tools.file_tools_paths import container_backend_for_task
                 if container_backend_for_task(task_id or "default") is None:  # container paths carry no host ledger entry
                     for _p in landed_paths:
                         with suppress(Exception):

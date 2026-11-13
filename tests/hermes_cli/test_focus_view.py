@@ -232,8 +232,8 @@ def _make_agent(tool_progress_mode: str):
         }
     ]
     with (
-        patch("model_tools.get_tool_definitions", return_value=tool_defs),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=tool_defs),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
@@ -283,7 +283,7 @@ def _run_fake_turn(tool_progress_mode: str, dispatch_mode: str = "sequential"):
         return json.dumps({"ok": args["query"]})
 
     with (
-        patch("model_tools.handle_function_call", side_effect=fake_dispatch),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_dispatch),
         patch.object(agent, "_invoke_tool", side_effect=fake_dispatch),
         patch(
             "agent.tool_executor.maybe_persist_tool_result",

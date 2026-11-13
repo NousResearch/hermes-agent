@@ -54,7 +54,7 @@ def test_real_tui_callbacks_filter_only_diagnostics_at_owner_sink(tmp_path, monk
 
 @pytest.mark.parametrize("setting", [None, False, True])
 def test_post_turn_drain_uses_owner_and_preserves_real_clarify(turn_env, marker_home, monkeypatch, setting, caplog):
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     from hermes_agent.tui_gateway import server_requests
     owner = marker_home / "owner"
     owner.mkdir()

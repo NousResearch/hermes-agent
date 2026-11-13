@@ -221,7 +221,7 @@ class GatewaySessionAgentMixin:
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
-            from tools.delegate_tool_config import gateway_delegation_inline, gateway_delegation_inline_scope
+            from hermes_agent.tools.delegate_tool_config import gateway_delegation_inline, gateway_delegation_inline_scope
             # delegation.gateway_mode from this turn's own (profile-scoped) config and the chat's resolved interim
             # setting (never muted for a heartbeat turn, which shares the user's session and its cached agent);
             # read once, by the agent's first tool build, then carried by its delegate_task schema and pin.

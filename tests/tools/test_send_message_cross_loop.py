@@ -22,7 +22,7 @@ class TestSendViaAdapterCrossLoopDispatch:
     @pytest.mark.asyncio
     async def test_cross_loop_dispatches_to_gateway_loop(self, monkeypatch):
         """adapter.send() runs on gateway loop, not the caller's loop."""
-        from tools.send_message_tool import _send_via_adapter
+        from hermes_agent.tools.send_message_tool import _send_via_adapter
 
         send_loop_id = {}
         platform = Platform("wecom")
@@ -72,7 +72,7 @@ class TestSendViaAdapterCrossLoopDispatch:
     async def test_same_loop_uses_direct_await(self, monkeypatch):
         """When current loop IS the gateway loop, adapter.send() is awaited
         directly — no run_coroutine_threadsafe (which would self-lock)."""
-        from tools.send_message_tool import _send_via_adapter
+        from hermes_agent.tools.send_message_tool import _send_via_adapter
 
         current_loop = asyncio.get_running_loop()
         platform = Platform("wecom")
@@ -105,7 +105,7 @@ class TestSendViaAdapterCrossLoopDispatch:
     async def test_gateway_loop_not_running_returns_error(self, monkeypatch):
         """When gateway loop exists but is stopped, return an error rather
         than attempting direct await on a loop-bound adapter."""
-        from tools.send_message_tool import _send_via_adapter
+        from hermes_agent.tools.send_message_tool import _send_via_adapter
 
         stopped_loop = asyncio.new_event_loop()
         stopped_loop.close()
@@ -137,7 +137,7 @@ class TestSendViaAdapterCrossLoopDispatch:
     async def test_shield_prevents_cancel_of_enqueued_send(self, monkeypatch):
         """asyncio.shield ensures that cancelling the caller does NOT cancel
         the already-dispatched send on the gateway loop."""
-        from tools.send_message_tool import _send_via_adapter
+        from hermes_agent.tools.send_message_tool import _send_via_adapter
 
         send_completed = asyncio.Event()
         send_result_holder = {}

@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools.connectors.gateway.names import (
+from hermes_agent.tools.connectors.gateway.names import (
     format_connector_name,
     parse_connector_name,
     vendor_slug_candidates,

@@ -76,7 +76,7 @@ class TestNoteFireForwardFailure:
 
 class TestFormatJobSurfacesFireError:
     def test_cronjob_list_carries_last_fire_error(self, tmp_cron_dir):
-        from tools.cronjob_tools import _format_job
+        from hermes_agent.tools.cronjob_tools import _format_job
 
         job = create_job(prompt="Daily invoice triage", schedule="every 1h")
         note_fire_forward_failure(job["id"], "gateway unreachable")

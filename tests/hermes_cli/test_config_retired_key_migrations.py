@@ -308,9 +308,9 @@ class TestNewerStamp:
         """v46 does not run on a newer file, so its `disabled: true` stays on disk; the runtime
         must still read it as off, or this build spawns a server the user turned off."""
         from hermes_cli.config import load_config, migrate_config
-        import tools.mcp_tool as core
-        from tools import mcp_tool_discovery as discovery
-        from tools.mcp_tool_common import mcp_server_enabled
+        import hermes_agent.tools.mcp_tool as core
+        from hermes_agent.tools import mcp_tool_discovery as discovery
+        from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
         config_path = self._newer(tmp_path, monkeypatch)
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))

@@ -694,9 +694,9 @@ class PluginLoaderMixin:
         return host if host is not None and host.alive else None
 
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
-        """Install the plugin's tool-override policy in tools.registry as a ledger-owned lease."""
+        """Install the plugin's tool-override policy in hermes_agent.tools.registry as a ledger-owned lease."""
         from hermes_cli.plugins import PluginContext
-        from tools.registry import registry as _registry
+        from hermes_agent.tools.registry import registry as _registry
         scope = self.scope_key
         with replacement_coordinator.transaction():
             previous_policy = _registry.snapshot_plugin_override_policy(module_name, scope=scope)

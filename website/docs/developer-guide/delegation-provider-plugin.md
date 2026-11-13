@@ -204,6 +204,6 @@ runs in the plugin host process.
 
 Load the plugin through the real discovery path against a temporary `HERMES_HOME` whose
 `config.yaml` sets `plugins.enabled`, `delegation.backend` and `delegation.backends.<name>`, then assert on behaviour: the
-`delegate_task` definition from `tools.registry.registry.get_definitions({"delegate_task"})` carries
-your parameter, and `tools.delegate_tool.delegate_task(...)` hands each child the route you chose.
+`delegate_task` definition from `hermes_agent.tools.registry.registry.get_definitions({"delegate_task"})` carries
+your parameter, and `hermes_agent.tools.delegate_tool.delegate_task(...)` hands each child the route you chose.
 `tests/tools/test_delegation_backends.py` in the Hermes repo is a complete example.

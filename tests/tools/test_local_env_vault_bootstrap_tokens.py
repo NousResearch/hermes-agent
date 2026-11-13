@@ -8,7 +8,7 @@ the generic spawn paths needs it."""
 import pytest
 
 from tests.tools._child_env_fixtures import child_env, observe_child
-from tools.environments import local
+from hermes_agent.tools.environments import local
 
 # Default bootstrap env names declared by the bundled sources
 # (agent/secret_sources/bitwarden.py, agent/secret_sources/onepassword.py).

@@ -23,8 +23,8 @@ import time
 
 import pytest
 
-from tools import terminal_tool as tt
-from tools.interrupt import (
+from hermes_agent.tools import terminal_tool as tt
+from hermes_agent.tools.interrupt import (
     set_interrupt,
     is_interrupted,
     _interrupted_threads,
@@ -164,7 +164,7 @@ def test_natural_exit_130_not_mislabeled_as_interrupt(monkeypatch):
 def test_retry_backoff_does_not_clear_genuine_interrupt(monkeypatch):
     """A genuine interrupt that lands during the retry backoff must survive
     (the clear runs ONCE before the loop, never re-clearing on retries)."""
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     calls = {"n": 0, "interrupted_at_retry": None}
 
@@ -180,7 +180,7 @@ def test_retry_backoff_does_not_clear_genuine_interrupt(monkeypatch):
         return {"output": "partial\n[Command interrupted]", "returncode": 130}
 
     monkeypatch.setattr(LocalEnvironment, "execute", fake_execute)
-    monkeypatch.setattr("tools.terminal_tool.time.sleep", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool.time.sleep", lambda *a, **k: None)
     set_interrupt(False)
 
     result = json.loads(tt.terminal_tool(command="sleep 1", force=True, task_id="retry-test"))
@@ -196,10 +196,10 @@ def test_retry_backoff_does_not_clear_genuine_interrupt(monkeypatch):
 
 def test_execute_code_approved_clears_stale_interrupt_bit(monkeypatch):
     """An approved execute_code script (local path) runs from a clean slate."""
-    from tools.code_execution_tool import execute_code
+    from hermes_agent.tools.code_execution_tool import execute_code
 
     monkeypatch.setattr(
-        "tools.approval.check_execute_code_guard",
+        "hermes_agent.tools.approval.check_execute_code_guard",
         lambda *a, **k: {"approved": True, "user_approved": True},
     )
     set_interrupt(True)
@@ -217,10 +217,10 @@ def test_execute_code_approved_clears_stale_interrupt_bit(monkeypatch):
 
 def test_execute_code_non_approved_still_interrupts_on_stale_bit(monkeypatch):
     """Non-user-approved execute_code keeps current interrupt behavior."""
-    from tools.code_execution_tool import execute_code
+    from hermes_agent.tools.code_execution_tool import execute_code
 
     monkeypatch.setattr(
-        "tools.approval.check_execute_code_guard",
+        "hermes_agent.tools.approval.check_execute_code_guard",
         lambda *a, **k: {"approved": True},  # approved, but NOT user_approved
     )
     set_interrupt(True)

@@ -124,7 +124,7 @@ def test_tool_events_drive_progress_and_complete_callbacks(make_agent):
 
 
 def test_approval_request_calls_cli_approval_callback_then_responds(make_agent):
-    from tools.terminal_tool import set_approval_callback
+    from hermes_agent.tools.terminal_tool import set_approval_callback
     seen = []
 
     def approve(command, description, **kw):
@@ -472,7 +472,7 @@ def test_reasoning_sink_sets_the_sessions_show_reasoning_flag_on_attach_and_togg
 def test_gateway_sudo_request_opens_mains_sudo_panel_and_replies_with_the_value(make_agent):
     """The gateway's ``sudo`` server→client request (a JSON-RPC request frame with an ``srq-`` id)
     is answered by main's masked sudo panel (the turn's registered callback) as a response frame."""
-    from tools.terminal_tool import set_sudo_password_callback
+    from hermes_agent.tools.terminal_tool import set_sudo_password_callback
     request = {"jsonrpc": "2.0", "id": "srq-abc", "method": "sudo",
                "params": {"session_id": SID, "command": "sudo true"}}
     agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})])
@@ -538,7 +538,7 @@ def test_gateway_secret_request_opens_mains_secret_panel_and_the_gateway_saves(m
     """``secret`` (skill env var): main's panel collects the value and prints its lines, but the CLI
     process never writes ``.env`` — the value goes back to the gateway, which saves it."""
     from hermes_cli import callbacks
-    from tools import skills_tool
+    from hermes_agent.tools import skills_tool
     request = {"jsonrpc": "2.0", "id": "srq-sec", "method": "secret",
                "params": {"session_id": SID, "env_var": "HAB_KEY", "prompt": "Enter it",
                           "metadata": {"skill_name": "hab"}}}
@@ -1109,7 +1109,7 @@ def test_new_session_reads_zero_without_a_stats_round_trip(make_agent):
 
 
 def test_todo_updates_after_a_session_switch_reach_the_cli_todo_store(make_agent):
-    """/new, /resume and /branch give the agent a fresh ``tools.todo_tool.TodoStore``; the gateway's
+    """/new, /resume and /branch give the agent a fresh ``hermes_agent.tools.todo_tool.TodoStore``; the gateway's
     later ``todo.updated`` must still land where the CLI reads it (``read()``: the pet's done-plan beat)."""
     from types import SimpleNamespace
 
@@ -1156,7 +1156,7 @@ def test_startup_resume_builds_the_agent_with_the_sessions_todos(make_agent):
     """``chat -c`` attaches (``open_session``) before it builds the agent, whose store starts with the
     snapshot; a later ``todo.updated`` of that session is what the next swapped-in store starts with."""
     from hermes_cli.gateway_session_store import GatewaySessionStore
-    from tools.todo_tool import TodoStore
+    from hermes_agent.tools.todo_tool import TodoStore
     todos = [{"id": "1", "content": "ship it", "status": "completed"}]
     agent, client = make_agent([])
     _resume_with_todos(client, todos, 2)

@@ -32,7 +32,7 @@ _last_worker_proc: Optional[subprocess.Popen] = None  # last worker Popen (test 
 
 
 class _SearchInterrupted(Exception):
-    """Raised when tools.interrupt.is_interrupted() trips during a search wait."""
+    """Raised when hermes_agent.tools.interrupt.is_interrupted() trips during a search wait."""
 
 
 def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
@@ -144,8 +144,8 @@ def _run_ddgs_search_bounded(query: str, safe_limit: int) -> list[dict[str, Any]
     never joins a child that may be in native code holding *its* GIL — it polls a
     communicator thread and, on timeout/interrupt, kills the OS process.
     Raises ``TimeoutError``, ``_SearchInterrupted``, or ``RuntimeError``."""
-    from tools.interrupt import is_interrupted  # lazy: keep plugin import light
-    from tools.environments.local import _sanitize_subprocess_env
+    from hermes_agent.tools.interrupt import is_interrupted  # lazy: keep plugin import light
+    from hermes_agent.tools.environments.local import _sanitize_subprocess_env
     global _last_worker_proc
     request: dict[str, Any] = {"query": query, "safe_limit": safe_limit}
     env = _sanitize_subprocess_env(dict(os.environ))

@@ -5,7 +5,7 @@ through ``agent.auxiliary_client`` which has no session handle, so their usage w
 historically discarded. The agent loop publishes ``(session_db, session_id)`` here
 (mirroring ``agent.portal_tags``) and the aux client records usage at its single
 response-validation chokepoint. ContextVar semantics isolate concurrent agents, propagate
-to worker threads via ``tools.thread_context`` and to asyncio tasks automatically.
+to worker threads via ``hermes_agent.tools.thread_context`` and to asyncio tasks automatically.
 """
 
 from __future__ import annotations

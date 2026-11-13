@@ -19,8 +19,8 @@ from hermes_cli.config import (
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
-from tools.mcp_tool_config import _ENV_VAR_PATTERN
-from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
+from hermes_agent.tools.mcp_tool_config import _ENV_VAR_PATTERN
+from hermes_agent.tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +219,7 @@ def _tool_filters(cfg: dict) -> tuple[Optional[list], Optional[list]]:
     """Return the ``(include, exclude)`` tool lists from a server config; ``None`` = key absent.
 
     An explicit ``include: []`` is a real (block-all) whitelist — the runtime registers nothing
-    (tools/mcp_tool_registration.py) — so it must not collapse to "no filter" here (#12865).
+    (hermes_agent/tools/mcp_tool_registration.py) — so it must not collapse to "no filter" here (#12865).
     """
     tools_cfg = cfg.get("tools", {})
     if not isinstance(tools_cfg, dict):
@@ -391,16 +391,16 @@ def _apply_mcp_preset(
 def _resolve_mcp_server_config(config: dict) -> dict:
     """Resolve ``${ENV}`` placeholders in a server config before connecting.
 
-    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``; without it the discovery probe sent
+    Mirrors ``_load_mcp_config()`` in ``hermes_agent/tools/mcp_tool.py``; without it the discovery probe sent
     literal placeholders in header templates and auth-requiring servers returned 401.
 
-    Mirrors ``_load_mcp_config()`` in ``tools/mcp_tool.py``: load ``~/.hermes/.env`` into ``os.environ`` and
+    Mirrors ``_load_mcp_config()`` in ``hermes_agent/tools/mcp_tool.py``: load ``~/.hermes/.env`` into ``os.environ`` and
     recursively interpolate any ``${VAR}`` placeholders. The CLI builds header templates like
     ``Authorization: Bearer ${MCP_X_API_KEY}`` but the probe path never resolved them, so the discovery
     probe sent the literal placeholder and auth-requiring servers (e.g. n8n) returned 401 — while runtime
     tool loading worked because it interpolates. (#37792)
     """
-    from tools.mcp_tool_config import _interpolate_env_vars
+    from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
     from agent.secret_scope import current_secret_scope
 
     if current_secret_scope() is None:
@@ -426,10 +426,10 @@ def _probe_single_server(
         rejected.failure_class = "config_rejected"  # type: ignore[attr-defined]
         raise rejected
 
-    from tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
-    from tools.mcp_tool_discovery import _connect_server
-    from tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
-    from tools.mcp_tool_common import _parse_boolish
+    from hermes_agent.tools.mcp_tool_loop import _ensure_mcp_loop, _run_on_mcp_loop
+    from hermes_agent.tools.mcp_tool_discovery import _connect_server
+    from hermes_agent.tools.mcp_tool_lifecycle import _stop_mcp_loop_if_idle
+    from hermes_agent.tools.mcp_tool_common import _parse_boolish
 
     config = _resolve_mcp_server_config(config)
     if connect_timeout is None:
@@ -437,7 +437,7 @@ def _probe_single_server(
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
         except (TypeError, ValueError):
             connect_timeout = 30.0
-    # Deep transport code (tools/mcp_tool_transport.py::_negotiate_session) reads its OWN
+    # Deep transport code (hermes_agent/tools/mcp_tool_transport.py::_negotiate_session) reads its OWN
     # session.initialize() bound straight off config["connect_timeout"], independent of the
     # `connect_timeout` param above. Callers that extend the param to give a user time to finish
     # an OAuth browser flow (e.g. `hermes mcp login`'s 315s) left that inner bound at the
@@ -449,7 +449,7 @@ def _probe_single_server(
     tools_found: list[tuple[str, str]] = []
 
     async def _probe():
-        from tools import mcp_tool as _core
+        from hermes_agent.tools import mcp_tool as _core
 
         claimed = []
         claim_token = _core._connect_server_claim.set(claimed.append)
@@ -478,7 +478,7 @@ def _probe_single_server(
                 # the desktop can estimate per-call token cost. Best-effort, absent on failure.
                 try:
                     import json as _json
-                    from tools.mcp_tool_schema import _convert_mcp_schema
+                    from hermes_agent.tools.mcp_tool_schema import _convert_mcp_schema
 
                     details["schema_chars"] = {
                         t.name: len(_json.dumps(_convert_mcp_schema(name, t), separators=(",", ":"), default=str))
@@ -528,7 +528,7 @@ def _probe_single_server(
 def _oauth_tokens_present(name: str) -> bool:
     """True if an OAuth token file exists for ``name`` (a clean probe alone is not proof of auth)."""
     try:
-        from tools.mcp_oauth import HermesTokenStorage
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage
         return HermesTokenStorage(name).has_cached_tokens()
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("Could not check OAuth tokens for '%s': %s", name, exc)
@@ -551,7 +551,7 @@ def _configure_http_auth(
         _info(f"Starting OAuth flow for '{name}'...")
         oauth_ok = False
         try:
-            from tools.mcp_oauth_manager import get_manager
+            from hermes_agent.tools.mcp_oauth_manager import get_manager
             if get_manager().get_or_build_provider(name, url, server_config.get("oauth")):
                 server_config["auth"] = "oauth"
                 _success("OAuth configured (tokens will be acquired on first connection)")
@@ -734,7 +734,7 @@ def cmd_mcp_remove(args):
     # Route OAuth cleanup through MCPOAuthManager so any provider cached in this process (e.g. from
     # an earlier `hermes mcp test`) is evicted too.
     try:
-        from tools.mcp_oauth_manager import get_manager
+        from hermes_agent.tools.mcp_oauth_manager import get_manager
         get_manager().remove(name)
         _success("Cleaned up OAuth tokens")
     except Exception:
@@ -794,7 +794,7 @@ def cmd_mcp_list(args=None):
 def _probe_failure_reason(exc: BaseException) -> str:
     """Plain reason for a failed probe: ``_format_connect_error`` unwraps ExceptionGroups and names a
     missing executable; the result is redacted like every other probe string."""
-    from tools.mcp_tool_errors import _format_connect_error
+    from hermes_agent.tools.mcp_tool_errors import _format_connect_error
     return redact_mcp_probe_text(_format_connect_error(exc))
 
 
@@ -806,8 +806,8 @@ def probe_failure_class(exc: BaseException) -> str:
 
     if tagged := tagged_failure_class(exc):
         return tagged
-    from tools.mcp_tool_errors import InvalidMcpUrlError, _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
-    from tools.mcp_tool_node_abi import NodeAbiMismatchError
+    from hermes_agent.tools.mcp_tool_errors import InvalidMcpUrlError, _is_auth_error, _iter_exception_nodes, _unwrap_exception_group
+    from hermes_agent.tools.mcp_tool_node_abi import NodeAbiMismatchError
     try:
         root = _unwrap_exception_group(exc)
         if isinstance(root, InvalidMcpUrlError):  # the configured URL is not http(s)://host
@@ -824,8 +824,8 @@ def probe_failure_class(exc: BaseException) -> str:
 
 def _probe_failure_next_step(name: str, exc: BaseException) -> str:
     """The one command that fixes the common probe failures (sign-in, missing command, everything else)."""
-    from tools.mcp_tool_errors import _format_connect_error, _is_auth_error, _unwrap_exception_group
-    from tools.mcp_tool_node_abi import NodeAbiMismatchError
+    from hermes_agent.tools.mcp_tool_errors import _format_connect_error, _is_auth_error, _unwrap_exception_group
+    from hermes_agent.tools.mcp_tool_node_abi import NodeAbiMismatchError
     root = _unwrap_exception_group(exc)
     if _is_auth_error(root) or getattr(getattr(root, "response", None), "status_code", None) in (401, 403):
         return f"The server rejected the sign-in. Run: hermes mcp login {name}"
@@ -905,13 +905,13 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         _error("oauth.flow must be browser or device")
         return False
     try:
-        from tools.mcp_oauth_manager import get_manager
+        from hermes_agent.tools.mcp_oauth_manager import get_manager
         if selected_flow == "browser":
             # Tokens, client registration and the CIMD refusal go; the cached authorization-server
             # metadata stays. A fresh discovery still overwrites it, but when the metadata document
             # cannot be re-fetched (WAF-fronted split-host servers) it is the only thing that keeps
             # the announced authorize URL off the SDK's `{mcp-origin}/authorize` guess (#115329).
-            from tools.mcp_oauth import HermesTokenStorage
+            from hermes_agent.tools.mcp_oauth import HermesTokenStorage
             get_manager().evict(name)
             HermesTokenStorage(name).remove(keep_metadata=True)
     except Exception as exc:
@@ -927,10 +927,10 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     # login` is explicitly user-initiated even when stdin isn't a TTY (desktop / agent-spawned
     # terminals), where _is_interactive() alone would refuse to open a browser.
     try:
-        from tools.mcp_oauth import force_interactive_oauth, login_connect_timeout
+        from hermes_agent.tools.mcp_oauth import force_interactive_oauth, login_connect_timeout
 
         if selected_flow == "device":
-            from tools.mcp_oauth_device import login_device
+            from hermes_agent.tools.mcp_oauth_device import login_device
             asyncio.run(login_device(name, url, oauth_cfg))
         probe_config = {**server_config, "oauth": {**oauth_cfg, "flow": selected_flow}}
         with force_interactive_oauth():
@@ -965,7 +965,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
         return True
     except Exception as exc:
         try:
-            from tools.mcp_oauth import humanize_oauth_registration_error
+            from hermes_agent.tools.mcp_oauth import humanize_oauth_registration_error
             humanized = humanize_oauth_registration_error(name, exc, server_url=url)
         except Exception:
             humanized = None
@@ -1074,9 +1074,9 @@ def cmd_mcp_configure(args):
     tool_names = [t[0] for t in all_tools]
     total = len(all_tools)
 
-    # Same matching semantics as runtime registration (tools/mcp_tool.py): exact names or globs.
+    # Same matching semantics as runtime registration (hermes_agent/tools/mcp_tool.py): exact names or globs.
     try:
-        from tools.mcp_tool_schema import matches_name_filter
+        from hermes_agent.tools.mcp_tool_schema import matches_name_filter
     except ImportError:  # pragma: no cover — defensive fallback
         def matches_name_filter(tool_name, patterns):
             return tool_name in patterns

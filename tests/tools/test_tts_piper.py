@@ -14,12 +14,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools import tts_tool, tts_tool_local
-from tools.tts_tool import (
+from hermes_agent.tools import tts_tool, tts_tool_local
+from hermes_agent.tools.tts_tool import (
     check_tts_requirements,
     text_to_speech_tool,
 )
-from tools.tts_tool_local import DEFAULT_PIPER_VOICE, _resolve_piper_voice_path
+from hermes_agent.tools.tts_tool_local import DEFAULT_PIPER_VOICE, _resolve_piper_voice_path
 
 
 # ---------------------------------------------------------------------------

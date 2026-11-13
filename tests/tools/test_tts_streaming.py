@@ -1,5 +1,5 @@
-"""Tests for the provider-agnostic streaming TTS backend (tools.tts_streaming)
-and its dispatch through tools.tts_tool_speaker.stream_tts_to_speaker.
+"""Tests for the provider-agnostic streaming TTS backend (hermes_agent.tools.tts_streaming)
+and its dispatch through hermes_agent.tools.tts_tool_speaker.stream_tts_to_speaker.
 
 No live audio or external network: the ElevenLabs/OpenAI SDKs, sounddevice, and
 the sync synth path are all mocked, and the xAI wire protocol runs against a
@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import tools.tts_streaming as ts
+import hermes_agent.tools.tts_streaming as ts
 
 pytest.importorskip("numpy")
 
@@ -225,9 +225,9 @@ def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
     import sys
     import types
 
-    fake = types.ModuleType("tools.xai_http")
+    fake = types.ModuleType("hermes_agent.tools.xai_http")
     fake.resolve_xai_http_credentials = lambda **kw: {"api_key": "xai-key"}
-    monkeypatch.setitem(sys.modules, "tools.xai_http", fake)
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.xai_http", fake)
     assert ts.XAIStreamer.available() is True
     fake.resolve_xai_http_credentials = lambda **kw: {"api_key": ""}
     assert ts.XAIStreamer.available() is False
@@ -241,16 +241,16 @@ def test_xai_streaming_prefers_explicit_api_key(monkeypatch):
 
     calls = []
 
-    fake = types.ModuleType("tools.xai_http")
+    fake = types.ModuleType("hermes_agent.tools.xai_http")
     fake.resolve_xai_http_credentials = lambda **kw: calls.append(kw) or {"api_key": "k"}
-    monkeypatch.setitem(sys.modules, "tools.xai_http", fake)
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.xai_http", fake)
 
     ts.XAIStreamer.available()
     assert calls and all(c.get("prefer_api_key") is True for c in calls)
 
     # The tts_tool availability probe (wired as _BUILTIN_REQUIREMENTS["xai"]) must
     # resolve key-first too, or a configured key still spends the OAuth pool (#113727).
-    from tools import tts_tool
+    from hermes_agent.tools import tts_tool
 
     calls.clear()
     assert tts_tool._xai_requirements() is True
@@ -398,9 +398,9 @@ def test_xai_stream_reports_errors_and_bounds_received_audio(monkeypatch, outcom
     import base64
     import json
     from websockets.exceptions import ConnectionClosed
-    import tools.xai_http
+    import hermes_agent.tools.xai_http
 
-    monkeypatch.setattr(tools.xai_http, "resolve_xai_http_credentials", lambda **kw: {"api_key": "test-key"})
+    monkeypatch.setattr(hermes_agent.tools.xai_http, "resolve_xai_http_credentials", lambda **kw: {"api_key": "test-key"})
     monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 100)
     closed = threading.Event()
 
@@ -467,8 +467,8 @@ def test_streamer_path_handles_misaligned_pcm_chunks(monkeypatch):
     odd-length chunk and silently dropped it — producing scattered
     audio fragments. The fix carries leftover bytes into the next chunk.
     """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     class _OddChunkProvider(ts.StreamingTTSProvider):
         sample_rate = 24000
@@ -488,7 +488,7 @@ def test_streamer_path_handles_misaligned_pcm_chunks(monkeypatch):
     q = _drain_queue(["A complete sentence for testing."])
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_OddChunkProvider({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
@@ -520,8 +520,8 @@ def test_streamer_path_survives_portaudio_write_error(monkeypatch):
     "Internal PortAudio error" on macOS device state changes).  The worker
     must log and break, not crash — otherwise _playback_done never fires.
     """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     class _Fake(ts.StreamingTTSProvider):
         sample_rate = 24000
@@ -539,7 +539,7 @@ def test_streamer_path_survives_portaudio_write_error(monkeypatch):
     q = _drain_queue(["A complete sentence for testing."])
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_Fake({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
@@ -561,8 +561,8 @@ def test_streamer_reinit_after_portaudio_error_plays_remaining_sentences(monkeyp
     second call to ``OutputStream()`` (the reinit).  The second sentence must
     be written to that fresh stream, proving the pipeline recovered.
     """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     class _Fake(ts.StreamingTTSProvider):
         sample_rate = 24000
@@ -595,7 +595,7 @@ def test_streamer_reinit_after_portaudio_error_plays_remaining_sentences(monkeyp
     ])
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_Fake({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
@@ -616,8 +616,8 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
     """Regression: after 3 failed reinits, remaining sentences must play
     via the temp-file fallback, not be silently dropped.
     """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     class _Fake(ts.StreamingTTSProvider):
         sample_rate = 24000
@@ -653,10 +653,10 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
     ])
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_Fake({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd), \
-         patch("tools.voice_mode.play_audio_file", side_effect=_fake_play):
+         patch("hermes_agent.tools.voice_mode.play_audio_file", side_effect=_fake_play):
         stream_tts_to_speaker(q, stop, done)
 
     # The stream was created 4 times: initial + 3 reinit attempts.
@@ -683,8 +683,8 @@ def test_streamer_tempfile_fallback_after_reinit_exhausted(monkeypatch):
 def test_speaker_honours_tts_streaming_min_len_for_short_cjk_opener(monkeypatch):
     """The CLI/TUI speaker cuts with the profile's tts.streaming.min_len (#96927): a 7-char CJK
     opener is streamed on its own instead of riding behind the second sentence."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     stream_calls: list[str] = []
 
@@ -703,7 +703,7 @@ def test_speaker_honours_tts_streaming_min_len_for_short_cjk_opener(monkeypatch)
     q = _drain_queue(["记得，叫团团. ", "然后我们再说第二句话，这一句要长一些才行. "])
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_Tracking({}, {})), \
          patch.object(tts_tool, "_load_tts_config", return_value={"streaming": {"min_len": 6}}), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
@@ -721,8 +721,8 @@ def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
     """Every sentence should get its own stream() call — per-sentence
     prefetch fires the HTTP request the moment each sentence completes,
     eliminating inter-sentence gaps."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     stream_calls: list[str] = []
 
@@ -748,7 +748,7 @@ def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
     q = _drain_queue(sentences)
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_Tracking({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
@@ -775,8 +775,8 @@ def test_hybrid_subsequent_sentences_prefetched_individually(monkeypatch):
 def test_hybrid_done_event_waits_for_prefetch(monkeypatch):
     """The done event must not fire until the prefetch thread has finished,
     otherwise continuous voice mode could overlap turns."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     prefetch_done = threading.Event()
 
@@ -806,7 +806,7 @@ def test_hybrid_done_event_waits_for_prefetch(monkeypatch):
     q = _drain_queue(sentences)
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_Blocking({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
@@ -826,8 +826,8 @@ def test_hybrid_done_event_waits_for_prefetch(monkeypatch):
 )
 def test_hybrid_single_sentence_still_works(monkeypatch):
     """A single-sentence reply should stream immediately with no batch."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     stream_calls: list[str] = []
 
@@ -846,7 +846,7 @@ def test_hybrid_single_sentence_still_works(monkeypatch):
     q = _drain_queue(["Just one complete sentence."])
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_Tracking({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
@@ -868,8 +868,8 @@ def test_hybrid_playback_serialized_no_overlap(monkeypatch):
     order. We verify by tracking concurrent playback — at most one thread
     should be inside _play_pcm_chunks at any time.
     """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     active_plays = [0]
     max_concurrent = [0]
@@ -906,7 +906,7 @@ def test_hybrid_playback_serialized_no_overlap(monkeypatch):
     q = _drain_queue(sentences)
     stop, done = threading.Event(), threading.Event()
 
-    with patch("tools.tts_streaming.resolve_streaming_provider",
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider",
                return_value=_Tracking({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
@@ -938,8 +938,8 @@ def _timed_sync_run(monkeypatch, sentences, *, synth_s=0.12, play_s=0.12,
     Returns (events, stop, done): events is [(kind, sentence, t_start, t_end)]
     with kinds "synth"/"play", timestamps from a shared monotonic origin.
     """
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     origin = time.monotonic()
     events = []
@@ -968,10 +968,10 @@ def _timed_sync_run(monkeypatch, sentences, *, synth_s=0.12, play_s=0.12,
     monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_synth)
     fake_vm = MagicMock()
     fake_vm.play_audio_file.side_effect = fake_play
-    monkeypatch.setitem(__import__("sys").modules, "tools.voice_mode", fake_vm)
+    monkeypatch.setitem(__import__("sys").modules, "hermes_agent.tools.voice_mode", fake_vm)
 
     q = _drain_queue(sentences)
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider", return_value=None):
         stream_tts_to_speaker(q, stop, done)
     return events, stop, done
 
@@ -1023,7 +1023,7 @@ def test_sync_pipeline_stop_skips_queued_playback(monkeypatch):
 
 
 def test_sync_pipeline_cleans_temp_files(monkeypatch):
-    from tools import tts_tool_speaker
+    from hermes_agent.tools import tts_tool_speaker
 
     created = []
     real_mkstemp = tempfile.mkstemp
@@ -1084,7 +1084,7 @@ def test_openai_streamer_honors_endpoint_reported_rate_in_wav_playback(monkeypat
     """Issue #76466: an OpenAI-compatible endpoint answering 44.1 kHz PCM (X-Audio-Sample-Rate)
     must drive the WAV header written for playback, not the construction-time expectation."""
     import wave
-    from tools import tts_tool_speaker as sp
+    from hermes_agent.tools import tts_tool_speaker as sp
 
     _patch_openai_speech(monkeypatch, {"content-type": "audio/pcm", "x-audio-sample-rate": "44100"})
     streamer = ts.OpenAIStreamer({}, {"api_key": "sk-x", "pcm_sample_rate": "22050"})
@@ -1096,7 +1096,7 @@ def test_openai_streamer_honors_endpoint_reported_rate_in_wav_playback(monkeypat
             wav_rates.append(wf.getframerate())
 
     monkeypatch.setattr(sp._StreamerPlayback, "_device_usable", lambda self: False)
-    with patch("tools.voice_mode.play_audio_file", side_effect=_fake_play):
+    with patch("hermes_agent.tools.voice_mode.play_audio_file", side_effect=_fake_play):
         playback = sp._StreamerPlayback(streamer, threading.Event())
         playback.speak("One sentence.")
         playback.finish()
@@ -1130,8 +1130,8 @@ def test_openai_pcm_sample_rate_resolution(config, headers, expected):
 def test_speaker_output_stream_opens_at_rate_learned_from_first_chunk(monkeypatch):
     """Issue #76466: the PortAudio device is opened after the first chunk arrived, at the rate
     the provider learned from the response, not at the construction-time default."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     class _Learns(ts.StreamingTTSProvider):
         sample_rate = 24000
@@ -1147,7 +1147,7 @@ def test_speaker_output_stream_opens_at_rate_learned_from_first_chunk(monkeypatc
     sd, out = _sd_mock()
     q = _drain_queue(["The first sentence is long enough. ", "The second sentence is long enough too. "])
     stop, done = threading.Event(), threading.Event()
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=_Learns({}, {})), \
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider", return_value=_Learns({}, {})), \
          patch.object(tts_tool, "_import_sounddevice", return_value=sd):
         stream_tts_to_speaker(q, stop, done)
     assert done.is_set()
@@ -1159,8 +1159,8 @@ def test_sync_pipeline_plays_the_artifact_the_tool_reported(monkeypatch, tmp_pat
     """A provider whose artifact lands off the requested path (command ``format`` suffix
     rewrite, or voice-compatible ffmpeg conversion) must still play: follow the reported
     ``file_path``/``file_paths`` instead of gating on the requested path (#115029)."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     ogg = tmp_path / "sentence.ogg"
     ogg.write_bytes(b"x" * 32)
@@ -1178,10 +1178,10 @@ def test_sync_pipeline_plays_the_artifact_the_tool_reported(monkeypatch, tmp_pat
     fake_vm = MagicMock()
     fake_vm.play_audio_file.side_effect = played.append
     monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_synth)
-    monkeypatch.setitem(sys.modules, "tools.voice_mode", fake_vm)
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.voice_mode", fake_vm)
 
     q = _drain_queue(["Hello there. "])
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider", return_value=None):
         stream_tts_to_speaker(q, threading.Event(), threading.Event())
     assert played == [str(ogg)], (
         "sentence dropped: playback ignored the reported artifact"
@@ -1191,8 +1191,8 @@ def test_sync_pipeline_plays_the_artifact_the_tool_reported(monkeypatch, tmp_pat
 def test_sync_pipeline_falls_back_to_requested_path_when_reported_missing(monkeypatch):
     """A tool envelope that reports nothing usable (None, non-JSON, missing files) keeps the
     legacy behavior: play the requested path when the tool wrote it there."""
-    from tools import tts_tool
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools import tts_tool
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     def fake_synth(text, output_path):
         with open(output_path, "wb") as fh:
@@ -1207,10 +1207,10 @@ def test_sync_pipeline_falls_back_to_requested_path_when_reported_missing(monkey
 
     fake_vm.play_audio_file.side_effect = _record
     monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_synth)
-    monkeypatch.setitem(sys.modules, "tools.voice_mode", fake_vm)
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.voice_mode", fake_vm)
 
     q = _drain_queue(["Hello there. "])
-    with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+    with patch("hermes_agent.tools.tts_streaming.resolve_streaming_provider", return_value=None):
         stream_tts_to_speaker(q, threading.Event(), threading.Event())
     # The temp file is unlinked after playback, so capture its size at play time.
     assert len(played) == 1 and played[0][1] > 0, (
@@ -1220,7 +1220,7 @@ def test_sync_pipeline_falls_back_to_requested_path_when_reported_missing(monkey
 
 @pytest.mark.parametrize("tag", ["<think>", "<thinking>", "<THINK>", "<reasoning>"])
 def test_flush_drops_unterminated_think_tail(tag):
-    from tools.tts_streaming import SentenceChunker
+    from hermes_agent.tools.tts_streaming import SentenceChunker
 
     chunker = SentenceChunker()
     assert chunker.feed(f"The spoken part. {tag}half-formed reas") == []

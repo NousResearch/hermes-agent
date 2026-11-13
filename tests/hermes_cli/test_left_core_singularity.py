@@ -126,7 +126,7 @@ def test_the_backend_name_is_free_for_the_plugin(monkeypatch):
 
 def test_without_the_plugin_the_backend_error_names_the_install_command(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(_home(tmp_path)))
-    from tools import terminal_tool_backends as backends
+    from hermes_agent.tools import terminal_tool_backends as backends
     assert backends._check_plugin_requirements({"env_type": "singularity"}) is False
     reason = backends.terminal_backend_unavailable_reason()
     assert "moved out of core into the 'singularity' plugin" in reason

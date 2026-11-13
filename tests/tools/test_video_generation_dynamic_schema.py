@@ -87,7 +87,7 @@ class TestDynamicSchemaBuilder:
 
 
     def test_builder_wired_into_registry(self):
-        from tools.registry import discover_builtin_tools, registry
+        from hermes_agent.tools.registry import discover_builtin_tools, registry
 
         discover_builtin_tools()
         entry = registry._tools["video_generate"]
@@ -96,7 +96,7 @@ class TestDynamicSchemaBuilder:
         assert "description" in out
 
     def test_both_modalities_model_claims_both(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema
+        from hermes_agent.tools.video_generation_tool import _build_dynamic_video_schema
 
         video_gen_registry.register_provider(_BothModalitiesProvider())
         _write_cfg(cfg_home, {"video_gen": {"provider": "both", "model": "family-a"}})
@@ -112,7 +112,7 @@ class TestDynamicSchemaBuilder:
     def test_i2v_only_model_does_not_claim_text_to_video(self, cfg_home):
         """A dual-modality backend with an i2v-only active model must not
         contradict the model caveat with a 'supports both' line."""
-        from tools.video_generation_tool import _build_dynamic_video_schema
+        from hermes_agent.tools.video_generation_tool import _build_dynamic_video_schema
 
         class _DualBackendI2VModel(VideoGenProvider):
             @property

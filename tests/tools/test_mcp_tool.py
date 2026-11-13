@@ -27,7 +27,7 @@ def _stop_reason(result):
     (camelCase survives only as the serialization alias, which pydantic does
     not expose to attribute access).
     """
-    from tools.mcp_tool import mcp_field
+    from hermes_agent.tools.mcp_tool import mcp_field
 
     return mcp_field(result, "stop_reason", "stopReason")
 
@@ -55,7 +55,7 @@ def _make_call_result(text="file contents here", is_error=False):
 
 def _make_mock_server(name, session=None, tools=None):
     """Create an MCPServerTask with mock attributes for testing."""
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
     server = MCPServerTask(name)
     server.session = session
     server._tools = tools or []
@@ -66,7 +66,7 @@ class TestFilterMCPChildren:
     def test_filters_gateway_children_by_argv_marker(self, monkeypatch):
         """Non-MCP children start with an interpreter/binary, not the marker."""
 
-        from tools import mcp_tool_lifecycle as _mcp_lifecycle
+        from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
         cmdlines = {
             101: [
@@ -117,7 +117,7 @@ class TestLoadMCPConfig:
             }
         }
         with patch("hermes_cli.config.load_config", return_value={"mcp_servers": servers}):
-            from tools.mcp_tool_config import _load_mcp_config
+            from hermes_agent.tools.mcp_tool_config import _load_mcp_config
             result = _load_mcp_config()
             assert "filesystem" in result
             assert result["filesystem"]["command"] == "npx"
@@ -125,7 +125,7 @@ class TestLoadMCPConfig:
     def test_mcp_servers_not_dict_returns_empty(self):
         """mcp_servers set to non-dict value -> empty dict."""
         with patch("hermes_cli.config.load_config", return_value={"mcp_servers": "invalid"}):
-            from tools.mcp_tool_config import _load_mcp_config
+            from hermes_agent.tools.mcp_tool_config import _load_mcp_config
             result = _load_mcp_config()
             assert result == {}
 
@@ -145,7 +145,7 @@ class TestLoadMCPConfig:
             patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
             patch.dict(os.environ, {"PORT": "3000"}),
         ):
-            from tools.mcp_tool_config import _load_mcp_config
+            from hermes_agent.tools.mcp_tool_config import _load_mcp_config
 
             result = _load_mcp_config()
 
@@ -186,7 +186,7 @@ class TestLoadMCPConfig:
         monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
         monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
 
-        from tools.mcp_tool_config import _load_mcp_config
+        from hermes_agent.tools.mcp_tool_config import _load_mcp_config
 
         result = _load_mcp_config()
 
@@ -200,7 +200,7 @@ class TestLoadMCPConfig:
 
 class TestMCPParallelSafetyProvenance:
     def test_parallel_safe_servers_keep_exact_raw_names(self, monkeypatch):
-        from tools import mcp_tool
+        from hermes_agent.tools import mcp_tool
 
         first = SimpleNamespace(session=object(), _registered_tool_names=[])
         second = SimpleNamespace(session=object(), _registered_tool_names=[])
@@ -234,8 +234,8 @@ class TestMCPParallelSafetyProvenance:
                 mcp_tool._parallel_safe_servers.update(saved_parallel)
 
     def test_tool_provenance_keeps_exact_raw_server_names(self):
-        from tools import mcp_tool
-        from tools import mcp_tool_registration as _mcp_registration
+        from hermes_agent.tools import mcp_tool
+        from hermes_agent.tools import mcp_tool_registration as _mcp_registration
 
         first_tool = "mcp__foo_bar__first"
         second_tool = "mcp__foo_bar__second"
@@ -267,9 +267,9 @@ class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
         self, monkeypatch
     ):
-        from tools import mcp_tool
-        from tools import mcp_tool_config as _mcp_config
-        from tools import mcp_tool_discovery as _mcp_discovery
+        from hermes_agent.tools import mcp_tool
+        from hermes_agent.tools import mcp_tool_config as _mcp_config
+        from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
 
         monkeypatch.setattr(
             _mcp_config, "_load_mcp_config",
@@ -314,9 +314,9 @@ class TestMCPStatus:
         assert statuses["disabled"]["disabled"] is True
 
     def test_status_ignores_a_runtime_owned_by_another_profile(self, monkeypatch):
-        from tools import mcp_tool
-        from tools import mcp_tool_config as _mcp_config
-        from tools import mcp_tool_discovery as _mcp_discovery
+        from hermes_agent.tools import mcp_tool
+        from hermes_agent.tools import mcp_tool_config as _mcp_config
+        from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
 
         monkeypatch.setattr(
             _mcp_config, "_load_mcp_config",
@@ -352,8 +352,8 @@ class TestMCPStatus:
 
 
     def test_scoped_shutdown_clears_only_its_connection_status(self, monkeypatch):
-        from tools import mcp_tool
-        from tools import mcp_tool_lifecycle, mcp_tool_loop
+        from hermes_agent.tools import mcp_tool
+        from hermes_agent.tools import mcp_tool_lifecycle, mcp_tool_loop
 
         monkeypatch.setattr(mcp_tool_loop, "_stop_mcp_loop", lambda **_kwargs: None)
         with mcp_tool._lock:
@@ -424,7 +424,7 @@ class TestMCPStatus:
 
 class TestLifecycleConfig:
     def test_get_lifecycle_seconds_accepts_top_level_and_nested_values(self):
-        from tools.mcp_tool_common import _get_lifecycle_seconds
+        from hermes_agent.tools.mcp_tool_common import _get_lifecycle_seconds
 
         assert (
             _get_lifecycle_seconds(
@@ -439,7 +439,7 @@ class TestLifecycleConfig:
         ) == 42.0
 
     def test_get_lifecycle_seconds_ignores_invalid_values(self):
-        from tools.mcp_tool_common import _get_lifecycle_seconds
+        from hermes_agent.tools.mcp_tool_common import _get_lifecycle_seconds
 
         assert (
             _get_lifecycle_seconds(
@@ -463,7 +463,7 @@ class TestLifecycleConfig:
 
 class TestSchemaConversion:
     def test_converts_mcp_tool_to_hermes_schema(self):
-        from tools.mcp_tool_schema import _convert_mcp_schema
+        from hermes_agent.tools.mcp_tool_schema import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="read_file", description="Read a file")
         schema = _convert_mcp_schema("filesystem", mcp_tool)
@@ -484,7 +484,7 @@ class TestSchemaConversion:
         CI/pipelines MCP tool whose ``definitions`` parameter is an array of
         pipeline-definition IDs.
         """
-        from tools.mcp_tool_schema import _convert_mcp_schema
+        from hermes_agent.tools.mcp_tool_schema import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(
             name="pipelines_build",
@@ -525,7 +525,7 @@ class TestSchemaConversion:
         Tencent Docs MCP server whose ``smartsheet_add_table`` tool has a
         parameter named ``properties`` (#110530).
         """
-        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+        from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema
 
         normalized = _normalize_mcp_input_schema({
             "type": "object",
@@ -580,7 +580,7 @@ class TestSchemaConversion:
         ``properties`` entry appears inside it and no non-list ``required``
         keyword is synthesised at the object level.
         """
-        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+        from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema
 
         normalized = _normalize_mcp_input_schema({
             "type": "object",
@@ -610,7 +610,7 @@ class TestSchemaConversion:
         ``null is not of type "array"``. The key now survives as ``[]``, and an object
         node that never had a ``required`` key is coerced to ``[]`` too.
         """
-        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+        from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema
 
         stale = _normalize_mcp_input_schema({
             "type": "object", "properties": {}, "required": ["stale"],
@@ -629,7 +629,7 @@ class TestSchemaConversion:
 
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
-        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+        from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema
 
         schema = _normalize_mcp_input_schema({
             "type": "object",
@@ -654,7 +654,7 @@ class TestSchemaConversion:
 
     def test_hyphens_sanitized_to_underscores(self):
         """Hyphens in tool/server names are replaced with underscores for LLM compat."""
-        from tools.mcp_tool_schema import _convert_mcp_schema
+        from hermes_agent.tools.mcp_tool_schema import _convert_mcp_schema
 
         mcp_tool = _make_mcp_tool(name="get-sum")
         schema = _convert_mcp_schema("my-server", mcp_tool)
@@ -669,7 +669,7 @@ class TestSchemaConversion:
         suffix, distinct long names must not collide, and the same inputs
         must always produce the same shortened name.
         """
-        from tools.mcp_tool_schema import _convert_mcp_schema, mcp_prefixed_tool_name
+        from hermes_agent.tools.mcp_tool_schema import _convert_mcp_schema, mcp_prefixed_tool_name
 
         server_name = "agent_plugin_my_server_997167c9__my_server"
         mcp_tool = _make_mcp_tool(name="reply_communication_todo")
@@ -696,8 +696,8 @@ class TestSchemaConversion:
 
 class TestCheckFunction:
     def test_disconnected_returns_false(self):
-        from tools.mcp_tool_handlers import _make_check_fn
-        from tools.mcp_tool import _servers
+        from hermes_agent.tools.mcp_tool_handlers import _make_check_fn
+        from hermes_agent.tools.mcp_tool import _servers
 
         _servers.pop("test_server", None)
         check = _make_check_fn("test_server")
@@ -705,8 +705,8 @@ class TestCheckFunction:
 
 
     def test_recycled_stdio_server_remains_available_for_lazy_reconnect(self):
-        from tools.mcp_tool_handlers import _make_check_fn
-        from tools.mcp_tool import _servers
+        from hermes_agent.tools.mcp_tool_handlers import _make_check_fn
+        from hermes_agent.tools.mcp_tool import _servers
 
         server = _make_mock_server("test_server", session=None)
         server._config = {"command": "npx"}
@@ -728,7 +728,7 @@ class TestRunOnMcpLoop:
         """If run_coroutine_threadsafe raises, the factory's coroutine is closed."""
         import gc
         import warnings
-        import tools.mcp_tool as mcp
+        import hermes_agent.tools.mcp_tool as mcp
 
         created = {"coro": None}
 
@@ -767,7 +767,7 @@ class TestRunOnMcpLoop:
         """If loop is None, a passed coroutine (not factory) is closed."""
         import gc
         import warnings
-        import tools.mcp_tool as mcp
+        import hermes_agent.tools.mcp_tool as mcp
 
         async def _sample():
             return "ok"
@@ -803,12 +803,12 @@ class TestToolHandler:
             coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             return asyncio.run(coro)
         if coro_side_effect:
-            return patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=coro_side_effect)
-        return patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=fake_run)
+            return patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop", side_effect=coro_side_effect)
+        return patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop", side_effect=fake_run)
 
     def test_successful_call(self):
-        from tools.mcp_tool_handlers import _make_tool_handler
-        from tools.mcp_tool import _servers
+        from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
+        from hermes_agent.tools.mcp_tool import _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -828,8 +828,8 @@ class TestToolHandler:
 
 
     def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
-        from tools.mcp_tool_handlers import _make_tool_handler
-        from tools.mcp_tool import _servers
+        from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
+        from hermes_agent.tools.mcp_tool import _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -849,7 +849,7 @@ class TestToolHandler:
 
         try:
             handler = _make_tool_handler("test_srv", "greet", 120)
-            with patch("tools.mcp_tool_discovery._request_lazy_reconnect", side_effect=fake_lazy_reconnect) as reconnect, \
+            with patch("hermes_agent.tools.mcp_tool_discovery._request_lazy_reconnect", side_effect=fake_lazy_reconnect) as reconnect, \
                  self._patch_mcp_loop():
                 result = json.loads(handler({"name": "world"}))
             assert result["result"] == "reconnected"
@@ -878,8 +878,8 @@ class TestRunOnMCPLoopInterrupts:
                 return mcp_mod._run_on_mcp_loop(_unused_call(), timeout=1)
 
     def test_interrupt_cancels_waiting_mcp_call(self):
-        import tools.mcp_tool as mcp_mod
-        from tools.interrupt import set_interrupt
+        import hermes_agent.tools.mcp_tool as mcp_mod
+        from hermes_agent.tools.interrupt import set_interrupt
 
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -926,7 +926,7 @@ class TestRunOnMCPLoopInterrupts:
             mcp_mod._mcp_thread = old_thread
 
     def test_timeout_reports_elapsed_and_configured_timeout(self):
-        import tools.mcp_tool as mcp_mod
+        import hermes_agent.tools.mcp_tool as mcp_mod
 
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -970,9 +970,9 @@ class TestRunOnMCPLoopInterrupts:
 class TestDiscoverAndRegister:
     def test_tools_registered_in_registry(self):
         """_discover_and_register_server registers tools with correct names."""
-        from tools.registry import ToolRegistry
-        from tools.mcp_tool_discovery import _discover_and_register_server
-        from tools.mcp_tool import _servers, MCPServerTask
+        from hermes_agent.tools.registry import ToolRegistry
+        from hermes_agent.tools.mcp_tool_discovery import _discover_and_register_server
+        from hermes_agent.tools.mcp_tool import _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_tools = [
@@ -987,8 +987,8 @@ class TestDiscoverAndRegister:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("hermes_agent.tools.registry.registry", mock_registry):
             registered = asyncio.run(
                 _discover_and_register_server("fs", {"command": "npx", "args": []})
             )
@@ -1002,8 +1002,8 @@ class TestDiscoverAndRegister:
 
 
     def test_same_server_normalization_collision_skips_all_ambiguous_tools(self):
-        from tools.mcp_tool_registration import _register_server_tools
-        from tools.registry import ToolRegistry
+        from hermes_agent.tools.mcp_tool_registration import _register_server_tools
+        from hermes_agent.tools.registry import ToolRegistry
 
         registry = ToolRegistry()
         server = _make_mock_server(
@@ -1017,8 +1017,8 @@ class TestDiscoverAndRegister:
         )
         config = {"tools": {"resources": False, "prompts": False}}
 
-        with patch("tools.registry.registry", registry), \
-             patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+        with patch("hermes_agent.tools.registry.registry", registry), \
+             patch("hermes_agent.tools.mcp_tool_registration._track_mcp_tool_server"):
             registered = _register_server_tools("srv", server, config)
 
         assert registered == ["mcp__srv__safe_tool"]
@@ -1034,8 +1034,8 @@ class TestDiscoverAndRegister:
         generated utility is only sugar for servers that lack such a tool, so
         the native tool wins and the utility is dropped.
         """
-        from tools.mcp_tool_registration import _register_server_tools
-        from tools.registry import ToolRegistry
+        from hermes_agent.tools.mcp_tool_registration import _register_server_tools
+        from hermes_agent.tools.registry import ToolRegistry
 
         registry = ToolRegistry()
         server = _make_mock_server(
@@ -1050,8 +1050,8 @@ class TestDiscoverAndRegister:
         # and collides; prompts disabled to keep the candidate set focused.
         config = {"tools": {"prompts": False}}
 
-        with patch("tools.registry.registry", registry), \
-             patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+        with patch("hermes_agent.tools.registry.registry", registry), \
+             patch("hermes_agent.tools.mcp_tool_registration._track_mcp_tool_server"):
             registered = _register_server_tools("srv", server, config)
 
         # The native tool is registered (before the fix it was dropped) and it
@@ -1072,7 +1072,7 @@ class TestMCPServerTask:
     @pytest.fixture(autouse=True)
     def _no_pm_launcher(self, monkeypatch):
         # Launcher resolution is not under test here, and a CI host has no PM-managed Node.
-        monkeypatch.setattr("tools.mcp_tool_config._managed_launcher", lambda command: None)
+        monkeypatch.setattr("hermes_agent.tools.mcp_tool_config._managed_launcher", lambda command: None)
 
     def _mock_stdio_and_session(self, session):
         """Return patches for stdio_client and ClientSession as async CMs."""
@@ -1087,14 +1087,14 @@ class TestMCPServerTask:
         mock_cs_cm.__aexit__ = AsyncMock(return_value=False)
 
         return (
-            patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm),
-            patch("tools.mcp_tool.ClientSession", return_value=mock_cs_cm),
+            patch("hermes_agent.tools.mcp_tool.stdio_client", return_value=mock_stdio_cm),
+            patch("hermes_agent.tools.mcp_tool.ClientSession", return_value=mock_cs_cm),
             mock_read, mock_write,
         )
 
     def test_start_connects_and_discovers_tools(self):
         """start() creates a Task that connects, discovers tools, and waits."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         mock_tools = [_make_mcp_tool("echo")]
         mock_session = MagicMock()
@@ -1106,7 +1106,7 @@ class TestMCPServerTask:
         p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
 
         async def _test():
-            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+            with patch("hermes_agent.tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
                 server = MCPServerTask("test_srv")
                 await server.start(
                     {"command": "npx", "args": ["-y", "test"], "cwd": "/plugin"}
@@ -1124,7 +1124,7 @@ class TestMCPServerTask:
         asyncio.run(_test())
 
     def test_start_preserves_native_default_cwd(self):
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         mock_session = MagicMock()
         mock_session.initialize = AsyncMock()
@@ -1132,7 +1132,7 @@ class TestMCPServerTask:
         p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
 
         async def _test():
-            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+            with patch("hermes_agent.tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
                 server = MCPServerTask("native")
                 await server.start({"command": "npx", "args": ["-y", "test"]})
                 assert params.call_args.kwargs["cwd"] is None
@@ -1148,7 +1148,7 @@ class TestMCPServerTask:
         relative-path servers resolve against the wrong tree.
         """
         from agent.runtime_cwd import clear_session_cwd, set_session_cwd
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         workspace = tmp_path / "workspace"
@@ -1162,7 +1162,7 @@ class TestMCPServerTask:
         async def _test():
             set_session_cwd(str(workspace))
             try:
-                with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+                with patch("hermes_agent.tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
                     server = MCPServerTask("session_cwd")
                     await server.start({"command": "npx", "args": ["-y", "test"]})
                     assert Path(params.call_args.kwargs["cwd"]) == workspace
@@ -1175,7 +1175,7 @@ class TestMCPServerTask:
     def test_start_configured_cwd_overrides_session_cwd(self, tmp_path, monkeypatch):
         """An explicit per-server `cwd` in config always wins over the session anchor."""
         from agent.runtime_cwd import clear_session_cwd, set_session_cwd
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         workspace = tmp_path / "workspace"
@@ -1189,7 +1189,7 @@ class TestMCPServerTask:
         async def _test():
             set_session_cwd(str(workspace))
             try:
-                with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+                with patch("hermes_agent.tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
                     server = MCPServerTask("explicit_wins")
                     await server.start({"command": "npx", "args": ["-y", "test"], "cwd": "/plugin"})
                     assert params.call_args.kwargs["cwd"] == "/plugin"
@@ -1200,7 +1200,7 @@ class TestMCPServerTask:
         asyncio.run(_test())
 
     def test_stdio_recycle_deadline_pauses_while_rpc_active(self):
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         async def _test():
             server = MCPServerTask("srv")
@@ -1222,9 +1222,9 @@ class TestMCPServerTask:
 class TestToolsetInjection:
     def test_mcp_tools_resolve_through_server_aliases(self):
         """Discovered MCP tools resolve through raw server-name aliases."""
-        from tools.mcp_tool import MCPServerTask
-        from tools.registry import ToolRegistry
-        from toolsets import resolve_toolset, validate_toolset
+        from hermes_agent.tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.registry import ToolRegistry
+        from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
         mock_tools = [_make_mcp_tool("list_files", "List files")]
         mock_session = MagicMock()
@@ -1240,12 +1240,12 @@ class TestToolsetInjection:
 
         fake_config = {"fs": {"command": "npx", "args": []}}
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._servers", fresh_servers), \
-             patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
-             patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
-            from tools.mcp_tool_discovery import discover_mcp_tools
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool._servers", fresh_servers), \
+             patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
+             patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("hermes_agent.tools.registry.registry", mock_registry):
+            from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
             result = discover_mcp_tools()
 
             assert "mcp__fs__list_files" in result
@@ -1256,7 +1256,7 @@ class TestToolsetInjection:
 
     def test_partial_failure_retry_on_second_call(self):
         """Failed servers are retried on subsequent discover_mcp_tools() calls."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         mock_tools = [_make_mcp_tool("ping", "Ping")]
         mock_session = MagicMock()
@@ -1284,12 +1284,12 @@ class TestToolsetInjection:
             "hermes-cli": {"tools": [], "description": "CLI", "includes": []},
         }
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._servers", fresh_servers), \
-             patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
-             patch("tools.mcp_tool_discovery._connect_server", side_effect=flaky_connect), \
-             patch("toolsets.TOOLSETS", fake_toolsets):
-            from tools.mcp_tool_discovery import discover_mcp_tools
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool._servers", fresh_servers), \
+             patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
+             patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=flaky_connect), \
+             patch("hermes_agent.toolsets.TOOLSETS", fake_toolsets):
+            from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
 
             # First call: good connects, broken fails
             result1 = discover_mcp_tools()
@@ -1304,7 +1304,7 @@ class TestToolsetInjection:
             # (#50394: prevents a tight re-spawn storm across the frequent
             # per-worker-session discovery passes). Expire that cooldown to
             # simulate the retry window having elapsed.
-            import tools.mcp_tool as _mcp_mod
+            import hermes_agent.tools.mcp_tool as _mcp_mod
             _mcp_mod._server_connect_retry_after.pop("broken", None)
 
             # Next call after the cooldown: should retry broken, skip good
@@ -1321,8 +1321,8 @@ class TestToolsetInjection:
 class TestGracefulFallback:
     def test_mcp_unavailable_returns_empty(self):
         """When _MCP_AVAILABLE is False, discover_mcp_tools is a no-op."""
-        with patch("tools.mcp_tool._MCP_AVAILABLE", False):
-            from tools.mcp_tool_discovery import discover_mcp_tools
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", False):
+            from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
             result = discover_mcp_tools()
             assert result == []
 
@@ -1340,9 +1340,9 @@ class TestShutdown:
         and the bounded wait for the scheduled shutdown expires. The loop owner
         must still cancel and drain that waiter before closing the loop.
         """
-        import tools.mcp_tool as mcp_mod
-        from tools.mcp_tool import MCPServerTask
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        import hermes_agent.tools.mcp_tool as mcp_mod
+        from hermes_agent.tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
 
         shutdown_started = threading.Event()
         parked_task_done = threading.Event()
@@ -1415,11 +1415,11 @@ class TestShutdown:
 
     def test_shutdown_deregisters_registered_tools(self):
         """shutdown_mcp_servers removes MCP tools and their raw alias."""
-        import tools.mcp_tool as mcp_mod
-        from tools.mcp_tool import MCPServerTask, _servers
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-        from tools.registry import registry
-        from toolsets import resolve_toolset, validate_toolset
+        import hermes_agent.tools.mcp_tool as mcp_mod
+        from hermes_agent.tools.mcp_tool import MCPServerTask, _servers
+        from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        from hermes_agent.tools.registry import registry
+        from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
         _servers.clear()
         registry.register(
@@ -1461,7 +1461,7 @@ class TestBuildSafeEnv:
 
     def test_only_safe_vars_passed(self):
         """Only safe baseline vars and XDG_* from os.environ are included."""
-        from tools.mcp_tool_config import _build_safe_env
+        from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
         fake_env = {
             "PATH": "/usr/bin",
@@ -1491,7 +1491,7 @@ class TestBuildSafeEnv:
 
     def test_secret_vars_excluded(self):
         """Sensitive env vars from os.environ are NOT passed through."""
-        from tools.mcp_tool_config import _build_safe_env
+        from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
         fake_env = {
             "PATH": "/usr/bin",
@@ -1513,7 +1513,7 @@ class TestBuildSafeEnv:
 
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""
-        from tools.mcp_tool_config import _build_safe_env
+        from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
         fake_env = {
             "PATH": r"C:\Windows\System32",
@@ -1547,7 +1547,7 @@ class TestSanitizeError:
     """Tests for _sanitize_error() credential stripping."""
 
     def test_strips_credentials(self):
-        from tools.mcp_tool_common import _sanitize_error
+        from hermes_agent.tools.mcp_tool_common import _sanitize_error
 
         for text, expected in (
             ("Error with ghp_abc123def456", "Error with [REDACTED]"),
@@ -1565,7 +1565,7 @@ class TestSanitizeError:
         assert multi.count("[REDACTED]") == 3
 
     def test_no_credentials_unchanged(self):
-        from tools.mcp_tool_common import _sanitize_error
+        from hermes_agent.tools.mcp_tool_common import _sanitize_error
         result = _sanitize_error("normal error message")
         assert result == "normal error message"
 
@@ -1577,19 +1577,19 @@ class TestHTTPConfig:
     """Tests for HTTP transport detection and handling."""
 
     def test_is_http_with_url(self):
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
         server = MCPServerTask("remote")
         server._config = {"url": "https://example.com/mcp"}
         assert server._is_http() is True
 
     def test_http_unavailable_raises(self):
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("remote")
         config = {"url": "https://example.com/mcp"}
 
         async def _test():
-            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
+            with patch("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", False):
                 with pytest.raises(ImportError):
                     await server._run_http(config)
 
@@ -1604,13 +1604,13 @@ class TestHTTPConfig:
         mirroring ``_run_http``'s behaviour when the HTTP transport is
         unavailable.
         """
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("local")
         config = {"command": "python3", "args": ["/tmp/echo.py"]}
 
         async def _test():
-            with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+            with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", False):
                 with pytest.raises(ImportError):
                     await server._run_stdio(config)
 
@@ -1625,7 +1625,7 @@ class TestReconnection:
 
     def test_reconnect_on_disconnect(self):
         """After initial success, a connection drop triggers reconnection."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         run_count = 0
         target_server = None
@@ -1672,7 +1672,7 @@ class TestReconnection:
         (buggy) initial-connect ladder but not the reconnect budget, so this
         distinguishes the two code paths.
         """
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         run_count = 0
         target_server = None
@@ -1738,7 +1738,7 @@ class TestReconnection:
 
     def test_preflight_probe_runs_on_initial_http_connect(self):
         """The content-type preflight probe fires on the first HTTP connect."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         target_server = None
         probe = AsyncMock()
@@ -1779,7 +1779,7 @@ class TestConfigurableTimeouts:
 
     def test_custom_timeout(self):
         """Server with timeout=180 in config gets 180."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         target_server = None
 
@@ -1828,13 +1828,13 @@ class TestUtilityHandlers:
         def fake_run(coro_or_factory, timeout=30):
             coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
             return asyncio.run(coro)
-        return patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=fake_run)
+        return patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop", side_effect=fake_run)
 
     # -- list_resources --
 
     def test_list_resources_success(self):
-        from tools.mcp_tool_handlers import _make_list_resources_handler
-        from tools.mcp_tool import _servers
+        from hermes_agent.tools.mcp_tool_handlers import _make_list_resources_handler
+        from hermes_agent.tools.mcp_tool import _servers
 
         mock_resource = SimpleNamespace(
             uri="file:///tmp/test.txt", name="test.txt",
@@ -1867,8 +1867,8 @@ class TestUtilityHandlers:
     # -- get_prompt --
 
     def test_get_prompt_success(self):
-        from tools.mcp_tool_handlers import _make_get_prompt_handler
-        from tools.mcp_tool import _servers
+        from hermes_agent.tools.mcp_tool_handlers import _make_get_prompt_handler
+        from hermes_agent.tools.mcp_tool import _servers
 
         mock_msg = SimpleNamespace(
             role="assistant",
@@ -1904,9 +1904,9 @@ class TestUtilityToolRegistration:
 
     def test_utility_tools_registered(self):
         """_discover_and_register_server registers all 4 utility tools."""
-        from tools.registry import ToolRegistry
-        from tools.mcp_tool_discovery import _discover_and_register_server
-        from tools.mcp_tool import _servers, MCPServerTask
+        from hermes_agent.tools.registry import ToolRegistry
+        from hermes_agent.tools.mcp_tool_discovery import _discover_and_register_server
+        from hermes_agent.tools.mcp_tool import _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
         mock_tools = [_make_mcp_tool("read_file", "Read a file")]
@@ -1918,8 +1918,8 @@ class TestUtilityToolRegistration:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("hermes_agent.tools.registry.registry", mock_registry):
             registered = asyncio.run(
                 _discover_and_register_server("fs", {"command": "npx", "args": []})
             )
@@ -1979,11 +1979,11 @@ try:
 except ImportError:
     ToolUseContent = _CompatType
 
-from tools.mcp_tool import CreateMessageResultWithTools, SamplingHandler, ToolUseContent
-from tools.mcp_tool_common import _safe_numeric
-from tools import mcp_tool_config as _mcp_config
-from tools import mcp_tool_discovery as _mcp_discovery
-from tools import mcp_tool_loop as _mcp_loop
+from hermes_agent.tools.mcp_tool import CreateMessageResultWithTools, SamplingHandler, ToolUseContent
+from hermes_agent.tools.mcp_tool_common import _safe_numeric
+from hermes_agent.tools import mcp_tool_config as _mcp_config
+from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -2522,9 +2522,9 @@ class TestDiscoveryConnectConcurrency:
         """Run a discovery pass with ``mcp.discovery_concurrency=cap``; return (peak in-flight, connected)."""
         import asyncio as _asyncio
 
-        from tools import mcp_tool_discovery as _discovery
-        from tools.mcp_tool import _servers
-        from tools.mcp_tool_loop import _ensure_mcp_loop
+        from hermes_agent.tools import mcp_tool_discovery as _discovery
+        from hermes_agent.tools.mcp_tool import _servers
+        from hermes_agent.tools.mcp_tool_loop import _ensure_mcp_loop
 
         in_flight = 0
         max_in_flight = 0
@@ -2540,11 +2540,11 @@ class TestDiscoveryConnectConcurrency:
             connected.append(name)
             return []
 
-        with patch("tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
+        with patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=server_names), \
              patch("hermes_cli.config.load_config", return_value={"mcp": {"discovery_concurrency": cap}}), \
-             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
-             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
+             patch("hermes_agent.tools.mcp_tool_discovery._discover_and_register_server", side_effect=tracked_register), \
+             patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool_registration._existing_tool_names", return_value=[]):
             _ensure_mcp_loop()
             try:
                 _discovery._run_discovery_pass(server_names)
@@ -2572,9 +2572,9 @@ class TestDiscoveryConnectConcurrency:
         ceil(N/cap) waves make a pass legitimately long, and an uncapped
         120s-per-wave timeout would let a lock loser run unguarded discovery
         beside a still-connecting holder (#117373 review)."""
-        from tools import mcp_tool_discovery as _discovery
-        from tools.mcp_tool import _MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
-        from tools.mcp_tool import _MCP_DISCOVERY_PASS_MAX_SEC
+        from hermes_agent.tools import mcp_tool_discovery as _discovery
+        from hermes_agent.tools.mcp_tool import _MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
+        from hermes_agent.tools.mcp_tool import _MCP_DISCOVERY_PASS_MAX_SEC
 
         waiter_budget = _MCP_DISCOVERY_LOCK_MAX_RETRIES * _MCP_DISCOVERY_LOCK_RETRY_DELAY_S
         assert waiter_budget > _MCP_DISCOVERY_PASS_MAX_SEC, (
@@ -2589,7 +2589,7 @@ class TestDiscoveryConnectConcurrency:
         # 40 servers = 14 waves at cap 3: uncapped, the pass would block 28 min
         # and outlive the waiter budget by 26+ minutes.
         server_names = {f"srv{i}": {} for i in range(40)}
-        with patch("tools.mcp_tool_discovery._loop._run_on_mcp_loop",
+        with patch("hermes_agent.tools.mcp_tool_discovery._loop._run_on_mcp_loop",
                    side_effect=fake_run_on_mcp_loop):
             _discovery._run_discovery_pass(server_names)
 
@@ -2611,9 +2611,9 @@ class TestMCPSelectiveToolLoading:
         return server
 
     def _run_discover(self, name, tool_names, config, session=None):
-        from tools.registry import ToolRegistry
-        from tools.mcp_tool_discovery import _discover_and_register_server
-        from tools.mcp_tool import _servers
+        from hermes_agent.tools.registry import ToolRegistry
+        from hermes_agent.tools.mcp_tool_discovery import _discover_and_register_server
+        from hermes_agent.tools.mcp_tool import _servers
 
         mock_registry = ToolRegistry()
         server = self._make_server(name, tool_names, session=session)
@@ -2622,9 +2622,9 @@ class TestMCPSelectiveToolLoading:
             return server
 
         async def run():
-            with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-                 patch("tools.registry.registry", mock_registry), \
-                 patch("toolsets.create_custom_toolset"):
+            with patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+                 patch("hermes_agent.tools.registry.registry", mock_registry), \
+                 patch("hermes_agent.toolsets.create_custom_toolset"):
                 return await _discover_and_register_server(name, config)
 
         try:
@@ -2669,7 +2669,7 @@ class TestMCPSelectiveToolLoading:
         assert registered == []
 
     def test_enabled_false_skips_connection_attempt(self):
-        from tools.mcp_tool_discovery import discover_mcp_tools
+        from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
 
         connect_called = []
 
@@ -2687,11 +2687,11 @@ class TestMCPSelectiveToolLoading:
             "hermes-cli": {"tools": [], "description": "CLI", "includes": []},
         }
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._servers", {}), \
-             patch("tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
-             patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("toolsets.TOOLSETS", fake_toolsets):
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool._servers", {}), \
+             patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=fake_config), \
+             patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("hermes_agent.toolsets.TOOLSETS", fake_toolsets):
             result = discover_mcp_tools()
 
         assert connect_called == []
@@ -2708,9 +2708,9 @@ class TestMCPBuiltinCollisionGuard:
 
     def test_mcp_tool_skipped_when_builtin_exists(self):
         """An MCP tool whose prefixed name collides with a built-in is skipped."""
-        from tools.registry import ToolRegistry
-        from tools.mcp_tool_discovery import _discover_and_register_server
-        from tools.mcp_tool import _servers, MCPServerTask
+        from hermes_agent.tools.registry import ToolRegistry
+        from hermes_agent.tools.mcp_tool_discovery import _discover_and_register_server
+        from hermes_agent.tools.mcp_tool import _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
 
@@ -2735,8 +2735,8 @@ class TestMCPBuiltinCollisionGuard:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("hermes_agent.tools.registry.registry", mock_registry):
             registered = asyncio.run(
                 _discover_and_register_server("abc", {"command": "test", "args": []})
             )
@@ -2749,9 +2749,9 @@ class TestMCPBuiltinCollisionGuard:
 
     def test_mcp_tool_rejected_when_collision_is_another_mcp(self):
         """Cross-server MCP collisions preserve the existing owner."""
-        from tools.registry import ToolRegistry
-        from tools.mcp_tool_discovery import _discover_and_register_server
-        from tools.mcp_tool import _servers, MCPServerTask
+        from hermes_agent.tools.registry import ToolRegistry
+        from hermes_agent.tools.mcp_tool_discovery import _discover_and_register_server
+        from hermes_agent.tools.mcp_tool import _servers, MCPServerTask
 
         mock_registry = ToolRegistry()
 
@@ -2775,8 +2775,8 @@ class TestMCPBuiltinCollisionGuard:
             server._tools = mock_tools
             return server
 
-        with patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("tools.registry.registry", mock_registry):
+        with patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("hermes_agent.tools.registry.registry", mock_registry):
             registered = asyncio.run(
                 _discover_and_register_server("srv", {"command": "test", "args": []})
             )
@@ -2804,8 +2804,8 @@ class TestSanitizeMcpNameComponent:
 
     def test_slash_in_server_alias_resolution(self):
         """Server names with slashes resolve through their live MCP alias."""
-        from tools.registry import ToolRegistry
-        from toolsets import resolve_toolset, validate_toolset
+        from hermes_agent.tools.registry import ToolRegistry
+        from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
         reg = ToolRegistry()
         reg.register(
@@ -2816,7 +2816,7 @@ class TestSanitizeMcpNameComponent:
         )
         reg.register_toolset_alias("ai.exa/exa", "mcp-ai.exa/exa")
 
-        with patch("tools.registry.registry", reg):
+        with patch("hermes_agent.tools.registry.registry", reg):
             assert validate_toolset("ai.exa/exa") is True
             assert "mcp__ai_exa_exa__search" in resolve_toolset("ai.exa/exa")
 
@@ -2830,17 +2830,17 @@ class TestRegisterMcpServers:
     """Verify the new register_mcp_servers() public API."""
 
     def test_mcp_not_available_returns_empty(self):
-        from tools.mcp_tool_discovery import register_mcp_servers
+        from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", False):
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", False):
             result = register_mcp_servers({"srv": {"command": "test"}})
         assert result == []
 
 
     def test_connects_new_servers(self):
-        from tools.mcp_tool_discovery import register_mcp_servers
-        from tools.mcp_tool import _servers
-        from tools.mcp_tool_loop import _ensure_mcp_loop
+        from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
+        from hermes_agent.tools.mcp_tool import _servers
+        from hermes_agent.tools.mcp_tool_loop import _ensure_mcp_loop
 
         fake_config = {"my_server": {"command": "npx", "args": ["test"]}}
 
@@ -2850,9 +2850,9 @@ class TestRegisterMcpServers:
             _servers[name] = server
             return ["mcp__my_server__tool1"]
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=fake_register), \
-             patch("tools.mcp_tool_registration._existing_tool_names", return_value=["mcp__my_server__tool1"]):
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool_discovery._discover_and_register_server", side_effect=fake_register), \
+             patch("hermes_agent.tools.mcp_tool_registration._existing_tool_names", return_value=["mcp__my_server__tool1"]):
             _ensure_mcp_loop()
             result = register_mcp_servers(fake_config)
 
@@ -2861,9 +2861,9 @@ class TestRegisterMcpServers:
 
     def test_skips_servers_already_connecting(self):
         """Servers in _server_connecting must not be spawned again (#58862)."""
-        from tools.mcp_tool_discovery import register_mcp_servers
-        from tools.mcp_tool import _servers, _server_connecting
-        from tools.mcp_tool_loop import _ensure_mcp_loop
+        from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
+        from hermes_agent.tools.mcp_tool import _servers, _server_connecting
+        from hermes_agent.tools.mcp_tool_loop import _ensure_mcp_loop
 
         fake_config = {"my_srv": {"command": "npx", "args": ["test"]}}
 
@@ -2879,10 +2879,10 @@ class TestRegisterMcpServers:
             return [f"mcp_{name}_tool"]
 
         try:
-            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-                 patch("tools.mcp_tool_discovery._discover_and_register_server", side_effect=fake_register), \
-                 patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]), \
-                 patch("tools.mcp_tool_discovery._connect_cooldown_active", return_value=False):
+            with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("hermes_agent.tools.mcp_tool_discovery._discover_and_register_server", side_effect=fake_register), \
+                 patch("hermes_agent.tools.mcp_tool_registration._existing_tool_names", return_value=[]), \
+                 patch("hermes_agent.tools.mcp_tool_discovery._connect_cooldown_active", return_value=False):
                 _ensure_mcp_loop()
                 result = register_mcp_servers(fake_config)
 
@@ -2898,9 +2898,9 @@ class TestRegisterMcpServers:
 
     def test_clears_stale_connecting_on_timeout(self):
         """Stale entries in _server_connecting are cleaned up after timeout (#58862)."""
-        from tools.mcp_tool_discovery import register_mcp_servers
-        from tools.mcp_tool import _servers, _server_connecting
-        from tools.mcp_tool_loop import _ensure_mcp_loop
+        from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
+        from hermes_agent.tools.mcp_tool import _servers, _server_connecting
+        from hermes_agent.tools.mcp_tool_loop import _ensure_mcp_loop
 
         fake_config = {
             "srv_a": {"command": "npx", "args": ["a"]},
@@ -2910,10 +2910,10 @@ class TestRegisterMcpServers:
         # Simulate that srv_a is already connecting from another call
         _server_connecting.add("srv_a")
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=TimeoutError("timed out")), \
-             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]), \
-             patch("tools.mcp_tool_discovery._connect_cooldown_active", return_value=False):
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop", side_effect=TimeoutError("timed out")), \
+             patch("hermes_agent.tools.mcp_tool_registration._existing_tool_names", return_value=[]), \
+             patch("hermes_agent.tools.mcp_tool_discovery._connect_cooldown_active", return_value=False):
             _ensure_mcp_loop()
 
             with pytest.raises(TimeoutError):
@@ -2942,9 +2942,9 @@ class TestMcpParallelToolCalls:
 
     def test_register_mcp_servers_tracks_parallel_flag(self):
         """register_mcp_servers populates _parallel_safe_servers from config."""
-        from tools.mcp_tool_discovery import register_mcp_servers
-        from tools.mcp_tool import _parallel_safe_servers, _lock
-        from tools.mcp_tool_schema import sanitize_mcp_name_component
+        from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
+        from hermes_agent.tools.mcp_tool import _parallel_safe_servers, _lock
+        from hermes_agent.tools.mcp_tool_schema import sanitize_mcp_name_component
         fake_config = {
             "parallel_srv": {
                 "command": "echo",
@@ -2959,10 +2959,10 @@ class TestMcpParallelToolCalls:
                 # no supports_parallel_tool_calls key
             },
         }
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop"), \
-             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop"), \
+             patch("hermes_agent.tools.mcp_tool_registration._existing_tool_names", return_value=[]):
             register_mcp_servers(fake_config)
 
         with _lock:
@@ -2983,7 +2983,7 @@ class TestMCPDiscoveryCrossProcessLock:
     @pytest.fixture(autouse=True)
     def _fast_retries(self):
         """Override retry constants so tests are fast."""
-        from tools import mcp_tool
+        from hermes_agent.tools import mcp_tool
         orig_max = mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES
         orig_delay = mcp_tool._MCP_DISCOVERY_LOCK_RETRY_DELAY_S
         mcp_tool._MCP_DISCOVERY_LOCK_MAX_RETRIES = 3
@@ -2994,8 +2994,8 @@ class TestMCPDiscoveryCrossProcessLock:
 
     def test_lock_acquired_path(self, tmp_path):
         """Lock acquired -> discovery runs normally, lock released at end."""
-        from tools.mcp_tool_loop import _LockCookie
-        from tools.mcp_tool_discovery import discover_mcp_tools
+        from hermes_agent.tools.mcp_tool_loop import _LockCookie
+        from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
 
         lock_file = tmp_path / ".mcp-discovery.lock"
         fh = open(lock_file, "w", encoding="utf-8")
@@ -3006,25 +3006,25 @@ class TestMCPDiscoveryCrossProcessLock:
 
         mock_config = {"test_srv": {"command": "echo", "enabled": True}}
         with patch.object(cookie, "release", wraps=cookie.release) as release_spy:
-            with patch("tools.mcp_tool_loop._try_acquire_mcp_discovery_lock", mock_acquire), \
-                 patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-                 patch("tools.mcp_tool_config._load_mcp_config", return_value=mock_config), \
-                 patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp__test_srv__ping"]):
+            with patch("hermes_agent.tools.mcp_tool_loop._try_acquire_mcp_discovery_lock", mock_acquire), \
+                 patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=mock_config), \
+                 patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp__test_srv__ping"]):
                 result = discover_mcp_tools()
             assert result == ["mcp__test_srv__ping"]
             release_spy.assert_called_once()
 
     def test_lock_held_retries_exhausted_fallback(self):
         """All retry attempts see lock held -> runs discovery unguarded."""
-        from tools.mcp_tool_discovery import discover_mcp_tools
+        from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
 
         mock_config = {"test_srv": {"command": "echo", "enabled": True}}
         # Every attempt returns None (lock held)
-        with patch("tools.mcp_tool_loop._try_acquire_mcp_discovery_lock", return_value=None), \
-             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_config._load_mcp_config", return_value=mock_config), \
-             patch("tools.mcp_tool_discovery.register_mcp_servers") as reg_spy, \
-             patch("tools.mcp_tool_registration._existing_tool_names", return_value=[]):
+        with patch("hermes_agent.tools.mcp_tool_loop._try_acquire_mcp_discovery_lock", return_value=None), \
+             patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=mock_config), \
+             patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers") as reg_spy, \
+             patch("hermes_agent.tools.mcp_tool_registration._existing_tool_names", return_value=[]):
             discover_mcp_tools()
         # Must still run local discovery
         reg_spy.assert_called_once_with(mock_config)
@@ -3042,7 +3042,7 @@ class TestRedirectHeaderStripper:
 
     def _build_redirect(self, httpx, *, strict=False, configured=frozenset(),
                         headers, location):
-        from tools.mcp_tool_errors import _make_redirect_header_stripper
+        from hermes_agent.tools.mcp_tool_errors import _make_redirect_header_stripper
 
         build_client = _make_redirect_header_stripper(
             httpx, httpx.URL("https://origin.example.test/mcp"),

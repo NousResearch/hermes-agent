@@ -121,7 +121,7 @@ def _tick(job, home, deliveries, resolve):
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_agent.hermes_state_registry.acquire", return_value=MagicMock()), \
-         patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+         patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
          patch("hermes_agent.cron.delivery_queue.enqueue",
                side_effect=lambda execution_id, jb, content, **kw: (

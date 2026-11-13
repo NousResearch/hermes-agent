@@ -362,7 +362,7 @@ def status_lines(status: dict[str, Any]) -> list[str]:
 def result_lines(status: dict[str, Any]) -> list[str]:
     """What a handoff did, for the line after "Signed in as ..." (every sign-in surface) and for
     :func:`status_lines`."""
-    from tools.tool_labels import app_title
+    from hermes_agent.tools.tool_labels import app_title
     state = status.get("state")
     where = status.get("account_email") or "your account"
     moved = [app_title(slug) for slug in status.get("moved_toolkits") or []]

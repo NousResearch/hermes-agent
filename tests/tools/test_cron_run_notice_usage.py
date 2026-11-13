@@ -10,8 +10,8 @@ import pytest
 
 from hermes_agent.cron import jobs
 from tests.fakes.cron_owner import admit_fire, cron_owner
-from tools.cronjob_tools import _try_dispatch_background_run
-from tools.process_registry_notifications import format_process_notification
+from hermes_agent.tools.cronjob_tools import _try_dispatch_background_run
+from hermes_agent.tools.process_registry_notifications import format_process_notification
 
 
 @pytest.fixture()
@@ -23,13 +23,13 @@ def owner(tmp_path, monkeypatch):
 
 def _completion(job, run_one_job):
     """Dispatch ``job`` through the real background path and return its completion event."""
-    from tools.approval_context import _approval_session_key
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.approval_context import _approval_session_key
+    from hermes_agent.tools.process_registry import process_registry
 
     token = _approval_session_key.set("agent:main:telegram:dm:4242")
     others = []
     try:
-        with patch("tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: dict(job)), \
+        with patch("hermes_agent.tools.cronjob_tools.claim_job_for_fire", side_effect=lambda jid, **kw: dict(job)), \
              patch("hermes_agent.cron.scheduler.run_one_job", side_effect=run_one_job):
             res = _try_dispatch_background_run(dict(job))
             assert res["dispatched"] is True

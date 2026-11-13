@@ -215,12 +215,12 @@ def vercel_sdk(monkeypatch):
 
 @pytest.fixture()
 def vercel_module(vercel_sdk, monkeypatch):
-    monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
-    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", list)
-    monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kwargs: [])
-    monkeypatch.setattr("tools.credential_files.iter_cache_files", lambda **kwargs: [])
+    monkeypatch.setattr("hermes_agent.tools.environments.base.is_interrupted", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.credential_files.get_credential_file_mounts", list)
+    monkeypatch.setattr("hermes_agent.tools.credential_files.iter_skills_files", lambda **kwargs: [])
+    monkeypatch.setattr("hermes_agent.tools.credential_files.iter_cache_files", lambda **kwargs: [])
 
-    module = importlib.import_module("tools.environments.vercel_sandbox")
+    module = importlib.import_module("hermes_agent.tools.environments.vercel_sandbox")
     module = importlib.reload(module)
     # These tests fully fake the vercel SDK via sys.modules (vercel_sdk
     # fixture) — the real package is never exercised, so the lazy-install
@@ -292,7 +292,7 @@ class TestFileSync:
         src = tmp_path / "token.txt"
         src.write_text("secret-token")
         monkeypatch.setattr(
-            "tools.credential_files.get_credential_file_mounts",
+            "hermes_agent.tools.credential_files.get_credential_file_mounts",
             lambda: [
                 {
                     "host_path": str(src),
@@ -300,8 +300,8 @@ class TestFileSync:
                 }
             ],
         )
-        monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kwargs: [])
-        monkeypatch.setattr("tools.credential_files.iter_cache_files", lambda **kwargs: [])
+        monkeypatch.setattr("hermes_agent.tools.credential_files.iter_skills_files", lambda **kwargs: [])
+        monkeypatch.setattr("hermes_agent.tools.credential_files.iter_cache_files", lambda **kwargs: [])
 
         make_env()
 
@@ -319,7 +319,7 @@ class TestFileSync:
         src = tmp_path / "token.txt"
         src.write_text("secret-token")
         monkeypatch.setattr(
-            "tools.credential_files.get_credential_file_mounts",
+            "hermes_agent.tools.credential_files.get_credential_file_mounts",
             lambda: [
                 {
                     "host_path": str(src),
@@ -327,8 +327,8 @@ class TestFileSync:
                 }
             ],
         )
-        monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kwargs: [])
-        monkeypatch.setattr("tools.credential_files.iter_cache_files", lambda **kwargs: [])
+        monkeypatch.setattr("hermes_agent.tools.credential_files.iter_skills_files", lambda **kwargs: [])
+        monkeypatch.setattr("hermes_agent.tools.credential_files.iter_cache_files", lambda **kwargs: [])
 
         env = make_env()
         src.write_text("updated-secret-token")
@@ -354,7 +354,7 @@ class TestFileSync:
         src = tmp_path / "token.txt"
         src.write_text("host-token")
         monkeypatch.setattr(
-            "tools.credential_files.get_credential_file_mounts",
+            "hermes_agent.tools.credential_files.get_credential_file_mounts",
             lambda: [
                 {
                     "host_path": str(src),
@@ -363,11 +363,11 @@ class TestFileSync:
             ],
         )
         monkeypatch.setattr(
-            "tools.credential_files.iter_skills_files",
+            "hermes_agent.tools.credential_files.iter_skills_files",
             lambda **kwargs: [],
         )
         monkeypatch.setattr(
-            "tools.credential_files.iter_cache_files",
+            "hermes_agent.tools.credential_files.iter_cache_files",
             lambda **kwargs: [],
         )
         env = make_env()
@@ -408,7 +408,7 @@ class TestFileSync:
         src = tmp_path / "token.txt"
         src.write_text("host-token")
         monkeypatch.setattr(
-            "tools.credential_files.get_credential_file_mounts",
+            "hermes_agent.tools.credential_files.get_credential_file_mounts",
             lambda: [
                 {
                     "host_path": str(src),
@@ -417,11 +417,11 @@ class TestFileSync:
             ],
         )
         monkeypatch.setattr(
-            "tools.credential_files.iter_skills_files",
+            "hermes_agent.tools.credential_files.iter_skills_files",
             lambda **kwargs: [],
         )
         monkeypatch.setattr(
-            "tools.credential_files.iter_cache_files",
+            "hermes_agent.tools.credential_files.iter_cache_files",
             lambda **kwargs: [],
         )
         env = make_env()
@@ -436,7 +436,7 @@ class TestFileSync:
                 _FakeRunResult(""),
             ]
         )
-        monkeypatch.setattr("tools.environments.file_sync.time.sleep", lambda _delay: None)
+        monkeypatch.setattr("hermes_agent.tools.environments.file_sync.time.sleep", lambda _delay: None)
 
         env.cleanup()
 

@@ -471,7 +471,7 @@ whose web configuration you intend to inspect:
 ```bash
 # From the Hermes source checkout, in a clean shell
 source ./activate
-python -m tools.web_tools
+python -m hermes_agent.tools.web_tools
 ```
 
 This prints the active backend and its status:

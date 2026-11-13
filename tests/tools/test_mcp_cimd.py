@@ -28,7 +28,7 @@ pytest.importorskip(
     reason="MCP SDK 1.26.0+ required for OAuth support",
 )
 
-from tools.mcp_oauth import (
+from hermes_agent.tools.mcp_oauth import (
     HermesTokenStorage,
     _CIMD_CLIENT_METADATA_URL,
     _CIMD_PORTS,
@@ -50,7 +50,7 @@ def _document() -> dict:
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+    monkeypatch.setattr("hermes_agent.tools.mcp_oauth.sys.stdin", mock_stdin)
 
 @pytest.fixture(autouse=True)
 def clean_port_state():
@@ -60,7 +60,7 @@ def clean_port_state():
     ``_pick_cimd_port`` and ``_reserve_callback_port`` hold their socket until
     ``_wait_for_callback`` adopts it — which these tests stop short of.
     """
-    import tools.mcp_oauth as mod
+    import hermes_agent.tools.mcp_oauth as mod
 
     mod._assigned_cimd_ports.clear()
     yield
@@ -73,7 +73,7 @@ def clean_port_state():
 @pytest.fixture
 def private_ports(monkeypatch):
     """Swap the pinned range for ports no other test file competes for."""
-    import tools.mcp_oauth as mod
+    import hermes_agent.tools.mcp_oauth as mod
 
     ports = (28890, 28891, 28892)
     monkeypatch.setattr(mod, "_CIMD_PORTS", ports)
@@ -182,7 +182,7 @@ def test_pinned_port_is_held_until_the_callback_adopts_it(
     """A fixed port is as stealable as an ephemeral one in the minutes
     between selection and the browser redirect (#22161), so the socket stays
     bound rather than being probed and released."""
-    import tools.mcp_oauth as mod
+    import hermes_agent.tools.mcp_oauth as mod
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -207,7 +207,7 @@ def test_pinned_socket_survives_the_ephemeral_eviction_cap(
     concurrency — closing it converts the pinned flow back into a stealable
     window, the exact race the pin exists to prevent (#22161).
     """
-    import tools.mcp_oauth as mod
+    import hermes_agent.tools.mcp_oauth as mod
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -305,7 +305,7 @@ def test_dashboard_flow_falls_back_to_dcr(tmp_path, monkeypatch, private_ports):
     """The dashboard redirects to its own public URL, which no static
     document can declare — it is per-deployment."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow, dashboard_oauth_flow
 
     flow = DashboardOAuthFlow(
         flow_id="flow-1",
@@ -450,7 +450,7 @@ def test_build_oauth_auth_forwards_the_document_url(
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _set_interactive_stdin(monkeypatch)
-    from tools.mcp_oauth import build_oauth_auth
+    from hermes_agent.tools.mcp_oauth import build_oauth_auth
 
     provider = build_oauth_auth("srv", "https://mcp.example.com/mcp", {})
 
@@ -459,7 +459,7 @@ def test_build_oauth_auth_forwards_the_document_url(
 def test_build_oauth_auth_omits_the_url_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _set_interactive_stdin(monkeypatch)
-    from tools.mcp_oauth import build_oauth_auth
+    from hermes_agent.tools.mcp_oauth import build_oauth_auth
 
     provider = build_oauth_auth("srv", "https://mcp.example.com/mcp", {"cimd": False})
 
@@ -468,7 +468,7 @@ def test_build_oauth_auth_omits_the_url_when_disabled(tmp_path, monkeypatch):
 def test_dcr_flow_passes_no_cimd_keyword_at_all():
     """An SDK predating CIMD rejects the keyword outright, so a DCR flow must
     not carry it — otherwise one unsupported argument breaks every login."""
-    from tools.mcp_oauth import cimd_provider_kwargs
+    from hermes_agent.tools.mcp_oauth import cimd_provider_kwargs
 
     assert cimd_provider_kwargs({}) == {}
     assert cimd_provider_kwargs({"_cimd_url": "https://x.example/c.json"}) == {
@@ -488,7 +488,7 @@ def test_sdk_chooses_cimd_only_when_the_server_advertises_it(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _set_interactive_stdin(monkeypatch)
     from mcp.client.auth.utils import should_use_client_metadata_url
-    from tools.mcp_oauth import build_oauth_auth
+    from hermes_agent.tools.mcp_oauth import build_oauth_auth
 
     provider = build_oauth_auth("srv", "https://mcp.example.com/mcp", {})
     server_metadata = SimpleNamespace(client_id_metadata_document_supported=advertised)
@@ -503,7 +503,7 @@ def test_manager_forwards_the_document_url(tmp_path, monkeypatch, private_ports)
     """The manager is the path live MCP connections actually take."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _set_interactive_stdin(monkeypatch)
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
 
     reset_manager_for_tests()
     provider = MCPOAuthManager().get_or_build_provider(
@@ -529,7 +529,7 @@ def _fake_response(status, url, body):
     return resp
 
 def _provider_rejected_at_token_endpoint(tmp_path, monkeypatch, client_id):
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
 
     reset_manager_for_tests()
     _set_interactive_stdin(monkeypatch)
@@ -605,7 +605,7 @@ def test_rejected_dcr_client_leaves_cimd_available(
 
 def _timed_out_waiter_message(monkeypatch, cimd_url):
     """Run a callback waiter to its timeout and return the error text."""
-    import tools.mcp_oauth as mod
+    import hermes_agent.tools.mcp_oauth as mod
 
     # No paste thread and no fail-fast: this exercises the timeout itself.
     monkeypatch.setattr(mod, "_is_interactive", lambda: False)

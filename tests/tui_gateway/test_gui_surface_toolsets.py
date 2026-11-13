@@ -15,7 +15,7 @@ answer is identical on every connection topology.
 import pytest
 
 from hermes_agent.tui_gateway import server
-from toolsets import TOOLSETS
+from hermes_agent.toolsets import TOOLSETS
 
 GUI_TOOLS = {
     "annotate_preview",
@@ -44,7 +44,7 @@ class TestDesktopUiToolset:
 
     def test_stays_off_the_core_tool_list(self):
         """Core ships on every API call — a GUI-only tool must not be there."""
-        from toolsets import _HERMES_CORE_TOOLS
+        from hermes_agent.toolsets import _HERMES_CORE_TOOLS
 
         assert GUI_TOOLS.isdisjoint(_HERMES_CORE_TOOLS)
 

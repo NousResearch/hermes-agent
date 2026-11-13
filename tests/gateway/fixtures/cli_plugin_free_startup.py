@@ -102,7 +102,7 @@ def main():
         queued.append(str(c._pending_input.get()))
     print(json.dumps({'calls': calls, 'agent': agent, 'session_id': c.session_id, 'output': out.getvalue(),
                       'outputs': outputs, 'errors': errors, 'completions': completions, 'queued': queued,
-                      'model_tools': 'model_tools' in sys.modules,
+                      'model_tools': 'hermes_agent.model_tools' in sys.modules,
                       'plugin_modules': sorted(m for m in sys.modules if m.startswith('hermes_plugins'))}),
           file=sys.__stdout__, flush=True)
     os._exit(0)

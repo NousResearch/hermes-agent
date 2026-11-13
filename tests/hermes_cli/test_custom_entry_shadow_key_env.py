@@ -269,8 +269,8 @@ def test_delegated_child_never_leases_the_builtin_account(tmp_path, monkeypatch)
     home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY")
     _edit_config(home, entry={"api": BUILTIN_HOST})
     from hermes_cli import runtime_provider as rp
-    from tools.delegate_tool_child_run import _lease_child_credential
-    from tools.delegate_tool_config import _resolve_child_credential_pool
+    from hermes_agent.tools.delegate_tool_child_run import _lease_child_credential
+    from hermes_agent.tools.delegate_tool_config import _resolve_child_credential_pool
 
     resolved = rp.resolve_runtime_provider(requested="custom:deepseek")
     assert resolved["api_key"] == ENTRY_KEY

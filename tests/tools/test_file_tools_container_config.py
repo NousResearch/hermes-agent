@@ -1,7 +1,7 @@
 """Tests for docker container_config key propagation in file_tools."""
 
 from unittest.mock import patch, MagicMock
-from tools import file_tools
+from hermes_agent.tools import file_tools
 
 
 def _make_env_config(**overrides):
@@ -34,15 +34,15 @@ class TestFileToolsContainerConfig:
             captured.update(kwargs)
             return mock_env
 
-        with patch("tools.terminal_tool._get_env_config", return_value=env_config), \
-             patch("tools.terminal_tool._task_env_overrides", task_env_overrides or {}), \
-             patch("tools.terminal_tool._active_environments", {}), \
-             patch("tools.terminal_tool._creation_locks", {}), \
-             patch("tools.terminal_tool._creation_locks_lock", __import__("threading").Lock()), \
-             patch("tools.terminal_tool_backends._create_environment", side_effect=fake_create_env), \
-             patch("tools.terminal_tool._start_cleanup_thread"), \
-             patch("tools.file_tools._file_ops_cache", {}), \
-             patch("tools.file_tools._file_ops_lock", __import__("threading").Lock()):
+        with patch("hermes_agent.tools.terminal_tool._get_env_config", return_value=env_config), \
+             patch("hermes_agent.tools.terminal_tool._task_env_overrides", task_env_overrides or {}), \
+             patch("hermes_agent.tools.terminal_tool._active_environments", {}), \
+             patch("hermes_agent.tools.terminal_tool._creation_locks", {}), \
+             patch("hermes_agent.tools.terminal_tool._creation_locks_lock", __import__("threading").Lock()), \
+             patch("hermes_agent.tools.terminal_tool_backends._create_environment", side_effect=fake_create_env), \
+             patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"), \
+             patch("hermes_agent.tools.file_tools._file_ops_cache", {}), \
+             patch("hermes_agent.tools.file_tools._file_ops_lock", __import__("threading").Lock()):
             file_tools._get_file_ops(task_id)
 
         return captured

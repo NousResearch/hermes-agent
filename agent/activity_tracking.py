@@ -74,7 +74,7 @@ class ActivityTrackingMixin:
         if os.environ.get("HERMES_KANBAN_TASK"):
             # Never let the bridge break the loop; this guard covers import-time failures.
             with suppress(Exception):
-                from tools.kanban_tools import (
+                from hermes_agent.tools.kanban_tools import (
                     heartbeat_current_worker_from_env, inject_new_comments_from_env
                 )
                 heartbeat_current_worker_from_env()

@@ -14,7 +14,7 @@ import pytest
 from tests.gateway.test_completion_admission import pending
 from tests.gateway.test_session_end_delegations import _admissions, _local
 from tests.gateway.test_unviewed_completion_notes import _human, _target, _turns
-from tools import async_delegation as delegation
+from hermes_agent.tools import async_delegation as delegation
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +95,7 @@ async def test_failed_sibling_in_a_coalesced_group_wakes_the_parent(tmp_path, mo
 async def test_crashed_batch_with_no_child_results_wakes_the_parent(tmp_path, monkeypatch):
     """A runner that raises finalizes the unit as ``status=error`` with ``results=[]`` (``_batch_crash``):
     no child reports a failure, the unit itself does."""
-    from tools.async_delegation import _batch_crash
+    from hermes_agent.tools.async_delegation import _batch_crash
     runner, authority, ref, _actor = await _local(tmp_path, monkeypatch)
     try:
         route, target = authority.sessions[ref.session_id].route, _target(runner, authority, ref)
@@ -132,7 +132,7 @@ async def test_early_task_failure_notice_stays_a_note(tmp_path, monkeypatch):
 
 def test_refused_child_block_names_the_recovery():
     """The parent learns the refusal is deterministic for that model and what to do about it."""
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
     text = format_process_notification(_batch_event("error")) or ""
     assert "content_policy_blocked" in text
     assert "different model" in text and "delegate_task" in text
@@ -192,7 +192,7 @@ async def test_failed_manual_cron_run_stays_a_note(tmp_path, monkeypatch):
 
 def test_cron_run_coalesced_with_a_failed_delegation_still_wakes():
     """One admission carries the batch: a cron run as its primary must not hide a failed sibling."""
-    from tools.process_registry_notifications import delegation_wakes_parent
+    from hermes_agent.tools.process_registry_notifications import delegation_wakes_parent
     cron = {"type": "async_delegation", "role": "cron_run", "status": "error", "error": "job failed"}
     assert not delegation_wakes_parent(cron)
     assert delegation_wakes_parent(dict(cron, _sibling_failed=True))
@@ -254,7 +254,7 @@ async def test_failure_in_a_chat_its_viewer_closed_stays_a_note(tmp_path, monkey
 def test_deterministic_failure_tells_the_parent_not_to_retry_unchanged(reason, told):
     """A failure that repeats for the same task on the same model gets the don't-retry line a refusal
     gets; a transient one (a rate limit, a gateway restart) does not."""
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
     evt = _batch_event("error")
     evt["results"][0].update(failure_reason=reason, error="Insufficient credits. Add credits, then retry.")
     text = (format_process_notification(evt) or "").lower()

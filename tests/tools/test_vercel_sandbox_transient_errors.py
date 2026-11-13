@@ -8,7 +8,7 @@ import socket
 import httpx
 import pytest
 
-from tools.environments.vercel_sandbox import _is_transient_vercel_error, _retry_vercel_call
+from hermes_agent.tools.environments.vercel_sandbox import _is_transient_vercel_error, _retry_vercel_call
 
 httpx2 = pytest.importorskip("httpx2")
 

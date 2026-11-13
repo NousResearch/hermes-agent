@@ -22,7 +22,7 @@ socket.socket.connect = no_connect
 socket.create_connection = no_connect
 import agent.tool_executor as te
 import agent.turn_usage as tu
-import tools.delegate_tool_results as dr
+import hermes_agent.tools.delegate_tool_results as dr
 import agent.usage_pricing as up
 import agent.codex_runtime as cr
 from run_agent import AIAgent

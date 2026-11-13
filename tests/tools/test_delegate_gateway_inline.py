@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hermes_agent.gateway.session_context import set_session_vars
-from tools.process_registry import process_registry
+from hermes_agent.tools.process_registry import process_registry
 
 LIVE_CONTROL = {"action", "subagent_id", "message"}
 
@@ -38,7 +38,7 @@ def _clean_queue_and_context(monkeypatch):
 
 def _built(inline: bool):
     from agent.agent_init import _load_tools
-    from tools.delegate_tool_config import gateway_delegation_inline_scope
+    from hermes_agent.tools.delegate_tool_config import gateway_delegation_inline_scope
 
     agent = SimpleNamespace(platform="whatsapp", quiet_mode=True)
     with gateway_delegation_inline_scope(inline):
@@ -51,9 +51,9 @@ def _delegate(agent) -> dict:
 
 
 def test_the_build_scope_picks_the_schema_and_the_agent_keeps_it():
-    import model_tools
-    from tools.delegate_tool import oneshot_delegate_function
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent import model_tools
+    from hermes_agent.tools.delegate_tool import oneshot_delegate_function
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     background = _built(inline=False)
     registry = next(t["function"] for t in model_tools.get_tool_definitions(
@@ -76,8 +76,8 @@ def test_a_session_keeps_its_mode_until_a_new_session():
     """Operator flips interim back on mid-session, then the cached agent is evicted: the fresh agent is built
     for background, but the session pin restores the joined schema the model has been seeing, and dispatch
     follows the pin. A new session (no pin) takes the new setting."""
-    from tools.delegate_tool import session_joins_delegation
-    from tools.mcp_tool_agent import restore_agent_tool_prefix, tool_pin_version
+    from hermes_agent.tools.delegate_tool import session_joins_delegation
+    from hermes_agent.tools.mcp_tool_agent import restore_agent_tool_prefix, tool_pin_version
 
     first = _built(inline=True)
     fresh = _built(inline=False)
@@ -102,8 +102,8 @@ def test_a_restored_mode_survives_a_later_tools_refresh(refresh, pinned_inline):
     """The pin is authoritative: a fresh agent built for the other mode restores the session's variant, and a later
     rebuild from fresh definitions (which reads the agent's frozen decision) keeps it instead of flipping the chat
     mid-conversation to whatever the current config says."""
-    from tools.delegate_tool import session_joins_delegation
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools, restore_agent_tool_prefix, tool_pin_version
+    from hermes_agent.tools.delegate_tool import session_joins_delegation
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools, restore_agent_tool_prefix, tool_pin_version
 
     first = _built(inline=pinned_inline)
     fresh = _built(inline=not pinned_inline)
@@ -129,7 +129,7 @@ def _parent(tools, depth=0):
 
 @pytest.fixture
 def fast_children(monkeypatch):
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     def build_child(**kw):
         child = MagicMock()
@@ -149,7 +149,7 @@ def fast_children(monkeypatch):
 
 
 def test_dispatch_follows_the_schema_the_session_carries(fast_children, monkeypatch):
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     dispatched = []
     monkeypatch.setattr(async_delegation, "dispatch_async_delegation_batch",

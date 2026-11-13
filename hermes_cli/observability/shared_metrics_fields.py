@@ -261,7 +261,7 @@ def extension_registry(kind: str, registry: Any) -> str:
     if kind != "skill":
         return "none"
     # The hub's own alias table (`--source skills.sh`); already imported by the install it records.
-    from tools.skills_hub_install import _SOURCE_ID_ALIASES
+    from hermes_agent.tools.skills_hub_install import _SOURCE_ID_ALIASES
 
     value = _norm(registry) or "none"
     value = _SOURCE_ID_ALIASES.get(value, value)

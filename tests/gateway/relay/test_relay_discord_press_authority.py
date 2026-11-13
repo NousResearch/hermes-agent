@@ -33,7 +33,7 @@ def relay(monkeypatch):
     from hermes_agent.gateway.relay.adapter import RelayAdapter
     from tests.gateway.relay.stub_connector import StubConnector
     from tests.gateway.relay.test_relay_interactive import make_desc
-    from tools import approval, clarify_gateway, slash_confirm
+    from hermes_agent.tools import approval, clarify_gateway, slash_confirm
 
     write_approvers(["*"])
     admins = {"group_allow_admin_from": ["owner-admin"]}
@@ -57,8 +57,8 @@ def _no_admin_list(monkeypatch):
 async def _raise_as_alice(adapter, stub, kind):
     """Raise *kind* inside Alice's turn and post its card; returns (prompt_id, option, answered?)."""
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import approval, clarify_gateway, slash_confirm
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval, clarify_gateway, slash_confirm
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     ran = []
     clarify = None
@@ -161,8 +161,8 @@ async def test_inbound_lane_press_from_another_member_still_answers(relay, kind,
 
 def test_unadmitted_card_answer_settles_nothing_for_another_member(relay):
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     tokens = set_session_vars(platform="discord", user_id="alice", user_name="Alice", chat_type="group",
                               session_key=SESSION)

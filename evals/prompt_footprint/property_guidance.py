@@ -21,8 +21,8 @@ def main():
         import tiktoken
         from agent import prompt_builder
         from agent.system_prompt import build_system_prompt
-        from tools.skills_hub_official import OptionalSkillSource
-        from tools.skills_tool import skill_view
+        from hermes_agent.tools.skills_hub_official import OptionalSkillSource
+        from hermes_agent.tools.skills_tool import skill_view
 
         agent = SimpleNamespace(
             load_soul_identity=False, skip_context_files=True, valid_tool_names=[],

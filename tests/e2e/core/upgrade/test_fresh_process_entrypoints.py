@@ -109,7 +109,7 @@ _PRELOAD = (
 # Import sites the pre-hand-off updater (v2026.9.14 update_cmd_fleet/_maint) reaches AFTER
 # its purge in the pre-pull interpreter: the restart phase (``hermes_cli.gateway`` and what
 # it pulls), the maintenance/summary steps, and the atexit browser cleanup that re-imports
-# ``tools.browser_tool`` -> ``hermes_cli.config`` (#112522). Entry points that only ever start
+# ``hermes_agent.tools.browser_tool`` -> ``hermes_cli.config`` (#112522). Entry points that only ever start
 # in a NEW process (hermes_agent.gateway.run, hermes_agent.tui_gateway.entry, hermes_agent.cron.scheduler) are covered by the
 # fresh-interpreter smoke instead.
 _POST_PURGE_IMPORTS = (

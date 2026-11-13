@@ -99,7 +99,7 @@ def _doctor_runtime(plugin_path: Path):
         raise
 
     from hermes_cli.plugins import PluginManager
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     entries_before = {entry.name: entry for entry in registry._snapshot_entries()}
     policy_before = dict(registry._plugin_override_policy)
     modules_before = {name for name in sys.modules if _is_plugin_module(name)}

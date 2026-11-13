@@ -44,7 +44,7 @@ def _touch(base: Path, rel: str) -> Path:
 
 
 def test_sibling_profile_credential_stores_are_read_and_write_denied(default_profile_with_sibling):
-    from tools.file_tools import read_file_tool
+    from hermes_agent.tools.file_tools import read_file_tool
 
     sibling = default_profile_with_sibling
     for rel in READ_DENIED:

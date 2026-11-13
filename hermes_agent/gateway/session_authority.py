@@ -380,7 +380,7 @@ class SessionAuthority:
             self.pending_closes.pop(ref.session_id, None)
             from hermes_agent.gateway.session_viewer_close import cancel_orphan_close
             cancel_orphan_close(self, ref.session_id)
-            from tools.async_delegation import allow_for_session
+            from hermes_agent.tools.async_delegation import allow_for_session
             allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
             transport = self.events.get(actor.transport_id)
             if transport is not None:

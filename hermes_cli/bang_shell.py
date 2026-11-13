@@ -62,7 +62,7 @@ def resolve_bang_cwd(session_key: Optional[str] = None) -> Optional[str]:
     recorded ``cd`` state first, then the configured ``TERMINAL_CWD``/backend default.
     """
     try:
-        from tools.terminal_tool import _get_env_config, get_session_cwd
+        from hermes_agent.tools.terminal_tool import _get_env_config, get_session_cwd
         return get_session_cwd(session_key) or (_get_env_config() or {}).get("cwd") or None
     except Exception:
         return None
@@ -71,14 +71,14 @@ def resolve_bang_cwd(session_key: Optional[str] = None) -> Optional[str]:
 def check_bang_approval(command: str) -> dict:
     """Run *command* through the terminal tool's approval gate.
 
-    Reuses ``tools.terminal_tool._check_all_guards`` — exactly what ``terminal_tool()`` calls — so the
+    Reuses ``hermes_agent.tools.terminal_tool._check_all_guards`` — exactly what ``terminal_tool()`` calls — so the
     hardline blocklist, user deny rules and the dangerous-command prompt all apply
     to user-typed bang commands too. Returns the gate's ``{"approved": bool, "message": ...}``;
     falls back to *approved* only when the gate itself cannot be imported (a broken install, not a
     policy decision).
     """
     try:
-        from tools.terminal_tool import _check_all_guards
+        from hermes_agent.tools.terminal_tool import _check_all_guards
     except Exception:
         return {"approved": True, "message": None}
 
@@ -93,7 +93,7 @@ def _bang_env() -> dict:
     script, so reuse the sanitizer ``quick_commands`` and the local terminal backend use. If that
     boundary is unavailable, let the launch fail rather than passing the CLI's full environment.
     """
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
     return build_subprocess_env()
 
 

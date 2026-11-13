@@ -12,7 +12,7 @@ import pytest
 
 from agent.runtime_session_store import RuntimeSessionStore
 from hermes_agent.hermes_state import SessionDB
-from tools.session_search_tool import session_search
+from hermes_agent.tools.session_search_tool import session_search
 
 
 @pytest.fixture

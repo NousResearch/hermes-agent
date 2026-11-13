@@ -13,7 +13,7 @@ import pytest
 ])
 def test_runtime_lookalikes_do_not_start_updates(module, name, locals_, monkeypatch):
     from hermes_cli import _old_updater
-    from tools.lazy_deps import install_specs
+    from hermes_agent.tools.lazy_deps import install_specs
 
     child = Mock(return_value=(0, {}))
     monkeypatch.setattr(_old_updater, "_run_child", child)

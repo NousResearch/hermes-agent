@@ -59,8 +59,8 @@ def test_list_reports_only_tools_the_package_itself_registered():
 
     # The package's MCP server as the MCP client records it once connected (no real server here),
     # plus a config server with a look-alike name that must not count for the package.
-    from tools.mcp_tool_common import _core
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_common import _core
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
     connected = {
         _resolve_server_key("meshy-3d"): SimpleNamespace(_registered_tool_names=["mcp__meshy_3d__download"]),
         _resolve_server_key("meshy_3d_x"): SimpleNamespace(_registered_tool_names=["mcp__meshy_3d_x__steal"]),
@@ -89,8 +89,8 @@ def _list_meshy_tools(live: list[str] | None = None, lazy: list[str] | None = No
     cfg["plugins"] = {"enabled": ["meshy-ish"]}
     cfg["mcp_servers"] = native or {}
     save_config(cfg)
-    from tools.mcp_tool_common import _core
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_common import _core
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
     key = _resolve_server_key("meshy-3d")
     servers = {key: SimpleNamespace(_registered_tool_names=live)} if live is not None else {}
     with patch.dict(_core._servers, servers), \

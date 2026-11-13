@@ -105,8 +105,8 @@ def homes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    import tools.browser_session_lifecycle as lifecycle
-    from tools import browser_session_cdp
+    import hermes_agent.tools.browser_session_lifecycle as lifecycle
+    from hermes_agent.tools import browser_session_cdp
     monkeypatch.setattr(browser_session_cdp, "_live_overrides", {})
     reaps = []
     monkeypatch.setattr(lifecycle, "cleanup_profile_browsers", reaps.append)
@@ -145,7 +145,7 @@ def _registry(launch, *homes):
 
 def _resolved(home):
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
     with _profile_runtime_scope(home, hydrate_secrets=False):
         return get_cdp_override_raw()
 

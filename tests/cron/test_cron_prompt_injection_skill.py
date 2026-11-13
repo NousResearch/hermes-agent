@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 def cron_env(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty skills tree.
 
-    `tools.skills_tool` snapshots `SKILLS_DIR` at module-import time, so
+    `hermes_agent.tools.skills_tool` snapshots `SKILLS_DIR` at module-import time, so
     setting `HERMES_HOME` alone doesn't reach it. We also patch the
     module-level constant so `skill_view()` finds the skills we plant.
 
@@ -46,7 +46,7 @@ def cron_env(tmp_path, monkeypatch):
     # Patch the module-level SKILLS_DIR snapshots that `skill_view()`
     # uses. Without this, the tool resolves against the real
     # `~/.hermes/skills/` and our planted skills are invisible.
-    import tools.skills_tool as _skills_tool
+    import hermes_agent.tools.skills_tool as _skills_tool
     monkeypatch.setattr(_skills_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(_skills_tool, "HERMES_HOME", hermes_home)
 

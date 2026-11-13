@@ -21,7 +21,7 @@ async def probe(peer, target, kind):
     from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_cli import web_server
     from run_agent import AIAgent
-    from tools.approval import resolve_gateway_approval
+    from hermes_agent.tools.approval import resolve_gateway_approval
 
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='local')
@@ -156,7 +156,7 @@ async def probe(peer, target, kind):
     finally:
         if sid is not None:
             resolve_gateway_approval(authority.sessions[sid].route, 'deny', resolve_all=True)
-            from tools import clarify_gateway
+            from hermes_agent.tools import clarify_gateway
             clarify_gateway.clear_session(authority.sessions[sid].route)
             task = authority.sessions[sid].task
             if task is not None:

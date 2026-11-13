@@ -2,11 +2,11 @@
 
 import pytest
 
-from tools.environments.local import _make_run_env
+from hermes_agent.tools.environments.local import _make_run_env
 
 
 def _publish(monkeypatch, value):
-    monkeypatch.setattr("tools.bot_desktop.runtime.published_env", lambda: value)
+    monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.published_env", lambda: value)
 
 
 def test_running_bot_desktop_display_rides_along(monkeypatch):
@@ -47,7 +47,7 @@ def test_routing_does_not_stamp_bot_desktop_activity(monkeypatch):
     stamps = []
     _publish(monkeypatch, {"DISPLAY": ":20"})
     monkeypatch.setattr(
-        "tools.bot_desktop.runtime.touch_activity", lambda: stamps.append(1)
+        "hermes_agent.tools.bot_desktop.runtime.touch_activity", lambda: stamps.append(1)
     )
     _make_run_env({})
     # A plain terminal command is not screen use; idle_stop_minutes must stay effective.

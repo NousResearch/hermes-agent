@@ -37,7 +37,7 @@ def release_unlocks(session_id) -> None:
 @contextlib.contextmanager
 def vault_prompt_scope(turn, agent):
     """Install the vault callbacks on this (agent) thread for a local viewer's turn; restore after.
-    Tool workers inherit them through ``tools.thread_context.propagate_context_to_thread``."""
+    Tool workers inherit them through ``hermes_agent.tools.thread_context.propagate_context_to_thread``."""
     from hermes_agent.gateway.run_turn_progress import local_viewer_turn
     if not local_viewer_turn(turn):
         yield

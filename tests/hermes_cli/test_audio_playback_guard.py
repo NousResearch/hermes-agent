@@ -13,7 +13,7 @@ leaked shell variable, so ``scripts/run_tests.sh``'s ``env -i`` was no help:
   3. Any later test that drives a turn to completion hits the TTS dispatch in
      ``prompt.submit``, which calls ``hermes_cli.voice.speak_text`` on a
      daemon thread with the turn's final response text.
-  4. ``speak_text`` needs no API key to be audible — ``tools/tts_tool.py``
+  4. ``speak_text`` needs no API key to be audible — ``hermes_agent/tools/tts_tool.py``
      defaults to the keyless ``edge`` provider.
 
 Two independent defences in ``tests/conftest.py``, one test each below:
@@ -47,7 +47,7 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
     monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "hermes_agent.tools.voice_mode",
         types.SimpleNamespace(
             check_voice_requirements=lambda: {"available": True, "details": ""}
         ),
@@ -69,7 +69,7 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
     # raising stub, because ``speak_text`` wraps its whole body in
     # ``except Exception`` and would swallow an AssertionError, quietly
     # turning this test green whether or not the guard is doing anything.
-    from tools import tts_tool
+    from hermes_agent.tools import tts_tool
 
     calls = []
     monkeypatch.setattr(

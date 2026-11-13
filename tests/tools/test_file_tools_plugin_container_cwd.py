@@ -2,9 +2,9 @@
 terminal tool uses, so a plugin backend declaring ``is_container`` gets a host-path override
 sanitized exactly like docker does (#101013)."""
 
-import tools.file_tools as ft
-from tools import terminal_tool
-import tools.terminal_tool_config as ttc
+import hermes_agent.tools.file_tools as ft
+from hermes_agent.tools import terminal_tool
+import hermes_agent.tools.terminal_tool_config as ttc
 
 
 def _capture_create(monkeypatch):

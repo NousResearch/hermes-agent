@@ -7,8 +7,8 @@ block: 66 minutes of a dead wave with nothing running.
 import queue
 from unittest.mock import patch
 
-from tools import async_delegation as ad
-from tools.process_registry_notifications import format_process_notification
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry_notifications import format_process_notification
 from hermes_agent.tui_gateway.session_notifications import _notification_event_dedup_key
 
 
@@ -23,7 +23,7 @@ def test_failure_notice_reaches_the_queue_while_the_batch_keeps_running_and_form
     entry = {"task_index": 1, "status": "error", "error": "401 authentication_error: key invalid", "duration_seconds": 12.5,
              "live_transcript": "/tmp/live/task-1.log"}
     with patch.object(ad, "_records", {"deleg_x": _record()}), \
-         patch("tools.process_registry.process_registry") as reg:
+         patch("hermes_agent.tools.process_registry.process_registry") as reg:
         reg.completion_queue = q
         ad.push_task_failure_notice("deleg_x", entry, n_tasks=3)
         assert ad._records["deleg_x"]["status"] == "running"  # not finalized
@@ -39,7 +39,7 @@ def test_failure_notice_reaches_the_queue_while_the_batch_keeps_running_and_form
 def test_notice_is_not_sent_for_a_finished_batch_and_does_not_dedup_against_the_final_result():
     q = queue.Queue()
     with patch.object(ad, "_records", {"deleg_x": _record(status="completed")}), \
-         patch("tools.process_registry.process_registry") as reg:
+         patch("hermes_agent.tools.process_registry.process_registry") as reg:
         reg.completion_queue = q
         ad.push_task_failure_notice("deleg_x", {"task_index": 0, "status": "error"}, n_tasks=3)
     assert q.empty()

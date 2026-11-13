@@ -1,12 +1,12 @@
-"""Tests for tools.env_passthrough — skill and config env var passthrough."""
+"""Tests for hermes_agent.tools.env_passthrough — skill and config env var passthrough."""
 
 import os
 import pytest
 import hermes_yaml as yaml
 
 from agent import secret_scope as ss
-import tools.env_passthrough as _ep_mod
-from tools.env_passthrough import (
+import hermes_agent.tools.env_passthrough as _ep_mod
+from hermes_agent.tools.env_passthrough import (
     clear_env_passthrough,
     get_all_passthrough,
     is_env_passthrough,
@@ -41,7 +41,7 @@ class TestRegistrationVisibleAcrossToolContextSnapshots:
 
     Tool dispatch fans each tool call onto a worker whose context is a
     copy_context() snapshot taken at submit time
-    (tools.thread_context.propagate_context_to_thread). A registration made
+    (hermes_agent.tools.thread_context.propagate_context_to_thread). A registration made
     inside one tool's worker (skill_view) used to be stored in a ContextVar
     and therefore never reached the submitting thread — the next tool's
     snapshot always saw an empty allowlist, so a skill's declared env vars
@@ -155,7 +155,7 @@ class TestExecuteCodeIntegration:
 
     def test_execute_code_uses_active_profile_for_passthrough(self, monkeypatch):
         """The execute_code child must receive the routed profile's value."""
-        from tools.code_execution_env import _scrub_child_env
+        from hermes_agent.tools.code_execution_env import _scrub_child_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -171,7 +171,7 @@ class TestExecuteCodeIntegration:
 
     def test_execute_code_omits_missing_scoped_passthrough(self, monkeypatch):
         """A missing routed secret must not leak into the execute_code child."""
-        from tools.code_execution_env import _scrub_child_env
+        from hermes_agent.tools.code_execution_env import _scrub_child_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -195,7 +195,7 @@ class TestExecuteCodeIntegration:
         - BUZZ_RELAY_URL matches no secret substring but is not on the safe
           prefix allowlist, so it is dropped too.
         """
-        from tools.code_execution_env import _scrub_child_env
+        from hermes_agent.tools.code_execution_env import _scrub_child_env
 
         buzz_vars = {
             "BUZZ_PRIVATE_KEY": "nsec1fake",
@@ -218,7 +218,7 @@ class TestTerminalIntegration:
 
     def test_background_terminal_uses_active_profile_for_passthrough(self, monkeypatch):
         """Background/PTY terminal children must use the routed profile value."""
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -237,7 +237,7 @@ class TestTerminalIntegration:
 
     def test_background_terminal_omits_missing_scoped_passthrough(self, monkeypatch):
         """A missing routed secret must not leak into background terminal work."""
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -255,8 +255,8 @@ class TestTerminalIntegration:
         """A routed profile's declared secret lives only in its scope (its .env never enters the
         process env), so it must be added from the scope on every local spawn surface; an
         undeclared scope entry stays out. No scope bound -> byte-identical single-profile env."""
-        from tools.code_execution_env import _scrub_child_env
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.code_execution_env import _scrub_child_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.delenv("SERVICE_TOKEN", raising=False)
@@ -280,9 +280,9 @@ class TestTerminalIntegration:
     def test_scope_overlay_failure_is_loud_on_both_local_surfaces(self, monkeypatch):
         """A scope/config failure while resolving declared scope-only names must raise, not be
         swallowed into a debug log that silently drops the declared secret again (#114209)."""
-        import tools.env_passthrough as ep
-        from tools.code_execution_env import _scrub_child_env
-        from tools.environments.local import _sanitize_subprocess_env
+        import hermes_agent.tools.env_passthrough as ep
+        from hermes_agent.tools.code_execution_env import _scrub_child_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
 
         def _boom(_present):
             raise RuntimeError("scope lookup failed")
@@ -295,7 +295,7 @@ class TestTerminalIntegration:
 
     def test_shared_local_snapshot_re_resolves_current_profile(self, monkeypatch, tmp_path):
         """A persistent shell snapshot must not retain the previous profile's value."""
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.environments.local import LocalEnvironment
 
         register_env_passthrough(["SERVICE_TOKEN"])
         monkeypatch.setenv("SERVICE_TOKEN", "token-for-default")
@@ -331,8 +331,8 @@ class TestTerminalIntegration:
         assert missing["output"] == "unset"
 
     def test_blocklisted_var_blocked_by_default(self):
-        from tools.environments.local import _sanitize_subprocess_env
-        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         # Pick a var we know is in the blocklist
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
@@ -346,8 +346,8 @@ class TestTerminalIntegration:
         Hermes provider credentials — that was the bypass where a skill
         could declare ANTHROPIC_TOKEN / OPENAI_API_KEY as passthrough and
         defeat the execute_code sandbox scrubbing."""
-        from tools.environments.local import _sanitize_subprocess_env
-        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
         # Attempt to register — must be silently refused (logged warning).
@@ -391,7 +391,7 @@ class TestTerminalIntegration:
         remote env builder must not resolve it: on Windows ``os.getenv`` is
         case-insensitive, so ``openai_api_key`` would carry the real
         ``OPENAI_API_KEY`` into SSH/Docker exec envs."""
-        from tools.environments import remote_common
+        from hermes_agent.tools.environments import remote_common
 
         register_env_passthrough(["openai_api_key"])
         exec_env, _unset = remote_common.resolve_passthrough_env(set())
@@ -403,7 +403,7 @@ class TestTerminalIntegration:
         monkeypatch.setenv("openai_api_key", "sk-variant-value")
         monkeypatch.setenv("MY_OWN_KEY", "own-value")
         monkeypatch.setattr(
-            "tools.env_passthrough.get_all_passthrough",
+            "hermes_agent.tools.env_passthrough.get_all_passthrough",
             lambda: {"openai_api_key", "MY_OWN_KEY"})
         exec_env, _unset = remote_common.resolve_passthrough_env(set())
         assert "openai_api_key" not in exec_env
@@ -413,7 +413,7 @@ class TestTerminalIntegration:
         """The GHSA-rhgp-j443-p4rf path end to end: the variant registration
         is refused, so is_env_passthrough cannot carry the name past the
         execute_code scrub."""
-        from tools.code_execution_env import _scrub_child_env
+        from hermes_agent.tools.code_execution_env import _scrub_child_env
 
         register_env_passthrough(["openai_api_key"])
         child_env = _scrub_child_env(
@@ -428,7 +428,7 @@ class TestTerminalIntegration:
         passthrough — they aren't in the static blocklist, so this is the
         defense-in-depth layer that keeps env_passthrough consistent with the
         unconditional strip in the sanitizers."""
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
 
         for var in (
             "AUXILIARY_VISION_API_KEY",
@@ -451,7 +451,7 @@ class TestTerminalIntegration:
         registration must still refuse them — the carve-out opens NO
         registration path, so a skill cannot expand BUZZ_* exposure to
         execute_code."""
-        from tools.environments.local import _sanitize_subprocess_env
+        from hermes_agent.tools.environments.local import _sanitize_subprocess_env
 
         monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")
         for var in (
@@ -468,7 +468,7 @@ class TestTerminalIntegration:
             result = _sanitize_subprocess_env({var: "value", "PATH": "/usr/bin"})
             assert result.get(var) == "value"
             # ...but the execute_code child never sees them.
-            from tools.code_execution_env import _scrub_child_env
+            from hermes_agent.tools.code_execution_env import _scrub_child_env
 
             child_env = _scrub_child_env({var: "value", "PATH": "/usr/bin"})
             assert var not in child_env
@@ -488,8 +488,8 @@ class TestTerminalIntegration:
     def test_make_run_env_blocklist_override_rejected(self):
         """_make_run_env must NOT expose a blocklisted var to subprocess env
         even after a skill attempts to register it via passthrough."""
-        from tools.environments.local import _make_run_env
-        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from hermes_agent.tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
         blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
         os.environ[blocked_var] = "secret_value"
@@ -531,7 +531,7 @@ class TestTerminalIntegration:
         """
         import builtins
 
-        from tools.code_execution_env import _scrub_child_env
+        from hermes_agent.tools.code_execution_env import _scrub_child_env
 
         real_import = builtins.__import__
 

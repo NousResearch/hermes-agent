@@ -312,7 +312,7 @@ export interface DelegationStatusResult {
   max_spawn_depth: number
   max_concurrent_children: number
 }
-/** One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record is extended by the child runner — ``missed_steer`` etc. — so it stays open). */
+/** One live child from ``hermes_agent/tools/delegate_tool_registry.py::list_active_subagents`` (the record is extended by the child runner — ``missed_steer`` etc. — so it stays open). */
 export interface ActiveSubagent {
   subagent_id: string
   parent_id?: string | null
@@ -1090,7 +1090,7 @@ export interface ConnectionOperationStatus {
   settled_by?: ConnectionSettleReason | null
   targets: ConnectionOperationTarget[]
 }
-/** ``tools/connectors/contract.py::SettleReason``. */
+/** ``hermes_agent/tools/connectors/contract.py::SettleReason``. */
 export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt'
 /** ``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra`` keys a leg records (``tools``, ``hint``) are typed here as they appear. */
 export interface ConnectionOperationTarget {
@@ -1132,7 +1132,7 @@ export interface ConnectionOperationTarget {
 }
 export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
-/** ``tools/connectors/contract.py::TargetState``. */
+/** ``hermes_agent/tools/connectors/contract.py::TargetState``. */
 export type ConnectionTargetState = 'pending' | 'initiated' | 'connected' | 'skipped' | 'failed' | 'expired' | 'not_connected'
 /** One credential an MCP install still needs; the card renders a field per entry and sends the values back with the approval. */
 export interface ConnectionTargetEnvField {
@@ -1194,7 +1194,7 @@ export interface ConnectionAnswerTarget {
   detail?: string | null
   env?: Record<string, string> | null
 }
-/** What the card says about one row: ``tools/connectors/mcp.py::apply_answer``. */
+/** What the card says about one row: ``hermes_agent/tools/connectors/mcp.py::apply_answer``. */
 export type ConnectionAnswerStatus = 'approved' | 'skipped'
 export interface ConnectionRespondResult {
   status: 'ok'
@@ -1387,7 +1387,7 @@ export interface ConnectorPolicySetResult {
   revision: string
   effective: ConnectorPolicyEffectiveUnrestricted | ConnectorPolicyEffectiveDenyAll | ConnectorPolicyEffectiveAllow | ConnectorPolicyEffectiveDeny
 }
-/** ``tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for. */
+/** ``hermes_agent/tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for. */
 export interface DisplayStatus {
   profile: string
   supported: boolean
@@ -1414,7 +1414,7 @@ export interface DisplayImageSwitch {
   target_image: string
   containers: number
 }
-/** ``tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a capability and never leaves the gateway; ``viewer_hash`` lets the holder recognise itself. */
+/** ``hermes_agent/tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a capability and never leaves the gateway; ``viewer_hash`` lets the holder recognise itself. */
 export interface DisplayLease {
   holder: LeaseHolder
   viewer_id?: null
@@ -1920,7 +1920,7 @@ export interface BotRelayRosterSyncParams {
   profile?: string | null
   agents?: RelayAgentRow[] | null
 }
-/** A roster row the Desktop pushes (``tools/bot_relay.py::_normalize_roster_row``); invalid rows are dropped server-side, so the shape stays open. */
+/** A roster row the Desktop pushes (``hermes_agent/tools/bot_relay.py::_normalize_roster_row``); invalid rows are dropped server-side, so the shape stays open. */
 export interface RelayAgentRow {
   profile?: string | null
   handle?: string | null
@@ -1940,7 +1940,7 @@ export interface BotRelayOutboxDrainParams {
 export interface BotRelayOutboxDrainResult {
   envelopes: RelayEnvelope[]
 }
-/** ``tools/bot_relay.py::enqueue_envelope``. */
+/** ``hermes_agent/tools/bot_relay.py::enqueue_envelope``. */
 export interface RelayEnvelope {
   id: string
   created_at: number
@@ -2484,7 +2484,7 @@ export interface SubagentSnapshot {
   accepting_steer?: boolean | null
   child_session_id?: string | null
 }
-/** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
+/** Lifecycle of one delegated child (``hermes_agent/tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
 /** ``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation. */
 export interface FailedDelegation {
@@ -3038,7 +3038,7 @@ export interface ApprovalPendingParams {
 export interface ApprovalPendingResult {
   approvals: PendingApproval[]
 }
-/** One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload`` renders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool. */
+/** One unresolved ``hermes_agent/tools/approval.py`` gateway queue entry as ``server._approval_request_payload`` renders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool. */
 export interface PendingApproval {
   request_id?: string | null
   command?: string | null
@@ -3169,7 +3169,7 @@ export interface WakeStatusResult {
   sample_rate: number
   frame_length: number
 }
-/** ``tools/wake_word.py::_describe_input_device`` — PortAudio diagnostics for the configured mic. */
+/** ``hermes_agent/tools/wake_word.py::_describe_input_device`` — PortAudio diagnostics for the configured mic. */
 export interface WakeInputDevice {
   selector?: number | string | null
   name?: string | null
@@ -3243,7 +3243,7 @@ export interface TranscriptMessage {
   reasoning?: string | null
   [key: string]: unknown
 }
-/** ``tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is, in words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse the tool name themselves. */
+/** ``hermes_agent.tools.tool_labels.ToolLabel`` — what one call executed through the tool_search bridge is, in words. Clients render ``text`` (or ``app``/``action`` in their own columns) and never parse the tool name themselves. */
 export interface ToolLabel {
   kind: ToolLabelKind
   app: string
@@ -3849,7 +3849,7 @@ export interface ProcessListParams {
 export interface ProcessListResult {
   processes?: ProcessEntry[]
 }
-/** ``tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``. */
+/** ``hermes_agent/tools/process_registry.py::list_sessions`` row plus the gateway's ``output_tail``. */
 export interface ProcessEntry {
   session_id: string
   command?: string
@@ -3877,7 +3877,7 @@ export interface ProcessKillParams {
   process_id: string
   profile?: string | null
 }
-/** ``tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses. */
+/** ``hermes_agent/tools/process_registry.py::kill_process`` snapshot; ``error`` rides on the failure statuses. */
 export interface ProcessKillResult {
   status: ProcessKillStatus
   session_id?: string | null
@@ -4028,7 +4028,7 @@ export interface RollbackRestoreParams {
   profile?: string | null
   all?: boolean | null
 }
-/** ``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
+/** ``hermes_agent/tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
 export interface RollbackRestoreResult {
   success: boolean
   restored_to?: string | null
@@ -4066,7 +4066,7 @@ export interface CronManageParams {
   profile?: string | null
 }
 export type CronAction = 'list' | 'add' | 'remove' | 'pause' | 'resume'
-/** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
+/** Pass-through of ``hermes_agent/tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
 export interface CronManageResult {
   success?: boolean | null
   error?: string | null
@@ -4089,7 +4089,7 @@ export interface CronManageResult {
   removed_job?: CronRemovedJob | null
   [key: string]: unknown
 }
-/** ``tools/cronjob_job_args.py::_format_job``. */
+/** ``hermes_agent/tools/cronjob_job_args.py::_format_job``. */
 export interface CronJobRow {
   job_id: string
   name?: string
@@ -4390,7 +4390,7 @@ export interface McpServersStatusResult {
   servers: McpServerRuntimeRow[]
   checked_at: number
 }
-/** Safe projection of ``tools.mcp_tool_discovery.get_mcp_status`` rows. */
+/** Safe projection of ``hermes_agent.tools.mcp_tool_discovery.get_mcp_status`` rows. */
 export interface McpServerRuntimeRow {
   name: string
   transport: string
@@ -4650,7 +4650,7 @@ export interface PluginLiveSkill {
   description?: string
 }
 export type PluginRestartTarget = 'gateway' | 'backend'
-/** One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked. */
+/** One security-scan finding (``hermes_agent.tools.plugin_guard``) on a plugin tree the scan blocked. */
 export interface PluginScanFinding {
   pattern_id: string
   severity: string
@@ -5723,7 +5723,7 @@ export interface ReadRangeRequestParams {
 export interface EmptyRequestParams {
   session_id: string
 }
-/** ``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets. */
+/** ``hermes_agent/tools/drive_preview_tool.py`` and ``hermes_agent/tools/annotate_preview_tool.py`` field sets. */
 export interface PreviewActRequestParams {
   session_id: string
   action: string
@@ -5745,7 +5745,7 @@ export interface PreviewVaultOperation {
   target?: string | null
   expression?: string | null
 }
-/** ``tools/tour_tool.py`` field set. */
+/** ``hermes_agent/tools/tour_tool.py`` field set. */
 export interface TourRequestParams {
   session_id: string
   action: string
@@ -5767,7 +5767,7 @@ export interface TourStep {
 }
 /** Which built-in tour ``start`` without steps runs. */
 export type TourPreset = 'quick' | 'full'
-/** ``tools/set_theme_tool.py`` values; accent is a swatch id, ``theme`` or ``#rrggbb``. */
+/** ``hermes_agent/tools/set_theme_tool.py`` values; accent is a swatch id, ``theme`` or ``#rrggbb``. */
 export interface ThemeApplyRequestParams {
   session_id: string
   accent?: string | null
@@ -5812,7 +5812,7 @@ export interface ConnectionUpdatePayload {
   actor?: ConnectionActor | null
   detail?: string | null
 }
-/** ``tools/connectors/contract.py::Actor``. */
+/** ``hermes_agent/tools/connectors/contract.py::Actor``. */
 export type ConnectionActor = 'user' | 'backend_watcher' | 'clock'
 export interface RequestCancelPayload {
   id: string
@@ -6107,7 +6107,7 @@ export interface NotificationShowPayload {
 export interface NotificationClearPayload {
   key: string
 }
-/** ``tools/tip_tool.py``. */
+/** ``hermes_agent/tools/tip_tool.py``. */
 export interface TipShowPayload {
   selector: string
   text: string
@@ -6183,7 +6183,7 @@ export interface SubagentEventPayload {
   duration_seconds?: number | null
   tool_preview?: string | null
 }
-/** ``tools/delegate_tool_results.py::_extract_output_tail`` row. */
+/** ``hermes_agent/tools/delegate_tool_results.py::_extract_output_tail`` row. */
 export interface SubagentOutputTailEntry {
   tool: string
   preview: string
@@ -6210,21 +6210,21 @@ export interface MoaPhasePayload {
   refs_total?: number | null
   aggregator?: string | null
 }
-/** ``tools/open_preview_tool.py``. */
+/** ``hermes_agent/tools/open_preview_tool.py``. */
 export interface PreviewOpenPayload {
   url: string
   label?: string
 }
-/** ``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab. */
+/** ``hermes_agent/tools/preview_tool.py`` / ``hermes_agent/tools/close_preview_tool.py``; ``url`` '' closes every tab. */
 export interface PreviewClosePayload {
   url?: string
 }
-/** ``tools/focus_pane_tool.py``. */
+/** ``hermes_agent/tools/focus_pane_tool.py``. */
 export interface PaneRevealPayload {
   pane: string
   [key: string]: unknown
 }
-/** ``tools/react_to_message_tool.py``. */
+/** ``hermes_agent/tools/react_to_message_tool.py``. */
 export interface MessageReactionPayload {
   row_id: number
   reactions: MessageReaction[]

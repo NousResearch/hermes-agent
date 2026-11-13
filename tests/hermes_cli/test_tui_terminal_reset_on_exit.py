@@ -123,7 +123,7 @@ class TestRunCleanupWiring(unittest.TestCase):
                 patch.object(
                     cli_mod, "_cleanup_all_browsers", patches["_cleanup_all_browsers"]
                 ),
-                patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda *a, **k: None),
+                patch("hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda *a, **k: None),
                 patch(
                     "agent.auxiliary_client.shutdown_cached_clients",
                     lambda *a, **k: None,

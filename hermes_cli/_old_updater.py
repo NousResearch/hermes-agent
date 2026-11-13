@@ -18,7 +18,7 @@ from typing import Any, NoReturn
 _result: int | None = None
 
 # The historical updater entrypoints. `_historical_context` reads capture data
-# from these frames; `tools.lazy_deps.install_specs` hands off only inside them.
+# from these frames; `hermes_agent.tools.lazy_deps.install_specs` hands off only inside them.
 # Keep in sync with scripts/audit-old-updater-imports.py UPDATE_ENTRYPOINTS: the
 # audit list is wider on purpose (helpers run *under* these frames and are found
 # by the frame walk).

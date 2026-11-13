@@ -196,7 +196,7 @@ def _notif_unowned_event(sid: str, evt: dict, deferred) -> None:
             "Dropping unowned %s notification (origin=%r key=%r) instead of delivering to session %s",
             evt_type, origin, key, sid)
         if is_delegation:
-            from tools.async_delegation import return_completion_offer
+            from hermes_agent.tools.async_delegation import return_completion_offer
             return_completion_offer(evt)
 
 
@@ -353,7 +353,7 @@ def _session_owns_live_wakeup_schedule(session: dict) -> bool:
 
 def _session_owns_pending_process_notification(session: dict) -> bool:
     """True while a background process this session started will still report back into it (``notify_on_complete``
-    or ``watch_patterns``): running, or its notice not yet routed (see ``tools.process_registry_awaiting``). The notice
+    or ``watch_patterns``): running, or its notice not yet routed (see ``hermes_agent.tools.process_registry_awaiting``). The notice
     reaches the model only through THIS session's notification poller, and closing the session kills the process
     (``agent_close``), so the reapers must keep it alive. Ownership is the set close() kills by — the agent's raw
     spawning task ids, which keep pre-compression ids after the session key rotates. Bounded by delivery: the session
@@ -362,8 +362,8 @@ def _session_owns_pending_process_notification(session: dict) -> bool:
         # After Stop no notification turn can start until the user's next prompt (``_notif_claim_turn``), so a
         # pending notice is no reason to keep the session: the user's prompt resumes it like any other.
         return False
-    from tools.process_registry import process_registry
-    from tools.process_registry_awaiting import awaits_notification
+    from hermes_agent.tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry_awaiting import awaits_notification
     return awaits_notification(process_registry, _session_process_owners(session))
 
 
@@ -606,8 +606,8 @@ def _notif_poll_kanban_scoped(sid: str, session: dict) -> None:
 
 
 def _notif_defer_event(evt, claim, put=None):
-    from tools.async_delegation import defer_completion_delivery
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.async_delegation import defer_completion_delivery
+    from hermes_agent.tools.process_registry import process_registry
     if claim:
         defer_completion_delivery(evt['delegation_id'], claim)
     (put or process_registry.completion_queue.put)(evt)
@@ -624,7 +624,7 @@ def _background_notifications_off(session: dict) -> bool:
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
     """Run the claimed (running=True) agent turn for one notification event."""
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from hermes_agent.tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
     try:
         claim = claim_event_delivery(evt, "tui-poller")
     except Exception as exc:  # shared ledger busy/unreadable: the durable row stays pending and replays
@@ -644,7 +644,7 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
         # Model-facing scaffolding: the process row on the status stack already says it is running,
         # so the wake never paints as a user bubble (Desktop, TUI and the transcript preview all
         # honour ``hidden``). Only what the agent says about the new output is visible.
-        from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
+        from hermes_agent.tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND
         kwargs = {"display_kind": HEARTBEAT_DISPLAY_KIND}
     from agent.notification_presentation import diagnostic_process_event
     if diagnostic_process_event(evt):
@@ -670,7 +670,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     ``_session_owns_notification_event`` (the post-turn safety net), so lineage resolves once."""
     queue = registry.completion_queue
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
-    from tools.environments.sandbox_scope import event_visible
+    from hermes_agent.tools.environments.sandbox_scope import event_visible
     if not event_visible(evt) or not owned and _notification_event_belongs_elsewhere(sid, session, evt):
         if deferred is not None:
             deferred.append(evt)
@@ -690,7 +690,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     # while distinct watch_match events from one process must stay visible.
     dedup_key = _notification_event_dedup_key(evt)
     if dedup_key not in emitted:
-        from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
+        from hermes_agent.tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
         from agent.notification_presentation import diagnostic_process_event
@@ -716,8 +716,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
 
 
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
-    from tools.process_registry_notifications import PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch
-    from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
+    from hermes_agent.tools.process_registry_notifications import PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch
+    from hermes_agent.tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
 
     if not notifications:
         return
@@ -780,7 +780,7 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
             for remaining in events[index + 1:]:
                 hand_back(remaining)
             _notif_dispatch_completions(sid, session, completions, registry, deferred)
-            from tools.async_delegation import return_completion_offer
+            from hermes_agent.tools.async_delegation import return_completion_offer
             return_completion_offer(event)
             raise
         if not routed:
@@ -803,13 +803,13 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
 
     Also polls ``kanban_notify_subs`` every ``_KANBAN_POLL_SECONDS`` for this session's TUI kanban
     subscriptions and delivers terminal task events the same way (status.update + agent turn) — the delivery
-    path tools/kanban_tools.py documents for platform="tui" rows (issue #59890).
+    path hermes_agent/tools/kanban_tools.py documents for platform="tui" rows (issue #59890).
     """
-    from tools import async_delegation
-    from tools.process_registry import process_registry
-    from tools.process_registry_awaiting import release as release_in_flight, take_ready
+    from hermes_agent.tools import async_delegation
+    from hermes_agent.tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry_awaiting import release as release_in_flight, take_ready
     from hermes_agent.tui_gateway import notification_park
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
     process_registry.restore_completions()  # first consumer in a TUI process (#123265)
     queue = process_registry.completion_queue
     emitted = session.setdefault("_notification_emitted", set())
@@ -865,7 +865,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
 
 def _async_delegation_display_metadata(evt: dict) -> dict:
     """Build display-only metadata before the completion event is formatted."""
-    from tools.process_registry_notifications import async_delegation_display_text
+    from hermes_agent.tools.process_registry_notifications import async_delegation_display_text
     raw_results = evt.get("results")
     results: list[dict] = [r for r in raw_results if isinstance(r, dict)] if isinstance(raw_results, list) else []
     task_count = len(results) or 1
@@ -886,7 +886,7 @@ def _wire_desktop_sinks() -> None:
     `terminal.close` (drops a tab without killing the process) route to the window owning the process; desktop-only
     tools pass the turn's ``HERMES_UI_SESSION_ID`` as ``sid``. `_emit` is thread-safe."""
     global _desktop_ui_wired
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     def _owner_sid(session) -> str:
         # session may be None (process already finished/pruned) — the tab can still linger and be closed.
@@ -902,7 +902,7 @@ def _wire_desktop_sinks() -> None:
         process_registry.on_close = lambda session, pid: _emit("terminal.close", _owner_sid(session), {"process_id": pid})
     if not _desktop_ui_wired:
         with contextlib.suppress(Exception):
-            from tools import desktop_ui
+            from hermes_agent.tools import desktop_ui
             desktop_ui.set_emitter(lambda sid, event, payload: _emit(event, sid, payload))
             _desktop_ui_wired = True
 
@@ -929,7 +929,7 @@ def _hud_surface_note(session: dict) -> str:
     surface, agent = session.get("client_surface"), session.get("agent")
     direct = getattr(agent, "valid_tool_names", None) or set()
     if surface == "hud":
-        from tools.tool_search_catalog import TOOL_CALL_NAME
+        from hermes_agent.tools.tool_search_catalog import TOOL_CALL_NAME
         if TOOL_CALL_NAME in direct:
             # Tool search defers the desktop tools by default: they stay callable through the
             # tool_call bridge, so the HUD note must count them and name the bridge (main 312f6bc2fd6).

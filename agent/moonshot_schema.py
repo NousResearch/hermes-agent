@@ -5,7 +5,7 @@ flavored json schema". Rules: (1) every property schema carries a ``type``;
 (2) with ``anyOf``, ``type`` belongs on the children, never the parent; (3) enum
 arrays under scalar types may not contain null / empty string; (4) every object
 schema carries a ``required`` array, even an empty one. The ``#/definitions/`` →
-``#/$defs/`` rewrite lives in ``tools/mcp_tool`` so it applies to all providers.
+``#/$defs/`` rewrite lives in ``hermes_agent/tools/mcp_tool`` so it applies to all providers.
 """
 
 from __future__ import annotations

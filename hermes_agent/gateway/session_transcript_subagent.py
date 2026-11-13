@@ -5,7 +5,7 @@ A child is a session of its own in the owning profile's store, written message b
 but ``session.resume`` refuses it and ``subagent.list`` rows are live-registry projections. This read joins
 the two under the parent's authority: a running child is the one the parent's roster names (the
 ``subagent.list`` rule, nested children included); a finished one is found by the ``subagent_id`` stamped
-on its row (``tools/delegate_tool_sessions.py``), and only when its ancestry reaches this conversation
+on its row (``hermes_agent/tools/delegate_tool_sessions.py``), and only when its ancestry reaches this conversation
 through delegate-child or compression-continuation hops. Anything else is ``available: false``.
 """
 import asyncio
@@ -34,7 +34,7 @@ def _child(authority, live, ref, subagent_id):
     under the session's event lock, which every streamed token takes too."""
     from hermes_agent.gateway.session_ancillary import (
         _compression_lineage, _owner_objects, _require_current_route, locked_projection, physical_target)
-    from tools.delegate_tool_sessions import stored_child_session
+    from hermes_agent.tools.delegate_tool_sessions import stored_child_session
 
     def roster():
         _require_current_route(authority, ref)

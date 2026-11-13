@@ -57,7 +57,7 @@ def test_config_get_browser_selection_keys_print_value_without_notice(hermes_hom
 
 
 @pytest.mark.parametrize("key,value", [
-    ("browser.cloud_provider", "browserbase"),   # core: tools.tool_backend_helpers.read_selection
+    ("browser.cloud_provider", "browserbase"),   # core: hermes_agent.tools.tool_backend_helpers.read_selection
     ("web.use_gateway", "true"),                 # core: legacy managed-gateway flag, every category
     ("dashboard.kanban.default_tenant", "t1"),   # core: bundled kanban dashboard preferences
 ])
@@ -120,7 +120,7 @@ def test_moa_non_field_paths_still_notice(key, hermes_home, monkeypatch, capsys)
 
 
 def test_every_selection_category_key_set_is_what_read_selection_returns(hermes_home, capsys):
-    from tools.tool_backend_helpers import read_selection, selection_config_keys
+    from hermes_agent.tools.tool_backend_helpers import read_selection, selection_config_keys
 
     name_keys: dict[str, set] = {}
     for dotted in selection_config_keys():

@@ -64,8 +64,8 @@ def test_imported_crash_marker_never_autocontinues(tmp_path):
 def test_viewer_poller_never_discovers_or_claims_bot_execution(monkeypatch, tmp_path):
     import queue
     import time
-    import tools.bot_live_delivery as mailbox
-    from tools.process_registry import process_registry
+    import hermes_agent.tools.bot_live_delivery as mailbox
+    from hermes_agent.tools.process_registry import process_registry
     calls = []
     monkeypatch.setattr(mailbox, 'find_canonical_live_owner', lambda home: calls.append(home))
     stop = threading.Event()

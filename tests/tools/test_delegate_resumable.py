@@ -30,7 +30,7 @@ def _db_rows(parent):
 
 def _forget_process_state():
     """What a restart loses: the in-process registry of finished children."""
-    from tools.delegate_tool_registry import _active_subagents_lock, _recent_subagents
+    from hermes_agent.tools.delegate_tool_registry import _active_subagents_lock, _recent_subagents
     with _active_subagents_lock:
         _recent_subagents.clear()
 
@@ -58,7 +58,7 @@ class _FailingModel(_ScriptedModel):
 
 
 def test_a_limit_stopped_child_is_continued_after_a_restart_on_its_own_transcript():
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     resets = time.time() + 3600
     model = _FailingModel(resets_at=resets)
@@ -88,9 +88,9 @@ def test_a_limit_stopped_child_is_continued_after_a_restart_on_its_own_transcrip
 def test_a_gateway_shutdown_leaves_a_resumable_record_and_a_user_stop_does_not(cause):
     import threading
 
-    from tools.async_delegation import interrupt_all
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, interrupt_subagent
+    from hermes_agent.tools.async_delegation import interrupt_all
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_registry import _active_subagents, _active_subagents_lock, interrupt_subagent
 
     started, release = threading.Event(), threading.Event()
     model = _ScriptedModel()
@@ -138,8 +138,8 @@ def test_a_resumable_childs_isolation_worktree_survives_its_stop_and_continue_ru
     """Found live: the stop path archived and removed the worktree of a child that was about to be continued."""
     import threading
 
-    from tools.async_delegation import interrupt_all
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.async_delegation import interrupt_all
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -147,8 +147,8 @@ def test_a_resumable_childs_isolation_worktree_survives_its_stop_and_continue_ru
     (repo / "a.txt").write_text("a")
     _git("add", "a.txt", cwd=repo)
     _git("commit", "-qm", "init", cwd=repo)
-    monkeypatch.setattr("tools.delegate_tool._get_worktree_isolation", lambda: True)
-    monkeypatch.setattr("tools.delegate_tool._resolve_workspace_hint", lambda _p: str(repo))
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._get_worktree_isolation", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._resolve_workspace_hint", lambda _p: str(repo))
     started, release = threading.Event(), threading.Event()
     model = _ScriptedModel()
 
@@ -157,7 +157,7 @@ def test_a_resumable_childs_isolation_worktree_survives_its_stop_and_continue_ru
         ok = child.run_conversation.side_effect
 
         def run_conversation(user_message, **rest):
-            from tools.terminal_tool import get_session_cwd
+            from hermes_agent.tools.terminal_tool import get_session_cwd
             model.turns.append({"cwd": get_session_cwd(rest.get("task_id"))})
             if len(model.builds) == 1:
                 (Path(get_session_cwd(rest.get("task_id"))) / "a.txt").write_text("child edit")
@@ -195,8 +195,8 @@ def test_crashed_childs_worktree_survives_the_sweep_until_its_record_expires(tmp
 
     from hermes_cli.worktree_sweep import plan_sweep, run_sweep, sweep_settings
     from hermes_agent.hermes_state import SessionDB
-    from tools.async_delegation import recover_abandoned_delegations
-    from tools.delegate_tool_resumable import _upsert
+    from hermes_agent.tools.async_delegation import recover_abandoned_delegations
+    from hermes_agent.tools.delegate_tool_resumable import _upsert
     from hermes_constants import get_hermes_home
 
     repo = tmp_path / "repo"

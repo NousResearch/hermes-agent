@@ -10,8 +10,8 @@ import json
 
 import pytest
 
-import model_tools
-from tools.registry import registry
+from hermes_agent import model_tools
+from hermes_agent.tools.registry import registry
 
 
 @pytest.fixture

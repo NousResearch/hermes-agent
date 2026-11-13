@@ -847,11 +847,11 @@ class CLITuiMixin:
         if not self._voice_tts_done.is_set():
             try:
                 logger.info("TTS CUT: record key handler cutting TTS")
-                from tools.tts_streaming import mark_speech_interrupted
+                from hermes_agent.tools.tts_streaming import mark_speech_interrupted
                 mark_speech_interrupted()
                 if self._voice_tts_stop is not None:
                     self._voice_tts_stop.set()
-                from tools.voice_mode import stop_playback
+                from hermes_agent.tools.voice_mode import stop_playback
                 stop_playback()
                 self._voice_tts_done.set()
             except Exception:

@@ -249,7 +249,7 @@ def install_wire_recorder(monkeypatch: pytest.MonkeyPatch, secret: str) -> WireL
 # Deterministic test tool --------------------------------------------------------
 
 def register_lookup_tool() -> Callable[[], None]:
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     def handler(args: dict, **_kw: Any) -> str:
         key = str(args.get("key", ""))

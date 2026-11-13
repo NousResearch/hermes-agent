@@ -19,7 +19,7 @@ from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.session import SessionStore
 from types import SimpleNamespace
 from hermes_agent.gateway.session_managed_worker import _session_yolo
-from tools.approval import is_session_yolo_enabled
+from hermes_agent.tools.approval import is_session_yolo_enabled
 store = SessionStore(sessions_dir=Path(sys.argv[1]), config=GatewayConfig())
 store._db = None
 entry = store.lookup_by_session_key(sys.argv[2])
@@ -34,8 +34,8 @@ assert not is_session_yolo_enabled(entry.session_key), 'revoked launch was re-en
 
 
 def test_live_toggle_survives_failed_persistence_after_initial_restore():
-    from tools.approval import clear_session, is_session_yolo_enabled
-    from tools.approval_yolo import restore_gateway_yolo, toggle_session_yolo
+    from hermes_agent.tools.approval import clear_session, is_session_yolo_enabled
+    from hermes_agent.tools.approval_yolo import restore_gateway_yolo, toggle_session_yolo
     key = 'gateway-yolo-persistence-failure'
     def unavailable(enabled):
         raise OSError('routing store unavailable')

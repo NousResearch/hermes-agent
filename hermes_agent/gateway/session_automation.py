@@ -156,7 +156,7 @@ _FOLD_HEADER_RE = re.compile(r'\[IMPORTANT: \d+ background process results arriv
 
 def _fold_completion(event, waiting, identity):
     from hermes_agent.gateway.run_notifications import INTERNAL_NOTIFICATION_FOOTER, _mark_internal_notification
-    from tools.process_registry_notifications import process_completion_display_text
+    from hermes_agent.tools.process_registry_notifications import process_completion_display_text
     descriptor = _descriptor(waiting['payload'])
     identities = sorted({*(descriptor.get('identities') or [waiting['request_id']]),
                          *(event.metadata.get('automation_identities') or [identity])})
@@ -204,7 +204,7 @@ async def prepare_heartbeat(runner, event):
     earlier = waiting and _descriptor(waiting['payload']).get('tick')
     if not isinstance(earlier, dict):
         return event
-    from tools.process_registry_notifications import join_heartbeat_outputs
+    from hermes_agent.tools.process_registry_notifications import join_heartbeat_outputs
     return {**event, **join_heartbeat_outputs(earlier, event), '_replaces': waiting['admission_id']}
 
 

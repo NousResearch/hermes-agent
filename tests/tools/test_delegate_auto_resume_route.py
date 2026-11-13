@@ -19,8 +19,8 @@ DEFAULT_ROUTE = {"model": "default-model", "provider": "custom", "base_url": "ht
 
 def _limited_child_of_session(tmp_path):
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools.delegate_tool import delegate_task
-    from tools.terminal_tool import record_session_cwd
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.terminal_tool import record_session_cwd
     _enable()
     parent = _parent()
     parent._current_task_id = "parent-task"
@@ -60,7 +60,7 @@ def _start(runner, model, built):
 
 
 def test_the_stand_in_parent_keeps_the_sessions_model_override(tmp_path):
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     parent, model, sid = _limited_child_of_session(tmp_path)
     built = []
     factory, start = _start(_runner(), model, built)
@@ -73,7 +73,7 @@ def test_the_stand_in_parent_keeps_the_sessions_model_override(tmp_path):
 
 def test_the_stand_in_parent_runs_on_the_sessions_own_tier_not_the_runners_last_one(tmp_path):
     """Another conversation's /fast turn left ``runner._service_tier`` at priority; this session has none."""
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _parent_agent, model, sid = _limited_child_of_session(tmp_path)
     runner, built = _runner(), []
     runner._service_tier = "priority"
@@ -86,7 +86,7 @@ def test_the_stand_in_parent_runs_on_the_sessions_own_tier_not_the_runners_last_
 
 @pytest.mark.parametrize("broken", ["route", "agent"])
 def test_a_stand_in_that_cannot_be_built_retries_later_and_never_turns_auto_resume_off(tmp_path, broken):
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     parent, model, sid = _limited_child_of_session(tmp_path)
     factory, start = _start(_runner(), model, [])
     target = ("hermes_agent.gateway.run.GatewayRunner._resolve_session_agent_runtime" if broken == "route"
@@ -102,7 +102,7 @@ def test_capacity_counts_only_this_profiles_running_units(tmp_path, monkeypatch)
     from agent.runtime_scope import bind_profile_scope
     from hermes_agent.gateway.run_auto_resume import _capacity
     from hermes_constants import hermes_home_key
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
     other, mine = tmp_path / "other", tmp_path / "mine"
     for home, cap in ((other, 2), (mine, 3)):
         home.mkdir()
@@ -117,8 +117,8 @@ def test_capacity_counts_only_this_profiles_running_units(tmp_path, monkeypatch)
 
 
 def test_a_spawn_pause_holds_resumes_without_claiming_or_building_a_stand_in(tmp_path):
-    from tools.delegate_tool_auto_resume import tick
-    from tools.delegate_tool_registry import set_spawn_paused
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_registry import set_spawn_paused
     parent, model, sid = _limited_child_of_session(tmp_path)
     built = []
     factory, start = _start(_runner(), model, built)

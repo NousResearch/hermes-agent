@@ -8,7 +8,7 @@ def test_monitor_keys_pin_controls_across_roster_changes(monkeypatch):
 
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
-    from tools import delegate_tool_registry as registry
+    from hermes_agent.tools import delegate_tool_registry as registry
     monkeypatch.setattr(registry, '_active_subagents', {})
     received = []
     child = SimpleNamespace(steer=lambda text: received.append(text) or True,
@@ -69,7 +69,7 @@ def test_a_stalled_steer_never_freezes_the_monitor(monkeypatch):
     from hermes_cli.cli_subagent_monitor import SubagentMonitor, build_monitor_application
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
-    from tools import delegate_tool_registry as registry
+    from hermes_agent.tools import delegate_tool_registry as registry
     monkeypatch.setattr(registry, '_active_subagents', {})
     registry._register_subagent(dict(subagent_id='only', goal='only', owner_agent_session_id='owner',
                                      started_at=1, status='running', agent=SimpleNamespace()))

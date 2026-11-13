@@ -413,7 +413,7 @@ def test_gateway_notes_on_a_multimodal_turn_stamp_the_persisted_ask():
 def test_a_todo_snapshot_folded_onto_the_turn_stays_out_of_the_typed_ask():
     """Turn-start compaction folds the active task list onto the tail turn before context is appended;
     a later compaction strips that block from the row, so a stamp holding it would outlive it."""
-    from tools.todo_tool import TODO_INJECTION_HEADER
+    from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
     from agent.turn_context import _stamp_typed_ask_once
 
     image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
@@ -512,7 +512,7 @@ def test_turn_author_reaches_the_agent_through_the_real_facade(monkeypatch):
 
     monkeypatch.setattr("agent.process_bootstrap.OpenAI",
                         lambda **_kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
     agent = AIAgent(model="test-model", api_key="k", base_url="http://localhost:1/v1", platform="cli",
                     max_iterations=2, quiet_mode=True, skip_memory=True)
     agent._disable_streaming = True
@@ -685,9 +685,9 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
 
     new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
 
-    import model_tools
-    import tools.mcp_tool
-    with patch("tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
+    from hermes_agent import model_tools
+    import hermes_agent.tools.mcp_tool
+    with patch("hermes_agent.tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
          patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):
         _build(agent)
 

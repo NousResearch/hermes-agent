@@ -18,7 +18,7 @@ import asyncio
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool import MCPServerTask
 
 
 def _group(*excs) -> BaseExceptionGroup:
@@ -76,15 +76,15 @@ class _FakeSessionCM:
 def _make_http_task(monkeypatch, transport_exc):
     task = MCPServerTask("http-drop")
 
-    monkeypatch.setattr("tools.mcp_tool._MCP_HTTP_AVAILABLE", True, raising=False)
-    monkeypatch.setattr("tools.mcp_tool._MCP_NEW_HTTP", True, raising=False)
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", True, raising=False)
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool._MCP_NEW_HTTP", True, raising=False)
     monkeypatch.setattr(
-        "tools.mcp_tool.streamable_http_client",
+        "hermes_agent.tools.mcp_tool.streamable_http_client",
         lambda url, http_client=None, **_sdk_kwargs: _RaisingTransportCM(transport_exc),
         raising=False,
     )
     monkeypatch.setattr(
-        "tools.mcp_tool.ClientSession",
+        "hermes_agent.tools.mcp_tool.ClientSession",
         lambda *a, **k: _FakeSessionCM(),
         raising=False,
     )

@@ -472,7 +472,7 @@ class TestPreprocessImagesWithVision:
 
     def test_single_image_with_text(self, cli, tmp_path):
         img = self._make_image(tmp_path)
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
             result = cli._preprocess_images_with_vision("Describe this", [img])
 
         assert isinstance(result, str)
@@ -486,7 +486,7 @@ class TestPreprocessImagesWithVision:
         img = self._make_image(tmp_path)
         async def _explode(**kwargs):
             raise RuntimeError("API down")
-        with patch("tools.vision_tools.vision_analyze_tool", side_effect=_explode):
+        with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=_explode):
             result = cli._preprocess_images_with_vision("check this", [img])
         assert isinstance(result, str)
         assert str(img) in result  # path still included for retry
@@ -551,8 +551,8 @@ class TestVoiceSubmission:
         return cli_obj
 
     def test_voice_transcript_clears_stale_attached_images(self, cli):
-        with patch("tools.voice_mode.play_beep"):
-            with patch("tools.voice_mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
+        with patch("hermes_agent.tools.voice_mode.play_beep"):
+            with patch("hermes_agent.tools.voice_mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
                 with patch("os.path.isfile", return_value=False):
                     with patch("cli._cprint"):
                         cli._voice_stop_and_transcribe()

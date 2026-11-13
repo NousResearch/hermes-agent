@@ -13,10 +13,10 @@ import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 from hermes_constants import get_hermes_home
-from tools import approval, mcp_tool, mcp_tool_costs
-from tools import mcp_tool_handlers as handlers
-from tools import mcp_tool_registration as registration
-from tools.approval_context import reset_current_session_key, set_current_session_key
+from hermes_agent.tools import approval, mcp_tool, mcp_tool_costs
+from hermes_agent.tools import mcp_tool_handlers as handlers
+from hermes_agent.tools import mcp_tool_registration as registration
+from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
 PAID = {"trust": "untrusted", "tool_costs": {"paid_render": 40}, "spend_limit": 50}
 

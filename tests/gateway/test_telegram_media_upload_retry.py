@@ -128,10 +128,10 @@ async def test_url_media_lost_after_the_request_left_falls_back_to_nothing(adapt
 
     adapter._bot.send_photo = lost
     adapter._bot.send_animation = lost
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda _url: True)
     base_send_image = AsyncMock()
     monkeypatch.setattr(BasePlatformAdapter, "send_image", base_send_image)
-    monkeypatch.setattr("tools.url_safety.create_ssrf_safe_async_client", MagicMock(
+    monkeypatch.setattr("hermes_agent.tools.url_safety.create_ssrf_safe_async_client", MagicMock(
         side_effect=AssertionError("the photo must not be downloaded for a re-upload")))
 
     result = await getattr(adapter, method)("123", "https://example.com/a.gif")
@@ -203,7 +203,7 @@ async def test_album_photo_lost_after_the_request_left_is_reported_ambiguous(ada
 
     adapter._bot.send_media_group = AsyncMock(side_effect=BadRequest("Wrong file identifier/http url specified"))
     adapter._bot.send_photo = lost
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda _url: True)
 
     result = await adapter.send_multiple_images("123", [("https://example.com/a.png", ""), ("https://example.com/b.png", "")])
 
@@ -229,7 +229,7 @@ async def test_a_gif_whose_receipt_was_lost_keeps_the_batch_ambiguous(adapter, m
     adapter._bot.send_animation = lost
     adapter._bot.send_media_group = AsyncMock(return_value=[SimpleNamespace(message_id=9)])
     adapter._bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=9))
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda _url: True)
 
     result = await adapter.send_multiple_images("123", images)
 

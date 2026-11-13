@@ -21,8 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _NO_EAGER_SUBMODULE = """
 import sys
-import tools.connectors  # noqa: F401
-loaded = sorted(k for k in sys.modules if k.startswith("tools.connectors."))
+import hermes_agent.tools.connectors  # noqa: F401
+loaded = sorted(k for k in sys.modules if k.startswith("hermes_agent.tools.connectors."))
 print("\\n".join(loaded))
 """
 
@@ -32,7 +32,7 @@ errors = []
 ITER = 25
 
 def purge():
-    for name in [k for k in list(sys.modules) if k.startswith("tools.connectors")]:
+    for name in [k for k in list(sys.modules) if k.startswith("hermes_agent.tools.connectors")]:
         sys.modules.pop(name, None)
 
 def run(target):
@@ -43,8 +43,8 @@ def run(target):
             errors.append((target, type(exc).__name__))
         purge()
 
-threads = [threading.Thread(target=run, args=("tools.connectors",)) for _ in range(3)]
-threads += [threading.Thread(target=run, args=("tools.connectors.tool",)) for _ in range(3)]
+threads = [threading.Thread(target=run, args=("hermes_agent.tools.connectors",)) for _ in range(3)]
+threads += [threading.Thread(target=run, args=("hermes_agent.tools.connectors.tool",)) for _ in range(3)]
 for t in threads:
     t.start()
 for t in threads:

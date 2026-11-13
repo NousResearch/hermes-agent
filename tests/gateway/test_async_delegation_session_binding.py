@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import tools.async_delegation as ad
+import hermes_agent.tools.async_delegation as ad
 
 
 @pytest.fixture(autouse=True)
@@ -460,7 +460,7 @@ async def test_delegate_completion_preserves_real_route_ownership(
     from hermes_agent.gateway.config import GatewayConfig, Platform
     from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
     from hermes_agent.gateway.session import SessionSource
-    from tools import async_delegation as ad
+    from hermes_agent.tools import async_delegation as ad
 
     with _profile_runtime_scope(tmp_path):
         runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))

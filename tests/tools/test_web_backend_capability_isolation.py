@@ -9,8 +9,8 @@ from __future__ import annotations
 
 
 def _ladder_env(monkeypatch, raw_web):
-    from tools import web_tools
-    from tools import tool_backend_helpers as helpers
+    from hermes_agent.tools import web_tools
+    from hermes_agent.tools import tool_backend_helpers as helpers
 
     monkeypatch.setattr(web_tools, "_load_web_config", lambda: dict(raw_web))
     monkeypatch.setattr(
@@ -30,7 +30,7 @@ def _ladder_env(monkeypatch, raw_web):
 
 
 def test_extract_only_config_does_not_reroute_search(monkeypatch):
-    from tools import web_tools
+    from hermes_agent.tools import web_tools
 
     _ladder_env(monkeypatch, {"extract_backend": "keenable"})
     # Broken before the fix: search resolved to "firecrawl" through the shared fallback.
@@ -39,7 +39,7 @@ def test_extract_only_config_does_not_reroute_search(monkeypatch):
 
 
 def test_managed_use_gateway_still_resolves_firecrawl(monkeypatch):
-    from tools import web_tools
+    from hermes_agent.tools import web_tools
 
     _ladder_env(monkeypatch, {"use_gateway": True})
     # Ladder would find ddgs if it ran — the managed selection must not reach it.

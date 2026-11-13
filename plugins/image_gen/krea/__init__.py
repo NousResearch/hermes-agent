@@ -141,8 +141,8 @@ def _resolve_managed_krea_gateway():
     ``image_gen`` selection is ``nous`` (or legacy ``use_gateway: true``), or never-configured with
     no ``KREA_API_KEY``; an explicit vendor selection pins direct. Never raises (discovery scans)."""
     try:
-        from tools.managed_tool_gateway import resolve_managed_tool_gateway
-        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+        from hermes_agent.tools.managed_tool_gateway import resolve_managed_tool_gateway
+        from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
     except Exception as exc:
         logger.debug("Managed Krea gateway resolution unavailable: %s", exc)
         return None
@@ -164,7 +164,7 @@ def _resolve_managed_krea_gateway():
 def _managed_krea_gateway_ready() -> bool:
     """Cheap, offline-friendly probe for managed Krea availability."""
     try:
-        from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+        from hermes_agent.tools.managed_tool_gateway import is_managed_tool_gateway_ready
 
         return bool(is_managed_tool_gateway_ready("krea"))
     except Exception:

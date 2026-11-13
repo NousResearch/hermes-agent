@@ -21,7 +21,7 @@ from agent.context_compressor import (
     _SUMMARY_END_MARKER,
 )
 from agent import skill_commands
-from tools import skills_tool
+from hermes_agent.tools import skills_tool
 from hermes_agent.hermes_state import SessionDB
 
 SKILL_BODY = (

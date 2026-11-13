@@ -138,9 +138,9 @@ API 请求被封装在 `_interruptible_api_call()` 中，该方法在后台线�
 
 ```text
 for each tool_call in response.tool_calls:
-    1. 从 tools/registry.py 解析处理器
+    1. 从 hermes_agent/tools/registry.py 解析处理器
     2. 触发 pre_tool_call 插件 hook
-    3. 检查是否为危险命令（tools/approval.py）
+    3. 检查是否为危险命令（hermes_agent/tools/approval.py）
        - 若危险：调用 approval_callback，等待用户确认
     4. 使用参数 + task_id 执行处理器
     5. 触发 post_tool_call 插件 hook
@@ -228,7 +228,7 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 | `agent/context_compressor.py` | 默认引擎——有损摘要算法 |
 | `agent/prompt_caching.py` | Anthropic prompt 缓存标记和缓存指标 |
 | `agent/auxiliary_client.py` | 用于辅助任务的辅助 LLM 客户端（视觉、摘要） |
-| `model_tools.py` | 工具 schema 集合，`handle_function_call()` 分发 |
+| `hermes_agent/model_tools.py` | 工具 schema 集合，`handle_function_call()` 分发 |
 
 ## 相关文档
 

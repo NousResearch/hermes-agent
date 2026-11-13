@@ -26,7 +26,7 @@ MAX_CONCURRENT_CHILDREN = 3
 @pytest.fixture(autouse=True)
 def _pin_max_concurrent_children(monkeypatch):
     monkeypatch.setattr(
-        "tools.delegate_tool._get_max_concurrent_children",
+        "hermes_agent.tools.delegate_tool._get_max_concurrent_children",
         lambda: MAX_CONCURRENT_CHILDREN,
     )
 

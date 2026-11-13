@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from tools.code_execution_env import _scrub_child_env
-from tools import code_execution_env
+from hermes_agent.tools.code_execution_env import _scrub_child_env
+from hermes_agent.tools import code_execution_env
 
 
 def _no_passthrough(_):

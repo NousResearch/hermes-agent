@@ -233,8 +233,8 @@ def test_messaging_tool_events_carry_no_diff_or_todo_frame():
 def test_prompts_carry_the_gateway_wait_window_only_for_local_viewers(monkeypatch, platform):
     from hermes_agent.gateway.session_pending_controls import PendingControls
     import threading
-    monkeypatch.setattr('tools.approval_context._get_approval_timeout', lambda: 90)
-    monkeypatch.setattr('tools.clarify_gateway.get_clarify_timeout', lambda: 600)
+    monkeypatch.setattr('hermes_agent.tools.approval_context._get_approval_timeout', lambda: 90)
+    monkeypatch.setattr('hermes_agent.tools.clarify_gateway.get_clarify_timeout', lambda: 600)
     published = []
     events = SimpleNamespace(lock=threading.RLock(), publish=lambda sid, prompt, event_type: published.append((event_type, prompt)))
     controls = PendingControls(events)
@@ -380,8 +380,8 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     """TUI-4: ``_ChildProgressRelay`` events reach the viewer stream on ``Platform.LOCAL`` (including registered background children descending from the spawning turn's agent after the turn settles, without borrowing a later turn's execution identity) and never on messaging platforms."""
     import weakref
     from hermes_agent.gateway.session_events import SessionEvents
-    from tools.delegate_tool_progress import _build_child_progress_callback
-    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+    from hermes_agent.tools.delegate_tool_progress import _build_child_progress_callback
+    from hermes_agent.tools.delegate_tool_registry import _register_subagent, _unregister_subagent
     from hermes_agent.tui_gateway.contracts.registry import EVENTS
 
     class _Parent:
@@ -535,7 +535,7 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
     import weakref
     from hermes_agent.gateway.run_turn import GatewayTurnMixin
     from hermes_agent.gateway.session_ancillary import _owner_objects, subagent_records
-    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+    from hermes_agent.tools.delegate_tool_registry import _register_subagent, _unregister_subagent
 
     class Parent:
         pass
@@ -641,7 +641,7 @@ def test_subagent_roster_survives_a_parent_rebuild():
     keeps the child; another conversation or another profile's DB never sees it."""
     import weakref
     from hermes_agent.gateway.session_ancillary import subagent_records
-    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+    from hermes_agent.tools.delegate_tool_registry import _register_subagent, _unregister_subagent
 
     class Parent:
         pass

@@ -14,8 +14,8 @@ import types
 
 import pytest
 
-from tools import mcp_tool
-from tools import mcp_tool_agent as _mcp_agent
+from hermes_agent.tools import mcp_tool
+from hermes_agent.tools import mcp_tool_agent as _mcp_agent
 
 
 def _tool(name):
@@ -38,7 +38,7 @@ def test_refresh_adds_late_landing_tools(monkeypatch):
     new_defs = [_tool(n) for n in ("read_file", "terminal", "mcp_granola_get_account_info")]
     monkeypatch.setattr(mcp_tool, "get_tool_definitions", lambda **kw: new_defs, raising=False)
     # get_tool_definitions is imported inside the helper from model_tools, so patch there too.
-    import model_tools
+    from hermes_agent import model_tools
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: new_defs)
 
     added = _mcp_agent.refresh_agent_mcp_tools(agent)
@@ -83,7 +83,7 @@ def test_refresh_preserves_memory_provider_and_context_engine_tools(monkeypatch)
     )
     agent._context_engine_tool_names = {"lcm_grep"}
 
-    import model_tools
+    from hermes_agent import model_tools
     # The registry now ALSO has a newly-connected MCP tool, but does NOT contain
     # the memory/context tools (they're never in get_tool_definitions output).
     monkeypatch.setattr(
@@ -113,7 +113,7 @@ def test_refresh_does_not_reinject_disabled_memory_provider_tools(monkeypatch):
         ]
     )
 
-    import model_tools
+    from hermes_agent import model_tools
     monkeypatch.setattr(
         model_tools,
         "get_tool_definitions",
@@ -136,7 +136,7 @@ def test_refresh_respects_context_engine_toolset_gate(monkeypatch):
     )
     agent._context_engine_tool_names = set()
 
-    import model_tools
+    from hermes_agent import model_tools
     monkeypatch.setattr(
         model_tools, "get_tool_definitions",
         lambda **kw: [_tool("read_file"), _tool("mcp_new_tool")],
@@ -171,7 +171,7 @@ def test_refresh_is_thread_safe_under_concurrent_calls(monkeypatch):
         with flip_lock:
             return list(next(flip))
 
-    import model_tools
+    from hermes_agent import model_tools
     monkeypatch.setattr(model_tools, "get_tool_definitions", _gtd)
 
     errors = []
@@ -224,7 +224,7 @@ def test_wait_returns_instantly_when_no_discovery_thread(monkeypatch):
 
 def _registered(monkeypatch, names):
     """Make the registry report exactly *names* as still registered."""
-    from tools import registry as registry_mod
+    from hermes_agent.tools import registry as registry_mod
 
     entries = [types.SimpleNamespace(name=n) for n in names]
     monkeypatch.setattr(
@@ -233,7 +233,7 @@ def _registered(monkeypatch, names):
 
 
 def _serve(monkeypatch, defs):
-    import model_tools
+    from hermes_agent import model_tools
 
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda **kw: list(defs))
 
@@ -332,7 +332,7 @@ def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     ``check_fn`` flap on a portal blip), and a moved byte in the tool array re-prefills
     the whole cached history. The refresh must leave the bridge entries exactly as
     built; a search still reads the live catalog at dispatch."""
-    from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
+    from hermes_agent.tools.tool_search_catalog import BRIDGE_TOOL_NAMES
 
     built = _tool("tool_search")
     built["function"]["description"] = "Search 21 additional tools. connectors__ hint present."
@@ -388,7 +388,7 @@ def test_eviction_rebuild_restores_the_sessions_saved_tool_order(monkeypatch):
     name list stands in for the missing predecessor: the tool is carried
     forward from the registry schema, byte-for-byte in its old slot.
     """
-    from tools import registry as registry_mod
+    from hermes_agent.tools import registry as registry_mod
 
     saved = ["read_file", "browser_exec", "terminal"]
     entries = {n: types.SimpleNamespace(name=n, schema=_tool(n)["function"]) for n in saved}
@@ -410,7 +410,7 @@ def test_resume_on_another_surface_restores_the_pinned_tool_bytes(monkeypatch, t
     every request, so a pin written by the same code hands back exactly what the session sent;
     one written by other code (``hermes update``) takes the current definitions instead."""
     from hermes_agent.hermes_state import SessionDB
-    from tools import registry as registry_mod
+    from hermes_agent.tools import registry as registry_mod
 
     def _described(name, description, **params):
         tool = _tool(name)
@@ -464,7 +464,7 @@ def test_a_pin_never_re_adds_a_tool_this_sessions_config_excludes(monkeypatch):
     """A pin from a surface where ``terminal`` was allowed must not hand it back where config
     disables it, nor ``browser_exec`` (host Python) once ``terminal`` is gone. A client-surface
     tool (``focus_pane``) is still carried: no config choice removed it here."""
-    import model_tools
+    from hermes_agent import model_tools
 
     monkeypatch.setattr(_mcp_agent, "persist_agent_tool_names", lambda agent: None)
     pin = {"version": _mcp_agent.tool_pin_version(),
@@ -479,8 +479,8 @@ def test_a_pin_never_re_adds_a_tool_this_sessions_config_excludes(monkeypatch):
 
 def test_reprobe_tool_availability_drops_cached_check_fn_verdicts(monkeypatch):
     """/reload-mcp is the explicit hatch: a cached False must be re-probed."""
-    from tools import registry as registry_mod
-    import model_tools
+    from hermes_agent.tools import registry as registry_mod
+    from hermes_agent import model_tools
 
     verdict = {"ok": False}
 
@@ -553,8 +553,8 @@ def test_authorized_message_agent_survives_every_snapshot_rebuild(
     managed_bot_home, monkeypatch, rebuild
 ):
     """Compaction, live refreshes and eviction/resume all preserve the guarded tool."""
-    from tools.bot_mode_dm import ensure_message_agent_tool
-    from tools import registry as registry_mod
+    from hermes_agent.tools.bot_mode_dm import ensure_message_agent_tool
+    from hermes_agent.tools import registry as registry_mod
 
     agent = _bot_mode_agent(managed_bot_home)
     _serve(monkeypatch, [_tool("read_file")])

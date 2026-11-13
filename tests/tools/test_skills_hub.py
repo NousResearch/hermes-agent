@@ -1,4 +1,4 @@
-"""Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
+"""Tests for hermes_agent/tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
 import os
@@ -9,18 +9,18 @@ from unittest.mock import patch, MagicMock
 import httpx
 import pytest
 
-from tools.skills_hub import HubLockFile, TapsManager, append_audit_log
-from tools.skills_hub_github import GitHubAuth, GitHubSource
-from tools.skills_hub_install import (
+from hermes_agent.tools.skills_hub import HubLockFile, TapsManager, append_audit_log
+from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource
+from hermes_agent.tools.skills_hub_install import (
     bundle_content_hash, check_for_skill_updates, install_from_quarantine, quarantine_bundle,
 )
-from tools.skills_hub_models import SkillBundle, SkillMeta, SkillSource, _referenced_support_paths
-from tools.skills_hub_official import OptionalSkillSource
-from tools.skills_hub_search import (
+from hermes_agent.tools.skills_hub_models import SkillBundle, SkillMeta, SkillSource, _referenced_support_paths
+from hermes_agent.tools.skills_hub_official import OptionalSkillSource
+from hermes_agent.tools.skills_hub_search import (
     HERMES_INDEX_TTL, _load_hermes_index, create_source_router, parallel_search_sources, unified_search,
 )
-from tools.skills_hub_skillssh import SkillsShSource
-from tools.skills_hub_sources import LobeHubSource, UrlSource, WellKnownSkillSource
+from hermes_agent.tools.skills_hub_skillssh import SkillsShSource
+from hermes_agent.tools.skills_hub_sources import LobeHubSource, UrlSource, WellKnownSkillSource
 
 # ---------------------------------------------------------------------------
 # GitHubSource._parse_frontmatter_quick
@@ -84,8 +84,8 @@ class TestSkillsShGroupings:
         )
         resp = MagicMock(status_code=200)
         resp.json.return_value = [{"type": "dir", "name": "rdkit"}]
-        with patch("tools.skills_hub_github._cached_metas", return_value=None), \
-             patch("tools.skills_hub_github._cache_metas"), \
+        with patch("hermes_agent.tools.skills_hub_github._cached_metas", return_value=None), \
+             patch("hermes_agent.tools.skills_hub_github._cache_metas"), \
              patch.object(src, "_get_skillsh_groupings", return_value=None), \
              patch.object(src, "inspect", return_value=meta), \
              patch.object(src, "_github_get", return_value=resp):
@@ -102,8 +102,8 @@ class TestSkillsShGroupings:
         )
         resp = MagicMock(status_code=200)
         resp.json.return_value = [{"type": "dir", "name": "cuopt-developer"}]
-        with patch("tools.skills_hub_github._cached_metas", return_value=None), \
-             patch("tools.skills_hub_github._cache_metas"), \
+        with patch("hermes_agent.tools.skills_hub_github._cached_metas", return_value=None), \
+             patch("hermes_agent.tools.skills_hub_github._cache_metas"), \
              patch.object(src, "_get_skillsh_groupings",
                           return_value={"cuopt-developer": "Decision Optimization"}), \
              patch.object(src, "inspect", return_value=meta), \
@@ -124,7 +124,7 @@ class TestTrustLevelFor:
     def test_trusted_repo(self):
         src = self._source()
         # TRUSTED_REPOS is imported from skills_guard, test with known trusted repo
-        from tools.skills_guard import TRUSTED_REPOS
+        from hermes_agent.tools.skills_guard import TRUSTED_REPOS
         if TRUSTED_REPOS:
             repo = next(iter(TRUSTED_REPOS))
             assert src.trust_level_for(f"{repo}/some-skill") == "trusted"
@@ -134,7 +134,7 @@ class TestTrustLevelFor:
         # that publish under a single `skills/`-style path. openai/skills
         # is the deliberate exception — it has two taps (`.curated/` and
         # `.system/`) — so we just assert membership not path equality.
-        from tools.skills_guard import TRUSTED_REPOS
+        from hermes_agent.tools.skills_guard import TRUSTED_REPOS
 
         tap_repos = {tap["repo"] for tap in GitHubSource.DEFAULT_TAPS}
         for repo in TRUSTED_REPOS:
@@ -159,7 +159,7 @@ class TestGitHubSourceFileFetch:
     @pytest.mark.parametrize("gh_token", ["gh-live", "gh-dead"])
     def test_rejected_token_falls_through_to_next_credential(self, monkeypatch, gh_token):
         """A 401 on the .env token retries with `gh auth token`, then anonymously (#98725)."""
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
         auth = GitHubAuth()
         monkeypatch.setattr(auth, "_try_pat", lambda: "pat-dead")
         monkeypatch.setattr(auth, "_try_gh_cli", lambda: gh_token)
@@ -181,8 +181,8 @@ class TestGitHubSourceFileFetch:
 
 @pytest.fixture
 def allow_public_skill_fetches(monkeypatch):
-    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
-    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub.check_website_access", lambda _url: None)
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +200,8 @@ class TestSkillsShSource:
         ``Accept-Encoding: gzip`` pin: skills.sh serves sitemaps brotli-compressed and
         httpx's optional brotlicffi backend has a streaming-decode bug on them, so the
         default ``gzip, deflate, br`` negotiation must never reach the server."""
-        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda _key: None)
-        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub_skillssh._cached_metas", lambda _key: None)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
         calls = []
 
         def fake_get(url, *, timeout, headers=None, **_kw):
@@ -211,7 +211,7 @@ class TestSkillsShSource:
                     "<urlset><url><loc>https://skills.sh/acme/repo/my-skill</loc></url></urlset>")
             return MagicMock(status_code=200, headers={}, text=body)
 
-        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub._ssrf_safe_http_get", fake_get)
 
         results = self._source()._sitemap_catalog(limit=5)
 
@@ -219,9 +219,9 @@ class TestSkillsShSource:
         assert [u for u, _ in calls] == ["https://www.skills.sh/sitemap.xml", "https://www.skills.sh/sitemap-skills-0.xml"]
         assert all(h == {"Accept-Encoding": "gzip"} for _, h in calls), calls
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_search_maps_skills_sh_results_to_prefixed_identifiers(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -247,16 +247,16 @@ class TestSkillsShSource:
         assert results[0].path == "vercel-react-best-practices"
         assert results[0].extra["installs"] == 207679
 
-    @patch("tools.skills_hub_skillssh.time.sleep")
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub_skillssh.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
     def test_sitemap_catalog_retries_failed_shard_and_never_caches_partial(
         self, _mock_read_cache, mock_write_cache, _mock_sleep, monkeypatch,
     ):
         """A per-skill sitemap shard that keeps failing is a hole in the catalog, not an
         empty shard: retry it, and never publish the partial slice to the shared cache."""
-        monkeypatch.setattr("tools.skills_hub_skillssh._cached_metas", lambda _key: None)
-        monkeypatch.setattr("tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub_skillssh._cached_metas", lambda _key: None)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub_skillssh._cache_metas", lambda _key, _metas: None)
         index = ("<sitemapindex><sitemap><loc>https://www.skills.sh/sitemap-skills-0.xml</loc></sitemap>"
                  "<sitemap><loc>https://www.skills.sh/sitemap-skills-1.xml</loc></sitemap></sitemapindex>")
         shard0 = "<urlset><url><loc>https://www.skills.sh/o/r/skill-a</loc></url></urlset>"
@@ -270,16 +270,16 @@ class TestSkillsShSource:
                 return MagicMock(status_code=200, headers={}, text=shard0)
             return MagicMock(status_code=503, headers={}, text="")
 
-        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub._ssrf_safe_http_get", fake_get)
         results = self._source()._sitemap_catalog(0)
 
         assert [m.identifier for m in results] == ["skills-sh/o/r/skill-a"]
         assert calls.count("https://www.skills.sh/sitemap-skills-1.xml") == SkillSource.CATALOG_PAGE_RETRIES
         mock_write_cache.assert_not_called()
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     @patch.object(GitHubSource, "fetch")
     def test_fetch_falls_back_to_tree_search_for_deeply_nested_skills(
         self, mock_fetch, mock_get, _mock_read_cache, _mock_write_cache,
@@ -348,7 +348,7 @@ class TestFindSkillInRepoTree:
         auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}
         return GitHubSource(auth=auth)
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_finds_deeply_nested_skill(self, mock_get):
         tree_entries = [
             {"path": "README.md", "type": "blob"},
@@ -373,7 +373,7 @@ class TestFindSkillInRepoTree:
         result = self._source()._find_skill_in_repo_tree("davila7/claude-code-templates", "senior-backend")
         assert result == "davila7/claude-code-templates/cli-tool/components/skills/development/senior-backend"
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_returns_none_when_repo_api_fails(self, mock_get):
         mock_get.return_value = MagicMock(status_code=404)
         result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")
@@ -426,9 +426,9 @@ class TestRepoRootSkillLayout:
             return resp
         return _side_effect
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_resolves_skill_md_at_repo_root(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.side_effect = self._github_stub(self.ROOT_TREE)
 
@@ -439,9 +439,9 @@ class TestRepoRootSkillLayout:
         assert meta.repo == self.REPO
         assert meta.identifier == self.IDENTIFIER
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_resolves_and_names_bundle_for_repo_root_skill(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.side_effect = self._github_stub(self.ROOT_TREE)
 
@@ -456,9 +456,9 @@ class TestRepoRootSkillLayout:
         assert bundle.identifier == self.IDENTIFIER
         assert bundle.metadata["source_url"] == f"https://github.com/{self.REPO}/tree/{'b' * 40}"
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_root_layout_does_not_resolve_as_a_multi_skill_repo(self, mock_get, _mock_read_cache, _mock_write_cache):
         """A repo with a root SKILL.md AND another skill dir is not a root-layout single skill."""
         mock_get.side_effect = self._github_stub(self.ROOT_TREE + [{"path": "skills/other/SKILL.md", "type": "blob"}])
@@ -470,9 +470,9 @@ class TestWellKnownSkillSource:
     def _source(self):
         return WellKnownSkillSource()
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_search_reads_index_from_well_known_url(self, mock_get, _mock_read_cache, _mock_write_cache):
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -492,9 +492,9 @@ class TestWellKnownSkillSource:
         ]
         assert all(r.source == "well-known" for r in results)
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_rejects_unsafe_file_paths_from_well_known_endpoint(self, mock_get, _mock_read_cache, _mock_write_cache):
         def fake_get(url, *args, **kwargs):
             if url.endswith("/index.json"):
@@ -581,16 +581,16 @@ Complex cases are documented under `{glob_reference}`.
 
     # ── inspect ─────────────────────────────────────────────────────────
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    @patch("tools.skills_hub.check_website_access", return_value=None)
-    @patch("tools.skills_hub.is_safe_url", return_value=False)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.check_website_access", return_value=None)
+    @patch("hermes_agent.tools.skills_hub.is_safe_url", return_value=False)
     def test_inspect_blocks_private_url(self, _mock_safe, _mock_policy, mock_get):
         assert self._source().inspect("http://127.0.0.1/SKILL.md") is None
         mock_get.assert_not_called()
 
     # ── fetch ───────────────────────────────────────────────────────────
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_skips_missing_support_file_instead_of_aborting(self, mock_get):
         # One referenced support file 404s; the other is reachable. The
         # install should still succeed with the file that could be fetched,
@@ -622,9 +622,9 @@ Complex cases are documented under `{glob_reference}`.
         assert bundle.files["references/good.md"] == b"good content"
         assert "references/missing.md" not in bundle.files
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    @patch("tools.skills_hub.check_website_access", return_value=None)
-    @patch("tools.skills_hub.is_safe_url", side_effect=[True, False])
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.check_website_access", return_value=None)
+    @patch("hermes_agent.tools.skills_hub.is_safe_url", side_effect=[True, False])
     def test_fetch_blocks_redirect_to_private_url(self, _mock_safe, _mock_policy, mock_get):
         redirect = MagicMock(status_code=302)
         redirect.headers = {"location": "http://127.0.0.1/private/SKILL.md"}
@@ -633,9 +633,9 @@ Complex cases are documented under `{glob_reference}`.
         assert self._source().fetch("https://example.com/SKILL.md") is None
         assert mock_get.call_count == 1
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
-    @patch("tools.skills_hub.check_website_access", return_value=None)
-    @patch("tools.skills_hub.is_safe_url", return_value=False)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.check_website_access", return_value=None)
+    @patch("hermes_agent.tools.skills_hub.is_safe_url", return_value=False)
     def test_fetch_blocks_private_url(self, _mock_safe, _mock_policy, mock_get):
         assert self._source().fetch("http://127.0.0.1/SKILL.md") is None
         mock_get.assert_not_called()
@@ -654,7 +654,7 @@ Complex cases are documented under `{glob_reference}`.
 
 class TestCheckForSkillUpdates:
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
-        from tools.skills_guard import content_hash
+        from hermes_agent.tools.skills_guard import content_hash
 
         bundle = SkillBundle(
             name="demo-skill",
@@ -675,7 +675,7 @@ class TestCheckForSkillUpdates:
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
     def test_reports_update_when_remote_hash_differs(self, tmp_path, monkeypatch):
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
         skills_dir = tmp_path / "skills"
         (skills_dir / "demo-skill").mkdir(parents=True)
         monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
@@ -709,7 +709,7 @@ class TestCheckForSkillUpdates:
     def test_unusable_entry_reported_without_remote_fetch(self, tmp_path, monkeypatch, path_kind):
         """A lock-file entry whose install directory no longer exists is
         reported ``orphaned`` without paying the remote fetch cost (#104291)."""
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
         if path_kind == "regular_file":
@@ -759,7 +759,7 @@ class TestCheckForSkillUpdates:
             self, tmp_path, monkeypatch, recorded, expected_status, expected_gets):
         """A lock entry whose recorded ``source_revision`` still matches the upstream tree
         sha is reported ``up_to_date`` with zero file GETs; a moved tree pays the full fetch (#101454)."""
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
         (tmp_path / "skills" / "demo-skill").mkdir(parents=True)
         monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
         lock = MagicMock()
@@ -947,7 +947,7 @@ class TestGithubProviderLabeling:
 
 def _make_index_source(skills):
     """Build a HermesIndexSource pre-loaded with a fixed skill list."""
-    from tools.skills_hub_official import HermesIndexSource
+    from hermes_agent.tools.skills_hub_official import HermesIndexSource
     src = HermesIndexSource(auth=GitHubAuth())
     src._index = {"skills": skills}
     src._loaded = True
@@ -983,7 +983,7 @@ class TestHermesIndexSearch:
 
 class TestProviderFilter:
     def test_filter_results_by_provider_narrows_exactly(self):
-        from tools.skills_hub_github import _filter_results_by_provider
+        from hermes_agent.tools.skills_hub_github import _filter_results_by_provider
         results = [
             SkillMeta(name="a", description="", source="github", identifier="NVIDIA/skills/a",
                       trust_level="trusted", extra={"provider": "NVIDIA"}),
@@ -1020,7 +1020,7 @@ class TestProviderFilter:
 class TestAppendAuditLog:
     def test_creates_log_entry(self, tmp_path):
         log_file = tmp_path / "audit.log"
-        with patch("tools.skills_hub.AUDIT_LOG", log_file):
+        with patch("hermes_agent.tools.skills_hub.AUDIT_LOG", log_file):
             append_audit_log("INSTALL", "test-skill", "github", "trusted", "pass")
         content = log_file.read_text()
         assert "INSTALL" in content
@@ -1238,7 +1238,7 @@ class TestOptionalSkillSourceLiveRepoFallback:
 
 class TestQuarantineBundleBinaryAssets:
     def test_quarantine_bundle_writes_binary_files(self, tmp_path):
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
 
         hub_dir = tmp_path / "skills" / ".hub"
         with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
@@ -1267,8 +1267,8 @@ class TestQuarantineBundleBinaryAssets:
     @pytest.mark.platforms("windows")
     def test_quarantine_bundle_hash_matches_bundle_on_windows(self, tmp_path):
         """Real Windows text mode: the quarantined SKILL.md hashes like the fetched bundle (#117181)."""
-        import tools.skills_hub as hub
-        from tools.skills_guard import content_hash
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import content_hash
 
         hub_dir = tmp_path / "skills" / ".hub"
         with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
@@ -1291,7 +1291,7 @@ class TestQuarantineBundleBinaryAssets:
         assert content_hash(q_path) == bundle_content_hash(bundle)
 
     def test_quarantine_bundle_rejects_traversal_file_paths(self, tmp_path):
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
 
         hub_dir = tmp_path / "skills" / ".hub"
         with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
@@ -1318,7 +1318,7 @@ class TestQuarantineBundleBinaryAssets:
         assert not (tmp_path / "skills" / "escape.txt").exists()
 
     def test_quarantine_bundle_rejects_absolute_file_paths(self, tmp_path):
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
 
         hub_dir = tmp_path / "skills" / ".hub"
         absolute_target = tmp_path / "outside.txt"
@@ -1350,7 +1350,7 @@ class TestQuarantineBundleBinaryAssets:
         is an NTFS Alternate Data Stream marker — the visible file passes
         ``rglob``-based review while hidden, scanner-invisible bytes are written
         into it. Reject it before it reaches disk, on any OS."""
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
 
         hub_dir = tmp_path / "skills" / ".hub"
         with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
@@ -1380,7 +1380,7 @@ class TestQuarantineBundleBinaryAssets:
         """The colon guard covers the whole class, not just ``helper.py:payload``:
         a colon in any component (leading drive letter, mid-path, or bare) is
         rejected, while ordinary portable paths still normalize."""
-        from tools.skills_hub_models import _normalize_bundle_path
+        from hermes_agent.tools.skills_hub_models import _normalize_bundle_path
 
         rejected = (
             "scripts/helper.py:payload",   # trailing-component ADS marker
@@ -1417,7 +1417,7 @@ class TestInstallPathSafety:
 
     @pytest.fixture
     def isolated_skills_dir(self, tmp_path):
-        import tools.skills_hub as hub
+        import hermes_agent.tools.skills_hub as hub
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -1476,7 +1476,7 @@ class TestInstallPathSafety:
 
     def test_uninstall_rejects_poisoned_absolute_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Hand-edited lock.json with absolute install_path must not delete anything."""
-        from tools.skills_hub_install import uninstall_skill
+        from hermes_agent.tools.skills_hub_install import uninstall_skill
 
         lock_path = tmp_path / "lock.json"
         target = tmp_path / "victim"
@@ -1509,7 +1509,7 @@ class TestInstallPathSafety:
         assert (target / "file.txt").read_text() == "important"
 
     def test_uninstall_rejects_traversal(self, tmp_path, isolated_skills_dir, patch_lock_file):
-        from tools.skills_hub_install import uninstall_skill
+        from hermes_agent.tools.skills_hub_install import uninstall_skill
 
         lock_path = tmp_path / "lock.json"
         sibling = tmp_path / "sibling"
@@ -1537,7 +1537,7 @@ class TestInstallPathSafety:
 
     def test_uninstall_rejects_empty_install_path(self, tmp_path, isolated_skills_dir, patch_lock_file):
         """Empty install_path resolves to SKILLS_DIR itself — must be refused."""
-        from tools.skills_hub_install import uninstall_skill
+        from hermes_agent.tools.skills_hub_install import uninstall_skill
 
         # Put a sibling skill alongside to prove rmtree doesn't fire.
         (isolated_skills_dir / "bystander").mkdir()
@@ -1565,8 +1565,8 @@ class TestInstallPathSafety:
     def test_install_from_quarantine_rejects_symlinks(self, tmp_path):
         """Skill install must not follow symlinks that leak file contents
         from outside the quarantine directory."""
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         quarantine_root = skills_dir / ".hub" / "quarantine"
@@ -1601,7 +1601,7 @@ class TestInstallPathSafety:
 
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
              patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
-             patch("tools.skill_usage.record_installed") as record_installed:
+             patch("hermes_agent.tools.skill_usage.record_installed") as record_installed:
             with pytest.raises(ValueError, match="symlink"):
                 install_from_quarantine(
                     q_dir, "bad-skill", "", bundle, scan_result,
@@ -1619,8 +1619,8 @@ class TestInstallPathSafety:
         research`` deleted the whole ``skills/research/`` category bucket,
         destroying 16 unrelated skills.
         """
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -1669,8 +1669,8 @@ class TestInstallPathSafety:
         """Installing over an existing skill directory (containing SKILL.md) is
         still allowed — that scenario is already guarded by the lock-file check
         in do_install()."""
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -1718,8 +1718,8 @@ class TestInstallPathSafety:
     def test_install_from_quarantine_allows_empty_category_dir(self, tmp_path):
         """Installing into an existing but empty category directory is allowed
         (no sibling skills to destroy)."""
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -1762,8 +1762,8 @@ class TestInstallPathSafety:
         """A category whose skills live only in sub-categories (depth >= 2,
         e.g. ``mlops/training/<skill>``) must also be protected — the guard
         must not be fooled by the absence of direct-child skills (#75983)."""
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         quarantine_root = skills_dir / ".hub" / "quarantine"
@@ -1808,8 +1808,8 @@ class TestInstallPathSafety:
         """Installing with --category naming an existing *skill* directory must
         be refused: it would create a hybrid skill-plus-category dir whose later
         update/uninstall rmtree would destroy the nested skill (#75983 sibling)."""
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         quarantine_root = skills_dir / ".hub" / "quarantine"
@@ -1852,8 +1852,8 @@ class TestInstallPathSafety:
     def test_install_from_quarantine_rejects_regular_file_collision(self, tmp_path):
         """A stray regular file at the install path must produce the caller's
         ValueError contract, not an uncaught NotADirectoryError from iterdir/rmtree."""
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         quarantine_root = skills_dir / ".hub" / "quarantine"
@@ -1889,8 +1889,8 @@ class TestInstallPathSafety:
         assert (skills_dir / "notes").read_text() == "not a directory"
 
     def test_install_from_quarantine_records_successful_install(self, tmp_path):
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
+        import hermes_agent.tools.skills_hub as hub
+        from hermes_agent.tools.skills_guard import ScanResult
 
         skills_dir = tmp_path / "skills"
         quarantine_root = skills_dir / ".hub" / "quarantine"
@@ -1914,7 +1914,7 @@ class TestInstallPathSafety:
 
         with patch.object(hub, "SKILLS_DIR", skills_dir), \
              patch.object(hub, "QUARANTINE_DIR", quarantine_root), \
-             patch("tools.skill_usage.record_installed") as record_installed:
+             patch("hermes_agent.tools.skill_usage.record_installed") as record_installed:
             installed = install_from_quarantine(
                 q_dir,
                 "good-skill",
@@ -2049,7 +2049,7 @@ class TestIndexMissFallback:
     def test_fallback_pass_has_its_own_short_budget(self, monkeypatch):
         # A slow registry (ClawHub takes minutes) must not stall a miss for the
         # callers' full 30 s overall_timeout when the index answered instantly.
-        monkeypatch.setattr("tools.skills_hub_search._INDEX_MISS_FALLBACK_BUDGET", 0.3, raising=False)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub_search._INDEX_MISS_FALLBACK_BUDGET", 0.3, raising=False)
         index, skills_sh, github = self._sources([])
         clawhub = _FakeSource("clawhub", sleep=5)
 
@@ -2082,7 +2082,7 @@ class TestLoadHermesIndex:
     def _isolate_cache(monkeypatch, tmp_path):
         """Point the on-disk cache at an empty tmp dir so no real cache leaks in."""
         cache_file = tmp_path / "hermes-index.json"
-        monkeypatch.setattr("tools.skills_hub_search._hermes_index_cache_file", lambda: cache_file)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub_search._hermes_index_cache_file", lambda: cache_file)
         return cache_file
 
     def test_fetch_does_not_request_brotli(self, monkeypatch, tmp_path):
@@ -2098,7 +2098,7 @@ class TestLoadHermesIndex:
             resp.json.return_value = {"skills": [{"name": "x"}]}
             return resp
 
-        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub._ssrf_safe_http_get", fake_get)
 
         data = _load_hermes_index()
         assert data == {"skills": [{"name": "x"}]}
@@ -2123,7 +2123,7 @@ class TestLoadHermesIndex:
         def fake_get(url, *args, **kwargs):
             raise httpx.DecodingError("brotli boom")
 
-        monkeypatch.setattr("tools.skills_hub._ssrf_safe_http_get", fake_get)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub._ssrf_safe_http_get", fake_get)
 
         data = _load_hermes_index()
         assert data == {"skills": [{"name": "stale"}]}

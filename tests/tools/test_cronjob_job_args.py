@@ -1,4 +1,4 @@
-"""Tests for tools/cronjob_job_args.py::_validate_cron_script_path (issue #105761).
+"""Tests for hermes_agent/tools/cronjob_job_args.py::_validate_cron_script_path (issue #105761).
 
 Regression coverage: the validator used to accept a script path that pointed
 at a file that doesn't exist, only failing later at every cron fire with a
@@ -8,7 +8,7 @@ through get_hermes_home(), which is per-profile.
 """
 
 from hermes_constants import get_hermes_home
-from tools.cronjob_job_args import _validate_cron_script_path
+from hermes_agent.tools.cronjob_job_args import _validate_cron_script_path
 
 
 class TestValidateCronScriptPath:

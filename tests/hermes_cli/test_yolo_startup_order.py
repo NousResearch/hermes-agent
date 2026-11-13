@@ -1,10 +1,10 @@
 """Regression tests for #60328: --yolo must set HERMES_YOLO_MODE in
 main() before _prepare_agent_startup() triggers tool imports.
 
-The freeze mechanism in tools.approval (_YOLO_MODE_FROZEN) is correct
+The freeze mechanism in hermes_agent.tools.approval (_YOLO_MODE_FROZEN) is correct
 by design (PR #7994). The bug was that main() set the env var inside
 cmd_chat(), which runs *after* _prepare_agent_startup() has already
-imported tools.approval and frozen the constant to False.
+imported hermes_agent.tools.approval and frozen the constant to False.
 
 These tests verify the ordering in main() itself: the env var must
 already be set at the moment _prepare_agent_startup() is called.
@@ -44,7 +44,7 @@ def _run_main_and_capture_yolo_at_startup(monkeypatch, argv):
 
 def test_top_level_yolo_flag_sets_env_before_startup(monkeypatch):
     """hermes --yolo must set HERMES_YOLO_MODE before
-    _prepare_agent_startup imports tools.approval."""
+    _prepare_agent_startup imports hermes_agent.tools.approval."""
     result = _run_main_and_capture_yolo_at_startup(
         monkeypatch, ["hermes", "--yolo"]
     )

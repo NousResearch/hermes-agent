@@ -326,7 +326,7 @@ def _input_image_part(part: dict[str, Any], role: str = "user", *, keep_empty_ur
         return None
     url = str(url or "")
     # Lazy import: the prep module only depends on hermes_constants at import time (no cycle).
-    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
+    from hermes_agent.tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
     mime = unsupported_inline_image_media_type(url)
     if mime == "image/svg+xml":
         # Rasterize so the model still sees the drawing; the placeholder is the fallback only
@@ -1105,7 +1105,7 @@ def _preflight_codex_api_kwargs(
     is_xai_model = str(api_kwargs.get("model") or "").lower().startswith(("grok-", "x-ai/grok-"))
     if is_xai_model and normalized.get("tools"):
         try:
-            from tools.schema_sanitizer import strip_slash_enum
+            from hermes_agent.tools.schema_sanitizer import strip_slash_enum
             normalized["tools"], _ = strip_slash_enum(normalized["tools"])
         except Exception:
             pass  # Best-effort — the caller-level sanitization should have handled it

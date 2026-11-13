@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the cross-agent FileStateRegistry (tools/file_state.py).
+"""Tests for the cross-agent FileStateRegistry (hermes_agent/tools/file_state.py).
 
 Covers the three layers added for safe concurrent subagent file edits:
 
@@ -24,8 +24,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from tools import file_state
-from tools.file_tools import (
+from hermes_agent.tools import file_state
+from hermes_agent.tools.file_tools import (
     clear_file_ops_cache,
     read_file_tool,
     write_file_tool,
@@ -161,7 +161,7 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         task_id = "finished-task"
         file_state.record_read(task_id, p)
 
-        from tools import file_tools_read_tracking as rt
+        from hermes_agent.tools import file_tools_read_tracking as rt
 
         rt._read_tracker[task_id] = {"dedup": {}}
         rt._patch_failure_tracker[task_id] = {p: 2}
@@ -201,7 +201,7 @@ class FileStateRegistryUnitTests(unittest.TestCase):
             agent._active_children_lock = threading.Lock()
             agent.client = None
             with patch("run_agent.cleanup_vm"), patch("run_agent.cleanup_browser"), \
-                 patch("tools.computer_use.tool.release_computer_use_session"):
+                 patch("hermes_agent.tools.computer_use.tool.release_computer_use_session"):
                 agent.close()
 
         self.assertEqual(file_state.known_reads("cron:JOB:run1"), [])

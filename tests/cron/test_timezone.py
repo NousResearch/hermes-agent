@@ -208,7 +208,7 @@ class TestCodeExecutionTZ:
         # TERMINAL_ENV=modal/docker which causes modal.exception.AuthError.
         monkeypatch.setenv("TERMINAL_ENV", "local")
         try:
-            from tools.code_execution_tool import execute_code
+            from hermes_agent.tools.code_execution_tool import execute_code
             self._execute_code = execute_code
         except ImportError:
             pytest.skip("tools.code_execution_tool not importable (missing deps)")
@@ -238,7 +238,7 @@ class TestCodeExecutionTZ:
             'print("TZ=" + os.environ.get("TZ", "NOT_SET")); '
             'print("HERMES_TIMEZONE=" + os.environ.get("HERMES_TIMEZONE", "NOT_SET"))'
         )
-        with patch("model_tools.handle_function_call", side_effect=self._mock_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=self._mock_handle):
             result = _json.loads(self._execute_code(
                 code=probe,
                 task_id="tz-combined-test",

@@ -11,7 +11,7 @@ per attempt (spamming the user's shell AFTER the TUI already exited) and
 retried until the iteration budget or interpreter froze the thread.
 
 Now the loop recognizes the shutdown signal via the shared predicate in
-``tools.interpreter_shutdown`` (same class as cron delivery #55924/#58720
+``hermes_agent.tools.interpreter_shutdown`` (same class as cron delivery #55924/#58720
 and concurrent tool submission), logs one warning, and abandons the turn —
 no print, no traceback, no retry.
 """
@@ -61,7 +61,7 @@ def _make_agent(monkeypatch, completions):
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **kwargs: client)
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
 
     agent = AIAgent(
         model="test-model",
@@ -152,7 +152,7 @@ def test_non_quiet_mode_still_prints_error(monkeypatch, capsys):
 class TestSharedPredicate:
 
     def test_ignores_unrelated_errors(self):
-        from tools.interpreter_shutdown import interpreter_shutting_down
+        from hermes_agent.tools.interpreter_shutdown import interpreter_shutting_down
 
         assert interpreter_shutting_down(RuntimeError("boom")) is False
         assert interpreter_shutting_down(None) is False

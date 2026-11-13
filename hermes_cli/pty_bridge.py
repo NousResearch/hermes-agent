@@ -126,7 +126,7 @@ class PtyBridge:
         os.set_blocking(self._fd, False)
         # A selector, never select.select() (ValueError at fd >= FD_SETSIZE, #94928) or poll()
         # (macOS poll() reports a PTY master as POLLNVAL, so read() would spin).
-        from tools.environments.fd_wait import open_fd_waiter
+        from hermes_agent.tools.environments.fd_wait import open_fd_waiter
 
         self._waiter = open_fd_waiter(self._fd)
 
@@ -149,7 +149,7 @@ class PtyBridge:
         # env=None: callers own env policy (process_registry already sanitizes), so inherit via the
         # factory with exact preservation. Backfill TERM when missing/blank — CI often lacks it and
         # probes like `tput cols` then fail before winsize reads; explicit overrides are kept.
-        from tools.environments.local import build_subprocess_env
+        from hermes_agent.tools.environments.local import build_subprocess_env
         spawn_env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False) if env is None else env.copy()
         if not spawn_env.get("TERM"):
             spawn_env["TERM"] = "xterm-256color"

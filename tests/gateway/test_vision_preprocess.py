@@ -13,7 +13,7 @@ async def test_enrich_message_with_vision_merges_analysis_without_output_cap():
     runner = GatewayRunner.__new__(GatewayRunner)
 
     with patch(
-        "tools.vision_tools.vision_analyze_tool",
+        "hermes_agent.tools.vision_tools.vision_analyze_tool",
         new_callable=AsyncMock,
         return_value=json.dumps({"success": True, "analysis": "A cat on a chair."}),
     ) as mock_vision:

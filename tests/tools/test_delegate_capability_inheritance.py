@@ -7,7 +7,7 @@ delegation overrides stay default-deny.
 
 from types import SimpleNamespace
 
-from tools.delegate_tool import _inherit_parent_capabilities
+from hermes_agent.tools.delegate_tool import _inherit_parent_capabilities
 
 
 def _parent(capabilities):

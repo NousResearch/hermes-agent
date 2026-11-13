@@ -33,7 +33,7 @@ _DANGLING_NOTICES = (
 
 
 # Every executor ends the killed run's ``output`` with a bracketed marker line: "[Command
-# interrupted]" (tools/environments/, exit 130), "[Command interrupted - Modal ...]"
+# interrupted]" (hermes_agent/tools/environments/, exit 130), "[Command interrupted - Modal ...]"
 # (managed_modal.py, exit 130), "[execution interrupted ...]" (code_execution_tool.py, exit -1).
 _INTERRUPT_MARKER_LINE = re.compile(r"^\[(?:command|execution) interrupted\b[^\n]*\]\s*$", re.IGNORECASE)
 

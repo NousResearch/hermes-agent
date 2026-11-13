@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.delegate_tool import _build_child_agent
-from tools.delegate_tool_config import _resolve_child_fallback_chain
+from hermes_agent.tools.delegate_tool import _build_child_agent
+from hermes_agent.tools.delegate_tool_config import _resolve_child_fallback_chain
 from tests.tools.test_delegate import _make_mock_parent
 
 PARENT_CHAIN = [
@@ -50,7 +50,7 @@ def test_child_fallback_chain_matrix(pinned, declared, expected):
 
 def _spawn_kwargs(parent, cfg, **overrides):
     model = overrides.pop("model", None)
-    with patch("tools.delegate_tool._load_config", return_value=cfg), patch("run_agent.AIAgent") as MockAgent:
+    with patch("hermes_agent.tools.delegate_tool._load_config", return_value=cfg), patch("run_agent.AIAgent") as MockAgent:
         MockAgent.return_value = MagicMock()
         _build_child_agent(task_index=0, goal="matrix wiring", context=None, toolsets=None, model=model,
                            max_iterations=10, parent_agent=parent, task_count=1, **overrides)
@@ -207,8 +207,8 @@ def test_declared_child_chain_activates_on_primary_failure():
         pinned=True,
     )
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         child = AIAgent(

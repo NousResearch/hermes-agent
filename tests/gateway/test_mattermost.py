@@ -422,7 +422,7 @@ class TestMattermostFileUpload:
         self.adapter._session = MagicMock()
 
     @pytest.mark.asyncio
-    @patch("tools.url_safety.is_safe_url", return_value=True)
+    @patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True)
     async def test_send_image_downloads_and_uploads(self, _mock_safe):
         """send_image should download the URL, upload via /api/v4/files, then post."""
         # Mock the download (GET)

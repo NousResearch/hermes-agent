@@ -45,26 +45,26 @@ def _write_local_skill(home, name: str):
 
 class TestProvenanceTier:
     def test_external_only_skill_classifies_as_external(self, external_home):
-        from tools.skill_usage import provenance
+        from hermes_agent.tools.skill_usage import provenance
         assert provenance("ext-skill") == "external"
 
     def test_local_skill_stays_agent(self, external_home):
         _write_local_skill(external_home, "my-local")
-        from tools.skill_usage import provenance
+        from hermes_agent.tools.skill_usage import provenance
         assert provenance("my-local") == "agent"
 
     def test_local_copy_wins_over_external_mount(self, external_home):
         """A name present both locally and externally is NOT external (local store wins)."""
         _write_local_skill(external_home, "ext-skill")
-        from tools.skill_usage import provenance
+        from hermes_agent.tools.skill_usage import provenance
         assert provenance("ext-skill") == "agent"
 
     def test_agent_created_still_excludes_external_only(self, external_home):
-        from tools.skill_usage import is_agent_created
+        from hermes_agent.tools.skill_usage import is_agent_created
         assert is_agent_created("ext-skill") is False
 
     def test_external_names_helper_scans_external_dirs(self, external_home):
-        from tools.skill_usage import _external_skill_names
+        from hermes_agent.tools.skill_usage import _external_skill_names
         assert _external_skill_names() == {"ext-skill"}
 
 

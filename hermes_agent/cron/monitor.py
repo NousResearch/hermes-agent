@@ -95,7 +95,7 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
     """
     from urllib.parse import urljoin
 
-    from tools.url_safety import create_ssrf_safe_client, is_safe_url
+    from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_safe_url
 
     current_url = str(url)
     if not current_url.lower().startswith(("http://", "https://")):

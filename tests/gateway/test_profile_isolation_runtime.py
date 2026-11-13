@@ -52,11 +52,11 @@ def _under_override(home: Path, fn):
 # ---------------------------------------------------------------------------
 
 class TestSkillsHubPathResolution:
-    """tools/skills_hub.py path constants must reflect the active profile."""
+    """hermes_agent/tools/skills_hub.py path constants must reflect the active profile."""
 
     def test_skills_dir_follows_override(self, two_profiles):
         prof_a, prof_b = two_profiles
-        import tools.skills_hub as sh
+        import hermes_agent.tools.skills_hub as sh
 
         # Importing/touching under A must NOT pin the path for B.
         a_seen = _under_override(prof_a, lambda: Path(sh.SKILLS_DIR))
@@ -68,7 +68,7 @@ class TestSkillsHubPathResolution:
 
     def test_hub_derived_paths_follow_override(self, two_profiles):
         _prof_a, prof_b = two_profiles
-        import tools.skills_hub as sh
+        import hermes_agent.tools.skills_hub as sh
 
         b_lock = _under_override(prof_b, lambda: Path(sh.LOCK_FILE))
         b_audit = _under_override(prof_b, lambda: Path(sh.AUDIT_LOG))
@@ -157,14 +157,14 @@ class TestGatewayHooksDirResolution:
 
 
 class TestCheckpointManagerPathResolution:
-    """tools/checkpoint_manager.py's checkpoint store root must honor the
+    """hermes_agent/tools/checkpoint_manager.py's checkpoint store root must honor the
     active profile — otherwise one profile's CheckpointManager instance can
     read/write code-edit checkpoints into a different profile's store under
     the multiplexed gateway."""
 
     def test_checkpoint_base_follows_override(self, two_profiles):
         prof_a, prof_b = two_profiles
-        import tools.checkpoint_manager as cm
+        import hermes_agent.tools.checkpoint_manager as cm
 
         a_seen = _under_override(prof_a, lambda: cm._resolve_checkpoint_base())
         b_seen = _under_override(prof_b, lambda: cm._resolve_checkpoint_base())
@@ -175,7 +175,7 @@ class TestCheckpointManagerPathResolution:
 
     def test_store_path_follows_override(self, two_profiles):
         _prof_a, prof_b = two_profiles
-        import tools.checkpoint_manager as cm
+        import hermes_agent.tools.checkpoint_manager as cm
 
         b_seen = _under_override(prof_b, lambda: cm._store_path())
         assert b_seen == prof_b / "checkpoints" / "store"
@@ -208,7 +208,7 @@ class TestThreadContextPropagation:
 
 
     def test_run_async_worker_preserves_override(self, two_profiles):
-        """model_tools._run_async's worker-thread branch must keep the override.
+        """hermes_agent.model_tools._run_async's worker-thread branch must keep the override.
 
         This is the generic sync->async bridge for every async tool; if it
         leaks, every async tool that resolves get_hermes_home() leaks.
@@ -216,7 +216,7 @@ class TestThreadContextPropagation:
         import asyncio
 
         _prof_a, prof_b = two_profiles
-        import model_tools
+        from hermes_agent import model_tools
 
         async def reads_home():
             return str(get_hermes_home())

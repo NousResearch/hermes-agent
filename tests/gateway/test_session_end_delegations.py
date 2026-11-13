@@ -11,7 +11,7 @@ from types import MethodType, SimpleNamespace
 
 import pytest
 
-from tools import async_delegation as delegation
+from hermes_agent.tools import async_delegation as delegation
 
 
 @pytest.fixture(autouse=True)

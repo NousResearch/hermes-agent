@@ -35,7 +35,7 @@ def _cu_status(args) -> int:
     _exit_if_plugin_backend()
     import os as _os
     from hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from hermes_agent.tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
 
     path = resolve_cua_driver_cmd()
     override = _os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
@@ -61,8 +61,8 @@ def _cu_status(args) -> int:
         return 1
     rc = 0
     if sys.platform == "linux":  # hand-written daemon units: dead `serve` is invisible to the binary contract (#114748)
-        from tools.computer_use.cua_backend import cua_daemon_listening
-        from tools.computer_use.doctor import cua_daemon_units
+        from hermes_agent.tools.computer_use.cua_backend import cua_daemon_listening
+        from hermes_agent.tools.computer_use.doctor import cua_daemon_units
         for _kind, unit, _target, serve, socket in cua_daemon_units():
             if serve and cua_daemon_listening(path, socket) is False:
                 print(f"  ✗ Daemon unit {unit}: no `cua-driver serve` is listening on {socket or 'the default socket'}")
@@ -75,7 +75,7 @@ def _cu_status(args) -> int:
 
 def _cu_doctor(args) -> None:
     _exit_if_plugin_backend(doctor=True)
-    from tools.computer_use.doctor import run_doctor
+    from hermes_agent.tools.computer_use.doctor import run_doctor
     sys.exit(run_doctor(
         include=list(getattr(args, "include", []) or []),
         skip=list(getattr(args, "skip", []) or []),
@@ -86,7 +86,7 @@ def _cu_perms_status(args) -> None:
     if not getattr(args, "json", False):  # --json: computer_use_status() reports the selected backend itself
         _exit_if_plugin_backend()
     import json as _json
-    from tools.computer_use.permissions import TCC_FIELDS, computer_use_status, stale_tcc_grant_hint
+    from hermes_agent.tools.computer_use.permissions import TCC_FIELDS, computer_use_status, stale_tcc_grant_hint
     st = computer_use_status()
     if bool(getattr(args, "json", False)):
         print(_json.dumps(st, indent=2, sort_keys=True))
@@ -118,7 +118,7 @@ def _cu_perms_status(args) -> None:
 
 def _cu_perms_grant(args) -> None:
     _exit_if_plugin_backend()
-    from tools.computer_use.permissions import request_permissions_grant
+    from hermes_agent.tools.computer_use.permissions import request_permissions_grant
     sys.exit(request_permissions_grant())
 
 

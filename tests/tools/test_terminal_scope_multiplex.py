@@ -4,7 +4,7 @@ One multiplexed process serves several profiles, but terminal.* used to
 resolve through the process-global ``TERMINAL_*`` env vars bridged once at
 startup — so every routed profile inherited the launch profile's backend,
 cwd, docker mounts and shared-container key (#68559, #94200, #101132,
-#95470). ``tools.terminal_scope`` installs the routed profile's COMPLETE
+#95470). ``hermes_agent.tools.terminal_scope`` installs the routed profile's COMPLETE
 terminal policy as a ContextVar at each profile boundary; readers resolve
 ONLY from it (omitted key → defined default, never ``os.environ``) and an
 unresolvable policy fails closed.
@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-from tools.terminal_scope import (
+from hermes_agent.tools.terminal_scope import (
     TerminalPolicyRefusal,
     TerminalPolicyUnavailable,
     get_terminal_scope,
@@ -24,7 +24,7 @@ from tools.terminal_scope import (
     set_terminal_scope,
     terminal_env,
 )
-from tools import browser_session_cloud as bs_cloud
+from hermes_agent.tools import browser_session_cloud as bs_cloud
 
 _LAUNCH_CWD = "/home/launch-user/private"
 _LAUNCH_VOLUMES = '["/host/secret:/data:rw"]'
@@ -42,7 +42,7 @@ def _polluted_launch_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_SSH_HOST", "10.10.0.103")
     monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", lambda _h: {})
     monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda _h: None)
-    import tools.terminal_tool as tt
+    import hermes_agent.tools.terminal_tool as tt
 
     monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", True)
     yield
@@ -92,11 +92,11 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
     file_tools/runtime_cwd cwd anchors, and the browser/env_probe backend
     checks — with none of launch profile A's docker policy showing through."""
     import hermes_agent.gateway.run as gw
-    import tools.terminal_tool as tt
+    import hermes_agent.tools.terminal_tool as tt
     from agent import runtime_cwd
     from hermes_agent.gateway.platforms import base as gbase
     from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
-    from tools import env_probe, file_tools_paths
+    from hermes_agent.tools import env_probe, file_tools_paths
 
     b_cwd = tmp_path / "b-work"
     b_cwd.mkdir()
@@ -133,7 +133,7 @@ def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
     """#101132/#95470: a docker profile that does NOT set docker_volumes or
     docker_shared_container_key must not inherit the launch profile's."""
     import hermes_agent.gateway.run as gw
-    import tools.terminal_tool as tt
+    import hermes_agent.tools.terminal_tool as tt
 
     home = _profile(tmp_path, "bee", "terminal:\n  backend: docker\n")
     with gw._profile_runtime_scope(home):
@@ -150,7 +150,7 @@ def test_persistent_docker_routed_profile_keeps_one_container(tmp_path):
     """Persistent Docker is profile-scoped: a routed profile's session-less (cron) work must key the
     SAME container as its session-bound work, and never another profile's."""
     import hermes_agent.gateway.run as gw
-    import tools.terminal_tool as tt
+    import hermes_agent.tools.terminal_tool as tt
     from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 
     docker = "terminal:\n  backend: docker\n  container_persistent: true\n"
@@ -173,7 +173,7 @@ def test_persistent_docker_routed_profile_keeps_one_container(tmp_path):
 def test_malformed_profile_config_refuses_execution(tmp_path):
     """Unresolvable policy → refusal scope; terminal_tool refuses instead of
     running under the launch process's ambient policy (fail closed)."""
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     home = _profile(tmp_path, "broken", "terminal: [unclosed\n")
     token = install_profile_terminal_scope(home)
@@ -200,7 +200,7 @@ def test_gateway_runtime_scope_resets_on_error(tmp_path):
 
 def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
     from hermes_agent.tui_gateway import server
-    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import install_and_reset_profile_terminal_scope
 
     home = _profile(tmp_path, "dash", "terminal:\n  backend: local\n")
     with server._session_profile_runtime_scope({"profile_home": str(home)}):
@@ -215,7 +215,7 @@ def test_tui_and_cron_boundaries_bind_and_reset(tmp_path):
 def test_config_list_and_dict_values_are_json_not_repr(tmp_path):
     """config.yaml list/dict terminal keys must be JSON so terminal_tool's
     json.loads path succeeds. str() produces Python repr and drops the tool."""
-    from tools.terminal_scope import build_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
 
     home = _profile(
         tmp_path,
@@ -243,7 +243,7 @@ def test_config_list_and_dict_values_are_json_not_repr(tmp_path):
     assert json.loads(scope["TERMINAL_DOCKER_EXTRA_ARGS"]) == ["--network=host"]
 
     import hermes_agent.gateway.run as gw
-    import tools.terminal_tool as tt
+    import hermes_agent.tools.terminal_tool as tt
 
     with gw._profile_runtime_scope(home):
         cfg = tt._get_env_config()
@@ -255,7 +255,7 @@ def test_config_list_and_dict_values_are_json_not_repr(tmp_path):
 
 def test_dotenv_json_strings_stay_json_strings(tmp_path):
     """The .env path already stores JSON text; str() must keep that payload."""
-    from tools.terminal_scope import build_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
 
     home = _profile(
         tmp_path,
@@ -276,7 +276,7 @@ def test_launch_turn_binds_terminal_scope_once_multiplexing_is_active(
     own terminal policy (mirrors ``prompt_turn._prepare_turn_input``'s
     ``elif _served_profile_homes`` branch) so poisoned ambient os.environ is
     never the authority."""
-    from tools.terminal_scope import (
+    from hermes_agent.tools.terminal_scope import (
         get_terminal_scope,
         install_profile_terminal_scope,
         reset_terminal_scope,

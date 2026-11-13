@@ -296,7 +296,7 @@ def _spawn_detached_gateway() -> bool:
     """
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
     from hermes_constants import get_hermes_home
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
     log_dir = _gw().get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     child_env = served_profile_child_env(

@@ -26,7 +26,7 @@ def _under(home):
 
 
 def test_browser_exec_cache_key_differs_per_served_profile_and_is_legacy_when_unscoped(two_homes):
-    import tools.browser_use_cli as bu
+    import hermes_agent.tools.browser_use_cli as bu
 
     a, b = two_homes
     assert bu._backend_cache_key("t1", "work") == "bu-named-work"
@@ -47,7 +47,7 @@ def test_browser_exec_cache_key_differs_per_served_profile_and_is_legacy_when_un
 
 
 def test_computer_use_backend_not_shared_across_profiles_and_release_finds_it(two_homes, monkeypatch):
-    import tools.computer_use.tool as cu
+    import hermes_agent.tools.computer_use.tool as cu
 
     a, b = two_homes
     created = []

@@ -79,7 +79,7 @@ async def test_a_refused_head_triggers_no_editor_mcp_probe(tmp_path, monkeypatch
 
 @pytest.fixture
 def mcp_loop():
-    from tools import mcp_tool_loop
+    from hermes_agent.tools import mcp_tool_loop
     mcp_tool_loop._ensure_mcp_loop()
     yield
     mcp_tool_loop._stop_mcp_loop()
@@ -89,8 +89,8 @@ def test_held_servers_are_relisted_together_under_one_bound(monkeypatch, mcp_loo
     """Two held servers that never answer cost one bound, not one each: each list only gets past
     its rendezvous while the other's is in flight too."""
     from hermes_agent.gateway import session_local_mcp
-    from tools import mcp_tool
-    from tools.mcp_tool_scope import _server_key
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_scope import _server_key
     bound = 2
     monkeypatch.setattr(session_local_mcp, '_RELIST_TIMEOUT', bound)
     scope, names = 'editor-session:slow', {0: 'editor_a', 1: 'editor_b'}

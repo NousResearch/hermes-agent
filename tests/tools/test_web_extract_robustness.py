@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import re
 
-import tools.web_tools as wt
-from tools import web_tools_truncate
+import hermes_agent.tools.web_tools as wt
+from hermes_agent.tools import web_tools_truncate
 
 
 def test_store_full_text_is_bounded(tmp_path, monkeypatch):

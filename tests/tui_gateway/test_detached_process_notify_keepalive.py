@@ -39,7 +39,7 @@ def _drain(registry):
 
 @pytest.fixture()
 def registry():
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     saved = dict(process_registry._running), dict(process_registry._finished)
     process_registry._running.clear()
@@ -90,7 +90,7 @@ def detached(server, monkeypatch):
 
 def _spawn(registry, owner: str, **kw):
     """A background process as the TUI turn spawns it: owner_task_id is the turn's task id (the session key)."""
-    from tools.process_registry import ProcessSession
+    from hermes_agent.tools.process_registry import ProcessSession
 
     proc = ProcessSession(id=f"proc_{len(registry._running)}", command="hermes -p reviewer chat",
                           session_key=owner, owner_task_id=owner, started_at=time.time(), **kw)
@@ -123,7 +123,7 @@ def test_orphan_reap_rearms_while_process_will_notify(server, registry, detached
 def test_exited_process_keeps_session_until_its_notice_is_routed(server, registry, detached):
     """Exit recorded → completion published → dequeued by a poller → routed: a reaper firing at any point of that
     hand-off must not close the session and lose the follow-up. Protection ends only when routing returns."""
-    from tools.process_registry_awaiting import release, take_ready
+    from hermes_agent.tools.process_registry_awaiting import release, take_ready
 
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
@@ -144,7 +144,7 @@ def test_exited_process_keeps_session_until_its_notice_is_routed(server, registr
 def test_unpublished_completion_survives_registry_pruning(server, registry, detached, monkeypatch):
     """Pruning can run (a concurrent spawn) after the exit is recorded but before the completion is queued; the
     entry must survive it, since it is the only record that a notice is still coming."""
-    from tools.process_registry import FINISHED_TTL_SECONDS
+    from hermes_agent.tools.process_registry import FINISHED_TTL_SECONDS
 
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
@@ -211,7 +211,7 @@ def test_stop_releases_session_even_with_a_running_watch(server, registry, detac
 def test_queued_notice_survives_registry_pruning(server, registry, detached):
     """Retained history is pruned by start time and a process cap, on every spawn: a long job's queued completion
     must keep protecting its owner after its finished entry is gone."""
-    from tools.process_registry import FINISHED_TTL_SECONDS
+    from hermes_agent.tools.process_registry import FINISHED_TTL_SECONDS
 
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
@@ -342,7 +342,7 @@ def test_foreign_notice_in_another_sessions_post_turn_drain_keeps_its_owner(serv
 
 
 def test_post_turn_drain_routes_its_own_notice_and_releases_every_hold(server, registry, detached, monkeypatch):
-    from tools import process_registry_awaiting as awaiting
+    from hermes_agent.tools import process_registry_awaiting as awaiting
 
     sid, session, _ = detached
     for owner in (session["session_key"], "someone-else"):
@@ -361,7 +361,7 @@ def test_post_turn_drain_routes_its_own_notice_and_releases_every_hold(server, r
 
 
 def test_post_turn_drain_releases_holds_when_routing_raises(server, registry, detached, monkeypatch):
-    from tools import process_registry_awaiting as awaiting
+    from hermes_agent.tools import process_registry_awaiting as awaiting
 
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)

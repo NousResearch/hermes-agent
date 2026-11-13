@@ -1,4 +1,4 @@
-"""Tests: cross-connection bot relay (tools/bot_relay.py + message_agent route).
+"""Tests: cross-connection bot relay (hermes_agent/tools/bot_relay.py + message_agent route).
 
 Connections ARE the peer set: every Desktop-connected gateway must be
 message_agent-reachable. These tests pin the gateway-side plumbing —
@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_relay
-from tools.bot_mode_dm import (
+from hermes_agent.tools import bot_relay
+from hermes_agent.tools.bot_mode_dm import (
     MESSAGE_AGENT_TOOL_NAME,
     ensure_message_agent_tool,
     message_agent_tool,
@@ -184,7 +184,7 @@ def test_waiter_is_a_runner_entrypoint_the_approval_gate_lets_through(root):
     refused exactly when bots talked to each other, and the reply never woke the sender."""
     import shlex
 
-    from tools.approval import detect_dangerous_command
+    from hermes_agent.tools.approval import detect_dangerous_command
 
     env = {"id": "b" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     cmd = bot_relay.waiter_command(root, env)
@@ -227,7 +227,7 @@ def test_waiter_outlives_the_desktop_deliver_deadline():
 def test_waiter_prints_the_completion_notification_the_sender_wakes_on(root, capsys, reply_file, expected_code, expected_tokens):
     """The waiter's stdout IS the sender's completion notification: the reply, a typed failure the
     sender can branch on without parsing prose (#93091), or an honest give-up that names the budget."""
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_mode_dm
 
     env = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{env['id']}.json"
@@ -332,7 +332,7 @@ class _FakeAgent:
 
 @pytest.fixture(autouse=True)
 def _fresh_probe_cache():
-    from tools import bot_mode_probe
+    from hermes_agent.tools import bot_mode_probe
 
     bot_mode_probe._reset_cache_for_tests()
     yield
@@ -342,7 +342,7 @@ def _fresh_probe_cache():
 def test_tool_injects_despite_legacy_soul_protocol(tmp_path):
     """A SOUL.md still carrying the plugin-appended protocol must not cost the TOOL (nor,
     since load-time stripping, the live section)."""
-    from tools import bot_mode_probe
+    from hermes_agent.tools import bot_mode_probe
 
     home = _managed_home(tmp_path, legacy_soul=True)
     assert bot_mode_probe.get_bot_mode_protocol_section(home) != ""
@@ -365,7 +365,7 @@ def test_relay_route_queues_envelope_and_spawns_waiter(tmp_path, monkeypatch):
         spawned["label"] = label
         return json.dumps({"status": "queued", "to": label})
 
-    monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", _fake_spawn)
+    monkeypatch.setattr("hermes_agent.tools.bot_mode_dm._spawn_delivery", _fake_spawn)
     agent = _FakeAgent(home)
     out = json.loads(message_agent_tool(target="hermes", message="ping", agent=agent))
     assert out.get("status") == "queued"
@@ -387,7 +387,7 @@ def test_relay_route_ambiguous_target_errors_with_forms(tmp_path, monkeypatch):
         {"profile": "scout", "handle": "scout", "connection_id": "ssh-vps"},
     ])
     monkeypatch.setattr(
-        "tools.bot_mode_dm._spawn_delivery",
+        "hermes_agent.tools.bot_mode_dm._spawn_delivery",
         lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)
@@ -402,7 +402,7 @@ def test_remote_default_is_addressable_by_its_title_slug(tmp_path, monkeypatch):
     """A remote ``default`` is ``@hermes`` like every gateway's own, so its Bot Mode title is the only
     bare form that singles it out: ``message_agent`` accepts the slug, the prompt roster offers it
     (never bare ``@hermes``, which is the LOCAL default), and the form does not depend on roster order."""
-    from tools import bot_mode_probe
+    from hermes_agent.tools import bot_mode_probe
 
     home = _managed_home(tmp_path)
     rows = [
@@ -410,7 +410,7 @@ def test_remote_default_is_addressable_by_its_title_slug(tmp_path, monkeypatch):
         {"profile": "default", "handle": "hermes", "connection_id": "cloud-1", "title": "Ops Bot"},
         {"profile": "cos-bot", "handle": "cos-bot", "connection_id": "cloud-1", "title": "Other"},
     ]
-    monkeypatch.setattr("tools.bot_mode_dm._spawn_delivery", lambda *a, **k: json.dumps({"status": "queued"}))
+    monkeypatch.setattr("hermes_agent.tools.bot_mode_dm._spawn_delivery", lambda *a, **k: json.dumps({"status": "queued"}))
     agent = _FakeAgent(home)
     for order in (rows, rows[::-1]):
         bot_relay.write_remote_roster(home, order)
@@ -434,7 +434,7 @@ def test_remote_default_is_addressable_by_its_title_slug(tmp_path, monkeypatch):
 
 
 def test_protocol_section_lists_remote_teammates(tmp_path):
-    from tools import bot_mode_probe
+    from hermes_agent.tools import bot_mode_probe
 
     home = _managed_home(tmp_path)
     bot_relay.write_remote_roster(home, [
@@ -447,7 +447,7 @@ def test_protocol_section_lists_remote_teammates(tmp_path):
 
 
 def test_capability_fingerprint_changes_with_relay_roster(tmp_path):
-    from tools import bot_mode_probe
+    from hermes_agent.tools import bot_mode_probe
 
     home = _managed_home(tmp_path)
     before = bot_mode_probe.capability_fingerprint(home)
@@ -640,7 +640,7 @@ def test_pre_upgrade_claim_settles_unknown_instead_of_stranding_its_waiter(root)
     """A claimed envelope from the old lane (no ``canonical_delivery_v1``) is never replayed into the
     authority, but its waiter must still resolve: once the old drain's re-offer point passes it gets
     a terminal ``unknown`` reply (not auto-retryable) and is never handed out again."""
-    from tools.bot_failure_reasons import UNKNOWN, is_auto_retryable
+    from hermes_agent.tools.bot_failure_reasons import UNKNOWN, is_auto_retryable
 
     base = bot_relay._ensure_dirs(root)
     legacy = {"id": "a" * 32, "created_at": int(_time2.time()) - 60, "from_profile": "default",
@@ -703,7 +703,7 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
          "connection_label": "Hermes Cloud", "online": False},
     ])
     monkeypatch.setattr(
-        "tools.bot_mode_dm._spawn_delivery",
+        "hermes_agent.tools.bot_mode_dm._spawn_delivery",
         lambda *a, **k: json.dumps({"status": "queued"}),
     )
     agent = _FakeAgent(home)

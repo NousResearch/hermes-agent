@@ -60,7 +60,7 @@ class TestWriteFileCrossProfileGuard:
         the same OS user owns every profile dir and the terminal tool
         always could write them. Cross-profile writes now succeed; the
         system prompt's profile hint is the only steering."""
-        from tools.file_tools import read_file_tool, write_file_tool
+        from hermes_agent.tools.file_tools import read_file_tool, write_file_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
         assert not json.loads(read_file_tool(str(target))).get("error")
         result_json = write_file_tool(str(target), "cross-profile write, allowed")
@@ -75,7 +75,7 @@ class TestWriteFileCrossProfileGuard:
 class TestPatchCrossProfileGuard:
 
     def test_cross_profile_patch_bypass(self, fake_hermes):
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
         result_json = patch_tool(
             mode="replace",
@@ -93,7 +93,7 @@ class TestPatchCrossProfileGuard:
         V4A patches embed target paths in the patch body; path extraction
         for the surviving mirror guards still runs, but cross-profile
         targets are no longer refused."""
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
         v4a = (
             "*** Begin Patch\n"
@@ -130,9 +130,9 @@ class TestSkillManageCrossProfileErrorUX:
         # Re-import the module so SKILLS_DIR picks up HERMES_HOME (set in
         # the fixture). Skill_manager_tool computes SKILLS_DIR at import.
         import importlib
-        import tools.skill_manager_tool
-        importlib.reload(tools.skill_manager_tool)
-        from tools.skill_manager_tool import _skill_not_found_error
+        import hermes_agent.tools.skill_manager_tool
+        importlib.reload(hermes_agent.tools.skill_manager_tool)
+        from hermes_agent.tools.skill_manager_tool import _skill_not_found_error
 
         err = _skill_not_found_error("default-only-skill")
         assert "not found in active profile 'hermes-security'" in err
@@ -143,9 +143,9 @@ class TestSkillManageCrossProfileErrorUX:
     ):
         """When no profile has the skill, error falls back to skills_list hint."""
         import importlib
-        import tools.skill_manager_tool
-        importlib.reload(tools.skill_manager_tool)
-        from tools.skill_manager_tool import _skill_not_found_error
+        import hermes_agent.tools.skill_manager_tool
+        importlib.reload(hermes_agent.tools.skill_manager_tool)
+        from hermes_agent.tools.skill_manager_tool import _skill_not_found_error
 
         err = _skill_not_found_error("totally-imaginary-skill")
         assert "not found in active profile 'hermes-security'" in err

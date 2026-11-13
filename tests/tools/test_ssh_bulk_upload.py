@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.environments import ssh as ssh_env
-from tools.environments.ssh import SSHEnvironment
+from hermes_agent.tools.environments import ssh as ssh_env
+from hermes_agent.tools.environments.ssh import SSHEnvironment
 
 
 def _mock_proc(*, returncode=0, poll_return=0, communicate_return=(b"", b""),

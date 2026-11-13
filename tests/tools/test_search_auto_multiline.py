@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tools.file_tools import search_tool
+from hermes_agent.tools.file_tools import search_tool
 
 
 @pytest.fixture

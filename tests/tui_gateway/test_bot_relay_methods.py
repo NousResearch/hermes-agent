@@ -17,7 +17,7 @@ import pytest
 
 import hermes_agent.tui_gateway.server as srv
 from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
-from tools import bot_relay
+from hermes_agent.tools import bot_relay
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def test_deliver_forwards_stable_id_to_target_profile_authority(home, monkeypatc
     """The relay door is a transport bridge: it resolves the target profile's
     own home and forwards the envelope id + message to THAT authority. It
     never runs a CLI turn of its own."""
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
 
     forwarded = []
     spawned = []
@@ -133,7 +133,7 @@ def test_deliver_forwards_stable_id_to_target_profile_authority(home, monkeypatc
 
 
 def test_deliver_unreachable_authority_is_a_typed_refusal(home, monkeypatch):
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
 
     def _down(target_home, params):
         raise ValueError("profile authority is not ready")
@@ -157,7 +157,7 @@ def test_deliver_unreachable_authority_is_a_typed_refusal(home, monkeypatch):
     {"id": "e" * 32, "profile": "../ops", "message": "x"},
 ])
 def test_deliver_requires_stable_id_and_valid_profile(home, monkeypatch, params):
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
 
     monkeypatch.setattr(live, "authority_delivery",
                         lambda *a, **k: pytest.fail("malformed requests never reach an authority"))
@@ -211,7 +211,7 @@ def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, monkey
     NOT the Desktop: it mints a ws-ticket carrying the signed-in ``{user_id, provider}`` on every
     gateway that requires sign-in (``hermes_cli/dashboard_auth/routes.py``), so it is a login
     identity and takes the principal-author branch below."""
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
     forwarded = []
     monkeypatch.setattr(live, "authority_delivery",
                         lambda home, params: forwarded.append(params) or {"status": "queued"})
@@ -231,7 +231,7 @@ def test_deliver_from_a_logged_in_client_is_attributed_to_its_principal_never_to
     itself a logged-in client there. Dropping the AUTHOR would make the turn the human's to the recipient's
     memory. So the author is derived from the caller's minted identity: stable, unspoofable, and still a bot —
     whether or not the client named a sender — and the authority receives it with the sender fields stripped."""
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
     forwarded = []
     monkeypatch.setattr(live, "authority_delivery",
                         lambda home, params: forwarded.append(params) or {"status": "queued"})
@@ -260,7 +260,7 @@ def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypa
     ``@hermes`` — the recipient's OWN default. The text forwarded to the target authority names the
     sender by the form this gateway resolves back to it: its title slug when the local relay roster
     carries it, else ``handle@connection``. A stamp that is not the relay's is left alone."""
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
     seen = []
     monkeypatch.setattr(live, "authority_delivery",
                         lambda home, params: seen.append(params["message"]) or {"status": "queued"})
@@ -285,7 +285,7 @@ def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, su
     The writer side (``message_agent``'s ``_hermes_root``) and the drain side
     (``methods_bot_relay._relay_root``) must agree for a ``profiles/<name>`` home AND for an
     arbitrary subdir of the native ``~/.hermes`` — a split here is silent non-delivery."""
-    from tools.bot_mode_probe import _default_home, _hermes_root
+    from hermes_agent.tools.bot_mode_probe import _default_home, _hermes_root
     from hermes_agent.tui_gateway import methods_bot_relay
 
     monkeypatch.setenv("HOME", str(tmp_path))

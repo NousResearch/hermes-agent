@@ -71,7 +71,7 @@ def test_rebuild_preparation_failure_keeps_reachable_owner(tmp_path, monkeypatch
         raise RuntimeError("preparation failed")
     monkeypatch.setattr(server, "_make_agent", make_agent)
     monkeypatch.setattr(server, "_config_model_target", fail_config)
-    monkeypatch.setattr("tools.bot_mode_probe.capability_fingerprint", lambda _: "after")
+    monkeypatch.setattr("hermes_agent.tools.bot_mode_probe.capability_fingerprint", lambda _: "after")
     try:
         if path == "reset":
             with pytest.raises(RuntimeError, match="preparation failed"):

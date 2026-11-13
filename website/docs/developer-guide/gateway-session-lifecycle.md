@@ -483,7 +483,7 @@ post-command drain starts it right away instead of the session idling until the 
 message. Whether a wake pinned to a session that `/new` just closed may still run is decided at
 processing time (`_resolve_async_delegation_session`, fail-closed).
 
-Both commands also end the session's **background delegations** (`tools.async_delegation.
+Both commands also end the session's **background delegations** (`hermes_agent.tools.async_delegation.
 interrupt_for_session`, selected by routing key and by the spawner's durable session id):
 `_interrupt_and_clear_session` fans the stop out for the busy path, and `_handle_stop_command`
 does the same for an idle session whose dispatching turn already ended (replying "Stopped" rather

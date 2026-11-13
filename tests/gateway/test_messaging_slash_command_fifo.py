@@ -192,7 +192,7 @@ async def test_an_admitted_turn_never_answers_a_pending_prompt(monkeypatch, prom
     """A prompt that opened after ``/queue yes`` was admitted (a destructive slash-confirm, an
     /update prompt, a clarify) never takes the executing turn as its answer: the turn runs. A
     restart replays the row as a plain restored event, which is checked directly."""
-    from tools import clarify_gateway, slash_confirm
+    from hermes_agent.tools import clarify_gateway, slash_confirm
     from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_agent.gateway.session_ingress import executing_admission
 
@@ -342,7 +342,7 @@ async def test_queued_ack_follows_the_commit(monkeypatch, command, agent, ack):
 async def test_queued_approval_word_is_a_turn_never_an_approval(monkeypatch):
     """Keep working: ``/queue yes`` queues a user turn; it never answers a blocking dangerous-command
     approval the way a typed "yes" does."""
-    from tools import approval
+    from hermes_agent.tools import approval
 
     approved = []
     monkeypatch.setattr(approval, 'has_blocking_approval', lambda key: True)

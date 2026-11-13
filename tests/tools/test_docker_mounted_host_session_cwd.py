@@ -18,9 +18,9 @@ When the registered cwd is the mounted host directory, both must land on
 
 import pytest
 
-import tools.terminal_tool as tt
-from tools.environments.base import BaseEnvironment
-from tools.environments.base_session_env import _wrap_command_script
+import hermes_agent.tools.terminal_tool as tt
+from hermes_agent.tools.environments.base import BaseEnvironment
+from hermes_agent.tools.environments.base_session_env import _wrap_command_script
 
 
 MNT = "/mnt/d/projects/app"
@@ -144,7 +144,7 @@ class TestMountedHostSessionCwd:
 
             return _Session()
 
-        monkeypatch.setattr("tools.terminal_tool_background._spawn", fake_spawn)
+        monkeypatch.setattr("hermes_agent.tools.terminal_tool_background._spawn", fake_spawn)
         task_id = "desktop-sess"
         tt.register_task_env_overrides(task_id, {"cwd": host, "cwd_source": "session"})
         try:

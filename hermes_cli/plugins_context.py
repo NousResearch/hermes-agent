@@ -282,7 +282,7 @@ class PluginContext(PluginCapabilityCtxMixin):
                 f"plugins.entries.{self.plugin_id}.allow_tool_override: true "
                 f"in config.yaml to allow this plugin to replace built-in tools."
             )
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         scope = self._manager.scope_key
         previous = registry.snapshot_registration(name, scope=scope)
         if previous is None and not override and registry.get_entry(name, scope=scope) is not None:
@@ -310,7 +310,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         self, server: str, tool: str, arguments: Optional[dict[str, Any]] = None,
         timeout: float = 30,
     ) -> dict[str, Any]:
-        """Call ``tool`` on MCP ``server`` synchronously through :mod:`tools.mcp_tool`'s native client
+        """Call ``tool`` on MCP ``server`` synchronously through :mod:`hermes_agent.tools.mcp_tool`'s native client
         (same trust gates, breaker, reconnect — never a parallel connection). Servers not in
         ``plugins.entries.<plugin_id>.mcp_allowlist`` raise ``PermissionError`` (default-deny). ``timeout``
         clamps to 1–600s; results over ~64KB are truncated with a marker.
@@ -331,7 +331,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         except (TypeError, ValueError):
             timeout = 30.0
         timeout = max(1.0, min(timeout, 600.0))
-        from tools.mcp_tool_handlers import _make_tool_handler
+        from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
         raw = _make_tool_handler(server, tool, timeout)(dict(arguments or {}))
         _facade().logger.debug("Plugin %s called MCP %s/%s (timeout=%ss, %d chars returned)",
                                self.manifest.name, server, tool, timeout, len(raw or ""))
@@ -483,7 +483,7 @@ class PluginContext(PluginCapabilityCtxMixin):
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call through the registry with the parent agent (when available)
         resolved automatically; returns the handler's JSON string. ``kwargs`` forward to dispatch."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         # In gateway mode _cli_ref is None — tools degrade gracefully (no spinner, TERMINAL_CWD).
         if "parent_agent" not in kwargs:
             agent = getattr(self._manager._cli_ref, "agent", None)

@@ -16,7 +16,7 @@ import pytest
 
 from hermes_cli import process_identity
 from tests.waiting import wait_until
-from tools import browser_use_cli
+from hermes_agent.tools import browser_use_cli
 
 
 def _group_alive(pgid: int) -> bool:
@@ -150,7 +150,7 @@ def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
     runtime.mkdir()
     owner_src = (
         "import json, os, subprocess, sys, time\n"
-        "from tools import browser_use_cli\n"
+        "from hermes_agent.tools import browser_use_cli\n"
         f"d = subprocess.Popen([sys.executable, '-m', 'browser_harness.daemon'], cwd={str(tmp_path / 'pkgroot')!r},"
         " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True,"
         " env=browser_use_cli._base_subprocess_env())\n"

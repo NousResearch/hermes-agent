@@ -37,7 +37,7 @@ _FORBIDDEN_MODULES = (
     "argparse",
     "cli",
     "run_agent",
-    "model_tools",
+    "hermes_agent.model_tools",
     "httpx",
     "openai",
 )

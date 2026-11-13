@@ -39,7 +39,7 @@ class TestEdgeTtsPythonpathFallback:
         mock_edge_tts = MagicMock()
         with patch.dict(sys.modules, {"edge_tts": mock_edge_tts}), \
              patch("pm.extras.ensure_import", side_effect=RuntimeError("provisioning failed")):
-            from tools.tts_tool import _import_edge_tts
+            from hermes_agent.tools.tts_tool import _import_edge_tts
             result = _import_edge_tts()
         assert result is mock_edge_tts
 
@@ -47,7 +47,7 @@ class TestEdgeTtsPythonpathFallback:
         """When the package is truly absent, ImportError must propagate."""
         with patch("pm.extras.ensure_import"), \
              patch.dict(sys.modules, {"edge_tts": None}):
-            from tools.tts_tool import _import_edge_tts
+            from hermes_agent.tools.tts_tool import _import_edge_tts
             with pytest.raises(ImportError):
                 _import_edge_tts()
 
@@ -62,7 +62,7 @@ class TestElevenLabsPythonpathFallback:
             "elevenlabs": mock_client_pkg,
             "elevenlabs.client": mock_client_pkg,
         }), patch("pm.extras.ensure_import", side_effect=RuntimeError("provisioning failed")):
-            from tools.tts_tool import _import_elevenlabs
+            from hermes_agent.tools.tts_tool import _import_elevenlabs
             result = _import_elevenlabs()
         assert result is mock_cls
 
@@ -71,7 +71,7 @@ class TestElevenLabsPythonpathFallback:
         with patch("pm.extras.ensure_import"), \
              patch.dict(sys.modules, {"elevenlabs": None,
                                       "elevenlabs.client": None}):
-            from tools.tts_tool import _import_elevenlabs
+            from hermes_agent.tools.tts_tool import _import_elevenlabs
             with pytest.raises(ImportError):
                 _import_elevenlabs()
 
@@ -86,7 +86,7 @@ class TestMistralPythonpathFallback:
             "mistralai": mock_mistralai,
             "mistralai.client": mock_mistralai,
         }), patch("pm.extras.ensure_import", side_effect=RuntimeError("provisioning failed")):
-            from tools.tts_tool import _import_mistral_client
+            from hermes_agent.tools.tts_tool import _import_mistral_client
             result = _import_mistral_client()
         assert result is mock_cls
 
@@ -95,7 +95,7 @@ class TestMistralPythonpathFallback:
         with patch("pm.extras.ensure_import"), \
              patch.dict(sys.modules, {"mistralai": None,
                                       "mistralai.client": None}):
-            from tools.tts_tool import _import_mistral_client
+            from hermes_agent.tools.tts_tool import _import_mistral_client
             with pytest.raises(ImportError):
                 _import_mistral_client()
 
@@ -109,7 +109,7 @@ class TestMistralSttPythonpathFallback:
     ):
         """A provisioning failure for stt.mistral must not block
         transcription when mistralai is importable via PYTHONPATH."""
-        from tools.transcription_tools import _transcribe_mistral
+        from hermes_agent.tools.transcription_tools import _transcribe_mistral
 
         audio_file = tmp_path / "audio.wav"
         audio_file.write_bytes(b"fake-audio")

@@ -33,7 +33,7 @@ async def test_video_attachment_adds_path_note_not_document_note():
     )
 
     with patch(
-        "tools.credential_files.to_agent_visible_cache_path",
+        "hermes_agent.tools.credential_files.to_agent_visible_cache_path",
         side_effect=lambda path: path,
     ):
         result = await runner._prepare_inbound_message_text(

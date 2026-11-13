@@ -198,7 +198,7 @@ def _iter_gateway_skills(platform: str):
     from agent.skill_commands import get_skill_commands
     from agent.skill_utils import (
         get_disabled_skill_names, get_external_skills_dirs, get_project_skills_dirs)
-    from tools.skills_tool import SKILLS_DIR
+    from hermes_agent.tools.skills_tool import SKILLS_DIR
 
     try:
         disabled = get_disabled_skill_names(platform=platform)

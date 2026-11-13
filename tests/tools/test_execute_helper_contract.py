@@ -5,9 +5,9 @@ import re
 
 import pytest
 
-from tools import code_execution_tool
-from tools.code_kernel import shutdown_all_kernels
-from tools.registry import registry
+from hermes_agent.tools import code_execution_tool
+from hermes_agent.tools.code_kernel import shutdown_all_kernels
+from hermes_agent.tools.registry import registry
 
 
 PROBE = '''

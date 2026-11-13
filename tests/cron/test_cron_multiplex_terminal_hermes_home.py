@@ -29,7 +29,7 @@ def two_profiles(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
     from agent.secret_scope import set_multiplex_active
     set_multiplex_active(True)
-    from tools.terminal_tool import cleanup_all_environments
+    from hermes_agent.tools.terminal_tool import cleanup_all_environments
     try:
         yield root, beta, gamma
     finally:
@@ -47,7 +47,7 @@ def _install_agent(monkeypatch, seen):
             pass
 
         def run_conversation(self, *_a, task_id=None, **_kw):
-            from tools.terminal_tool import terminal_tool
+            from hermes_agent.tools.terminal_tool import terminal_tool
             out = json.loads(terminal_tool("echo HH=$HERMES_HOME", task_id=task_id))
             seen.append(out["output"].strip().rpartition("HH=")[2])
             return {"final_response": "done", "messages": [{"role": "assistant", "content": "done"}]}

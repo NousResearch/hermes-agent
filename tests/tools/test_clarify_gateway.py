@@ -1,4 +1,4 @@
-"""Tests for the gateway-side clarify primitive (tools/clarify_gateway.py).
+"""Tests for the gateway-side clarify primitive (hermes_agent/tools/clarify_gateway.py).
 
 The clarify tool needs to ask the user a question and block the agent
 thread until they respond.  These tests cover the module-level state
@@ -17,7 +17,7 @@ from tests.waiting import wait_until
 
 def _clear_clarify_state():
     """Reset module-level state between tests."""
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
@@ -32,7 +32,7 @@ class TestClarifyPrimitive:
 
     def test_button_choice_resolves_wait(self):
         """resolve_gateway_clarify unblocks wait_for_response with the chosen string."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         cm.register("id1", "sk1", "Pick one", ["A", "B", "C"])
 
@@ -46,7 +46,7 @@ class TestClarifyPrimitive:
 
     def test_first_resolution_wins(self):
         """A late cancellation must not overwrite an already-selected choice."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register("id-race", "sk-race", "Pick one", ["A", "B"])
 
@@ -56,7 +56,7 @@ class TestClarifyPrimitive:
 
     def test_get_pending_tracks_lifecycle(self):
         """Adapters read a pending entry through ``get_pending``; answered or unknown ids read None."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register("id-pend", "sk-pend", "Pick", ["A", "B"])
         assert cm.get_pending("id-pend") is entry
@@ -66,7 +66,7 @@ class TestClarifyPrimitive:
 
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register("id2", "sk2", "Free form?", None)
         assert entry.awaiting_text is True
@@ -80,7 +80,7 @@ class TestClarifyPrimitive:
 
     def test_include_choice_prompts_returns_multi_choice_entry(self):
         """Gateway typed replies must see active choice prompts too."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         cm.register("id3b", "sk3b", "Pick", ["X", "Y"])
         pending = cm.get_pending_for_session("sk3b", include_choice_prompts=True)
@@ -90,7 +90,7 @@ class TestClarifyPrimitive:
 
     def test_clear_session_cancels_pending_entries(self):
         """clear_session unblocks blocked threads."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         cm.register("id7", "sk7", "Q?", ["A"])
 
@@ -114,7 +114,7 @@ class TestClarifyPrimitive:
         clear_session only cancels entries whose event is not yet set, so
         the racing waiter observes the real answer, not the empty sentinel.
         """
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         cm.register("id-race", "sk-race", "Pick one", ["A", "B"])
 
@@ -136,7 +136,7 @@ class TestClarifyPrimitive:
 
     def test_session_index_isolation(self):
         """Entries from different sessions don't leak across get_pending lookups."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         cm.register("idA", "alpha", "Q?", None)  # auto-await text
         cm.register("idB", "beta", "Q?", None)   # auto-await text
@@ -157,7 +157,7 @@ class TestGatewayTextIntercept:
     def test_get_pending_for_session_returns_oldest_text_awaiting(self):
         """When two clarifies are pending, get_pending_for_session returns the
         first that is awaiting_text (the older one if both)."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         # Older multi-choice (not awaiting text)
         cm.register("first", "sk", "Q1?", ["A"])
@@ -178,7 +178,7 @@ class TestGatewayTextIntercept:
     def test_text_fallback_enables_awaiting_text_for_multi_choice(self):
         """When base send_clarify renders choices as text, mark_awaiting_text
         is called so the gateway text-intercept can capture the reply."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register("id-tf", "sk-tf", "Pick one", ["A", "B", "C"])
         # Initially, multi-choice does NOT await text (button path)
@@ -205,14 +205,14 @@ class TestCoverageGaps:
 
     def test_wait_for_response_unknown_id_returns_none(self):
         """wait_for_response on a non-existent id returns None immediately."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         assert cm.wait_for_response("nonexistent-id", timeout=0.1) is None
 
 
     def test_get_clarify_timeout_exception_returns_default(self, monkeypatch):
         """get_clarify_timeout returns the 90s default when load_config raises."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         monkeypatch.setattr("hermes_cli.config.load_config",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -231,7 +231,7 @@ class TestClarifyTimeoutResolution:
         the resolver, capping every CLI modal at that value (120 s) while the docs promise
         90 s / unlimited. The CLI defaults must leave the legacy key unset."""
         import cli
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         defaults = cli._cli_config_defaults()
         assert (defaults.get("clarify") or {}).get("timeout") is None
@@ -243,7 +243,7 @@ class TestClarifyTimeoutResolution:
     def test_non_positive_preserved_as_unlimited_sentinel(self):
         """<= 0 is passed through verbatim — the waiting loops read it as
         'unlimited', so the resolver must not clamp it to a positive default."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         assert cm.resolve_clarify_timeout({"agent": {"clarify_timeout": 0}}) == 0
         assert cm.resolve_clarify_timeout({"clarify": {"timeout": -1}}) == -1
@@ -257,7 +257,7 @@ class TestUnlimitedWait:
         _clear_clarify_state()
 
     def test_zero_timeout_waits_until_resolved(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         cm.register("u1", "sk", "Q?", ["A", "B"])
         result_box = {}
@@ -281,8 +281,8 @@ class TestUnlimitedWait:
     def test_interrupt_on_waiting_thread_withdraws_unlimited_wait(self):
         """/stop or gateway shutdown signals the turn's thread; the wait is released as cancelled
         (as the approval wait is) instead of holding the turn for the whole clarify timeout."""
-        from tools import clarify_gateway as cm
-        from tools.interrupt import set_interrupt
+        from hermes_agent.tools import clarify_gateway as cm
+        from hermes_agent.tools.interrupt import set_interrupt
 
         cm.register("u2", "sk", "Q?", ["A", "B"])
         box = {}
@@ -318,7 +318,7 @@ class TestMultiSelectTextFallback:
         _clear_clarify_state()
 
     def _register_multi(self, cid="m1", choices=("A", "B", "C")):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         entry = cm.register(cid, "sk", "Pick some", list(choices), multi_select=True)
         # Text fallback path always flips awaiting_text on.
         cm.mark_awaiting_text(cid)
@@ -328,14 +328,14 @@ class TestMultiSelectTextFallback:
 
     def test_multi_select_without_choices_is_ignored(self):
         """multi_select on an open-ended clarify is meaningless — dropped."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         entry = cm.register("s2", "sk", "Q?", None, multi_select=True)
         assert entry.multi_select is False
 
 
     def test_duplicate_selections_deduped(self):
         import json
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         entry = self._register_multi()
         coerced = cm._coerce_text_response(entry, "1, 1, 2")
         assert json.loads(coerced) == ["A", "B"]
@@ -343,7 +343,7 @@ class TestMultiSelectTextFallback:
     def test_resolve_text_response_end_to_end(self):
         """resolve_text_response_for_session delivers the JSON array to the waiter."""
         import json
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         self._register_multi(cid="m3")
         result_box = {}
 
@@ -359,12 +359,12 @@ class TestMultiSelectTextFallback:
 
     def test_single_select_regression_numeric(self):
         """Single-select coercion unchanged: '2' maps to the choice label string."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         entry = cm.register("s3", "sk", "Q?", ["A", "B", "C"])
         assert cm._coerce_text_response(entry, "2") == "B"
 
     def test_single_select_regression_label(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         entry = cm.register("s4", "sk", "Q?", ["A", "B"])
         assert cm._coerce_text_response(entry, "b") == "B"
 
@@ -381,7 +381,7 @@ class TestNativeRejectClassification:
         _clear_clarify_state()
 
     def test_multi_select_out_of_range_is_invalid_selection(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register(
             "ms-oor", "sk-ms", "Pick some", ["A", "B", "C"], multi_select=True,
@@ -398,7 +398,7 @@ class TestNativeRejectClassification:
         assert not pending.event.is_set()
 
     def test_multi_select_bad_comma_list_is_invalid_selection(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register(
             "ms-bad", "sk-ms2", "Pick some", ["A", "B", "C"], multi_select=True,
@@ -414,7 +414,7 @@ class TestNativeRejectClassification:
         assert not pending.event.is_set()
 
     def test_multi_select_free_prose_is_rejected_prose(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register(
             "ms-prose", "sk-ms3", "Pick some", ["A", "B"], multi_select=True,
@@ -429,7 +429,7 @@ class TestNativeRejectClassification:
         ) == cm.TEXT_REJECTED_PROSE
 
     def test_single_select_out_of_range_is_invalid_selection(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register("ss-oor", "sk-ss", "Pick one", ["A", "B"])
         value, reason = cm._coerce_text_response_detailed(entry, "9")
@@ -440,7 +440,7 @@ class TestNativeRejectClassification:
         )
 
     def test_single_select_prose_is_rejected_prose(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         entry = cm.register("ss-prose", "sk-ss2", "Pick one", ["A", "B"])
         value, reason = cm._coerce_text_response_detailed(

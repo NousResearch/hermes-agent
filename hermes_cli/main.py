@@ -958,7 +958,7 @@ def _sync_bundled_skills_for_startup() -> bool:
     if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
         return False
 
-    from tools.skills_sync import sync_skills
+    from hermes_agent.tools.skills_sync import sync_skills
 
     sync_skills(quiet=True)
     _mark_termux_bundled_skills_synced()
@@ -1400,7 +1400,7 @@ def _apply_in_dir(args) -> None:
         return
     # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
     # translate drive-root spellings to native Windows form. No-op elsewhere.
-    from tools.environments.local import _msys_to_windows_path
+    from hermes_agent.tools.environments.local import _msys_to_windows_path
 
     _target_dir = os.path.abspath(os.path.expanduser(_msys_to_windows_path(in_dir)))
     if not os.path.isdir(_target_dir):
@@ -2759,7 +2759,7 @@ def _chat_runs_at_gateway(args) -> bool:
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     # --yolo chokepoint: HERMES_YOLO_MODE must be set before any discovery
-    # below imports tools.approval, which freezes _YOLO_MODE_FROZEN at import.
+    # below imports hermes_agent.tools.approval, which freezes _YOLO_MODE_FROZEN at import.
     # main() sets it earlier too, but other launchers (Termux fast-CLI) reach
     # here directly, so the guarantee lives where the import is triggered.
     # See #7994.
@@ -3418,7 +3418,7 @@ def main():
         cmd_version(args)
         return
 
-    # --yolo must be set *before* plugin discovery: tools.approval freezes
+    # --yolo must be set *before* plugin discovery: hermes_agent.tools.approval freezes
     # _YOLO_MODE_FROZEN at import; set later (inside cmd_chat) it does nothing.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"

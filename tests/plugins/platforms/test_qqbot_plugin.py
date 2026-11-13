@@ -178,7 +178,7 @@ async def test_qq_voice_download_http_error_keeps_the_url_out_of_warning(caplog,
     adapter = QQAdapter(PlatformConfig(enabled=True, extra={}))
     adapter._http_client = httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(403, request=request)))
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda _url: True)
     caplog.set_level(logging.DEBUG, logger="plugins.platforms.qqbot.adapter")
     assert await adapter._stt_voice_attachment("https://files.example.test/v?sig=private-sentinel", "voice", "a.silk") is None
     info = [

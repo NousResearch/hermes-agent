@@ -11,7 +11,7 @@ class TestResolvePath:
     def test_relative_path_uses_terminal_cwd(self, monkeypatch, tmp_path):
         """Relative paths resolve against TERMINAL_CWD, not process CWD."""
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-        from tools.file_tools_paths import _resolve_path_for_task
+        from hermes_agent.tools.file_tools_paths import _resolve_path_for_task
 
         result = _resolve_path_for_task("foo/bar.py")
         assert result == (tmp_path / "foo" / "bar.py")
@@ -25,7 +25,7 @@ class TestResolvePath:
         live_dir.mkdir()
         monkeypatch.setenv("TERMINAL_CWD", str(start_dir))
 
-        from tools import file_tools_paths, terminal_tool
+        from hermes_agent.tools import file_tools_paths, terminal_tool
 
         task_id = "live-cwd"
         # The session's completed `cd` recorded the new directory.

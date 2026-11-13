@@ -24,7 +24,7 @@ def skills_home(tmp_path, monkeypatch):
     (home / "skills").mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import tools.skill_usage as mod
+    import hermes_agent.tools.skill_usage as mod
     importlib.reload(mod)
     return home
 
@@ -37,7 +37,7 @@ def _write_hub_lock(home: Path, raw: bytes) -> None:
 
 def test_windows_1252_em_dash_does_not_raise(skills_home):
     """A 0x97 em-dash byte in a description must not blow up the reader."""
-    import tools.skill_usage as mod
+    import hermes_agent.tools.skill_usage as mod
 
     # Valid JSON structure, but the description value contains a raw cp1252
     # em-dash byte (0x97) instead of the UTF-8 sequence.
@@ -55,7 +55,7 @@ def test_windows_1252_em_dash_does_not_raise(skills_home):
 
 def test_clean_utf8_lock_still_read(skills_home):
     """A well-formed UTF-8 lock keeps working unchanged."""
-    import tools.skill_usage as mod
+    import hermes_agent.tools.skill_usage as mod
 
     raw = b'{"installed": {"alpha": {}, "beta": {}}}'
     _write_hub_lock(skills_home, raw)

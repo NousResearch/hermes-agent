@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.bot_desktop import browser, placement, runtime
+from hermes_agent.tools.bot_desktop import browser, placement, runtime
 
 
 def _browser_config(monkeypatch, home: Path, **browser_cfg) -> None:
@@ -26,17 +26,17 @@ def _browser_config(monkeypatch, home: Path, **browser_cfg) -> None:
 def _agent_launch(monkeypatch, display: str = ":37") -> dict:
     """Create the agent's local browser session with the Bot Desktop screen up; returns the launcher call
     (``key`` + kwargs) instead of starting Chromium."""
-    from tools import browser_launcher, browser_session, browser_session_cdp, browser_session_cloud
-    from tools import browser_session_lifecycle
+    from hermes_agent.tools import browser_launcher, browser_session, browser_session_cdp, browser_session_cloud
+    from hermes_agent.tools import browser_session_lifecycle
 
     for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
         monkeypatch.setattr(browser_session, name, {})
     monkeypatch.setattr(browser_session_lifecycle, "start_cleanup_thread", lambda: None)
     monkeypatch.setattr(browser_session_cdp, "get_cdp_override", lambda: "")
     monkeypatch.setattr(browser_session_cloud, "get_cloud_provider", lambda: None)
-    monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
-    monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
+    monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": display})
     call: dict = {}
 
@@ -126,7 +126,7 @@ def _devtools_server():
 
 
 def test_running_instance_port_requires_live_pid_and_open_port(tmp_path):
-    from tools import browser_launcher as launcher
+    from hermes_agent.tools import browser_launcher as launcher
 
     server = _devtools_server()
     port = server.server_address[1]
@@ -151,7 +151,7 @@ def test_running_instance_port_requires_live_pid_and_open_port(tmp_path):
 def test_agent_attaches_to_human_started_browser(tmp_path, monkeypatch):
     """With a live dock instance on the shared profile the agent's launch ATTACHES to it (never owned, so
     never killed by Hermes); without one it launches its own Chromium on that profile."""
-    from tools import browser_launcher as launcher
+    from hermes_agent.tools import browser_launcher as launcher
 
     monkeypatch.setattr(launcher, "_browsers", {})
     monkeypatch.setattr(launcher, "_procs", {})
@@ -178,7 +178,7 @@ def test_agent_attaches_to_human_started_browser(tmp_path, monkeypatch):
 def _install_browsers(tmp_path, monkeypatch, *, playwright: bool, system: bool):
     """A Playwright build under a private PLAYWRIGHT_BROWSERS_PATH and/or a system chromium on PATH."""
     monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
-    monkeypatch.setattr("tools.browser_session_cloud.executable_path", lambda: "")
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.executable_path", lambda: "")
     roots = tmp_path / "pw"
     roots.mkdir(parents=True)
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(roots))
@@ -225,7 +225,7 @@ def test_unprivileged_user_under_apparmor_userns_restriction_gets_the_system_bro
 
 def _agent_sandbox_flags(exe: str) -> set:
     """The sandbox-bypass flags the agent's launch of ``exe`` on the shared profile carries."""
-    from tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, build_chromium_argv
+    from hermes_agent.tools.browser_launcher import CHROMIUM_SANDBOX_BYPASS_ARGS, build_chromium_argv
 
     argv = build_chromium_argv(exe, "/p/dir", packaged=False, headed=True, sandbox_bypass=True,
                                extra_args=browser.SHARED_PROFILE_ARGS)
@@ -236,9 +236,9 @@ def test_root_dock_browser_starts_with_the_same_sandbox_args_as_the_agents_brows
     """Chromium refuses to start as root without --no-sandbox; the agent's launch gets that flag from one
     policy, and the dock icon (same binary, same profile) must get the very same flags or the human's
     click dies while the agent's launch works."""
-    from tools import browser_launcher as launcher
+    from hermes_agent.tools import browser_launcher as launcher
 
-    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.chromium_args", list)
     monkeypatch.setattr(launcher.os, "geteuid", lambda: 0)
     agent_flags = _agent_sandbox_flags("/opt/chrome")
     assert agent_flags, "root must inject sandbox flags for the agent's Chromium"
@@ -293,11 +293,11 @@ def test_headless_shell_override_is_not_a_headed_browser(tmp_path, monkeypatch):
     shell.write_text("#!/bin/sh\n", encoding="utf-8")
     shell.chmod(0o755)
     _install_browsers(tmp_path, monkeypatch, playwright=False, system=False)
-    monkeypatch.setattr("tools.browser_session_cloud.executable_path", lambda: str(shell))
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.executable_path", lambda: str(shell))
     assert browser.executable() is None
 
     _, sys_exe = _install_browsers(tmp_path / "with-sys", monkeypatch, playwright=False, system=True)
-    monkeypatch.setattr("tools.browser_session_cloud.executable_path", lambda: str(shell))
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.executable_path", lambda: str(shell))
     assert browser.executable() == sys_exe  # a real headed browser elsewhere still wins over the override
 
 
@@ -327,8 +327,8 @@ def test_headed_chromium_spawn_asks_the_screen_to_start_but_the_env_builder_neve
     starts the profile's screen (bot_desktop.auto_start) like computer_use dispatch does; `build_browser_env()`
     itself stays pure — it also serves the harness CLI, the Lightpanda engine and every launch, none of which
     may block on Xvnc+Xfce coming up."""
-    from tools import browser_launcher, browser_lightpanda, browser_session, browser_session_cdp
-    from tools import browser_session_cloud, browser_session_lifecycle
+    from hermes_agent.tools import browser_launcher, browser_lightpanda, browser_session, browser_session_cdp
+    from hermes_agent.tools import browser_session_cloud, browser_session_lifecycle
 
     calls: list = []
     monkeypatch.setattr(runtime, "ensure_started_for_tool", lambda: calls.append(1))
@@ -342,8 +342,8 @@ def test_headed_chromium_spawn_asks_the_screen_to_start_but_the_env_builder_neve
     monkeypatch.setattr(browser_session_lifecycle, "start_cleanup_thread", lambda: None)
     monkeypatch.setattr(browser_session_cdp, "get_cdp_override", lambda: "")
     monkeypatch.setattr(browser_session_cloud, "get_cloud_provider", lambda: None)
-    monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
-    monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
+    monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
+    monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
     monkeypatch.setattr(browser_session_cloud, "get_browser_engine", lambda: engine)
     monkeypatch.setattr(browser_launcher, "launch_chromium", lambda key, **kw: (
         SimpleNamespace(cdp_url="ws://127.0.0.1:41234/devtools/browser/abc", pid=4242), None))
@@ -356,8 +356,8 @@ def test_headed_chromium_spawn_asks_the_screen_to_start_but_the_env_builder_neve
 def test_janitor_keeps_the_shared_browser_alive_while_a_human_holds_the_lease(monkeypatch):
     """#110064: the agent goes idle BECAUSE the human took over to log in; the janitor must count the human's
     lease as activity for the shared local browser, and reap it again once the lease is handed back."""
-    from tools import browser_session as session, browser_session_lifecycle as lifecycle
-    from tools.bot_desktop import lease
+    from hermes_agent.tools import browser_session as session, browser_session_lifecycle as lifecycle
+    from hermes_agent.tools.bot_desktop import lease
 
     monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":37"})
     holder = {"human": True}
@@ -395,7 +395,7 @@ def test_a_headless_shell_pin_is_replaced_while_a_screen_is_up(tmp_path, monkeyp
     headed.chmod(0o755)
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bot-desktop")
     monkeypatch.setattr(browser, "_managed_executable", lambda: str(headed))
-    monkeypatch.setattr("tools.browser_session_cloud.executable_path", lambda: str(shell))
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.executable_path", lambda: str(shell))
     # Unpinned, the ubuntu runner (non-root, userns-restricted) flips executable() to
     # its own /usr/bin/google-chrome; host policy is not the subject here.
     monkeypatch.setattr(browser, "_userns_restricted", lambda: False)
@@ -416,6 +416,6 @@ def test_a_real_user_pin_is_still_honoured(tmp_path, monkeypatch):
     other.chmod(0o755)
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path / "bot-desktop")
     monkeypatch.setattr(browser, "_managed_executable", lambda: str(other))
-    monkeypatch.setattr("tools.browser_session_cloud.executable_path", lambda: str(mine))
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.executable_path", lambda: str(mine))
 
     assert _agent_launch(monkeypatch)["executable"] == str(mine)

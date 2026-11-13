@@ -101,11 +101,11 @@ if not _loaded_env_paths:
     logger.info("No .env file found. Using system environment variables.")
 
 
-from model_tools import get_toolset_for_tool
-from tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
-from tools.interrupt import set_interrupt as _set_interrupt
-from tools.browser_session_lifecycle import cleanup_browser
-from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
+from hermes_agent.model_tools import get_toolset_for_tool
+from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
+from hermes_agent.tools.interrupt import set_interrupt as _set_interrupt
+from hermes_agent.tools.browser_session_lifecycle import cleanup_browser
+from hermes_agent.tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
 from agent.memory_provider import is_trivial_prompt
 from agent.client_lifecycle import ClientLifecycleMixin
@@ -293,7 +293,7 @@ class AIAgent(
         advertised ``session_search`` tool stays usable."""
         # Persistence-isolated forks (background review) must not lazily open the canonical state DB —
         # that would re-arm the flush to write the fork's harness turn into the user's real session.
-        from tools.hosted_tool_policy import host_feature_enabled
+        from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
         if getattr(self, "_persist_disabled", False) or not host_feature_enabled("session_recall"):
             return None  # hosted: the profile's state.db is not the agent's recall store
         if self._session_db is not None:
@@ -311,7 +311,7 @@ class AIAgent(
     def _session_row_model_config(self) -> Any:
         """``model_config`` for the lazily created session row: the init config plus a live /yolo toggled
         before the first turn (``hermes --resume`` restores it)."""
-        from tools.approval_yolo import with_session_yolo
+        from hermes_agent.tools.approval_yolo import with_session_yolo
         return with_session_yolo(self._session_init_model_config, self.session_id)
 
     def _ensure_db_session(self) -> None:
@@ -767,7 +767,7 @@ class AIAgent(
         (/refine, with or without focus) is user-initiated: it bypasses the automatic-only delegate,
         ``enabled`` and idle-defer gates (#87250: ``enabled: false`` stops only automatic forks).
         """
-        from tools.hosted_tool_policy import host_feature_enabled
+        from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
         if not host_feature_enabled("background_review"):
             return  # hosted: the review fork writes the profile's memory and skills on this host
         # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
@@ -809,7 +809,7 @@ class AIAgent(
         from agent.background_review import (
             finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
         )
-        from tools.thread_context import propagate_context_to_thread
+        from hermes_agent.tools.thread_context import propagate_context_to_thread
 
         review_run = prepare_background_review_run(self)
         if review_run is None:
@@ -1064,7 +1064,7 @@ class AIAgent(
 
     def _latest_todo_response(self, history: list[dict[str, Any]]) -> Optional[tuple]:
         """Walk history backwards for the newest paired, size-bounded todo result → ``(todos, revision)``."""
-        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+        from hermes_agent.tools.todo_tool import MAX_TODO_RESULT_CHARS
 
         for idx in range(len(history) - 1, -1, -1):
             msg = history[idx]
@@ -1104,7 +1104,7 @@ class AIAgent(
     @classmethod
     def _assistant_has_todo_tool_call(cls, assistant_msg: dict[str, Any], tool_call_id: str) -> bool:
         """True when the paired call resolves to the registered Todo tool."""
-        from tools.todo_tool import is_todo_tool_call
+        from hermes_agent.tools.todo_tool import is_todo_tool_call
 
         tool_calls = assistant_msg.get("tool_calls")
         return isinstance(tool_calls, list) and any(
@@ -1195,7 +1195,7 @@ class AIAgent(
     def _cap_delegate_task_calls(tool_calls: list) -> list:
         """Cap delegate_task calls in one turn at max_concurrent_children (non-delegate calls all kept);
         returns the original list when nothing was truncated."""
-        from tools.delegate_tool import _get_max_concurrent_children
+        from hermes_agent.tools.delegate_tool import _get_max_concurrent_children
         max_children = _get_max_concurrent_children()
         delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
         if delegate_count <= max_children:
@@ -1355,7 +1355,7 @@ class AIAgent(
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
         """Single call site for delegate_task dispatch; new DELEGATE_TASK_SCHEMA fields are added only here."""
-        from tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
+        from hermes_agent.tools.delegate_tool import _strip_model_hidden_task_fields, delegate_task as _delegate_task
         # Top-level MODEL delegations run in the background (handle returned, results re-enter as messages),
         # unless the session's delegate_task is the joined variant (one-shot, delegation.gateway_mode inline).
         # An ORCHESTRATOR SUBAGENT (depth > 0) stays synchronous — it needs results in-turn and owns no gateway
@@ -1432,8 +1432,8 @@ _LIST_TOOLS_USAGE = """
 
 def _print_tool_listing() -> None:
     """``--list_tools``: print toolsets (basic / composite / scenario / legacy), every tool, and usage examples."""
-    from model_tools import get_all_tool_names, get_available_toolsets
-    from toolsets import get_all_toolsets, get_toolset_info
+    from hermes_agent.model_tools import get_all_tool_names, get_available_toolsets
+    from hermes_agent.toolsets import get_all_toolsets, get_toolset_info
 
     print("📋 Available Tools & Toolsets:")
     print("-" * 50)

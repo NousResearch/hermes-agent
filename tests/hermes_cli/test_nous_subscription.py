@@ -4,8 +4,8 @@ import pytest
 
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
-from tools import tool_backend_helpers
-from tools.image_generation_catalog import DEFAULT_MODEL as FAL_DEFAULT_MODEL
+from hermes_agent.tools import tool_backend_helpers
+from hermes_agent.tools.image_generation_catalog import DEFAULT_MODEL as FAL_DEFAULT_MODEL
 
 
 _POOL_COVERAGE = {
@@ -62,7 +62,7 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
 def test_get_nous_subscription_features_recognizes_keyless_tavily_backend(monkeypatch):
     """Selecting Tavily in setup/tools counts as available with no API key.
 
-    Mirrors tools.web_tools._is_backend_available('tavily'): keyless is
+    Mirrors hermes_agent.tools.web_tools._is_backend_available('tavily'): keyless is
     opt-in via web.backend / search_backend / extract_backend, not a
     silent empty-install default. The setup summary previously required
     TAVILY_API_KEY and printed a false 'missing' after a skipped key prompt.
@@ -129,7 +129,7 @@ def _stub_browser_probes(monkeypatch, *, harness, chromium):
         ns, "get_nous_portal_account_info", lambda: _account(logged_in=False)
     )
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
-    monkeypatch.setattr("tools.browser_use_cli._find_cli", lambda: ["harness"] if harness else None)
+    monkeypatch.setattr("hermes_agent.tools.browser_use_cli._find_cli", lambda: ["harness"] if harness else None)
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
     monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
     monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
@@ -222,7 +222,7 @@ def test_logged_in_entitled_account_yields_a_state_for_every_feature(monkeypatch
     ],
 )
 def test_managed_image_partner_follows_the_stored_model(image_cfg, partner):
-    """The partner is the gateway the runtime dispatcher routes to (tools.image_generation_managed.
+    """The partner is the gateway the runtime dispatcher routes to (hermes_agent.tools.image_generation_managed.
     managed_route): the stored model decides under the managed pick, Portal ids only with an
     explicit ``nous``; a direct vendor owns its model id."""
     assert ns.managed_image_partner({"image_gen": image_cfg}) == partner

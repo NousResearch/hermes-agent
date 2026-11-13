@@ -443,7 +443,7 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
             title = str((db.get_session_title(key) if (db and key) else None) or "").strip()
         if title != "Bot Chat":
             return
-        from tools.bot_mode_probe import capability_fingerprint
+        from hermes_agent.tools.bot_mode_probe import capability_fingerprint
         current = capability_fingerprint(session.get("profile_home") or None)
         if current == "unavailable":
             return

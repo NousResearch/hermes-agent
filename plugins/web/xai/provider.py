@@ -13,7 +13,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from plugins.web._common import BaseWebSearchProvider, search_fail as _fail, search_ok, setup_schema, title_hit as _row
-from tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials
+from hermes_agent.tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
 
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
         try:
-            from tools.interrupt import is_interrupted
+            from hermes_agent.tools.interrupt import is_interrupted
             if is_interrupted():
                 return _fail("Interrupted")
         except Exception:

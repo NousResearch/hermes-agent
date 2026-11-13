@@ -10,8 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from hermes_agent.gateway.config import Platform
-from tools.send_message_tool import _send_to_platform, send_message_tool
-from tools.send_message_targets import _parse_target_ref
+from hermes_agent.tools.send_message_tool import _send_to_platform, send_message_tool
+from hermes_agent.tools.send_message_targets import _parse_target_ref
 
 
 def _run_async_immediately(coro):
@@ -275,10 +275,10 @@ def test_send_message_routes_buzz_uuid_without_home_fallback() -> None:
     channel_id = "31b543d5-80d4-4df5-8a5c-cefca1a58fdd"
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
          patch("hermes_agent.gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw UUID should not resolve via directory")), \
-         patch("model_tools._run_async", side_effect=_run_async_immediately), \
-         patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+         patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
          patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(
             send_message_tool(
@@ -338,10 +338,10 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
     )
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
          patch("hermes_agent.gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("raw JID should not resolve via directory")), \
-         patch("model_tools._run_async", side_effect=_run_async_immediately), \
-         patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+         patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
          patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(
             send_message_tool(
@@ -385,14 +385,14 @@ def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
     )
     try:
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch(
                  "hermes_agent.gateway.channel_directory.resolve_channel_name",
                  return_value="opaque:directory-id",
              ), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
              patch(
-                 "tools.send_message_tool._send_to_platform",
+                 "hermes_agent.tools.send_message_tool._send_to_platform",
                  new=AsyncMock(return_value={"success": True}),
              ) as send_mock, \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
@@ -443,7 +443,7 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
     )
     try:
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch(
                  "hermes_agent.gateway.channel_directory.resolve_channel_name",
                  return_value=None,
@@ -452,9 +452,9 @@ def test_unresolved_plugin_target_requires_explicit_parser() -> None:
                  "hermes_cli.plugins.discover_plugins",
                  side_effect=lambda: platform_registry.register(entry),
              ) as discover_mock, \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
              patch(
-                 "tools.send_message_tool._send_to_platform",
+                 "hermes_agent.tools.send_message_tool._send_to_platform",
                  new=AsyncMock(return_value={"success": True}),
              ) as send_mock, \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
@@ -485,7 +485,7 @@ def test_unresolved_builtin_target_keeps_directory_error() -> None:
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None), \
          patch(
-             "tools.send_message_tool._send_to_platform",
+             "hermes_agent.tools.send_message_tool._send_to_platform",
              new=AsyncMock(return_value={"success": True}),
          ) as send_mock:
         result = json.loads(
@@ -509,7 +509,7 @@ def test_unresolved_builtin_target_passes_through_when_requested() -> None:
     built-in targets: with no model in the loop to react to an error, the
     raw id must reach the adapter, as it did before resolve_send_target
     took over these callers."""
-    from tools.send_message_tool import resolve_send_target
+    from hermes_agent.tools.send_message_tool import resolve_send_target
 
     with patch("hermes_agent.gateway.channel_directory.resolve_channel_name", return_value=None):
         chat_id, thread_id, error = resolve_send_target(
@@ -528,7 +528,7 @@ def test_photon_group_guid_passes_through_when_requested() -> None:
     pattern (only DM GUIDs have an explicit rule) and no directory entry.
     Photon registers as a parser-less plugin platform, so the pass-through
     applies once platforms are prepared."""
-    from tools.send_message_tool import (
+    from hermes_agent.tools.send_message_tool import (
         prepare_send_message_platforms,
         resolve_send_target,
     )
@@ -548,7 +548,7 @@ def test_parserless_plugin_target_passes_through_when_requested() -> None:
     """A plugin platform that declares no parser has no explicit syntax at
     all, so passing the raw id through is the only way cron can target it."""
     from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
-    from tools.send_message_tool import resolve_send_target
+    from hermes_agent.tools.send_message_tool import resolve_send_target
 
     platform_name = "opaque-cron-fallback-test"
     entry = PlatformEntry(
@@ -576,7 +576,7 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
     its parser is the authority on native syntax, so an unrecognized
     target errors even with pass_unresolved_references."""
     from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
-    from tools.send_message_tool import resolve_send_target
+    from hermes_agent.tools.send_message_tool import resolve_send_target
 
     platform_name = "opaque-parser-strict-test"
     entry = PlatformEntry(
@@ -602,8 +602,8 @@ def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
 def test_unknown_platform_that_left_core_names_its_install_command(tmp_path, monkeypatch):
     """A platform that moved out of core into a catalog plugin, sent to while the plugin is absent."""
     from hermes_agent.gateway.config import GatewayConfig
-    from tools.send_message_targets import resolve_send_target
-    from tools.send_message_tool import _resolve_platform_config
+    from hermes_agent.tools.send_message_targets import resolve_send_target
+    from hermes_agent.tools.send_message_tool import _resolve_platform_config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _, _, _, err = _resolve_platform_config("homeassistant", GatewayConfig())
@@ -623,9 +623,9 @@ def test_bare_platform_home_fallback_preserves_thread_id() -> None:
     )
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-         patch("tools.interrupt.is_interrupted", return_value=False), \
-         patch("model_tools._run_async", side_effect=_run_async_immediately), \
-         patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+         patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+         patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
          patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
         result = json.loads(
             send_message_tool(

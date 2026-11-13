@@ -134,7 +134,7 @@ def run_one(scenario, mode, rep, out_dir: Path):
     base.reset_module_state()
     register_epic_tools_adversarial()
 
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     original_dispatch = registry.dispatch
     call_log: list[str] = []
 

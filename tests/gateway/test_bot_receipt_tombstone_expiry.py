@@ -12,7 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 import hermes_agent.hermes_state_runtime as rt
 from hermes_agent.gateway.session_results import retain_result
 from hermes_agent.hermes_state import SessionDB
-from tools.bot_live_delivery import _locked, _read, _write
+from hermes_agent.tools.bot_live_delivery import _locked, _read, _write
 
 KEY = "a" * 32
 

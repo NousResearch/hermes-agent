@@ -10,7 +10,7 @@ import tempfile
 import pytest
 
 from hermes_cli.web_routers import display
-from tools.bot_desktop import lease
+from hermes_agent.tools.bot_desktop import lease
 
 
 class _Ws:
@@ -92,7 +92,7 @@ class _OpenWs(_Ws):
 def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_interval(monkeypatch):
     """The bridge caches the input decision instead of reading lease.json per message; a takeover
     written by ANOTHER process (no in-process listener fires) must still be seen quickly."""
-    from tools.bot_desktop import rfb_filter
+    from hermes_agent.tools.bot_desktop import rfb_filter
     captured = {}
 
     class _Filter(rfb_filter.RfbClientFilter):

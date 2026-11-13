@@ -374,7 +374,7 @@ class TestPrompt:
         is authoritative — so ``_make_run_env`` handed child subprocesses an
         empty ``HERMES_SESSION_ID`` instead of the session's own id.
         """
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
 
         resp = await agent.new_session(cwd=".")
         state = mock_manager.get_session(resp.session_id)
@@ -661,8 +661,8 @@ class TestRegisterSessionMcpServers:
             pinned_cwd["value"] = resolve_context_cwd()  # the stdio default cwd reads this pin
             return ["mcp_test_server_tool1"]
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=capture_register), \
-             patch("model_tools.get_tool_definitions", return_value=[]):
+        with patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", side_effect=capture_register), \
+             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]):
             await agent._register_session_mcp_servers(state, [server])
 
         assert "test-server" in registered_config
@@ -704,8 +704,8 @@ class TestRegisterSessionMcpServers:
             {"function": {"name": "terminal"}},
         ]
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp_srv_search"]), \
-             patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
+        with patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", return_value=["mcp_srv_search"]), \
+             patch("hermes_agent.model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
         mock_defs.assert_called_once_with(
@@ -745,7 +745,7 @@ class TestRegisterSessionMcpServers:
             env=[],
         )
 
-        with patch("tools.mcp_tool_discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
+        with patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
 

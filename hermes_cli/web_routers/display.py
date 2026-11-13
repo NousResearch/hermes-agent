@@ -4,7 +4,7 @@ The Desktop renderer calls ``display.observe`` on its authenticated ``/api/ws`` 
 single-use 30 s ticket pinned to that profile's RFB socket, then opens this route with
 ``?display_ticket=``. No websockify, no new port: the bridge splices the profile's 0600 Unix socket
 into the WebSocket as binary frames with backpressure both ways, and runs the client stream through
-:class:`tools.bot_desktop.rfb_filter.RfbClientFilter` so keyboard, pointer and clipboard reach Xvnc
+:class:`hermes_agent.tools.bot_desktop.rfb_filter.RfbClientFilter` so keyboard, pointer and clipboard reach Xvnc
 only from the viewer that currently holds the lease. noVNC's ``viewOnly`` is UX; this is the gate.
 
 A lease change closes the evicted viewer's socket with 4000 ``control-taken`` so its UI drops back to
@@ -49,7 +49,7 @@ def _should_evict(held: dict, lease, viewer_id: str) -> bool:
     UI repaints; a plain hand-back to the agent, pure watchers and the new holder stay connected. The
     hand-back also forgets that this viewer ever held: after it, they are a plain watcher again and a
     later takeover by someone else must not evict them. ``held`` is the per-connection memory."""
-    from tools.bot_desktop import lease as _lease
+    from hermes_agent.tools.bot_desktop import lease as _lease
     if lease.holder != _lease.HUMAN:
         held["ever"] = False
         return False
@@ -115,7 +115,7 @@ async def _open_rfb(profile_home: Path):
     the terminal backend: a ``docker exec`` / ``ssh`` relay whose stdio IS the RFB stream (``relay`` is that
     Popen; None for a socket). Raises OSError when nothing is running."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.bot_desktop import runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     token = set_hermes_home_override(profile_home)
     try:
         if _bd_runtime.sandbox_screen_running():
@@ -142,8 +142,8 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     """Pump RFB bytes between the viewer socket (already accepted) and THIS profile's Xvnc, gated by
     the lease."""
     from hermes_constants import hermes_home_key
-    from tools.bot_desktop import lease as _lease
-    from tools.bot_desktop.rfb_filter import RfbClientFilter
+    from hermes_agent.tools.bot_desktop import lease as _lease
+    from hermes_agent.tools.bot_desktop.rfb_filter import RfbClientFilter
 
     profile_home = str(info["hermes_home"])
     profile_key = hermes_home_key(profile_home)

@@ -121,7 +121,7 @@ def test_release_unbinds_home_secrets_and_terminal_together(two_homes, monkeypat
     the others on this thread, whichever reset helper a caller has patched."""
     from agent.secret_scope import current_secret_scope
     from hermes_constants import get_hermes_home_override
-    from tools import terminal_scope
+    from hermes_agent.tools import terminal_scope
 
     root, b = two_homes
     scopes = server._profile_runtime_scope_tokens(str(b))

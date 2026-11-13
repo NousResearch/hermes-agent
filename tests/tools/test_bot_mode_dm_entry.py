@@ -1,6 +1,6 @@
 """The ``bot_mode_dm.py`` runner entry boots Hermes' dependency environment itself.
 
-``message_agent`` spawns ``<sys.executable> tools/bot_mode_dm.py --run-delivery …`` and the relay
+``message_agent`` spawns ``<sys.executable> hermes_agent/tools/bot_mode_dm.py --run-delivery …`` and the relay
 spawns ``… --wait-reply …`` (``bot_relay.waiter_command``). Under a PM-managed install
 ``sys.executable`` is the bare store interpreter: dependencies are activated in-process at boot,
 and the terminal backend strips the Hermes-owned ``PYTHONPATH``, so a runner that does not boot
@@ -21,11 +21,11 @@ from pathlib import Path
 import pytest
 
 from pm.environments import install_state_dir, runtime_facts_path, site_packages
-from tools import bot_relay
-from tools.bot_mode_dm import _dm_delivery_id
+from hermes_agent.tools import bot_relay
+from hermes_agent.tools.bot_mode_dm import _dm_delivery_id
 
 REPO = Path(__file__).resolve().parents[2]
-RUNNER = REPO / "tools" / "bot_mode_dm.py"
+RUNNER = REPO / "hermes_agent" / "tools" / "bot_mode_dm.py"
 # A bare interpreter: isolated (-I ignores PYTHONPATH/PYTHONHOME, user site) and no site
 # module (-S), so no third-party package is importable unless the entry activates one.
 BARE = [sys.executable, "-I", "-S"]

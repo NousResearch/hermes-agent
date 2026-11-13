@@ -11,7 +11,7 @@ def test_secret_source_injected_vars_are_passed(monkeypatch):
     """Vars tagged by an external secret source (Bitwarden/1Password) are
     deliberately allowed for MCP stdio servers."""
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     monkeypatch.setitem(env_loader._SECRET_SOURCES, "ALPACA_API_KEY", "bitwarden")
     monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
@@ -36,7 +36,7 @@ def test_secret_source_vars_resolve_through_active_profile_scope(monkeypatch):
     never the launch profile's os.environ copy; a name the profile lacks is omitted."""
     from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     monkeypatch.setitem(env_loader._SECRET_SOURCES, "ALPACA_API_KEY", "bitwarden")
     monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
@@ -60,7 +60,7 @@ def test_secret_source_never_forwards_hermes_credentials(monkeypatch):
     """Where a Hermes-managed credential is stored (``.env`` or a secret source) must not change
     whether a stdio child receives it; a server that needs one declares it in its own ``env``."""
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     hermes_creds = {"OPENAI_API_KEY": "sk-MARKER-provider", "TELEGRAM_BOT_TOKEN": "MARKER-bot"}
     fake_env = {"PATH": "/usr/bin", "ALPACA_API_KEY": "MARKER-third-party", **hermes_creds,
@@ -82,7 +82,7 @@ def test_secret_source_never_forwards_profile_platform_plugin_secret(monkeypatch
     """A secret the bound profile's user-installed platform plugin declares is that adapter's
     credential, so a secret-source copy of it is withheld like a bundled adapter's token."""
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     plugin = Path(os.environ["HERMES_HOME"]) / "plugins" / "platforms" / "chatx"
     plugin.mkdir(parents=True)
@@ -103,7 +103,7 @@ def test_secret_source_never_forwards_config_declared_provider_keys(monkeypatch)
     ``api_key_env`` on the main model, a custom/named provider, an auxiliary task, a fallback
     route) is a Hermes credential under that name, so a vault copy of it is withheld too."""
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
         "model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n  key_env: MY_LLM_KEY\n"
@@ -132,7 +132,7 @@ def test_secret_source_never_forwards_config_env_ref_credentials(monkeypatch):
     is withheld even though the merged config already holds the expanded value. An
     ``mcp_servers.*.env`` ref is the server's declared env and is still forwarded."""
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
         "delegation:\n  base_url: http://127.0.0.1:9/v1\n  api_key: ${DELEGATION_KEY}\n"
@@ -157,7 +157,7 @@ def test_secret_source_never_forwards_model_api_alias_ref(monkeypatch):
     """``model.api`` is read as the main model's API key (an alias of ``model.api_key``), so a
     ``${VAR}`` there makes VAR a Hermes credential whose vault copy is withheld."""
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
         "model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n  api: ${LAB_LLM}\n", encoding="utf-8")
@@ -174,7 +174,7 @@ def test_secret_source_never_forwards_managed_config_credential_refs(monkeypatch
     ``${VAR}`` it declares is a Hermes credential exactly like one in the profile file; its own
     ``mcp_servers.*.env`` refs stay the server's declared env."""
     from hermes_cli import env_loader, managed_scope
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     managed = tmp_path / "managed"
     managed.mkdir()
@@ -203,7 +203,7 @@ def test_secret_source_never_forwards_embedded_credential_ref(monkeypatch, templ
     """The loader expands every ``${VAR}`` inside a credential string, not only a whole-value one,
     so a name embedded in one is a Hermes credential too; a third-party name stays forwarded."""
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
         f'model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n  api_key: "{template}"\n',
@@ -225,7 +225,7 @@ def test_secret_source_withholds_last_good_credential_while_config_is_broken(mon
     names they were read from stay withheld instead of being released by the failed raw read."""
     from hermes_cli import env_loader
     from hermes_cli.config import load_config_readonly
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     config = Path(os.environ["HERMES_HOME"]) / "config.yaml"
     config.write_text("model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n"
@@ -251,7 +251,7 @@ def test_unreadable_backups_dir_does_not_stop_stdio_env_while_config_is_broken(m
     an exception: the stdio server still starts (the env is built), as it did before the lookup."""
     from hermes_cli import config_backups, env_loader
     from hermes_cli.config import load_config_readonly
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     config = Path(os.environ["HERMES_HOME"]) / "config.yaml"
     config.write_text("model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n"
@@ -276,7 +276,7 @@ def test_secret_source_mcp_server_env_pointer_does_not_block_vendor_token(monkey
     """An MCP server env entry is not a Hermes credential declaration, even if its
     arbitrary name matches the *_key_env pointer convention elsewhere in config."""
     from hermes_cli import env_loader
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
         "model:\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n  key_env: MY_LLM_KEY\n"

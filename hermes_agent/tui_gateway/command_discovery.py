@@ -32,7 +32,7 @@ def _skill_usage_lookup():
     """``(usage, origin)`` callables for the skill catalog: activity count (use + view + patch) and
     "hub" / "bundled" / "local" (``/api/skills`` ``provenance``, "local" spelled "agent"). Failure → 0 / "local"."""
     try:
-        from tools.skill_usage import (
+        from hermes_agent.tools.skill_usage import (
             _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
         records, bundled, hub = load_usage(), _read_bundled_names(), _read_hub_installed_names()
     except Exception as e:
@@ -199,7 +199,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> st
     collision_note = getattr(sc, "skill_command_collision_note", None)
     if collision_note is None:
         return ""
-    names = sorted(s["name"] for s in module_loader("tools.skills_tool").find_all_skills())
+    names = sorted(s["name"] for s in module_loader("hermes_agent.tools.skills_tool").find_all_skills())
     return "; ".join(filter(None, map(collision_note, names)))
 
 

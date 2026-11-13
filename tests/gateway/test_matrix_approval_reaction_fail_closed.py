@@ -109,9 +109,9 @@ def _run(adapter, event):
     adapter._approval_prompts_by_event[prompt_event_id] = prompt
     adapter._redact_bot_approval_reactions = AsyncMock()
 
-    fake_approval = types.ModuleType("tools.approval")
+    fake_approval = types.ModuleType("hermes_agent.tools.approval")
     fake_approval.resolve_gateway_approval = lambda session_key, choice: 1
-    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+    with patch.dict(sys.modules, {"hermes_agent.tools.approval": fake_approval}):
         asyncio.run(adapter._on_reaction(event))
 
     return prompt.resolved

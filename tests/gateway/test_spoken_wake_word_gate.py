@@ -64,7 +64,7 @@ async def test_telegram_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path,
     transcribe, calls = _stt(spoken)
     adapter = _telegram(opt_in)
     msg = _voice_note()
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._handle_media_message(SimpleNamespace(message=msg, update_id=1), SimpleNamespace())
 
     assert adapter.handle_message.await_count == (1 if admitted else 0)
@@ -86,7 +86,7 @@ async def test_the_turn_reuses_the_gate_transcript(tmp_path):
     clip.write_bytes(OGG)
     recaptured = tmp_path / "admitted.ogg"
     transcribe, calls = _stt("hermes, what is on today")
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS]) == [str(clip)]
         recaptured.write_bytes(clip.read_bytes())
         runner = GatewayInboundTranscriptionMixin()
@@ -116,7 +116,7 @@ async def test_whatsapp_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path,
     data = {"chatId": "123@g.us", "senderId": "1555@s.whatsapp.net", "isGroup": True, "body": "[ptt received]",
             "hasMedia": True, "mediaType": "ptt", "mime": "audio/ogg", "mediaUrls": [str(clip)], "messageId": "m1"}
     transcribe, calls = _stt(spoken)
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         event = await adapter._build_message_event(data)
 
     assert len(calls) == 1
@@ -139,7 +139,7 @@ async def test_photon_group_voice_note_wakes_on_the_spoken_wake_word(tmp_path, m
         "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
     adapter.handle_message = AsyncMock()
     transcribe, calls = _stt(spoken)
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._dispatch_inbound({
             "messageId": "v1", "space": {"id": "group-guid", "type": "group", "phone": None},
             "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z",
@@ -167,7 +167,7 @@ async def test_photon_grouped_voice_payload_matches_spoken_wake_word(tmp_path, m
     content = {"type": "group", "items": [
         {"content": {"type": "attachment", "name": "p.png", "mimeType": "image/png", "data": base64.b64encode(b"\x89PNG").decode()}},
         {"content": {"type": "voice", "name": "voice.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}}]}
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._dispatch_inbound({
             "messageId": "grouped-v1", "space": {"id": "group-guid", "type": "group", "phone": None},
             "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
@@ -198,7 +198,7 @@ async def test_bluebubbles_group_voice_memo_wakes_on_the_spoken_wake_word(tmp_pa
         "chats": [{"guid": "iMessage;+;group-chat"}], "attachments": [{"guid": "a1", "mimeType": "audio/ogg"}]}}).encode()
     request = SimpleNamespace(query={"password": "secret"}, headers={}, read=AsyncMock(return_value=body))
     transcribe, calls = _stt(spoken)
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._handle_webhook(request)
         await asyncio.sleep(0)
 
@@ -227,7 +227,7 @@ async def test_a_bluebubbles_memo_from_an_unauthorized_sender_is_never_fetched_o
         "chats": [{"guid": "iMessage;+;group-chat"}], "attachments": [{"guid": "a1", "mimeType": "audio/ogg"}]}}).encode()
     request = SimpleNamespace(query={"password": "secret"}, headers={}, read=AsyncMock(return_value=body))
     transcribe, calls = _stt("hermes, what is on today")
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._handle_webhook(request)
         await asyncio.sleep(0)
 
@@ -250,7 +250,7 @@ async def test_disabled_stt_never_transcribes_at_the_gate_even_with_local_fallba
     def fallback(path, _model=None):
         local.append(path)
         return {"success": True, "transcript": "hermes, what is on today", "provider": "local"}
-    with patch("tools.transcription_tools.transcribe_audio_local_fallback", side_effect=fallback):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio_local_fallback", side_effect=fallback):
         assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS]) == []
     assert local == []
 
@@ -284,7 +284,7 @@ async def test_telegram_gate_transcribes_in_the_routed_profile(tmp_path, monkeyp
     adapter = _telegram(True)
     adapter.gateway_runner = SimpleNamespace(_async_profile_scope_for_source=scope,
                                              _profile_name_for_source=lambda *_a, **_k: None)
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._handle_media_message(SimpleNamespace(message=_voice_note(), update_id=1), SimpleNamespace())
 
     assert entered == ["-100"] and homes == [str(routed)]
@@ -319,7 +319,7 @@ async def test_photon_gate_stt_never_holds_the_inbound_reader(tmp_path, monkeypa
     group = {"id": "group-guid", "type": "group", "phone": None}
     dm = {"id": "dm-guid", "type": "dm", "phone": "+15551234567"}
     voice = {"type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=slow):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=slow):
         await asyncio.wait_for(adapter._on_inbound_line(line("v1", group, voice)), 2)
         await asyncio.wait_for(adapter._on_inbound_line(line("t1", group, {"type": "text", "text": "hermes later"})), 2)
         await asyncio.wait_for(adapter._on_inbound_line(line("s1", dm, {"type": "text", "text": "/stop"})), 2)
@@ -343,7 +343,7 @@ async def test_the_gate_honours_the_runners_stt_setting(tmp_path, monkeypatch):
     clip.write_bytes(OGG)
     adapter = SimpleNamespace(gateway_runner=SimpleNamespace(config=SimpleNamespace(stt_enabled=False)))
     transcribe, calls = _stt("hermes, what is on today")
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS], adapter=adapter) == []
     assert calls == []
 
@@ -363,7 +363,7 @@ async def test_a_gate_transcript_never_crosses_profiles(tmp_path):
     transcribe, calls = _stt("hermes, what is on today")
     runner = GatewayInboundTranscriptionMixin()
     runner.config = SimpleNamespace(stt_enabled=True)
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         token = set_hermes_home_override(str(tmp_path / "a"))
         try:
             assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS], keep=frozenset({str(clip)}))
@@ -398,8 +398,8 @@ async def test_the_turn_notes_name_its_own_audio_never_the_gate_copy(tmp_path):
         return {"success": True, "transcript": "hermes, what is on today", "provider": "fake"}
     runner = GatewayInboundTranscriptionMixin()
     runner.config = SimpleNamespace(stt_enabled=True)
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe), \
-            patch("tools.transcription_tools.transcribe_audio_local_fallback", return_value={"success": False}):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe), \
+            patch("hermes_agent.tools.transcription_tools.transcribe_audio_local_fallback", return_value={"success": False}):
         assert await spoken_mention_clips([str(p) for p in gate], [re.compile(p) for p in PATTERNS])
         turn = [tmp_path / "turn_1.ogg", tmp_path / "turn_2.ogg"]
         for src, dst in zip(gate, turn):
@@ -424,7 +424,7 @@ async def test_a_sender_the_runner_refuses_is_never_transcribed(tmp_path):
                              _is_user_authorized_for_source=lambda src: asked.append(src.user_id) or False)
     adapter = SimpleNamespace(gateway_runner=runner, _canonicalize=lambda _src: None)
     transcribe, calls = _stt("hermes, what is on today")
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         assert await spoken_mention_clips([str(clip)], [re.compile(p) for p in PATTERNS], adapter=adapter,
                                           source=SimpleNamespace(user_id="blocked")) == []
     assert asked == ["blocked"] and calls == []
@@ -443,7 +443,7 @@ async def test_photon_caf_attachment_voice_note_wakes_on_the_spoken_wake_word(tm
         "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
     adapter.handle_message = AsyncMock()
     transcribe, calls = _stt("hermes, what is on today")
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._dispatch_inbound({
             "messageId": "caf1", "space": {"id": "group-guid", "type": "group", "phone": None},
             "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z",
@@ -471,7 +471,7 @@ async def test_photon_document_first_envelope_still_sends_its_spoken_audio_to_st
     content = {"type": "group", "items": [
         {"content": {"type": "attachment", "name": "a.pdf", "mimeType": "application/pdf", "data": base64.b64encode(b"%PDF").decode()}},
         {"content": {"type": "voice", "name": "voice.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}}]}
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._dispatch_inbound({
             "messageId": "dv1", "space": {"id": "group-guid", "type": "group", "phone": None},
             "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
@@ -507,7 +507,7 @@ async def test_a_group_control_command_never_waits_on_an_earlier_voice_check(tmp
         return json.dumps({"messageId": mid, "space": {"id": "group-guid", "type": "group", "phone": None},
                            "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
     voice = {"type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=slow):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=slow):
         await asyncio.wait_for(adapter._on_inbound_line(line("v1", voice)), 2)
         await asyncio.wait_for(adapter._on_inbound_line(line("t1", {"type": "text", "text": "hermes later"})), 2)
         # Photon's group mention gate needs the wake word on a command too.
@@ -541,7 +541,7 @@ async def test_a_busy_session_sends_only_the_admitted_envelopes_audio_to_stt(tmp
     transcribe, _calls = _stt("hermes, look at this")
     content = {"type": "group", "items": [{"content": first}, {"content": {
         "type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}}]}
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._dispatch_inbound({
             "messageId": "mx1", "space": {"id": "group-guid", "type": "group", "phone": None},
             "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
@@ -579,7 +579,7 @@ async def test_a_session_command_keeps_its_place_behind_an_earlier_voice_note(tm
         return json.dumps({"messageId": mid, "space": {"id": "group-guid", "type": "group", "phone": None},
                            "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
     voice = {"type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=slow):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=slow):
         await asyncio.wait_for(adapter._on_inbound_line(line("v1", voice)), 2)
         await asyncio.wait_for(adapter._on_inbound_line(line("c1", {"type": "text", "text": command})), 2)
         await asyncio.wait_for(adapter._on_inbound_line(line("t1", {"type": "text", "text": "hermes later"})), 2)
@@ -606,7 +606,7 @@ async def test_a_photon_caf_sent_as_octet_stream_is_transcribed_as_the_voice_it_
         "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
     adapter.handle_message = AsyncMock()
     transcribe, calls = _stt("hermes, what is on today")
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._dispatch_inbound({
             "messageId": "caf2", "space": {"id": "group-guid", "type": "group", "phone": None},
             "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z",
@@ -647,7 +647,7 @@ async def test_a_threaded_reply_stop_never_waits_on_an_earlier_voice_check(tmp_p
     voice = {"type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}
     stop = {"type": "reply", "targetMessageId": "old", "content": {"type": "text", "text": "/stop hermes"}}
     try:
-        with patch("tools.transcription_tools.transcribe_audio", side_effect=slow):
+        with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=slow):
             await asyncio.wait_for(adapter._on_inbound_line(line("v1", voice)), 2)
             await asyncio.wait_for(adapter._on_inbound_line(line("s1", stop)), 2)
             assert seen == ["s1"]
@@ -683,7 +683,7 @@ async def test_a_bluebubbles_memo_beside_a_file_sends_only_its_audio_to_stt_and_
         "attachments": [{"guid": "a1", **memo}, {"guid": "d1", **other}]}}).encode()
     request = SimpleNamespace(query={"password": "secret"}, headers={}, read=AsyncMock(return_value=body))
     transcribe, calls = _stt("hermes, look at this")
-    with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+    with patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         await adapter._handle_webhook(request)
         await asyncio.sleep(0)
 

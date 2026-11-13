@@ -48,7 +48,7 @@ async def shell_exec(connection, ref, params):
     backend = str(json.loads(policy.terminal_json).get('TERMINAL_ENV') or '').strip().lower()
     if backend not in _LOCAL_BACKENDS:
         raise RuntimeStoreError('unsupported_terminal_backend', field='terminal.backend', detail=backend)
-    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    from hermes_agent.tools.approval_detection import detect_dangerous_command, detect_hardline_command
     if detect_hardline_command(command)[0] or detect_dangerous_command(command)[0]:
         raise RuntimeStoreError('dangerous_command')
     return await asyncio.to_thread(_run, command, policy.cwd)
@@ -57,7 +57,7 @@ async def shell_exec(connection, ref, params):
 def _run(command, cwd):
     from agent.redact import redact_sensitive_text
     from hermes_cli._subprocess_compat import windows_hide_flags
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
     # shell=True keeps the user-facing !cmd grammar (pipes, redirects); the child never inherits
     # credentials the long-lived owner holds, nor a launch profile's .env residue in a routed one.
     if not os.path.isdir(cwd):  # a deleted checkout / worktree: never fall back to the owner's cwd

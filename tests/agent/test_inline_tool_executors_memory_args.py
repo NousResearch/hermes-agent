@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-from tools.memory_tool_store import MemoryStore
+from hermes_agent.tools.memory_tool_store import MemoryStore
 
 
 def test_memory_alias_persists_with_content_precedence(tmp_path, monkeypatch):

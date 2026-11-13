@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from agent import skill_bundles
 from agent import skill_commands
-from tools import skills_tool
+from hermes_agent.tools import skills_tool
 from agent import prompt_cache_boundary
 from agent.prompt_cache_boundary import (
     find_stable_prefix,
@@ -364,9 +364,9 @@ class TestCronBuilder:
         with patch(
             "agent.skill_bundles.resolve_bundle_command_key", return_value=None
         ), patch(
-            "tools.skills_tool.skill_view", side_effect=self._skill_view
+            "hermes_agent.tools.skills_tool.skill_view", side_effect=self._skill_view
         ), patch(
-            "tools.skill_usage.bump_use"
+            "hermes_agent.tools.skill_usage.bump_use"
         ):
             return [_build_job_prompt(job) for job in jobs]
 

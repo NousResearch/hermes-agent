@@ -13,7 +13,7 @@ from tests.gateway.test_completion_admission import pending
 from tests.gateway.test_session_end_delegations import _admissions, _local
 from tests.gateway.test_unviewed_completion_notes import _process_event, _target, _turns
 from tests.gateway.test_unviewed_delegation_failure_turn import _batch, _fail, _notes
-from tools import async_delegation as delegation
+from hermes_agent.tools import async_delegation as delegation
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +114,7 @@ async def test_successful_manual_cron_run_stays_a_note(tmp_path, monkeypatch):
 
 
 def test_resume_predicate_covers_results_not_diagnostics():
-    from tools.process_registry_notifications import completion_resumes_parent
+    from hermes_agent.tools.process_registry_notifications import completion_resumes_parent
     assert completion_resumes_parent({'type': 'async_delegation', 'status': 'completed'})
     assert completion_resumes_parent({'type': 'completion', 'exit_code': 0})
     assert not completion_resumes_parent({'type': 'async_delegation', 'task_failure_notice': True})

@@ -41,7 +41,7 @@ def _no_fallback_notice(connector) -> bool:
 
 
 def test_send_message_tool_reports_an_unconfirmed_attachment(ack_lost_relay, tmp_path):
-    from tools.send_message_tool import _send_live_adapter_media
+    from hermes_agent.tools.send_message_tool import _send_live_adapter_media
 
     connector, adapter, loop = ack_lost_relay
     pdf = tmp_path / "q3-report.pdf"

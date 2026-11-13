@@ -123,8 +123,8 @@ def schema(tree, mode):
     code = (
         "import json, os, sys\n"
         "sys.path.insert(0, sys.argv[1])\n"
-        "from tools.registry import registry\n"
-        "import tools.delegate_tool\n"
+        "from hermes_agent.tools.registry import registry\n"
+        "import hermes_agent.tools.delegate_tool\n"
         "print(json.dumps(registry.get_definitions({'delegate_task'})[0]))\n"
     )
     with tempfile.TemporaryDirectory(prefix="dg-schema-") as home:

@@ -211,7 +211,7 @@ DEFAULT_CONFIG = {
         "gateway_timeout_warning": 900,
         # Max seconds any surface (CLI, TUI/Desktop, messaging gateway) blocks an agent awaiting a
         # clarify-tool reply; then it unblocks with "[user did not respond within Xm]". 0 or less =
-        # unlimited. Resolved by tools/clarify_gateway.py::resolve_clarify_timeout (a legacy
+        # unlimited. Resolved by hermes_agent/tools/clarify_gateway.py::resolve_clarify_timeout (a legacy
         # top-level ``clarify.timeout`` still wins when explicitly set).
         # 90s: an unanswered question must not hold the turn (and the chat) for long. A user who
         # writes anything instead of answering cancels the question at once and their message runs.
@@ -1673,7 +1673,7 @@ DEFAULT_CONFIG = {
         # /reload-mcp confirms before rebuilding the MCP tool set (it invalidates the prompt cache). "Always Approve" → false.
         "mcp_reload_confirm": True,
         # /clear, /new, /reset, /undo confirm before discarding state (Approve Once / Always Approve
-        # / Cancel via tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
+        # / Cancel via hermes_agent.tools.slash_confirm; native buttons on Telegram/ Discord/Slack). "Always
         # Approve" → false. HERMES_TUI_NO_CONFIRM=1 skips the TUI modal.
         "destructive_slash_confirm": True,
     },
@@ -1932,7 +1932,7 @@ DEFAULT_CONFIG = {
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
     },
-    # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
+    # Bot Mode cross-connection relay (hermes_agent/tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.
     "bot_mode": {
         # Drain-time TTL (seconds): older envelopes are NOT delivered on drain; the sender gets an
@@ -1951,7 +1951,7 @@ DEFAULT_CONFIG = {
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.
         "mode": "project",
         # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
-        # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
+        # (hermes_agent/tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
         # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
         # across calls and turns; subagents get their own. Kernels die with the session, after
         # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A
@@ -1992,7 +1992,7 @@ DEFAULT_CONFIG = {
             "listing_max_tokens": 4000,
             # Tools replaced by the bridge by default. This list intentionally includes cold,
             # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
-            # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
+            # tool eager. The runtime fallback in hermes_agent/tools/tool_search.py derives from this value.
             "defer": [
                 "computer_use", "session_search", "image_generate",
                 "todo_list", "process_manage", "cronjob_manage", "browser_vault", "text_to_speech", "manage_connections",
@@ -2537,7 +2537,7 @@ DEFAULT_CONFIG = {
         # vision = pixels only.
         "capture_after_mode": "som",
         # Bound cua-driver's accessibility-tree WALK on every capture (get_window_state max_elements).
-        # _DEFAULT_MAX_ELEMENTS in tools/computer_use/tool.py caps the SURFACED element list at 100 and
+        # _DEFAULT_MAX_ELEMENTS in hermes_agent/tools/computer_use/tool.py caps the SURFACED element list at 100 and
         # spills the rest to a cache file, so an unbounded walk pays for nodes the model never sees:
         # measured on macOS (cua-driver 0.28.2, M-series) a 1,444-node Chrome window went 540 ms -> 83 ms
         # and a 456-node Finder window 6.9 s -> 0.6 s at 200, with the returned elements a prefix of the
@@ -2904,8 +2904,8 @@ OPTIONAL_ENV_VARS = OptionalEnvVars({
     "GITHUB_TOKEN": _tool("GitHub token for Skills Hub (higher API rate limits, skill publish)",
         "GitHub Token", "https://github.com/settings/tokens"),
     # ── Bundled skills (opt-in) ── category="skill" (not "tool") so the sandbox env blocklist in
-    # tools/environments/local.py does NOT rewrite them; skills need them passed through to curl
-    # via tools/env_passthrough.py.
+    # hermes_agent/tools/environments/local.py does NOT rewrite them; skills need them passed through to curl
+    # via hermes_agent/tools/env_passthrough.py.
     "NOTION_API_KEY": _skill("Notion integration token (used by the Teams meeting pipeline's Notion sink)",
         "Notion API key", "https://www.notion.so/my-integrations"),
     "LINEAR_API_KEY": _skill("Linear personal API key (used by the `linear` skill)",

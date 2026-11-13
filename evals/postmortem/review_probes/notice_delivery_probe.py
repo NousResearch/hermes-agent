@@ -14,10 +14,10 @@ for key in list(os.environ):
         os.environ.pop(key,None)
 os.environ['HERMES_HOME']=tempfile.mkdtemp(prefix='notice-review-')
 socket.socket.connect=lambda *a,**k: (_ for _ in ()).throw(RuntimeError('network forbidden'))
-import tools.async_delegation as ad
-import tools.delegate_tool_dispatch as dd
-from tools.process_registry import process_registry as reg
-from tools.process_registry_notifications import format_process_notification
+import hermes_agent.tools.async_delegation as ad
+import hermes_agent.tools.delegate_tool_dispatch as dd
+from hermes_agent.tools.process_registry import process_registry as reg
+from hermes_agent.tools.process_registry_notifications import format_process_notification
 from hermes_agent.gateway.run_notifications import GatewayNotificationsMixin
 assert Path(ad.__file__).is_relative_to(root)
 assert Path(dd.__file__).is_relative_to(root)

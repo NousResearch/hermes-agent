@@ -2,7 +2,7 @@
 """Tests for the FAL.ai image generation plugin.
 
 The plugin is a thin registration adapter — actual FAL pipeline logic
-lives in ``tools.image_generation_tool`` and is exercised by
+lives in ``hermes_agent.tools.image_generation_tool`` and is exercised by
 ``tests/tools/test_image_generation.py``. These tests focus on:
 
 * the ``ImageGenProvider`` ABC surface (name, models, schema)
@@ -27,13 +27,13 @@ class TestFalImageGenProviderSurface:
 
     def test_default_model_matches_legacy(self):
         from plugins.image_gen.fal import FalImageGenProvider
-        from tools.image_generation_catalog import DEFAULT_MODEL
+        from hermes_agent.tools.image_generation_catalog import DEFAULT_MODEL
 
         assert FalImageGenProvider().default_model() == DEFAULT_MODEL
 
     def test_list_models_uses_legacy_catalog(self):
         from plugins.image_gen.fal import FalImageGenProvider
-        from tools.image_generation_catalog import FAL_MODELS
+        from hermes_agent.tools.image_generation_catalog import FAL_MODELS
 
         provider = FalImageGenProvider()
         models = provider.list_models()
@@ -59,7 +59,7 @@ class TestFalImageGenProviderGenerate:
         """Plugin must look up ``image_generate_tool`` at call time so
         ``monkeypatch.setattr(image_tool, "image_generate_tool", ...)``
         takes effect."""
-        import tools.image_generation_tool as image_tool
+        import hermes_agent.tools.image_generation_tool as image_tool
         from plugins.image_gen.fal import FalImageGenProvider
 
         captured = {}

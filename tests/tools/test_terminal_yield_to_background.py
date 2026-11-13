@@ -14,9 +14,9 @@ import time
 import pytest
 
 from agent.interrupt_control import InterruptControlMixin
-from tools import interrupt as interrupt_mod
-from tools.process_registry import process_registry
-from tools.terminal_tool import terminal_tool
+from hermes_agent.tools import interrupt as interrupt_mod
+from hermes_agent.tools.process_registry import process_registry
+from hermes_agent.tools.terminal_tool import terminal_tool
 
 pytestmark = pytest.mark.platforms("linux")
 
@@ -85,7 +85,7 @@ def test_redirect_mid_command_yields_it_to_background_without_killing_it(tmp_pat
 def test_yield_request_without_steer_leaves_foreground_wait_alone():
     """No yield handler (internal env.execute consumers) -> the request is ignored and the
     command runs to completion; an unrelated stale yield bit must not leak into it either."""
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     env = LocalEnvironment()
     try:

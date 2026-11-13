@@ -18,8 +18,8 @@ from hermes_agent.gateway.session_context import (
     reset_session_vars,
     set_session_vars,
 )
-from tools import approval as approval_module
-from tools import approval_context
+from hermes_agent.tools import approval as approval_module
+from hermes_agent.tools import approval_context
 
 
 class _FakeCronAgent:
@@ -101,7 +101,7 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
             "args": None,
         },
     )
-    monkeypatch.setattr("tools.mcp_tool_discovery.discover_mcp_tools", list)
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", list)
     monkeypatch.setattr(cron_scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(cron_scheduler, "get_fallback_chain", lambda _cfg: [])
     monkeypatch.setattr(

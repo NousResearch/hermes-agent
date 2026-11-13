@@ -35,7 +35,7 @@ def _asking_turn(runner, agent, answers, *, hold_until_interrupted):
     async def asks(event):
         key = runner._session_key_for_source(event.source)
         runner._session_state(key).turn.agent = agent
-        from tools import clarify_gateway as clarify
+        from hermes_agent.tools import clarify_gateway as clarify
         clarify.register('c-relay', key, 'Which?', ['a', 'b'])
         answers.append(await asyncio.to_thread(clarify.wait_for_response, 'c-relay', 60))
         if hold_until_interrupted:
@@ -48,7 +48,7 @@ def _asking_turn(runner, agent, answers, *, hold_until_interrupted):
 @pytest.mark.asyncio
 async def test_a_message_instead_of_an_answer_cancels_the_question_and_takes_over_in_queue_mode(
         tmp_path, monkeypatch):
-    from tools import clarify_gateway as clarify
+    from hermes_agent.tools import clarify_gateway as clarify
     answers, agent = [], _Agent()
     async with _gateway(tmp_path, 'relay-clarify-prose') as (runner, _authority, send, _outgoing, _adapter):
         # queue mode would leave the message behind a turn that carries on without its answer
@@ -74,7 +74,7 @@ async def test_a_resent_answer_is_not_run_again_as_a_new_turn(tmp_path, monkeypa
         executed = _stub_model(runner, monkeypatch, {'first': _asking_turn(
             runner, _Agent(), answers, hold_until_interrupted=False)})
         await send(FIRST, ROOT, 'first')
-        from tools import clarify_gateway as clarify
+        from hermes_agent.tools import clarify_gateway as clarify
         await async_wait_until(lambda: clarify.get_pending('c-relay') is not None, timeout=20,
                                what='the question is pending')
         await send('1700000000.000502', ROOT, '2', thread_id=FIRST)

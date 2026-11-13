@@ -121,7 +121,7 @@ def _data_url_to_input_image_url(value: str) -> str:
 
 def _remote_image_to_data_url(value: str) -> str:
     """The edit endpoint takes inline data URLs only (as the official client sends), so fetch."""
-    from tools.url_safety import create_ssrf_safe_client, is_safe_url
+    from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_safe_url
 
     if not is_safe_url(value):
         raise ValueError(f"Image URL failed the SSRF safety check: {value}")

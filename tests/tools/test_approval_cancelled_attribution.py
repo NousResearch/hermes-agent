@@ -9,9 +9,9 @@ import time
 
 import pytest
 
-from tools import approval as mod
-from tools import approval_context
-from tools.interrupt import set_interrupt
+from hermes_agent.tools import approval as mod
+from hermes_agent.tools import approval_context
+from hermes_agent.tools.interrupt import set_interrupt
 
 SESSION_KEY = "test-cancelled-attribution"
 

@@ -9,9 +9,9 @@ import types
 
 import pytest
 
-import tools.delegate_tool as dt
-import tools.delegate_tool_progress as dt_progress
-from tools.delegate_tool import _build_child_progress_callback, format_batch_tag
+import hermes_agent.tools.delegate_tool as dt
+import hermes_agent.tools.delegate_tool_progress as dt_progress
+from hermes_agent.tools.delegate_tool import _build_child_progress_callback, format_batch_tag
 
 
 @pytest.fixture(autouse=True)

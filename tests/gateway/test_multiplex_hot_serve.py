@@ -381,7 +381,7 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
 
     shutdowns = []
     monkeypatch.setattr(
-        "tools.mcp_tool_lifecycle.shutdown_mcp_servers",
+        "hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers",
         lambda **kw: shutdowns.append(kw.get("scope")),
     )
     hermes_logging._reset_queued_handlers()  # a prior test's routers would route to stale homes

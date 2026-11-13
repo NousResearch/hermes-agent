@@ -187,7 +187,7 @@ class TestPinnedLocksTheMainModel:
     def test_pinned_true_locks_then_pinned_false_releases(self, monkeypatch, tmp_path):
         jobs, _ = self._store(monkeypatch, tmp_path)
 
-        from tools.cronjob_job_args import _format_job
+        from hermes_agent.tools.cronjob_job_args import _format_job
 
         unpinned = jobs.create_job(prompt="do a thing", schedule="every 1 hour")
         assert (unpinned["model"], unpinned["provider"]) == (None, None)

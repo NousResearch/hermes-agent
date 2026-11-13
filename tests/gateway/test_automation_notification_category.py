@@ -26,7 +26,7 @@ async def _authority(tmp_path, monkeypatch):
 
 
 def test_live_delivery_forwards_diagnostic_category(tmp_path, monkeypatch):
-    from tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_live_delivery as live
     calls = []
     monkeypatch.setattr(live, 'authority_delivery', lambda home, params: calls.append(params) or {})
     owner = dict(profile_home=str(tmp_path), session_id='bot', canonical=True,
@@ -53,7 +53,7 @@ async def test_bot_category_is_committed_restored_and_part_of_retry_identity(tmp
         retry = await deliver(connection, params)
         assert first['admission_id'] == retry['admission_id']
         # Poll the owner's local projection, then explicitly retry its immutable envelope.
-        from tools import bot_live_delivery as live
+        from hermes_agent.tools import bot_live_delivery as live
         monkeypatch.setattr(live, 'authority_delivery', lambda *a: pytest.fail('receipt poll opened RPC'))
         replay = live.read_delivery_result(tmp_path, params['id'])
         assert replay is not None

@@ -146,7 +146,7 @@ class TestAuthStoreEncodingRoundTrip:
 
 class TestAuthJsonSiblingReaders:
     def test_has_xai_credentials_reads_non_ascii_store(self, hermes_home, windows_default_encoding, monkeypatch):
-        """tools/xai_http.has_xai_credentials must read a non-ASCII auth.json.
+        """hermes_agent/tools/xai_http.has_xai_credentials must read a non-ASCII auth.json.
 
         Pre-fix, a UTF-8 store with a non-ASCII label raised UnicodeDecodeError
         here (cp1252 default on Windows), the broad except swallowed it, and
@@ -167,7 +167,7 @@ class TestAuthJsonSiblingReaders:
         }
         _write_utf8(hermes_home / "auth.json", store)
 
-        from tools.xai_http import has_xai_credentials
+        from hermes_agent.tools.xai_http import has_xai_credentials
 
         assert has_xai_credentials() is True
 
@@ -282,7 +282,7 @@ class TestAuthJsonSiblingReaders:
     def test_managed_tool_gateway_reads_non_ascii_nous_state(
         self, hermes_home, windows_default_encoding
     ):
-        """tools.managed_tool_gateway._read_nous_provider_state reads auth.json.
+        """hermes_agent.tools.managed_tool_gateway._read_nous_provider_state reads auth.json.
 
         The Nous provider entry can carry a non-ASCII label. Under the
         Windows-default-encoding fixture a no-encoding read raises and the
@@ -301,7 +301,7 @@ class TestAuthJsonSiblingReaders:
         }
         _write_utf8(hermes_home / "auth.json", store)
 
-        from tools.managed_tool_gateway import _read_nous_provider_state
+        from hermes_agent.tools.managed_tool_gateway import _read_nous_provider_state
 
         nous = _read_nous_provider_state()
         assert nous is not None

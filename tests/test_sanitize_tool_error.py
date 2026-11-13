@@ -9,7 +9,7 @@ cap pathological lengths.
 """
 from __future__ import annotations
 
-from model_tools import _sanitize_tool_error, _TOOL_ERROR_MAX_LEN
+from hermes_agent.model_tools import _sanitize_tool_error, _TOOL_ERROR_MAX_LEN
 
 
 class TestRoleTagStripping:
@@ -76,7 +76,7 @@ class TestEnvelope:
 class TestHandleFunctionCallIntegration:
     """Verify handle_function_call routes exception-path errors through the sanitizer.
 
-    Note: the "Unknown tool: ..." early-return in tools/registry.py is a
+    Note: the "Unknown tool: ..." early-return in hermes_agent/tools/registry.py is a
     *different* code path from `except Exception` in handle_function_call —
     that one returns directly without sanitization (and there's nothing to
     sanitize in a hardcoded format string anyway). This test exercises the
@@ -85,8 +85,8 @@ class TestHandleFunctionCallIntegration:
 
     def test_exception_path_error_is_sanitized(self):
         import json
-        from model_tools import handle_function_call
-        from tools.registry import registry as _registry
+        from hermes_agent.model_tools import handle_function_call
+        from hermes_agent.tools.registry import registry as _registry
 
         # Force a known tool to raise with a payload containing role tags.
         def boom(_args, **_kwargs):

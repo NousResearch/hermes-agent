@@ -5,10 +5,10 @@ import json
 
 from agent.message_sanitization import coalesce_tool_call_id, deterministic_call_id, uniquify_tool_call_ids
 from agent.transports.types import ToolCall
-from tools.connectors import is_connector_name
-from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
-from tools.tool_search_catalog import TOOL_CALL_NAME
-from tools.tool_search_validation import normalize_tool_call_entries
+from hermes_agent.tools.connectors import is_connector_name
+from hermes_agent.tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
+from hermes_agent.tools.tool_search_catalog import TOOL_CALL_NAME
+from hermes_agent.tools.tool_search_validation import normalize_tool_call_entries
 
 
 def expand_local_tool_batches(tool_calls: list, *, provider_data: dict | None = None) -> list:

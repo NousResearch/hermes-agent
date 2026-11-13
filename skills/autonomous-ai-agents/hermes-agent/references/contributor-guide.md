@@ -7,11 +7,13 @@ For occasional contributors and PR authors. Full developer docs: https://hermes-
 ```
 hermes-agent/
 ├── run_agent.py          # AIAgent — core conversation loop
-├── model_tools.py        # Tool discovery and dispatch
-├── toolsets.py           # Toolset definitions
 ├── cli.py                # Interactive CLI (HermesCLI)
 ├── hermes_agent/         # the Python package
+│   ├── model_tools.py        # Tool discovery and dispatch
+│   ├── toolsets.py           # Toolset definitions
 │   ├── hermes_state.py       # SQLite session store
+│   ├── tools/                # One file per tool
+│   │   └── registry.py       # Central tool registry
 │   ├── gateway/              # Messaging gateway
 │   │   └── platforms/        # Platform adapters (telegram, discord, etc.)
 │   └── cron/                 # Job scheduler
@@ -20,8 +22,6 @@ hermes-agent/
 │   ├── commands.py       # Slash command registry (CommandDef)
 │   ├── config.py         # DEFAULT_CONFIG, env var definitions
 │   └── main.py           # CLI entry point and argparse
-├── tools/                # One file per tool
-│   └── registry.py       # Central tool registry
 ├── tests/                # Extensive pytest suite (run via scripts/run_tests.sh)
 └── website/              # Docusaurus docs site
 ```
@@ -30,14 +30,14 @@ Config: `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys) — both
 
 ### Adding a Tool
 
-Two files. Auto-discovery imports any `tools/*.py` with a top-level
+Two files. Auto-discovery imports any `hermes_agent/tools/*.py` with a top-level
 `registry.register()` call, but a tool is only *exposed* to an agent once
 its name appears in a toolset.
 
-**1. Create `tools/your_tool.py`:**
+**1. Create `hermes_agent/tools/your_tool.py`:**
 ```python
 import json, os
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 def check_requirements() -> bool:
     return bool(os.getenv("EXAMPLE_API_KEY"))
@@ -56,7 +56,7 @@ registry.register(
 )
 ```
 
-**2. Wire it into a toolset in `toolsets.py`** — add the name to
+**2. Wire it into a toolset in `hermes_agent/toolsets.py`** — add the name to
 `_HERMES_CORE_TOOLS` (every platform) or to a specific toolset.
 
 All handlers must return JSON strings. Use `get_hermes_home()` for paths,

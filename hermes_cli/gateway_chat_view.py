@@ -17,7 +17,7 @@ def _pending_preview(text):
     """One terminal-safe line of a pending admission's prompt: escape sequences removed, every
     other non-printable (C0/C1, bidi and zero-width format chars, newlines) folded to a space,
     capped at ``_PREVIEW_CHARS``. Empty when the row carries no text."""
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
     if not isinstance(text, str):
         return ""
     line = " ".join("".join(ch if ch.isprintable() else " " for ch in strip_ansi(text)).split())

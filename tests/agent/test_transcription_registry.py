@@ -9,7 +9,7 @@ Covers:
 - Case + whitespace insensitivity on lookup
 - ABC contract: default implementations work
 - ABC contract: transcribe() must be implemented
-- Sync invariant: registry built-ins match tools/transcription_tools.py
+- Sync invariant: registry built-ins match hermes_agent/tools/transcription_tools.py
 """
 
 from __future__ import annotations
@@ -143,7 +143,7 @@ class TestABCContract:
 
 class TestBuiltinSync:
     """``_BUILTIN_NAMES`` in agent/transcription_registry.py is duplicated
-    from ``BUILTIN_STT_PROVIDERS`` in tools/transcription_tools.py
+    from ``BUILTIN_STT_PROVIDERS`` in hermes_agent/tools/transcription_tools.py
     (importing directly would create a circular dependency). This test
     fails loudly if the two lists drift — a new built-in added to
     transcription_tools.py MUST also be added to
@@ -153,7 +153,7 @@ class TestBuiltinSync:
     """
 
     def test_registry_builtins_match_dispatcher_builtins(self):
-        from tools.transcription_tools import BUILTIN_STT_PROVIDERS
+        from hermes_agent.tools.transcription_tools import BUILTIN_STT_PROVIDERS
 
         assert transcription_registry._BUILTIN_NAMES == BUILTIN_STT_PROVIDERS, (
             "agent.transcription_registry._BUILTIN_NAMES and "

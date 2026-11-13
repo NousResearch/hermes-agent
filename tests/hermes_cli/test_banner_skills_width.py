@@ -6,8 +6,8 @@ from unittest.mock import patch
 from rich.console import Console
 
 from hermes_cli import banner
-import model_tools
-import tools.mcp_tool_discovery
+from hermes_agent import model_tools
+import hermes_agent.tools.mcp_tool_discovery
 
 def _build_banner_with_skills(skills_by_category, term_width=160):
     """Helper: build banner with given skills and return captured output."""
@@ -19,7 +19,7 @@ def _build_banner_with_skills(skills_by_category, term_width=160):
         ),
         patch.object(banner, "get_available_skills", return_value=skills_by_category),
         patch.object(banner, "get_update_result", return_value=None),
-        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
+        patch.object(hermes_agent.tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
         patch("shutil.get_terminal_size", return_value=os.terminal_size((term_width, 50))),
     ):
         console = Console(

@@ -110,8 +110,8 @@ def _worker_config(authority, policy):
 def _session_yolo(authority, route, policy):
     """The route's bypass as the in-process turn arms it on the owner, the one place a revocation
     is recorded: a ``--yolo`` launch seeded once per boundary, then the persisted ``/yolo`` copy."""
-    from tools.approval import is_session_yolo_enabled
-    from tools.approval_yolo import restore_gateway_yolo
+    from hermes_agent.tools.approval import is_session_yolo_enabled
+    from hermes_agent.tools.approval_yolo import restore_gateway_yolo
     store = getattr(authority.runner, 'session_store', None)
     entry = store.lookup_by_session_key(route) if store is not None else None
     restore_gateway_yolo(route, getattr(entry, 'yolo', None), launch=bool(policy.yolo))
@@ -141,7 +141,7 @@ def worker_turn_scope(frame):
     except RuntimeStoreError as exc:
         raise ValueError('invalid_managed_worker_bootstrap') from exc
     if turn['yolo']:
-        from tools.approval import enable_session_yolo
+        from hermes_agent.tools.approval import enable_session_yolo
         enable_session_yolo(frame['route'])
     with finite_turn_scope(turn['finite'], turn['unattended']), surface_turn_scope(surface), \
             display_turn_scope(frame['scope']['execution_id'], display):
@@ -404,7 +404,7 @@ def _worker_env(authority):
     inherit the process env byte-for-byte, exactly as before."""
     from pathlib import Path
     from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import _is_routed_home
+    from hermes_agent.tools.environments.local import _is_routed_home
     home = Path(str(authority.profile_id))
     if not home.is_absolute():
         return None
@@ -414,7 +414,7 @@ def _worker_env(authority):
     if not routed and not is_multiplex_active():
         return None
     from agent.secret_scope import build_profile_secret_scope
-    from tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
+    from hermes_agent.tools.environments.local import _scrub_credentials, build_subprocess_env, strip_launch_profile_env
     # The scrub removes credentials, not settings: the launch profile's TERMINAL_* policy and
     # its ``.env`` settings would otherwise reach the secondary's worker (cron/kanban rule).
     # Strip the RAW environ before the constructor injects this turn's own session/bridge context:
@@ -442,8 +442,8 @@ def _launch_env_only_credentials(home, env):
     (unbound session context, venv markers) stay removed, and Hermes-internal secrets
     (``AUXILIARY_*_API_KEY``, relay auth) never reach a child. Only the launch home's worker calls
     this; a routed home's worker sees its own files only."""
-    from tools.environments.local import _scrub_credentials
-    from tools.environments.local_env_policy import _is_hermes_internal_secret
+    from hermes_agent.tools.environments.local import _scrub_credentials
+    from hermes_agent.tools.environments.local_env_policy import _is_hermes_internal_secret
     from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope
     missing = {k: v for k, v in launch_secret_scope(home).items()
                if k not in env and not _is_hermes_internal_secret(k)}

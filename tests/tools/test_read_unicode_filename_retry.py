@@ -11,7 +11,7 @@ import unicodedata
 
 import pytest
 
-from tools.file_tools import read_file_tool
+from hermes_agent.tools.file_tools import read_file_tool
 
 HOSTILE = unicodedata.normalize(
     "NFD", "Meeting\u202fnotes\u2019 re\u0301sume\u0301 3.04\u202fPM.txt"

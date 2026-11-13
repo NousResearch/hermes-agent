@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from tools import checkpoint_manager as cm
+from hermes_agent.tools import checkpoint_manager as cm
 from utils import rmtree_readonly
 
 

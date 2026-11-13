@@ -20,7 +20,7 @@ CASES = json.loads(
 def _readers():
     from hermes_cli.mcp_catalog import server_enabled
     from hermes_cli.tools_config import enabled_mcp_server_names
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
     from hermes_agent.tui_gateway.mcp_rpc_helpers import summarize_server
     from hermes_agent.tui_gateway.methods_profiles import _mcp_entry_enabled
 
@@ -42,8 +42,8 @@ def test_every_reader_agrees_with_the_shared_table(case):
 
 
 def _spawned(monkeypatch) -> list:
-    import tools.mcp_tool as core
-    from tools import mcp_tool_discovery as discovery
+    import hermes_agent.tools.mcp_tool as core
+    from hermes_agent.tools import mcp_tool_discovery as discovery
 
     spawned: list = []
     monkeypatch.setattr(core, "_ensure_mcp_sdk", lambda: True)
@@ -73,7 +73,7 @@ def _route(name):
 
 
 def _connector(name):
-    from tools.connectors.mcp import _CatalogBackend
+    from hermes_agent.tools.connectors.mcp import _CatalogBackend
 
     _CatalogBackend().enable(name)
 
@@ -91,7 +91,7 @@ def test_enable_clears_a_legacy_disabled_so_the_server_spawns(enable, tmp_path, 
     `enabled` reported success and left the server off. Every enable writer drops the key."""
     import hermes_yaml as yaml
     from hermes_cli.config import DEFAULT_CONFIG, load_config
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump({
@@ -134,7 +134,7 @@ def test_config_set_enable_clears_disabled_on_a_dotted_server_name(key, tmp_path
     same entry, or the server stays off after a printed success."""
     import hermes_yaml as yaml
     from hermes_cli.config import DEFAULT_CONFIG, load_config, set_config_value
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump({

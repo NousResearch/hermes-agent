@@ -51,7 +51,7 @@ def _underlying_tool_name(name: str, arguments: Any) -> str:
 
     A deferred producer (text_to_speech, image_generate, computer_use) is recorded under the
     bridge name, so a lookup keyed on the producer's own name would never match its result."""
-    from tools.tool_search import TOOL_CALL_NAME, normalize_tool_call_entries
+    from hermes_agent.tools.tool_search import TOOL_CALL_NAME, normalize_tool_call_entries
 
     if name != TOOL_CALL_NAME:
         return name

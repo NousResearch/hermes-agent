@@ -9,7 +9,7 @@ same applies to overwriting the interpreter through the file tools.
 Two questions, one coordinate system:
 
 * :func:`command_deletes_runtime` — would a shell command delete a protected
-  path? Wired into the approval floor (``tools.approval._floor_block``), so it
+  path? Wired into the approval floor (``hermes_agent.tools.approval._floor_block``), so it
   cannot be bypassed by yolo / approvals.mode=off / cron approve mode.
 * :func:`is_protected_path` — is a filesystem path protected? Wired into the
   file-safety write classifier, covering write/patch/move/delete.
@@ -89,7 +89,7 @@ def _normalize_path(raw: str) -> str:
         if m:
             path = f"{m.group(2)}:\\{m.group(3)}"
         path = path.replace("/", "\\")
-    from tools.environments.sandbox_scope import sandbox_lexical_path
+    from hermes_agent.tools.environments.sandbox_scope import sandbox_lexical_path
     if (lexical := sandbox_lexical_path(path)) is not None:
         return lexical  # a hosted agent's sandbox path: never resolved against this host
     try:

@@ -61,8 +61,8 @@ def loop_agent(monkeypatch):
     from run_agent import AIAgent
 
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
@@ -80,7 +80,7 @@ def loop_agent(monkeypatch):
     agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
-    monkeypatch.setattr("model_tools.handle_function_call", MagicMock(return_value="unused"))
+    monkeypatch.setattr("hermes_agent.model_tools.handle_function_call", MagicMock(return_value="unused"))
     monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr("agent.turn_empty_response.interruptible_backoff_sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(agent, "_persist_session", MagicMock())

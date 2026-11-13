@@ -1,4 +1,4 @@
-"""Tests for tools/send_message_tool.py."""
+"""Tests for hermes_agent/tools/send_message_tool.py."""
 
 import asyncio
 import json
@@ -27,14 +27,14 @@ def _reset_signal_scheduler():
     _reset_scheduler()
 
 from hermes_agent.gateway.config import Platform
-from tools.send_message_tool import (
+from hermes_agent.tools.send_message_tool import (
     _resolve_slack_user_target,
     _send_matrix_via_adapter,
     _send_to_platform,
     send_message_tool,
 )
 from plugins.platforms.telegram.standalone import _send_telegram
-from tools.send_message_targets import _parse_target_ref
+from hermes_agent.tools.send_message_targets import _parse_target_ref
 from plugins.platforms.signal.standalone import _send_signal
 # Discord helpers moved to the plugin in #24325.  Import from the new path
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
@@ -291,10 +291,10 @@ class TestSendMessageTool:
         )
 
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
              patch("hermes_agent.gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("should not resolve ntfy topics")), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
@@ -331,9 +331,9 @@ class TestSendMessageTool:
         secret.write_bytes(b"%PDF secret")
 
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
@@ -372,9 +372,9 @@ class TestSendMessageTool:
         missing = tmp_path / "missing.pdf"
 
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
              patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
             raw = send_message_tool({
                 "action": "send",
@@ -404,8 +404,8 @@ class TestSendMessageTool:
             )
 
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False), \
-             patch("model_tools._run_async", side_effect=_raise_and_close):
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+             patch("hermes_agent.model_tools._run_async", side_effect=_raise_and_close):
             result = json.loads(
                 send_message_tool(
                     {
@@ -993,7 +993,7 @@ class TestEmailHomeChannelErrorHint:
             get_home_channel=lambda _platform: None,
         )
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
-             patch("tools.interrupt.is_interrupted", return_value=False):
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False):
             result = json.loads(
                 send_message_tool(
                     {
@@ -1287,7 +1287,7 @@ class TestSendDiscordForumMedia:
 
     def test_forum_with_media_uses_multipart(self, tmp_path, monkeypatch):
         """Forum + media → single multipart POST to /threads carrying the starter + files."""
-        from tools import send_message_tool as smt
+        from hermes_agent.tools import send_message_tool as smt
 
         img = tmp_path / "photo.png"
         img.write_bytes(b"\x89PNGbytes")
@@ -1518,7 +1518,7 @@ class TestSendViaAdapterStandaloneFallback:
 
     @pytest.mark.asyncio
     async def test_live_ntfy_adapter_receives_explicit_publish_topic(self, monkeypatch):
-        from tools.send_message_tool import _send_via_adapter
+        from hermes_agent.tools.send_message_tool import _send_via_adapter
 
         platform = Platform("ntfy")
         recorded = {}
@@ -1551,7 +1551,7 @@ class TestSendViaAdapterStandaloneFallback:
     @pytest.mark.asyncio
     async def test_standalone_sender_fn_raises_is_caught_and_formatted(self, monkeypatch):
         """Hook raises: error dict has 'Plugin standalone send failed: ...'"""
-        from tools.send_message_tool import _send_via_adapter
+        from hermes_agent.tools.send_message_tool import _send_via_adapter
         from hermes_agent.gateway.platform_registry import platform_registry
 
         async def boom(pconfig, chat_id, message, **kwargs):
@@ -1577,7 +1577,7 @@ class TestSendViaAdapterStandaloneFallback:
     async def test_fresh_process_discovers_plugins_before_the_fallback(self, monkeypatch):
         """No gateway and nothing registered yet (cron/CLI process): the fallback runs plugin
         discovery, so a platform without a dedicated route still reaches its standalone sender."""
-        from tools.send_message_tool import _send_via_adapter
+        from hermes_agent.tools.send_message_tool import _send_via_adapter
         from hermes_agent.gateway.platform_registry import platform_registry
 
         sent = []
@@ -1649,7 +1649,7 @@ def test_not_configured_error_names_resolved_home_and_consulted_sources(tmp_path
     """The 'not configured' error names the files this process actually read (resolved home, not a
     hardcoded ``~/.hermes``) and what each source held, so a Windows/profile home user can fix the right file."""
     from hermes_agent.gateway.config import GatewayConfig
-    from tools.send_message_tool import _resolve_platform_config
+    from hermes_agent.tools.send_message_tool import _resolve_platform_config
 
     home = tmp_path / "AppData" / "Local" / "hermes"
     home.mkdir(parents=True)
@@ -1673,7 +1673,7 @@ def test_not_configured_error_names_default_root_gateway_and_secret_sources(tmp_
     import os
 
     from hermes_agent.gateway.config import GatewayConfig
-    from tools.send_message_tool import _resolve_platform_config
+    from hermes_agent.tools.send_message_tool import _resolve_platform_config
 
     root = tmp_path / "hermes"
     profile = root / "profiles" / "coder"

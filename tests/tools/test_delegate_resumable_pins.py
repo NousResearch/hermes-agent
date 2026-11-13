@@ -40,7 +40,7 @@ def _run(parent, sid):
 
 def _completions(delegation_ids):
     """Wait for every listed unit's completion event (one drain: waiting per id would drop a sibling's event)."""
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     pending = set(delegation_ids)
 
     def drained():
@@ -60,7 +60,7 @@ def _backdate(*paths):
 
 def test_a_running_continuation_pins_the_tree_it_moved_to_not_only_where_it_last_stopped(tmp_path):
     from hermes_cli.worktree_sweep import run_sweep, sweep_settings
-    from tools import delegate_tool_resumable as r
+    from hermes_agent.tools import delegate_tool_resumable as r
     parent = _parent()
     repo = _repo(tmp_path / "repo")
     a, b = repo / ".worktrees" / "subagent-old", repo / ".worktrees" / "subagent-new"
@@ -84,7 +84,7 @@ def test_a_running_continuation_pins_the_tree_it_moved_to_not_only_where_it_last
 
 
 def test_a_tree_the_child_made_stays_pinned_after_it_leaves_that_repository(tmp_path):
-    from tools import delegate_tool_resumable as r
+    from hermes_agent.tools import delegate_tool_resumable as r
     parent = _parent()
     repo, other = _repo(tmp_path / "repo"), _repo(tmp_path / "other")
     run = _run(parent, "sa-left")
@@ -107,7 +107,7 @@ def test_a_tree_the_child_made_stays_pinned_after_it_leaves_that_repository(tmp_
 
 def test_a_late_record_write_never_recreates_a_removed_profile_and_stays_owner_only(tmp_path):
     from hermes_constants import get_hermes_home, profile_tombstone_path
-    from tools import delegate_tool_resumable as r
+    from hermes_agent.tools import delegate_tool_resumable as r
     removed = get_hermes_home() / "profiles" / "removed"
     tomb = profile_tombstone_path(removed)
     tomb.parent.mkdir(parents=True, exist_ok=True)
@@ -129,8 +129,8 @@ def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_th
     resumable stop while the owner exits before the unit's row turns terminal. Either way the recovered notice
     names every child the parent can continue."""
     from hermes_constants import get_hermes_home
-    from tools import async_delegation as ad
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools import async_delegation as ad
+    from hermes_agent.tools.delegate_tool import delegate_task
     (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"independent_completions": independent}}))
     parent, model = _parent(), _ScriptedModel()
     with patch("run_agent.AIAgent", side_effect=model):

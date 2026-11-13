@@ -11,7 +11,7 @@ from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from plugins.platforms.weixin import adapter as weixin
 from plugins.platforms.weixin.adapter import ContextTokenStore, WeixinAdapter
-from tools.send_message_targets import _parse_target_ref
+from hermes_agent.tools.send_message_targets import _parse_target_ref
 
 
 def _make_adapter() -> WeixinAdapter:
@@ -414,7 +414,7 @@ class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()
 
-        with patch("tools.url_safety.is_safe_url", return_value=False):
+        with patch("hermes_agent.tools.url_safety.is_safe_url", return_value=False):
             try:
                 asyncio.run(adapter._download_remote_media("http://127.0.0.1/private.png"))
             except ValueError as exc:

@@ -4,7 +4,7 @@ import json
 
 def test_watch_event_identity_survives_retry_but_not_another_hit():
     from hermes_agent.gateway.run import GatewayRunner
-    from tools.process_registry import ProcessRegistry, ProcessSession
+    from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
     registry = ProcessRegistry()
     session = ProcessSession(id='proc-watch', command='owned', task_id='task',
         session_key='agent:main:local:dm:owned', parent_session_id='parent')

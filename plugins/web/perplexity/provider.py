@@ -75,8 +75,8 @@ def _missing_key_error() -> str:
 
 def _managed_gateway(token_reader=None):
     """Nous Tool Gateway config when web_search is on the managed route, else None."""
-    from tools import managed_tool_gateway as gw
-    from tools.web_tools import _managed_web_search
+    from hermes_agent.tools import managed_tool_gateway as gw
+    from hermes_agent.tools.web_tools import _managed_web_search
 
     if not _managed_web_search():
         return None
@@ -188,7 +188,7 @@ class PerplexityWebSearchProvider(WebSearchProvider):
     def is_available(self) -> bool:
         """True with a ``PERPLEXITY_API_KEY``, or on the managed route with a likely-usable Nous token."""
         from agent.web_search_provider import get_provider_env
-        from tools.managed_tool_gateway import peek_nous_access_token
+        from hermes_agent.tools.managed_tool_gateway import peek_nous_access_token
 
         return bool(get_provider_env("PERPLEXITY_API_KEY")) or _managed_gateway(token_reader=peek_nous_access_token) is not None
 
@@ -206,20 +206,20 @@ class PerplexityWebSearchProvider(WebSearchProvider):
         belongs in ``web_extract`` rather than a results list.
         """
         try:
-            from tools.interrupt import is_interrupted
+            from hermes_agent.tools.interrupt import is_interrupted
 
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
             from agent.web_search_provider import get_provider_env
-            from tools.managed_tool_gateway import resolve_free_search_gateway
-            from tools.web_tools import _managed_web_search
+            from hermes_agent.tools.managed_tool_gateway import resolve_free_search_gateway
+            from hermes_agent.tools.web_tools import _managed_web_search
 
             direct = bool(get_provider_env("PERPLEXITY_API_KEY"))
             managed = False if direct else _managed_web_search()
             gateway = resolve_free_search_gateway() if managed else None
             if gateway is None and managed:
-                from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
+                from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
 
                 raise ValueError(selection_error(
                     "web", NOUS_MANAGED_PROVIDER, "there is no usable Nous identity (sign in with `/login`)"))
@@ -246,7 +246,7 @@ class PerplexityWebSearchProvider(WebSearchProvider):
         become items with ``error``; a missing key errors every URL.
         """
         try:
-            from tools.interrupt import is_interrupted
+            from hermes_agent.tools.interrupt import is_interrupted
 
             if is_interrupted():
                 return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]

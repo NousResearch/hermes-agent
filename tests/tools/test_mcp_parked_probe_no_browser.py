@@ -11,14 +11,14 @@ import pytest
 def test_self_probe_revival_runs_with_interactive_oauth_suppressed(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_oauth import _is_interactive, force_interactive_oauth
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_oauth import _is_interactive, force_interactive_oauth
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 0)
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
 
-    from tools import mcp_tool_config as _config
+    from hermes_agent.tools import mcp_tool_config as _config
     monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"srv": {"command": "x"}})
     _real_sleep = asyncio.sleep
 
@@ -64,7 +64,7 @@ def test_self_probe_revival_runs_with_interactive_oauth_suppressed(monkeypatch, 
 def test_explicit_reconnect_request_keeps_the_callers_interactivity():
     """Only the TIMED wake is unattended; ``_reconnect_event`` (OAuth recovery, /mcp refresh) is an
     explicit request and is reported as such."""
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     async def _scenario():
         task = MCPServerTask("srv")

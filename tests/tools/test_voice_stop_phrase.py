@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.voice_mode_transcript import (
+from hermes_agent.tools.voice_mode_transcript import (
     DEFAULT_VOICE_STOP_PHRASES,
     _load_voice_stop_phrases,
     is_voice_stop_phrase,
@@ -27,7 +27,7 @@ class TestVoiceStopHint:
 
 
     def test_disabled_phrases_show_no_hint(self):
-        with patch("tools.voice_mode_transcript._load_voice_stop_phrases", return_value=()):
+        with patch("hermes_agent.tools.voice_mode_transcript._load_voice_stop_phrases", return_value=()):
             assert voice_stop_hint() == ""
 
 
@@ -40,7 +40,7 @@ class TestIsVoiceStopPhrase:
 
 
     def test_uses_config_when_phrases_omitted(self):
-        with patch("tools.voice_mode_transcript._load_voice_stop_phrases", return_value=("halt",)):
+        with patch("hermes_agent.tools.voice_mode_transcript._load_voice_stop_phrases", return_value=("halt",)):
             assert is_voice_stop_phrase("halt") is True
             assert is_voice_stop_phrase("stop") is False
 
@@ -175,13 +175,13 @@ class TestStopPhraseSurvivesHallucinationFilter:
     stop phrase it must come through so the stop check can end the chat."""
 
     def _transcribe(self, text, phrases):
-        import tools.voice_mode as vm
-        import tools.voice_mode_transcript as vmt
+        import hermes_agent.tools.voice_mode as vm
+        import hermes_agent.tools.voice_mode_transcript as vmt
 
         with patch.object(
             vmt, "_load_voice_stop_phrases", return_value=tuple(phrases)
         ), patch(
-            "tools.transcription_tools.transcribe_audio",
+            "hermes_agent.tools.transcription_tools.transcribe_audio",
             return_value={"success": True, "transcript": text},
         ):
             return vm.transcribe_recording("/tmp/fake.wav")

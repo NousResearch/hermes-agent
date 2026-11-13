@@ -17,13 +17,13 @@ def locked_home(tmp_path, monkeypatch):
         (skills / rel / "scripts").mkdir(parents=True)
         (skills / rel / "SKILL.md").write_text(f"---\nname: {display}\ndescription: x\n---\nbody\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     assert skill_usage.set_locked("locked-skill", True)
     return home
 
 
 def test_file_tools_refuse_a_locked_skill_and_its_record(locked_home):
-    from tools.file_tools import patch_tool, write_file_tool
+    from hermes_agent.tools.file_tools import patch_tool, write_file_tool
     locked = locked_home / "skills/ops/locked-skill/SKILL.md"
     free = locked_home / "skills/ops/free-skill/SKILL.md"
     before = locked.read_text()
@@ -75,7 +75,7 @@ def test_file_tools_refuse_a_locked_skill_and_its_record(locked_home):
     ("cp -r {H}/new-skill {H}/skills/ops/new-skill", False),
 ])
 def test_terminal_refuses_writes_into_a_locked_skill_but_not_reads(locked_home, command, blocked):
-    from tools.skill_lock import command_refusal
+    from hermes_agent.tools.skill_lock import command_refusal
     lock_dir = locked_home / "skills/ops/locked-skill"
     reason = command_refusal(command.format(L=lock_dir, H=locked_home), str(locked_home))
     assert (reason is not None) is blocked, reason
@@ -83,8 +83,8 @@ def test_terminal_refuses_writes_into_a_locked_skill_but_not_reads(locked_home, 
 
 def test_lock_resolves_by_display_name_as_well_as_directory(locked_home):
     """Locks are keyed by directory; the curator's rows carry the frontmatter name."""
-    from tools import skill_usage
-    from tools.skill_lock import is_locked_skill
+    from hermes_agent.tools import skill_usage
+    from hermes_agent.tools.skill_lock import is_locked_skill
     assert skill_usage.set_locked("accelerate", True)
     assert is_locked_skill("huggingface-accelerate")
     assert is_locked_skill("training/accelerate")

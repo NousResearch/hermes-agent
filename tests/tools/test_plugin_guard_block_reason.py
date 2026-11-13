@@ -1,7 +1,7 @@
 """Behavior contracts for plugin-guard dangerous-install diagnostics."""
 
-from tools.plugin_guard import should_allow_plugin_install
-from tools.skills_guard import Finding, ScanResult
+from hermes_agent.tools.plugin_guard import should_allow_plugin_install
+from hermes_agent.tools.skills_guard import Finding, ScanResult
 
 
 def test_dangerous_reason_counts_and_names_blocking_findings():

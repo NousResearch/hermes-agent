@@ -432,7 +432,7 @@ def present_sections(config):
 def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False,
                  client_local=False):
     from agent.runtime_cwd import resolve_agent_cwd
-    from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
 
     source = params.get('source', 'cli')
@@ -672,7 +672,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
     stays on ``focus``; the gateway decides it, never the client."""
     from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
     from hermes_cli.toolset_validation import saved_toolset_resolver
-    from toolsets import validate_toolset
+    from hermes_agent.toolsets import validate_toolset
     explicit = params.get('toolsets')
     if 'toolsets' in params:
         if not isinstance(explicit, list):
@@ -700,7 +700,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         posture = focus_toolsets(config)
     enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
@@ -711,7 +711,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         # subtract again or `disabled_toolsets: [project]` is a no-op here (#54433).
         # desktop_ui is the client's own control surface, not a model toolset.
         from agent.skill_utils import parse_config_string_list
-        from toolsets import CLIENT_SURFACE_TOOLSETS
+        from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS
         disabled = set(parse_config_string_list((config.get('agent') or {}).get('disabled_toolsets')))
         surface = set(CLIENT_SURFACE_TOOLSETS) if source == 'gui' else {'project'}
         enabled |= surface - (disabled - {'desktop_ui'})
@@ -1138,7 +1138,7 @@ def policy_scope(policy, *, authority=None, home=None):
         raise RuntimeStoreError('workspace_unavailable', field='cwd', detail=policy.cwd)
     from agent.runtime_cwd import set_session_cwd
     from agent.runtime_scope import bind_terminal_policy
-    from tools.terminal_scope import reset_terminal_scope
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope
     terminal = json.loads(policy.terminal_json)
     live = policy.read_profile(authority, for_turn=True)
     if policy.config_secret_ref is not None:
@@ -1193,7 +1193,7 @@ def bind_turn_workspace(policy, task_id):
         # binding an earlier turn registered would otherwise win in _plan_execution on the new backend.
         unbind_turn_workspace(task_id)
         return
-    from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides, workspace_key_for
+    from hermes_agent.tools.terminal_tool import register_task_env_overrides, resolve_task_overrides, workspace_key_for
     current = resolve_task_overrides(task_id)
     if current.get('cwd') == policy.cwd and current.get('cwd_source') == 'session':
         return
@@ -1207,7 +1207,7 @@ def unbind_turn_workspace(task_id):
     image override registered by someone else under the same id stays."""
     if not task_id:
         return
-    from tools.terminal_tool import _qualify_task_key, _task_env_overrides, clear_session_cwd, get_session_cwd
+    from hermes_agent.tools.terminal_tool import _qualify_task_key, _task_env_overrides, clear_session_cwd, get_session_cwd
     key = _qualify_task_key(task_id)
     current = _task_env_overrides.get(key) or {}
     if 'workspace_key' not in current:

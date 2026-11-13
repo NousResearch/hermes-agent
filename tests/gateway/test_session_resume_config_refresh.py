@@ -472,7 +472,7 @@ async def test_a_refreshed_terminal_binding_drops_the_sessions_cached_environmen
     the session's terminal binding drops the session's own environment before it is reported, so the next
     command builds one on the new backend. A refresh that leaves the binding alone, and environments
     the profile's other sessions share, keep theirs."""
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     home = _home(monkeypatch)
     store, authority = await _owner_authority(home)
     owner, later, last = _connect(authority), _connect(authority), _connect(authority)
@@ -518,7 +518,7 @@ def _terminal(authority, sid, command):
     """One terminal call as the session's turn makes it: its route's session context, its policy's scope."""
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from hermes_agent.gateway.session_policy import policy_scope
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
     tokens = set_session_vars(platform='local', session_key=authority.sessions[sid].route, session_id=sid)
     try:
         with policy_scope(_policy(authority, sid), authority=authority):
@@ -532,7 +532,7 @@ async def test_the_next_command_after_a_terminal_refresh_runs_on_the_new_backend
     """The directory a session's commands last recorded wins over its binding's default: a refresh that moves
     the binding drops it with the environment, so the next command runs on the new backend in the new
     binding's directory, not the old backend's. A refresh that leaves the binding alone keeps it."""
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     built = []
     monkeypatch.setattr(terminal_tool, '_active_environments', {})
     monkeypatch.setattr(terminal_tool, '_session_cwd', {})
@@ -570,7 +570,7 @@ async def test_the_next_command_after_a_workspace_move_runs_in_the_new_folder(tm
     both and the next command runs in the new folder. The teardown (seconds on a remote backend) runs off the
     owner's loop, so other clients never stall behind it."""
     import threading
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
 
     class _Torn(_Backend):
         def cleanup(self):
@@ -618,7 +618,7 @@ async def test_a_second_resume_during_terminal_cleanup_waits_for_the_refresh(tmp
     generation, each environment torn down once."""
     import logging
     import threading
-    from tools import terminal_tool_lifecycle
+    from hermes_agent.tools import terminal_tool_lifecycle
     home = _home(monkeypatch)
     store, authority = await _owner_authority(home)
     entered, release, cleaned = threading.Event(), threading.Event(), []

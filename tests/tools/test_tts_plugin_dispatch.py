@@ -1,4 +1,4 @@
-"""Tests for TTS plugin dispatch in tools/tts_tool.py (issue #30398).
+"""Tests for TTS plugin dispatch in hermes_agent/tools/tts_tool.py (issue #30398).
 
 Covers the three core invariants of the plugin dispatcher:
 
@@ -22,7 +22,7 @@ Also exercises:
 The dispatcher is exercised in isolation — we don't actually call
 ``text_to_speech_tool`` because that would require real audio file
 writes. Each test directly calls
-``tools.tts_tool._dispatch_to_plugin_provider`` / the predicate
+``hermes_agent.tools.tts_tool._dispatch_to_plugin_provider`` / the predicate
 helpers.
 """
 
@@ -34,7 +34,7 @@ import pytest
 
 from agent import tts_registry
 from agent.tts_provider import TTSProvider
-from tools import tts_tool
+from hermes_agent.tools import tts_tool
 
 
 class _FakeTTSProvider(TTSProvider):
@@ -252,7 +252,7 @@ class _PCMPlugin(TTSProvider):
 
 @pytest.mark.parametrize("streaming", [{}, {"provider": "auto"}, {"provider": "fake-pcm"}])
 def test_opted_in_plugin_streams_pcm_in_the_configured_voice(monkeypatch, streaming):
-    from tools import tts_streaming
+    from hermes_agent.tools import tts_streaming
     monkeypatch.setattr(tts_streaming, "_try_instantiate", lambda name, cfg: None)  # no built-in creds
     plugin = _PCMPlugin()
     tts_registry.register_provider(plugin)
@@ -274,7 +274,7 @@ def test_opted_in_plugin_streams_pcm_in_the_configured_voice(monkeypatch, stream
     (_PCMPlugin(), {"providers": {"fake-pcm": {"type": "command", "command": "say {input_path}"}}}),
 ])
 def test_plugin_without_full_opt_in_keeps_per_sentence_synthesis(plugin, extra_cfg):
-    from tools import tts_streaming
+    from hermes_agent.tools import tts_streaming
     tts_registry.register_provider(plugin)
     assert tts_streaming.resolve_streaming_provider({"provider": "fake-pcm", **extra_cfg}) is None
     assert plugin.calls == []

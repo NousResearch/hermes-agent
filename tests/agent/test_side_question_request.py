@@ -76,8 +76,8 @@ def provider(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     # Every agent built during the test (parent and fork) talks to the same fake.
     patches = [
-        patch("model_tools.get_tool_definitions", return_value=_tool_defs("web_search", "terminal")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=_tool_defs("web_search", "terminal")),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=fake.client),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
         # The side call only runs where a consented plugin holds the capability; that gate has
@@ -126,7 +126,7 @@ def _run_parent_turn(parent, provider, *, tool_round=True):
         ]
     else:
         provider.replies.append(_response("Found it: the answer is 42.", usage=_usage()))
-    with patch("model_tools.handle_function_call", return_value=json.dumps({"result": "42"})):
+    with patch("hermes_agent.model_tools.handle_function_call", return_value=json.dumps({"result": "42"})):
         return parent.run_conversation("look this up")
 
 
@@ -195,7 +195,7 @@ def dispatch_spy():
         return _fn
 
     with (
-        patch("model_tools.handle_function_call", side_effect=_record("handle_function_call")),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=_record("handle_function_call")),
         patch.object(AIAgent, "_invoke_tool", side_effect=_record("_invoke_tool"), autospec=False),
         patch.object(AIAgent, "_execute_tool_calls", side_effect=_record("_execute_tool_calls"), autospec=False),
     ):
@@ -296,7 +296,7 @@ def test_side_call_bills_the_session_the_token_was_issued_for(provider, issued, 
 def test_side_call_leaves_the_parent_sessions_terminal_environment_alive(provider, issued):
     """The fork shares the parent's session_id, and CLI/gateway key a session's terminal
     sandbox by it: tearing the fork down must not tear down the session's live tool state."""
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
 
     class _Env:
         cleaned = False

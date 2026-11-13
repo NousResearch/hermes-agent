@@ -11,8 +11,8 @@ import os
 import tempfile
 
 
-import tools.delegate_tool as dt
-from tools.delegate_tool_results import _MIN_SUMMARY_CHARS, _parent_summary_char_budget
+import hermes_agent.tools.delegate_tool as dt
+from hermes_agent.tools.delegate_tool_results import _MIN_SUMMARY_CHARS, _parent_summary_char_budget
 
 
 class _FakeCompressor:
@@ -86,7 +86,7 @@ def test_unknown_parent_usage_means_static_ceiling_not_zero_context():
     """Independent-review witness: a parent with no usage yet was treated as 0 tokens used, so a 190K/200K
     prompt got a 384K-char summary budget instead of ~4K."""
     from types import SimpleNamespace
-    from tools.delegate_tool_results import _parent_summary_char_budget
+    from hermes_agent.tools.delegate_tool_results import _parent_summary_char_budget
     parent = SimpleNamespace(context_compressor=SimpleNamespace(context_length=200_000, max_tokens=0),
                              _last_turn_usage=None)
     assert _parent_summary_char_budget(parent, 1) is None
@@ -95,7 +95,7 @@ def test_unknown_parent_usage_means_static_ceiling_not_zero_context():
 def test_moa_fold_does_not_inflate_the_parents_prompt_size():
     """MoA folds advisor prompts into reported usage; the parent's context holds only the aggregator's."""
     from types import SimpleNamespace
-    from tools.delegate_tool_results import _parent_summary_char_budget
+    from hermes_agent.tools.delegate_tool_results import _parent_summary_char_budget
     cc = SimpleNamespace(context_length=200_000, max_tokens=0)
     folded = SimpleNamespace(context_compressor=cc, _last_turn_usage={"prompt_tokens": 190_000}, _last_prompt_size_tokens=50_000)
     unfolded = SimpleNamespace(context_compressor=cc, _last_turn_usage={"prompt_tokens": 50_000})

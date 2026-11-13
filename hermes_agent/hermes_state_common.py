@@ -186,7 +186,7 @@ _RESET_END_REASONS = ("session_reset", "session_switch", "idle", "daily", "suspe
 _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
 # Deliberate conversation boundaries: the reset set plus CLI /new, which ends the predecessor as
 # 'new_session' (hermes_cli/cli_session_mixin.py) without a reset child row.  A compression rotation must
-# never heal one of these (#106459); tools/session_search_tool.py derives its fresh-reset set from it.
+# never heal one of these (#106459); hermes_agent/tools/session_search_tool.py derives its fresh-reset set from it.
 _BOUNDARY_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
 # Accidental end reasons recovery treats as resumable (website/docs/developer-guide/gateway-session-lifecycle.md); single source of truth for

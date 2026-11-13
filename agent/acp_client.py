@@ -108,7 +108,7 @@ def _build_subprocess_env() -> dict[str, str]:
     # Lazy: the env policy imports hermes_cli.config, and provider plugins import this module
     # while hermes_cli.config is still initializing (discovery runs from it).
     from hermes_constants import apply_subprocess_home_env
-    from tools.environments.local import hermes_subprocess_env
+    from hermes_agent.tools.environments.local import hermes_subprocess_env
 
     # An ACP agent drives a model and needs LLM provider credentials; the central helper still
     # strips Tier-1 secrets (bot tokens, GitHub auth, infra).

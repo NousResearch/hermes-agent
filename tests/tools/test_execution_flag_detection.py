@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from tools.approval import detect_dangerous_command, detect_hardline_command
+from hermes_agent.tools.approval import detect_dangerous_command, detect_hardline_command
 
 
 @pytest.mark.parametrize(
@@ -191,7 +191,7 @@ def test_grep_pcre_pattern_with_grouped_root_delete_text_stays_safe():
 
 
 def test_interpreter_heredoc_keeps_legacy_approval_key_compatibility():
-    from tools.approval import _approval_key_aliases
+    from hermes_agent.tools.approval import _approval_key_aliases
 
     aliases = _approval_key_aliases("script execution via heredoc")
     assert r"(python[23]?|perl|ruby|node)\s+<<" in aliases
@@ -231,7 +231,7 @@ def _time_benign_segments(count):
 
 
 def test_max_accepted_separator_free_input_is_fast():
-    from tools.approval_detection import _MAX_SEPARATOR_FREE_COMMAND_CHARS
+    from hermes_agent.tools.approval_detection import _MAX_SEPARATOR_FREE_COMMAND_CHARS
 
     command = "x" * _MAX_SEPARATOR_FREE_COMMAND_CHARS
     started = time.perf_counter()

@@ -1,7 +1,7 @@
 """Live A/B runner: session_search schema variants, extracted from git refs.
 
-For each arm, ``tools/session_search_tool.py`` is extracted from a git ref
-(``git show <ref>:tools/session_search_tool.py``) and imported as its own
+For each arm, ``hermes_agent/tools/session_search_tool.py`` is extracted from a git ref
+(``git show <ref>:hermes_agent/tools/session_search_tool.py``) and imported as its own
 module. A minimal agent loop (OpenRouter, tools API) then runs the shared
 task battery against a freshly seeded temp session DB. The ONLY variable
 between arms is that module — schema text, response hints, tool behavior.
@@ -58,7 +58,7 @@ def _load_api_key() -> str:
 
 
 def extract_arm(ref: str, workdir: Path, name: str) -> Path:
-    """Extract tools/session_search_tool.py from a git ref."""
+    """Extract hermes_agent/tools/session_search_tool.py from a git ref."""
     out = subprocess.run(
         ["git", "show", f"{ref}:tools/session_search_tool.py"],
         cwd=REPO_ROOT, capture_output=True, text=True,

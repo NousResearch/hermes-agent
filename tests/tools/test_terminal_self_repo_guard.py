@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools import self_repo_guard
+from hermes_agent.tools import self_repo_guard
 
 
 def _make_env_config(**overrides):
@@ -33,7 +33,7 @@ def repo(tmp_path):
 
 def _run(command, config, monkeypatch, repo_root, session_cwds=None,
          guard_on=True, **kwargs):
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     monkeypatch.setattr(self_repo_guard, "get_running_source_root", lambda: repo_root)
     monkeypatch.setattr(self_repo_guard, "guard_active", lambda: guard_on)
@@ -43,19 +43,19 @@ def _run(command, config, monkeypatch, repo_root, session_cwds=None,
 
     with ExitStack() as stack:
         stack.enter_context(
-            patch("tools.terminal_tool._get_env_config", return_value=config)
+            patch("hermes_agent.tools.terminal_tool._get_env_config", return_value=config)
         )
-        stack.enter_context(patch("tools.terminal_tool._start_cleanup_thread"))
+        stack.enter_context(patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"))
         stack.enter_context(
-            patch("tools.terminal_tool._active_environments", {"default": mock_env})
+            patch("hermes_agent.tools.terminal_tool._active_environments", {"default": mock_env})
         )
-        stack.enter_context(patch("tools.terminal_tool._last_activity", {"default": 0}))
+        stack.enter_context(patch("hermes_agent.tools.terminal_tool._last_activity", {"default": 0}))
         stack.enter_context(
-            patch("tools.terminal_tool._session_cwd", session_cwds or {})
+            patch("hermes_agent.tools.terminal_tool._session_cwd", session_cwds or {})
         )
         stack.enter_context(
             patch(
-                "tools.terminal_tool._check_all_guards", return_value={"approved": True}
+                "hermes_agent.tools.terminal_tool._check_all_guards", return_value={"approved": True}
             )
         )
         result = json.loads(terminal_tool(command=command, **kwargs))

@@ -37,7 +37,7 @@ class GatewayRuntimeInitMixin:
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
         from hermes_agent.gateway.run import (AsyncSessionStore, DeliveryRouter, SessionStore)
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
         self.session_store = SessionStore(
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(
@@ -119,7 +119,7 @@ class GatewayRuntimeInitMixin:
         self._session_sources: OrderedDict[str, SessionSource] = OrderedDict()
         self._session_sources_max = 512
         # Lifecycle-scoped completion dedup: closes queue/watcher races inside one gateway without claiming
-        # exactly-once across a crash; durable replay state stays owned by tools.async_delegation.
+        # exactly-once across a crash; durable replay state stays owned by hermes_agent.tools.async_delegation.
         self._completion_delivery_lock = threading.Lock()
         self._completion_deliveries_inflight: set[tuple[str, str, object]] = set()
         self._completion_deliveries_delivered: OrderedDict[tuple[str, str, object], None] = OrderedDict()
@@ -156,7 +156,7 @@ class GatewayRuntimeInitMixin:
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
         # Strong refs to detached fatal-error handler tasks so the loop can't GC them mid-run.
         self._fatal_handler_tasks: set = set()
-        # Slash-confirm state lives in tools.slash_confirm (module-level) so adapters resolve callbacks
+        # Slash-confirm state lives in hermes_agent.tools.slash_confirm (module-level) so adapters resolve callbacks
         # without a runner backref; a counter keeps confirm_ids compact (64-byte callback_data caps)
         # and its random start keeps a pre-restart card from answering a new confirmation.
         from hermes_agent.gateway.platforms.helpers import prompt_id_counter

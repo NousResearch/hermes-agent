@@ -61,7 +61,7 @@ async def test_transcribed_utterance_keeps_its_captured_binding(bound_after: int
         return {"success": True, "transcript": "what broke on the ingest box"}
 
     with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
-         patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+         patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         task = asyncio.ensure_future(adapter._voice_listen_loop(_GUILD))
         while not started.is_set():
             await asyncio.sleep(0.01)
@@ -123,7 +123,7 @@ async def _transcribed_pcm(adapter: DiscordAdapter, drain: Callable[[], Awaitabl
     adapter._voice_input_callback = callback = AsyncMock()
     with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav",
                side_effect=lambda pcm, path: converted.append(len(pcm))), \
-         patch("tools.transcription_tools.transcribe_audio",
+         patch("hermes_agent.tools.transcription_tools.transcribe_audio",
                return_value={"success": True, "transcript": "what broke on the ingest box"}):
         await drain()
     return callback.await_count, converted

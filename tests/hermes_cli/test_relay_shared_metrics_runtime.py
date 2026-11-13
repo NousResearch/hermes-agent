@@ -817,9 +817,9 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     monkeypatch,
 ):
     from hermes_cli.observability.shared_metrics import SharedMetricsStore
-    from tools import approval
-    from tools import approval_prompt
-    from tools import approval_context
+    from hermes_agent.tools import approval
+    from hermes_agent.tools import approval_prompt
+    from hermes_agent.tools import approval_context
 
     assert real_binding_runtime._native is not None
     base = {
@@ -2360,7 +2360,7 @@ def test_tool_category_comes_from_runtime_registry_metadata(
     direct_runtime,
     monkeypatch,
 ):
-    import model_tools
+    from hermes_agent import model_tools
 
     monkeypatch.setattr(
         model_tools,

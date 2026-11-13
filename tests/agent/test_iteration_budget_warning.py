@@ -11,8 +11,8 @@ def _agent(tmp_path, monkeypatch, ratio):
     )
     from run_agent import AIAgent
     from hermes_agent.hermes_state import SessionDB
-    from model_tools import _clear_tool_defs_cache
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent.model_tools import _clear_tool_defs_cache
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
 
     # Cases model separate worker processes; their availability caches must not
     # survive a change from ordinary to dispatcher-owned construction.

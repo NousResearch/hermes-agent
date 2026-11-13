@@ -1,4 +1,4 @@
-"""Unit tests for the on-disk MCP schema cache (tools/mcp_schema_cache.py).
+"""Unit tests for the on-disk MCP schema cache (hermes_agent/tools/mcp_schema_cache.py).
 
 The module landed in #56832's extraction without its tests; these cover the
 fingerprint keying, read/write round-trip, and invalidation behavior.
@@ -6,8 +6,8 @@ fingerprint keying, read/write round-trip, and invalidation behavior.
 
 import pytest
 
-import tools.mcp_schema_cache as msc
-from tools import mcp_tool_registration as _mcp_registration
+import hermes_agent.tools.mcp_schema_cache as msc
+from hermes_agent.tools import mcp_tool_registration as _mcp_registration
 
 
 class TestConfigFingerprint:
@@ -75,7 +75,7 @@ class TestCacheFileLocation:
         self, monkeypatch, tmp_path
     ):
         # Real path (no _cache_path monkeypatch): HERMES_HOME/cache/…, 0o600,
-        # matching the discovery-cache precedent in tools/registry.py.
+        # matching the discovery-cache precedent in hermes_agent/tools/registry.py.
         import hermes_constants
 
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
@@ -122,8 +122,8 @@ class TestWriteThroughPreservesSchema:
 
         from mcp.types import Tool
 
-        import tools.mcp_tool as mt
-        from tools.registry import ToolRegistry
+        import hermes_agent.tools.mcp_tool as mt
+        from hermes_agent.tools.registry import ToolRegistry
 
         monkeypatch.setattr(msc, "_cache_path", lambda: tmp_path / "cache.json")
         # Registration records per-server state in module globals (lazy tool names, trust
@@ -138,7 +138,7 @@ class TestWriteThroughPreservesSchema:
         ]
         server.session = MagicMock()
 
-        with patch("tools.registry.registry", ToolRegistry()):
+        with patch("hermes_agent.tools.registry.registry", ToolRegistry()):
             registered = _mcp_registration._register_server_tools("probe_srv", server, {})
         assert registered, "tool was not registered; write-through never fired"
         entry = json.loads((tmp_path / "cache.json").read_text(encoding="utf-8"))["probe_srv"]
@@ -150,12 +150,12 @@ class TestWriteThroughPreservesSchema:
         """The whole point of the cache: a lazy server re-advertises params."""
         from unittest.mock import patch
 
-        from tools import mcp_tool_registration as _mcp_registration
-        from tools.registry import ToolRegistry
+        from hermes_agent.tools import mcp_tool_registration as _mcp_registration
+        from hermes_agent.tools.registry import ToolRegistry
 
         entry = self._cache_write_through(tmp_path, monkeypatch)
         lazy_reg = ToolRegistry()
-        with patch("tools.registry.registry", lazy_reg):
+        with patch("hermes_agent.tools.registry.registry", lazy_reg):
             names = _mcp_registration._register_from_cache_sync("probe_srv", {}, entry)
         assert names, "lazy registration produced no tools"
         schema = lazy_reg.get_schema("mcp__probe_srv__zhida")

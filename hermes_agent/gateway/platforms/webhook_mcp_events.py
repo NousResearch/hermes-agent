@@ -1,4 +1,4 @@
-"""MCP Events deliveries on routes that ``tools/mcp_tool_events.py`` created (the route carries an
+"""MCP Events deliveries on routes that ``hermes_agent/tools/mcp_tool_events.py`` created (the route carries an
 ``mcp_event`` block). The endpoint-verification echo and the ``terminated`` / ``gap`` control
 envelopes are answered here without an agent run; an event occurrence continues through the normal
 route pipeline, keyed for idempotency by its ``eventId``. Signatures (Standard Webhooks, ``whsec_``)
@@ -57,13 +57,13 @@ def mcp_event_delivery_id(route_config: dict, payload: Any) -> Optional[str]:
 def _store_cursor(route_name: str, cursor: str) -> None:
     # Subscription state lives beside the route, never in it: an admitted run's reply is checked against
     # a digest of the route config, so a cursor written there would strand every run still in flight.
-    from tools.mcp_tool_events import store_cursor
+    from hermes_agent.tools.mcp_tool_events import store_cursor
     store_cursor(route_name, cursor)
 
 
 def _remove_route(route_name: str) -> None:
     from hermes_cli.webhook import _mutate_subscriptions
-    from tools.mcp_tool_events import drop_state
+    from hermes_agent.tools.mcp_tool_events import drop_state
     _mutate_subscriptions(lambda subscriptions: subscriptions.pop(route_name, None))
     drop_state(route_name)
 

@@ -53,7 +53,7 @@ def _run_clarify(adapter, questions=_ONE_QUESTION, answers=(), via_tool=False):
     ``via_tool`` routes the questions through ``clarify_tool`` itself rather than calling the
     runner's callback directly."""
     from hermes_agent.gateway.run_turn_runner import TurnRunner
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     runner = object.__new__(TurnRunner)
     runner._approval_owner = None  # no owning authority: the controls snapshot is skipped
@@ -85,9 +85,9 @@ def _run_clarify(adapter, questions=_ONE_QUESTION, answers=(), via_tool=False):
         return entry
 
     with patch.object(cm, "register", _register), \
-            patch("tools.clarify_gateway.get_clarify_timeout", return_value=0.05):
+            patch("hermes_agent.tools.clarify_gateway.get_clarify_timeout", return_value=0.05):
         if via_tool:
-            from tools.clarify_tool import clarify_tool
+            from hermes_agent.tools.clarify_tool import clarify_tool
             return clarify_tool(questions, callback=runner._clarify_callback_sync), labels
         return runner._clarify_callback_sync(questions), labels
 
@@ -179,7 +179,7 @@ def test_skip_hint_only_on_messaging_platforms(platform, hinted):
     from hermes_agent.gateway.config import Platform
     adapter = _CardAdapter()
     from hermes_agent.gateway.run_turn_runner import TurnRunner
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
     runner = object.__new__(TurnRunner)
     runner._approval_owner = None
     runner._ctx = SimpleNamespace(
@@ -199,7 +199,7 @@ def test_skip_hint_only_on_messaging_platforms(platform, hinted):
         cm.resolve_gateway_clarify(kwargs["clarify_id"], "a")
         return entry
     with patch.object(cm, "register", _register), \
-            patch("tools.clarify_gateway.get_clarify_timeout", return_value=0.05):
+            patch("hermes_agent.tools.clarify_gateway.get_clarify_timeout", return_value=0.05):
         runner._clarify_callback_sync(_ONE_QUESTION)
     assert adapter.asked[0].startswith("Pick one")
     assert ("skip" in adapter.asked[0]) is hinted, adapter.asked

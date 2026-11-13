@@ -513,7 +513,7 @@ def _report_catalog_plugin_updates() -> None:
 
 def _print_bundled_skills_sync_report() -> None:
     """Run ``sync_skills`` (copies new, updates changed, respects user deletions) and print its summary."""
-    from tools.skills_sync import sync_skills
+    from hermes_agent.tools.skills_sync import sync_skills
     result = sync_skills(quiet=True)
     if result["copied"]:
         print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
@@ -923,7 +923,7 @@ def _install_default_tools_after_update() -> None:
 
 def _print_checkpoint_footprint_notice() -> None:
     """Surface a GB-scale /rollback store the user may not know is on (see the helper's docstring)."""
-    from tools.checkpoint_maintenance import checkpoint_footprint_notice
+    from hermes_agent.tools.checkpoint_maintenance import checkpoint_footprint_notice
     notice = checkpoint_footprint_notice()
     if notice:
         print(f"\n\033[1;33mℹ  {notice}\033[0m")

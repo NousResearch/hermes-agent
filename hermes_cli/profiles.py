@@ -1470,7 +1470,7 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Option
     try:
         result = subprocess.run(
             [sys.executable, "-c",
-             "import json; from tools.skills_sync import sync_skills; "
+             "import json; from hermes_agent.tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
             cwd=project_root_str(),
@@ -1639,7 +1639,7 @@ def _stop_bot_desktop(profile_dir: Path) -> None:
     override so the runtime reads THIS profile's bot-desktop/ state, whichever profile invoked the op.
     A failure here is logged, never fatal: the profile op is what the user asked for."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
     if not runtime.is_supported_host():
         return
     token = set_hermes_home_override(profile_dir)
@@ -1649,7 +1649,7 @@ def _stop_bot_desktop(profile_dir: Path) -> None:
             # The screen a human's exclusion protected is gone; on rename the directory (lease.json
             # included) moves with the profile, and a human lease for a dead viewer would fence the
             # agent out of the renamed profile's next screen until someone force-released it.
-            from tools.bot_desktop import lease
+            from hermes_agent.tools.bot_desktop import lease
             lease.release()
     except Exception as e:
         logger.warning("Could not stop the Bot Desktop of %s: %s", profile_dir, e)
@@ -1744,7 +1744,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # The main serve process survives this deletion. Stop only this profile's MCP
     # transports and release cached stderr handles, including completed probes.
     from hermes_constants import hermes_home_key
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
 
     # Release this process's holographic memory-store connections into the profile. The
@@ -2261,7 +2261,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # delete_profile): Windows refuses to rename a directory holding an open file, and the
     # handle would otherwise stay cached under the old key after the move.
     from hermes_constants import hermes_home_key
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=hermes_home_key(old_dir))
 
     # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),

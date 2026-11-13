@@ -13,7 +13,7 @@ from tests.tools.test_delegate_auto_resume import _AlwaysLimited, _enable, _repo
 from tests.tools.test_delegate_continue import _parent, _ScriptedModel
 from tests.tools.test_delegate_resumable import _db_rows
 from tests.waiting import wait_until
-from tools.process_registry import process_registry
+from hermes_agent.tools.process_registry import process_registry
 
 
 def _events(delegation_id):
@@ -37,8 +37,8 @@ def _ledger(parent, delegation_id):
 
 
 def _silent_stop(tmp_path, parent):
-    from tools.delegate_tool import delegate_task
-    from tools.terminal_tool import record_session_cwd
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.terminal_tool import record_session_cwd
     parent._current_task_id = "parent-task"
     record_session_cwd("parent-task", str(_repo(tmp_path, "repo")))
     with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
@@ -49,7 +49,7 @@ def _silent_stop(tmp_path, parent):
 
 
 def test_a_promised_stop_delivers_nothing_and_list_shows_it_waiting(tmp_path):
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -62,7 +62,7 @@ def test_a_promised_stop_delivers_nothing_and_list_shows_it_waiting(tmp_path):
 
 def test_past_the_deadline_the_parent_gets_exactly_one_failure(tmp_path):
     from hermes_constants import get_hermes_home
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent, dispatched = _parent(), []
     sid, unit = _silent_stop(tmp_path, parent)
@@ -87,8 +87,8 @@ def _deadline(minutes):
 
 
 def test_a_waiting_child_is_not_listed_as_failed_until_it_gives_up(tmp_path):
-    from tools.async_delegation import failed_delegations_for_session
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.async_delegation import failed_delegations_for_session
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent = _parent()
     _sid, unit = _silent_stop(tmp_path, parent)
@@ -101,8 +101,8 @@ def test_a_waiting_child_is_not_listed_as_failed_until_it_gives_up(tmp_path):
 
 def test_a_crash_during_the_last_attempt_reports_the_give_up_once_not_outcome_unknown(tmp_path):
     import sqlite3
-    from tools.async_delegation import recover_abandoned_delegations
-    from tools.delegate_tool_auto_resume import MAX_AUTO_ATTEMPTS, tick
+    from hermes_agent.tools.async_delegation import recover_abandoned_delegations
+    from hermes_agent.tools.delegate_tool_auto_resume import MAX_AUTO_ATTEMPTS, tick
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -126,7 +126,7 @@ def test_a_crash_during_the_last_attempt_reports_the_give_up_once_not_outcome_un
 
 def test_a_spawn_with_a_waiting_childs_exact_goal_is_refused_until_it_is_stopped(tmp_path):
     from tests.tools.test_delegate_continue import _ScriptedModel
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     _enable()
     parent = _parent()
     sid, _unit = _silent_stop(tmp_path, parent)
@@ -142,7 +142,7 @@ def test_a_spawn_with_a_waiting_childs_exact_goal_is_refused_until_it_is_stopped
 def test_the_duplicate_guard_is_off_without_auto_resume(tmp_path):
     from hermes_constants import get_hermes_home
     from tests.tools.test_delegate_continue import _ScriptedModel
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     _enable()
     parent = _parent()
     _sid, _unit = _silent_stop(tmp_path, parent)
@@ -154,7 +154,7 @@ def test_the_duplicate_guard_is_off_without_auto_resume(tmp_path):
 
 # ── delivery: each child reports once, on its own row, whatever the pool or a crash does ──────────────────────────
 def _deliver_all(events):
-    from tools.async_delegation import claim_event_delivery, complete_completion_delivery
+    from hermes_agent.tools.async_delegation import claim_event_delivery, complete_completion_delivery
     delivered = []
     for event in events:
         token = claim_event_delivery(event, "test")
@@ -176,7 +176,7 @@ class _LimitedWhenSlow(_ScriptedModel):
             if "slow" not in user_message:
                 # Finishes only after its limited sibling was recorded, so that one's early-notice check runs while
                 # this child is still running (dispatch records a finished child right before that check).
-                from tools.async_delegation import _records, _records_lock
+                from hermes_agent.tools.async_delegation import _records, _records_lock
 
                 def sibling_recorded():
                     with _records_lock:
@@ -192,8 +192,8 @@ class _LimitedWhenSlow(_ScriptedModel):
 def test_a_mixed_batch_reports_each_child_once_and_no_early_failure_for_the_waiting_one(tmp_path):
     """One child completes, one is limit-stopped and promised a resume: no early per-task failure notice for the
     waiting one; the batch's own completion carries the finished child, and the give-up its own row and ack."""
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable(independent_completions=False, worktree_isolation=False, max_concurrent_children=3)
     parent = _parent()
     with patch("run_agent.AIAgent", side_effect=_LimitedWhenSlow()):
@@ -211,7 +211,7 @@ def test_a_mixed_batch_reports_each_child_once_and_no_early_failure_for_the_wait
 
 
 def test_a_full_pool_still_settles_a_deadline(tmp_path):
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -225,12 +225,12 @@ def test_a_give_up_interrupted_before_its_commit_reports_once_on_a_later_tick(tm
     """The gave-up mark and the replayable failure commit together: a failure between them loses neither, and the
     retry neither repeats nor drops the one report (its row stays pending for restart replay until acked)."""
     import contextlib
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
     _deadline(1)
-    with patch("tools.async_delegation_recovery_hints.transcript_tails", side_effect=RuntimeError("disk full")), \
+    with patch("hermes_agent.tools.async_delegation_recovery_hints.transcript_tails", side_effect=RuntimeError("disk full")), \
             contextlib.suppress(RuntimeError):
         tick(lambda *args: None, capacity=3, now=time.time() + 120)
     assert _events(unit) == []
@@ -253,8 +253,8 @@ def _sql(parent, sql, params=()):
 
 def test_turning_auto_resume_off_still_reports_a_promised_child_once_and_the_guard_follows_its_deadline(tmp_path):
     from hermes_constants import get_hermes_home
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -274,7 +274,7 @@ def test_turning_auto_resume_off_still_reports_a_promised_child_once_and_the_gua
 
 def test_a_stop_while_auto_resume_is_off_still_cancels_a_promised_child(tmp_path):
     from hermes_constants import get_hermes_home
-    from tools.delegate_tool_auto_resume import supersede_for_session, tick
+    from hermes_agent.tools.delegate_tool_auto_resume import supersede_for_session, tick
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -290,10 +290,10 @@ def test_a_stop_while_auto_resume_is_off_still_cancels_a_promised_child(tmp_path
 
 
 def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
-    from tools.async_delegation import _MAX_RETAINED_COMPLETED, _prune_durable_records, _transaction
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.async_delegation import _MAX_RETAINED_COMPLETED, _prune_durable_records, _transaction
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     from pathlib import Path
-    from tools.delegate_tool_resumable import _apply_limits, _write
+    from hermes_agent.tools.delegate_tool_resumable import _apply_limits, _write
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -321,14 +321,14 @@ def test_retention_limits_never_eat_a_waiting_childs_report(tmp_path):
 
 def _expire(parent, sid):
     from pathlib import Path
-    from tools.delegate_tool_resumable import _apply_limits, _write
+    from hermes_agent.tools.delegate_tool_resumable import _apply_limits, _write
     _sql(parent, "UPDATE resumable_subagents SET expires_at=? WHERE subagent_id=?", (time.time() - 1, sid))
     _write(Path(parent._session_db.db_path), _apply_limits)
 
 
 def _cancelled_then_expired(tmp_path, cancel, *, expire_first):
     from hermes_constants import get_hermes_home
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -344,18 +344,18 @@ def _cancelled_then_expired(tmp_path, cancel, *, expire_first):
 
 
 def _slash_stop(parent, _sid):
-    from tools.delegate_tool_auto_resume import supersede_for_session
+    from hermes_agent.tools.delegate_tool_auto_resume import supersede_for_session
     assert supersede_for_session(parent_session_id=parent.session_id, reason="/stop") == 1
 
 
 def _stop(parent, sid):
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     out = json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
     assert out.get("status") == "dismissed", out
 
 
 def _stop_claimed(parent, sid):  # the parent's own continue holds it: not a dismiss, but the stop is kept
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     out = json.loads(delegate_task(action="stop", subagent_id=sid, parent_agent=parent))
     assert out.get("status") == "stop_recorded", out
 
@@ -389,7 +389,7 @@ def _no_commits(path):
 
 
 def test_a_disabled_tick_with_nothing_owed_never_writes_the_store(tmp_path):
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -405,8 +405,8 @@ def _manual_claim_then(tmp_path, cancel):
     """The parent's own continue claims a promised child and *cancel* (or nothing) lands while it holds the claim;
     a disabled tick runs inside that window, then the continue is refused before anything ran and ticks follow
     (enabled ones only after a cancel: a cancelled child must not be resumed)."""
-    from tools.delegate_tool_auto_resume import tick
-    from tools.delegate_tool_resumable import _db_path_for, _write, claim, release
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_resumable import _db_path_for, _write, claim, release
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -444,9 +444,9 @@ def test_a_stop_during_the_parents_own_continue_claim_is_never_lost(tmp_path, ca
 def test_a_stop_racing_the_refused_continues_hand_back_is_never_lost(tmp_path):
     """The refused continue hands the row back while ``action='stop'`` is deciding: the read and the cancel are one
     transaction, so the stop lands on whichever row it sees and the child is never resumed."""
-    import tools.delegate_tool_resumable as res
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_auto_resume import tick
+    import hermes_agent.tools.delegate_tool_resumable as res
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -473,7 +473,7 @@ def test_a_stop_racing_the_refused_continues_hand_back_is_never_lost(tmp_path):
 
 # ── an automatic attempt that never started is not an outcome; a cancel the tick did not see still wins ──────────
 def _cancel_after_confirm(parent, sid):
-    import tools.delegate_tool_auto_resume as ar
+    import hermes_agent.tools.delegate_tool_auto_resume as ar
     real = ar.confirm_start
 
     def confirm_then_stop(path, subagent_id):
@@ -484,14 +484,14 @@ def _cancel_after_confirm(parent, sid):
 
 
 def _first_run_record_busy(_parent, _sid):
-    import tools.delegate_tool_resumable as dr
+    import hermes_agent.tools.delegate_tool_resumable as dr
     from tests.tools.test_delegate_auto_resume_parent_wins import _busy_run_record
     return patch.object(dr, "_write", _busy_run_record(dr))
 
 
 @pytest.mark.parametrize("unstarted", [_cancel_after_confirm, _first_run_record_busy])
 def test_an_automatic_attempt_that_never_started_reports_nothing(tmp_path, unstarted):
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     from tests.tools.test_delegate_auto_resume import _settled
     _enable()
     parent, dispatched = _parent(), []
@@ -510,7 +510,7 @@ def test_an_automatic_attempt_that_never_started_reports_nothing(tmp_path, unsta
 
 
 def test_a_cancel_after_the_tick_read_an_expired_child_still_wins(tmp_path):
-    import tools.delegate_tool_auto_resume as ar
+    import hermes_agent.tools.delegate_tool_auto_resume as ar
     _enable()
     parent = _parent()
     sid, unit = _silent_stop(tmp_path, parent)
@@ -527,7 +527,7 @@ def test_a_cancel_after_the_tick_read_an_expired_child_still_wins(tmp_path):
 
 def test_an_expired_record_without_auto_resume_fields_is_still_deleted():
     from pathlib import Path
-    from tools.delegate_tool_resumable import _apply_limits, _write
+    from hermes_agent.tools.delegate_tool_resumable import _apply_limits, _write
     parent = _parent()
     _sql(parent, "INSERT INTO resumable_subagents (subagent_id,state,pinned,record_json,created_at,updated_at,"
                  "expires_at) VALUES ('legacy','expired',0,'{}',1,1,1)")
@@ -536,9 +536,9 @@ def test_an_expired_record_without_auto_resume_fields_is_still_deleted():
 
 
 def test_a_failed_start_whose_hand_back_also_failed_still_reports_once_after_the_store_recovers(tmp_path):
-    import tools.delegate_tool_resumable as dr
+    import hermes_agent.tools.delegate_tool_resumable as dr
     from tests.tools.test_delegate_auto_resume import _settled
-    from tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
     _enable()
     parent, dispatched = _parent(), []
     sid, unit = _silent_stop(tmp_path, parent)

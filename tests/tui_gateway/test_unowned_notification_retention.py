@@ -65,7 +65,7 @@ class _Batch:
 def _isolated_state(monkeypatch):
     """The park, its held-copy marks, the session registry and the lineage store are process-global: pin them."""
     monkeypatch.setattr(notification_park, "_parked", [])
-    monkeypatch.setattr("tools.async_delegation._held_copies", collections.Counter())
+    monkeypatch.setattr("hermes_agent.tools.async_delegation._held_copies", collections.Counter())
     monkeypatch.setattr(server, "_sessions", {})
 
     @contextlib.contextmanager
@@ -74,12 +74,12 @@ def _isolated_state(monkeypatch):
 
     monkeypatch.setattr(server, "_session_db", _fake_session_db)
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda evt, consumer: "claim")
-    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda evt, claim: None)
-    monkeypatch.setattr("tools.process_registry_notifications.ProcessNotificationBatch", _Batch)
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.claim_event_delivery", lambda evt, consumer: "claim")
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.complete_event_delivery", lambda evt, claim: None)
+    monkeypatch.setattr("hermes_agent.tools.process_registry_notifications.ProcessNotificationBatch", _Batch)
     for name in ("_maybe_fire_tui_loop_tick", "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)
-    monkeypatch.setattr("tools.async_delegation.maybe_sweep_orphaned_completions", lambda q: 0)
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.maybe_sweep_orphaned_completions", lambda q: 0)
 
 
 @pytest.mark.parametrize("make_event", [_completion, _delegation], ids=["notify_on_complete", "async_delegation"])
@@ -90,7 +90,7 @@ def test_resumed_owner_gets_what_a_foreign_poller_could_not_deliver(monkeypatch,
     other = _session(OTHER_KEY)
     monkeypatch.setattr(server, "_sessions", {"other-sid": other})
     registry = _registry()
-    monkeypatch.setattr("tools.process_registry.process_registry", registry)
+    monkeypatch.setattr("hermes_agent.tools.process_registry.process_registry", registry)
     started: list = []
     stop = threading.Event()
 
@@ -104,7 +104,7 @@ def test_resumed_owner_gets_what_a_foreign_poller_could_not_deliver(monkeypatch,
     server._notif_handle_ready("other-sid", other, [evt], set(), registry, lambda _evt: "text", None)
     assert registry.completion_queue.empty()
     assert started == [] and _parked() == [evt]
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
     assert sum(async_delegation._held_copies.values()) == (evt["type"] == "async_delegation")
     assert notification_park.claim(lambda evt: server._session_owns_notification_event("other-sid", other, evt)) == []
 
@@ -117,7 +117,7 @@ def test_resumed_owner_gets_what_a_foreign_poller_could_not_deliver(monkeypatch,
 
     assert started == ["resumed-sid"]
     assert _parked() == []
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
     assert not async_delegation._held_copies  # the claimed copy's park mark ended once it was routed
 
 
@@ -142,7 +142,7 @@ def test_a_delegation_the_park_lets_go_of_is_a_loud_loss_with_its_offer_cleared(
     orphan sweep re-offers it) is never parked at all."""
     caplog.set_level("WARNING", logger=notification_park.__name__)
     returned: list = []
-    monkeypatch.setattr("tools.async_delegation.return_completion_offer", returned.append)
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.return_completion_offer", returned.append)
     monkeypatch.setattr(notification_park, "RETENTION_SECONDS", 0.0)
     live = _delegation()
     assert notification_park.park(live) is True
@@ -180,14 +180,14 @@ def test_shutdown_drain_hands_back_what_it_could_not_route(monkeypatch):
     owner, other = _session(OWNER_KEY), _session(OTHER_KEY)
     monkeypatch.setattr(server, "_sessions", {"owner-sid": owner, "other-sid": other})
     registry = _registry()
-    monkeypatch.setattr("tools.process_registry.process_registry", registry)
+    monkeypatch.setattr("hermes_agent.tools.process_registry.process_registry", registry)
 
     def _format(evt):
         if evt.get("session_id") == "proc_broken":
             raise RuntimeError("unformattable")
         return "text"
 
-    monkeypatch.setattr("tools.process_registry_notifications.format_process_notification", _format)
+    monkeypatch.setattr("hermes_agent.tools.process_registry_notifications.format_process_notification", _format)
     broken, foreign = _completion("proc_broken"), _completion("proc_foreign", key=OTHER_KEY)
     registry.completion_queue.put(broken)
     registry.completion_queue.put(foreign)
@@ -206,13 +206,13 @@ def test_the_orphan_sweep_counts_a_parked_delegation_as_live_until_the_park_lets
     re-offered; once the park lets go of it (TTL) the sweep re-offers the still-pending row."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tests.waiting import wait_until
-    from tools import async_delegation as ad
-    from tools.process_registry_awaiting import release, take_ready
+    from hermes_agent.tools import async_delegation as ad
+    from hermes_agent.tools.process_registry_awaiting import release, take_ready
 
     home = tmp_path / "home"
     home.mkdir()
     registry = _registry()
-    monkeypatch.setattr("tools.process_registry.process_registry", registry)
+    monkeypatch.setattr("hermes_agent.tools.process_registry.process_registry", registry)
     ad._reset_for_tests()
     token = set_hermes_home_override(str(home))
     try:
@@ -227,7 +227,7 @@ def test_the_orphan_sweep_counts_a_parked_delegation_as_live_until_the_park_lets
         release(ready)  # ...and parks it
         assert [evt["delegation_id"] for evt in _parked()] == [handle["delegation_id"]]
         lease = time.time() + ad._CLAIM_LEASE_S + 1
-        caplog.set_level(logging.WARNING, logger="tools.async_delegation")
+        caplog.set_level(logging.WARNING, logger="hermes_agent.tools.async_delegation")
 
         assert ad.sweep_orphaned_completions(sweep_q, now=lease) == 0
         assert sweep_q.empty() and not [r for r in caplog.records if "Re-offering" in r.getMessage()]

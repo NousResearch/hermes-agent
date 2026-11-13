@@ -8,10 +8,10 @@ import pytest
 
 from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS
 from hermes_cli.config import load_config, save_config
-from tools.memory_tool import MemoryStore, apply_memory_pending
-from tools.registry import registry
-from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
-from tools import write_approval as wa
+from hermes_agent.tools.memory_tool import MemoryStore, apply_memory_pending
+from hermes_agent.tools.registry import registry
+from hermes_agent.tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+from hermes_agent.tools import write_approval as wa
 
 
 def _call(route, store, args):

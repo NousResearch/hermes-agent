@@ -24,6 +24,11 @@ def _hits(src: str) -> list[int]:
     ("def f():\n    from tools.terminal_scope import install_profile_terminal_scope\n"
      "    install_profile_terminal_scope('/h')\n", True),
     ("from tools.terminal_scope import set_terminal_scope\nset_terminal_scope({})\n", True),
+    # the same setters at their home after the package move
+    ("from hermes_agent.tools.terminal_scope import set_terminal_scope\nset_terminal_scope({})\n", True),
+    ("import hermes_agent.tools.terminal_scope as ts\nts.install_profile_terminal_scope('/h')\n", True),
+    ("from hermes_agent.agent.secret_scope import set_secret_scope\nset_secret_scope({})\n", True),
+    ("import hermes_agent.hermes_constants as hc\nhc.set_hermes_home_override('/h')\n", True),
     # the replacement, and unrelated names that merely share a spelling
     ("from agent.runtime_scope import bind_profile_scope\nwith bind_profile_scope('/h'):\n    pass\n", False),
     ("def f(set_hermes_home_override):\n    set_hermes_home_override('/h')\n", False),
@@ -49,6 +54,7 @@ def test_detects_direct_setter_calls(src, flagged):
     ("hermes_constants.py", False),     # the setters' own definitions
     ("agent/secret_scope.py", False),
     ("tools/terminal_scope.py", False),
+    ("hermes_agent/tools/terminal_scope.py", False),
 ])
 def test_scope(path, applies):
     assert rule_applies(RULES_BY_ID["HX016"], path) is applies
@@ -75,3 +81,19 @@ def test_ratchet(tmp_path, capsys, head, blocks):
     assert (code != 0) is blocks, out
     if blocks:
         assert "HX016" in out
+
+
+_TS_OLD = ("from tools.terminal_scope import set_terminal_scope\n\n\n"
+           "def old(policy):\n    return set_terminal_scope(policy)\n")
+_TS_MOVED = _TS_OLD.replace("from tools.", "from hermes_agent.tools.")
+
+
+@pytest.mark.parametrize("head, blocks", [
+    ({"gateway/a.py": _TS_MOVED}, False),  # the move rewrote the import; the call is the old one
+    ({"gateway/a.py": _TS_MOVED + "\n\ndef new(policy):\n    return set_terminal_scope(policy)\n"}, True),
+])
+def test_ratchet_across_the_terminal_scope_move(tmp_path, capsys, head, blocks):
+    repo, _ = _repo(tmp_path)
+    base = _commit(repo, {"gateway/a.py": _TS_OLD})
+    code, out = _verdict(repo, base, head, capsys)
+    assert (code != 0) is blocks, out

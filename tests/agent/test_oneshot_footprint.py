@@ -48,7 +48,7 @@ def interactive_prompt(tmp_path, monkeypatch):
 
 
 def test_oneshot_delegation_budget_charges_total_children_then_refuses(oneshot, monkeypatch):
-    from tools import delegate_tool
+    from hermes_agent.tools import delegate_tool
 
     monkeypatch.setattr(delegate_tool, "_get_oneshot_max_children", lambda: 2)
     parent = type("P", (), {})()

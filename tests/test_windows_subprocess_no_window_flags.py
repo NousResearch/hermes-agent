@@ -319,7 +319,7 @@ def test_lsp_client_spawn_hides_console_window(monkeypatch):
 # ── #67690 env probes, lazy installs, platform.win32_ver() (@m4r13y) ───────
 #
 # Windowless processes (pythonw gateway + kanban workers) flashed consoles
-# from three more spawn families: tools/env_probe._run's interpreter/pip
+# from three more spawn families: hermes_agent/tools/env_probe._run's interpreter/pip
 # probes and CPython
 # 3.11/3.12's platform.win32_ver() which shells out `cmd /c ver` with
 # shell=True and no CREATE_NO_WINDOW. All are hide-only (creationflags);
@@ -328,7 +328,7 @@ def test_lsp_client_spawn_hides_console_window(monkeypatch):
 
 
 def test_env_probe_run_hides_console_window(monkeypatch):
-    from tools import env_probe
+    from hermes_agent.tools import env_probe
 
     captured = []
 

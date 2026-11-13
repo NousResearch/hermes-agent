@@ -1,4 +1,4 @@
-"""Tests for video_analyze tool in tools/vision_tools.py."""
+"""Tests for video_analyze tool in hermes_agent/tools/vision_tools.py."""
 
 import asyncio
 import base64
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.vision_tools import (
+from hermes_agent.tools.vision_tools import (
     _detect_video_mime_type,
     _video_to_base64_data_url,
     _handle_video_analyze,
@@ -72,7 +72,7 @@ class TestHandleVideoAnalyze:
         monkeypatch.setenv("AUXILIARY_VIDEO_MODEL", "")
         monkeypatch.setenv("AUXILIARY_VISION_MODEL", "google/gemini-flash")
 
-        with patch("tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
+        with patch("hermes_agent.tools.vision_tools.video_analyze_tool", new_callable=AsyncMock) as mock_tool:
             mock_tool.return_value = json.dumps({"success": True, "analysis": "ok"})
             asyncio.get_event_loop().run_until_complete(
                 _handle_video_analyze({"video_url": "/tmp/test.mp4", "question": "test"})
@@ -99,8 +99,8 @@ class TestVideoAnalyzeTool:
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "A short video showing a demo."
 
-        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response):
-            with patch("tools.vision_tools.extract_content_or_reasoning", return_value="A short video showing a demo."):
+        with patch("hermes_agent.tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response):
+            with patch("hermes_agent.tools.vision_tools.extract_content_or_reasoning", return_value="A short video showing a demo."):
                 result = self._run(video_analyze_tool(str(video), "What is this?"))
 
         data = json.loads(result)
@@ -123,7 +123,7 @@ class TestVideoAnalyzeTool:
         disguised = tmp_path / "video.mp4"
         disguised.symlink_to(secret)
 
-        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("hermes_agent.tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
             result = self._run(video_analyze_tool(str(disguised), "What is this?"))
 
         data = json.loads(result)
@@ -155,8 +155,8 @@ class TestVideoAnalyzeTool:
             mock_response.choices[0].message.content = "OK"
             return mock_response
 
-        with patch("tools.vision_tools.async_call_llm", side_effect=capture_llm):
-            with patch("tools.vision_tools.extract_content_or_reasoning", return_value="OK"):
+        with patch("hermes_agent.tools.vision_tools.async_call_llm", side_effect=capture_llm):
+            with patch("hermes_agent.tools.vision_tools.extract_content_or_reasoning", return_value="OK"):
                 self._run(video_analyze_tool(str(video), "Describe this"))
 
         messages = captured_kwargs["messages"]
@@ -175,7 +175,7 @@ class TestVideoAnalyzeTool:
         """Non-local terminal backends must not read local host video paths.
 
         The read routes through the shared media resolver
-        (tools.image_source, ``permitted=("video",)``) which exec-reads the
+        (hermes_agent.tools.image_source, ``permitted=("video",)``) which exec-reads the
         bytes inside the sandbox — so the analyzed video is the container's
         file, never the host's.
         """
@@ -186,8 +186,8 @@ class TestVideoAnalyzeTool:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
 
-        import tools.image_source as isrc
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.image_source as isrc
+        import hermes_agent.tools.terminal_tool as tt
 
         env_lookups = []
 
@@ -210,8 +210,8 @@ class TestVideoAnalyzeTool:
             return mock_response
 
         with (
-            patch("tools.vision_tools.async_call_llm", side_effect=capture_llm),
-            patch("tools.vision_tools.extract_content_or_reasoning", return_value="sandbox video"),
+            patch("hermes_agent.tools.vision_tools.async_call_llm", side_effect=capture_llm),
+            patch("hermes_agent.tools.vision_tools.extract_content_or_reasoning", return_value="sandbox video"),
         ):
             result = self._run(
                 video_analyze_tool(str(host_video), "Describe this", task_id="task-123")
@@ -233,7 +233,7 @@ class TestVideoToolsetRegistration:
     """Verify the tool is registered correctly."""
 
     def test_registered_in_video_toolset(self):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         entry = registry.get_entry("video_analyze")
         assert entry is not None
         assert entry.toolset == "video"

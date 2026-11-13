@@ -10,13 +10,13 @@ import pytest
 @pytest.fixture
 def runtime(monkeypatch):
     from hermes_agent.tui_gateway import server
-    from tools import async_delegation, delegate_tool_registry
+    from hermes_agent.tools import async_delegation, delegate_tool_registry
 
     transport = SimpleNamespace(write=lambda frame: True)
     owner = {"session_key": "parent", "history": [], "transport": transport}
     monkeypatch.setattr(server, "_sessions", {"ui-owner": owner})
     # Empty the shared registries IN PLACE rather than rebinding the module attributes:
-    # tools.delegate_tool_progress binds ``_active_subagents`` by name at import, so a rebound
+    # hermes_agent.tools.delegate_tool_progress binds ``_active_subagents`` by name at import, so a rebound
     # registry dict forks the two views whenever that module was imported by an earlier test
     # (run_agent pulls it in) — the relay then writes last_tool into the orphaned original while
     # ``_register_subagent`` and ``subagent.list`` use the replacement.
@@ -37,10 +37,10 @@ def runtime(monkeypatch):
 
 
 def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
-    from tools import async_delegation as bg
-    from tools.delegate_tool_child_run import _register_child
-    from tools.delegate_tool_registry import _unregister_subagent
-    from tools.delegate_tool_progress import _build_child_progress_callback
+    from hermes_agent.tools import async_delegation as bg
+    from hermes_agent.tools.delegate_tool_child_run import _register_child
+    from hermes_agent.tools.delegate_tool_registry import _unregister_subagent
+    from hermes_agent.tools.delegate_tool_progress import _build_child_progress_callback
 
     server, owner, transport, call = runtime
     release = threading.Event()
@@ -89,9 +89,9 @@ def test_snapshot_projects_only_this_sessions_runtime_records(runtime):
 
 def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):
     from run_agent import AIAgent
-    from tools.delegate_tool_child_run import _register_child
-    from tools.delegate_tool_registry import _close_subagent_steering, _unregister_subagent
-    from tools.delegation_live_log import LiveTranscriptWriter
+    from hermes_agent.tools.delegate_tool_child_run import _register_child
+    from hermes_agent.tools.delegate_tool_registry import _close_subagent_steering, _unregister_subagent
+    from hermes_agent.tools.delegation_live_log import LiveTranscriptWriter
 
     server, owner, transport, call = runtime
     child = object.__new__(AIAgent)
@@ -129,8 +129,8 @@ def test_live_tail_and_steer_share_exact_owner_and_end_with_child(runtime):
 
 
 def test_interrupt_requires_exact_live_owner_but_direct_helper_stays_legacy(runtime):
-    from tools.delegate_tool_child_run import _register_child
-    from tools.delegate_tool_registry import interrupt_subagent, _unregister_subagent
+    from hermes_agent.tools.delegate_tool_child_run import _register_child
+    from hermes_agent.tools.delegate_tool_registry import interrupt_subagent, _unregister_subagent
 
     server, owner, transport, call = runtime
     stopped = []
@@ -162,7 +162,7 @@ def test_interrupt_requires_exact_live_owner_but_direct_helper_stays_legacy(runt
 
 
 def test_reattach_preserves_child_controls_including_late_registration(runtime, tmp_path):
-    from tools.delegate_tool_child_run import _register_child
+    from hermes_agent.tools.delegate_tool_child_run import _register_child
 
     server, owner, old, call = runtime
     new = type("Transport", (), {"write": lambda self, frame: True})()
@@ -210,7 +210,7 @@ def test_reattach_preserves_child_controls_including_late_registration(runtime, 
 
 
 def test_reattach_does_not_adopt_foreign_or_retired_generations(runtime):
-    from tools.delegate_tool_child_run import _register_child
+    from hermes_agent.tools.delegate_tool_child_run import _register_child
 
     server, owner, old, call = runtime
     new = type("Transport", (), {"write": lambda self, frame: True})()
@@ -240,7 +240,7 @@ def test_any_attach_path_carries_subagent_authority_without_registry_sync(runtim
     """Authority follows the live session slot, not a per-record transport copy. Every reattach site
     (prompt.submit, queued-prompt drain, resume, activate, future ones) goes through
     _attach_session_transport; none of them may need to remember a registry sync step."""
-    from tools.delegate_tool_child_run import _register_child
+    from hermes_agent.tools.delegate_tool_child_run import _register_child
 
     server, owner, old, call = runtime
     new = type("Transport", (), {"write": lambda self, frame: True})()
@@ -268,8 +268,8 @@ def test_list_follows_the_conversation_across_ui_sid_and_compression_rotation(ru
     compression rotates the durable key. The read-only roster must keep showing the conversation's still-
     running children; a foreign conversation on the same transport sees nothing and control stays exact."""
     from hermes_agent.hermes_state import SessionDB
-    from tools.delegate_tool_child_run import _register_child
-    from tools.delegate_tool_registry import _unregister_subagent
+    from hermes_agent.tools.delegate_tool_child_run import _register_child
+    from hermes_agent.tools.delegate_tool_registry import _unregister_subagent
 
     server, owner, transport, call = runtime
     db = SessionDB(db_path=tmp_path / "state.db")
@@ -310,7 +310,7 @@ def test_list_surfaces_failed_delegations_that_outlived_the_live_roster(runtime)
     durable row still reaches ``delegations`` for its own session only (#97202)."""
     import time
 
-    from tools import async_delegation as bg
+    from hermes_agent.tools import async_delegation as bg
 
     _server, _owner, _transport, call = runtime
     for did, ui in (("d-mine", "ui-owner"), ("d-foreign", "other")):

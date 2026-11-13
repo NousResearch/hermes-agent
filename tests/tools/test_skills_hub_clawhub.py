@@ -4,8 +4,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from tools.skills_hub_clawhub import ClawHubSource
-from tools.skills_hub_models import SkillMeta
+from hermes_agent.tools.skills_hub_clawhub import ClawHubSource
+from hermes_agent.tools.skills_hub_models import SkillMeta
 
 
 class _MockResponse:
@@ -22,8 +22,8 @@ class _MockResponse:
 class TestClawHubSource(unittest.TestCase):
     def setUp(self):
         self.src = ClawHubSource()
-        self._safe_patcher = patch("tools.skills_hub.is_safe_url", return_value=True)
-        self._policy_patcher = patch("tools.skills_hub.check_website_access", return_value=None)
+        self._safe_patcher = patch("hermes_agent.tools.skills_hub.is_safe_url", return_value=True)
+        self._policy_patcher = patch("hermes_agent.tools.skills_hub.check_website_access", return_value=None)
         self._safe_patcher.start()
         self._policy_patcher.start()
 
@@ -31,10 +31,10 @@ class TestClawHubSource(unittest.TestCase):
         self._policy_patcher.stop()
         self._safe_patcher.stop()
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
     @patch.object(ClawHubSource, "_load_catalog_index", return_value=[])
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_search_uses_listing_endpoint_as_fallback(
         self, mock_get, _mock_load_catalog, _mock_read_cache, _mock_write_cache
     ):
@@ -67,7 +67,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].description, "Calendar integration")
 
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_maps_display_name_and_summary(self, mock_get):
         mock_get.return_value = _MockResponse(
             status_code=200,
@@ -86,7 +86,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.description, "Calendar integration")
         self.assertEqual(meta.identifier, "caldav-calendar")
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_handles_nested_skill_payload(self, mock_get):
         mock_get.return_value = _MockResponse(
             status_code=200,
@@ -109,7 +109,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.identifier, "self-improving-agent")
         self.assertEqual(meta.tags, ["automation"])
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_captures_owner_from_detail_api(self, mock_get):
         """inspect() fetches the detail API which includes owner — capture it."""
         mock_get.return_value = _MockResponse(
@@ -132,8 +132,8 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(meta.extra.get("owner"), "thesethrose")
 
 
-    @patch("tools.skills_hub_clawhub._guarded_http_stream")
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub_clawhub._guarded_http_stream")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get, mock_stream):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
@@ -169,7 +169,7 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
         self.assertEqual(bundle.files["README.md"], "hello")
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_falls_back_to_versions_list(self, mock_get):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
@@ -186,10 +186,10 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNotNone(bundle)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
 
-    @patch("tools.skills_hub_clawhub._guarded_http_stream")
-    @patch("tools.skills_hub.check_website_access", return_value=None)
-    @patch("tools.skills_hub.is_safe_url")
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub_clawhub._guarded_http_stream")
+    @patch("hermes_agent.tools.skills_hub.check_website_access", return_value=None)
+    @patch("hermes_agent.tools.skills_hub.is_safe_url")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_blocks_private_raw_url(self, mock_get, mock_safe, _mock_policy, mock_stream):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
@@ -222,9 +222,9 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNone(bundle)
         self.assertNotIn("http://127.0.0.1/private-skill", [c.args[0] for c in mock_get.call_args_list])
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_search_empty_query_paginates_full_catalog(
         self, mock_get, _mock_read_cache, _mock_write_cache
     ):
@@ -274,9 +274,9 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIn("b-skill-199", identifiers)
         self.assertIn("c-skill-49", identifiers)
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_catalog_walk_aborts_on_budget_and_does_not_poison_cache(
         self, mock_get, _mock_read_cache, mock_write_cache
     ):
@@ -317,9 +317,9 @@ class TestClawHubSource(unittest.TestCase):
         # Whatever was gathered is still returned to the caller.
         self.assertIsInstance(results, list)
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_catalog_walk_caches_when_terminating_naturally_within_budget(
         self, mock_get, _mock_read_cache, mock_write_cache
     ):
@@ -378,19 +378,19 @@ class TestClawHubSource(unittest.TestCase):
             )
         )
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_does_not_claim_github_style_identifier(self, mock_get):
         meta = self.src.inspect("latipun7/agent-skill-collections/skills/skillopt")
         self.assertIsNone(meta)
         mock_get.assert_not_called()
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_fetch_does_not_claim_github_style_identifier(self, mock_get):
         bundle = self.src.fetch("latipun7/agent-skill-collections/skillopt")
         self.assertIsNone(bundle)
         mock_get.assert_not_called()
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_inspect_rejects_owner_mismatch_on_clawhub_url_path(self, mock_get):
         mock_get.return_value = _MockResponse(
             status_code=200,
@@ -416,8 +416,8 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
 
     def setUp(self):
         self.src = ClawHubSource()
-        self._safe_patcher = patch("tools.skills_hub.is_safe_url", return_value=True)
-        self._policy_patcher = patch("tools.skills_hub.check_website_access", return_value=None)
+        self._safe_patcher = patch("hermes_agent.tools.skills_hub.is_safe_url", return_value=True)
+        self._policy_patcher = patch("hermes_agent.tools.skills_hub.check_website_access", return_value=None)
         self._safe_patcher.start()
         self._policy_patcher.start()
 
@@ -446,9 +446,9 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
 
         return side_effect
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_max_items_stops_walk_early_and_does_not_cache(
         self, mock_get, _mock_read_cache, mock_write_cache
     ):
@@ -466,9 +466,9 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         # Partial (bounded) walk must not be cached.
         mock_write_cache.assert_not_called()
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_max_items_zero_ignores_wall_clock_budget(
         self, mock_get, _mock_read_cache, _mock_write_cache
     ):
@@ -483,9 +483,9 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         self.assertGreater(page_calls["n"], 100)
         self.assertEqual(len(results), page_calls["n"])
 
-    @patch("tools.skills_hub_clawhub.time.sleep")
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub_clawhub.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
     def test_unbounded_walk_retries_none_page_then_caches(
         self, _mock_read_cache, mock_write_cache, mock_sleep
     ):
@@ -509,9 +509,9 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         mock_write_cache.assert_called_once()
         mock_sleep.assert_called()
 
-    @patch("tools.skills_hub_clawhub.time.sleep")
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub_clawhub.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
     def test_unbounded_walk_exhausted_retries_does_not_cache(
         self, _mock_read_cache, mock_write_cache, mock_sleep
     ):
@@ -532,9 +532,9 @@ class TestClawHubCatalogWalkBounded(unittest.TestCase):
         mock_write_cache.assert_not_called()
         self.assertGreaterEqual(calls["n"], 6)
 
-    @patch("tools.skills_hub._write_index_cache")
-    @patch("tools.skills_hub._read_index_cache", return_value=None)
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._write_index_cache")
+    @patch("hermes_agent.tools.skills_hub._read_index_cache", return_value=None)
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_empty_query_browse_bounds_walk_to_limit(
         self, mock_get, _mock_read_cache, _mock_write_cache
     ):
@@ -556,12 +556,12 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
     def setUp(self):
         self.src = ClawHubSource()
         for target, value in (("is_safe_url", True), ("check_website_access", None)):
-            patcher = patch(f"tools.skills_hub.{target}", return_value=value)
+            patcher = patch(f"hermes_agent.tools.skills_hub.{target}", return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    @patch("tools.skills_hub.time.sleep")
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_retries_on_429_with_retry_after_header(self, mock_get, mock_sleep):
         """On 429, _fetch_owner_handle retries and honours Retry-After."""
         mock_get.side_effect = [
@@ -579,8 +579,8 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         mock_sleep.assert_called_once_with(3.0)
 
 
-    @patch("tools.skills_hub.time.sleep")
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_gives_up_after_max_attempts_on_429(self, mock_get, mock_sleep):
         """After 3 attempts all 429, return None (no more retries)."""
         mock_get.return_value = _MockResponse(status_code=429, headers={})
@@ -591,8 +591,8 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 3)
         self.assertEqual(mock_sleep.call_count, 2)  # sleeps between attempts, not after last
 
-    @patch("tools.skills_hub.time.sleep")
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_retries_on_5xx_transient_error(self, mock_get, mock_sleep):
         """On 500/502/503, retries with exponential backoff."""
         mock_get.side_effect = [
@@ -609,8 +609,8 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 2)
         mock_sleep.assert_called_once()
 
-    @patch("tools.skills_hub.time.sleep")
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_does_not_retry_on_4xx_non_429(self, mock_get, mock_sleep):
         """4xx (not 429) means the resource doesn't exist — no retry."""
         mock_get.return_value = _MockResponse(status_code=404, headers={})
@@ -621,8 +621,8 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 1)
         mock_sleep.assert_not_called()
 
-    @patch("tools.skills_hub.time.sleep")
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_retries_on_transport_error(self, mock_get, mock_sleep):
         """Network/transport errors (httpx.HTTPError) trigger retry with backoff."""
         import httpx
@@ -640,8 +640,8 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 2)
         mock_sleep.assert_called_once()
 
-    @patch("tools.skills_hub.time.sleep")
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub.time.sleep")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_enrich_owners_survives_burst_429_then_succeeds(self, mock_get, mock_sleep):
         """enrich_owners() should not abort when a burst of 429s is followed by success.
 
@@ -689,7 +689,7 @@ class TestFetchOwnerHandleRetry(unittest.TestCase):
         self.assertEqual(call_count["n"], 6)
         mock_sleep.assert_called()
 
-    @patch("tools.skills_hub._ssrf_safe_http_get")
+    @patch("hermes_agent.tools.skills_hub._ssrf_safe_http_get")
     def test_enrich_owners_budget_stops_early_and_keeps_partial_results(self, mock_get):
         """An exhausted budget ends enrichment early (the un-enriched rest ships without an
         owner) instead of walking every remaining skill — the unbounded walk over 78k skills

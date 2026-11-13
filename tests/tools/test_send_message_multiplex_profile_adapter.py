@@ -11,7 +11,7 @@ import pytest
 
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
-from tools.send_message_senders import _live_adapter
+from hermes_agent.tools.send_message_senders import _live_adapter
 
 
 @pytest.fixture

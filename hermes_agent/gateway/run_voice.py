@@ -458,8 +458,8 @@ class GatewayVoiceMixin:
         over a platform limit); legacy single-file results keep working."""
         audio_path, actual_paths = None, []
         try:
-            from tools.tts_text_normalize import _strip_markdown_for_tts
-            from tools.tts_tool import text_to_speech_tool
+            from hermes_agent.tools.tts_text_normalize import _strip_markdown_for_tts
+            from hermes_agent.tools.tts_tool import text_to_speech_tool
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
                 return

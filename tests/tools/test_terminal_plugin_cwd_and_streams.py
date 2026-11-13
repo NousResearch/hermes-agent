@@ -9,10 +9,10 @@ import pytest
 
 from agent import terminal_env_registry as reg
 from agent.terminal_env_provider import TerminalEnvironmentProvider
-from tools import file_tools, file_tools_paths, terminal_tool
-from tools.bot_desktop import placement
-from tools.environments import streams
-from tools.terminal_tool_backends import _create_environment
+from hermes_agent.tools import file_tools, file_tools_paths, terminal_tool
+from hermes_agent.tools.bot_desktop import placement
+from hermes_agent.tools.environments import streams
+from hermes_agent.tools.terminal_tool_backends import _create_environment
 
 
 class _SpaceEnv:
@@ -151,7 +151,7 @@ def test_a_string_exec_prefix_is_refused_instead_of_split_into_characters():
 
 
 def test_a_failed_sandbox_bring_up_is_not_retried_on_every_path_resolution(monkeypatch):
-    from tools import terminal_tool_lifecycle
+    from hermes_agent.tools import terminal_tool_lifecycle
 
     attempts = []
 
@@ -168,14 +168,14 @@ def test_a_failed_sandbox_bring_up_is_not_retried_on_every_path_resolution(monke
 
 
 def test_desktop_scratch_dir_works_for_an_environment_without_get_temp_dir():
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
 
     assert not hasattr(_SpaceEnv(), "get_temp_dir")
     assert sandbox_host._remote_dir(_SpaceEnv(), "p1") == "/tmp/hermes-bot-desktop/p1"
 
 
 def test_missing_desktop_stack_hint_names_no_config_key_for_a_plugin_backend(monkeypatch):
-    from tools.bot_desktop import runtime, sandbox_host
+    from hermes_agent.tools.bot_desktop import runtime, sandbox_host
 
     monkeypatch.setattr(placement, "_setting", lambda: "auto")
     monkeypatch.setattr(placement, "_terminal_backend", lambda: "spacebox")

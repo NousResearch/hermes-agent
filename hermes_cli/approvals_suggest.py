@@ -1,9 +1,9 @@
 """``hermes approvals suggest`` — mine approval history into allowlist proposals.
 
 Hermes has no dedicated approval-decision ledger: ``always`` answers land in ``command_allowlist``
-(config.yaml) via :func:`tools.approval.save_permanent_allowlist`, while ``once``/``session``
+(config.yaml) via :func:`hermes_agent.tools.approval.save_permanent_allowlist`, while ``once``/``session``
 approvals are in-memory only. So this module mines *implied approvals*: a command that matches a
-dangerous-command class (the same :func:`tools.approval.detect_dangerous_command` classifier that
+dangerous-command class (the same :func:`hermes_agent.tools.approval.detect_dangerous_command` classifier that
 triggers the prompt) AND whose tool result is not a block/denial marker must have been approved by
 the user (once, session, always, smart-approve, or yolo) before it ran.
 """
@@ -24,7 +24,7 @@ from typing import Iterable, Iterator, Optional
 # ---------------------------------------------------------------------------
 
 # Dangerous-class descriptions matching ANY of these are never proposed, regardless of approval
-# frequency (matched case-insensitively against tools.approval's DANGEROUS_PATTERNS / execution-flag
+# frequency (matched case-insensitively against hermes_agent.tools.approval's DANGEROUS_PATTERNS / execution-flag
 # descriptions). Deliberately conservative: a benign class accidentally excluded costs the user
 # one manual config edit; a destructive class accidentally proposed costs them data.
 _UNSAFE_CLASS_PATTERNS = [
@@ -55,7 +55,7 @@ _UNSAFE_ROOT_BINARIES = {
 _UNSAFE_ROOT_PREFIXES = ("mkfs",)
 
 # Substrings in a role='tool' result that mean the command did NOT execute with user consent
-# (blocked, denied, timed out, or still pending). Kept in sync with tools/approval.py templates.
+# (blocked, denied, timed out, or still pending). Kept in sync with hermes_agent/tools/approval.py templates.
 _BLOCK_MARKERS = (
     "BLOCKED (hardline)", "BLOCKED: User denied", "BLOCKED: Action ",
     "BLOCKED: Command flagged as dangerous", "BLOCKED: approval required",
@@ -150,7 +150,7 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
     """``(command, dangerous_class_description)`` records for dangerous-classified terminal commands
     that actually executed (i.e. carried an implied user approval).
     """
-    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    from hermes_agent.tools.approval_detection import detect_dangerous_command, detect_hardline_command
     path = Path(db_path) if db_path else default_db_path()
     if not path.exists():
         return []
@@ -182,7 +182,7 @@ def scan_approval_history(db_path: Optional[Path] = None, days: int = 90) -> lis
 
 def normalize_command(command: str) -> str:
     """Fold user/hermes home prefixes and collapse whitespace."""
-    from tools.approval_detection import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
+    from hermes_agent.tools.approval_detection import _rewrite_resolved_hermes_home, _rewrite_resolved_user_home
     return " ".join(_rewrite_resolved_user_home(_rewrite_resolved_hermes_home(command)).split())
 
 
@@ -202,7 +202,7 @@ def derive_glob(normalized: str) -> Optional[str]:
     Returns None for compound commands (shell operators — the runtime allowlist matcher refuses
     those anyway) and for commands anchored on an unsafe root binary.
     """
-    from tools.approval_floors import _has_allowlist_shell_operator
+    from hermes_agent.tools.approval_floors import _has_allowlist_shell_operator
     tokens = normalized.split()
     if _has_allowlist_shell_operator(normalized) or not tokens or _unsafe_root_binary(tokens[0]):
         return None
@@ -282,7 +282,7 @@ def parse_apply_indices(spec: str, total: int) -> list[int]:
 
 def apply_proposals(proposals: list[Proposal], indices: list[int]) -> set:
     """Merge chosen proposal patterns into command_allowlist and persist."""
-    import tools.approval as approval_module
+    import hermes_agent.tools.approval as approval_module
     merged = set(approval_module.load_permanent_allowlist()) | {proposals[idx].pattern for idx in indices}
     approval_module.save_permanent_allowlist(merged)
     # Keep the in-process allowlist consistent so a long-lived process sees the new entries
@@ -323,7 +323,7 @@ def suggest_command(args) -> int:
         print(f"Session database not found: {db_path}")
         return 1
 
-    import tools.approval as approval_module
+    import hermes_agent.tools.approval as approval_module
     existing = set(approval_module.load_permanent_allowlist())
     proposals = build_proposals(
         scan_approval_history(db_path, days=days), existing=existing,

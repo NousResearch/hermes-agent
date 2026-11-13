@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from tools.bot_desktop import placement, runtime, sandbox_host
-from tools.environments import streams
+from hermes_agent.tools.bot_desktop import placement, runtime, sandbox_host
+from hermes_agent.tools.environments import streams
 
 # What the launcher writes (sandbox-side paths, so a leak into a local env is unambiguous).
 LAUNCHER_VALUES = {
@@ -165,8 +165,8 @@ def test_desktop_env_drops_this_machines_seat_for_a_sandbox_hosted_screen_but_st
 
 def test_browser_and_cua_driver_envs_carry_none_of_the_backend_values(sandbox_screen, monkeypatch):
     monkeypatch.setenv("DISPLAY", ":0")
-    from tools.browser_session import build_browser_env
-    from tools.computer_use.cua_backend import cua_driver_child_env
+    from hermes_agent.tools.browser_session import build_browser_env
+    from hermes_agent.tools.computer_use.cua_backend import cua_driver_child_env
 
     browser_env = build_browser_env()
     assert _leaked(browser_env) == {}
@@ -182,13 +182,13 @@ def test_a_host_cua_driver_never_gets_this_machines_seat_for_a_sandbox_hosted_sc
     for key, value in {"DISPLAY": ":0", "XAUTHORITY": "/home/u/.Xauthority",
                        "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/u/bus"}.items():
         monkeypatch.setenv(key, value)
-    from tools.computer_use.cua_backend import CuaDriverBackend
+    from hermes_agent.tools.computer_use.cua_backend import CuaDriverBackend
     env = CuaDriverBackend("unrestricted")._embedded_daemon.child_env()
     assert not {"DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"} & set(env)
 
 
 def test_local_terminal_env_carries_none_of_the_backend_values(sandbox_screen, monkeypatch):
-    from tools.environments.local import _make_run_env
+    from hermes_agent.tools.environments.local import _make_run_env
     monkeypatch.setenv("DISPLAY", ":0")
     env = _make_run_env({})
     assert _leaked(env) == {}
@@ -208,7 +208,7 @@ def gateway_screen(home):
 
 
 def test_gateway_hosted_screen_still_merges_into_local_children(gateway_screen, monkeypatch):
-    from tools.environments.local import _make_run_env
+    from hermes_agent.tools.environments.local import _make_run_env
     env = runtime.desktop_env({"DISPLAY": ":0", "WAYLAND_DISPLAY": "wayland-0"})
     assert {k: env[k] for k in gateway_screen} == gateway_screen
     assert "WAYLAND_DISPLAY" not in env
@@ -221,11 +221,11 @@ def test_processes_inside_the_backend_still_receive_the_published_values(sandbox
     backend["env_file"] = _env_file(LAUNCHER_VALUES)  # exactly what the launcher writes
     assert runtime.published_env() == LAUNCHER_VALUES
 
-    from tools import browser_session_sandbox
+    from hermes_agent.tools import browser_session_sandbox
     env, published = browser_session_sandbox._sandbox()
     assert env is sandbox_screen and published == LAUNCHER_VALUES
 
-    from tools.computer_use import cua_backend
+    from hermes_agent.tools.computer_use import cua_backend
     monkeypatch.setattr(streams, "exec_prefix", lambda e, *, user=None, interactive=True:
                         ["docker", "exec", "-i", e._container_id])
     invocation = cua_backend.sandbox_mcp_invocation()
@@ -239,7 +239,7 @@ def test_processes_inside_the_backend_still_receive_the_published_values(sandbox
 
 def test_cached_driver_identity_follows_a_sandbox_hosted_screen(sandbox_screen, backend, monkeypatch):
     """The computer_use cache compares this identity to notice a screen that came up or went away."""
-    from tools.computer_use import cua_backend
+    from hermes_agent.tools.computer_use import cua_backend
     monkeypatch.setenv("DISPLAY", ":0")
     assert cua_backend.desktop_identity() == ":20"
     backend["env_file"] = b""  # the screen is down: nothing published, and the seat is not the screen either
@@ -248,6 +248,6 @@ def test_cached_driver_identity_follows_a_sandbox_hosted_screen(sandbox_screen, 
 
 
 def test_cached_driver_identity_follows_a_gateway_hosted_screen(gateway_screen, monkeypatch):
-    from tools.computer_use import cua_backend
+    from hermes_agent.tools.computer_use import cua_backend
     monkeypatch.setenv("DISPLAY", ":0")
     assert cua_backend.desktop_identity() == ":23"

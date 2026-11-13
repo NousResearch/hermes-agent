@@ -61,7 +61,7 @@ Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自
 - **`skill_view` / `skills_list`** — 读取 Hermes 的技能库。
 - **`text_to_speech`** — 通过 Hermes 配置的提供商进行 TTS。
 
-当模型需要其中某个工具时，Codex 通过 stdio MCP 生成 `hermes_tools_mcp_server` 子进程，调用通过 `model_tools.handle_function_call()` 分发（与 Hermes 默认运行时的代码路径相同），结果像其他 MCP 响应一样返回给 Codex。
+当模型需要其中某个工具时，Codex 通过 stdio MCP 生成 `hermes_tools_mcp_server` 子进程，调用通过 `hermes_agent.model_tools.handle_function_call()` 分发（与 Hermes 默认运行时的代码路径相同），结果像其他 MCP 响应一样返回给 Codex。
 
 ### 此运行时上不可用的工具
 
@@ -354,7 +354,7 @@ startup_timeout_sec = 30.0
 tool_timeout_sec = 600.0
 ```
 
-当模型调用 `web_search`（或其他暴露的 Hermes 工具）时，Codex 通过 stdio 生成 `hermes_tools_mcp_server` 子进程，请求通过 `model_tools.handle_function_call()` 分发，结果像其他 MCP 响应一样投影回 Codex。
+当模型调用 `web_search`（或其他暴露的 Hermes 工具）时，Codex 通过 stdio 生成 `hermes_tools_mcp_server` 子进程，请求通过 `hermes_agent.model_tools.handle_function_call()` 分发，结果像其他 MCP 响应一样投影回 Codex。
 
 **通过回调可用的工具：** `web_search`、`web_extract`、`vision_analyze`、`image_generate`、`skill_view`、`skills_list`、`text_to_speech`。
 

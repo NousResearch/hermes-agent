@@ -96,8 +96,8 @@ def execution_policy_mapping(*, target_profile: str, config: Mapping[str, Any] |
         raise RoomExecutionPolicyError("gateway config is invalid")
     from hermes_cli.config import resolve_turn_limit
     from hermes_cli.tools_config import _get_platform_tools
-    from tools.approval import _YOLO_MODE_FROZEN
-    from tools.approval_context import _normalize_approval_mode
+    from hermes_agent.tools.approval import _YOLO_MODE_FROZEN
+    from hermes_agent.tools.approval_context import _normalize_approval_mode
     toolsets = sorted({*_get_platform_tools(dict(config), "api_server"), "bot_room"})
     agent = config.get("agent") if isinstance(config.get("agent"), Mapping) else {}
     approvals = config.get("approvals") if isinstance(config.get("approvals"), Mapping) else {}
@@ -131,7 +131,7 @@ def bind_profile_routed() -> Token:
 
     The room policy was signed for the room MEMBER's profile; a child the member delegates to a
     different profile executes as that profile, so its approval mode is the stricter of the room's
-    and that profile's own (``tools.approval_context._get_approval_mode``). The mark is set by the
+    and that profile's own (``hermes_agent.tools.approval_context._get_approval_mode``). The mark is set by the
     profile route's own scope, never inferred from profile-name comparisons: a ``-p x`` gateway
     serves its launch home as ``default``."""
     return _PROFILE_ROUTED.set(True)

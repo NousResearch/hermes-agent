@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-import tools.checkpoint_manager as checkpoints
-from tools import checkpoint_maintenance
+import hermes_agent.tools.checkpoint_manager as checkpoints
+from hermes_agent.tools import checkpoint_maintenance
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def test_maintenance_size_cap_retains_every_snapshot_after_the_only_large_one(hi
 def test_snapshot_over_cap_drops_one_round_and_leaves_the_gc_to_the_prune(history):
     """A checkpoint never waits on ``git gc``: over the cap it rewrites the ref once and marks
     the store gc-pending; the periodic prune reclaims the objects and clears the marker."""
-    from tools.checkpoint_pruning import GC_PENDING_NAME
+    from hermes_agent.tools.checkpoint_pruning import GC_PENDING_NAME
 
     base, project, manager = history
     store = checkpoints._store_path(base)

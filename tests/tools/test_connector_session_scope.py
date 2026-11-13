@@ -16,13 +16,13 @@ import pytest
     (None, [], True),
 ])
 def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, enabled, disabled, allowed):
-    import model_tools
-    from tools.connectors import managed
-    from tools.connectors.gateway import bridge, config
+    from hermes_agent import model_tools
+    from hermes_agent.tools.connectors import managed
+    from hermes_agent.tools.connectors.gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
     invalidate_check_fn_cache()
     remote = []
     name = "connectors__gmail__SEND_EMAIL"
@@ -75,7 +75,7 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
 
 def test_ordinary_platform_defaults_grant_connections_without_widening_webhook():
     from hermes_cli.tools_config import _get_platform_tools
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     for platform in ("cli", "telegram"):
         enabled = _get_platform_tools({}, platform)

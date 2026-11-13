@@ -10,30 +10,30 @@ from unittest.mock import patch
 # ── TTS tool ──────────────────────────────────────────────────────────────
 
 class TestTTSProviderNullGuard:
-    """tools/tts_tool.py — _get_provider()"""
+    """hermes_agent/tools/tts_tool.py — _get_provider()"""
 
     def test_missing_provider_keeps_free_default_with_cloud_credentials(self):
         """A chat-provider key must not silently opt the user into paid TTS."""
-        from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
+        from hermes_agent.tools.tts_tool import _get_provider, DEFAULT_PROVIDER
 
         assert _get_provider({}) == DEFAULT_PROVIDER
         assert _get_provider({"provider": None}) == DEFAULT_PROVIDER
 
     def test_explicit_provider_wins_over_active(self):
         """An explicit tts.provider always overrides the active-provider fallback."""
-        from tools.tts_tool import _get_provider
+        from hermes_agent.tools.tts_tool import _get_provider
 
         assert _get_provider({"provider": "edge"}) == "edge"
 
 # ── Web tools ─────────────────────────────────────────────────────────────
 
 class TestWebBackendNullGuard:
-    """tools/web_tools.py — _get_backend()"""
+    """hermes_agent/tools/web_tools.py — _get_backend()"""
 
-    @patch("tools.web_tools._load_web_config", return_value={"backend": None})
+    @patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": None})
     def test_explicit_null_backend_does_not_crash(self, _cfg):
         """YAML ``web: {backend: null}`` should not raise AttributeError."""
-        from tools.web_tools import _get_backend
+        from hermes_agent.tools.web_tools import _get_backend
 
         # Should not raise — the exact return depends on env key fallback
         result = _get_backend()

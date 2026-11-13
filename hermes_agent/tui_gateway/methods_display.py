@@ -30,7 +30,7 @@ _lease_listener_installed = threading.Event()
 
 def _display_snapshot() -> dict:
     from hermes_constants import hermes_home_key
-    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     st = _bd_runtime.status()
     return {**st.as_dict(), "lease": _bd_lease.public_view(_bd_lease.get()), "profile_key": hermes_home_key()}
 
@@ -39,7 +39,7 @@ def _install_lease_listener() -> None:
     """Once per process: broadcast every lease change to all connected clients."""
     if _lease_listener_installed.is_set():
         return
-    from tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
 
     def _on_change(profile_key: str, lease) -> None:
         _broadcast_global_event("display.lease", {"profile_key": profile_key, "lease": _bd_lease.public_view(lease)})
@@ -65,11 +65,11 @@ def _(rid, params: dict) -> dict:
     the lease moved DURING the grab: a takeover racing the framebuffer read means the frame may
     already be the human's session, so it is dropped rather than shipped to every client."""
     try:
-        from tools.bot_desktop import lease as _bd_lease
+        from hermes_agent.tools.bot_desktop import lease as _bd_lease
         before = _bd_lease.get()
         if before.holder == _bd_lease.HUMAN:
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
-        from tools.bot_desktop.thumbnail import thumbnail_data_url
+        from hermes_agent.tools.bot_desktop.thumbnail import thumbnail_data_url
         data_url = thumbnail_data_url()
         if _bd_lease.get().epoch != before.epoch:
             return _ok(rid, {"data_url": None, "suppressed": "human_has_control"})
@@ -82,7 +82,7 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     _install_lease_listener()
-    from tools.bot_desktop import runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     try:
         _bd_runtime.start()
         return _ok(rid, _display_snapshot())
@@ -95,7 +95,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Stopping kills the screen under whoever is on it, so it obeys the same rule as a bare
     display.lease.release: refused while a human holds unless the caller says ``force``."""
-    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     force = bool(params.get("force"))
     # Refusal and release are ONE lease transition: a takeover landing between a separate human_holds()
     # check and the release would be acknowledged to the human and then silently revoked here.
@@ -155,7 +155,7 @@ def _(rid, params: dict) -> dict:
     from hermes_constants import get_hermes_home
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from hermes_cli.web_session_sockets import admission_of
-    from tools.bot_desktop import runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     try:
         # The bridge dials either the host RFB socket or the sandbox relay; neither exists before start.
         if _bd_runtime.rfb_socket_path() is None and not _bd_runtime.sandbox_screen_running():
@@ -193,7 +193,7 @@ def _(rid, params: dict) -> dict:
     """Start the package install in the background; the renderer follows ``display.install.log`` /
     ``display.install.done``. Refused while one is already running for this profile."""
     from hermes_constants import hermes_home_key
-    from tools.bot_desktop import install as _bd_install, runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import install as _bd_install, runtime as _bd_runtime
     if not _bd_runtime.is_supported_host():
         return _err(rid, _DISPLAY_ERR, "Bot Desktop runs on Linux gateway hosts only")
     if _bd_runtime.in_sandbox():
@@ -239,7 +239,7 @@ def _(rid, params: dict) -> dict:
 @method("display.lease.acquire")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
@@ -256,7 +256,7 @@ def _(rid, params: dict) -> dict:
 @method("display.lease.release")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
     viewer_id = str(params.get("viewer_id") or "").strip() or None
     # lease.release(None) skips the holder check; a client that lost its viewer id must not be able to
     # yank control from whoever holds it unless it says so explicitly (force).

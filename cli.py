@@ -396,20 +396,20 @@ except Exception:
 # Agent/tool systems load lazily: bare startup only needs the prompt.
 def get_tool_definitions(*args, **kwargs):
     from hermes_cli.mcp_startup import wait_for_mcp_discovery
-    from model_tools import get_tool_definitions as _get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions as _get_tool_definitions
 
     wait_for_mcp_discovery()
     return _get_tool_definitions(*args, **kwargs)
 
 
-validate_toolset = _lazy_shim("toolsets", "validate_toolset")
+validate_toolset = _lazy_shim("hermes_agent.toolsets", "validate_toolset")
 
 
-_cleanup_all_terminals = _lazy_shim("tools.terminal_tool", "cleanup_all_environments", "_cleanup_all_terminals")
-set_sudo_password_callback = _lazy_shim("tools.terminal_tool", "set_sudo_password_callback")
-set_approval_callback = _lazy_shim("tools.terminal_tool", "set_approval_callback")
-set_secret_capture_callback = _lazy_shim("tools.skills_tool", "set_secret_capture_callback")
-_cleanup_all_browsers = _lazy_shim("tools.browser_session_lifecycle", "emergency_cleanup_all_sessions", "_cleanup_all_browsers")
+_cleanup_all_terminals = _lazy_shim("hermes_agent.tools.terminal_tool", "cleanup_all_environments", "_cleanup_all_terminals")
+set_sudo_password_callback = _lazy_shim("hermes_agent.tools.terminal_tool", "set_sudo_password_callback")
+set_approval_callback = _lazy_shim("hermes_agent.tools.terminal_tool", "set_approval_callback")
+set_secret_capture_callback = _lazy_shim("hermes_agent.tools.skills_tool", "set_secret_capture_callback")
+_cleanup_all_browsers = _lazy_shim("hermes_agent.tools.browser_session_lifecycle", "emergency_cleanup_all_sessions", "_cleanup_all_browsers")
 
 _cleanup_done = False  # _run_cleanup runs exactly once
 _cleanup_in_progress = False
@@ -1020,12 +1020,12 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
             # Runs on a daemon thread on the snapshot fast path: keep the imports to modules the
             # registry walk already loaded plus the pure notices module (a heavy import here races
             # importlib's module locks against the main thread).
-            from model_tools import check_tool_availability
+            from hermes_agent.model_tools import check_tool_availability
             from hermes_cli.tool_availability_notices import (
                 current_terminal_backend, filter_to_enabled_toolsets, tool_availability_warning_lines,
             )
-            from tools.terminal_tool import terminal_backend_unavailable_reason
-            from toolsets import resolve_toolset
+            from hermes_agent.tools.terminal_tool import terminal_backend_unavailable_reason
+            from hermes_agent.toolsets import resolve_toolset
 
             _, unavailable = check_tool_availability()
             # Only toolsets this CLI session actually has. The selection is usually a composite bundle
@@ -1254,7 +1254,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         try:
             # shell=True is intentional (user-authored config snippets, never LLM controlled);
             # the env is sanitized because this process holds every API key.
-            from tools.environments.local import build_subprocess_env
+            from hermes_agent.tools.environments.local import build_subprocess_env
             from hermes_cli._subprocess_compat import windows_hide_flags
             result = subprocess.run(
                 exec_cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -1628,7 +1628,7 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
     # cache (~0.4s). Only on the -w path: plain `hermes` has no I/O wait to hide.
     def _prewarm_tools() -> None:
         try:
-            import model_tools as _mt
+            import hermes_agent.model_tools as _mt
             _mt.get_tool_definitions(quiet_mode=True)
         except Exception:
             logger.debug("tool prewarm failed", exc_info=True)

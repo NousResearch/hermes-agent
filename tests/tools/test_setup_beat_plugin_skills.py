@@ -14,7 +14,7 @@ import pytest
 
 from agent import onboarding_flow as flow
 from hermes_cli import plugins as plugins_mod
-from tools.setup_beat_tool import _result
+from hermes_agent.tools.setup_beat_tool import _result
 
 PC = flow.Facts(os="windows", arch="amd64", machine_kind="PC", nvidia_platform="discrete")
 
@@ -66,7 +66,7 @@ def test_the_build_beat_names_an_installed_plugin_skill_by_its_registered_name(h
 
 def test_a_skill_saved_under_the_hashed_portable_name_still_loads(home):
     from hermes_cli.plugins_manifest import _portable_data_namespace
-    from tools.skills_tool import skill_view
+    from hermes_agent.tools.skills_tool import skill_view
 
     _install_blender_from_catalog(home)
     plugins_mod.get_plugin_manager().discover_and_load(force=True)

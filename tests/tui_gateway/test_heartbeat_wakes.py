@@ -26,8 +26,8 @@ DELEGATION = {"type": "async_delegation", "delegation_id": "d1", "session_key": 
 @pytest.fixture
 def surface(monkeypatch):
     submits: list = []
-    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda evt, consumer: "claimed")
-    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.claim_event_delivery", lambda evt, consumer: "claimed")
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.complete_event_delivery", lambda *a, **k: None)
     monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, session, text, **kw: submits.append((text, kw)))
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_session_owns_notification_event", lambda sid, session, evt: True)

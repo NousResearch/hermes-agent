@@ -3,7 +3,7 @@
 The transition table is the single statement of the operation's lifecycle. ``operation.py``
 enforces it; the renderer reads a generated copy (see the shared contract rail)."""
 
-from tools.connectors import contract as c
+from hermes_agent.tools.connectors import contract as c
 
 def test_every_state_is_reachable_from_pending_in_some_kind():
     reachable = set()

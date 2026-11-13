@@ -253,7 +253,7 @@ def _raft_hook(fn):
 @_raft_hook
 def _on_session_start(**kwargs: Any) -> None:
     try:
-        from tools.env_passthrough import register_env_passthrough
+        from hermes_agent.tools.env_passthrough import register_env_passthrough
         register_env_passthrough(["RAFT_PROFILE"])
     except Exception:
         logger.debug("[raft] failed to register RAFT_PROFILE env passthrough", exc_info=True)
@@ -380,7 +380,7 @@ class RaftAdapter(BasePlatformAdapter):
         endpoint = f"http://{self._host}:{port}{self._path}"
         cmd: list[str] = [raft_bin, "--profile", profile, "agent", "bridge", "--wake-adapter", "wake-channel",
                           "--wake-channel-endpoint", endpoint]
-        from tools.environments.local import hermes_subprocess_env
+        from hermes_agent.tools.environments.local import hermes_subprocess_env
         # The raft CLI needs its own profile and channel token, never Hermes' credentials.
         env = {**hermes_subprocess_env(), "RAFT_PROFILE": profile, "RAFT_CHANNEL_TOKEN": self._bridge_token}
         env["HOME"] = env["HERMES_REAL_HOME"]  # the raft CLI's own login lives under the user's HOME

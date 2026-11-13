@@ -198,7 +198,7 @@ class TestCatalog:
 
 class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):
-        from tools.blueprints import BlueprintSpec, register_blueprint_suggestion
+        from hermes_agent.tools.blueprints import BlueprintSpec, register_blueprint_suggestion
 
         spec = BlueprintSpec(skill_name="morning-brief", schedule="0 8 * * *", deliver="telegram")
         with patch("hermes_agent.cron.suggestions.add_suggestion", store.add_suggestion):

@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-# tools.skills_hub / tools.skills_guard are imported inside functions (cycles + startup cost).
+# hermes_agent.tools.skills_hub / hermes_agent.tools.skills_guard are imported inside functions (cycles + startup cost).
 from hermes_constants import display_hermes_home
 
 _console = Console()
@@ -87,8 +87,8 @@ def _try(fn, *args):
 
 def _sources():
     """Source router over all registries (authenticated GitHub when available)."""
-    from tools.skills_hub_github import GitHubAuth
-    from tools.skills_hub_search import create_source_router
+    from hermes_agent.tools.skills_hub_github import GitHubAuth
+    from hermes_agent.tools.skills_hub_search import create_source_router
     return create_source_router(GitHubAuth())
 
 
@@ -219,7 +219,7 @@ def _resolve_short_name(name: str, sources, console: Console, attempt: Optional[
     several -> the single official one, else they are listed). ``attempt`` (an install's metric
     record) gets ``failure_class`` ``ambiguous`` / ``not_found`` when it returns ""."""
     attempt = attempt if attempt is not None else {}
-    from tools.skills_hub_search import unified_search
+    from hermes_agent.tools.skills_hub_search import unified_search
     c = console or _console
     c.print(f"[dim]Resolving '{name}'...[/]")
     results = unified_search(name, sources, source_filter="all", limit=20)
@@ -280,7 +280,7 @@ def _full_identifier(identifier: str, sources, c, attempt: Optional[dict] = None
 
 def _resolve_identifier(identifier: str, sources, c) -> tuple:
     """Short-name resolution + (meta, bundle, source). identifier == "" means unresolved."""
-    from tools.skills_hub import skills_hub_http_session
+    from hermes_agent.tools.skills_hub import skills_hub_http_session
     with skills_hub_http_session():
         identifier = _full_identifier(identifier, sources, c)
         if not identifier:
@@ -297,8 +297,8 @@ def _is_valid_installed_skill_name(name: str) -> bool:
 
 def _existing_categories() -> list[str]:
     """Sorted category buckets under ``~/.hermes/skills/`` (children without their own SKILL.md)."""
-    from tools.skills_hub import SKILLS_DIR
-    from tools.skills_hub_install import _category_skill_dirs
+    from hermes_agent.tools.skills_hub import SKILLS_DIR
+    from hermes_agent.tools.skills_hub_install import _category_skill_dirs
     try:
         return sorted(name for name in set(_category_skill_dirs(SKILLS_DIR))
                       if not (SKILLS_DIR / name / "SKILL.md").exists())
@@ -354,7 +354,7 @@ def _prompt_for_category(c: Console, existing: list[str]) -> str:
 def do_search(query: str, source: str = "all", limit: int = 10, console: Optional[Console] = None,
               as_json: bool = False) -> None:
     """Search registries -> Rich table, or a clean JSON array (``as_json``) for scripting."""
-    from tools.skills_hub_search import unified_search
+    from hermes_agent.tools.skills_hub_search import unified_search
     c = console or _console
     sources = _sources()
     if as_json:
@@ -399,7 +399,7 @@ def _rank_and_page(all_results, page: int, page_size: int):
 
 def _fetch_browse_results(c: Console, source: str):
     """Parallel fetch from all (or filtered) sources with a live per-source progress spinner."""
-    from tools.skills_hub_search import parallel_search_sources
+    from hermes_agent.tools.skills_hub_search import parallel_search_sources
     with c.status("[bold]Fetching skills from registries...") as status:
         # parallel_search_sources invokes the callback from the collecting thread as each
         # source completes; the page itself is rendered once over the final, fully sorted set.
@@ -456,7 +456,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     page_size = max(1, min(page_size, 100))
     c = console or _console
     all_results, source_counts, timed_out = _fetch_browse_results(c, source)
-    from tools.skills_hub_github import _provider_filter_of
+    from hermes_agent.tools.skills_hub_github import _provider_filter_of
     if not all_results:
         # Provider narrowing happens inside parallel_search_sources; keep the
         # provider-specific empty message.
@@ -472,7 +472,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
 def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> dict:
     """Paginated hub browse for programmatic callers (e.g. TUI gateway)."""
-    from tools.skills_hub_search import parallel_search_sources
+    from hermes_agent.tools.skills_hub_search import parallel_search_sources
     page_size = max(1, min(page_size, 100))
     # The shared parallel walker carries the index-aware source-skip logic — querying
     # hermes-index AND the external APIs at once would double-count every skill.
@@ -533,7 +533,7 @@ def _install_blocked(c: Console, bundle, message: str, verdict: str, detail: str
     c.print(f"{lead}[bold red]{label}[/] {message}")
     if q_path is not None:
         shutil.rmtree(q_path, ignore_errors=True)
-    from tools.skills_hub import append_audit_log
+    from hermes_agent.tools.skills_hub import append_audit_log
     append_audit_log("BLOCKED", bundle.name, bundle.source, bundle.trust_level, verdict, detail)
 
 
@@ -542,7 +542,7 @@ def _scan_block_message(result, identifier: str) -> str:
 
     Says what happened (not installed), why in plain words (high-risk patterns), whether ``--force``
     can help, and the read-only next step (``hermes skills inspect``). The hard-block rule mirrors
-    ``tools.skills_guard.should_allow_install``: a dangerous verdict on a non-official source."""
+    ``hermes_agent.tools.skills_guard.should_allow_install``: a dangerous verdict on a non-official source."""
     n = len(result.findings)
     findings = f"{n} high-risk pattern(s)" if n else "high-risk patterns"
     hard_block = result.verdict == "dangerous" and result.trust_level in ("community", "trusted")
@@ -600,7 +600,7 @@ def _announce_blueprint(c: Console, skill_name: str) -> None:
     """Offer an installed skill's ``metadata.hermes.blueprint`` via /suggestions — never
     auto-scheduled (installing must not silently create a recurring job). Never raises."""
     try:
-        from tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
+        from hermes_agent.tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
         try:
             spec = blueprint_spec_for_installed(skill_name)
         except BlueprintError as _rec_err:
@@ -626,7 +626,7 @@ def _announce_blueprint(c: Console, skill_name: str) -> None:
 
 def _pinned_sources(c: Console, sources, source_id: Optional[str], identifier: str):
     """Restrict `sources` to the adapter matching `source_id`; None when it is unknown."""
-    from tools.skills_hub_install import _source_matches
+    from hermes_agent.tools.skills_hub_install import _source_matches
     pinned = [src for src in sources if _source_matches(src, source_id)] if source_id else sources
     if pinned:
         return pinned
@@ -680,9 +680,9 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
 
 def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str):
     """Run the cached security scan on the quarantined bundle and print the report."""
-    from tools.skills_hub import HUB_DIR
-    from tools.skills_hub_models import source_url_for_bundle
-    from tools.skills_guard import scan_skill_cached, format_scan_report
+    from hermes_agent.tools.skills_hub import HUB_DIR
+    from hermes_agent.tools.skills_hub_models import source_url_for_bundle
+    from hermes_agent.tools.skills_guard import scan_skill_cached, format_scan_report
     c.print("[bold]Running security scan...[/]")
     scan_source = ("official" if bundle.source == "official"
                    else bundle.identifier or getattr(meta, "identifier", "") or identifier)
@@ -729,7 +729,7 @@ def _install_bundled(c: Console, name: str, invalidate_cache: bool) -> tuple:
     bundled source. The hub copy of a built-in is either a stranger's same-named skill or this
     repo's files rescanned as community content and refused, so neither is fetched."""
     from types import SimpleNamespace
-    from tools.skills_sync_bundled_ops import ensure_bundled_skill
+    from hermes_agent.tools.skills_sync_bundled_ops import ensure_bundled_skill
     result = ensure_bundled_skill(name)
     if not result["ok"]:
         _print_error(c, result["message"])
@@ -750,10 +750,10 @@ def _registry_prefixes() -> tuple:
     """Identifier prefixes each adapter accepts, from the adapters themselves (``<SOURCE_ID>/``, the
     skills.sh spellings, ``well-known:``), so a fetch no adapter answered still names the registry
     it was meant for. Bare owner/repo/path stays unresolved."""
-    from tools.skills_hub_clawhub import ClawHubSource
-    from tools.skills_hub_official import OptionalSkillSource
-    from tools.skills_hub_skillssh import SkillsShSource
-    from tools.skills_hub_sources import BrowseShSource, LobeHubSource, UrlSource, WellKnownSkillSource
+    from hermes_agent.tools.skills_hub_clawhub import ClawHubSource
+    from hermes_agent.tools.skills_hub_official import OptionalSkillSource
+    from hermes_agent.tools.skills_hub_skillssh import SkillsShSource
+    from hermes_agent.tools.skills_hub_sources import BrowseShSource, LobeHubSource, UrlSource, WellKnownSkillSource
 
     return (
         *((f"{cls.SOURCE_ID}/", cls.SOURCE_ID) for cls in (OptionalSkillSource, ClawHubSource, LobeHubSource, BrowseShSource)),
@@ -804,7 +804,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     The CLI router turns False into a non-zero exit — the Desktop Hub toasts failures off that
     exit code, so an exit-0 failure reads as "the button did nothing" (only the action log).
     """
-    from tools.skills_hub import HubLockFile
+    from hermes_agent.tools.skills_hub import HubLockFile
     fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
     attempt: dict = {}
     try:
@@ -829,11 +829,11 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     ``failure_class``."""
     attempt = attempt if attempt is not None else {}
     attempt["registry"] = "none"
-    from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
-    from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
-    from tools.skills_guard import should_allow_install
+    from hermes_agent.tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
+    from hermes_agent.tools.skills_hub_install import install_from_quarantine, quarantine_bundle
+    from hermes_agent.tools.skills_guard import should_allow_install
     ensure_hub_dirs()
-    from tools.skills_sync_bundled_ops import bundled_skill_for_install
+    from hermes_agent.tools.skills_sync_bundled_ops import bundled_skill_for_install
     if not source_id and not name_override and (builtin := bundled_skill_for_install(identifier)):
         # Read only when the restore fails or raises: either way it was a bundled install, not a hub one.
         attempt.update(failure_class="filesystem_error", origin="bundled")
@@ -919,7 +919,7 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         _invalid_path(c, bundle, exc, q_path)
         attempt["failure_class"] = "invalid_bundle"
         return bundle, failed, False
-    from tools.skills_hub import SKILLS_DIR
+    from hermes_agent.tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
     _announce_blueprint(c, bundle.name)
@@ -931,7 +931,7 @@ def _print_tier1_advisory(skill_dir, console) -> None:
     """Advisory SkillEvaluator Tier 1 report. Never raises/blocks: scanner missing, disabled via
     ``skills.tier1_advisory: false``, or erroring all degrade to silence. Secrets render red."""
     try:
-        from tools.skillevaluator_scan import (format_tier1_report, run_tier1_scan,
+        from hermes_agent.tools.skillevaluator_scan import (format_tier1_report, run_tier1_scan,
                                                tier1_advisory_enabled)
         if not tier1_advisory_enabled():
             return
@@ -957,9 +957,9 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
             console: Optional[Console] = None) -> None:
     """List installed skills (hub / builtin / local). Enabled state comes from the active
     profile's config — ``-p`` swaps HERMES_HOME at process start, so no profile flag here."""
-    from tools.skills_hub import HubLockFile, ensure_hub_dirs
-    from tools.skills_sync import _read_manifest
-    from tools.skills_tool import _skill_catalog
+    from hermes_agent.tools.skills_hub import HubLockFile, ensure_hub_dirs
+    from hermes_agent.tools.skills_sync import _read_manifest
+    from hermes_agent.tools.skills_tool import _skill_catalog
     from agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
@@ -1007,7 +1007,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
     """Check hub-installed skills for upstream updates."""
-    from tools.skills_hub_install import check_for_skill_updates
+    from hermes_agent.tools.skills_hub_install import check_for_skill_updates
     c = console or _console
     results = check_for_skill_updates(name=name)
     if not results:
@@ -1028,8 +1028,8 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
 def _has_local_edits(installed: dict) -> bool:
     """True when the on-disk content no longer matches the install-time hash."""
-    from tools.skills_hub import SKILLS_DIR
-    from tools.skills_guard import content_hash
+    from hermes_agent.tools.skills_hub import SKILLS_DIR
+    from hermes_agent.tools.skills_guard import content_hash
     recorded_hash = installed.get("content_hash", "")
     skill_path = SKILLS_DIR / installed.get("install_path", "")
     try:
@@ -1052,8 +1052,8 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
     paperclipai/paperclip#10978's explicit-merge-mode rule: destructive replacement must be an explicit
     caller choice, never a rerun default).
     """
-    from tools.skills_hub import HubLockFile
-    from tools.skills_hub_install import check_for_skill_updates
+    from hermes_agent.tools.skills_hub import HubLockFile
+    from hermes_agent.tools.skills_hub_install import check_for_skill_updates
     c = console or _console
     lock = HubLockFile()
     updates = [entry for entry in check_for_skill_updates(name=name) if entry.get("status") == "update_available"]
@@ -1098,8 +1098,8 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
              deep: bool = False) -> None:
     """Re-scan installed hub skills; ``deep`` adds an AST diagnostic (review aid, not a gate)."""
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
-    from tools.skills_guard import scan_skill, format_scan_report
+    from hermes_agent.tools.skills_hub import HubLockFile, SKILLS_DIR
+    from hermes_agent.tools.skills_guard import scan_skill, format_scan_report
     c = console or _console
     installed = HubLockFile().list_installed()
     if not installed:
@@ -1111,7 +1111,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         return
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
     if deep:
-        from tools.skills_ast_audit import ast_scan_path, format_ast_report
+        from hermes_agent.tools.skills_ast_audit import ast_scan_path, format_ast_report
     for entry in targets:
         skill_path = SKILLS_DIR / entry["install_path"]
         if not skill_path.exists():
@@ -1129,7 +1129,7 @@ def do_uninstall(name: str, console: Optional[Console] = None, skip_confirm: boo
                  invalidate_cache: bool = True) -> Optional[bool]:
     """Remove a hub-installed skill with confirmation. True when removed, False when the removal
     was refused (not a hub skill, unsafe path), None when the user declined the prompt."""
-    from tools.skills_hub_install import uninstall_skill
+    from hermes_agent.tools.skills_hub_install import uninstall_skill
     c = console or _console
     # skip_confirm bypasses the prompt (TUI mode, where input() hangs)
     if not skip_confirm and not _confirm_or_cancel(c, f"\n[bold]Uninstall '{name}'?[/]"):
@@ -1143,7 +1143,7 @@ def do_uninstall(name: str, console: Optional[Console] = None, skip_confirm: boo
 def do_reset(name: str, restore: bool = False, console: Optional[Console] = None,
              skip_confirm: bool = False, invalidate_cache: bool = True) -> None:
     """Reset a bundled skill's manifest tracking (+ optionally restore from bundled)."""
-    from tools.skills_sync_bundled_ops import reset_bundled_skill
+    from hermes_agent.tools.skills_sync_bundled_ops import reset_bundled_skill
     c = console or _console
     if not skip_confirm and restore and not _confirm_or_cancel(
         c, f"\n[bold]Restore '{name}' from bundled source?[/]",
@@ -1161,7 +1161,7 @@ def do_reset(name: str, restore: bool = False, console: Optional[Console] = None
 
 def do_list_modified(console: Optional[Console] = None, as_json: bool = False) -> None:
     """List bundled skills the user has edited (which `hermes update` keeps)."""
-    from tools.skills_sync_bundled_ops import list_user_modified_bundled_skills
+    from hermes_agent.tools.skills_sync_bundled_ops import list_user_modified_bundled_skills
     c = console or _console
     modified = list_user_modified_bundled_skills()
     if as_json:
@@ -1196,7 +1196,7 @@ _DIFF_STATUS_LINE = {
 
 def do_diff(name: str, console: Optional[Console] = None) -> None:
     """Show how the user's copy of a bundled skill differs from the stock version."""
-    from tools.skills_sync_bundled_ops import diff_bundled_skill
+    from hermes_agent.tools.skills_sync_bundled_ops import diff_bundled_skill
     c = console or _console
     result = diff_bundled_skill(name)
     if not result["ok"]:
@@ -1221,7 +1221,7 @@ def do_opt_out(remove: bool = False, console: Optional[Console] = None, skip_con
                invalidate_cache: bool = True) -> None:
     """Write the .no-bundled-skills marker; with ``remove`` also delete pristine (tracked AND
     unmodified) bundled skills. User-edited and non-bundled skills are never touched."""
-    from tools.skills_sync_bundled_ops import set_bundled_skills_opt_out, remove_pristine_bundled_skills
+    from hermes_agent.tools.skills_sync_bundled_ops import set_bundled_skills_opt_out, remove_pristine_bundled_skills
     c = console or _console
     res = set_bundled_skills_opt_out(True)  # the marker first: always-safe
     if not _report_ok(c, res):
@@ -1257,8 +1257,8 @@ def do_opt_out(remove: bool = False, console: Optional[Console] = None, skip_con
 def do_opt_in(sync: bool = False, console: Optional[Console] = None,
               invalidate_cache: bool = True) -> None:
     """Remove the opt-out marker so bundled-skill seeding resumes."""
-    from tools.skills_sync import sync_skills
-    from tools.skills_sync_bundled_ops import set_bundled_skills_opt_out
+    from hermes_agent.tools.skills_sync import sync_skills
+    from hermes_agent.tools.skills_sync_bundled_ops import set_bundled_skills_opt_out
     c = console or _console
     if not _report_ok(c, set_bundled_skills_opt_out(False)):
         return
@@ -1272,7 +1272,7 @@ def do_opt_in(sync: bool = False, console: Optional[Console] = None,
 def do_repair_official(name: str, restore: bool = False, console: Optional[Console] = None,
                        skip_confirm: bool = False, invalidate_cache: bool = True) -> None:
     """Backfill or restore official optional skills from repo source."""
-    from tools.skills_sync_optional import restore_official_optional_skill
+    from hermes_agent.tools.skills_sync_optional import restore_official_optional_skill
     c = console or _console
     if restore and not skip_confirm and not _confirm_or_cancel(
         c, f"\n[bold]Restore official optional skill '{name}' from repo source?[/]",
@@ -1302,7 +1302,7 @@ _TAP_OPS = {
 
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
     """Manage taps (custom GitHub repo sources)."""
-    from tools.skills_hub import TapsManager
+    from hermes_agent.tools.skills_hub import TapsManager
     c = console or _console
     mgr = TapsManager()
     if action == "list":
@@ -1339,9 +1339,9 @@ def _read_frontmatter(skill_md: str) -> dict:
 def do_publish(skill_path: str, target: str = "github", repo: str = "",
                console: Optional[Console] = None) -> None:
     """Publish a local skill to a registry (GitHub PR or ClawHub submission)."""
-    from tools.skills_hub import SKILLS_DIR
-    from tools.skills_hub_github import GitHubAuth
-    from tools.skills_guard import scan_skill, format_scan_report
+    from hermes_agent.tools.skills_hub import SKILLS_DIR
+    from hermes_agent.tools.skills_hub_github import GitHubAuth
+    from hermes_agent.tools.skills_guard import scan_skill, format_scan_report
     c = console or _console
     path = Path(skill_path)
     if not path.is_absolute():
@@ -1447,7 +1447,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str, auth) -
 
 def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> None:
     """Export current hub skill configuration to a portable JSON file."""
-    from tools.skills_hub import HubLockFile, TapsManager
+    from hermes_agent.tools.skills_hub import HubLockFile, TapsManager
     c = console or _console
     installed = HubLockFile().list_installed()
     tap_list = TapsManager().list_taps()
@@ -1474,7 +1474,7 @@ def do_snapshot_import(input_path: str, force: bool = False,
                        console: Optional[Console] = None) -> Optional[bool]:
     """Re-install skills from a snapshot file. Returns False when the file is unreadable or any
     entry failed to install (e.g. refused by the scan gate), else None — as ``do_update`` does."""
-    from tools.skills_hub import TapsManager
+    from hermes_agent.tools.skills_hub import TapsManager
     c = console or _console
     inp = Path(input_path)
     if not inp.exists():

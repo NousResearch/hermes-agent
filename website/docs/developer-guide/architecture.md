@@ -54,12 +54,30 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 hermes-agent/
 ├── run_agent.py              # AIAgent facade — loop lives in agent/conversation_loop.py + agent/turn_*.py
 ├── cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
-├── model_tools.py            # Tool discovery, schema collection, dispatch
-├── toolsets.py               # Tool groupings and platform presets
 ├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 ├── hermes_agent/             # the Python package
+│   ├── model_tools.py            # Tool discovery, schema collection, dispatch
+│   ├── toolsets.py               # Tool groupings and platform presets
 │   ├── hermes_state.py           # SQLite session/state database facade (+ hermes_state_*.py siblings)
 │   ├── batch_runner.py           # Batch trajectory generation
+│   │
+│   ├── tools/                    # Tool implementations (one file per tool)
+│   │   ├── registry.py           # Central tool registry
+│   │   ├── approval.py           # Dangerous command detection
+│   │   ├── terminal_tool.py      # Terminal orchestration
+│   │   ├── process_registry.py   # Background process management
+│   │   ├── file_tools.py         # read_file, write_file, patch, search_files
+│   │   ├── web_tools.py          # web_search, web_extract
+│   │   ├── browser_use_cli.py    # browser_exec — Python over CDP (browser-harness)
+│   │   ├── browser_session.py    # Per-task browser sessions (+ browser_session_*.py siblings)
+│   │   ├── browser_launcher.py   # Local Chromium launch, reuse and orphan reaping
+│   │   ├── code_execution_tool.py # execute_code sandbox
+│   │   ├── delegate_tool.py      # Subagent delegation
+│   │   ├── mcp_tool.py           # MCP client facade (+ mcp_tool_*.py siblings)
+│   │   ├── credential_files.py   # File-based credential passthrough
+│   │   ├── env_passthrough.py    # Env var passthrough for sandboxes
+│   │   ├── ansi_strip.py         # ANSI escape stripping
+│   │   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, vercel_sandbox)
 │   │
 │   ├── gateway/                  # Messaging platform gateway
 │   │   ├── run.py                # GatewayRunner facade — message dispatch (+ run_*.py siblings)
@@ -107,24 +125,6 @@ hermes-agent/
 │   ├── callbacks.py          # Terminal callbacks (clarify, sudo, approval)
 │   └── gateway.py            # hermes gateway start/stop
 │
-├── tools/                    # Tool implementations (one file per tool)
-│   ├── registry.py           # Central tool registry
-│   ├── approval.py           # Dangerous command detection
-│   ├── terminal_tool.py      # Terminal orchestration
-│   ├── process_registry.py   # Background process management
-│   ├── file_tools.py         # read_file, write_file, patch, search_files
-│   ├── web_tools.py          # web_search, web_extract
-│   ├── browser_use_cli.py    # browser_exec — Python over CDP (browser-harness)
-│   ├── browser_session.py    # Per-task browser sessions (+ browser_session_*.py siblings)
-│   ├── browser_launcher.py   # Local Chromium launch, reuse and orphan reaping
-│   ├── code_execution_tool.py # execute_code sandbox
-│   ├── delegate_tool.py      # Subagent delegation
-│   ├── mcp_tool.py           # MCP client facade (+ mcp_tool_*.py siblings)
-│   ├── credential_files.py   # File-based credential passthrough
-│   ├── env_passthrough.py    # Env var passthrough for sandboxes
-│   ├── ansi_strip.py         # ANSI escape stripping
-│   └── environments/         # Terminal backends (local, docker, ssh, modal, daytona, vercel_sandbox)
-│
 ├── plugins/platforms/        # Bundled platform plugins: telegram, discord, slack,
 │                             #   whatsapp, matrix, mattermost, email, sms, dingtalk,
 │                             #   feishu, wecom, irc, line, teams, google_chat,
@@ -151,7 +151,7 @@ User input → HermesCLI.process_input()
     → prompt_builder.build_system_prompt()
     → runtime_provider.resolve_runtime_provider()
     → API call (chat_completions / codex_responses / anthropic_messages)
-    → tool_calls? → model_tools.handle_function_call() → loop
+    → tool_calls? → hermes_agent.model_tools.handle_function_call() → loop
     → final response → display → save to SessionDB
 ```
 
@@ -219,7 +219,7 @@ A shared runtime resolver used by CLI, gateway, cron, ACP, and auxiliary calls. 
 
 ### Tool System
 
-Central tool registry (`tools/registry.py`) with 70+ registered tools across ~28 toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 6 built-in backends (local, Docker, SSH, Daytona, Modal, Vercel Sandbox) plus plugin backends (e.g. Singularity).
+Central tool registry (`hermes_agent/tools/registry.py`) with 70+ registered tools across ~28 toolsets. Each tool file self-registers at import time. The registry handles schema collection, dispatch, availability checking, and error wrapping. Terminal tools support 6 built-in backends (local, Docker, SSH, Daytona, Modal, Vercel Sandbox) plus plugin backends (e.g. Singularity).
 
 → [Tools Runtime](./tools-runtime.md)
 
@@ -273,13 +273,13 @@ Generates ShareGPT-format trajectories from agent sessions for training data gen
 ## File Dependency Chain
 
 ```text
-tools/registry.py  (no deps — imported by all tool files)
+hermes_agent/tools/registry.py  (no deps — imported by all tool files)
        ↑
-tools/*.py  (each calls registry.register() at import time)
+hermes_agent/tools/*.py  (each calls registry.register() at import time)
        ↑
-model_tools.py  (imports tools/registry + triggers tool discovery)
+hermes_agent/model_tools.py  (imports hermes_agent/tools/registry + triggers tool discovery)
        ↑
 run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
-This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.
+This chain means tool registration happens at import time, before any agent instance is created. Any `hermes_agent/tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

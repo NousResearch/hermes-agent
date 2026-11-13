@@ -11,7 +11,7 @@ from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource, build_session_key
 from hermes_agent.hermes_state import SessionDB
 from plugins.platforms.discord.adapter import DiscordAdapter
-from tools import async_delegation as delegation
+from hermes_agent.tools import async_delegation as delegation
 
 
 def pending(key, name):

@@ -200,11 +200,11 @@ async def test_prompt_response_resolves_clarify_choice_and_other(monkeypatch):
     resolved: list[tuple] = []
     marked: list[str] = []
     monkeypatch.setattr(
-        "tools.clarify_gateway.resolve_gateway_clarify",
+        "hermes_agent.tools.clarify_gateway.resolve_gateway_clarify",
         lambda cid, resp: resolved.append((cid, resp)) or True,
     )
     monkeypatch.setattr(
-        "tools.clarify_gateway.mark_awaiting_text", lambda cid: marked.append(cid)
+        "hermes_agent.tools.clarify_gateway.mark_awaiting_text", lambda cid: marked.append(cid)
     )
     # Positional id maps back to the REAL choice text.
     event = _event({"prompt_id": prompt_id, "option_id": "c1"})
@@ -401,10 +401,10 @@ async def test_sibling_gateway_ignores_another_instances_prompt_answer(monkeypat
 
     resolved: list[tuple] = []
     monkeypatch.setattr(
-        "tools.clarify_gateway.resolve_gateway_clarify",
+        "hermes_agent.tools.clarify_gateway.resolve_gateway_clarify",
         lambda cid, resp: resolved.append((cid, resp)) or True,
     )
-    monkeypatch.setattr("tools.clarify_gateway.mark_awaiting_text", lambda cid: None)
+    monkeypatch.setattr("hermes_agent.tools.clarify_gateway.mark_awaiting_text", lambda cid: None)
 
     event = _event({"prompt_id": prompt_id, "option_id": "c1"})
     # Consumed (True) so the "/c1"-shaped text is never dispatched as chat --
@@ -428,7 +428,7 @@ async def test_repeat_answer_for_resolved_prompt_is_ignored(monkeypatch):
 
     resolved: list[tuple] = []
     monkeypatch.setattr(
-        "tools.clarify_gateway.resolve_gateway_clarify",
+        "hermes_agent.tools.clarify_gateway.resolve_gateway_clarify",
         lambda cid, resp: resolved.append((cid, resp)) or True,
     )
     event = _event({"prompt_id": prompt_id, "option_id": "c0"})

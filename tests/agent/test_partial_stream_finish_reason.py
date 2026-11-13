@@ -404,8 +404,8 @@ def loop_agent():
     so we can stage a stub + continuation pair on .chat.completions.create."""
     from run_agent import AIAgent
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -713,8 +713,8 @@ class TestBuildAssistantMessageEmptyContentPad:
     def _agent_for_builder(self):
         from run_agent import AIAgent
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             a = AIAgent(

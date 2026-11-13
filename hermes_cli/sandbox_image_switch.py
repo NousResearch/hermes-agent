@@ -36,7 +36,7 @@ def pending() -> Optional[PendingSwitch]:
     unpinned default, and a container labeled for this profile runs another image. ``docker`` is
     consulted (one ``ps``); any failure is "nothing pending"."""
     from hermes_cli.config import load_config_readonly
-    from tools.environments.docker import _container_identity, _docker_query, find_docker
+    from hermes_agent.tools.environments.docker import _container_identity, _docker_query, find_docker
 
     terminal = (load_config_readonly() or {}).get("terminal") or {}
     if terminal.get("backend") != "docker":
@@ -72,7 +72,7 @@ def _image_pinned(terminal_cfg: dict) -> bool:
     launch env, where an operator's ``TERMINAL_DOCKER_IMAGE`` differing from the effective value
     is their choice."""
     from hermes_cli.config import read_raw_config
-    from tools.terminal_scope import get_terminal_scope
+    from hermes_agent.tools.terminal_scope import get_terminal_scope
     raw = read_raw_config().get("terminal")
     if isinstance(raw, dict) and "docker_image" in raw:
         return True
@@ -98,7 +98,7 @@ def decide(switch: PendingSwitch, approve: bool) -> str:
         # The cached environment object still points at the old container; drop it so the next
         # terminal call reattaches, sees the pin and recreates. The container itself keeps running
         # until then (persistent), nothing is removed here.
-        from tools.terminal_tool_lifecycle import _evict_environment_for_task
+        from hermes_agent.tools.terminal_tool_lifecycle import _evict_environment_for_task
         _evict_environment_for_task(None)
     return image
 

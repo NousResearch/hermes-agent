@@ -15,8 +15,8 @@ import os
 
 import pytest
 
-from tools import bot_failure_reasons as bfr
-from tools import bot_relay
+from hermes_agent.tools import bot_failure_reasons as bfr
+from hermes_agent.tools import bot_relay
 
 
 @pytest.fixture

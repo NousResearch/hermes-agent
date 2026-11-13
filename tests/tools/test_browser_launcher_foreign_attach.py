@@ -20,7 +20,7 @@ import pytest
 
 from tests.tools.browser_launcher_fakes import kill_fake, pids, write_fake_chromium
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
+from hermes_agent.tools import browser_launcher as launcher
 
 pytestmark = pytest.mark.platforms("linux")
 

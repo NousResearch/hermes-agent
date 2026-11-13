@@ -12,7 +12,7 @@ What is virtual and what stays real:
 * The fire-claim heartbeat cadence is time-scaled (60 s -> ``HEARTBEAT_REAL_SECONDS``) so a
   run that spans many virtual minutes still refreshes its lease the way a real one would.
 * Fakes: the agent (``hermes_agent.cron.scheduler.run_job``, the one function that would build an AIAgent)
-  and the platform wire (``tools.send_message_tool._send_to_platform``). Both append JSONL
+  and the platform wire (``hermes_agent.tools.send_message_tool._send_to_platform``). Both append JSONL
   records. Everything between — the real ``InProcessCronScheduler.start`` ticker loop,
   ``tick()``, due scan, pending slots, fire claims, heartbeat, executions ledger, the durable
   delivery queue (``cron/deliveries.db``) and its drain, delivery routing, ``mark_job_run`` — is
@@ -203,7 +203,7 @@ class FakeAgent:
 
 
 class FakeSink:
-    """Replaces ``tools.send_message_tool._send_to_platform`` (the standalone wire)."""
+    """Replaces ``hermes_agent.tools.send_message_tool._send_to_platform`` (the standalone wire)."""
 
     def __init__(self, clock: VirtualClock, control: Control):
         self.clock = clock
@@ -245,7 +245,7 @@ def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     from hermes_agent.cron import jobs
     from hermes_agent.cron import scheduler
     import hermes_time
-    from tools import send_message_tool
+    from hermes_agent.tools import send_message_tool
 
     setattr_fn(hermes_time, "datetime", _virtual_datetime_class(clock))
     proxy = _TimeProxy(clock)

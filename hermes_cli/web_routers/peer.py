@@ -238,7 +238,7 @@ async def _outside_the_bot_chat(client: httpx.AsyncClient, base: str, key: str, 
     """The refusal for a messaging pass's request that would reach beyond the agent's canonical Bot
     Chat (other chats' titles and previews, turns in them, a session of its own), or None. A
     session id is checked by its title on the gateway itself, which keeps that title unique."""
-    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE
     if template == "api/sessions" and body is None:  # the listing: only the exact-title lookup
         titles = [value for name, value in query if name == "title"]
         return None if titles and all(title.strip() == BOT_CHAT_TITLE for title in titles) else _bot_chat_only()

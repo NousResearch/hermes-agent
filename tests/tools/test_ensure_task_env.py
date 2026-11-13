@@ -5,9 +5,9 @@ read without a prior terminal command (issue #62825)."""
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tools.terminal_tool as tt
-import tools.terminal_tool_backends as ttb
-from tools.terminal_tool_lifecycle import get_active_env
+import hermes_agent.tools.terminal_tool as tt
+import hermes_agent.tools.terminal_tool_backends as ttb
+from hermes_agent.tools.terminal_tool_lifecycle import get_active_env
 
 
 def _clear(*task_ids):

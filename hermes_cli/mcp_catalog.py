@@ -400,7 +400,7 @@ def is_installed(name: str) -> bool:
 
 def server_enabled(cfg: dict) -> bool:
     """Whether the server block is on: the same reader the MCP client uses."""
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
     return mcp_server_enabled(cfg)
 

@@ -32,7 +32,7 @@ def test_real_run_ledger_and_incident_match_actual_presentation(tmp_path, monkey
         sent.append(text)
         return {"success": True, "message_id": "receipt"}
 
-    monkeypatch.setattr("tools.send_message_tool._send_to_platform", send)
+    monkeypatch.setattr("hermes_agent.tools.send_message_tool._send_to_platform", send)
 
     def run(job, **kwargs):
         if mode == "crash":

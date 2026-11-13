@@ -14,7 +14,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from tools import delegate_tool
+from hermes_agent.tools import delegate_tool
 
 
 class _SslBlockedChild:

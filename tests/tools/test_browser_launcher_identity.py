@@ -4,7 +4,7 @@
 Records from earlier containers or boots are kept (their pids cannot be judged from here), so a pid number can
 recur across them, and two containers can give two different browsers the same number. An attacher leases the
 launch it actually reached (for a browser of another environment: the record whose DevTools browser id its
-endpoint serves), and stopping one key lets go only of that key's own browser (``tools/browser_launcher.py``).
+endpoint serves), and stopping one key lets go only of that key's own browser (``hermes_agent/tools/browser_launcher.py``).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import pytest
 
 from tests.tools.browser_launcher_fakes import kill_fake, write_fake_chromium
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
+from hermes_agent.tools import browser_launcher as launcher
 
 pytestmark = pytest.mark.platforms("linux")
 

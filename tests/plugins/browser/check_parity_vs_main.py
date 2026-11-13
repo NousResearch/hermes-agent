@@ -4,7 +4,7 @@ Spawns one subprocess per (version, scenario) cell — pinned to either
 origin/main (legacy in-tree providers + class-instantiation lookup) or
 this PR's worktree (plugin-based registry) via `sys.path[0]`. Each
 subprocess clears all browser-related env vars + writes a config.yaml,
-loads the tree's cloud-provider resolver (`tools.browser_session_cloud.get_cloud_provider`;
+loads the tree's cloud-provider resolver (`hermes_agent.tools.browser_session_cloud.get_cloud_provider`;
 pre-browser_exec trees: `tools.browser_tool_cloud._get_cloud_provider`), and emits a reduced
 "shape tuple" {is_local, provider_name, is_available} as JSON.
 
@@ -33,10 +33,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # checkout lives two levels up at ``~/.hermes/hermes-agent``.
 MAIN_DIR = REPO_ROOT.parent.parent  # ~/.hermes/hermes-agent
 PR_DIR = REPO_ROOT  # the worktree we're in
-assert (MAIN_DIR / "tools" / "browser_tool.py").exists(), (
+assert (MAIN_DIR / "hermes_agent" / "tools" / "browser_tool.py").exists(), (
     f"MAIN_DIR={MAIN_DIR} doesn't look like a hermes-agent checkout"
 )
-assert (PR_DIR / "tools" / "browser_tool.py").exists(), (
+assert (PR_DIR / "hermes_agent" / "tools" / "browser_tool.py").exists(), (
     f"PR_DIR={PR_DIR} doesn't look like a hermes-agent checkout"
 )
 
@@ -72,13 +72,13 @@ with open(config_path, "w") as f:
 
 # Fresh import — must not have any browser modules cached.
 for name in list(sys.modules):
-    if name.startswith("tools.") or name.startswith("agent.") or name.startswith("plugins."):
+    if name.startswith("hermes_agent.tools.") or name.startswith("agent.") or name.startswith("plugins."):
         sys.modules.pop(name, None)
 
 try:
-    from tools.browser_session_cloud import get_cloud_provider
+    from hermes_agent.tools.browser_session_cloud import get_cloud_provider
 except ImportError:  # the other tree predates the browser_session split
-    from tools.browser_tool_cloud import _get_cloud_provider as get_cloud_provider
+    from hermes_agent.tools.browser_tool_cloud import _get_cloud_provider as get_cloud_provider
 
 provider = get_cloud_provider()
 

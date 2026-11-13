@@ -50,7 +50,7 @@ python3 evals/readtool/report.py --labels baseline feat-stat-guard
 Rules of engagement (from hermesbench discipline):
 
 - **3 reps minimum**; single-run deltas within ±3% are noise, not wins.
-- Never edit `tools/` while a run is in flight — the runner imports the
+- Never edit `hermes_agent/tools/` while a run is in flight — the runner imports the
   live tree.
 - Two models on purpose: a frontier model (opus) that can absorb sloppy
   reads, and a strong open model (qwen-max) where harness quality shows.

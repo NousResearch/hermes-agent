@@ -33,7 +33,7 @@ class _AlwaysLimited(_ScriptedModel):
 def _settled(delegation_id):
     """The unit's completion once it finished: the queued event, or, for a unit every child of which waits on a
     promised automatic resume (silent: nothing queued), the event its ledger row recorded."""
-    from tools.async_delegation import _transaction
+    from hermes_agent.tools.async_delegation import _transaction
     from tests.waiting import wait_until
 
     def row():
@@ -68,7 +68,7 @@ def _enable(*, gateway=True, **extra):
 
 def _scheduler(parent, dispatched):
     """The scheduler's ``start``: the same continue the gateway performs, on this test's parent."""
-    from tools.delegate_tool_continue import continue_subagent
+    from hermes_agent.tools.delegate_tool_continue import continue_subagent
 
     def start(record, unit, message):
         out = json.loads(continue_subagent(record["subagent_id"], message, parent, background=True, auto=True))
@@ -80,9 +80,9 @@ def _scheduler(parent, dispatched):
 
 
 def test_a_child_that_keeps_hitting_the_limit_is_resumed_at_most_twice_and_says_why(tmp_path):
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_auto_resume import MAX_AUTO_ATTEMPTS, tick
-    from tools.terminal_tool import record_session_cwd
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_auto_resume import MAX_AUTO_ATTEMPTS, tick
+    from hermes_agent.tools.terminal_tool import record_session_cwd
 
     _enable()
     model, parent, dispatched = _AlwaysLimited(), _parent(), []
@@ -112,9 +112,9 @@ def test_a_child_that_keeps_hitting_the_limit_is_resumed_at_most_twice_and_says_
 def test_the_parent_wins_a_child_is_not_resumed_once_its_parent_moved_on(tmp_path, parent_moved_on):
     """Explicit cancel only: a limit-stopped child is superseded (kept, pinned, never resumed) when the parent
     conversation was reset; new work the parent starts, in the same repository or elsewhere, does not cancel it."""
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_auto_resume import SUPERSEDED, tick
-    from tools.terminal_tool import record_session_cwd
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_auto_resume import SUPERSEDED, tick
+    from hermes_agent.tools.terminal_tool import record_session_cwd
 
     _enable()
     parent, dispatched = _parent(), []
@@ -150,9 +150,9 @@ def test_the_parent_wins_a_child_is_not_resumed_once_its_parent_moved_on(tmp_pat
 
 
 def test_stop_on_a_waiting_child_dismisses_it_and_releases_its_pin(tmp_path):
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_auto_resume import tick
-    from tools.terminal_tool import record_session_cwd
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_auto_resume import tick
+    from hermes_agent.tools.terminal_tool import record_session_cwd
 
     _enable()
     parent, dispatched = _parent(), []

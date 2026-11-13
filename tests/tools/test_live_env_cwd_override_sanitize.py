@@ -10,7 +10,7 @@ while terminal commands kept working (their per-command resolver sanitizes).
 
 import pytest
 
-import tools.terminal_tool as tt
+import hermes_agent.tools.terminal_tool as tt
 
 
 class _FakeEnv:
@@ -69,8 +69,8 @@ def test_real_builders_tag_env_type_and_record_host_cwd(tmp_path):
     ``DockerEnvironment._mount_args`` records the host dir bound at /workspace."""
     import os
 
-    from tools.environments.docker import DockerEnvironment
-    from tools.terminal_tool_backends import _create_environment
+    from hermes_agent.tools.environments.docker import DockerEnvironment
+    from hermes_agent.tools.terminal_tool_backends import _create_environment
 
     assert _create_environment("local", image="", cwd=str(tmp_path), timeout=5).env_type == "local"
     docker = object.__new__(DockerEnvironment)  # _mount_args needs no docker daemon

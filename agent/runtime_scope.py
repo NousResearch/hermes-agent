@@ -95,7 +95,7 @@ def bind_state(
     unless ``hydrate_secrets=False``, stamped with the home unless ``stamp_home=False`` (unstamped marks the process's own profile); the terminal policy
     is built from the profile's config over *env_overlay* (the refusal scope if it cannot be
     read), or *terminal_policy* when the caller already built it off the event loop
-    (``tools.terminal_scope.prepare_profile_terminal_scope``), or built on its first read with
+    (``hermes_agent.tools.terminal_scope.prepare_profile_terminal_scope``), or built on its first read with
     ``defer_terminal=True`` (a legacy setter's switch: see ``DeferredTerminalPolicy``). ``home_override=False`` /
     ``terminal=False`` keep that piece as currently bound, for the
     one host that deliberately binds less (a single-profile launch turn keeps a routed request's
@@ -114,7 +114,7 @@ def bind_state(
     home = scope.home()
     if home is None:
         return push_state(scope=scope, home=None, secrets=None, terminal=None)
-    from tools.terminal_scope import prepare_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import prepare_profile_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     if secrets is None:
@@ -131,7 +131,7 @@ def bind_state(
     if terminal_policy is not None:
         policy = terminal_policy
     elif terminal and defer_terminal:
-        from tools.terminal_scope import DeferredTerminalPolicy
+        from hermes_agent.tools.terminal_scope import DeferredTerminalPolicy
         overlay = dict(env_overlay) if env_overlay is not None else None  # the bind's value, not the caller's dict
         policy = DeferredTerminalPolicy(lambda: prepare_profile_terminal_scope(Path(home), env_overlay=overlay))
     elif terminal:
@@ -232,5 +232,5 @@ def bind_terminal_policy(policy: Mapping[str, str], *, profile_home: str | Path 
     policy. Inside a bound scope the policy must belong to the bound agent: anything else raises
     :class:`~hermes_scope.ScopeSwitchRefused`, since the scope's home and secrets would stay behind
     with another profile's backend. To run under another profile's policy, bind that profile."""
-    from tools.terminal_scope import set_terminal_scope
+    from hermes_agent.tools.terminal_scope import set_terminal_scope
     return set_terminal_scope(dict(policy), profile_home=profile_home)

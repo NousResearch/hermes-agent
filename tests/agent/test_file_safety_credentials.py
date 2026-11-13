@@ -77,8 +77,8 @@ def test_search_tool_blocks_direct_auth_json_path(fake_home, monkeypatch):
     """Searching a credential file directly must not invoke the search backend."""
     import json
 
-    import tools.file_tools as ft
-    from tools import terminal_tool
+    import hermes_agent.tools.file_tools as ft
+    from hermes_agent.tools import terminal_tool
 
     auth = _create(fake_home, "auth.json")
     auth.write_text("SEARCH_DIRECT_AUTH_SECRET", encoding="utf-8")
@@ -105,10 +105,10 @@ def test_search_tool_filters_credential_results(fake_home, tmp_path, monkeypatch
     """Directory searches omit credential and MCP-token result entries."""
     import json
 
-    from tools.file_operations import SearchResult
-    from tools.file_operations_common import SearchMatch
-    import tools.file_tools as ft
-    from tools import terminal_tool
+    from hermes_agent.tools.file_operations import SearchResult
+    from hermes_agent.tools.file_operations_common import SearchMatch
+    import hermes_agent.tools.file_tools as ft
+    from hermes_agent.tools import terminal_tool
 
     auth = _create(fake_home, "auth.json")
     token = _create(fake_home, Path("mcp-tokens") / "provider.json")

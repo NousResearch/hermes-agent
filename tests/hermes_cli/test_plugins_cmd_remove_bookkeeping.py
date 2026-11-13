@@ -59,7 +59,7 @@ def test_remove_clears_the_toolset_of_a_plugin_without_provides_tools(home):
     """``remove`` drops the plugin's toolset from a saved ``platform_toolsets`` list even when
     plugin.yaml never declared ``provides_tools``; otherwise ``hermes config check`` warns about an
     unknown toolset forever."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     d = _write_plugin(home / "plugins", "zznodecl", "zznodecl")
     (d / "__init__.py").write_text(

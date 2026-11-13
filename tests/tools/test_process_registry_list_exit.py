@@ -17,7 +17,7 @@ import pytest
 
 @pytest.mark.platforms("posix")
 def test_list_leaves_live_reader_as_completion_owner():
-    from tools.process_registry import ProcessRegistry, ProcessSession
+    from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
     registry = ProcessRegistry()
     session = ProcessSession(
@@ -57,7 +57,7 @@ def test_poll_during_the_readers_final_drain_keeps_the_whole_output(tmp_path):
     is behind must report, and leave in the completion, the whole output — not the chunk read so far."""
     import threading
 
-    import tools.process_registry as module
+    import hermes_agent.tools.process_registry as module
 
     module._SYSTEMD_SCOPE_AVAILABLE = False
     registry = module.ProcessRegistry()
@@ -102,7 +102,7 @@ def test_list_reconciles_real_exit_without_consuming_owned_result(tmp_path):
 
 
 def _probe(root):
-    import tools.process_registry as module
+    import hermes_agent.tools.process_registry as module
 
     assert ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
     module._SYSTEMD_SCOPE_AVAILABLE = False  # Own the test process tree, not a host service.

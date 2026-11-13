@@ -3,8 +3,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tools import browser_session, browser_session_cdp, browser_session_cloud, browser_session_lifecycle
-from tools.browser_session_cdp import resolve_cdp_override
+from hermes_agent.tools import browser_session, browser_session_cdp, browser_session_cloud, browser_session_lifecycle
+from hermes_agent.tools.browser_session_cdp import resolve_cdp_override
 
 
 HOST = "example-host"
@@ -37,7 +37,7 @@ class TestResolveCdpOverride:
         response.json.return_value = {"webSocketDebuggerUrl": resolved_ws}
 
         with patch("requests.get", return_value=response), \
-                patch("tools.browser_session_cdp.logger.info") as mock_info:
+                patch("hermes_agent.tools.browser_session_cdp.logger.info") as mock_info:
             resolved = resolve_cdp_override(raw)
 
         assert resolved == resolved_ws
@@ -55,7 +55,7 @@ class TestResolveCdpOverride:
         )
 
         with patch("requests.get", side_effect=secret_error), \
-                patch("tools.browser_session_cdp.logger.warning") as mock_warning:
+                patch("hermes_agent.tools.browser_session_cdp.logger.warning") as mock_warning:
             resolved = resolve_cdp_override(raw)
 
         assert resolved == raw
@@ -140,7 +140,7 @@ class TestCreateCdpSession:
         cdp_url_with_token = "wss://cdp.example/devtools/browser/abc?token=super-secret-token-999"
         monkeypatch.setattr(browser_session_cdp, "get_cdp_override", lambda: cdp_url_with_token)
 
-        with caplog.at_level(logging.DEBUG, logger="tools.browser_session"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.browser_session"):
             result = browser_session.get_session_info("task-1")
 
         assert result["cdp_url"] == cdp_url_with_token, "raw URL must be stored unmodified"
@@ -160,7 +160,7 @@ class TestCDPSupervisorTimeoutRedaction:
     def _make_timed_out_supervisor(self, cdp_url: str):
         """Return a CDPSupervisor whose start() will time out immediately."""
         import threading
-        from tools.browser_supervisor import CDPSupervisor
+        from hermes_agent.tools.browser_supervisor import CDPSupervisor
 
         sup = CDPSupervisor.__new__(CDPSupervisor)
         sup.task_id = "test-task"
@@ -226,7 +226,7 @@ class TestCDPSupervisorStartErrorRedaction:
         exactly as the real supervisor loop does on a first-connect failure.
         """
         import threading
-        from tools.browser_supervisor import CDPSupervisor
+        from hermes_agent.tools.browser_supervisor import CDPSupervisor
 
         sup = CDPSupervisor.__new__(CDPSupervisor)
         sup.task_id = "test-task"
@@ -283,14 +283,14 @@ class TestRedactCdpErrorText:
     """The supervisor's error-text chokepoint masks credentials, keeps context."""
 
     def test_masks_query_token_in_exception(self):
-        from tools.browser_supervisor import _redact_cdp_error_text
+        from hermes_agent.tools.browser_supervisor import _redact_cdp_error_text
 
         err = ConnectionError("connect wss://h/x?token=leak-me failed")
         out = _redact_cdp_error_text(err)
         assert "leak-me" not in out
 
     def test_preserves_non_secret_context(self):
-        from tools.browser_supervisor import _redact_cdp_error_text
+        from hermes_agent.tools.browser_supervisor import _redact_cdp_error_text
 
         err = ConnectionError("connect ws://127.0.0.1:9222/x failed: refused")
         out = _redact_cdp_error_text(err)

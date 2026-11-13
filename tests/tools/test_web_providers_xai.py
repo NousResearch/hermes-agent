@@ -6,8 +6,8 @@ Covers:
 - search() error paths — HTTP error, request error, missing creds, mutually-exclusive domain filters,
   200-OK error envelope
 - Request payload shape — model, tools list, allowed_domains/excluded_domains filters
-- OAuth credential resolution end-to-end through tools.xai_http
-- _is_backend_available("xai") integration with tools.web_tools
+- OAuth credential resolution end-to-end through hermes_agent.tools.xai_http
+- _is_backend_available("xai") integration with hermes_agent.tools.web_tools
 - _get_backend() accepts "xai" as a configured backend
 """
 from __future__ import annotations
@@ -381,7 +381,7 @@ class TestXAIProviderSearchErrors:
 
 
 # ---------------------------------------------------------------------------
-# Integration with tools/web_tools.py backend wiring
+# Integration with hermes_agent/tools/web_tools.py backend wiring
 # ---------------------------------------------------------------------------
 
 
@@ -392,11 +392,11 @@ class TestXAIBackendWiring:
         """Regression guard — `_is_backend_available` runs on every web_search
         dispatch and every `hermes tools` repaint. It must not invoke the
         OAuth resolver (which can trigger a network refresh)."""
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         monkeypatch.setenv("XAI_API_KEY", "sk-xai-test")
         with patch(
-            "tools.xai_http.resolve_xai_http_credentials",
+            "hermes_agent.tools.xai_http.resolve_xai_http_credentials",
             side_effect=AssertionError("must not call resolver"),
         ):
             assert web_tools._is_backend_available("xai") is True
@@ -415,7 +415,7 @@ class TestXAIBackendWiring:
         normal "pick the one provider the user actually configured"
         behavior shared by every other backend.
         """
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", dict)
         for key in (
@@ -430,14 +430,14 @@ class TestXAIBackendWiring:
 
 
 # ---------------------------------------------------------------------------
-# OAuth credential resolution (end-to-end through tools.xai_http)
+# OAuth credential resolution (end-to-end through hermes_agent.tools.xai_http)
 # ---------------------------------------------------------------------------
 
 
 class TestXAIProviderOAuthPath:
     """Verifies the provider works when credentials come from the OAuth
     credential pool (``hermes auth`` sign-in) rather than an env-var key.
-    The full ``tools.xai_http.resolve_xai_http_credentials`` chain is exercised
+    The full ``hermes_agent.tools.xai_http.resolve_xai_http_credentials`` chain is exercised
     against a temporary auth store.
     """
 
@@ -484,7 +484,7 @@ class TestXAIProviderOAuthPath:
         breaks the next main-runtime load.
         """
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        from tools.xai_http import resolve_xai_http_credentials
+        from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("XAI_API_KEY", raising=False)

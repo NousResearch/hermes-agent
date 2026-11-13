@@ -17,7 +17,7 @@ def test_tui_sudo_request_fires_human_input_hooks(monkeypatch):
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)
     from hermes_agent.tui_gateway import server, server_requests
     from agent.vault_backends import unlock
-    from tools import project_tools, skills_tool, terminal_tool, terminal_tool_sudo
+    from hermes_agent.tools import project_tools, skills_tool, terminal_tool, terminal_tool_sudo
 
     monkeypatch.setattr(terminal_tool, "_callback_tls", threading.local())
     monkeypatch.setattr(unlock, "_callback_tls", threading.local())

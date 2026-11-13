@@ -8,7 +8,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import tools.send_message_tool as smt
+import hermes_agent.tools.send_message_tool as smt
 
 
 class _FakePhotonAdapter:

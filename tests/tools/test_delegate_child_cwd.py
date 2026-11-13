@@ -33,8 +33,8 @@ def repo(tmp_path, monkeypatch):
     (repo / "a.txt").write_text("a")
     _git("add", "a.txt", cwd=repo)
     _git("commit", "-qm", "init", cwd=repo)
-    monkeypatch.setattr("tools.delegate_tool._get_worktree_isolation", lambda: True)
-    monkeypatch.setattr("tools.delegate_tool._resolve_workspace_hint", lambda _p: str(repo))
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._get_worktree_isolation", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._resolve_workspace_hint", lambda _p: str(repo))
     monkeypatch.setenv("TERMINAL_CWD", str(repo))
     return repo
 
@@ -42,7 +42,7 @@ def repo(tmp_path, monkeypatch):
 @pytest.fixture
 def bound_session_key():
     """The parent conversation's session key, as the gateway/CLI/TUI turn binds it (children inherit it)."""
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
     token = set_current_session_key("parent-sess")
     yield
     reset_current_session_key(token)
@@ -50,7 +50,7 @@ def bound_session_key():
 
 def _pwd_model(stop_first_turn_of_each_child=False):
     """Each child turn runs a real terminal ``pwd``; optionally its first turn then stops on a usage limit."""
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     model, seen, stopped = _ScriptedModel(), [], set()
 
@@ -73,7 +73,7 @@ def _pwd_model(stop_first_turn_of_each_child=False):
 
 
 def _spawn(parent, goal):
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     out = json.loads(delegate_task(tasks=[{"goal": goal}], background=True, parent_agent=parent))
     _completion(out["delegation_id"])
     return out["subagent_ids"][0]
@@ -84,7 +84,7 @@ def _own_tree(repo, task_id):
 
 
 def test_continued_children_each_run_in_their_own_worktree_after_a_sibling_finished(repo, bound_session_key):
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     build, seen = _pwd_model(stop_first_turn_of_each_child=True)
     parent = _parent()

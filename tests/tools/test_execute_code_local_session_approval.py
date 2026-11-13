@@ -15,9 +15,9 @@ import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 from hermes_agent.gateway.session_policy import _ACTIVE_POLICY, SURFACES, LocalSessionPolicy
-from tools import approval as A
-from tools import approval_context, approval_smart
-from tools.approval_detection import detect_dangerous_command
+from hermes_agent.tools import approval as A
+from hermes_agent.tools import approval_context, approval_smart
+from hermes_agent.tools.approval_detection import detect_dangerous_command
 from tests.tools import _child_env_fixtures
 from tests.tools._child_env_fixtures import run_code
 
@@ -138,7 +138,7 @@ def test_local_session_skips_whole_script_prompt(child_env, turn, source):
     assert victim.is_dir()
 
 
-# The approval-specific refusals the gate returns (tools/approval.py _EXECUTE_CODE_GATE / _pending_result).
+# The approval-specific refusals the gate returns (hermes_agent/tools/approval.py _EXECUTE_CODE_GATE / _pending_result).
 _DENIED_SCRIPT = ("BLOCKED: execute_code script denied by user. The user has NOT consented to running this code. "
                   "Do NOT retry, do NOT rephrase the script, and do NOT attempt the same outcome via a different tool.")
 
@@ -155,9 +155,9 @@ def _run_unguarded_rm(victim) -> tuple[str, dict]:
     guard sees: only the whole-script gate stands in front of it."""
     import json
     from unittest.mock import patch
-    from tools.code_execution_tool import execute_code
+    from hermes_agent.tools.code_execution_tool import execute_code
     code = f"import subprocess\nsubprocess.run(['rm', '-rf', {str(victim)!r}], check=False)\nprint('ran')"
-    with patch("tools.code_execution_tool._load_config", return_value={"mode": "project"}):
+    with patch("hermes_agent.tools.code_execution_tool._load_config", return_value={"mode": "project"}):
         return code, json.loads(execute_code(code=code, task_id="child-env-test", enabled_tools=["terminal"], reset=True))
 
 

@@ -16,7 +16,7 @@ THIRD = 'd' * 32
 
 
 def _status(bot, key):
-    from tools.bot_live_delivery import _locked, _read
+    from hermes_agent.tools.bot_live_delivery import _locked, _read
     with _locked(bot.home) as root:
         return (_read(root / f'{key}.json') or {}).get('status')
 

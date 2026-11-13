@@ -1,6 +1,6 @@
 """Regression tests for the transcription_tools variant of #17140.
 
-Same class of bug as ``tools/tts_tool.py`` (fixed in PR #17163): the STT
+Same class of bug as ``hermes_agent/tools/tts_tool.py`` (fixed in PR #17163): the STT
 provider call sites read API keys via ``os.getenv()``, which bypasses
 ``~/.hermes/.env`` entries. These tests confirm each STT provider now
 consults ``get_env_value()`` and the provider auto-detect + explicit
@@ -45,7 +45,7 @@ class TestProviderSelectionGate:
         """No local backend, no explicit provider — auto-detect should fall
         through to Groq when its key lives in dotenv only. Before the fix
         it would return 'none'."""
-        from tools import transcription_tools as tt
+        from hermes_agent.tools import transcription_tools as tt
 
         with patch.object(tt, "_HAS_FASTER_WHISPER", False), \
              patch.object(tt, "_HAS_OPENAI", True), \
@@ -64,7 +64,7 @@ class TestTranscribeCallSitesReadDotenv:
     capture what gets passed through."""
 
     def test_transcribe_groq_forwards_dotenv_key(self):
-        from tools import transcription_tools as tt
+        from hermes_agent.tools import transcription_tools as tt
 
         seen_keys: list = []
 
@@ -94,8 +94,8 @@ class TestTranscribeCallSitesReadDotenv:
 
     def test_transcribe_xai_forwards_dotenv_key(self):
         """An explicit XAI_API_KEY must win over Grok subscription OAuth for STT."""
-        from tools import transcription_tools as tt
-        from tools import xai_http
+        from hermes_agent.tools import transcription_tools as tt
+        from hermes_agent.tools import xai_http
 
         captured: dict = {}
 
@@ -127,7 +127,7 @@ class TestTranscribeCallSitesReadDotenv:
         assert captured["headers"]["Authorization"] == "Bearer xai-dotenv-key"
 
     def test_transcribe_elevenlabs_forwards_dotenv_key(self):
-        from tools import transcription_tools as tt
+        from hermes_agent.tools import transcription_tools as tt
 
         captured: dict = {}
 
@@ -161,7 +161,7 @@ class TestEndToEndRegressionGuard:
     directly and returned ``XAI_API_KEY not set``."""
 
     def test_xai_key_only_in_dotenv_before_fix(self, monkeypatch):
-        from tools import transcription_tools as tt
+        from hermes_agent.tools import transcription_tools as tt
 
         monkeypatch.delenv("XAI_API_KEY", raising=False)
 

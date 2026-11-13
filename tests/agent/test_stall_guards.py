@@ -322,7 +322,7 @@ def test_multimodal_content_never_stubbed_and_breaks_streak():
 def test_extract_persisted_path_round_trip():
     # The stub's spillover reference is parsed from the <persisted-output>
     # block that maybe_persist_tool_result builds — assert the round trip.
-    from tools.tool_result_storage import (
+    from hermes_agent.tools.tool_result_storage import (
         _build_persisted_message,
         extract_persisted_path,
     )

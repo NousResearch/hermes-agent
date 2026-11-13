@@ -68,8 +68,8 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     import agent.auxiliary_client as ac
     import agent.image_token_cost as itc
     from agent import models_dev
-    import tools.computer_use.tool as cu
-    from tools import mcp_tool_loop
+    import hermes_agent.tools.computer_use.tool as cu
+    from hermes_agent.tools import mcp_tool_loop
 
     ac._reset_aux_semaphores()
     # The catalog memo is process-wide: start cold so the seeded disk catalog is what answers.

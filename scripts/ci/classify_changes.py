@@ -77,7 +77,7 @@ must never skip one a change could break:
   packaging tests read them, so they keep every Python lane.
 * ``website/static/oauth/`` is python-relevant too: it publishes the OAuth
   Client ID Metadata Document that ``tests/tools/test_mcp_cimd.py`` checks
-  against the pinned callback ports in ``tools/mcp_oauth.py``.
+  against the pinned callback ports in ``hermes_agent/tools/mcp_oauth.py``.
 * ``website/docs/`` and ``website/scripts/`` are python-relevant for the same
   reason: the docs tree generates ``llms.txt``, and
   ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
@@ -120,7 +120,7 @@ _CI_CONFIG_FILES = {"justfile", "scripts/hermes-python"}
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # Published artifacts that live under website/ but that Python asserts about.
 # The OAuth Client ID Metadata Document is cross-checked against the pinned
-# callback ports in tools/mcp_oauth.py, so editing it alone must still run the
+# callback ports in hermes_agent/tools/mcp_oauth.py, so editing it alone must still run the
 # Python lane — otherwise dropping a redirect URI goes green here and breaks
 # every CIMD login on main.
 # website/docs/ and website/scripts/ are asserted about the same way. The docs

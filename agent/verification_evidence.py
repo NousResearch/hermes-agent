@@ -128,7 +128,7 @@ def _ledger_enabled() -> bool:
     """The ledger exists only to feed verify-on-stop; when that guard is off nothing may
     record, read, or even create the database (an unconsumed ledger is pure disk churn)."""
     from agent.verification_stop import verify_on_stop_enabled
-    from tools.hosted_tool_policy import host_feature_enabled
+    from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
 
     # A hosted agent's commands, paths and output are its own: none recorded in this host's ledger.
     return host_feature_enabled("tool_host_artifacts") and verify_on_stop_enabled()

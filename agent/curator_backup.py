@@ -45,7 +45,7 @@ def _excluded_member(ti: tarfile.TarInfo) -> bool:
     """Skip excluded names anywhere in the path, plus regeneratable DIRECTORIES (venv, node_modules,
     caches — a 1.3 GB torch venv inside one skill made every snapshot 349 MB, #107539). Directory
     parts only: a plain file that happens to be called ``venv`` is skill content."""
-    from tools.skill_ledger import TRANSIENT_DIRS
+    from hermes_agent.tools.skill_ledger import TRANSIENT_DIRS
 
     parts = Path(ti.name).parts
     dir_parts = parts if ti.isdir() else parts[:-1]
@@ -340,7 +340,7 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> list[str]:
     its parent skill dir was restored and nothing sits at the target. If the target snapshot predates the skill, the entry
     is dropped with the staging dir rather than left orphaned; the safety snapshot excludes these paths too, so not undoable.
     Returns entries whose move failed, so their only surviving copies stay staged for recovery."""
-    from tools.skill_ledger import TRANSIENT_DIRS
+    from hermes_agent.tools.skill_ledger import TRANSIENT_DIRS
 
     failed: list[str] = []
     for dirpath, dirnames, filenames in os.walk(staged):

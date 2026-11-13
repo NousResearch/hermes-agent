@@ -21,7 +21,7 @@ def _fail(message: str) -> NoReturn:
 
 
 def _valid_alias(alias: str) -> str:
-    from tools.connectors.targets import ALIAS_PATTERN
+    from hermes_agent.tools.connectors.targets import ALIAS_PATTERN
 
     if not re.match(ALIAS_PATTERN, alias):
         _fail(f"Invalid name {alias!r}. Use 1 to 32 lowercase letters, digits or hyphens, "
@@ -38,7 +38,7 @@ def _display_name(row: dict[str, Any]) -> str:
 
 
 def _app_accounts(app: str) -> list[dict[str, Any]]:
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
 
     return [r for r in PortalConnectorClient().list_accounts() if str(r.get("connector", "")).lower() == app]
 
@@ -58,7 +58,7 @@ def _match_named(app: str, rows: list[dict[str, Any]], name: str) -> dict[str, A
 
 
 def _list(args) -> int:
-    from tools.connectors.managed import managed_client
+    from hermes_agent.tools.connectors.managed import managed_client
 
     rows = managed_client(creates_guest=True).list_connectors()
     if not rows:
@@ -72,7 +72,7 @@ def _list(args) -> int:
 
 
 def _accounts(args) -> int:
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
 
     app = (args.app or "").strip().lower()
     rows = [r for r in PortalConnectorClient().list_accounts()
@@ -113,7 +113,7 @@ def _wait_for_link(start, app: str) -> dict[str, Any]:
 
 
 def _report_connect(app: str, alias: str | None, target: dict[str, Any]) -> int:
-    from tools.tool_labels import app_title
+    from hermes_agent.tools.tool_labels import app_title
 
     state = target.get("state")
     if state == "connected":
@@ -132,8 +132,8 @@ def _report_connect(app: str, alias: str | None, target: dict[str, Any]) -> int:
 
 
 def _connect(args) -> int:
-    from tools.connectors import account, live
-    from tools.connectors.contract import SettleReason
+    from hermes_agent.tools.connectors import account, live
+    from hermes_agent.tools.connectors.contract import SettleReason
 
     app = args.app.strip().lower()
     if args.reconnect:
@@ -165,8 +165,8 @@ def _connect(args) -> int:
 
 
 def _rename(args) -> int:
-    from tools.connectors.gateway.errors import GatewayUnavailable, IdempotencyConflict, ToolGatewayError
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.gateway.errors import GatewayUnavailable, IdempotencyConflict, ToolGatewayError
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
 
     app = args.app.strip().lower()
     new = _valid_alias(args.to)
@@ -201,7 +201,7 @@ def _pick_account(app: str, alias: str | None, *, retired: bool = False) -> dict
 
 
 def _disconnect(args) -> int:
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
 
     app = args.app.strip().lower()
     row = _pick_account(app, args.alias, retired=True)
@@ -229,8 +229,8 @@ _ACTIONS: dict[str, Callable[[Any], int]] = {
 
 
 def cmd_connectors(args) -> int:
-    from tools.connectors import connectors_available
-    from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
+    from hermes_agent.tools.connectors import connectors_available
+    from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
 
     handler = _ACTIONS.get(getattr(args, "connectors_action", None) or "list")
     if handler is None:

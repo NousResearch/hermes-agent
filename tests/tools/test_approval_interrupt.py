@@ -20,7 +20,7 @@ import time
 
 def _clear_approval_state():
     """Reset all module-level approval state between tests."""
-    from tools import approval as mod
+    from hermes_agent.tools import approval as mod
     mod._gateway_queues.clear()
     mod._gateway_notify_cbs.clear()
     mod._session_approved.clear()
@@ -32,8 +32,8 @@ class TestApprovalInterrupt:
     SESSION_KEY = "interrupt-test-session"
 
     def setup_method(self):
-        from tools.interrupt import set_interrupt
-        from tools import interrupt as _interrupt_mod
+        from hermes_agent.tools.interrupt import set_interrupt
+        from hermes_agent.tools import interrupt as _interrupt_mod
 
         _clear_approval_state()
         # Wipe ALL per-thread interrupt bits — thread idents are recycled by
@@ -52,8 +52,8 @@ class TestApprovalInterrupt:
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
 
     def teardown_method(self):
-        from tools.interrupt import set_interrupt
-        from tools import interrupt as _interrupt_mod
+        from hermes_agent.tools.interrupt import set_interrupt
+        from hermes_agent.tools import interrupt as _interrupt_mod
 
         with _interrupt_mod._lock:
             _interrupt_mod._interrupted_threads.clear()
@@ -68,9 +68,9 @@ class TestApprovalInterrupt:
     def test_interrupt_unblocks_pending_approval_quickly(self, monkeypatch):
         """An interrupt on the waiting thread must resolve the wait as deny
         well before the (here, intentionally long) approval timeout."""
-        from tools import approval as mod
-        from tools import approval_context
-        from tools.interrupt import set_interrupt
+        from hermes_agent.tools import approval as mod
+        from hermes_agent.tools import approval_context
+        from hermes_agent.tools.interrupt import set_interrupt
 
         # Force a long timeout so a *passing* test can only happen via the
         # interrupt path, never by the deadline elapsing.
@@ -127,9 +127,9 @@ class TestApprovalInterrupt:
     def test_unrelated_thread_interrupt_does_not_unblock(self, monkeypatch):
         """An interrupt flagged on a *different* thread must NOT release this
         session's approval wait — interrupts are thread-scoped."""
-        from tools import approval as mod
-        from tools import approval_context
-        from tools.interrupt import set_interrupt
+        from hermes_agent.tools import approval as mod
+        from hermes_agent.tools import approval_context
+        from hermes_agent.tools.interrupt import set_interrupt
 
         # Short timeout so the test finishes fast via the deadline, proving the
         # foreign interrupt did not short-circuit the wait.

@@ -29,13 +29,13 @@ def test_raises_when_no_model_resolvable(monkeypatch, tmp_path):
         urllib.request, "urlopen",
         lambda *a, **kw: (_ for _ in ()).throw(Exception("offline")),
     )
-    from tools.tts_tool import _generate_deepinfra_tts
+    from hermes_agent.tools.tts_tool import _generate_deepinfra_tts
     with pytest.raises(ValueError, match="No DeepInfra TTS model available"):
         _generate_deepinfra_tts("hi", str(tmp_path / "out.mp3"), {})
 
 
 def test_requirements_follow_explicit_deepinfra_provider(monkeypatch):
-    from tools import tts_tool
+    from hermes_agent.tools import tts_tool
 
     monkeypatch.setattr(
         tts_tool,
@@ -48,7 +48,7 @@ def test_requirements_follow_explicit_deepinfra_provider(monkeypatch):
 
 
 def test_unselected_cloud_credentials_do_not_expose_edge_tool(monkeypatch):
-    from tools import tts_tool
+    from hermes_agent.tools import tts_tool
 
     monkeypatch.setattr(tts_tool, "_load_tts_config", dict)
     monkeypatch.setattr(tts_tool, "_import_edge_tts", MagicMock(side_effect=ImportError))

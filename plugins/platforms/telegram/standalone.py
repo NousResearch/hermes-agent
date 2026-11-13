@@ -4,7 +4,7 @@ notification mode, rich-message fast-path, albums and fallbacks. Wired as the pl
 ``standalone_sender_fn``; core reaches it only through the platform registry.
 
 ``_media_caption_split``, the media extension sets and the result/redaction helpers are small local
-copies of ``tools.send_message_senders``' (private core names a plugin may not import)."""
+copies of ``hermes_agent.tools.send_message_senders``' (private core names a plugin may not import)."""
 
 import asyncio
 import contextlib

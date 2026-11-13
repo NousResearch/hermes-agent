@@ -149,7 +149,7 @@ class TestDoctorToolAvailabilitySummary:
             check_tool_availability=lambda: ([], unavailable),
             TOOLSET_REQUIREMENTS={"image_gen": {"name": "image_gen"}, "homeassistant": {"name": "homeassistant"}},
         )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
@@ -249,7 +249,7 @@ class TestDoctorEnvFileEncoding:
             check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
             TOOLSET_REQUIREMENTS={},
         )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
         # Run doctor. If the .env read still uses locale encoding, this
         # raises UnicodeDecodeError and the test fails.
@@ -274,7 +274,7 @@ class TestDoctorEnvFileEncoding:
             check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
             TOOLSET_REQUIREMENTS={},
         )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
         with pytest.raises(SystemExit):
             doctor_mod.run_doctor(Namespace(fix=False))
@@ -322,7 +322,7 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -377,7 +377,7 @@ class TestDoctorMemoryProviderSection:
             check_tool_availability=lambda *a, **kw: ([], []),
             TOOLSET_REQUIREMENTS={},
         )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
         # Stub auth checks to avoid real API calls
         try:
@@ -481,7 +481,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -525,7 +525,7 @@ def test_run_doctor_accepts_stable_key_when_provider_name_differs(
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -567,7 +567,7 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -604,7 +604,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -658,7 +658,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -705,7 +705,7 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -761,7 +761,7 @@ def test_run_doctor_vendor_slug_policy_for_openai_api_endpoint(
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -804,7 +804,7 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -845,7 +845,7 @@ def _doctor_env_for_browser(monkeypatch, tmp_path):
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -949,7 +949,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -998,7 +998,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -1057,7 +1057,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
         from hermes_cli import auth as _auth_mod
@@ -1151,7 +1151,7 @@ def _run_doctor_with_healthy_oauth_fallback(
         check_tool_availability=lambda *a, **kw: ([], []),
         TOOLSET_REQUIREMENTS={},
     )
-    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+    monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     from hermes_cli import auth as _auth_mod
 
@@ -1253,7 +1253,7 @@ class TestDoctorXaiOAuthStatus:
             check_tool_availability=lambda *a, **kw: ([], []),
             TOOLSET_REQUIREMENTS={},
         )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
@@ -1295,7 +1295,7 @@ class TestDoctorXaiOAuthStatus:
             check_tool_availability=lambda *a, **kw: ([], []),
             TOOLSET_REQUIREMENTS={},
         )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
         from hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True})
@@ -1369,7 +1369,7 @@ class TestDoctorStaleMaxIterationsDrift:
             check_tool_availability=lambda *a, **kw: (_ for _ in ()).throw(SystemExit(0)),
             TOOLSET_REQUIREMENTS={},
         )
-        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf), pytest.raises(SystemExit):
@@ -1502,9 +1502,9 @@ class TestStagedRuntimeVenv:
 def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
 
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: True, raising=False)
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.using_lightpanda_engine", lambda: True, raising=False)
     monkeypatch.setattr(
-        "tools.browser_lightpanda.lightpanda_engine_status",
+        "hermes_agent.tools.browser_lightpanda.lightpanda_engine_status",
         lambda: (False, "cloud provider Browserbase is selected"), raising=False,
     )
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
@@ -1517,10 +1517,10 @@ def test_run_doctor_reports_shadowed_lightpanda_engine(monkeypatch, tmp_path):
 def test_run_doctor_warns_when_lightpanda_binary_missing(monkeypatch, tmp_path):
     helper = TestDoctorMemoryProviderSection()
 
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: True, raising=False)
-    monkeypatch.setattr("tools.browser_lightpanda.lightpanda_engine_status",
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.using_lightpanda_engine", lambda: True, raising=False)
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.lightpanda_engine_status",
                         lambda: (True, "Hermes spawns `lightpanda serve`"), raising=False)
-    monkeypatch.setattr("tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.find_lightpanda_binary", lambda: None)
     out = helper._run_doctor_and_capture(monkeypatch, tmp_path)
     assert "Lightpanda selected but binary not found" in out
 

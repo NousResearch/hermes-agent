@@ -477,7 +477,7 @@ def _windows_script_argv(argv: list[str]) -> list[str]:
         return [sys.executable, *argv]
     # Resolved inside the caller's try: no Git for Windows raises RuntimeError carrying the
     # installer's own actionable guidance, which is a better diagnostic than any we could add.
-    from tools.environments.local import _find_bash
+    from hermes_agent.tools.environments.local import _find_bash
     return [_find_bash(), *argv]
 
 
@@ -495,7 +495,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
         return failed(f"command {spec.command!r} cannot be parsed: {exc}")
     if not argv:
         return failed("empty command")
-    from tools.hosted_tool_policy import host_feature_refusal
+    from hermes_agent.tools.hosted_tool_policy import host_feature_refusal
     if refusal := host_feature_refusal("shell_hooks", "A shell hook"):  # the one subprocess site
         return failed(refusal)
     t0 = time.monotonic()
@@ -507,7 +507,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
     # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
     # script must not inherit; single-profile runs keep the process env byte-for-byte as before.
     from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
     try:
         if IS_WINDOWS:
             argv = _windows_script_argv(argv)
@@ -545,7 +545,7 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
 
     def _callback(**kwargs: Any) -> Optional[dict[str, Any]]:
         from agent.safe_worker_policy import safe_worker_enabled
-        from tools.hosted_tool_policy import host_feature_enabled
+        from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
 
         # A hosted scope's events carry the tenant's payload; a shell hook is a process on this host.
         if safe_worker_enabled() or not host_feature_enabled("shell_hooks"):

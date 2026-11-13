@@ -124,7 +124,7 @@ def test_runtime_retires_thread_when_an_in_place_switch_changes_the_codex_provid
 def test_runtime_gives_no_approval_callback_when_nobody_can_answer(monkeypatch):
     """`hermes chat -q` registers the CLI panel callback but nobody answers it: the codex session gets no
     callback, so exec/apply_patch requests fail closed at once instead of waiting the approval timeout."""
-    from tools.terminal_tool import set_approval_callback
+    from hermes_agent.tools.terminal_tool import set_approval_callback
 
     monkeypatch.setattr(sess_mod, "CodexAppServerClient", lambda **kw: _FakeClient())
     panel = lambda *args, **kwargs: "once"

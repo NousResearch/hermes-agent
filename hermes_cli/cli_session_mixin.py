@@ -244,9 +244,9 @@ class CLISessionMixin:
         _dim_notice(self, msg, quiet)
 
     def _restore_session_yolo(self, session_meta: dict, *, quiet: bool = False) -> None:
-        """Re-arm the session row's persisted /yolo on every resume path (``tools.approval_yolo``)."""
+        """Re-arm the session row's persisted /yolo on every resume path (``hermes_agent.tools.approval_yolo``)."""
         from hermes_agent.hermes_state import SessionDB
-        from tools.approval_yolo import restore_session_yolo
+        from hermes_agent.tools.approval_yolo import restore_session_yolo
         if restore_session_yolo(self.session_id or "default", SessionDB.session_yolo_enabled(session_meta)):
             _dim_notice(self, t("cli.session.yolo_restored"), quiet)
 
@@ -264,8 +264,8 @@ class CLISessionMixin:
         return buf.getvalue().rstrip("\n").splitlines()
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
-        """A 1-indexed checkpoint number or a hash (``tools/checkpoint_refs.py``, every surface's rule)."""
-        from tools.checkpoint_refs import resolve_checkpoint_ref
+        """A 1-indexed checkpoint number or a hash (``hermes_agent/tools/checkpoint_refs.py``, every surface's rule)."""
+        from hermes_agent.tools.checkpoint_refs import resolve_checkpoint_ref
         try:
             return resolve_checkpoint_ref(checkpoints, ref)
         except ValueError:
@@ -340,8 +340,8 @@ class CLISessionMixin:
 
         approval_label = None
         try:
-            from tools.approval import is_approval_bypass_active_for_session
-            from tools.approval_context import _get_approval_mode
+            from hermes_agent.tools.approval import is_approval_bypass_active_for_session
+            from hermes_agent.tools.approval_context import _get_approval_mode
             approval_label = _get_approval_mode()
             if is_approval_bypass_active_for_session(getattr(self, "session_key", "") or ""):
                 approval_label += t("cli.session.yolo_bypass_suffix")
@@ -622,7 +622,7 @@ class CLISessionMixin:
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):
                 with contextlib.suppress(Exception):
-                    from tools.todo_tool import TodoStore
+                    from hermes_agent.tools.todo_tool import TodoStore
                     self.agent._todo_store = TodoStore()
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
@@ -912,10 +912,10 @@ class CLISessionMixin:
             write_breadcrumb(self.session_id)
 
     def _is_session_yolo_active(self) -> bool:
-        """Whether YOLO bypass is on for this session: reads ``tools.approval._session_yolo``
+        """Whether YOLO bypass is on for this session: reads ``hermes_agent.tools.approval._session_yolo``
         (not a stale env var) and honors the frozen process-start ``--yolo`` flag."""
         try:
-            from tools.approval import _YOLO_MODE_FROZEN, is_session_yolo_enabled
+            from hermes_agent.tools.approval import _YOLO_MODE_FROZEN, is_session_yolo_enabled
         except Exception:
             return False
         if _YOLO_MODE_FROZEN:
@@ -928,14 +928,14 @@ class CLISessionMixin:
         """Toggle per-session YOLO mode (skip dangerous-command approvals).
 
         Mirrors the gateway/TUI ``/yolo`` handlers. Deliberately does NOT touch
-        ``HERMES_YOLO_MODE``: that env var is frozen into ``tools.approval._YOLO_MODE_FROZEN``
+        ``HERMES_YOLO_MODE``: that env var is frozen into ``hermes_agent.tools.approval._YOLO_MODE_FROZEN``
         at import (so prompt-injected skills can't flip the bypass), making a later set a
         silent no-op. ``run_conversation`` binds ``self.session_id`` as the active approval
         key, so the bypass applies to the very next dangerous command.
         """
         from cli import _cprint
         from hermes_cli.colors import Colors as _Colors
-        from tools.approval import _YOLO_MODE_FROZEN
+        from hermes_agent.tools.approval import _YOLO_MODE_FROZEN
 
         # A frozen process-level bypass short-circuits the approval gate ahead of the session
         # check — toggling "OFF" would be a false safety claim. Say so instead.
@@ -944,7 +944,7 @@ class CLISessionMixin:
             _cprint(f"  {t('cli.session.yolo_locked', state=state)}")
             return
 
-        from tools.approval_yolo import toggle_session_yolo
+        from hermes_agent.tools.approval_yolo import toggle_session_yolo
         session_key = self.session_id or "default"
         db = getattr(self, "_session_db", None)  # getattr: tests call this unbound against a stand-in
         # The row is created lazily on the first turn; until then with_session_yolo records the toggle.
@@ -1009,7 +1009,7 @@ class CLISessionMixin:
                 # generation point at the live continuation, not the ended parent.
                 agent_sid = getattr(self.agent, "session_id", None)
                 if agent_sid and agent_sid != self.session_id:
-                    from tools.approval_yolo import transfer_session_yolo
+                    from hermes_agent.tools.approval_yolo import transfer_session_yolo
                     transfer_session_yolo(self.session_id, agent_sid)
                     self.session_id = self.agent.session_id
                     self._write_terminal_breadcrumb()

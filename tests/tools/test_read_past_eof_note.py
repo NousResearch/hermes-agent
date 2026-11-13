@@ -6,7 +6,7 @@ bad offset? broken tool?) — the tool names the dead end and the recovery.
 
 import json
 
-from tools.file_tools import read_file_tool
+from hermes_agent.tools.file_tools import read_file_tool
 
 
 class TestPastEofNote:

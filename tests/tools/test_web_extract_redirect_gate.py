@@ -10,8 +10,8 @@ import asyncio
 import pytest
 
 import plugins.web.keenable.provider as keenable
-from tools import web_result_cache as wrc
-from tools import web_tools_extract as wte
+from hermes_agent.tools import web_result_cache as wrc
+from hermes_agent.tools import web_tools_extract as wte
 
 REDIRECTOR = "https://redirector.example/go"
 BLOCKED = "https://blocked.example/secret"
@@ -37,8 +37,8 @@ def _policy(monkeypatch, blocked_host: str | None = "blocked.example", unsafe_ho
     async def safe(url):
         return not (unsafe_host and unsafe_host in url)
 
-    monkeypatch.setattr("tools.website_policy.check_website_access", check)
-    monkeypatch.setattr("tools.url_safety.async_is_safe_url", safe)
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", check)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.async_is_safe_url", safe)
 
 
 def _keenable(monkeypatch, target):
@@ -127,7 +127,7 @@ def test_a_policy_check_that_raises_on_a_cached_final_url_is_a_miss(monkeypatch)
         if "allowed.example" in url:
             raise RuntimeError("policy unreadable")
 
-    monkeypatch.setattr("tools.website_policy.check_website_access", boom)
+    monkeypatch.setattr("hermes_agent.tools.website_policy.check_website_access", boom)
     result = _extract(provider)[0]
     assert not result.get("cached") and len(calls) == 2
     assert result["content"] == "" and "policy check failed" in result["error"]

@@ -1,6 +1,6 @@
 """A chat's terminal working directory survives a gateway restart (#41128).
 
-The terminal tool records where each command finished (``tools.terminal_tool.record_session_cwd``,
+The terminal tool records where each command finished (``hermes_agent.tools.terminal_tool.record_session_cwd``,
 keyed by the chat's session key) in a process-local dict, so a ``cd`` made in one turn holds for the
 next. A restart empties that dict and the chat's next command runs in ``terminal.cwd`` again. The
 turn now writes the recorded directory onto the chat's routing entry when it changed, and a turn
@@ -31,8 +31,8 @@ def _local_backend(policy) -> bool:
     else:
         # Only the scope-aware backend name: the full tool config also parses timeouts, ports and
         # Docker JSON, and a typo there must not fail a turn that never runs a command.
-        from tools.terminal_tool import _ensure_terminal_env_bridged
-        from tools.terminal_tool_config import _tenv
+        from hermes_agent.tools.terminal_tool import _ensure_terminal_env_bridged
+        from hermes_agent.tools.terminal_tool_config import _tenv
         _ensure_terminal_env_bridged()
         backend = _tenv("TERMINAL_ENV", "local")
     return str(backend or "local").strip().lower() == "local"
@@ -58,7 +58,7 @@ def restore_turn_cwd(runner, session_key: str | None, policy) -> object | None:
     entry = _routing_entry(runner, session_key) if session_key else None
     if entry is None or not _local_backend(policy):
         return None
-    from tools.terminal_tool import _qualify_task_key, clear_session_cwd, get_session_cwd, record_session_cwd
+    from hermes_agent.tools.terminal_tool import _qualify_task_key, clear_session_cwd, get_session_cwd, record_session_cwd
     owner, token = _qualify_task_key(session_key), entry.created_at
     if _record_owner.get(owner, token) != token:
         clear_session_cwd(session_key)
@@ -76,7 +76,7 @@ def persist_turn_cwd(runner, session_key: str | None, token: object | None) -> N
     entry = _routing_entry(runner, session_key) if token is not None else None
     if entry is None or entry.created_at != token:
         return
-    from tools.terminal_tool import get_session_cwd
+    from hermes_agent.tools.terminal_tool import get_session_cwd
     cwd = get_session_cwd(session_key)
     if not cwd or entry.metadata.get(_METADATA_KEY) == cwd:
         return

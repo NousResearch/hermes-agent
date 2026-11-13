@@ -176,7 +176,7 @@ def test_default_spawn_hands_the_assignee_owner_only_its_own_values(monkeypatch,
         set_multiplex_active(False)
 
     assert pid == 4243
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
     owner_env = served_profile_child_env(base=captured["env"], target_home=str(profile), inherit_credentials=True)
     assert owner_env.get("MY_PASSTHROUGH_VAR") == "elias-value"
     assert owner_env["HERMES_HOME"] == str(profile)

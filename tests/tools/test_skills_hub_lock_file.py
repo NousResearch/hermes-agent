@@ -15,7 +15,7 @@ import textwrap
 from pathlib import Path
 
 from tests.file_write_observer import observe_file_writes
-from tools.skills_hub import HubLockFile, TapsManager
+from hermes_agent.tools.skills_hub import HubLockFile, TapsManager
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _WRITES_PER_PROCESS = 150

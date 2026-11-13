@@ -19,7 +19,7 @@ from hermes_agent.gateway import run_notifications
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.run import GatewayRunner
 from tests.module_clock import install_module_clock
-from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 
 class AdmittingHandler(AsyncMock):
@@ -35,7 +35,7 @@ class AdmittingHandler(AsyncMock):
 def isolated_registry(tmp_path, monkeypatch):
     """Any current/future durable compatibility path must stay in tmp state."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     monkeypatch.setattr(pr_module, "CHECKPOINT_PATH", tmp_path / "processes.json")
     registry = pr_module.ProcessRegistry()
@@ -185,7 +185,7 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
     runner = _runner(adapter)
     _stop_after_sleeps(monkeypatch, runner, count=3, minutes_apart=True)
 
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     acknowledgements = []
     monkeypatch.setattr(
@@ -202,7 +202,7 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
 
 
 def _persist_pending_completion(event):
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     async_delegation._persist_dispatch({
         "delegation_id": event["delegation_id"],
@@ -218,7 +218,7 @@ def _persist_pending_completion(event):
 
 
 def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch):
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     registry = ProcessRegistry()
     session = ProcessSession(
@@ -262,7 +262,7 @@ def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch)
 
 
 def test_process_tool_redacts_explicit_kill_output(monkeypatch):
-    from tools import process_registry as pr_module
+    from hermes_agent.tools import process_registry as pr_module
 
     registry = ProcessRegistry()
     session = ProcessSession(
@@ -293,7 +293,7 @@ def test_process_tool_redacts_explicit_kill_output(monkeypatch):
 
 def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypatch):
     import agent.redact as redact_module
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     secret = "abc123randomopaquetokenvalue999"
     registry = ProcessRegistry()
@@ -335,7 +335,7 @@ def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypat
 
 def test_concurrent_process_watchers_coalesce_one_session_completion_turn(monkeypatch):
     """Concurrent terminal watchers for one session must re-enter the agent once."""
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
 
     registry = ProcessRegistry()
     watchers = []
@@ -769,7 +769,7 @@ def test_same_tick_async_batch_coalesces_into_one_turn_and_acks_all_rows(
     All three durable delegation rows must be honestly acknowledged only
     after the single consolidated injection was accepted by the adapter.
     """
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     isolated = queue.Queue()
     monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
@@ -843,7 +843,7 @@ def test_failed_coalesced_async_batch_releases_claims_and_retries(
     monkeypatch, isolated_registry,
 ):
     """A rejected consolidated injection leaves every durable row pending."""
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     isolated = queue.Queue()
     monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
@@ -873,7 +873,7 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     monkeypatch, isolated_registry,
 ):
     """A sibling owned elsewhere is excluded from the consolidated turn."""
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     isolated = queue.Queue()
     monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
@@ -905,7 +905,7 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
 def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavailable, batch_size):
     """Unavailable owners/transports cannot consume any sibling's durable attempts."""
     from hermes_agent.hermes_state import SessionDB
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     events = [_async_event(f"deleg_unavailable_{i}") for i in range(batch_size)]
     raw = unavailable in {"raw_adapter", "api_db"}

@@ -31,7 +31,7 @@ def secret_prompt_scope(turn, agent):
     if not local_viewer_turn(turn):
         yield
         return
-    from tools.skills_tool import bind_turn_secret_capture
+    from hermes_agent.tools.skills_tool import bind_turn_secret_capture
     authority, session_id, _generation = turn._approval_owner
 
     def callback(var_name, prompt, metadata=None):

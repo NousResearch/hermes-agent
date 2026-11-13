@@ -7,8 +7,8 @@ from contextvars import ContextVar
 import pytest
 
 from tests.waiting import wait_until
-from tools import registry as registry_module
-from tools.registry import ToolRegistry, invalidate_check_fn_cache
+from hermes_agent.tools import registry as registry_module
+from hermes_agent.tools.registry import ToolRegistry, invalidate_check_fn_cache
 
 _RELEASE = threading.Event()
 _published: ContextVar = ContextVar("probe_published", default=None)
@@ -106,7 +106,7 @@ def test_an_uncached_check_answers_for_its_own_caller_while_another_runs(monkeyp
     from contextlib import nullcontext
 
     from agent.delegation_context import delegated_child_context
-    from tools import kanban_tools
+    from hermes_agent.tools import kanban_tools
 
     entered, release, results = threading.Event(), threading.Event(), {}
 

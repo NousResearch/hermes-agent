@@ -1,4 +1,4 @@
-"""Unit tests for the shared TTS text cleaner (tools/tts_text_normalize).
+"""Unit tests for the shared TTS text cleaner (hermes_agent/tools/tts_text_normalize).
 
 Covers the consolidated preprocessing pipeline: <think> reasoning blocks
 (#34213), emoji strip (#13311/#18598), file-mutation verifier footer
@@ -9,7 +9,7 @@ path and the voice-mode paths.
 
 import json
 
-from tools.tts_text_normalize import (
+from hermes_agent.tools.tts_text_normalize import (
     flatten_newlines_for_payload,
     prepare_spoken_text,
     strip_nonspoken_blocks,
@@ -92,7 +92,7 @@ class TestSharedCleanerWiring:
     """The ONE cleaner must be applied on every TTS entry path."""
 
     def test_tool_path_strips_think_blocks(self):
-        from tools.tts_text_normalize import _strip_markdown_for_tts
+        from hermes_agent.tools.tts_text_normalize import _strip_markdown_for_tts
 
         cleaned = _strip_markdown_for_tts("<think>hidden</think>**Loud** and clear 🎉")
         assert "hidden" not in cleaned
@@ -101,13 +101,13 @@ class TestSharedCleanerWiring:
         assert "Loud and clear" in cleaned
 
     def test_tool_rejects_text_empty_after_cleanup(self):
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
 
         result = json.loads(text_to_speech_tool(text="<think>only reasoning</think>"))
         assert result["success"] is False
 
     def test_streaming_helper_uses_shared_cleaner(self):
-        from tools.tts_text_normalize import _strip_markdown_for_tts
+        from hermes_agent.tools.tts_text_normalize import _strip_markdown_for_tts
 
         cleaned = _strip_markdown_for_tts("Temp is 14°C today\nand rising")
         assert "degrees Celsius" in cleaned

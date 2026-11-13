@@ -15,7 +15,7 @@ import time
 import pytest
 from unittest.mock import patch
 
-from tools.process_registry import (
+from hermes_agent.tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
     WATCH_GLOBAL_MAX_PER_WINDOW,
@@ -133,7 +133,7 @@ class TestLifetimeCap:
         """Matches spaced well past the cooldown never strike, but a service
         restarted over and over must still get disabled instead of forcing a
         full-context turn forever."""
-        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+        from hermes_agent.tools.process_registry import WATCH_LIFETIME_MAX_HITS
 
         session = _make_session(watch_patterns=["Application started"])
         for i in range(WATCH_LIFETIME_MAX_HITS):
@@ -166,7 +166,7 @@ class TestLifetimeCap:
         """Only DELIVERED notifications consume the lifetime budget — matches
         suppressed inside the cooldown window must not increment the counter
         (they never forced an agent turn)."""
-        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+        from hermes_agent.tools.process_registry import WATCH_LIFETIME_MAX_HITS
 
         session = _make_session(watch_patterns=["E"])
         registry._check_watch_patterns(session, "E emit\n")
@@ -186,7 +186,7 @@ class TestLifetimeCap:
         """The Nth delivered match is still delivered, then the session is
         promoted to notify_on_complete in the same call, with the
         watch_disabled summary queued right after the final match."""
-        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+        from hermes_agent.tools.process_registry import WATCH_LIFETIME_MAX_HITS
 
         session = _make_session(watch_patterns=["ready"])
         for i in range(WATCH_LIFETIME_MAX_HITS - 1):
@@ -232,7 +232,7 @@ class TestCheckpointPersistence:
 
     def test_watch_patterns_recovery(self, registry, tmp_path, monkeypatch):
         """watch_patterns survives checkpoint recovery."""
-        import tools.process_registry as pr_mod
+        import hermes_agent.tools.process_registry as pr_mod
         checkpoint = tmp_path / "processes.json"
         checkpoint.write_text(json.dumps([{
             "session_id": "proc_recovered",
@@ -264,7 +264,7 @@ class TestTerminalToolSchema:
     def test_schema_unified_notify_covers_patterns(self):
         """Pattern-watching is advertised through `notify` (list form); the
         legacy watch_patterns arg stays handler-accepted but unadvertised."""
-        from tools.terminal_tool import TERMINAL_SCHEMA
+        from hermes_agent.tools.terminal_tool import TERMINAL_SCHEMA
         props = TERMINAL_SCHEMA["parameters"]["properties"]
         assert "watch_patterns" not in props
         array_alts = [alt for alt in props["notify"]["anyOf"] if alt["type"] == "array"]
@@ -274,7 +274,7 @@ class TestTerminalToolSchema:
     def test_foreground_watch_patterns_rejected_with_teaching_error(self):
         """Background-only modifiers on a foreground call fail loud with the
         corrected call shape instead of being silently ignored."""
-        from tools.terminal_tool import _handle_terminal
+        from hermes_agent.tools.terminal_tool import _handle_terminal
         result = json.loads(
             _handle_terminal({"command": "echo hi", "watch_patterns": ["ERR"]}, task_id="t1")
         )
@@ -288,7 +288,7 @@ class TestTerminalToolSchema:
 
 class TestCodeExecutionBlocked:
     def test_watch_patterns_blocked(self):
-        from tools.code_execution_rpc import _TERMINAL_BLOCKED_PARAMS
+        from hermes_agent.tools.code_execution_rpc import _TERMINAL_BLOCKED_PARAMS
         assert "watch_patterns" in _TERMINAL_BLOCKED_PARAMS
 
 
@@ -323,7 +323,7 @@ class TestSuppressAfterExit:
 class TestMutualExclusion:
     def test_resolver_drops_watch_when_notify_set(self):
         """Both flags set → watch_patterns dropped with a note."""
-        from tools.terminal_tool import _resolve_notification_flag_conflict
+        from hermes_agent.tools.terminal_tool import _resolve_notification_flag_conflict
 
         resolved, note = _resolve_notification_flag_conflict(
             notify_on_complete=True,
@@ -337,7 +337,7 @@ class TestMutualExclusion:
 
     def test_resolver_inert_when_not_background(self):
         """Without background=True, the whole thing is a no-op."""
-        from tools.terminal_tool import _resolve_notification_flag_conflict
+        from hermes_agent.tools.terminal_tool import _resolve_notification_flag_conflict
 
         resolved, note = _resolve_notification_flag_conflict(
             notify_on_complete=True,
@@ -421,7 +421,7 @@ class TestOverflowNotificationFormatting:
     to the completion formatter as a phantom 'process exited (exit code ?)'."""
 
     def test_overflow_tripped_formats_message(self):
-        from tools.process_registry_notifications import format_process_notification
+        from hermes_agent.tools.process_registry_notifications import format_process_notification
 
         evt = {
             "type": "watch_overflow_tripped",
@@ -433,7 +433,7 @@ class TestOverflowNotificationFormatting:
         assert "exit code" not in out
 
     def test_overflow_released_formats_message(self):
-        from tools.process_registry_notifications import format_process_notification
+        from hermes_agent.tools.process_registry_notifications import format_process_notification
 
         evt = {
             "type": "watch_overflow_released",

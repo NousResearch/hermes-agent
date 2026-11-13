@@ -139,7 +139,7 @@ def test_standalone_timeout_is_not_queued(monkeypatch, gateway_loop):
 
 def test_standalone_send_marks_timeouts_in_flight(monkeypatch):
     """_standalone_send's own timeout arm flags the target in flight (not a definitive failure)."""
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     async def _hang(platform, pconfig, chat_id, message, **kwargs):
         await asyncio.Event().wait()  # never set: only the send timeout's cancel ends it
@@ -161,7 +161,7 @@ def test_telegram_sender_lost_answer_is_not_queued(monkeypatch, gateway_loop, ra
 
     import sys
 
-    from tools.send_message_senders import _plugin_standalone_sender
+    from hermes_agent.tools.send_message_senders import _plugin_standalone_sender
     sender, _err = _plugin_standalone_sender("telegram")  # the module the registry really calls
     tg_standalone = sys.modules[sender.__module__]
     import httpx
@@ -193,7 +193,7 @@ def test_standalone_send_definitive_failure_is_not_in_flight(monkeypatch):
     async def _refused(platform, pconfig, chat_id, message, **kwargs):
         return {"error": "You must pass the token from BotFather"}
 
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
     monkeypatch.setattr(smt, "_send_to_platform", _refused)
     t = _target(None)
     sd._standalone_send(t, "the report", [])

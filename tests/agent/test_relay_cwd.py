@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from agent import relay_cwd, runtime_cwd
-from tools.terminal_tool import clear_session_cwd, record_session_cwd
+from hermes_agent.tools.terminal_tool import clear_session_cwd, record_session_cwd
 
 
 def test_session_context_and_task_record_remain_distinct(monkeypatch):
@@ -33,7 +33,7 @@ def test_remote_scoped_cwd_is_preserved_without_host_resolution(
     monkeypatch, logical_cwd
 ):
     token = runtime_cwd.set_session_cwd(logical_cwd)
-    monkeypatch.setattr("tools.terminal_tool.get_session_cwd", lambda _key: None)
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool.get_session_cwd", lambda _key: None)
     monkeypatch.setattr(
         runtime_cwd,
         "resolve_agent_cwd",
@@ -95,12 +95,12 @@ def test_only_local_cli_uses_host_cwd(
         host_lookups.append(True)
         return resolved
 
-    monkeypatch.setattr("tools.terminal_tool.get_session_cwd", lambda _key: None)
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool.get_session_cwd", lambda _key: None)
     monkeypatch.setattr(
         "hermes_agent.gateway.session_context.get_session_env", lambda _name, default: default
     )
     monkeypatch.setattr(
-        "tools.terminal_scope.terminal_env",
+        "hermes_agent.tools.terminal_scope.terminal_env",
         lambda name, default: backend if name == "TERMINAL_ENV" else default,
     )
     monkeypatch.setattr(runtime_cwd, "resolve_agent_cwd", resolve_host_cwd)
@@ -117,10 +117,10 @@ def test_cwd_lookup_failures_do_not_break_the_turn(monkeypatch):
     def unavailable(*_args):
         raise RuntimeError("unavailable")
 
-    monkeypatch.setattr("tools.terminal_tool.get_session_cwd", unavailable)
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool.get_session_cwd", unavailable)
     monkeypatch.setattr(runtime_cwd, "scoped_session_cwd", unavailable)
     monkeypatch.setattr("hermes_agent.gateway.session_context.get_session_env", unavailable)
-    monkeypatch.setattr("tools.terminal_scope.terminal_env", unavailable)
+    monkeypatch.setattr("hermes_agent.tools.terminal_scope.terminal_env", unavailable)
 
     assert relay_cwd.resolve_relay_scope_cwds(
         object(), "task-1", "session-1", "gateway"

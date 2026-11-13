@@ -20,7 +20,7 @@ import types
 
 import pytest
 
-from tools import mcp_tool
+from hermes_agent.tools import mcp_tool
 
 # What CPython raises when two threads import the SDK's circular modules at once; a
 # RuntimeError, not an ImportError.
@@ -54,7 +54,7 @@ def cold_probe(monkeypatch):
 
 def _patch_import(monkeypatch, hook):
     """Route the probe's ``importlib.import_module`` through ``hook(name, real_import)``. Only
-    ``tools.mcp_tool``'s own ``importlib`` name is swapped, never the shared module."""
+    ``hermes_agent.tools.mcp_tool``'s own ``importlib`` name is swapped, never the shared module."""
     real_import = importlib.import_module
     monkeypatch.setattr(mcp_tool, "importlib", types.SimpleNamespace(
         util=importlib.util,
@@ -177,7 +177,7 @@ def test_persistent_core_import_failure_warns_and_recovers(cold_probe, caplog):
         return real()
 
     _patch_import(cold_probe, hook)
-    with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+    with caplog.at_level("WARNING", logger="hermes_agent.tools.mcp_tool"):
         assert mcp_tool._ensure_mcp_sdk() is False
     assert "pydantic_core" in caplog.text
     assert mcp_tool._MCP_SDK_IMPORT_ATTEMPTED is False

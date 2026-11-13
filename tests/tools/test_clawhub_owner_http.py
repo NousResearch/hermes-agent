@@ -9,8 +9,8 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-from tools.skills_hub_clawhub import ClawHubSource
-from tools.url_safety import _reset_allow_private_cache
+from hermes_agent.tools.skills_hub_clawhub import ClawHubSource
+from hermes_agent.tools.url_safety import _reset_allow_private_cache
 
 
 @contextmanager

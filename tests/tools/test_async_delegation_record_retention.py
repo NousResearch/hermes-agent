@@ -4,8 +4,8 @@ import contextvars
 import gc
 import weakref
 
-from tools import async_delegation as ad
-from tools.process_registry import process_registry
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
 
 _turn_state = contextvars.ContextVar("_turn_state")
 

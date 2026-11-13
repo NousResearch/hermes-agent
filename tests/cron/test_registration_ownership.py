@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_agent.cron import jobs, scheduler as sched
-from tools import cronjob_tools as tools
+from hermes_agent.tools import cronjob_tools as tools
 
 
 def test_live_direct_run_survives_stale_sweep(tmp_path, monkeypatch):

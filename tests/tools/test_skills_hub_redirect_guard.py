@@ -5,10 +5,10 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-import tools.skills_hub as hub
-from tools.skills_hub_github import GitHubAuth, GitHubSource
-from tools.skills_hub_models import _get_text
-from tools.skills_hub_sources import BrowseShSource
+import hermes_agent.tools.skills_hub as hub
+from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource
+from hermes_agent.tools.skills_hub_models import _get_text
+from hermes_agent.tools.skills_hub_sources import BrowseShSource
 
 METADATA = "http://169.254.169.254/latest/meta-data/"
 
@@ -101,7 +101,7 @@ def test_blocked_github_hop_is_not_retried(transport, monkeypatch):
     monkeypatch.setattr(hub, "is_safe_url", lambda url: "169.254" not in url)
     monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
     sleeps = []
-    monkeypatch.setattr("tools.skills_hub_github.time.sleep", sleeps.append)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_github.time.sleep", sleeps.append)
     api = "https://api.github.com/repos/o/r"
     routes[api] = httpx.Response(302, headers={"location": METADATA})
 
@@ -113,7 +113,7 @@ def test_dns_failure_stays_retryable(transport, monkeypatch):
     """Unresolvable is transient, not a refusal: the GitHub GET retries it like any transport error."""
     import socket
 
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     _routes, seen = transport
 
@@ -124,7 +124,7 @@ def test_dns_failure_stays_retryable(transport, monkeypatch):
     monkeypatch.setattr(url_safety, "_proxy_is_configured", lambda: False)
     monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
     sleeps = []
-    monkeypatch.setattr("tools.skills_hub_github.time.sleep", sleeps.append)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_github.time.sleep", sleeps.append)
 
     with pytest.raises(httpx.ConnectError) as exc_info:
         hub._skills_hub_http_get("https://api.github.com/repos/o/r")
@@ -140,7 +140,7 @@ def test_unresolvable_metadata_hostname_stays_a_refusal(transport, monkeypatch, 
     """A host refused by name is not a transient DNS failure, even when it does not resolve."""
     import socket
 
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     def no_dns(host, port=None):
         raise socket.gaierror("nxdomain")
@@ -170,7 +170,7 @@ def test_redirect_chain_reuses_one_client(transport, monkeypatch):
 
 def test_malformed_catalog_file_url_is_refused(transport):
     """A malformed rawUrl is refused like any unsafe URL, not raised as ValueError."""
-    from tools.skills_hub_clawhub import ClawHubSource
+    from hermes_agent.tools.skills_hub_clawhub import ClawHubSource
 
     _routes, seen = transport
     files = ClawHubSource()._extract_files({"files": [{"path": "SKILL.md", "rawUrl": "http://["}]})

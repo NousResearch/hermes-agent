@@ -9,7 +9,7 @@ all three, while an operator-driven stop still reaches it.
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.process_registry import ProcessRegistry, ProcessSession, _CHECKPOINT_FIELDS
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession, _CHECKPOINT_FIELDS
 
 
 def _make_session(sid="proc_test123", task_id="t1", persist=False) -> ProcessSession:
@@ -71,7 +71,7 @@ def test_agent_close_owned_loop_skips_persisted_sessions(registry, monkeypatch):
     from types import SimpleNamespace
 
     from agent.client_lifecycle import ClientLifecycleMixin
-    import tools.process_registry as registry_module
+    import hermes_agent.tools.process_registry as registry_module
 
     persisted = _make_session(sid="proc_persisted", task_id="turn-1", persist=True)
     volatile = _make_session(sid="proc_volatile", task_id="turn-1")
@@ -86,7 +86,7 @@ def test_agent_close_owned_loop_skips_persisted_sessions(registry, monkeypatch):
     import run_agent as ra
     monkeypatch.setattr(ra, "cleanup_vm", lambda *a, **k: None)
     monkeypatch.setattr(ra, "cleanup_browser", lambda *a, **k: None)
-    import tools.computer_use.tool as cu
+    import hermes_agent.tools.computer_use.tool as cu
     monkeypatch.setattr(cu, "release_computer_use_session", lambda *a, **k: None)
 
     ClientLifecycleMixin._close_task_resources(agent, "turn-1")
@@ -125,13 +125,13 @@ def test_spawn_local_stamps_persist_on_release(registry, monkeypatch, tmp_path):
     ProcessSession so every kill filter can see it (#41225)."""
     import os
 
-    from tools import terminal_tool_sudo
+    from hermes_agent.tools import terminal_tool_sudo
 
     # Stay off the real hermes home: the spawn-path env sanitizer resolves the
     # real console-script install (_resolve_hermes_bin_dir), which the test
     # suite's HomeIOGuard forbids. None == "no managed install found".
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.environments import local as local_env
+    from hermes_agent.tools.environments import local as local_env
     monkeypatch.setattr(local_env, "_resolve_hermes_bin_dir", lambda: None)
     monkeypatch.setattr(registry, "_track_started", lambda *a, **k: None)
     monkeypatch.setattr(terminal_tool_sudo, "_rewrite_compound_background", lambda c: c)

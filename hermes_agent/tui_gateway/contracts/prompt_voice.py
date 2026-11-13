@@ -500,7 +500,7 @@ class WakeStatusParams(Params):
 
 
 class WakeInputDevice(OpenModel):
-    """``tools/wake_word.py::_describe_input_device`` — PortAudio diagnostics for the configured mic."""
+    """``hermes_agent/tools/wake_word.py::_describe_input_device`` — PortAudio diagnostics for the configured mic."""
 
     selector: int | str | None = None
     name: str | None = None

@@ -1,6 +1,6 @@
 """Identifier-to-speech normalization (#119207).
 
-Both speech normalizers — tools/tts_text_normalize.py (gateway/CLI/TTS tool)
+Both speech normalizers — hermes_agent/tools/tts_text_normalize.py (gateway/CLI/TTS tool)
 and apps/desktop/src/lib/speech-text.ts (Desktop read-aloud / auto-speak) —
 must apply the same policy to identifier-dense tokens (filenames with
 extensions, hashes, UUIDs, dense model/version IDs, paths): silence, never
@@ -14,7 +14,7 @@ lockstep.
 import json
 from pathlib import Path
 
-from tools.tts_text_normalize import prepare_spoken_text
+from hermes_agent.tools.tts_text_normalize import prepare_spoken_text
 
 _CORPUS = Path(__file__).resolve().parent.parent / "fixtures" / "identifier_speech_corpus.json"
 

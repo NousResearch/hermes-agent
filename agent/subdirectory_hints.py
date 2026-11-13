@@ -144,7 +144,7 @@ class SubdirectoryHintTracker:
         # ``enabled=False`` mirrors ``skip_context_files``: a session that opted out of
         # AGENTS.md/CLAUDE.md injection at startup must not get the same files spliced into
         # tool results later — cron jobs relaying exact stdout leaked them to chat (#9441).
-        from tools.hosted_tool_policy import host_feature_enabled
+        from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
         if not host_feature_enabled("subdirectory_hints"):
             # Hosted: the working dir names the agent's sandbox. Nothing is resolved or read here.
             self.enabled, self.working_dir, self._home_is_working_dir = False, Path(working_dir or "/"), True
@@ -171,7 +171,7 @@ class SubdirectoryHintTracker:
 
     def rebind_working_dir(self, working_dir: str) -> None:
         """Re-anchor hint discovery to *working_dir* (a session workspace adoption)."""
-        from tools.hosted_tool_policy import host_feature_enabled
+        from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
         if not host_feature_enabled("subdirectory_hints"):
             return
         try:
@@ -196,7 +196,7 @@ class SubdirectoryHintTracker:
     def check_tool_call(self, tool_name: str, tool_args: dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
         from agent.safe_worker_policy import safe_worker_enabled
-        from tools.hosted_tool_policy import host_feature_enabled
+        from hermes_agent.tools.hosted_tool_policy import host_feature_enabled
 
         if not self.enabled or safe_worker_enabled() or not host_feature_enabled("subdirectory_hints"):
             return None  # hosted: the paths name the agent's sandbox; nothing is resolved here

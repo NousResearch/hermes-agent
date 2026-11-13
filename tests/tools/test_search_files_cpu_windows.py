@@ -6,14 +6,14 @@ import types
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import SearchResult, ShellFileOperations
-from tools.file_operations_search import (
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import SearchResult, ShellFileOperations
+from hermes_agent.tools.file_operations_search import (
     _ACTIVE_FILENAME_SEARCH_ROOTS,
     _FILENAME_SEARCH_ADMISSION,
     _normalized_filename_search_root,
 )
-from tools.interrupt import set_interrupt
+from hermes_agent.tools.interrupt import set_interrupt
 
 
 class RemoteEnvironment:
@@ -203,7 +203,7 @@ def test_interrupt_published_after_final_sample_prevents_filename_dispatch(monke
 
     operations = _operations(RemoteEnvironment(), scan)
     original_is_interrupted = __import__(
-        "tools.interrupt", fromlist=["is_interrupted"]
+        "hermes_agent.tools.interrupt", fromlist=["is_interrupted"]
     ).is_interrupted
 
     def pause_after_clear_sample():
@@ -214,7 +214,7 @@ def test_interrupt_published_after_final_sample_prevents_filename_dispatch(monke
         return interrupted
 
     monkeypatch.setattr(
-        "tools.file_operations_search.tool_interrupt.is_interrupted",
+        "hermes_agent.tools.file_operations_search.tool_interrupt.is_interrupted",
         pause_after_clear_sample,
     )
 
@@ -277,7 +277,7 @@ def test_admission_releases_after_every_base_exception_path(raised):
 def test_remote_roots_are_normalized_lexically_against_backend_cwd(monkeypatch):
     env = RemoteEnvironment()
     monkeypatch.setattr(
-        "tools.file_operations.os.path.abspath",
+        "hermes_agent.tools.file_operations.os.path.abspath",
         lambda path: (_ for _ in ()).throw(AssertionError("controller resolution used")),
     )
 

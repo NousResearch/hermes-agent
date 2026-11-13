@@ -336,11 +336,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         ):
             return True
         def _delegations_active() -> bool:
-            from tools.async_delegation import active_count
+            from hermes_agent.tools.async_delegation import active_count
             return active_count() > 0
 
         def _processes_active() -> bool:
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
             return bool(process_registry.has_any_active() or process_registry.pending_watchers)
 
         for label, probe in (("async-delegation", _delegations_active), ("bg-work", _processes_active)):
@@ -1341,7 +1341,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         """
         from hermes_agent.gateway.config_loader import drop_bridged_env
         from hermes_constants import get_default_hermes_root, get_hermes_home
-        from tools.environments.local import host_gateway_child_env, served_profile_child_env
+        from hermes_agent.tools.environments.local import host_gateway_child_env, served_profile_child_env
 
         home = get_hermes_home()
         try:
@@ -1731,7 +1731,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                 logger.info(fmt, phase, n)
 
         def _kill_processes() -> None:
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
             # Host shutdown: kill even persist_on_release jobs or they become
             # PPID=1 orphans (#41225/#46778); an explicit source reaches them.
             _count_step(
@@ -1756,7 +1756,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             return _interrupted
 
         def _interrupt_delegations() -> None:
-            from tools.async_delegation import interrupt_all as _interrupt_async
+            from hermes_agent.tools.async_delegation import interrupt_all as _interrupt_async
             _count_step(
                 "Shutdown (%s): interrupted %d background delegation(s)",
                 lambda: _interrupt_async(reason=f"gateway shutdown ({phase})", resumable=True),
@@ -1766,11 +1766,11 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         _marked_cron_jobs = _step("mark_running_jobs_interrupted", _mark_cron_interrupted) or []
         _step("async interrupt_all", _interrupt_delegations)
         def _cleanup_environments() -> None:
-            from tools.terminal_tool_lifecycle import cleanup_all_environments
+            from hermes_agent.tools.terminal_tool_lifecycle import cleanup_all_environments
             cleanup_all_environments()
 
         def _cleanup_browsers() -> None:
-            from tools.browser_session_lifecycle import cleanup_all_browsers
+            from hermes_agent.tools.browser_session_lifecycle import cleanup_all_browsers
             cleanup_all_browsers()
 
         _step("cleanup_all_environments", _cleanup_environments)

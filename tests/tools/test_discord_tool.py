@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.discord_tool import (
+from hermes_agent.tools.discord_tool import (
     DiscordAPIError,
     _ACTIONS,
     _ADMIN_ACTIONS,
@@ -72,7 +72,7 @@ class TestCheckRequirements:
 
     def test_multiplex_scope_missing_token_fails_closed(self, monkeypatch):
         from agent import secret_scope
-        from tools.registry import invalidate_check_fn_cache, registry
+        from hermes_agent.tools.registry import invalidate_check_fn_cache, registry
 
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "another-profile-token")
         secret_scope.set_multiplex_active(True)
@@ -125,7 +125,7 @@ class TestCheckRequirements:
 # ---------------------------------------------------------------------------
 
 class TestDiscordRequest:
-    @patch("tools.discord_tool.urllib.request.urlopen")
+    @patch("hermes_agent.tools.discord_tool.urllib.request.urlopen")
     def test_get_request(self, mock_urlopen_fn):
         mock_urlopen_fn.return_value = _mock_urlopen({"ok": True})
         result = _discord_request("GET", "/test", "token123")
@@ -139,9 +139,9 @@ class TestDiscordRequest:
         assert req.get_method() == "GET"
 
 
-    @patch("tools.discord_tool.urllib.request.urlopen")
+    @patch("hermes_agent.tools.discord_tool.urllib.request.urlopen")
     def test_response_body_size_limit(self, mock_urlopen_fn, monkeypatch):
-        monkeypatch.setattr("tools.discord_tool._DISCORD_RESPONSE_BODY_MAX_BYTES", 8)
+        monkeypatch.setattr("hermes_agent.tools.discord_tool._DISCORD_RESPONSE_BODY_MAX_BYTES", 8)
         mock_resp = MagicMock()
         mock_resp.status = 200
         mock_resp.read.return_value = b"x" * 9
@@ -183,7 +183,7 @@ class TestDiscordServerValidation:
 # ---------------------------------------------------------------------------
 
 class TestListChannels:
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_list_channels_organized(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = [
@@ -209,7 +209,7 @@ class TestListChannels:
 # ---------------------------------------------------------------------------
 
 class TestListRoles:
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_list_roles_sorted(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = [
@@ -231,7 +231,7 @@ class TestListRoles:
 # ---------------------------------------------------------------------------
 
 class TestSearchMembers:
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_search_members_limit_capped(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = []
@@ -245,7 +245,7 @@ class TestSearchMembers:
 # ---------------------------------------------------------------------------
 
 class TestFetchMessages:
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_fetch_messages(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = [
@@ -270,7 +270,7 @@ class TestFetchMessages:
 # ---------------------------------------------------------------------------
 
 class TestCreateThread:
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_create_standalone_thread(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = {"id": "800", "name": "New Thread"}
@@ -283,7 +283,7 @@ class TestCreateThread:
             body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11},
         )
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_create_thread_from_message(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = {"id": "801", "name": "Discussion"}
@@ -302,7 +302,7 @@ class TestCreateThread:
 # ---------------------------------------------------------------------------
 
 class TestErrorHandling:
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_api_error_handled(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.side_effect = DiscordAPIError(403, '{"message": "Missing Access"}')
@@ -310,7 +310,7 @@ class TestErrorHandling:
         assert "error" in result
         assert "403" in result["error"]
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_unexpected_error_handled_core(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.side_effect = RuntimeError("something broke")
@@ -348,7 +348,7 @@ class TestCapabilityDetection:
     def teardown_method(self):
         _reset_capability_cache()
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_both_intents_enabled(self, mock_req):
         # flags: GUILD_MEMBERS (1<<14) + MESSAGE_CONTENT (1<<18) = 278528
         mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
@@ -358,7 +358,7 @@ class TestCapabilityDetection:
         assert caps["detected"] is True
 
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_detection_failure_is_permissive(self, mock_req):
         """If detection fails (network/401/revoked token), expose everything
         and let runtime errors surface. Silent failure should never hide
@@ -385,10 +385,10 @@ class TestNonBlockingCapabilityDetection:
         _reset_capability_cache()
 
     def test_memory_cache_hit_no_network(self):
-        from tools.discord_tool import _capability_cache, _detect_capabilities_nonblocking
+        from hermes_agent.tools.discord_tool import _capability_cache, _detect_capabilities_nonblocking
         caps_in = {"has_members_intent": False, "has_message_content": True, "detected": True}
         _capability_cache["tok"] = caps_in
-        with patch("tools.discord_tool._discord_request") as mock_req:
+        with patch("hermes_agent.tools.discord_tool._discord_request") as mock_req:
             caps = _detect_capabilities_nonblocking("tok")
         assert caps == caps_in
         mock_req.assert_not_called()
@@ -397,7 +397,7 @@ class TestNonBlockingCapabilityDetection:
     def test_disk_cache_expires(self, tmp_path, monkeypatch):
         import time as _time
 
-        import tools.discord_tool as dt
+        import hermes_agent.tools.discord_tool as dt
         monkeypatch.setattr(
             dt, "_capability_disk_cache_path",
             lambda: tmp_path / "discord_capabilities.json",
@@ -420,9 +420,9 @@ class TestNonBlockingCapabilityDetection:
             "hermes_cli.config.load_config",
             lambda: {"discord": {"server_actions": ""}},
         )
-        with patch("tools.discord_tool._load_caps_from_disk", return_value=None), \
-             patch("tools.discord_tool.threading.Thread") as mock_thread, \
-             patch("tools.discord_tool._discord_request") as mock_req:
+        with patch("hermes_agent.tools.discord_tool._load_caps_from_disk", return_value=None), \
+             patch("hermes_agent.tools.discord_tool.threading.Thread") as mock_thread, \
+             patch("hermes_agent.tools.discord_tool._discord_request") as mock_req:
             schema = get_dynamic_schema_core()
         # No blocking HTTP call happened on the schema-build path
         mock_req.assert_not_called()
@@ -432,7 +432,7 @@ class TestNonBlockingCapabilityDetection:
         actions = set(schema["parameters"]["properties"]["action"]["enum"])
         assert actions == set(_CORE_ACTIONS.keys())  # permissive default
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_cache_is_keyed_by_token(self, mock_req):
         """Regression: token A's capabilities must not leak to token B.
 
@@ -478,19 +478,19 @@ class TestConfigAllowlist:
         ``tools.*`` children to ``ERROR`` (see run_agent.py quiet_mode
         block).  A persistent test process keeps that setting, so a
         streaming test will silence WARNING-level logs from
-        ``tools.discord_tool`` for every test that follows.  Reset here so
+        ``hermes_agent.tools.discord_tool`` for every test that follows.  Reset here so
         ``caplog`` can capture warnings regardless of earlier tests.
         """
         import logging as _logging
-        _prev_tools = _logging.getLogger("tools").level
-        _prev_dt = _logging.getLogger("tools.discord_tool").level
-        _logging.getLogger("tools").setLevel(_logging.NOTSET)
-        _logging.getLogger("tools.discord_tool").setLevel(_logging.NOTSET)
+        _prev_tools = _logging.getLogger("hermes_agent.tools").level
+        _prev_dt = _logging.getLogger("hermes_agent.tools.discord_tool").level
+        _logging.getLogger("hermes_agent.tools").setLevel(_logging.NOTSET)
+        _logging.getLogger("hermes_agent.tools.discord_tool").setLevel(_logging.NOTSET)
         try:
             yield
         finally:
-            _logging.getLogger("tools").setLevel(_prev_tools)
-            _logging.getLogger("tools.discord_tool").setLevel(_prev_dt)
+            _logging.getLogger("hermes_agent.tools").setLevel(_prev_tools)
+            _logging.getLogger("hermes_agent.tools.discord_tool").setLevel(_prev_dt)
 
     def test_empty_string_returns_none(self, monkeypatch):
         """Empty config means no allowlist — all actions visible."""
@@ -555,7 +555,7 @@ class TestDynamicSchema:
     def teardown_method(self):
         _reset_capability_cache()
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_no_token_returns_none(self, mock_req, monkeypatch):
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
         assert get_dynamic_schema_core() is None
@@ -563,7 +563,7 @@ class TestDynamicSchema:
         mock_req.assert_not_called()
 
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_no_members_intent_hides_search_members_from_core(
         self, mock_req, monkeypatch,
     ):
@@ -582,7 +582,7 @@ class TestDynamicSchema:
         actions = schema["parameters"]["properties"]["action"]["enum"]
         assert "search_members" not in actions
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_config_allowlist_narrows_admin_schema(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
@@ -594,7 +594,7 @@ class TestDynamicSchema:
         actions = schema["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "list_channels"]
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_empty_allowlist_with_valid_values_hides_tools(self, mock_req, monkeypatch):
         """If the allowlist resolves to zero valid actions (e.g. all names
         were typos), get_dynamic_schema returns None so the tool is dropped."""
@@ -613,7 +613,7 @@ class TestDynamicSchema:
 # ---------------------------------------------------------------------------
 
 class TestRuntimeAllowlistEnforcement:
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_denied_action_blocked_at_runtime(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
@@ -625,7 +625,7 @@ class TestRuntimeAllowlistEnforcement:
         assert "disabled by config" in result["error"]
         mock_req.assert_not_called()
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_allowed_action_proceeds(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
@@ -642,7 +642,7 @@ class TestRuntimeAllowlistEnforcement:
 # ---------------------------------------------------------------------------
 
 class Test403Enrichment:
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_403_in_runtime_is_enriched(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
@@ -657,7 +657,7 @@ class Test403Enrichment:
         assert "MANAGE_ROLES" in result["error"]
         assert "Missing Permissions" in result["error"]  # Raw body preserved
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_non_403_errors_are_not_enriched(self, mock_req, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
@@ -677,23 +677,23 @@ class Test403Enrichment:
 class TestModelToolsIntegration:
     def setup_method(self):
         _reset_capability_cache()
-        from model_tools import _clear_tool_defs_cache
-        from tools.registry import invalidate_check_fn_cache
+        from hermes_agent.model_tools import _clear_tool_defs_cache
+        from hermes_agent.tools.registry import invalidate_check_fn_cache
         _clear_tool_defs_cache()
         invalidate_check_fn_cache()
 
     def teardown_method(self):
         _reset_capability_cache()
-        from model_tools import _clear_tool_defs_cache
-        from tools.registry import invalidate_check_fn_cache
+        from hermes_agent.model_tools import _clear_tool_defs_cache
+        from hermes_agent.tools.registry import invalidate_check_fn_cache
         _clear_tool_defs_cache()
         invalidate_check_fn_cache()
 
-    @patch("tools.discord_tool._discord_request")
+    @patch("hermes_agent.tools.discord_tool._discord_request")
     def test_discord_admin_schema_rebuilt_by_get_tool_definitions(
         self, mock_req, monkeypatch,
     ):
-        """When model_tools.get_tool_definitions runs with discord_admin
+        """When hermes_agent.model_tools.get_tool_definitions runs with discord_admin
         available, it should replace the static schema with the dynamic one."""
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
         monkeypatch.setattr(
@@ -703,7 +703,7 @@ class TestModelToolsIntegration:
         # Bot without GUILD_MEMBERS intent
         mock_req.return_value = {"flags": 0}
 
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
         # skip_tool_search_assembly: this test exercises the dynamic schema
         # rebuild; under tiered disclosure the discord tools defer behind the
         # bridge, but the rebuilt schema is what tool_describe serves.

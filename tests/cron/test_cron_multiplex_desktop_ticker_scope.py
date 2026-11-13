@@ -27,7 +27,7 @@ def test_standalone_fallback_pool_keeps_profile_scope(tmp_path, monkeypatch):
     )
     from hermes_constants import get_hermes_home, set_hermes_home_override
     import hermes_agent.cron.scheduler as sched
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     default_home = tmp_path / "default"
     sec_home = tmp_path / "profiles" / "ops"

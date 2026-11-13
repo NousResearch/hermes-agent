@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.process_registry import ProcessRegistry, ProcessSession
-from tools.process_registry_env_log import parse_log_delta_reply
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry_env_log import parse_log_delta_reply
 
 
 @pytest.fixture()
@@ -46,7 +46,7 @@ class TestEnvPollerIncrementalRead:
                 return next(self._responses)
 
         env = FakeEnv()
-        with patch("tools.process_registry.time.sleep", return_value=None), \
+        with patch("hermes_agent.tools.process_registry.time.sleep", return_value=None), \
             patch.object(registry, "_move_to_finished"):
             registry._env_poller_loop(
                 session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit"
@@ -286,7 +286,7 @@ class TestEnvPollerIncrementalRead:
             assert len(env.commands) < 1000, "wrapper never read as exited"
 
         try:
-            with patch("tools.process_registry.time.sleep", tick), \
+            with patch("hermes_agent.tools.process_registry.time.sleep", tick), \
                 patch.object(registry, "_move_to_finished"):
                 registry._env_poller_loop(session, env, str(log), str(pid), str(exit_))
         finally:
@@ -318,7 +318,7 @@ class TestEnvPollerIncrementalRead:
         env.execute = lambda command, **kw: real_execute(hook + command, **kw)
         session = _make_session(sid="proc_status_order")
         session.exited = False
-        with patch("tools.process_registry.time.sleep"), \
+        with patch("hermes_agent.tools.process_registry.time.sleep"), \
             patch.object(registry, "_move_to_finished"):
             registry._env_poller_loop(session, env, str(log), str(pid), str(exit_))
         assert len(env.commands) == 1

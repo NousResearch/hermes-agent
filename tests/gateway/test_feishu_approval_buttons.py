@@ -215,7 +215,7 @@ class TestResolveApproval:
             "request_id": "req-1",
         }
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
 
         mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once", request_id="req-1")
@@ -232,7 +232,7 @@ class TestResolveApproval:
             "chat_id": "oc_12345",
         }
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval") as mock_resolve:
             await adapter._resolve_approval(5, "once", "Mallory", open_id="ou_intruder", chat_id="oc_12345")
 
         mock_resolve.assert_not_called()

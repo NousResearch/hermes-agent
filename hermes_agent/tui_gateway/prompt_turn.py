@@ -37,7 +37,7 @@ def _is_bot_mode_session(session: dict) -> bool:
     title lands after turn 1 and ``pending_title`` is cleared once it does), then the
     live title from the session store.
     """
-    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE
     hint = str(getattr(session.get("agent"), "_session_title_hint", "") or "").strip()
     if hint:  # any explicit hint decides; only an empty one costs a session-store read
         return hint == BOT_CHAT_TITLE
@@ -255,7 +255,7 @@ def _start_turn_voice() -> tuple[Any, bool]:
     if _voice_cfg_dict().get("barge_in", True):
         _arm_full_duplex_listener()
     try:
-        from tools.voice_mode import is_audio_output_active, start_thinking_sound
+        from hermes_agent.tools.voice_mode import is_audio_output_active, start_thinking_sound
 
         def _thinking_should_play() -> bool:
             if is_audio_output_active():
@@ -463,11 +463,11 @@ def _run_post_turn_followups(
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
         # _release_turn_scopes / _post_turn_housekeeping have released the worker's runtime scopes. Queue ownership,
         # notification policy and nested dispatch still belong to this session.
-        from tools.process_registry_awaiting import drained_for
-        from tools.process_registry_notifications import format_process_notification, should_surface_notification
+        from hermes_agent.tools.process_registry_awaiting import drained_for
+        from hermes_agent.tools.process_registry_notifications import format_process_notification, should_surface_notification
         key = session.get("session_key", "")
         owns = lambda e: process_registry._owns_event(
             e, key, lambda evt: _session_owns_notification_event(sid, session, evt), e.get("type") == "async_delegation")
@@ -678,7 +678,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     fail-closed refusal scope).  The config-model sync is skipped under a /model --once
     override (not pinned as model_override, the sync would clobber it); a model picked
     mid-turn is applied first so the explicit pick wins over a config change."""
-    from tools.approval_context import set_current_session_key
+    from hermes_agent.tools.approval_context import set_current_session_key
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
     scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
@@ -741,7 +741,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         st.tts_queue, st.thinking_started = _start_turn_voice()
     # Per-turn API-message notes: barge mid-speech, reactions, HUD surface (per-turn state
     # that must not touch the byte-stable system prompt).
-    from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
+    from hermes_agent.tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
@@ -1054,7 +1054,7 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
         run_kwargs.clear()
     if st.thinking_started:
         with contextlib.suppress(Exception):
-            from tools.voice_mode import stop_thinking_sound
+            from hermes_agent.tools.voice_mode import stop_thinking_sound
             stop_thinking_sound()
     if st.tts_queue is not None:
         st.tts_queue.put(None)  # end-of-text sentinel — flush + finish speaking
@@ -1069,7 +1069,7 @@ def _release_turn_scopes(sid: str, session: dict, st: _TurnRun) -> None:
     scopes = st.scopes
     with contextlib.suppress(Exception):
         if scopes.approval is not None:
-            from tools.approval_context import reset_current_session_key
+            from hermes_agent.tools.approval_context import reset_current_session_key
             reset_current_session_key(scopes.approval)
     _clear_session_context(scopes.session_tokens)
 

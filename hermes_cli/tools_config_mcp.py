@@ -14,11 +14,11 @@ from hermes_cli.toolset_scope import (
 
 def _mcp_match_filter():
     """Runtime name-filter matcher (exact names or fnmatch globs), with a literal fallback.
-    Must use the SAME semantics as tools/mcp_tool.py registration — a literal ``in`` check renders glob
+    Must use the SAME semantics as hermes_agent/tools/mcp_tool.py registration — a literal ``in`` check renders glob
     excludes (e.g. ``*team_member*`` from catalog default_excluded manifests) as if nothing were
     excluded."""
     try:
-        from tools.mcp_tool_schema import matches_name_filter
+        from hermes_agent.tools.mcp_tool_schema import matches_name_filter
         return matches_name_filter
     except ImportError:  # pragma: no cover — defensive fallback
         return lambda tool_name, patterns: tool_name in patterns
@@ -83,7 +83,7 @@ def _configure_mcp_tools_interactive(config: dict):
         _print_info("No MCP servers configured.")
         return
 
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
     enabled_names = [k for k, v in mcp_servers.items() if isinstance(v, dict) and mcp_server_enabled(v)]
     if not enabled_names:
@@ -95,7 +95,7 @@ def _configure_mcp_tools_interactive(config: dict):
     print(color(f"  Connecting to {len(enabled_names)} server(s): {', '.join(enabled_names)}", Colors.DIM))
 
     try:
-        from tools.mcp_tool_discovery import probe_mcp_server_tools
+        from hermes_agent.tools.mcp_tool_discovery import probe_mcp_server_tools
         server_tools = probe_mcp_server_tools()
     except Exception as exc:
         _print_error(f"Failed to probe MCP servers: {exc}")

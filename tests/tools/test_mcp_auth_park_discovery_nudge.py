@@ -11,10 +11,10 @@ import pytest
 @pytest.mark.no_isolate
 def test_auth_parked_oauth_server_ignores_discovery_until_credentials_change(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool
-    from tools.mcp_oauth import HermesTokenStorage, OAuthNonInteractiveError
-    from tools.mcp_tool import MCPServerTask
-    from tools.mcp_tool_discovery import _select_new_servers
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage, OAuthNonInteractiveError
+    from hermes_agent.tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool_discovery import _select_new_servers
 
     cfg = {"url": "https://mcp.example.test/mcp", "auth": "oauth"}
     token_file = HermesTokenStorage("cloud")._tokens_path()

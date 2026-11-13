@@ -9,9 +9,9 @@ import types
 
 import pytest
 
-from tools import terminal_tool as tt
-from tools import terminal_tool_sudo as tts
-from tools import terminal_tool_sudo_askpass as askpass
+from hermes_agent.tools import terminal_tool as tt
+from hermes_agent.tools import terminal_tool_sudo as tts
+from hermes_agent.tools import terminal_tool_sudo_askpass as askpass
 
 CONFIGURED = "canary-configured-pw-7f3a"
 PROMPTED = "canary-typed-at-prompt-91c2"
@@ -49,8 +49,8 @@ class _FakeResponse:
 
 def _exec_payloads(monkeypatch, command, stdin_data):
     """Run *command* through the real ManagedModalEnvironment.execute over a fake HTTP transport."""
-    from tools import credential_files
-    from tools.environments import managed_modal
+    from hermes_agent.tools import credential_files
+    from hermes_agent.tools.environments import managed_modal
 
     monkeypatch.setattr(credential_files, "get_credential_file_mounts", list)
     monkeypatch.setattr(managed_modal, "resolve_managed_tool_gateway", lambda vendor: types.SimpleNamespace(

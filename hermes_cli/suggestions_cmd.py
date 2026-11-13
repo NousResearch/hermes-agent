@@ -32,7 +32,7 @@ def _resolve_origin() -> Optional[dict[str, Any]]:
     withholds non-push surfaces such as api_server) so an accepted job delivers back to the
     accepting chat; None lets create_job use the home channel."""
     try:
-        from tools.cronjob_job_args import _origin_from_env
+        from hermes_agent.tools.cronjob_job_args import _origin_from_env
         return _origin_from_env()
     except Exception:
         pass

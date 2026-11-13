@@ -8,7 +8,7 @@ from tests.gateway.test_approval_requester_binding import pending_from, write_ap
 
 @pytest.fixture(autouse=True)
 def _clean():
-    from tools import approval
+    from hermes_agent.tools import approval
     approval._gateway_queues.clear()
     yield
     approval._gateway_queues.clear()

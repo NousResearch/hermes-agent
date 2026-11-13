@@ -18,8 +18,8 @@ _FALLBACK_URL = "http://127.0.0.1:9102/v1"
 
 def _agent(fallback):
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("agent.context_compressor.get_model_context_length", return_value=200_000),
     ):

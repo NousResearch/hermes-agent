@@ -80,7 +80,7 @@ def _persist_guest_tokens(*, inference: int | None = None, connectors: int | Non
 
 class TestConnectorsCallers:
     def test_never_challenged_even_while_the_inference_mint_would_be(self, nas, presented):
-        from tools.managed_tool_gateway import read_nous_access_token
+        from hermes_agent.tools.managed_tool_gateway import read_nous_access_token
         nas.challenge_required = True
         nas.challenge_never_clears = True
         token = auth_mod.resolve_nous_access_token()
@@ -97,7 +97,7 @@ class TestConnectorsCallers:
     ])
     def test_picks_the_live_slot_or_mints_connectors_only(self, nas, presented, monkeypatch,
                                                           inference, connectors, serves):
-        from tools.managed_tool_gateway import read_nous_access_token
+        from hermes_agent.tools.managed_tool_gateway import read_nous_access_token
         held = _persist_guest_tokens(inference=inference, connectors=connectors)
         nas.challenge_required = True
         token = auth_mod.resolve_nous_access_token()
@@ -245,7 +245,7 @@ class TestOlderNas:
 class TestPersistedState:
     def test_state_written_by_current_releases_loads_unchanged(self, trial):
         nas = trial
-        from tools.managed_tool_gateway import peek_nous_access_token
+        from hermes_agent.tools.managed_tool_gateway import peek_nous_access_token
         token = _persist_guest_tokens(inference=900)["inference"]
         assert peek_nous_access_token() == token
         assert auth_mod.resolve_nous_access_token() == token

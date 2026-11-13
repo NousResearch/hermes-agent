@@ -28,7 +28,7 @@ def kanban_home(tmp_path, monkeypatch):
     kb.init_db()
     with kbc.connect() as conn:
         task = kb.create_task(conn, title="group card", assignee="worker")
-    # What the terminal tool hands the CLI child of a group-chat turn (tools/environments/local.py).
+    # What the terminal tool hands the CLI child of a group-chat turn (hermes_agent/tools/environments/local.py).
     for name, value in (("PLATFORM", "telegram"), ("CHAT_ID", GROUP), ("CHAT_TYPE", "group"),
                         ("USER_ID", "111")):
         monkeypatch.setenv(f"HERMES_SESSION_{name}", value)

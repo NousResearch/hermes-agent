@@ -26,7 +26,7 @@ class ApprovalModeResult:
 
 def _effective_mode() -> str:
     """Return the exact mode enforced by the terminal approval guard."""
-    from tools.approval_context import _get_approval_mode
+    from hermes_agent.tools.approval_context import _get_approval_mode
     return _get_approval_mode()
 
 

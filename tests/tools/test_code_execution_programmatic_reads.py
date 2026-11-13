@@ -8,10 +8,10 @@ import json
 
 import pytest
 
-from model_tools import handle_function_call
-from tools.code_execution_rpc import _default_dispatch
-from tools.code_kernel import CellAuthority
-from tools.file_tools_read_tracking import reset_file_dedup
+from hermes_agent.model_tools import handle_function_call
+from hermes_agent.tools.code_execution_rpc import _default_dispatch
+from hermes_agent.tools.code_kernel import CellAuthority
+from hermes_agent.tools.file_tools_read_tracking import reset_file_dedup
 
 
 def _call(dispatch, name, **args):

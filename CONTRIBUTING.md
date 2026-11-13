@@ -298,11 +298,29 @@ See [Package management](website/docs/reference/package-management.md) for PM co
 hermes-agent/
 ├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
 ├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
-├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
-├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 ├── hermes_agent/             # the Python package
+│   ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
+│   ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
 │   ├── batch_runner.py           # Parallel batch processing for trajectory generation
+│   │
+│   ├── tools/                    # Tool implementations (self-registering)
+│   │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
+│   │   ├── approval.py               # Dangerous command detection + per-session approval
+│   │   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
+│   │   ├── file_operations.py        # read_file, write_file, search, patch, etc.
+│   │   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
+│   │   ├── vision_tools.py           # Image analysis via multimodal models
+│   │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
+│   │   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
+│   │   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
+│   │   ├── browser_use_cli.py        # browser_exec (Python over CDP); sessions in browser_session*.py, launcher in browser_launcher.py
+│   │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
+│   │   ├── cronjob_tools.py          # Scheduled task management
+│   │   ├── skill_tools.py            # Skill search, load, manage
+│   │   └── environments/             # Terminal execution backends
+│   │       ├── base.py                   # BaseEnvironment ABC
+│   │       ├── local.py, docker.py, ssh.py, modal.py, daytona.py
 │   │
 │   └── gateway/                  # Messaging gateway
 │       ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
@@ -338,24 +356,6 @@ hermes-agent/
 │   ├── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
 │   ├── web_server.py             # Dashboard server (facade + web_server_*.py siblings)
 │   └── web_routers/              # Dashboard FastAPI routers (one file per surface)
-│
-├── tools/                    # Tool implementations (self-registering)
-│   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
-│   ├── approval.py               # Dangerous command detection + per-session approval
-│   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
-│   ├── file_operations.py        # read_file, write_file, search, patch, etc.
-│   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
-│   ├── vision_tools.py           # Image analysis via multimodal models
-│   ├── delegate_tool.py          # Subagent spawning and parallel task execution
-│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
-│   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
-│   ├── browser_use_cli.py        # browser_exec (Python over CDP); sessions in browser_session*.py, launcher in browser_launcher.py
-│   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
-│   ├── cronjob_tools.py          # Scheduled task management
-│   ├── skill_tools.py            # Skill search, load, manage
-│   └── environments/             # Terminal execution backends
-│       ├── base.py                   # BaseEnvironment ABC
-│       ├── local.py, docker.py, ssh.py, modal.py, daytona.py
 │
 ├── scripts/                  # Installer and bridge scripts
 │   ├── install.sh                # Linux/macOS installer
@@ -408,7 +408,7 @@ User message → AIAgent._run_agent_loop()
 
 ### Key Design Patterns
 
-- **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
+- **Self-registering tools**: Each tool file calls `registry.register()` at import time. `hermes_agent/model_tools.py` triggers discovery by importing all tool modules.
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
 - **Session persistence**: All conversations are stored in SQLite (`hermes_agent/hermes_state.py`) with full-text search and unique session titles. Automatic per-session JSON snapshots have been removed. Existing files are left untouched; use `/save json` or `hermes sessions export` for an explicit export.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
@@ -442,7 +442,7 @@ Tools self-register with the central registry. Each tool file co-locates its sch
 """my_tool — Brief description of what this tool does."""
 
 import json
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 def my_tool(param1: str, param2: int = 10, **kwargs) -> str:
@@ -483,14 +483,14 @@ registry.register(
 ```
 
 **Wire into a toolset (required):** Built-in tools are auto-discovered: any
-`tools/*.py` file that contains a top-level `registry.register(...)` call is
-imported by `discover_builtin_tools()` in `tools/registry.py` when `model_tools`
-loads. There is **no** manual import list in `model_tools.py` to maintain.
+`hermes_agent/tools/*.py` file that contains a top-level `registry.register(...)` call is
+imported by `discover_builtin_tools()` in `hermes_agent/tools/registry.py` when `model_tools`
+loads. There is **no** manual import list in `hermes_agent/model_tools.py` to maintain.
 
-You must still add the tool name to the appropriate list in `toolsets.py`
+You must still add the tool name to the appropriate list in `hermes_agent/toolsets.py`
 (for example `_HERMES_CORE_TOOLS` or a dedicated toolset); otherwise the tool
 registers but is never exposed to the agent. If you introduce a new toolset,
-add it in `toolsets.py` and wire it into the relevant platform presets.
+add it in `hermes_agent/toolsets.py` and wire it into the relevant platform presets.
 
 See `AGENTS.md` (section **Adding New Tools**) for profile-aware paths and
 plugin vs core guidance.
@@ -954,10 +954,10 @@ Hermes has terminal access. Security matters.
 | Layer | Implementation |
 |-------|---------------|
 | **Sudo password piping** | Uses `shlex.quote()` to prevent shell injection |
-| **Dangerous command detection** | Regex patterns in `tools/approval.py` with user approval flow |
-| **Cron prompt injection** | Scanner in `tools/cronjob_tools.py` blocks instruction-override patterns |
+| **Dangerous command detection** | Regex patterns in `hermes_agent/tools/approval.py` with user approval flow |
+| **Cron prompt injection** | Scanner in `hermes_agent/tools/cronjob_tools.py` blocks instruction-override patterns |
 | **Write deny list** | Protected paths (`~/.ssh/authorized_keys`, `/etc/shadow`) resolved via `os.path.realpath()` to prevent symlink bypass |
-| **Skills guard** | Security scanner for hub-installed skills (`tools/skills_guard.py`) |
+| **Skills guard** | Security scanner for hub-installed skills (`hermes_agent/tools/skills_guard.py`) |
 | **Code execution sandbox** | `execute_code` child process runs with API keys stripped from environment |
 | **Container hardening** | Docker: all capabilities dropped, no privilege escalation, PID limits, size-limited tmpfs |
 

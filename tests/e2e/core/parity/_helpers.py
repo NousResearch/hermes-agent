@@ -59,7 +59,7 @@ class DriveResult:
     """What an entrypoint driver reports back (see ``_drive_cli`` for the contract)."""
 
     final_text: str | None
-    toolset: str  # the platform toolset this surface documents (a toolsets.py key)
+    toolset: str  # the platform toolset this surface documents (a hermes_agent/toolsets.py key)
     cwd_channel: str = "launch dir"
     graceful_exit: bool = True
     extra: dict[str, Any] = field(default_factory=dict)
@@ -326,7 +326,7 @@ def collect_observation(entrypoint: str, ph: ParityHome, srv: FakeLLMServer,
 
 
 def disabled_tool_names() -> set[str]:
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     return set(resolve_toolset(DISABLED_TOOLSET))
 
@@ -338,7 +338,7 @@ _FEATURE_TOOLS = ("terminal", "read_file", "write_file", "patch", "search_files"
 
 def required_tool_names(toolset: str) -> set[str]:
     """The core feature tools the surface's documented toolset promises, plus the MCP tool."""
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     promised = set(resolve_toolset(toolset))
     return {t for t in _FEATURE_TOOLS if t in promised} | {MCP_TOOL_NAME}

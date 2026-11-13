@@ -7,7 +7,7 @@ variants like "Ignore ALL prior instructions" bypassed the scanner.
 Fix: allow optional extra words with `(?:\\w+\\s+)*` groups.
 """
 
-from tools.cronjob_tools import _scan_cron_prompt
+from hermes_agent.tools.cronjob_tools import _scan_cron_prompt
 
 class TestMultiWordInjectionBypass:
     """Multi-word variants that previously bypassed the scanner."""
@@ -29,8 +29,8 @@ class TestInvisibleUnicodeParity:
 
     def test_cron_set_matches_canonical(self):
         """Invariant: the cron-local set IS the canonical install-time set."""
-        from tools.cronjob_prompt_scan import _CRON_INVISIBLE_CHARS
-        from tools.threat_patterns import INVISIBLE_CHARS
+        from hermes_agent.tools.cronjob_prompt_scan import _CRON_INVISIBLE_CHARS
+        from hermes_agent.tools.threat_patterns import INVISIBLE_CHARS
         assert _CRON_INVISIBLE_CHARS == INVISIBLE_CHARS
 
     def test_invisible_math_operator_blocked(self):

@@ -1,10 +1,10 @@
-"""Tests for tools/env_probe.py — local Python toolchain probe."""
+"""Tests for hermes_agent/tools/env_probe.py — local Python toolchain probe."""
 
 import sys
 
 import pytest
 
-from tools import env_probe
+from hermes_agent.tools import env_probe
 
 
 @pytest.fixture(autouse=True)

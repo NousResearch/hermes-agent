@@ -8,7 +8,7 @@ key and ``get_session_cwd`` misses until the first ``cd``.
 
 from __future__ import annotations
 
-from tools import terminal_tool
+from hermes_agent.tools import terminal_tool
 from hermes_agent.tui_gateway import server
 
 

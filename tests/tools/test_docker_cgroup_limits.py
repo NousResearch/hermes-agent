@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-import tools.environments.docker as docker_env
+import hermes_agent.tools.environments.docker as docker_env
 
 
 @pytest.fixture(autouse=True)

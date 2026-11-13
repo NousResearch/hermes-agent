@@ -43,17 +43,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # checkout if one exists.
 def _resolve_main_dir() -> Path:
     candidate = REPO_ROOT.parent.parent
-    if (candidate / "tools" / "image_generation_tool.py").exists() and candidate != REPO_ROOT:
+    if (candidate / "hermes_agent" / "tools" / "image_generation_tool.py").exists() and candidate != REPO_ROOT:
         return candidate
     sibling = REPO_ROOT.parent / "hermes-agent-main"
-    if (sibling / "tools" / "image_generation_tool.py").exists():
+    if (sibling / "hermes_agent" / "tools" / "image_generation_tool.py").exists():
         return sibling
     return REPO_ROOT
 
 
 MAIN_DIR = _resolve_main_dir()
 PR_DIR = REPO_ROOT
-assert (PR_DIR / "tools" / "image_generation_tool.py").exists(), (
+assert (PR_DIR / "hermes_agent" / "tools" / "image_generation_tool.py").exists(), (
     f"PR_DIR={PR_DIR} doesn't look like a hermes-agent checkout"
 )
 
@@ -84,13 +84,13 @@ with open(config_path, "w") as f:
 
 # Fresh import — must not have anything cached.
 for name in list(sys.modules):
-    if (name.startswith("tools.")
+    if (name.startswith("hermes_agent.tools.")
             or name.startswith("agent.")
             or name.startswith("plugins.")
             or name.startswith("hermes_cli.")):
         sys.modules.pop(name, None)
 
-import tools.image_generation_tool as image_tool
+import hermes_agent.tools.image_generation_tool as image_tool
 
 dispatch_kind = None
 provider_name = None

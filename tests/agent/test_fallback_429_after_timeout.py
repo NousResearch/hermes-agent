@@ -43,8 +43,8 @@ def _make_tool_defs():
 def _make_agent_with_fallback(fb_chain):
     """Build a minimal AIAgent with the given fallback chain configured."""
     with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
     ):
         agent = AIAgent(

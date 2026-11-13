@@ -107,14 +107,14 @@ class CLICommandsSessionToolsMixin:
     # ---- /rollback chat undo --------------------------------------------------------------
     @staticmethod
     def _checkpoint_taken_at(cwd, commit):
-        from tools.checkpoint_undo_hint import checkpoint_taken_at
+        from hermes_agent.tools.checkpoint_undo_hint import checkpoint_taken_at
         return checkpoint_taken_at(cwd, commit)
 
     def _rollback_chat_turn(self, taken) -> None:
         """Main's whole-tree ``/rollback`` also undoes the newest chat turn, but only one that made or followed
         the checkpoint taken at ``taken``: after ``/undo`` removed that turn, the turns the user kept stay."""
         from hermes_cli.cli_session_mixin import _user_turn_indices
-        from tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
+        from hermes_agent.tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
         history = self.conversation_history
         if history and rollback_rewinds_newest_turn(history, _user_turn_indices(history), taken):
             self.undo_last(prefill=False)
@@ -143,7 +143,7 @@ class CLICommandsSessionToolsMixin:
         """Handle /agents — show background processes and agent status. On the gateway both run there:
         the session's ``process.list`` and its usage's running-subagent count (no per-delegation rows)."""
         from hermes_cli.gateway_tools import process_registry as _registry, process_view
-        from tools.process_registry import format_uptime_short
+        from hermes_agent.tools.process_registry import format_uptime_short
         process_registry, view = _registry(), process_view()
         if view is not None:
             view.refresh(force=True)
@@ -319,7 +319,7 @@ def _stop_background_work() -> None:
         view.refresh(force=True)
     running = [p for p in process_registry.list_sessions() if p.get("status") == "running"]
     # Background subagents live in their own registry, not the process registry.
-    n_async = view.active_delegations() if view is not None else _probe("tools.async_delegation", "active_count", 0)
+    n_async = view.active_delegations() if view is not None else _probe("hermes_agent.tools.async_delegation", "active_count", 0)
     if not running and not n_async:
         return _cp(f"  {_t('stop.none_running')}")
     if running:
@@ -329,7 +329,7 @@ def _stop_background_work() -> None:
         if view is not None:
             interrupted = view.interrupt_delegations()  # the gateway interrupts this session's own
         else:
-            from tools.async_delegation import interrupt_all
+            from hermes_agent.tools.async_delegation import interrupt_all
             interrupted = interrupt_all(reason='/stop')
         _cp(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
 
@@ -350,7 +350,7 @@ def print_session_diff(cli, result: dict, stat_only: bool) -> None:
 
 def _print_local_delegations() -> None:
     """This process's background (async) delegations — delegate_task(background=true)."""
-    delegations = _probe("tools.async_delegation", "list_async_delegations", [])
+    delegations = _probe("hermes_agent.tools.async_delegation", "list_async_delegations", [])
     if not delegations:
         return
     running_d = [d for d in delegations if d.get("status") in ("running", "stalling")]

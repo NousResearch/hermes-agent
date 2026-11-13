@@ -122,10 +122,10 @@ class TestConsolidationProposalSurfaces:
 
     def _store(self, tmp_path, monkeypatch):
         import json as _json
-        from tools.memory_tool_store import MemoryStore
+        from hermes_agent.tools.memory_tool_store import MemoryStore
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        monkeypatch.setattr("hermes_agent.tools.memory_tool.get_memory_dir", lambda: tmp_path)
         store = MemoryStore(memory_char_limit=500, user_char_limit=300)
         store.load_from_disk()
         return store
@@ -133,8 +133,8 @@ class TestConsolidationProposalSurfaces:
     def test_staged_proposal_surfaces_in_summary(self, tmp_path, monkeypatch):
         import json
 
-        from tools.memory_tool import memory_tool
-        from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
+        from hermes_agent.tools.memory_tool import memory_tool
+        from hermes_agent.tools.skill_provenance import set_current_write_origin, reset_current_write_origin
 
         store = self._store(tmp_path, monkeypatch)
         assert store.add("memory", "standing rule entry")["success"] is True
@@ -162,8 +162,8 @@ class TestConsolidationProposalSurfaces:
         changed and nothing was silently lost."""
         import json
 
-        from tools.memory_tool import memory_tool
-        from tools.skill_provenance import set_current_write_origin, reset_current_write_origin
+        from hermes_agent.tools.memory_tool import memory_tool
+        from hermes_agent.tools.skill_provenance import set_current_write_origin, reset_current_write_origin
 
         store = self._store(tmp_path, monkeypatch)
         assert store.add("memory", "seed entry one")["success"] is True

@@ -44,7 +44,7 @@ async def test_a_peer_turn_into_a_bot_chat_without_an_authority_runs_here(tmp_pa
     lease is not an owner, so the turn runs here and no mailbox delivery is admitted."""
     home = tmp_path.resolve()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("tools.bot_mode_dm._LIVE_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr("hermes_agent.tools.bot_mode_dm._LIVE_WAIT_SECONDS", 1.0)
     db = SessionDB(home / "state.db")
     db.create_session("bot-chat", "desktop")
     db.set_session_title("bot-chat", "Bot Chat")
@@ -181,7 +181,7 @@ async def test_gateway_shutdown_reports_a_live_owned_run_as_interrupted(tmp_path
         waiting.set()
         await asyncio.sleep(3600)
 
-    with patch("tools.bot_live_delivery.await_delivery_async", _receipt_never_arrives):
+    with patch("hermes_agent.tools.bot_live_delivery.await_delivery_async", _receipt_never_arrives):
         task = asyncio.create_task(runs_mod._execute_run_via_live_owner(
             adapter, launch, tmp_path, {"delivery_id": "d" * 32, "status": "queued"}, _api_server=None))
         adapter._active_run_tasks["run-1"] = task

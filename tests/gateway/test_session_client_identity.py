@@ -91,7 +91,7 @@ async def test_a_malformed_client_is_refused_as_invalid_params(tmp_path, monkeyp
 def test_the_client_label_changes_no_policy_decision(tmp_path, monkeypatch, source):
     from hermes_agent.gateway.local_viewer_events import launch_shows_reasoning
     from hermes_agent.gateway.session_policy import DAYBREAK_LABELS, build_policy
-    from tools.approval_context import _LOCAL_INTERACTIVE_SOURCES
+    from hermes_agent.tools.approval_context import _LOCAL_INTERACTIVE_SOURCES
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     config = {'model': {'default': 'm', 'provider': 'custom', 'base_url': 'http://x.invalid/v1'},
               'platform_toolsets': {'cli': ['terminal', 'file'], 'acp': ['file']}}

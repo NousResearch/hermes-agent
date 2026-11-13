@@ -5,7 +5,7 @@ import os
 import pytest
 
 from tests.tools._child_env_fixtures import child_env, observe_child
-from tools.environments.local import build_subprocess_env
+from hermes_agent.tools.environments.local import build_subprocess_env
 
 
 @pytest.mark.parametrize("scrub,inherit_home", [(True, True), (True, False), (False, True), (False, False)])
@@ -52,7 +52,7 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
     """
     import shutil
 
-    from tools.environments import local as local_mod
+    from hermes_agent.tools.environments import local as local_mod
 
     bin_dir = local_mod._resolve_hermes_bin_dir()
     if not bin_dir or not os.path.isfile(

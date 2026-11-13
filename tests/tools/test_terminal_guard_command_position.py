@@ -10,7 +10,7 @@ blocks ordinary work, under-matching lets a real dev server hang the call.
 
 import pytest
 
-from tools.terminal_tool_guards import _foreground_background_guidance as guidance
+from hermes_agent.tools.terminal_tool_guards import _foreground_background_guidance as guidance
 
 
 FALSE_POSITIVES = [

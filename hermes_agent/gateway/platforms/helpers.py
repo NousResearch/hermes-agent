@@ -623,7 +623,7 @@ async def spoken_mention_clips(paths: list[str], patterns, *, adapter: Any = Non
     results: dict = {}
     try:
         async with _gate_stt_scope(adapter, source):
-            from tools.transcription_tools import is_stt_enabled
+            from hermes_agent.tools.transcription_tools import is_stt_enabled
             enabled = stt_enabled_for_turn(getattr(adapter, "gateway_runner", None)) \
                 and _sender_may_use_bot(adapter, source) and await asyncio.to_thread(is_stt_enabled)
             for path in paths if enabled else ():
@@ -1095,13 +1095,13 @@ def is_discord_channel_obfuscated(channel) -> bool:
 
 def platform_http_client(**kwargs: Any) -> Any:
     """``httpx.AsyncClient`` for a platform adapter: connect-time SSRF validation
-    (``tools.url_safety.create_ssrf_safe_async_client``), every redirect hop re-checked
+    (``hermes_agent.tools.url_safety.create_ssrf_safe_async_client``), every redirect hop re-checked
     (``gateway.platforms.base.ssrf_redirect_guard``, run before any caller ``response`` hooks) and the
     shared keepalive pool limits (``platform_httpx_limits()``; pass ``limits=None`` for httpx's
     defaults). Defaults ``timeout=30.0`` and ``follow_redirects=True``; other kwargs go to httpx."""
     from hermes_agent.gateway.platforms._http_client_limits import platform_httpx_limits
     from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
-    from tools.url_safety import create_ssrf_safe_async_client
+    from hermes_agent.tools.url_safety import create_ssrf_safe_async_client
     hooks = dict(kwargs.pop("event_hooks", None) or {})
     hooks["response"] = [ssrf_redirect_guard, *hooks.get("response", ())]
     kwargs.setdefault("timeout", 30.0)
@@ -1133,12 +1133,12 @@ def _sends_credentials(session: Any, kwargs: dict) -> bool:
 @contextlib.asynccontextmanager
 async def ssrf_checked_aiohttp_get(session: Any, url: str, *, first_hop_vetted: bool = False, **kwargs: Any):
     """``session.get(url)`` on an aiohttp session with every redirect hop checked by
-    ``tools.url_safety.async_is_safe_url``. aiohttp follows redirects by default, so a pre-flight
+    ``hermes_agent.tools.url_safety.async_is_safe_url``. aiohttp follows redirects by default, so a pre-flight
     check alone lets a public URL 302 to loopback or cloud metadata. Raises ``ValueError`` on a
     blocked hop, a credential-bearing cross-origin hop, or too many redirects. ``first_hop_vetted``
     skips the check on ``url`` itself for a caller that vetted it another way (a host allowlist);
     redirect targets are always checked."""
-    from tools.url_safety import async_is_safe_url
+    from hermes_agent.tools.url_safety import async_is_safe_url
     # aiohttp spends one ``total`` across its own redirect loop and the body read; each hop here
     # is a fresh request, so the whole chain shares one deadline or ``total`` multiplies per hop.
     total = getattr(kwargs.get("timeout") or getattr(session, "timeout", None), "total", None)

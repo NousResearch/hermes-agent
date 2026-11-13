@@ -16,7 +16,7 @@ import pytest
 
 from hermes_agent.hermes_state import SessionDB
 from tests.waiting import wait_until
-from tools.process_registry import process_registry
+from hermes_agent.tools.process_registry import process_registry
 
 
 @pytest.fixture(autouse=True)
@@ -86,7 +86,7 @@ def _completion(delegation_id):
 
 
 def _spawn(parent, goal):
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     out = json.loads(delegate_task(tasks=[{"goal": goal, "context": "repo at /src"}], background=True,
                                    parent_agent=parent))
     assert out["status"] == "dispatched", out
@@ -95,7 +95,7 @@ def _spawn(parent, goal):
 
 
 def test_continue_runs_the_finished_child_on_its_transcript_route_and_toolsets():
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     model = _ScriptedModel()
     parent = _parent()
@@ -125,8 +125,8 @@ def test_continue_runs_the_finished_child_on_its_transcript_route_and_toolsets()
 
 
 def test_an_inherited_route_refuses_once_the_parent_switched_provider():
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_registry import _recent_subagents
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_registry import _recent_subagents
 
     model = _ScriptedModel()
     parent = _parent()
@@ -147,7 +147,7 @@ def test_an_inherited_route_refuses_once_the_parent_switched_provider():
 
 
 def test_continue_on_a_running_child_points_to_steer():
-    from tools.delegate_tool import _register_subagent, _unregister_subagent, delegate_task
+    from hermes_agent.tools.delegate_tool import _register_subagent, _unregister_subagent, delegate_task
 
     parent = _parent()
     _register_subagent({"subagent_id": "sa-cont-live", "goal": "g", "agent": MagicMock(),
@@ -162,8 +162,8 @@ def test_continue_on_a_running_child_points_to_steer():
 
 def _finished(sid, owner):
     """A finished delegate_task child as the registry retains it."""
-    from tools.delegate_tool import _register_subagent, _unregister_subagent
-    from tools.delegate_tool_routes import TaskRoute
+    from hermes_agent.tools.delegate_tool import _register_subagent, _unregister_subagent
+    from hermes_agent.tools.delegate_tool_routes import TaskRoute
 
     child = MagicMock()
     child.session_id = f"{sid}-session"
@@ -173,8 +173,8 @@ def _finished(sid, owner):
 
 
 def test_non_owner_unknown_and_evicted_ids_are_not_found():
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_registry import _RECENT_SUBAGENTS_CAP, _recent_subagents
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_registry import _RECENT_SUBAGENTS_CAP, _recent_subagents
 
     parent = _parent()
     _finished("sa-cont-foreign", owner="someone-else")
@@ -189,7 +189,7 @@ def test_non_owner_unknown_and_evicted_ids_are_not_found():
 
 
 def test_one_shot_sessions_are_not_offered_continue():
-    from tools.delegate_tool import DELEGATE_TASK_SCHEMA, _build_dynamic_schema_overrides, oneshot_delegate_function
+    from hermes_agent.tools.delegate_tool import DELEGATE_TASK_SCHEMA, _build_dynamic_schema_overrides, oneshot_delegate_function
 
     full = {**DELEGATE_TASK_SCHEMA, **_build_dynamic_schema_overrides()}
     assert "continue" in full["parameters"]["properties"]["action"]["enum"]
@@ -199,8 +199,8 @@ def test_one_shot_sessions_are_not_offered_continue():
 
 
 def test_one_shot_sessions_refuse_continue_without_consuming_it(monkeypatch):
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_registry import _recent_subagents
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_registry import _recent_subagents
 
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")  # the finite ``chat -q`` marker
     parent = _parent()
@@ -220,8 +220,8 @@ def _write_profile(home, *, host, model, key):
 
 
 def test_profile_routed_child_continues_inside_its_profile_scope(tmp_path, monkeypatch):
-    from tools.delegate_tool import delegate_task
-    from tools.delegate_tool_routes import _route_to_task_route
+    from hermes_agent.tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool_routes import _route_to_task_route
 
     launch = tmp_path / "os-home" / ".hermes"
     coder = launch / "profiles" / "coder"
@@ -235,7 +235,7 @@ def test_profile_routed_child_continues_inside_its_profile_scope(tmp_path, monke
     parent = _parent(db=SessionDB(db_path=tmp_path / "parent-db" / "state.db"))
     route = _route_to_task_route({"profile": "coder", "label": "coder"}, parent, {})
     with patch("run_agent.AIAgent", side_effect=model), \
-            patch("tools.delegate_tool_routes.resolve_task_routes", return_value=([route], None)):
+            patch("hermes_agent.tools.delegate_tool_routes.resolve_task_routes", return_value=([route], None)):
         sid, _ = _spawn(parent, "work as coder")
     with patch("run_agent.AIAgent", side_effect=model):  # continue never asks the backend again
         out = json.loads(delegate_task(action="continue", subagent_id=sid, message="and the follow-up",
@@ -252,12 +252,12 @@ def test_profile_routed_child_continues_inside_its_profile_scope(tmp_path, monke
 
 @pytest.mark.parametrize("background", [False, True], ids=["synchronous", "sync-fallback"])
 def test_joined_result_handle_can_continue_the_same_child(background):
-    from tools import delegate_tool  # register the real handler
+    from hermes_agent.tools import delegate_tool  # register the real handler
 
     registry = delegate_tool.registry
     model, parent = _ScriptedModel(), _parent()
     with patch("run_agent.AIAgent", side_effect=model), \
-            patch("tools.delegate_tool_dispatch._resolve_async_wake_sid", return_value=None):
+            patch("hermes_agent.tools.delegate_tool_dispatch._resolve_async_wake_sid", return_value=None):
         out = json.loads(registry.dispatch("delegate_task", {"goal": "write parser", "background": background},
                                            parent_agent=parent))
         if background:
@@ -273,7 +273,7 @@ def test_joined_result_handle_can_continue_the_same_child(background):
 
 @pytest.mark.parametrize("caller", ["root", "rebuilt-root", "compressed-root"])
 def test_finished_grandchild_keeps_ancestor_continuation_ownership(caller):
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     model, root = _ScriptedModel(), _parent("root-sess")
     middle = _parent("middle-sess", db=root._session_db)
@@ -303,7 +303,7 @@ def test_finished_grandchild_keeps_ancestor_continuation_ownership(caller):
 
 
 def test_spawner_keeps_ownership_after_root_continues_grandchild():
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
 
     model, root = _ScriptedModel(), _parent("root-sess")
     middle = _parent("middle-sess", db=root._session_db)
@@ -325,8 +325,8 @@ def test_spawner_keeps_ownership_after_root_continues_grandchild():
 
 
 def test_resume_claim_checks_ownership_without_lock_and_only_one_claim_wins(monkeypatch):
-    from tools import delegate_tool_registry as registry
-    from tools.delegate_tool_continue import _claim_resume
+    from hermes_agent.tools import delegate_tool_registry as registry
+    from hermes_agent.tools.delegate_tool_continue import _claim_resume
 
     parent, sid = _parent(), "sa-cont-claim-race"
     _finished(sid, owner=parent.session_id)
@@ -351,8 +351,8 @@ def test_resume_claim_checks_ownership_without_lock_and_only_one_claim_wins(monk
 
 
 def test_resume_claim_refuses_a_record_replaced_during_ownership_check(monkeypatch):
-    from tools import delegate_tool_registry as registry
-    from tools.delegate_tool_continue import _claim_resume
+    from hermes_agent.tools import delegate_tool_registry as registry
+    from hermes_agent.tools.delegate_tool_continue import _claim_resume
 
     parent, sid = _parent(), "sa-cont-replaced"
     _finished(sid, owner=parent.session_id)
@@ -370,7 +370,7 @@ def test_resume_claim_refuses_a_record_replaced_during_ownership_check(monkeypat
 
 
 def test_timeout_continue_waits_for_worker_close_and_resource_cleanup(monkeypatch):
-    from tools import delegate_tool
+    from hermes_agent.tools import delegate_tool
 
     parent, model = _parent(), _ScriptedModel()
     worker_release, close_release, cleanup_release, next_release = [threading.Event() for _ in range(4)]
@@ -420,9 +420,9 @@ def test_timeout_continue_waits_for_worker_close_and_resource_cleanup(monkeypatc
             raise TimeoutError()
         assert settled.wait(30)
 
-    monkeypatch.setattr("tools.delegate_tool_child_run._ChildRun.wait_liveness_aware", timeout_first)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool_child_run._ChildRun.wait_liveness_aware", timeout_first)
     monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 1)
-    monkeypatch.setattr("tools.code_kernel.shutdown_kernels_for_delegated_child", shutdown_kernels)
+    monkeypatch.setattr("hermes_agent.tools.code_kernel.shutdown_kernels_for_delegated_child", shutdown_kernels)
 
     def follow_up(sid):
         return json.loads(delegate_tool.delegate_task(action="continue", subagent_id=sid, message="follow up",

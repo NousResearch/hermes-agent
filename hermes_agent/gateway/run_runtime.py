@@ -557,7 +557,7 @@ async def recover_bot_mailbox(authority):
     client keeps working instead of the whole gateway refusing to start. Any other failure still
     aborts startup."""
     from hermes_agent.gateway.session_bot import recover_bot_deliveries
-    from tools.bot_live_delivery import MailboxUnusable
+    from hermes_agent.tools.bot_live_delivery import MailboxUnusable
     try:
         await recover_bot_deliveries(authority)
     except MailboxUnusable as exc:

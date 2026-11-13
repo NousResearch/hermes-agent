@@ -156,7 +156,7 @@ def test_send_to_platform_honours_configured_base_url(monkeypatch: pytest.Monkey
     dispatch (``_send_to_platform``), so cron / ``hermes send`` / send_message use the same
     self-hosted or compatible Bot API server as the gateway, never api.telegram.org."""
     from hermes_agent.gateway.config import Platform, PlatformConfig
-    from tools.send_message_tool import _send_to_platform
+    from hermes_agent.tools.send_message_tool import _send_to_platform
 
     monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
     monkeypatch.setattr("hermes_agent.gateway.run._gateway_runner_ref", lambda: None)
@@ -181,7 +181,7 @@ def test_local_bot_api_server_honours_no_proxy_bypass(monkeypatch: pytest.Monkey
     """An inherited HTTPS_PROXY with ``NO_PROXY=127.0.0.1`` reaches a local ``telegram-bot-api``
     (``base_url: http://127.0.0.1:8081/bot``) directly: a remote proxy cannot reach it."""
     from hermes_agent.gateway.config import Platform, PlatformConfig
-    from tools.send_message_tool import _send_to_platform
+    from hermes_agent.tools.send_message_tool import _send_to_platform
 
     monkeypatch.delenv("TELEGRAM_PROXY", raising=False)
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")

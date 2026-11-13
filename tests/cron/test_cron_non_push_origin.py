@@ -11,7 +11,7 @@ from hermes_agent.gateway.session_context import clear_session_vars, set_session
 
 
 def test_non_push_session_stamps_no_origin_and_gets_creation_notice():
-    from tools.cronjob_job_args import _local_delivery_notice, _origin_from_env
+    from hermes_agent.tools.cronjob_job_args import _local_delivery_notice, _origin_from_env
 
     tokens = set_session_vars(platform="api_server", chat_id="desk-1", session_key="desk-1",
                               async_delivery=False)
@@ -47,7 +47,7 @@ def test_stamped_api_server_origin_falls_back_to_home_channel(monkeypatch):
 def test_non_push_session_creation_notice_names_home_channel_fallback(monkeypatch):
     """With a home channel configured the rerouted job must still tell the creating client where
     the report goes (the api_server client never sees it); a push-capable session stays silent."""
-    from tools.cronjob_job_args import _local_delivery_notice, _origin_from_env
+    from hermes_agent.tools.cronjob_job_args import _local_delivery_notice, _origin_from_env
 
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
     tokens = set_session_vars(platform="api_server", chat_id="desk-1", session_key="desk-1",

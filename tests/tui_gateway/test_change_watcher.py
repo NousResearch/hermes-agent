@@ -488,7 +488,7 @@ def test_skill_installed_from_another_terminal_broadcasts_skills_changed(watcher
     """CFG-8: the gateway notices a new skill dir and tells attached clients to refetch
     ``commands.catalog``; clients never rescan disk themselves."""
     home, events = watcher_home
-    import tools.skills_tool as st
+    import hermes_agent.tools.skills_tool as st
     skills = home / "skills"
     skills.mkdir()
     monkeypatch.setattr(st, "SKILLS_DIR", skills)
@@ -510,7 +510,7 @@ def test_a_skill_installed_in_another_sessions_repo_broadcasts_skills_changed(wa
     signs every scope a session resolved commands in, not only the launch repo."""
     import json
     import agent.skill_commands as sc
-    import tools.skills_tool as st
+    import hermes_agent.tools.skills_tool as st
     from agent.runtime_cwd import reset_session_cwd, set_session_cwd
     home, events = watcher_home
     monkeypatch.setenv("HERMES_HOME", str(home))

@@ -492,7 +492,7 @@ class CLIInitMixin:
             # without the parent's toggle, so set it there too (/branch moves the CLI's own flag over).
             # Approvals run on the gateway, so this write is not toggle_session_yolo's best-effort persist:
             # a failure raises before the child shows YOLO locally.
-            from tools.approval import enable_session_yolo, is_session_yolo_enabled
+            from hermes_agent.tools.approval import enable_session_yolo, is_session_yolo_enabled
             if is_session_yolo_enabled(branch_of):
                 store.set_session_yolo(child, True)
                 enable_session_yolo(child)

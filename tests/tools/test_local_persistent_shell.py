@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from tools.terminal_tool import _get_env_config, _resolve_container_task_id, terminal_tool
-from tools.terminal_tool_lifecycle import cleanup_vm
+from hermes_agent.tools.terminal_tool import _get_env_config, _resolve_container_task_id, terminal_tool
+from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
 
 
 @pytest.mark.platforms("linux", "macos")
@@ -34,7 +34,7 @@ def test_local_persistent_controls_exports_but_cwd_always_carries(monkeypatch, t
 
 
 def test_local_persistent_defaults_on_and_reaches_the_environment(monkeypatch, tmp_path):
-    from tools.terminal_tool_lifecycle import _create_configured_env
+    from hermes_agent.tools.terminal_tool_lifecycle import _create_configured_env
 
     monkeypatch.delenv("TERMINAL_LOCAL_PERSISTENT", raising=False)
     config = _get_env_config()

@@ -2,7 +2,7 @@
 
 Main's sidecar (``hermes_agent/tui_gateway/server_requests.py``) and the session owner (``hermes_agent/gateway/session_server_requests.py``)
 each keep open server→client requests, and each used to compute a batch's terminal ``{answers, outcome}``
-in its own code, which drifted twice (#140472 review). Both now call ``tools.clarify_batch.settle_batch``.
+in its own code, which drifted twice (#140472 review). Both now call ``hermes_agent.tools.clarify_batch.settle_batch``.
 These cases drive each real registry through the same ending, one ``clarify.lock`` on ``q0`` first, and
 require the same result.
 """
@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from tools.clarify_batch import settle_batch
+from hermes_agent.tools.clarify_batch import settle_batch
 
 QUESTIONS = [{'qid': 'q0', 'question': 'colour?', 'choices': ['red', 'blue'], 'multi_select': False},
              {'qid': 'q1', 'question': 'size?', 'choices': None, 'multi_select': False}]

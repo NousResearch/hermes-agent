@@ -1,4 +1,4 @@
-"""E2E tests for tools.voice_client_config — the /api/audio/voice-config resolver.
+"""E2E tests for hermes_agent.tools.voice_client_config — the /api/audio/voice-config resolver.
 
 Real config files in a temp HERMES_HOME, real resolution chains (no mocked
 resolvers): what the endpoint hands the desktop must be exactly what the
@@ -33,9 +33,9 @@ def voice_home(tmp_path, monkeypatch):
         for name in list(sys.modules):
             if name in {
                 "hermes_cli.config",
-                "tools.transcription_tools",
-                "tools.tts_tool",
-                "tools.voice_client_config",
+                "hermes_agent.tools.transcription_tools",
+                "hermes_agent.tools.tts_tool",
+                "hermes_agent.tools.voice_client_config",
             }:
                 importlib.reload(sys.modules[name])
 
@@ -43,7 +43,7 @@ def voice_home(tmp_path, monkeypatch):
 
 
 def _resolve():
-    from tools.voice_client_config import resolve_client_voice_config
+    from hermes_agent.tools.voice_client_config import resolve_client_voice_config
 
     return resolve_client_voice_config()
 

@@ -2,8 +2,8 @@
 import threading
 import pytest
 
-from tools import approval, async_delegation as ad
-from tools.approval_context import set_current_session_key, reset_current_session_key
+from hermes_agent.tools import approval, async_delegation as ad
+from hermes_agent.tools.approval_context import set_current_session_key, reset_current_session_key
 
 
 @pytest.mark.parametrize("choice", ["once", "deny", "timeout", "cancel", "missing"])
@@ -65,7 +65,7 @@ def test_child_approval_after_parent_finished(monkeypatch, choice):
 def test_cancelled_queued_worker_releases_transport(monkeypatch):
     from concurrent.futures import Future
     from types import SimpleNamespace
-    from tools.approval_notify_lease import current
+    from hermes_agent.tools.approval_notify_lease import current
 
     ad._reset_for_tests()
     future = Future()
@@ -91,7 +91,7 @@ def test_cancelled_queued_worker_releases_transport(monkeypatch):
 
 
 def test_concurrent_children_have_independent_single_use_consent(monkeypatch):
-    from tools.approval_notify_lease import acquire, run
+    from hermes_agent.tools.approval_notify_lease import acquire, run
     monkeypatch.setattr(approval.approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval, "_presence", lambda cb=None: (None, False, True, False))
     monkeypatch.setattr(approval.approval_context, "_get_approval_timeout", lambda: 5)
@@ -140,7 +140,7 @@ def test_concurrent_children_have_independent_single_use_consent(monkeypatch):
 
 
 def test_cleared_session_revokes_child_transport():
-    from tools.approval_notify_lease import acquire
+    from hermes_agent.tools.approval_notify_lease import acquire
 
     key = "session-clear-child"
     delivered = []

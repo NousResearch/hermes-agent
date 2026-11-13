@@ -11,7 +11,7 @@ import pytest
 from tests.gateway.test_stored_history_mount import _connect
 from agent.prompt_refresh import stamp_prompt_epoch
 from agent.turn_facade_lease import admit_durable_turn_lease
-from tools.delegate_tool import _build_child_agent
+from hermes_agent.tools.delegate_tool import _build_child_agent
 
 
 def _parent(db, session_id, on_progress):

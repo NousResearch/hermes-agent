@@ -131,7 +131,7 @@ def test_dotted_model_name_provider_allowlist_host_anchored():
 
 
 def test_figma_remote_mcp_host_anchored():
-    from tools.mcp_oauth import _is_figma_remote_mcp
+    from hermes_agent.tools.mcp_oauth import _is_figma_remote_mcp
 
     assert _is_figma_remote_mcp(server_url="https://mcp.figma.com/mcp") is True
     assert _is_figma_remote_mcp(server_url="https://www.figma.com/mcp") is True

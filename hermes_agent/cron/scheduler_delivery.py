@@ -167,7 +167,7 @@ def _redact_cron_payload(text: str, what: str) -> str:
     so the policy lives in one place. ``force=True`` because this is a safety boundary, not
     logging: the ``security.redact_secrets`` preference governs how much is scrubbed from the
     user's own logs and must not be able to turn scrubbing off on the way out to a chat (same
-    reasoning as ``tools/delegation_live_log.py``). Empty input is returned as-is; any failure
+    reasoning as ``hermes_agent/tools/delegation_live_log.py``). Empty input is returned as-is; any failure
     inside the redactor replaces the payload entirely rather than letting an unscanned value out.
     """
     if not text:
@@ -632,7 +632,7 @@ def _resolve_single_delivery_target(
     if ":" in deliver_value:
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
-        from tools.send_message_tool import prepare_send_message_platforms, resolve_send_target
+        from hermes_agent.tools.send_message_tool import prepare_send_message_platforms, resolve_send_target
         prepare_send_message_platforms()
         # pass_unresolved_references: no model in the loop to react; an unknown-to-directory target
         # must reach the adapter as written or the job's output is silently lost.
@@ -682,7 +682,7 @@ def _get_standalone_send_timeout() -> int:
 
     ``_send_to_platform``'s gateway-loop dispatch deliberately awaits its future with no
     timeout ("the adapter and outer _run_async bound the wait") — but on this lane the
-    outer runner is a bare ``asyncio.run``, not ``model_tools._run_async``, so without a
+    outer runner is a bare ``asyncio.run``, not ``hermes_agent.model_tools._run_async``, so without a
     bound here a reconnecting transport pins the run (and the restart drain behind it)
     indefinitely. Mirrors the sibling lanes: live dispatch ``future.result(timeout=60)``,
     thread fallback ``result(timeout=30)``. ``cron.standalone_send_timeout_seconds``;
@@ -728,7 +728,7 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *,
     import uuid
     from hermes_constants import get_hermes_home
     from hermes_cli.profiles import get_profile_dir
-    from tools.bot_live_delivery import (
+    from hermes_agent.tools.bot_live_delivery import (
         deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
     )
 

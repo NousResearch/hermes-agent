@@ -1,7 +1,7 @@
 """Regression tests: YOLO mode persists across ``hermes --resume``.
 
 Pre-fix bug: the ``/yolo`` toggle (and the process-start ``--yolo`` flag)
-lived only in the in-memory ``tools.approval._session_yolo`` set / the
+lived only in the in-memory ``hermes_agent.tools.approval._session_yolo`` set / the
 frozen env var. Resuming a session in a fresh process silently reverted the
 bypass — dangerous commands started prompting again even though the user had
 YOLO on for that session.
@@ -23,8 +23,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.approval as approval_module
-from tools import approval_context
+import hermes_agent.tools.approval as approval_module
+from hermes_agent.tools import approval_context
 from cli import HermesCLI
 from hermes_agent.hermes_state import SessionDB
 

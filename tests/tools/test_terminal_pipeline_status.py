@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from tools.environments.base_session_env import _split_cwd_marker, _wrap_command_script
+from hermes_agent.tools.environments.base_session_env import _split_cwd_marker, _wrap_command_script
 
 CWD_MARKER = "__HERMES_CWD_test__"
 PIPE_MARKER = "__HERMES_PIPE_test__"

@@ -8,8 +8,8 @@ import subprocess
 import sys
 from threading import Thread
 
-import tools.checkpoint_manager as checkpoints
-from tools import checkpoint_maintenance
+import hermes_agent.tools.checkpoint_manager as checkpoints
+from hermes_agent.tools import checkpoint_maintenance
 
 
 def test_active_snapshot_owns_store_until_its_ref_is_published(tmp_path, monkeypatch):
@@ -24,7 +24,7 @@ def test_active_snapshot_owns_store_until_its_ref_is_published(tmp_path, monkeyp
     program = '''
 import sys
 from pathlib import Path
-from tools import checkpoint_manager as c
+from hermes_agent.tools import checkpoint_manager as c
 c.CHECKPOINT_BASE = Path(sys.argv[1])
 
 run = c._run_git
@@ -37,7 +37,7 @@ def paused(args, *rest, **kwargs):
 c._run_git = paused
 assert c.CheckpointManager(enabled=True, max_total_size_mb=0).ensure_checkpoint(sys.argv[2], "concurrent")
 '''
-    env = {**os.environ, "PYTHONPATH": str(Path(checkpoints.__file__).resolve().parents[1])}
+    env = {**os.environ, "PYTHONPATH": str(Path(checkpoints.__file__).resolve().parents[2])}
     child = subprocess.Popen([sys.executable, "-u", "-c", program, str(base), str(project)],
                              cwd=tmp_path, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, encoding="utf-8")

@@ -126,7 +126,7 @@ async def test_send_clarify_with_choices_sends_native_poll(
     poll_calls = _stub_sidecar_poll(adapter, monkeypatch)
 
     marked: list[str] = []
-    import tools.clarify_gateway as cg
+    import hermes_agent.tools.clarify_gateway as cg
 
     monkeypatch.setattr(cg, "mark_awaiting_text", lambda cid: marked.append(cid))
 

@@ -3,7 +3,7 @@
 The gate: ``plugins.entries.<plugin_id>.mcp_allowlist`` — a list of MCP
 server names. Absent key = no MCP access (default-deny). Calls to unlisted
 servers raise PermissionError naming the config key. All calls route
-through the existing tools.mcp_tool handler machinery (mocked here — no
+through the existing hermes_agent.tools.mcp_tool handler machinery (mocked here — no
 live MCP servers).
 """
 
@@ -31,8 +31,8 @@ def _patch_config(monkeypatch, entries: dict) -> None:
 
 
 def _patch_handler(monkeypatch, response: str, captured: dict | None = None):
-    """Replace tools.mcp_tool_handlers._make_tool_handler with a transport mock."""
-    from tools import mcp_tool_handlers as _mcp_handlers
+    """Replace hermes_agent.tools.mcp_tool_handlers._make_tool_handler with a transport mock."""
+    from hermes_agent.tools import mcp_tool_handlers as _mcp_handlers
 
     def _fake_make_handler(server_name, tool_name, tool_timeout):
         if captured is not None:

@@ -227,11 +227,11 @@ _managed_fal_video_client_lock = threading.Lock()
 
 
 def _load_fal_client() -> Any:
-    """Lazy-load ``fal_client`` once via ``tools.fal_common``."""
+    """Lazy-load ``fal_client`` once via ``hermes_agent.tools.fal_common``."""
     global _fal_client
     with _fal_client_lock:
         if _fal_client is None:
-            from tools.fal_common import import_fal_client
+            from hermes_agent.tools.fal_common import import_fal_client
             _fal_client = import_fal_client()
         return _fal_client
 
@@ -239,8 +239,8 @@ def _load_fal_client() -> Any:
 def _resolve_managed_fal_video_gateway():
     """Resolve the FAL video route from the stored ``video_gen`` selection: ``"nous"`` → managed only (unentitled ⇒
     selection-naming error); other stored provider → direct only (missing FAL_KEY ⇒ error); never-configured → autodetect."""
-    from tools.managed_tool_gateway import resolve_managed_tool_gateway
-    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured, read_selection, selection_error
+    from hermes_agent.tools.managed_tool_gateway import resolve_managed_tool_gateway
+    from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured, read_selection, selection_error
     selected = read_selection("video_gen")
     if selected == NOUS_MANAGED_PROVIDER:
         gateway = resolve_managed_tool_gateway("fal-queue")
@@ -256,14 +256,14 @@ def _resolve_managed_fal_video_gateway():
 
 def _fal_video_available() -> bool:
     """True if the selected (or, never-configured, any) FAL backend is reachable; raises on a stored-but-broken selection."""
-    from tools.tool_backend_helpers import fal_key_is_configured
+    from hermes_agent.tools.tool_backend_helpers import fal_key_is_configured
     return _resolve_managed_fal_video_gateway() is not None or fal_key_is_configured()
 
 
 def _get_managed_fal_video_client(managed_gateway):
     """Reuse the managed FAL client so its internal httpx.Client is not leaked per call."""
     global _managed_fal_video_client, _managed_fal_video_client_config
-    from tools.fal_common import _ManagedFalSyncClient
+    from hermes_agent.tools.fal_common import _ManagedFalSyncClient
     client_config = (managed_gateway.gateway_origin.rstrip("/"), managed_gateway.nous_user_token)
     with _managed_fal_video_client_lock:
         if _managed_fal_video_client is None or _managed_fal_video_client_config != client_config:
@@ -280,7 +280,7 @@ def _submit_fal_video_request(endpoint: str, arguments: dict[str, Any]):
     managed_gateway = _resolve_managed_fal_video_gateway()
     if managed_gateway is None:
         return client.submit(endpoint, arguments=arguments, headers=headers)
-    from tools.fal_common import (
+    from hermes_agent.tools.fal_common import (
         _extract_http_status, _managed_fal_billing_error, submit_managed_fal_with_rate_limit_retry,
     )
     try:
@@ -315,7 +315,7 @@ def _upscale_video(video_url: str, source_request_id: Optional[str] = None) -> O
             if not source_request_id:
                 raise RuntimeError("Managed SeedVR upscale requires the source FAL request id")
             arguments["source_request_id"] = source_request_id
-        from tools.fal_common import wait_fal_queue_result
+        from hermes_agent.tools.fal_common import wait_fal_queue_result
         result = wait_fal_queue_result(_submit_fal_video_request(UPSCALER_ENDPOINT, arguments))
     except Exception as exc:
         logger.warning("Video upscale failed: %s", exc)
@@ -409,7 +409,7 @@ class FALVideoGenProvider(VideoGenProvider):
         payload = _build_payload(family, prompt=prompt, image_url=image_url_norm, duration=duration, aspect_ratio=aspect_ratio,
                                  resolution=resolution, negative_prompt=negative_prompt, audio=audio, seed=seed)
         try:
-            from tools.fal_common import wait_fal_queue_result
+            from hermes_agent.tools.fal_common import wait_fal_queue_result
             handle = _submit_fal_video_request(endpoint, payload)
             source_request_id = getattr(handle, "request_id", None)
             video, url = _video_url_from_result(wait_fal_queue_result(handle))

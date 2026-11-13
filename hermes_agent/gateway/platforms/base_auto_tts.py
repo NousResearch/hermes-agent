@@ -26,7 +26,7 @@ def _profile_scope(adapter, source) -> contextlib.AbstractAsyncContextManager:
 
 def _synthesize(text: str, output_path: str) -> list[str]:
     """Worker-thread half: run the TTS tool and keep the files it reports that exist."""
-    from tools.tts_tool import text_to_speech_tool
+    from hermes_agent.tools.tts_tool import text_to_speech_tool
     tts_data = json.loads(text_to_speech_tool(text=text, output_path=output_path))
     if not tts_data.get("success", True):
         return []
@@ -40,7 +40,7 @@ async def synthesize_auto_tts(adapter, text_content: str, source, output_path_fo
     paths: list[str] = []
     requested_path = None
     try:
-        from tools.tts_tool import check_tts_requirements
+        from hermes_agent.tools.tts_tool import check_tts_requirements
         async with _profile_scope(adapter, source):
             if check_tts_requirements():
                 speech_text = adapter.prepare_tts_text(text_content)

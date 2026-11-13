@@ -99,7 +99,7 @@ def test_exa_sdk_reports_failed_urls_from_statuses():
     (["HTTP 500 upstream exploded", "HTTP 500 upstream exploded"], True),  # backend failure: rescue
 ])
 def test_keyless_rescue_runs_for_backend_failures_not_origin_errors(errors, rescued):
-    from tools import web_tools_extract
+    from hermes_agent.tools import web_tools_extract
     urls = ["https://t.test/a", "https://t.test/b"]
     provider = SimpleNamespace(name="keenable", extract=lambda batch, **_kw: [
         {"url": u, "title": "", "content": "", "error": e} for u, e in zip(batch, errors)])

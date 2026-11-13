@@ -259,22 +259,22 @@ class TestBrowserVaultTools:
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose
         browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         empty = VaultStore(base_dir=tmp_path / "empty-vault")
         with patch("agent.vault_store.get_vault_store", return_value=empty), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""):
-            with patch("tools.browser_use_cli.browser_exec_available", return_value=True):
+             patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value=""):
+            with patch("hermes_agent.tools.browser_use_cli.browser_exec_available", return_value=True):
                 assert browser_vault_tool._check_vault_available() is True
-            with patch("tools.browser_use_cli.browser_exec_available", return_value=False):
+            with patch("hermes_agent.tools.browser_use_cli.browser_exec_available", return_value=False):
                 assert browser_vault_tool._check_vault_available() is False
         # A configured CDP endpoint is a browser too: the vault rides along even without browser-harness
-        with patch("tools.browser_use_cli.browser_exec_available", return_value=False), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value="ws://127.0.0.1:9222/devtools/browser/x"):
+        with patch("hermes_agent.tools.browser_use_cli.browser_exec_available", return_value=False), \
+             patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value="ws://127.0.0.1:9222/devtools/browser/x"):
             assert browser_vault_tool._check_vault_available() is True
 
     def test_list_returns_identifier_never_password(self, store):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         _add_login(store)
         with patch("agent.vault_store.get_vault_store", return_value=store):
@@ -287,7 +287,7 @@ class TestBrowserVaultTools:
         assert "s3cret-pw" not in json.dumps(out)
 
     def test_fill_refused_on_origin_mismatch(self, store):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
         with patch("agent.vault_store.get_vault_store", return_value=store), \
@@ -311,7 +311,7 @@ class TestBrowserVaultTools:
         """A manager item with several saved websites fills on each of them
         (exact match only), and the in-page origin assert pins the origin
         actually being filled — not just the first saved one."""
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         meta = self._manager_meta()
 
@@ -359,7 +359,7 @@ class TestBrowserVaultTools:
     def test_fill_still_refused_on_origin_not_saved_on_the_item(self):
         """Multi-website items widen nothing: an unsaved origin — even a sibling
         subdomain — is still refused (fail-closed regression)."""
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         meta = self._manager_meta()
 
@@ -383,14 +383,14 @@ class TestBrowserVaultTools:
         assert "s3cret-pw" not in json.dumps(out)
 
     def test_fill_unknown_handle(self, store):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         with patch("agent.vault_store.get_vault_store", return_value=store):
             out = json.loads(browser_vault_tool.browser_vault_fill("vault_nope"))
         assert out["success"] is False
 
     def test_fill_success_returns_counts_only(self, store):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
         controls = [
@@ -435,7 +435,7 @@ class TestBrowserVaultTools:
         """P1-2 schedule regression: inspection passes on the allowed origin,
         the page navigates before the fill script runs, the in-script origin
         assert refuses, and zero credential bytes are written."""
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
         controls = [
@@ -473,7 +473,7 @@ class TestBrowserVaultTools:
 
     def test_secret_eval_fails_closed_without_supervisor(self, store):
         """P1-1: the secret-bearing eval NEVER falls back to the argv path."""
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
         controls = [
@@ -490,8 +490,8 @@ class TestBrowserVaultTools:
         # and nothing evaluates the secret-bearing script.
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
-             patch("tools.browser_session.session_for_task", return_value={}), \
-             patch("tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg:
+             patch("hermes_agent.tools.browser_session.session_for_task", return_value={}), \
+             patch("hermes_agent.tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg:
             reg.get.return_value = None
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
@@ -506,8 +506,8 @@ class TestBrowserVaultTools:
         unrecoverable through a model-facing browser_cdp-style result."""
         from agent import redact
         from agent.redact import redact_sensitive_text
-        from tools import browser_vault_tool
-        from tools.browser_cdp_tool import _redact_cdp_output
+        from hermes_agent.tools import browser_vault_tool
+        from hermes_agent.tools.browser_cdp_tool import _redact_cdp_output
 
         canary = "plain sentence nobody would flag 7"
         meta = _add_login(store, origin="https://example.com", password=canary)
@@ -550,7 +550,7 @@ class TestBrowserVaultTools:
         """A card is written only after the user confirms (a prompt injection reaching a checkout must not be
         able to spend); the secret eval then targets the classified card controls and the result carries
         the field tokens but never a value."""
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
         from agent import redact
 
         meta = store.add_item(kind="payment", label="Visa", origin="https://shop.test", secret=_CARD)
@@ -576,7 +576,7 @@ class TestBrowserVaultTools:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
+                 patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="decline"):
                 declined = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
             assert declined["success"] is False and declined["error_type"] == "payment_declined"
             assert secret_exprs == []
@@ -584,7 +584,7 @@ class TestBrowserVaultTools:
             with patch("agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
-                 patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+                 patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="accept"):
                 raw = browser_vault_tool.browser_vault_fill(meta.id)
             out = json.loads(raw)
             assert out["success"] is True and out["fields"] == ["cc-csc", "cc-exp", "cc-number"]
@@ -650,8 +650,8 @@ def test_every_registered_tool_schema_declares_openai_style_parameters():
     """The registry emits ``parameters`` (OpenAI function shape) and every provider adapter converts from
     it; a schema that spells it ``input_schema`` (Anthropic shape) ships with NO parameters, so the model is
     told the tool takes nothing and calls browser_vault_fill without a handle."""
-    import model_tools
-    from tools.registry import registry
+    from hermes_agent import model_tools
+    from hermes_agent.tools.registry import registry
 
     missing = [entry.name for entry in registry.get_all_entries()
                if "parameters" not in entry.schema or "input_schema" in entry.schema]
@@ -664,7 +664,7 @@ class TestSaveLoginPrompt:
 
     def test_saves_to_page_origin_and_never_echoes_the_password(self, store, monkeypatch):
         from agent.vault_backends import unlock as unlock_mod
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         seen = {}
 
@@ -689,7 +689,7 @@ class TestSaveLoginPrompt:
 
     def test_declined_or_headless_stores_nothing(self, store, monkeypatch):
         from agent.vault_backends import unlock as unlock_mod
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
         with patch("agent.vault_store.get_vault_store", return_value=store):
@@ -718,11 +718,11 @@ class TestManagerAutoDetection:
 
 
 def test_every_vault_tool_is_in_the_browser_toolset():
-    """toolsets.py is a hand-maintained list; a tool registered here but missing there is invisible to the model
+    """hermes_agent/toolsets.py is a hand-maintained list; a tool registered here but missing there is invisible to the model
     (live: browser_vault_save_login was registered, tested, and never offered)."""
-    import toolsets
-    from tools import browser_vault_tool
-    from tools.registry import registry
+    from hermes_agent import toolsets
+    from hermes_agent.tools import browser_vault_tool
+    from hermes_agent.tools.registry import registry
 
     registered = {e.name for e in registry.get_all_entries() if e.name.startswith("browser_vault_")}
     assert registered <= set(toolsets.TOOLSETS["browser"]["tools"]), registered - set(toolsets.TOOLSETS["browser"]["tools"])
@@ -750,7 +750,7 @@ class TestTwoFactor:
     def test_saved_authenticator_key_mints_codes_without_asking(self, store, monkeypatch):
         """The whole point: with a seed on the login, enter_code never prompts and the code never comes back."""
         from agent.vault_backends import unlock as unlock_mod
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         meta = store.add_item("login", "gh", {"identifier_type": "username", "identifier": "tek", "password": "pw",
                                               "otp_secret": "JBSWY3DPEHPK3PXP"}, origin="https://github.com")
@@ -780,7 +780,7 @@ class TestTwoFactor:
 
     def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
         from agent.vault_backends import unlock as unlock_mod
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         unlock_mod.set_code_prompt_callback(lambda site, hint: "246 810")
         boxes = [{"index": i, "type": "tel", "name": f"digit{i}", "label": "", "autocomplete": "one-time-code",
@@ -823,7 +823,7 @@ class TestTwoFactor:
         assert [f["value"] for f in build_otp_fills([ctl(i + 4, maxlen=1) for i in range(6)], "246810")] == list("246810")
 
     def test_no_code_field_points_at_passkey_or_device_approval(self):
-        from tools import browser_vault_tool
+        from hermes_agent.tools import browser_vault_tool
 
         fake_eval = lambda t, e: {"success": True, "result": json.dumps([{"index": 0, "type": "text", "name": "q", "label": "Search", "autocomplete": ""}]) if "querySelectorAll" in e else "https://acme.test/approve"}
         with patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \

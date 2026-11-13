@@ -13,7 +13,7 @@ import weakref
 
 import pytest
 
-from tools.delegate_tool import (
+from hermes_agent.tools.delegate_tool import (
     _handle_control_action,
     _is_descendant_of,
     _owns_subagent_record,
@@ -176,7 +176,7 @@ def test_steer_closed_acceptance_is_refused():
 
 
 def test_stop_interrupts_owned_child(monkeypatch):
-    import tools.delegate_tool_registry as dt
+    import hermes_agent.tools.delegate_tool_registry as dt
 
     parent = _StubParent()
     child = _StubChild(parent)
@@ -196,7 +196,7 @@ def test_stop_interrupts_owned_child(monkeypatch):
 
 
 def test_stop_foreign_child_is_refused(monkeypatch):
-    import tools.delegate_tool_registry as dt
+    import hermes_agent.tools.delegate_tool_registry as dt
 
     parent = _StubParent()
     foreign = _StubChild(_StubParent())
@@ -223,7 +223,7 @@ def test_stop_foreign_child_is_refused(monkeypatch):
 
 
 def test_delegate_task_control_action_bypasses_spawn_pause():
-    from tools.delegate_tool import set_spawn_paused
+    from hermes_agent.tools.delegate_tool import set_spawn_paused
 
     parent = _StubParent()
     set_spawn_paused(True)
@@ -423,7 +423,7 @@ def test_completion_notification_carries_delegation_attribution(monkeypatch):
     non-default): this test pins the ATTRIBUTION path, which only renders
     when child process notifications are surfaced at all.
     """
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(
         ProcessRegistry,
@@ -476,7 +476,7 @@ def test_child_completion_notification_suppressed_by_default(monkeypatch):
     """With no user config, subagent-owned completion events are DROPPED from
     the parent drain (not delivered, not requeued)."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
@@ -493,7 +493,7 @@ def test_async_delegation_event_from_child_never_suppressed(monkeypatch):
     the parent even while the same child's process notifications are
     suppressed."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
@@ -519,7 +519,7 @@ def test_async_delegation_event_from_child_never_suppressed(monkeypatch):
 def test_parent_owned_completion_unaffected_by_suppression(monkeypatch):
     """Processes the parent itself started (non sa- task_id) still notify."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
@@ -542,7 +542,7 @@ def test_surface_flag_true_restores_child_notification_delivery(monkeypatch):
     """delegation.surface_child_process_notifications=true restores the legacy
     behavior: child completion delivered with attribution."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(
         _cfg,
@@ -563,7 +563,7 @@ def test_surface_flag_true_restores_child_notification_delivery(monkeypatch):
 def test_child_watch_match_suppressed_by_default(monkeypatch):
     """watch_match events from sa- sessions follow the same suppression."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
@@ -590,7 +590,7 @@ def test_child_completion_with_collapsed_container_task_id_suppressed(monkeypatc
     owner_task_id (the raw spawning id), or child events with
     task_id="default" walk straight past it into the parent chat."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
@@ -629,7 +629,7 @@ def test_spawn_local_stamps_owner_task_id_and_event_carries_it(monkeypatch, noti
     real subagent-spawned process (collapsed task_id) is suppressed on
     drain. Exercises the actual spawn -> _move_to_finished -> drain path."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
@@ -654,7 +654,7 @@ def test_spawn_local_without_owner_defaults_to_task_id(monkeypatch, notification
     """Backward compat: callers that don't pass owner_task_id behave exactly
     as before (owner falls back to task_id; parent-owned still delivers)."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setattr(_cfg, "read_raw_config", lambda *a, **k: {})
     reg = ProcessRegistry()
@@ -678,8 +678,8 @@ def test_attribution_line_uses_owner_task_id(monkeypatch):
     """format_process_notification resolves attribution from owner_task_id
     when task_id is a collapsed container key (surface flag on)."""
     import hermes_cli.config as _cfg
-    from tools.process_registry import ProcessRegistry
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
 
     monkeypatch.setattr(
         _cfg,
@@ -707,7 +707,7 @@ def test_attribution_line_uses_owner_task_id(monkeypatch):
 
 
 def test_completion_notification_trims_subagent_output_wall():
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
 
     parent = _StubParentWithSession("sess-attr-4")
     child = _StubChild(parent)

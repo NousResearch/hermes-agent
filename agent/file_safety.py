@@ -85,7 +85,7 @@ def _is_under(resolved: str | Path, base: str | Path) -> bool:
 def _resolve_target(path: str) -> Optional[Path]:
     """``Path(expanduser(path)).resolve()``, or None when resolution fails (a hosted agent's path:
     its lexical form, see ``sandbox_lexical_path``)."""
-    from tools.environments.sandbox_scope import sandbox_lexical_path
+    from hermes_agent.tools.environments.sandbox_scope import sandbox_lexical_path
     path = local_drive_spelling(path)
     if (lexical := sandbox_lexical_path(path)) is not None:
         return Path(lexical)
@@ -122,7 +122,7 @@ def _guard_homes(path: str = "") -> set[str]:
 def _homes_and_resolved(path: str) -> tuple[set[str], str]:
     """``(guard homes, realpath(expanduser(path)))`` — the write-guard coordinate pair (a hosted
     agent's path: its lexical form, see ``sandbox_lexical_path``)."""
-    from tools.environments.sandbox_scope import sandbox_lexical_path
+    from hermes_agent.tools.environments.sandbox_scope import sandbox_lexical_path
     lexical = sandbox_lexical_path(path)
     return _guard_homes(path), lexical if lexical is not None else os.path.realpath(os.path.expanduser(str(path)))
 
@@ -343,7 +343,7 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     if denial or not entry:
         return denial
     parent, leaf = split_entry(os.path.expanduser(str(path)))
-    from tools.environments.sandbox_scope import sandbox_lexical_path
+    from hermes_agent.tools.environments.sandbox_scope import sandbox_lexical_path
     lexical_parent = sandbox_lexical_path(parent or ".")
     entry_path = os.path.join(lexical_parent if lexical_parent is not None else os.path.realpath(parent or "."), leaf)
     return _classify_resolved_write_denial(homes, entry_path)
@@ -488,7 +488,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     nt_error = get_nt_namespace_error(path, verb="Read")
     if nt_error:
         return nt_error
-    from tools.environments.sandbox_scope import sandbox_lexical_path
+    from hermes_agent.tools.environments.sandbox_scope import sandbox_lexical_path
     local = local_drive_spelling(path)
     lexical = sandbox_lexical_path(local)
     resolved = Path(lexical) if lexical is not None else Path(local).expanduser().resolve()

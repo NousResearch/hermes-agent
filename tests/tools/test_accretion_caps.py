@@ -21,7 +21,7 @@ These tests pin the new caps + prune hooks.
 
 class TestReadTrackerCaps:
     def setup_method(self):
-        from tools import file_tools_read_tracking as rt
+        from hermes_agent.tools import file_tools_read_tracking as rt
 
         # Clean slate per test.
         with rt._read_tracker_lock:
@@ -31,8 +31,8 @@ class TestReadTrackerCaps:
 
     def test_live_cap_applied_after_read_add(self, tmp_path, monkeypatch):
         """Live read_file path enforces caps."""
-        from tools import file_tools as ft
-        from tools import file_tools_read_tracking as rt
+        from hermes_agent.tools import file_tools as ft
+        from hermes_agent.tools import file_tools_read_tracking as rt
 
         monkeypatch.setattr(rt, "_READ_HISTORY_CAP", 3)
         monkeypatch.setattr(rt, "_DEDUP_CAP", 3)
@@ -59,7 +59,7 @@ class TestCompletionConsumedPrune:
     def test_prune_drops_completion_entry_with_expired_session(self):
         """When a finished session is pruned, _completion_consumed is
         cleared for the same session_id."""
-        from tools.process_registry import ProcessRegistry, FINISHED_TTL_SECONDS
+        from hermes_agent.tools.process_registry import ProcessRegistry, FINISHED_TTL_SECONDS
         import time
 
         reg = ProcessRegistry()
@@ -85,7 +85,7 @@ class TestCompletionConsumedPrune:
     def test_prune_clears_dangling_completion_entries(self):
         """Stale entries in _completion_consumed without a backing session
         record are cleared out (belt-and-suspenders invariant)."""
-        from tools.process_registry import ProcessRegistry
+        from hermes_agent.tools.process_registry import ProcessRegistry
 
         reg = ProcessRegistry()
         # Add a dangling entry that was never in _running or _finished.

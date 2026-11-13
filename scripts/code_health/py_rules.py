@@ -892,7 +892,9 @@ def _is_legacy_setter(call: ast.Call) -> bool:
         root = root.value
     if not getattr(root, "imported", False):
         return False
-    name = _call_name(call)
+    # A setter's module is under hermes_agent/ once its package has moved; the table keeps the bare path,
+    # which is also what a tree from before the move imports (the ratchet runs this rule over the base too).
+    name = _call_name(call).removeprefix("hermes_agent.")
     if getattr(root, "relative", False):
         return "." in name and any(f".{setter}".endswith(f".{name}") for setter in _LEGACY_PROFILE_SETTERS)
     return name in _LEGACY_PROFILE_SETTERS

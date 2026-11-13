@@ -6,7 +6,7 @@ ordinary text and must not prompt.
 
 import pytest
 
-from tools.approval_detection import detect_dangerous_command
+from hermes_agent.tools.approval_detection import detect_dangerous_command
 
 INVISIBLE = "invisible or bidirectional Unicode control character (possible obfuscation)"
 
@@ -47,7 +47,7 @@ def test_emoji_presentation_and_plain_text_pass(command):
 
 
 def test_hidden_selector_is_its_own_content_key_after_another_rule():
-    from tools.approval_detection import detect_content_rule_keys
+    from hermes_agent.tools.approval_detection import detect_content_rule_keys
 
     command = "rm -rf /tmp/x; printf 'a\ufe0f'"
     assert detect_dangerous_command(command)[1] != INVISIBLE  # another rule matches first

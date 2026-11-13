@@ -33,7 +33,7 @@ from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, Proc
 from hermes_agent.gateway.platforms.helpers import redact_phone
 from hermes_agent.gateway.platforms.helpers import cancel_task
 from hermes_agent.gateway.platforms.media_cache import mime_for_ext
-from tools.audio_container import CONTAINER_TO_EXT, sniff_container
+from hermes_agent.tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from plugins.platforms.signal.signal_format import markdown_to_signal
 from plugins.platforms.signal.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
@@ -72,7 +72,7 @@ def _parse_comma_list(value: str) -> list[str]:
 
 def _guess_extension(data: bytes) -> str:
     """Guess file extension from magic bytes. WEBP is claimed before the shared audio/AV sniffer
-    (it shares RIFF with WAVE); tools/audio_container.py owns MP3-vs-ADTS-AAC disambiguation."""
+    (it shares RIFF with WAVE); hermes_agent/tools/audio_container.py owns MP3-vs-ADTS-AAC disambiguation."""
     for magic, ext in _MAGIC_EXTENSIONS:
         if data.startswith(magic):
             return ext

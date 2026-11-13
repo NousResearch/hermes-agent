@@ -15,7 +15,7 @@ import pytest
 
 from agent.lsp import deferred
 from agent.lsp.manager import LSPService
-from model_tools import handle_function_call
+from hermes_agent.model_tools import handle_function_call
 from tests.agent.lsp.test_service import _install_mock_server
 from tests.waiting import wait_until
 

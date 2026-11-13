@@ -11,9 +11,9 @@ import logging
 import pytest
 
 from agent.tool_dispatch_helpers import _peel_bridge_call
-from tools.connectors.gateway.bridge import ConnectorLeg, connector_describe
-from tools.connectors.gateway.errors import GatewayAuthError
-from tools.tool_search import (
+from hermes_agent.tools.connectors.gateway.bridge import ConnectorLeg, connector_describe
+from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError
+from hermes_agent.tools.tool_search import (
     CONNECTOR_BATCH_SENTINEL,
     ToolSearchConfig,
     assemble_tool_defs,
@@ -21,7 +21,7 @@ from tools.tool_search import (
     dispatch_tool_search,
     resolve_underlying_call,
 )
-from tools.tool_search_validation import normalize_tool_call_entries
+from hermes_agent.tools.tool_search_validation import normalize_tool_call_entries
 
 
 def _tool_search_description(tool_defs):
@@ -94,7 +94,7 @@ def test_resolve_multi_local_batch_echoes_first_entry_as_the_retry_shape():
 def test_resolve_unknown_name_points_at_tool_search_not_direct_call():
     # An unregistered name (typically a deferred MCP tool cited by its bare suffix) must
     # NOT be told "call it directly" — that is the opposite of the required correction.
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     name, _args, err = resolve_underlying_call({"name": "not_a_real_tool", "arguments": {}})
     assert name is None
@@ -183,7 +183,7 @@ def _fake_connector_search(queries):
 def _registered_local_defs():
     """Deferrable local tools the registry knows, so they enter the BM25 catalog: an issue
     tracker whose descriptions mention email notifications, and an unrelated tool."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     specs = [
         ("mcp__tracker__create_issue", "Create an issue. Sends an email notification to the team."),
@@ -203,7 +203,7 @@ def test_connector_intent_is_not_starved_by_local_tools_sharing_one_word():
     """The reported bug: with a large local catalog, tools that merely shared 'email' filled
     every slot and the gmail connector tool never appeared. Ranked as one corpus with the
     rarest-token gate ('gmail' is in one document), the connector tool is the only result."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     defs, names = _registered_local_defs()
     try:
@@ -225,7 +225,7 @@ def test_connector_intent_is_not_starved_by_local_tools_sharing_one_word():
 def test_both_sources_answer_within_one_limit():
     """When a local MCP server and a connector both serve the same service, both surface,
     ranked by the same BM25 pass, and `limit` caps the group as a whole."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     defs, names = _registered_local_defs()
     try:
@@ -309,7 +309,7 @@ def test_search_keeps_only_the_twin_a_colliding_name_reaches(order, caplog):
             },
         })
 
-    with caplog.at_level(logging.WARNING, logger="tools.connectors.search"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.connectors.search"):
         out = json.loads(dispatch_tool_search(
             {"queries": ["gmail fetch profile"]},
             current_tool_defs=_local_defs(),
@@ -508,8 +508,8 @@ def test_peel_keeps_mixed_and_local_batches_as_sequential_barrier():
 
 
 def _connectors_on(monkeypatch, client_factory):
-    from tools.registry import invalidate_check_fn_cache
-    from tools.connectors.gateway import bridge, config
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.connectors.gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -518,7 +518,7 @@ def _connectors_on(monkeypatch, client_factory):
 
 
 def _tool_call(calls):
-    import model_tools
+    from hermes_agent import model_tools
 
     return json.loads(model_tools.handle_function_call(
         "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="bridge-session",
@@ -610,7 +610,7 @@ class _RecordingTransport:
 
 
 def _recording_client_factory(transport):
-    from tools.connectors.gateway.client import ConnectorClient
+    from hermes_agent.tools.connectors.gateway.client import ConnectorClient
 
     return lambda: ConnectorClient(
         transport=transport,

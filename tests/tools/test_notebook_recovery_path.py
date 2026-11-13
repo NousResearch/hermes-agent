@@ -5,7 +5,7 @@ import shlex
 
 import pytest
 
-from tools.read_extract import (
+from hermes_agent.tools.read_extract import (
     _needs_ocr_warning,
     _pdf_coverage_note,
     extract_document_bytes,
@@ -28,7 +28,7 @@ def test_notebook_recovery_hint_opens_original_file(tmp_path, reader):
         text = extract_document_text(str(path))
     else:
         # Real public entry point, including configured local byte transport.
-        from tools.file_tools import read_file_tool
+        from hermes_agent.tools.file_tools import read_file_tool
         result = json.loads(read_file_tool(str(path), task_id='notebook-hint-recovery'))
         assert result.get('extracted_document'), result
         text = result['content']
@@ -42,7 +42,7 @@ def test_notebook_recovery_hint_opens_original_file(tmp_path, reader):
 
 def test_pdftoppm_recovery_hints_round_trip_apostrophe_path(monkeypatch):
     path = "/tmp/training team's notebook.pdf"
-    monkeypatch.setattr('tools.read_extract._pdf_page_texts', lambda _p: ['x' * 500, '', '', ''])
+    monkeypatch.setattr('hermes_agent.tools.read_extract._pdf_page_texts', lambda _p: ['x' * 500, '', '', ''])
     for note in (_needs_ocr_warning(path, [2]), _pdf_coverage_note('/tmp/copy.pdf', display_path=path)):
         command = note.split('`', 2)[1]
         argv = shlex.split(command)

@@ -21,7 +21,7 @@ def _account_method(params_model=None, *, creates_guest, invalid="", invalid_rea
     def decorate(fn):
         def handler(rid, params):
             from pydantic import ValidationError
-            from tools.connectors.gateway.errors import GatewayAuthError
+            from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError
 
             with _desktop_page_vars():
                 if gate_error := _account_gate_closed(rid):
@@ -58,10 +58,10 @@ def _account_method(params_model=None, *, creates_guest, invalid="", invalid_rea
     unavailable_message="Connector tools are unavailable.",
 )
 def _(rid, request):
-    from tools.connectors.gateway.errors import GatewayUnavailable
-    from tools.connectors.portal.client import PortalConnectorClient
-    from tools.connectors.portal.errors import InvalidConnectorSlug
-    from tools.connectors.portal.tools_cache import read_tools
+    from hermes_agent.tools.connectors.gateway.errors import GatewayUnavailable
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.errors import InvalidConnectorSlug
+    from hermes_agent.tools.connectors.portal.tools_cache import read_tools
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorToolsResult
 
     client = PortalConnectorClient()
@@ -81,8 +81,8 @@ def _(rid, request):
     unavailable_message="Connector catalog is unavailable.",
 )
 def _(rid, _params):
-    from tools.connectors.portal.client import PortalConnectorClient
-    from tools.managed_tool_gateway import read_nous_access_token
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.managed_tool_gateway import read_nous_access_token
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorsCatalogResult
 
     client = PortalConnectorClient()
@@ -100,8 +100,8 @@ def _(rid, _params):
     unavailable_message="Connector accounts are unavailable.",
 )
 def _(rid, request):
-    from tools.connectors.portal.client import PortalConnectorClient
-    from tools.managed_tool_gateway import read_nous_access_token
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.managed_tool_gateway import read_nous_access_token
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorAccountRow, ConnectorAccountsResult
 
     accounts = PortalConnectorClient().list_accounts() if read_nous_access_token() else []
@@ -137,13 +137,13 @@ def _account_row(account):
     unavailable_message="Connector accounts are unavailable.",
 )
 def _(rid, request):
-    from tools.connectors.gateway.errors import (
+    from hermes_agent.tools.connectors.gateway.errors import (
         GatewayAuthError,
         GatewayUnavailable,
         IdempotencyConflict,
         ToolGatewayError,
     )
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
     try:
@@ -175,8 +175,8 @@ def _(rid, request):
     unavailable_message="Connector accounts are unavailable.",
 )
 def _(rid, request):
-    from tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorAccountsRemoveResult, ConnectorErrorReason
 
     try:
@@ -207,8 +207,8 @@ def _(rid, request):
     unavailable_message="Connector policy is unavailable.",
 )
 def _(rid, _params):
-    from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorPolicyGetResult, ConnectorPolicyLayer
 
     try:
@@ -239,9 +239,9 @@ def _(rid, _params):
     unavailable_message="Connector policy is unavailable.",
 )
 def _(rid, request):
-    from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
-    from tools.connectors.portal.client import PortalConnectorClient
-    from tools.connectors.portal.policy import InvalidMemberPolicy, compose_connector_write, compose_tools_write
+    from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.policy import InvalidMemberPolicy, compose_connector_write, compose_tools_write
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorPolicySetResult, ToolsChange
 
     try:

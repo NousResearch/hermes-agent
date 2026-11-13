@@ -64,7 +64,7 @@ class CLIVoiceMixin:
         from cli import _ACCENT, _DIM, _RST, _cprint
         if getattr(self, '_should_exit', False):
             return
-        from tools.voice_mode import create_audio_recorder, check_voice_requirements
+        from hermes_agent.tools.voice_mode import create_audio_recorder, check_voice_requirements
 
         reqs = check_voice_requirements()
         if not reqs["audio_available"]:
@@ -149,7 +149,7 @@ class CLIVoiceMixin:
         """Play a record start/stop beep when enabled; never raises."""
         if self._voice_beeps_enabled():
             try:
-                from tools.voice_mode import play_beep
+                from hermes_agent.tools.voice_mode import play_beep
                 play_beep(frequency=frequency, count=count)
             except Exception:
                 pass
@@ -217,8 +217,8 @@ class CLIVoiceMixin:
                 _cprint(f"{_DIM}{t('cli.voice.preparing_stt', model=stt_model)}{_RST}")
             else:
                 _cprint(f"{_DIM}{t('cli.voice.transcribing')}{_RST}")
-            from tools.voice_mode_transcript import is_voice_stop_phrase
-            from tools.voice_mode import transcribe_recording
+            from hermes_agent.tools.voice_mode_transcript import is_voice_stop_phrase
+            from hermes_agent.tools.voice_mode import transcribe_recording
             result = transcribe_recording(wav_path, model=stt_model)
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()
@@ -299,12 +299,12 @@ class CLIVoiceMixin:
             return
         self._voice_tts_done.clear()
         try:
-            from tools.tts_tool import text_to_speech_tool
-            from tools.voice_mode import play_audio_file
+            from hermes_agent.tools.tts_tool import text_to_speech_tool
+            from hermes_agent.tools.voice_mode import play_audio_file
             # Shared cleaner strips markdown/emoji/⋗ blocks/verifier footer; the TTS tool owns
             # provider request limits and long-form chunking.
             try:
-                from tools.tts_text_normalize import prepare_spoken_text
+                from hermes_agent.tools.tts_text_normalize import prepare_spoken_text
                 tts_text = prepare_spoken_text(text, max_chars=None)
             except Exception:
                 # Legacy fallback pipeline — keep voice replies best-effort.
@@ -369,7 +369,7 @@ class CLIVoiceMixin:
             voice_cfg = load_config().get("voice") or {}
             if not (isinstance(voice_cfg, dict) and voice_cfg.get("barge_in", True)):
                 return
-            from tools.voice_mode import full_duplex_listen, is_audio_output_active, stop_playback
+            from hermes_agent.tools.voice_mode import full_duplex_listen, is_audio_output_active, stop_playback
 
             try:
                 _mult = float(voice_cfg.get("barge_in_threshold_multiplier", 0) or 0)
@@ -400,7 +400,7 @@ class CLIVoiceMixin:
                 _pipe_stop = getattr(self, "_voice_tts_stop", None)
                 if phase == "playback":
                     logger.debug("TTS CUT: full-duplex listener tripped during playback")
-                    from tools.tts_streaming import mark_speech_interrupted
+                    from hermes_agent.tools.tts_streaming import mark_speech_interrupted
                     mark_speech_interrupted()
                     if _pipe_stop is not None:
                         _pipe_stop.set()
@@ -437,11 +437,11 @@ class CLIVoiceMixin:
         from cli import _DIM, _RST, _VoiceInputMessage, _cprint, logger
         submitted = False
         try:
-            from tools.voice_mode import transcribe_recording
+            from hermes_agent.tools.voice_mode import transcribe_recording
             result = transcribe_recording(wav_path, model=self._voice_stt_model())
             transcript = (result.get("transcript") or "").strip() if result.get("success") else ""
             if transcript:
-                from tools.voice_mode_transcript import is_voice_stop_phrase
+                from hermes_agent.tools.voice_mode_transcript import is_voice_stop_phrase
                 if is_voice_stop_phrase(transcript):
                     _cprint(f"\n{_DIM}{t('cli.voice.stop_phrase')}{_RST}")
                     self._disable_voice_mode()
@@ -449,7 +449,7 @@ class CLIVoiceMixin:
                 # Fail-closed echo guard: playback-phase capture has no echo cancellation, so
                 # a close match for what Hermes just spoke is speaker bleed, not a user turn.
                 if getattr(self, "_voice_barge_phase", None) == "playback":
-                    from tools.voice_mode_transcript import is_tts_echo
+                    from hermes_agent.tools.voice_mode_transcript import is_tts_echo
                     if is_tts_echo(transcript, getattr(self, "_voice_last_tts_text", "")):
                         logger.debug(
                             "Dropping playback-phase barge transcript as TTS echo: %r", transcript)
@@ -484,7 +484,7 @@ class CLIVoiceMixin:
             _cprint(f"{_DIM}{t('cli.voice.already_enabled')}{_RST}")
             return
 
-        from tools.voice_mode import check_voice_requirements, detect_audio_environment
+        from hermes_agent.tools.voice_mode import check_voice_requirements, detect_audio_environment
         env_check = detect_audio_environment()
         if not env_check["available"]:
             _cprint(f"\n{_ACCENT}{t('cli.voice.unavailable_header')}{_RST}")
@@ -521,7 +521,7 @@ class CLIVoiceMixin:
         _cprint(f"  {_DIM}{t('cli.voice.record_key_hint', shortcut=self._voice_record_key_label())}{_RST}")
         # Spoken-stop hint from voice.stop_phrases (first entry); "" when disabled.
         try:
-            from tools.voice_mode_transcript import voice_stop_hint
+            from hermes_agent.tools.voice_mode_transcript import voice_stop_hint
             _stop_hint = voice_stop_hint()
         except Exception:
             _stop_hint = ""
@@ -546,7 +546,7 @@ class CLIVoiceMixin:
         if not voice_on:
             return False
         try:
-            from tools.voice_mode_transcript import is_voice_stop_phrase
+            from hermes_agent.tools.voice_mode_transcript import is_voice_stop_phrase
             if not is_voice_stop_phrase(user_input):
                 return False
         except Exception:
@@ -583,7 +583,7 @@ class CLIVoiceMixin:
             if self._voice_tts_stop is not None:
                 logger.info("TTS CUT: _disable_voice_mode setting stop event")
                 self._voice_tts_stop.set()
-            from tools.voice_mode import stop_playback
+            from hermes_agent.tools.voice_mode import stop_playback
             stop_playback()
         except Exception:
             pass
@@ -593,7 +593,7 @@ class CLIVoiceMixin:
     def _maybe_start_wake_word(self):
         """Start the wake-word listener at CLI startup if this surface is eligible."""
         try:
-            from tools.wake_word import wake_surface_enabled
+            from hermes_agent.tools.wake_word import wake_surface_enabled
             if not wake_surface_enabled("cli"):
                 return
         except Exception:
@@ -605,7 +605,7 @@ class CLIVoiceMixin:
         from cli import _ACCENT, _DIM, _RST, _cprint
         say = _cprint if announce else (lambda *_a: None)
         try:
-            from tools.wake_word import (
+            from hermes_agent.tools.wake_word import (
                 check_wake_word_requirements, load_wake_word_config, owns_listener, start_listening)
         except Exception as e:
             say(f"{_DIM}{t('cli.voice.wake_unavailable', error=e)}{_RST}")
@@ -652,7 +652,7 @@ class CLIVoiceMixin:
         self._wake_word_active = False
         self._wake_suspended = False
         try:
-            from tools.wake_word import stop_listening
+            from hermes_agent.tools.wake_word import stop_listening
             stop_listening(owner=self)
         except Exception:
             pass
@@ -672,7 +672,7 @@ class CLIVoiceMixin:
 
         # Release the mic so STT can capture the command utterance.
         try:
-            from tools.wake_word import pause_listening
+            from hermes_agent.tools.wake_word import pause_listening
             if not pause_listening(owner=self):
                 self._wake_word_active = False
                 return
@@ -684,12 +684,12 @@ class CLIVoiceMixin:
         # The CLI is single-profile: a phrase enrolled by ANOTHER profile can't be routed
         # here — print the switch command and re-arm rather than answer as the wrong profile.
         try:
-            from tools.wake_word import get_last_match
+            from hermes_agent.tools.wake_word import get_last_match
             _match = get_last_match()
         except Exception:
             _match = None
         if _match and _match[1]:
-            from tools.wake_word import _active_profile_name
+            from hermes_agent.tools.wake_word import _active_profile_name
             if _match[1] != _active_profile_name():
                 _cprint(f"\n{_DIM}{t('cli.voice.wake_profile_hint', profile=_match[1])}{_RST}")
                 self._wake_suspended = True  # watchdog resumes the listener
@@ -746,7 +746,7 @@ class CLIVoiceMixin:
                     if idle_polls >= 3:
                         idle_polls = 0
                         try:
-                            from tools.wake_word import resume_listening
+                            from hermes_agent.tools.wake_word import resume_listening
                             if resume_listening(owner=self):
                                 self._wake_suspended = False
                             else:
@@ -761,7 +761,7 @@ class CLIVoiceMixin:
     def _show_wake_word_status(self):
         """Show current wake-word listener status."""
         from cli import _ACCENT, _BOLD, _DIM, _RST, _cprint
-        from tools.wake_word import (
+        from hermes_agent.tools.wake_word import (
             audio_is_silent, check_wake_word_requirements, is_listening, load_wake_word_config,
             owns_listener)
 
@@ -795,7 +795,7 @@ class CLIVoiceMixin:
 
         def _run():
             try:
-                from tools.tts_tool_lifecycle import acquire_tts_lease, release_tts_lease
+                from hermes_agent.tools.tts_tool_lifecycle import acquire_tts_lease, release_tts_lease
                 if active:
                     acquire_tts_lease("cli:voice-tts")
                 else:
@@ -816,7 +816,7 @@ class CLIVoiceMixin:
             self._voice_tts = not self._voice_tts
         status = t("cli.shared.label_enabled" if self._voice_tts else "cli.shared.label_disabled")
         if self._voice_tts:
-            from tools.tts_tool import check_tts_requirements
+            from hermes_agent.tools.tts_tool import check_tts_requirements
             if not check_tts_requirements():
                 _cprint(f"{_DIM}{t('cli.voice.tts_no_provider')}{_RST}")
         self._tts_lease_async(self._voice_tts)  # warm-up / release signal for the TTS engine
@@ -825,7 +825,7 @@ class CLIVoiceMixin:
     def _show_voice_status(self):
         """Show current voice mode status."""
         from cli import _BOLD, _RST, _cprint
-        from tools.voice_mode import check_voice_requirements
+        from hermes_agent.tools.voice_mode import check_voice_requirements
 
         reqs = check_voice_requirements()
         _on, _off = t("cli.voice.state_on"), t("cli.voice.state_off")

@@ -14,7 +14,7 @@ import time
 import pytest
 from unittest.mock import patch
 
-from tools.process_registry import (
+from hermes_agent.tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
 )
@@ -101,7 +101,7 @@ class TestCompletionQueue:
         assert completion["output_cut"] == 3000
 
     def test_completion_output_is_sized_per_process(self, registry):
-        """A spawner whose output IS the payload (a bot DM's reply, tools/bot_mode_dm.py) asks for a
+        """A spawner whose output IS the payload (a bot DM's reply, hermes_agent/tools/bot_mode_dm.py) asks for a
         larger completion; the tail cap stays the default for everything else, and a completion
         that carries the whole output declares no cut."""
         s = _make_session(notify_on_complete=True, output="x" * 5000)
@@ -163,7 +163,7 @@ class TestCompletionQueue:
 
 class TestCheckpointNotify:
     def test_checkpoint_includes_notify(self, registry, tmp_path):
-        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+        with patch("hermes_agent.tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
             s = _make_session(notify_on_complete=True)
             registry._running[s.id] = s
             registry._write_checkpoint()
@@ -181,7 +181,7 @@ class TestCheckpointNotify:
             "pid": os.getpid(),
             "task_id": "t1",
         }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        with patch("hermes_agent.tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 1
             s = registry.get("proc_live")
@@ -197,7 +197,7 @@ class TestTerminalSchema:
 
     def test_cut_completion_says_so_and_points_at_the_log(self):
         """The rendered notice names the cut and the process log; a whole output renders as before."""
-        from tools.process_registry_notifications import format_process_notification
+        from hermes_agent.tools.process_registry_notifications import format_process_notification
         base = {"type": "completion", "session_id": "proc_abc", "command": "hermes peer dm mini",
                 "exit_code": 0, "output": "Reply from mini:\ntail"}
         cut = format_process_notification({**base, "output_cut": 3000})
@@ -298,8 +298,8 @@ def _silent_bg_base_config(tmp_path):
 def _silent_bg_harness(monkeypatch, tmp_path):
     """Common test fixture: patch enough of terminal_tool to spawn a fake
     background process and capture the JSON result the agent sees."""
-    import tools.terminal_tool as terminal_tool_module
-    from tools import process_registry as process_registry_module
+    import hermes_agent.tools.terminal_tool as terminal_tool_module
+    from hermes_agent.tools import process_registry as process_registry_module
     from types import SimpleNamespace
 
     config = _silent_bg_base_config(tmp_path)
@@ -345,7 +345,7 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
 
     assert result["session_id"] == "proc_silent_test"
     hint = result.get("hint", "")
-    from tools.process_registry import PROCESS_SCHEMA
+    from hermes_agent.tools.process_registry import PROCESS_SCHEMA
     assert f"{PROCESS_SCHEMA['name']}(action=" in hint
     assert hint, "Silent background process must include a hint field"
     assert "notify_on_complete" in hint, (

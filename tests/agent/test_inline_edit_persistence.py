@@ -23,14 +23,14 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
     from agent import secret_scope
     from agent.turn_context import build_api_messages
     from hermes_agent.hermes_state import SessionDB
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
-    from tools.terminal_tool import register_task_env_overrides, clear_task_env_overrides
-    from tools import file_tools
-    import model_tools
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.terminal_tool import register_task_env_overrides, clear_task_env_overrides
+    from hermes_agent.tools import file_tools
+    from hermes_agent import model_tools
     import hermes_agent.tui_gateway.server as progress
 
-    assert Path(model_tools.__file__).resolve().parent == Path(__file__).resolve().parents[2]
+    assert Path(model_tools.__file__).resolve().parents[1] == Path(__file__).resolve().parents[2]
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
     # Deliberately different from the execution cwd: relative previews must use

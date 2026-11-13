@@ -24,7 +24,7 @@ def secondary_scope(monkeypatch):
 
 
 def test_scoped_tool_credential_gates_ignore_default_profile_environ(monkeypatch, secondary_scope, tmp_path):
-    from tools import browser_use_cli, read_extract, tool_backend_helpers
+    from hermes_agent.tools import browser_use_cli, read_extract, tool_backend_helpers
 
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-default")
     monkeypatch.setenv("MODAL_TOKEN_ID", "id-default")
@@ -39,7 +39,7 @@ def test_scoped_tool_credential_gates_ignore_default_profile_environ(monkeypatch
 
 
 def test_weixin_home_channel_resolves_from_profile_scope_not_environ(monkeypatch, secondary_scope):
-    from tools import send_message_tool
+    from hermes_agent.tools import send_message_tool
 
     class _NoHome:
         def get_home_channel(self, platform):

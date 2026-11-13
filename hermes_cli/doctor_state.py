@@ -107,7 +107,7 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
 
 
 def _memory_store_flags(hermes_home: Path) -> tuple:
-    from tools.memory_tool import get_builtin_memory_store_flags
+    from hermes_agent.tools.memory_tool import get_builtin_memory_store_flags
     return get_builtin_memory_store_flags({"memory": _doctor_memory_config(hermes_home)})
 
 
@@ -518,7 +518,7 @@ def _check_cron_store(should_fix: bool, f: Finding) -> None:
 @doctor_check()
 def _check_checkpoint_store(should_fix: bool, f: Finding) -> None:
     """/rollback store footprint: warn when checkpoints are on and the store sits above its cap."""
-    from tools.checkpoint_maintenance import checkpoint_footprint_notice
+    from hermes_agent.tools.checkpoint_maintenance import checkpoint_footprint_notice
     notice = checkpoint_footprint_notice()
     if notice:
         check_warn(notice)

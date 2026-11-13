@@ -54,12 +54,28 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 hermes-agent/
 ├── run_agent.py              # AIAgent — 核心对话循环（大文件）
 ├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
-├── model_tools.py            # 工具发现、schema 收集、分发
-├── toolsets.py               # 工具分组与平台预设
 ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── hermes_agent/             # Python 包
+│   ├── model_tools.py            # 工具发现、schema 收集、分发
+│   ├── toolsets.py               # 工具分组与平台预设
 │   ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 │   ├── batch_runner.py           # 批量轨迹生成
+│   │
+│   ├── tools/                    # 工具实现（每个工具一个文件）
+│   │   ├── registry.py           # 中央工具注册表
+│   │   ├── approval.py           # 危险命令检测
+│   │   ├── terminal_tool.py      # 终端编排
+│   │   ├── process_registry.py   # 后台进程管理
+│   │   ├── file_tools.py         # read_file、write_file、patch、search_files
+│   │   ├── web_tools.py          # web_search、web_extract
+│   │   ├── browser_tool.py       # 10 个浏览器自动化工具
+│   │   ├── code_execution_tool.py # execute_code 沙箱
+│   │   ├── delegate_tool.py      # 子 agent 委托
+│   │   ├── mcp_tool.py           # MCP 客户端（大文件）
+│   │   ├── credential_files.py   # 基于文件的凭据透传
+│   │   ├── env_passthrough.py    # 沙箱环境变量透传
+│   │   ├── ansi_strip.py         # ANSI 转义字符剥离
+│   │   └── environments/         # 终端后端（local、docker、ssh、modal、daytona、singularity）
 │   │
 │   ├── gateway/                  # 消息平台 gateway
 │   │   ├── run.py                # GatewayRunner——消息分发（大文件）
@@ -107,22 +123,6 @@ hermes-agent/
 │   ├── callbacks.py          # 终端回调（clarify、sudo、approval）
 │   └── gateway.py            # hermes gateway 启动/停止
 │
-├── tools/                    # 工具实现（每个工具一个文件）
-│   ├── registry.py           # 中央工具注册表
-│   ├── approval.py           # 危险命令检测
-│   ├── terminal_tool.py      # 终端编排
-│   ├── process_registry.py   # 后台进程管理
-│   ├── file_tools.py         # read_file、write_file、patch、search_files
-│   ├── web_tools.py          # web_search、web_extract
-│   ├── browser_tool.py       # 10 个浏览器自动化工具
-│   ├── code_execution_tool.py # execute_code 沙箱
-│   ├── delegate_tool.py      # 子 agent 委托
-│   ├── mcp_tool.py           # MCP 客户端（大文件）
-│   ├── credential_files.py   # 基于文件的凭据透传
-│   ├── env_passthrough.py    # 沙箱环境变量透传
-│   ├── ansi_strip.py         # ANSI 转义字符剥离
-│   └── environments/         # 终端后端（local、docker、ssh、modal、daytona、singularity）
-│
 ├── plugins/platforms/        # 随包平台插件：telegram、discord、slack、whatsapp、
 │                             #   whatsapp_cloud、signal、weixin、bluebubbles、qqbot、
 │                             #   matrix、feishu 等（元宝：`yuanbao` Hermes Labs 插件）
@@ -144,7 +144,7 @@ hermes-agent/
     → prompt_builder.build_system_prompt()
     → runtime_provider.resolve_runtime_provider()
     → API 调用（chat_completions / codex_responses / anthropic_messages）
-    → tool_calls? → model_tools.handle_function_call() → 循环
+    → tool_calls? → hermes_agent.model_tools.handle_function_call() → 循环
     → 最终响应 → 显示 → 保存至 SessionDB
 ```
 
@@ -212,7 +212,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 ### 工具系统
 
-中央工具注册表（`tools/registry.py`），包含约 28 个 toolset 中的 70+ 个已注册工具。每个工具文件在导入时自行注册。注册表负责 schema 收集、分发、可用性检查和错误包装。终端工具支持 7 种后端（local、Docker、SSH、Daytona、Modal、Singularity、Vercel Sandbox）。
+中央工具注册表（`hermes_agent/tools/registry.py`），包含约 28 个 toolset 中的 70+ 个已注册工具。每个工具文件在导入时自行注册。注册表负责 schema 收集、分发、可用性检查和错误包装。终端工具支持 7 种后端（local、Docker、SSH、Daytona、Modal、Singularity、Vercel Sandbox）。
 
 → [工具运行时](./tools-runtime.md)
 
@@ -266,13 +266,13 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 ## 文件依赖链
 
 ```text
-tools/registry.py  （无依赖——被所有工具文件导入）
+hermes_agent/tools/registry.py  （无依赖——被所有工具文件导入）
        ↑
-tools/*.py  （每个文件在导入时调用 registry.register()）
+hermes_agent/tools/*.py  （每个文件在导入时调用 registry.register()）
        ↑
-model_tools.py  （导入 tools/registry 并触发工具发现）
+hermes_agent/model_tools.py  （导入 hermes_agent/tools/registry 并触发工具发现）
        ↑
 run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
-这条依赖链意味着工具注册发生在导入时，早于任何 agent 实例的创建。任何在顶层调用 `registry.register()` 的 `tools/*.py` 文件都会被自动发现——无需手动维护导入列表。
+这条依赖链意味着工具注册发生在导入时，早于任何 agent 实例的创建。任何在顶层调用 `registry.register()` 的 `hermes_agent/tools/*.py` 文件都会被自动发现——无需手动维护导入列表。

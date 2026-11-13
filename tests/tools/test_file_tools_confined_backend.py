@@ -13,10 +13,10 @@ import json
 
 import pytest
 
-from tools import terminal_tool
-from tools.environments.local import LocalEnvironment
-from tools.file_tools import clear_file_ops_cache
-from tools.registry import registry
+from hermes_agent.tools import terminal_tool
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_tools import clear_file_ops_cache
+from hermes_agent.tools.registry import registry
 
 # The host fast path is POSIX-only (``_native_read_enabled``); Windows always takes the shell path.
 pytestmark = pytest.mark.platforms("posix")

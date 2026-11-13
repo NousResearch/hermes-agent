@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 
 @pytest.fixture()
@@ -162,7 +162,7 @@ class TestCheckpointReadopt:
                 "notify_on_complete": True,
             }]))
             monkeypatch.setattr(
-                "tools.process_registry.CHECKPOINT_PATH", checkpoint
+                "hermes_agent.tools.process_registry.CHECKPOINT_PATH", checkpoint
             )
             monkeypatch.setattr(
                 ProcessRegistry, "_safe_host_start_time", staticmethod(lambda _pid: None)
@@ -198,10 +198,10 @@ class TestCheckpointReadopt:
             }]))
             stopped = []
             monkeypatch.setattr(
-                "tools.process_registry.CHECKPOINT_PATH", checkpoint
+                "hermes_agent.tools.process_registry.CHECKPOINT_PATH", checkpoint
             )
             monkeypatch.setattr(
-                "tools.process_registry._stop_systemd_unit",
+                "hermes_agent.tools.process_registry._stop_systemd_unit",
                 lambda unit: stopped.append(unit) or True,
             )
 

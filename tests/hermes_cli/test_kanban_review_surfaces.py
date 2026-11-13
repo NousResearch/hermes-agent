@@ -38,7 +38,7 @@ def test_review_tools_redact_handoff_and_route_changes(
     review_worker: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tools import kanban_tools as tools
+    from hermes_agent.tools import kanban_tools as tools
 
     secret = "ghp_" + "A" * 40
     requested = json.loads(
@@ -93,9 +93,9 @@ def test_review_tools_redact_handoff_and_route_changes(
 def test_review_tools_are_gated_and_visible_to_kanban_workers(
     review_worker: str,
 ) -> None:
-    import tools.kanban_tools
-    from tools.registry import invalidate_check_fn_cache, registry
-    from toolsets import resolve_toolset
+    import hermes_agent.tools.kanban_tools
+    from hermes_agent.tools.registry import invalidate_check_fn_cache, registry
+    from hermes_agent.toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
     definitions = registry.get_definitions(
@@ -288,7 +288,7 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setenv("HERMES_KANBAN_TASK", tool_task)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
 
-    from tools import kanban_tools as tools
+    from hermes_agent.tools import kanban_tools as tools
 
     monkeypatch.setattr(tools, "_goal_judge_available", lambda: True)
     monkeypatch.setattr(

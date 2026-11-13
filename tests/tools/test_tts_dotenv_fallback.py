@@ -43,7 +43,7 @@ class TestDotenvFallbackPerProvider:
     """
 
     def test_elevenlabs_reads_dotenv_key(self, tmp_path):
-        from tools import tts_tool
+        from hermes_agent.tools import tts_tool
 
         with patch("hermes_cli.config.get_env_value", return_value="el-dotenv-key"), \
              patch.object(tts_tool, "_import_elevenlabs") as mock_import:
@@ -57,10 +57,10 @@ class TestDotenvFallbackPerProvider:
             mock_import.return_value.assert_called_once_with(api_key="el-dotenv-key")
 
     def test_xai_reads_dotenv_key(self, tmp_path):
-        """xAI TTS resolves credentials through ``tools.xai_http``, which reads the
+        """xAI TTS resolves credentials through ``hermes_agent.tools.xai_http``, which reads the
         canonical ``hermes_cli.config.get_env_value`` — the dotenv contract from #17140.
         """
-        from tools import tts_tool
+        from hermes_agent.tools import tts_tool
 
         captured: dict = {}
 
@@ -80,7 +80,7 @@ class TestDotenvFallbackPerProvider:
 
 
     def test_gemini_reads_dotenv_key(self, tmp_path):
-        from tools import tts_tool
+        from hermes_agent.tools import tts_tool
 
         captured: dict = {}
 
@@ -137,7 +137,7 @@ class TestRegressionGuard:
     """
 
     def test_minimax_missing_when_only_in_dotenv_before_fix(self, tmp_path, monkeypatch):
-        from tools import tts_tool
+        from hermes_agent.tools import tts_tool
 
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
 
@@ -180,7 +180,7 @@ class TestRegressionGuard:
         would say "no provider available" for users who keep MINIMAX_API_KEY
         in ``~/.hermes/.env``, even though the dispatcher would later succeed.
         """
-        from tools import tts_tool
+        from hermes_agent.tools import tts_tool
 
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
 

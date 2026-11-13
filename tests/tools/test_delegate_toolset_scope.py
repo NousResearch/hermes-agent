@@ -8,7 +8,7 @@ arbitrary toolsets.
 
 from types import SimpleNamespace
 
-from tools.delegate_tool import _strip_blocked_tools, _emit_parent_console
+from hermes_agent.tools.delegate_tool import _strip_blocked_tools, _emit_parent_console
 
 class TestToolsetIntersection:
     """Subagent toolsets must be a subset of parent's enabled_toolsets."""

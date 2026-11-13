@@ -1,10 +1,10 @@
-"""Tests for tools/self_repo_guard.py — the running-source-checkout git guard."""
+"""Tests for hermes_agent/tools/self_repo_guard.py — the running-source-checkout git guard."""
 
 import subprocess
 
 import pytest
 
-from tools.self_repo_guard import (
+from hermes_agent.tools.self_repo_guard import (
     detect_self_repo_git_mutation,
 )
 
@@ -303,7 +303,7 @@ class TestAllowsSafeCommands:
         assert hit is False
 
     def test_packaged_install_is_inert(self, monkeypatch, tmp_path):
-        import tools.self_repo_guard as mod
+        import hermes_agent.tools.self_repo_guard as mod
 
         monkeypatch.setattr(mod, "get_running_source_root", lambda: None)
         hit, msg = mod.detect_self_repo_git_mutation("git checkout main", str(tmp_path))
@@ -379,7 +379,7 @@ class TestWorktreeTargetingSourceRoot:
 class TestSourceRootResolution:
 
     def test_worktree_git_file_counts(self, tmp_path, monkeypatch):
-        import tools.self_repo_guard as mod
+        import hermes_agent.tools.self_repo_guard as mod
 
         root = tmp_path / "wt"
         root.mkdir()

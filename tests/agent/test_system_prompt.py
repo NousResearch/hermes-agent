@@ -65,7 +65,7 @@ def test_kanban_guidance_requires_worker_task_at_agent_init(monkeypatch, task_id
     """A profile can expose kanban tools without making the session a worker."""
     from agent.agent_init import _load_tools
     from agent.prompt_builder import KANBAN_GUIDANCE
-    import model_tools
+    from hermes_agent import model_tools
 
     if task_id is None:
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -668,7 +668,7 @@ def _build(builder, **overrides):
         patch("agent.prompt_builder.load_soul_md", return_value=""),
         patch("agent.prompt_builder.build_environment_hints", return_value=""),
         patch("agent.prompt_builder.build_context_files_prompt", return_value=_CONTEXT),
-        patch("model_tools.get_toolset_for_tool", return_value=None),
+        patch("hermes_agent.model_tools.get_toolset_for_tool", return_value=None),
         patch("agent.prompt_builder.build_skills_system_prompt", return_value=_SKILLS),
     ):
         return builder(agent)

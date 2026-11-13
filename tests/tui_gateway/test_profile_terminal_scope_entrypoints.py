@@ -1,6 +1,6 @@
 """Terminal-scope invariants for the TUI gateway's off-turn profile entrypoints under multiplexing.
 
-``tools/terminal_tool.py`` no longer bridges a profile's ``terminal.*`` into ``os.environ`` under a
+``hermes_agent/tools/terminal_tool.py`` no longer bridges a profile's ``terminal.*`` into ``os.environ`` under a
 home override, so every secondary-profile entrypoint must bind the owning terminal scope itself:
 side workers (``prompt.background`` / ``prompt.btw`` / ``preview.restart``) and agent builds
 (eager resume, ``session.branch``) used to bind only the home (+ secrets) and ran a
@@ -21,8 +21,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import terminal_tool as tt
-from tools.terminal_scope import get_terminal_scope
+from hermes_agent.tools import terminal_tool as tt
+from hermes_agent.tools.terminal_scope import get_terminal_scope
 from hermes_agent.tui_gateway import launch_profile_policy as ltp
 from hermes_agent.tui_gateway import server
 
@@ -129,7 +129,7 @@ def _launch_turn_policy(launch_home):
             assert get_terminal_scope() is not None
             return tt._get_env_config()
     finally:
-        from tools.approval_context import reset_current_session_key
+        from hermes_agent.tools.approval_context import reset_current_session_key
         if st.scopes.profile is not None:
             st.scopes.profile.reset()
         if st.scopes.approval is not None:

@@ -180,7 +180,7 @@ def _xai_prefers_native_web_search() -> bool:
         if provider is not None:
             return getattr(provider, "name", None) == "xai"
 
-        from tools.web_tools import _get_search_backend
+        from hermes_agent.tools.web_tools import _get_search_backend
 
         return (_get_search_backend() or "").strip().lower() == "xai"
     except Exception:
@@ -216,7 +216,7 @@ def _openai_prefers_native_web_search() -> bool:
         if provider is not None:
             return getattr(provider, "name", None) == "openai-native"
 
-        from tools.web_tools import _get_search_backend
+        from hermes_agent.tools.web_tools import _get_search_backend
 
         return (_get_search_backend() or "").strip().lower() == "openai-native"
     except Exception:

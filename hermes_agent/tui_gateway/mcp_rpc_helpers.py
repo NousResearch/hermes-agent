@@ -14,7 +14,7 @@ def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[dic
     plugins: dict[str, str | None] = {name: None for name in servers}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
-        from tools.mcp_tool_config import _filter_suspicious_mcp_servers
+        from hermes_agent.tools.mcp_tool_config import _filter_suspicious_mcp_servers
 
         discover_plugins()
         manager = get_plugin_manager()
@@ -31,7 +31,7 @@ def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[dic
 
 def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
     cfg = cfg if isinstance(cfg, dict) else {}
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")

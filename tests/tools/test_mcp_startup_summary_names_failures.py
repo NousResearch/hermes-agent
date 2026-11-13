@@ -10,12 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.mcp_tool_scope import _server_key
+from hermes_agent.tools.mcp_tool_scope import _server_key
 
 
 @pytest.fixture
 def _clean_registry():
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     yield
     with mcp_tool._lock:
@@ -35,14 +35,14 @@ def test_register_summary_names_failed_server_with_reason(monkeypatch, tmp_path,
     """Production path: ``register_mcp_servers`` with a stdio command that cannot start. The
     summary line itself carries the server name and the recorded connect error."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool
-    from tools.mcp_tool_discovery import register_mcp_servers
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
 
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 1)
     monkeypatch.setattr(mcp_tool, "_MAX_BACKOFF_SECONDS", 0.1)
     missing = str(tmp_path / "no-such-mcp-binary")
 
-    with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.tools.mcp_tool"):
         register_mcp_servers({"ghost": {"command": missing, "connect_timeout": 15}})
 
     summaries = _summaries(caplog)
@@ -55,12 +55,12 @@ def test_summary_marks_candidate_skipped_for_cooldown(caplog, _clean_registry):
     """A candidate this pass never attempted (still inside its retry cooldown) has no fresh
     connect error: it is named with an explicit "not attempted" reason instead of vanishing
     into the count; a healthy server keeps the summary unchanged."""
-    from tools import mcp_tool
-    from tools.mcp_tool_discovery import _log_summary
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_discovery import _log_summary
 
     with mcp_tool._lock:
         mcp_tool._servers[_server_key("ok")] = SimpleNamespace(_registered_tool_names=["t1", "t2"])
-    with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.tools.mcp_tool"):
         _log_summary("  MCP:", ["ok", "cooled"])
 
     summaries = _summaries(caplog)

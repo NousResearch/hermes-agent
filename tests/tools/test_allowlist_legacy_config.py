@@ -1,5 +1,5 @@
 import hermes_yaml as yaml
-from tools import approval
+from hermes_agent.tools import approval
 
 
 def test_legacy_string_allowlist_recovers_only_string_lists(tmp_path, monkeypatch, caplog):

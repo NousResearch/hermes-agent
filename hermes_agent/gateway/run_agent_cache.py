@@ -65,7 +65,7 @@ class GatewayAgentCacheMixin:
             else:
                 out[f"{section}.{key}"] = cfg_get(cfg, section, key, default=default)
         try:
-            from tools.registry import registry
+            from hermes_agent.tools.registry import registry
             out["tools.registry_generation"] = getattr(registry, "_generation", None)
         except Exception:
             out["tools.registry_generation"] = None
@@ -442,7 +442,8 @@ class GatewayAgentCacheMixin:
             state.persistent.approvals = None
             state.persistent.update_prompt_pending = False
         for mod, attr, what in (
-            ("tools.slash_confirm", "clear", "slash-confirm"), ("tools.approval", "clear_session", "approval"),
+            ("hermes_agent.tools.slash_confirm", "clear", "slash-confirm"),
+            ("hermes_agent.tools.approval", "clear_session", "approval"),
         ):
             try:
                 clear = getattr(importlib.import_module(mod), attr)
@@ -562,7 +563,7 @@ class GatewayAgentCacheMixin:
         # The turn's hard interrupt reaches only its in-turn children; background delegations were
         # detached at dispatch and would otherwise run to completion and wake the session later.
         # Each interrupted unit still returns as a completion (status=interrupted, partial output).
-        from tools.async_delegation import interrupt_for_session
+        from hermes_agent.tools.async_delegation import interrupt_for_session
         interrupt_for_session(
             session_key=session_key, reason=invalidation_reason,
             parent_session_id=str(getattr(running_agent, "session_id", "") or ""))

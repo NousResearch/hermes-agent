@@ -6,8 +6,8 @@ expose it, so operators could not request networkless Docker execution from
 config.yaml.
 """
 
-from tools import terminal_tool
-from tools.environments import docker as docker_env
+from hermes_agent.tools import terminal_tool
+from hermes_agent.tools.environments import docker as docker_env
 
 
 def test_terminal_env_config_reads_docker_network_toggle(monkeypatch):
@@ -24,8 +24,8 @@ def test_every_sandbox_creator_passes_the_full_container_config(monkeypatch):
     the probe lost ``docker_network`` (bridge-networked probe under lockdown, #46358/#76906/#87995),
     execute_code lost ``docker_extra_args``/``docker_forward_env``/``docker_env`` (#84027/#100019)."""
     from agent import prompt_builder
-    from tools import code_execution_tool
-    import tools.terminal_tool_backends as backends
+    from hermes_agent.tools import code_execution_tool
+    import hermes_agent.tools.terminal_tool_backends as backends
 
     config = {"env_type": "docker", "cwd": "/root", "timeout": 60, "docker_network": False,
               "docker_extra_args": ["--user", "1009:1009"], "docker_forward_env": ["DATABASE_URL"],
@@ -214,11 +214,11 @@ def test_pin_verdict_reaches_docker_environment_through_the_terminal_tool(monkey
     """TERMINAL_DOCKER_IMAGE_PINNED must survive the terminal tool's config shaping
     (``_CONTAINER_KEYS`` is an allowlist): a pinned image that the builder never sees is a pin
     the runtime never honours, and the approval would silently do nothing."""
-    from tools import terminal_tool as tt
-    from tools.terminal_tool_backends import _build_docker_env, _container_config_from_config
+    from hermes_agent.tools import terminal_tool as tt
+    from hermes_agent.tools.terminal_tool_backends import _build_docker_env, _container_config_from_config
 
     seen = {}
-    monkeypatch.setattr("tools.terminal_tool_backends._DockerEnvironment",
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool_backends._DockerEnvironment",
                         lambda **kw: seen.update(kw) or object())
     monkeypatch.setattr(tt, "_maybe_reap_docker_orphans", lambda cc: None)
     monkeypatch.setattr(tt, "_docker_session_isolation_enabled", lambda: False)

@@ -15,7 +15,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_wait_for_lifecycle_event_shutdown_wins_when_both_set():
     """If both events are set simultaneously, shutdown takes precedence."""
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
     task = MCPServerTask("test")
 
     task._shutdown_event.set()

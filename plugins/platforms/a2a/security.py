@@ -226,7 +226,7 @@ def is_loopback_host_header(host_header: Optional[str], public_url: str = "") ->
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
     """True when a push callback URL is http(s) and may be dialed. Literal loopback only in
     localhost-only mode; everything else goes through the shared SSRF policy
-    (``tools.url_safety.is_safe_url``), which resolves the host and checks every answer, so a DNS
+    (``hermes_agent.tools.url_safety.is_safe_url``), which resolves the host and checks every answer, so a DNS
     name or an integer/hex IPv4 spelling of a metadata/RFC1918 address is refused as the dotted
     form is. ``security.allow_private_urls`` lifts that refusal for private and loopback answers
     (never metadata), as it does for the agent's other fetches."""
@@ -242,7 +242,7 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
         return False
     if is_loopback_host(parsed.hostname):
         return localhost_mode
-    from tools.url_safety import is_safe_url
+    from hermes_agent.tools.url_safety import is_safe_url
 
     return is_safe_url(url)
 
@@ -257,7 +257,7 @@ def post_callback(url: str, body: bytes, headers: dict, *, localhost_mode: bool,
     ``HTTP(S)_PROXY`` set, the operator's proxy resolves and dials the target instead, as for the
     other callers of the shared guard."""
     import httpx
-    from tools.url_safety import create_ssrf_safe_client
+    from hermes_agent.tools.url_safety import create_ssrf_safe_client
 
     if localhost_mode and is_loopback_host(httpx.URL(url).host):
         client = httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False)

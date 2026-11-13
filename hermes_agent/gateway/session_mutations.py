@@ -423,7 +423,7 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
     from hermes_agent.gateway.session_policy import release_launch_secrets, release_session_workspaces
     release_launch_secrets(authority, session_ids)
     release_session_workspaces(authority, session_ids)
-    from tools.async_delegation import allow_for_session
+    from hermes_agent.tools.async_delegation import allow_for_session
     from hermes_agent.gateway.session_vault_prompt import release_unlocks
     for sid in session_ids:
         # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.

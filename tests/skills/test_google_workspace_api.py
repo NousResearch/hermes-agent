@@ -353,3 +353,46 @@ class TestGwsNativeMode:
             raw_api_module.get_credentials()
         assert "gws-native mode" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("hermes_token", [False, True])
+    def test_run_gws_routes_credentials_to_real_child(self, raw_api_module, monkeypatch, hermes_token):
+        """Both auth modes enforce their env policy at the real operation boundary."""
+        key = "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"
+        monkeypatch.setenv(key, "/stale/hermes/google_token.json")
+        monkeypatch.setenv("GWS_TEST_SENTINEL", "preserved")
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: True)
+        monkeypatch.setattr(raw_api_module, "_gws_binary", lambda: sys.executable)
+        if hermes_token:
+            raw_api_module.TOKEN_PATH.write_text("{}")
+        child = (
+            "import json, os; "
+            f"print(json.dumps({{'credentials': os.getenv({key!r}), "
+            "'sentinel': os.getenv('GWS_TEST_SENTINEL')}))"
+        )
+        result = raw_api_module._run_gws(["-c", child])
+        assert result == {
+            "credentials": str(raw_api_module.TOKEN_PATH) if hermes_token else None,
+            "sentinel": "preserved",
+        }
+        assert raw_api_module.os.environ[key] == "/stale/hermes/google_token.json"
+
+    @pytest.mark.parametrize("operation", ["drive_upload", "drive_download", "build_service"])
+    def test_python_only_operations_reject_native_before_imports(
+        self, raw_api_module, monkeypatch, capsys, operation
+    ):
+        import builtins
+
+        monkeypatch.setattr(raw_api_module, "gws_native_authed", lambda: True)
+        original_import = builtins.__import__
+
+        def without_google_client(name, *args, **kwargs):
+            if name.startswith("googleapiclient"):
+                raise ModuleNotFoundError("native-only install has no googleapiclient")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", without_google_client)
+        args = ("drive", "v3") if operation == "build_service" else (types.SimpleNamespace(),)
+        with pytest.raises(SystemExit) as exc:
+            getattr(raw_api_module, operation)(*args)
+        assert exc.value.code == 1
+        assert "gws-native mode" in capsys.readouterr().err
+

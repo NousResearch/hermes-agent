@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,14 @@ class TestGwsNativeAuthed:
     def test_false_on_non_json(self, gws_auth, monkeypatch):
         monkeypatch.setattr(gws_auth, "gws_binary", lambda: "/usr/local/bin/gws")
         monkeypatch.setattr(gws_auth.subprocess, "run", lambda *a, **k: FakeResult(stdout="not json"))
+        assert gws_auth.gws_native_authed() is False
+
+    @pytest.mark.parametrize("payload", [["unexpected"], "unexpected", 1, True, None])
+    def test_false_on_non_object_json(self, gws_auth, monkeypatch, payload):
+        monkeypatch.setattr(gws_auth, "gws_binary", lambda: "/fake/gws")
+        monkeypatch.setattr(
+            gws_auth.subprocess, "run", lambda *a, **k: FakeResult(stdout=json.dumps(payload))
+        )
         assert gws_auth.gws_native_authed() is False
 
     def test_false_when_subprocess_raises(self, gws_auth, monkeypatch):
@@ -184,3 +193,27 @@ class TestNativeEnvSanitization:
         monkeypatch.delenv("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", raising=False)
         env = gws_auth._native_env()
         assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in env
+
+    @pytest.mark.parametrize("probe", ["gws_native_authed", "gws_live_check"])
+    def test_real_child_ignores_override_without_mutating_parent(self, gws_auth, monkeypatch, probe):
+        """Exercise the actual child env, not just the mocked subprocess kwargs."""
+        key = "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"
+        monkeypatch.setenv(key, "/stale/hermes/google_token.json")
+        monkeypatch.setenv("GWS_TEST_SENTINEL", "preserved")
+        monkeypatch.setattr(gws_auth, "gws_binary", lambda: "/fixture/gws")
+        run = gws_auth.subprocess.run
+        child = (
+            "import json, os; "
+            f"assert {key!r} not in os.environ; "
+            "assert os.environ['GWS_TEST_SENTINEL'] == 'preserved'; "
+            "print(json.dumps({'token_valid': True, 'has_refresh_token': True}))"
+        )
+
+        def run_python_fixture(cmd, **kwargs):
+            # Only replace the executable: keep the production env/timeout policy.
+            return run([sys.executable, "-c", child], **kwargs)
+
+        monkeypatch.setattr(gws_auth.subprocess, "run", run_python_fixture)
+        result = getattr(gws_auth, probe)()
+        assert (result if probe == "gws_native_authed" else result[0]) is True
+        assert gws_auth.os.environ[key] == "/stale/hermes/google_token.json"

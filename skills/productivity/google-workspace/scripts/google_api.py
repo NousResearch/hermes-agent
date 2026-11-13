@@ -252,13 +252,8 @@ def _datetime_with_timezone(value: str) -> str:
     return value + "Z"
 
 
-def get_credentials():
-    """Load and refresh credentials from the Hermes-managed token file.
-
-    This is the Python-client backend. It requires the Hermes token; it cannot
-    use gws-native credentials. Operations without a gws route (e.g. drive
-    upload/download) reach here and fail clearly in gws-native mode.
-    """
+def _require_hermes_auth():
+    """Reject Python-only operations before importing optional Google clients."""
     if _ensure_authenticated() == "gws-native":
         print(
             "This operation needs Hermes-managed OAuth (google_token.json), which "
@@ -267,6 +262,14 @@ def get_credentials():
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def get_credentials():
+    """Load and refresh credentials from the Hermes-managed token file.
+
+    The Python-client backend cannot use gws-native credentials.
+    """
+    _require_hermes_auth()
 
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -287,9 +290,10 @@ def get_credentials():
 
 
 def build_service(api, version):
+    credentials = get_credentials()
     from googleapiclient.discovery import build
 
-    return build(api, version, credentials=get_credentials())
+    return build(api, version, credentials=credentials)
 
 
 # =========================================================================
@@ -693,6 +697,7 @@ def drive_get(args):
 def drive_upload(args):
     """Upload a local file to Drive. Falls through to Python client even when gws
     is installed, because gws doesn't do multipart uploads."""
+    _require_hermes_auth()
     import mimetypes
     from googleapiclient.http import MediaFileUpload
 
@@ -725,6 +730,7 @@ def drive_upload(args):
 def drive_download(args):
     """Download a Drive file to a local path. Google-native files (Docs/Sheets/Slides)
     must be exported; binary files are downloaded as-is."""
+    _require_hermes_auth()
     import io
     from googleapiclient.http import MediaIoBaseDownload
 

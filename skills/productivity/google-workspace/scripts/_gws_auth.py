@@ -4,8 +4,9 @@
 Two distinct credential stores are in play for this skill:
 
 * **Hermes-managed OAuth** — ``~/.hermes/google_token.json``. The skill owns
-  this token; ``gws_bridge.py`` and ``google_api.py`` point gws at it via
-  ``GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE``.
+  this token; ``google_api.py`` points gws at it via
+  ``GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE``. The separate Hermes-only
+  ``gws_bridge.py`` supplies a refreshed access token via ``GOOGLE_WORKSPACE_CLI_TOKEN``.
 * **gws-native credentials** — whatever the standalone ``gws`` CLI stores on
   its own (e.g. ``~/.config/gws/``) after the user ran ``gws auth login``
   independently of Hermes.
@@ -63,15 +64,17 @@ def _gws_auth_status() -> dict | None:
             text=True,
             timeout=10,
             env=_native_env(),
+            check=False,
         )
     except Exception:
         return None
     if result.returncode != 0:
         return None
     try:
-        return json.loads(result.stdout)
+        data = json.loads(result.stdout)
     except (ValueError, TypeError):
         return None
+    return data if isinstance(data, dict) else None
 
 
 def gws_native_authed() -> bool:
@@ -100,8 +103,9 @@ def gws_live_check() -> tuple[bool, str]:
             text=True,
             timeout=30,
             env=_native_env(),
+            check=False,
         )
-    except Exception as e:  # noqa: BLE001 — surface any subprocess failure to caller
+    except Exception as e:  # Surface any subprocess failure to the caller.
         return False, str(e)
     if result.returncode != 0:
         return False, (result.stderr.strip() or result.stdout.strip() or "gws call failed")

@@ -47,18 +47,58 @@ def make_targz(base: str, root_dir: str, base_dir: str) -> str:
     return archive_path
 
 
+def _materialize_archive_symlink(member: tarfile.TarInfo, target: Path) -> bool:
+    """Validate one archive symlink member against the archive root.
+
+    ``target`` is the member's own destination path, so its parent chain is the archive root.
+    Returns ``True`` when the link stays inside that root (including links whose target is
+    another member of the same archive), ``False`` otherwise. Relative ``..`` segments are
+    resolved against the link's parent before the containment check, so ``a/../b/link`` is
+    judged the same way as ``b/link`` and a link that only *looks* internal (for example
+    ``link -> ../../outside``) is still refused.
+    """
+    raw_link = member.linkname.replace("\\", "/")
+    link_path = PurePosixPath(raw_link)
+    if link_path.is_absolute() or PureWindowsPath(member.linkname).is_absolute() \
+            or PureWindowsPath(member.linkname).drive:
+        return False
+    base = PurePosixPath(member.name).parent
+    resolved_parts: list[str] = []
+    for part in (base / link_path).parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not resolved_parts:
+                return False  # escapes the archive root
+            resolved_parts.pop()
+            continue
+        resolved_parts.append(part)
+    if not resolved_parts:
+        return False  # link to the archive root itself
+    return True
+
+
 def safe_extract_targz(archive: Path, destination: Path) -> None:
     """Extract ``archive`` into ``destination`` without path escapes or links.
 
-    Only directories and regular files are extracted; symlinks, hardlinks, and device nodes raise
-    rather than being silently skipped, so a tampered archive fails the import instead of landing a
-    partial tree.
+    Directories and regular files are extracted as-is. Symlinks are materialized: a link whose
+    resolved target stays inside ``destination`` (another member of the same archive, or a
+    relative path that cannot escape) is recreated with ``os.symlink``; a link that resolves
+    outside ``destination`` raises. Hardlinks and device nodes always raise rather than being
+    silently skipped, so a tampered archive fails the import instead of landing a partial tree.
     """
     with tarfile.open(archive, "r:gz") as tf:
         for member in tf.getmembers():
             target = destination.joinpath(*normalize_archive_parts(member.name))
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
+                continue
+            if member.issym():
+                if not _materialize_archive_symlink(member, target):
+                    raise ValueError(f"Archive symlink escapes the destination: {member.name}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with suppress(FileExistsError):
+                    os.symlink(member.linkname, target)
                 continue
             if not member.isfile():
                 raise ValueError(f"Unsupported archive member type: {member.name}")

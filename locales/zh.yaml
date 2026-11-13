@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ 本会话 YOLO 模式 **已关闭** — 危险命令将需要批准。"
     enabled: "⚡ 本会话 YOLO 模式 **已开启** — 所有命令自动批准。请谨慎使用。"
   shared:
+    fallback_model_suffix: " — 备用，原为 `{primary}`"
     session_db_unavailable: "会话数据库不可用。"
     session_db_unavailable_prefix: "会话数据库不可用"
     session_not_found: "数据库中未找到该会话。"

@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。"
     enabled: "⚡ 本工作階段 YOLO 模式 **已開啟** — 所有指令自動批准。請謹慎使用。"
   shared:
+    fallback_model_suffix: " — 備援，原為 `{primary}`"
     session_db_unavailable: "工作階段資料庫無法使用。"
     session_db_unavailable_prefix: "工作階段資料庫無法使用"
     session_not_found: "資料庫中找不到此工作階段。"

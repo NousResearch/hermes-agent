@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ Modo YOLO **DESACTIVADO** en esta sesión — los comandos peligrosos requerirán aprobación."
     enabled: "⚡ Modo YOLO **ACTIVADO** en esta sesión — todos los comandos se aprueban automáticamente. Úsalo con precaución."
   shared:
+    fallback_model_suffix: " — respaldo de `{primary}`"
     session_db_unavailable: "Base de datos de sesiones no disponible."
     session_db_unavailable_prefix: "Base de datos de sesiones no disponible"
     session_not_found: "Sesión no encontrada en la base de datos."

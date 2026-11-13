@@ -604,6 +604,7 @@ gateway:
     disabled: "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."
     enabled: "⚡ 이 세션에서 YOLO 모드 **켜짐** — 모든 명령이 자동 승인됩니다. 주의해서 사용하세요."
   shared:
+    fallback_model_suffix: " — 대체 모델, 기본: `{primary}`"
     session_db_unavailable: "세션 데이터베이스를 사용할 수 없습니다."
     session_db_unavailable_prefix: "세션 데이터베이스를 사용할 수 없습니다"
     session_not_found: "데이터베이스에서 세션을 찾을 수 없습니다."

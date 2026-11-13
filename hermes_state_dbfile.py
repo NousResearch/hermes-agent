@@ -300,8 +300,13 @@ _DARWIN_LIBPROC = None
 # proc_pidfdinfo call can block uninterruptibly in the kernel (a process stuck
 # in uninterruptible I/O on a dead network share), so no per-iteration check
 # can bound it: the whole pass runs in a daemon thread and is abandoned on
-# expiry, failing open per the guard's contract.
+# expiry, failing open per the guard's contract. A timed-out worker cannot
+# be interrupted, so the next caller must not launch another libproc walk.
 _DARWIN_FD_SCAN_TIMEOUT_SECONDS = 5.0
+_DARWIN_FD_SCAN_LOCK = threading.Lock()
+_DARWIN_FD_SCAN_WORKER: Optional[threading.Thread] = None
+_DARWIN_FD_SCAN_NEXT_RETRY = 0.0
+_DARWIN_FD_SCAN_RETRY_DELAY_SECONDS = 1.0
 
 
 def _darwin_libproc():
@@ -398,13 +403,20 @@ def _iter_darwin_sidecar_holders(db_path) -> list[tuple[int, str]]:
         except BaseException as exc:
             errors.append(exc)
 
-    # ponytail: abandoned daemon thread per timed-out scan; a kernel-blocked
-    # proc_pidfdinfo cannot be interrupted, so expiry leaks one thread that
-    # dies with the process. Fail open: partial/empty holders, never a refusal.
-    worker = threading.Thread(target=_scan, daemon=True)
-    worker.start()
+    # A kernel-blocked daemon cannot be cancelled. Keep only one libproc walk
+    # alive across profiles; concurrent callers and a short retry window fail open.
+    global _DARWIN_FD_SCAN_WORKER, _DARWIN_FD_SCAN_NEXT_RETRY
+    with _DARWIN_FD_SCAN_LOCK:
+        if (_DARWIN_FD_SCAN_WORKER is not None and _DARWIN_FD_SCAN_WORKER.is_alive()
+                or time.monotonic() < _DARWIN_FD_SCAN_NEXT_RETRY):
+            return []
+        worker = threading.Thread(target=_scan, daemon=True)
+        _DARWIN_FD_SCAN_WORKER = worker
+        worker.start()
     worker.join(_DARWIN_FD_SCAN_TIMEOUT_SECONDS)
     if worker.is_alive():
+        with _DARWIN_FD_SCAN_LOCK:
+            _DARWIN_FD_SCAN_NEXT_RETRY = time.monotonic() + _DARWIN_FD_SCAN_RETRY_DELAY_SECONDS
         logger.warning(
             "deleted-WAL holder scan timed out after %.1fs for %s; continuing fail-open",
             _DARWIN_FD_SCAN_TIMEOUT_SECONDS,

@@ -104,10 +104,8 @@ class RelayDiscordInteractionMixin:
                 event = self._discord_interaction_to_event(forward)
                 if event is not None:
                     self._capture_ingress_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound). The
-                    # connector forwards it to every gateway of the tenant without its per-author
-                    # check, so the sender is not admitted.
-                    if await self._consume_prompt_response(event, author_admitted=False):
+                    # A prompt-token component press is consumed (same gate as _on_inbound).
+                    if await self._consume_prompt_response(event):
                         return
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
@@ -197,6 +195,9 @@ class RelayDiscordInteractionMixin:
             profile=getattr(forward, "profile", None),
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
+        # The connector forwards an interaction to every gateway of the tenant without the per-author
+        # check it runs on messages: it answers a prompt only as an unadmitted sender (``may_answer``).
+        event._unadmitted_author = True
         if itype == 3:
             # A component press whose custom_id is a Hermes prompt token
             # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;

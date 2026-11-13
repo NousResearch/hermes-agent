@@ -37,6 +37,10 @@ class _Lease:
 
     def __init__(self):
         self.released = False
+        self.capacity_active = False
+
+    def set_capacity_active(self, active, *, config=None):
+        self.capacity_active = active
 
     def release(self):
         self.released = True
@@ -86,4 +90,19 @@ def test_ordinary_session_keeps_its_slot_after_a_turn(monkeypatch, tmp_path):
     assert server._run_prompt_submit("rid", "ui-sid", session, "hello") is True
 
     assert lease.released is False
+    assert lease.capacity_active is False
+    assert session["active_session_lease"] is lease
+
+
+def test_refused_turn_worker_frees_running_capacity(monkeypatch, tmp_path):
+    _turn_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(server, "_start_session_work", lambda *a, **k: None)
+    lease = _Lease()
+    session = _session("desktop", lease)
+
+    assert server._run_prompt_submit("rid", "refused-ui", session, "synthetic") is False
+
+    assert session["running"] is False
+    assert lease.released is False
+    assert lease.capacity_active is False
     assert session["active_session_lease"] is lease

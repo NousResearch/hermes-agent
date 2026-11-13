@@ -129,15 +129,14 @@ def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_pa
         assert server._ensure_active_session_slot(sid, server._sessions[sid]) is None
         assert server._ensure_active_session_slot(sid, server._sessions[sid]) is None
         assert len(active_session_registry_snapshot()) == 1
-
-        blocked = server._ensure_active_session_slot(other, server._sessions[other])
-        assert blocked  # refusal reason returned; exact wording not pinned
-
+        # Idle ownership is free; running capacity is capped (refusal wording not pinned).
+        assert server._ensure_active_session_slot(other, server._sessions[other]) is None
+        assert server._activate_active_session_slot(server._sessions[sid]) is None
+        assert server._activate_active_session_slot(server._sessions[other])
         closed = server._methods["session.close"]("r3", {"session_id": sid})
         assert closed["result"]["closed"] is True
-        assert active_session_registry_snapshot() == []
-
-        assert server._ensure_active_session_slot(other, server._sessions[other]) is None
+        assert len(active_session_registry_snapshot()) == 1  # other's idle ownership remains
+        assert server._activate_active_session_slot(server._sessions[other]) is None
     finally:
         _clear_server_sessions()
         server._cfg_cache = None

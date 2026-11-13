@@ -118,7 +118,8 @@ def _plan_goal_compression_recovery(
 def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
-    display_metadata: dict | None, *, report_ownership_refusal: bool = True) -> tuple[list[str], Any] | None:
+    display_metadata: dict | None, *, report_ownership_refusal: bool = True,
+    on_admitted: Callable[[], None] | None = None) -> tuple[list[str], Any] | None:
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -140,12 +141,19 @@ def _admit_prompt_turn(
             queued_prompt_generation is not None
             and int(session.get("_queued_prompt_generation", 0)) != queued_prompt_generation):
             session["running"] = False
+            _release_hosted_room_turn_slot(session)
             session.pop("_submit_user_row", None)
             if session.get("_closing") and session.get("active_session_lease") is not held_lease:
                 # Close stops waiting for this thread after a grace and then finalizes. A lease this
                 # admission claimed after that finalize has no other code path that releases it; one
                 # the session already held stays for close's own handoff (_settle_isolated_turn_before_close).
                 _release_active_session_slot(session)
+            return None
+        if (capacity_refusal := _activate_active_session_slot(session)) is not None:
+            session["running"] = False
+            session.pop("_submit_user_row", None)
+            if report_ownership_refusal:
+                _emit("error", sid, {"message": str(capacity_refusal)})
             return None
         images = list(session.get("attached_images", []) if image_paths is None else image_paths)
         if image_paths is None:
@@ -159,9 +167,12 @@ def _admit_prompt_turn(
         agent = session["agent"]
         if agent is None:
             session["running"] = False
+            _release_hosted_room_turn_slot(session)
         else:
             with contextlib.suppress(Exception):
                 agent.clear_interrupt()
+            if on_admitted is not None:
+                on_admitted()
     if agent is None:
         # A deferred build can finish without attaching an agent (its record was replaced or closed
         # mid-build: ``agent_ready`` set, ``agent`` None, see ``_start_agent_build``).  Every turn source
@@ -1123,7 +1134,12 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None, report_ownership_refusal: bool = True) -> bool:
+    turn_author: dict | None = None, report_ownership_refusal: bool = True,
+    on_admitted: Callable[[], None] | None = None) -> bool:
+    """Start a prompt, keeping the bool API. ``on_admitted`` commits a queued claim
+    under history_lock after both gates pass, before any worker can start.
+    A False return before that hook is safe to retry; later failures are not.
+    """
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1134,7 +1150,8 @@ def _run_prompt_submit(
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata,
-        report_ownership_refusal=report_ownership_refusal)
+        report_ownership_refusal=report_ownership_refusal,
+        **({"on_admitted": on_admitted} if on_admitted is not None else {}))
     if admitted is None:
         return False
     images, agent = admitted
@@ -1270,6 +1287,7 @@ def _run_prompt_submit(
     if not can_start:
         with session["history_lock"]:
             session["running"] = False
+            _release_hosted_room_turn_slot(session)
             if session.get(SESSION_KEY) is segments:
                 session.pop(SESSION_KEY)
     return can_start

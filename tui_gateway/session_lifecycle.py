@@ -74,6 +74,7 @@ def _claim_active_session_slot(
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
             metadata=_lease_metadata(live_session_id),
+            capacity_active=False,
             track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -119,7 +120,7 @@ def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
 
 
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
-    """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
+    """Claim exclusive ownership, not running capacity; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
     inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
@@ -137,6 +138,19 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
         return None
     return limit_message
+
+
+def _activate_active_session_slot(session: dict) -> str | None:
+    """Atomically admit running work against this profile's current capacity."""
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return None  # unregistered legacy callers still cross the ownership gate
+    try:
+        return lease.set_capacity_active(True, config=_load_cfg())
+    except Exception as exc:  # health: allow BLE001 -- fail closed: no turn runs without an admitted lease
+        # Registry exceptions may carry profile paths or payloads: log the type only.
+        logger.warning("Failed to activate session capacity (%s)", type(exc).__name__)
+        return _SESSION_OWNERSHIP_UNAVAILABLE
 
 
 _CANONICAL_PENDING_SQL = """SELECT status FROM session_admissions WHERE target_session_id=? AND status!='terminal'
@@ -293,7 +307,7 @@ def _release_active_session_slot(session: dict | None) -> bool:
 
 
 def _release_hosted_room_turn_slot(session: dict) -> None:
-    """End-of-turn release for hosted room member sessions (``source=bot_room``) only.
+    """Release running capacity on every surface; retain ordinary session ownership.
 
     A hosted room turn is serialized by the room driver's lease, not by this process, so the member
     profile's ``bot_room`` slot is needed only while a turn is in flight. Holding it for the life of
@@ -306,6 +320,16 @@ def _release_hosted_room_turn_slot(session: dict) -> None:
     from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE
     if _session_source(session) == ROOM_SESSION_SOURCE:
         _release_active_session_slot(session)
+    elif (lease := session.get("active_session_lease")) is not None:
+        from hermes_cli.active_sessions import ActiveSessionRegistryError
+        try:
+            lease.set_capacity_active(False)
+        except (OSError, ActiveSessionRegistryError) as exc:
+            # The lease records pending-idle intent before I/O; the backend heartbeat
+            # retries it. Preserve ownership and let settlement/queued work finish.
+            # Registry exceptions may contain profile paths or payloads: log type only.
+            logger.warning("Failed to persist idle session capacity; heartbeat will retry (%s)",
+                           type(exc).__name__)
 
 
 def _own_live_lease_ids(*, exclude=None) -> set[str]:

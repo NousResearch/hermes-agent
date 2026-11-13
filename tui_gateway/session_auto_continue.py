@@ -215,6 +215,8 @@ def _drop_queued_duplicates_of_inflight_user(session: dict) -> None:
 def _ac_set_queue(session: dict, entries: list) -> None:
     """Write ``entries`` back as queued_prompt (head) + queued_prompts (rest)."""
     session["queued_prompt"] = entries[0] if entries else None
+    if not entries:
+        session.pop("_queued_prompt_capacity_wait", None)
     if len(entries) > 1:
         session["queued_prompts"] = entries[1:]
     else:
@@ -397,22 +399,36 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     return fresh
 
 
+def _session_prompt_busy(session: dict) -> bool:
+    """An accepted FIFO owns the next turn, including settlement before drain. Caller holds history_lock."""
+    return bool(session.get("running") or _queued_prompt_capacity_wait(session)
+                or (session.get("queued_prompt") and not _queued_prompt_dispatch_cancelled(session)))
+
+
+def _busy_submit_mode(session: dict, queued: bool) -> str:
+    """Capacity-waiting sends cannot steer a nonexistent turn; compression also requires queueing."""
+    if not session.get("running") or _queued_prompt_capacity_wait(session):
+        return "queue"
+    mode = "queue" if queued else _load_busy_input_mode()
+    if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
+        return "queue"
+    return mode
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
                         turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
     after" message must NEVER become a live correction."""
-    mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
     # Compression in flight demotes steer/interrupt to queue: a correction delivered
     # mid-compression aborts the compression instead of waiting for it (#61042). The
     # follow-up drains when compression finishes — the Discord-gateway contract.
-    if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
-        mode = "queue"
     with session["history_lock"]:
-        if not session.get("running"):
+        if not _session_prompt_busy(session):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
+        mode = _busy_submit_mode(session, queued)
         # Typed while the turn ran, in any busy mode: the running turn no longer counts as unattended.
         session["_turn_user_input"] = True
         image_paths = list(session.get("attached_images", []))
@@ -432,7 +448,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
     with session["history_lock"]:
-        if not session.get("running"):
+        if not _session_prompt_busy(session):
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
@@ -454,13 +470,96 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     return _ok(rid, {"status": "queued"})
 
 
-def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
-    """Fire a queued next-turn prompt if one is waiting and the session is idle. True when dispatched: the caller
-    skips lower-priority follow-ups this cycle (the user's message wins)."""
+def _queued_prompt_capacity_wait(session: dict) -> dict | None:
+    """Return the current generation's retry, retiring Stop/close's stale marker. Caller holds history_lock."""
+    pending = session.get("_queued_prompt_capacity_wait")
+    if pending and (_queued_prompt_dispatch_cancelled(session)
+                    or int(session.get("_queued_prompt_generation", 0)) != pending["generation"]
+                    or not session.get("queued_prompt")):
+        session.pop("_queued_prompt_capacity_wait", None)
+        return None
+    return pending
+
+
+def _queued_prompt_dispatch_cancelled(session: dict) -> bool:
+    return bool(session.get("_closing") or session.get("_finalized") or session.get("_turn_cancel_requested"))
+
+
+def _queued_prompt_retry_is_current(sid: str, session: dict, generation, stop_event) -> bool:
+    """Recheck the poller's captured ownership at the history-locked admission boundary."""
+    return ((generation is None or int(session.get("_queued_prompt_generation", 0)) == generation)
+            and (stop_event is None or (not stop_event.is_set()
+                 and session.get("_notif_stop") is stop_event and _sessions.get(sid) is session)))
+
+
+def _retry_capacity_queued_prompt(sid: str, session: dict, *, stop_event=None) -> bool:
+    """Retry a deferred FIFO head on the existing notification poller's tick, never on a new timer."""
+    with session["history_lock"]:
+        pending = _queued_prompt_capacity_wait(session)
+        if not pending or session.get("running"):
+            return False
+        rid, generation = pending["rid"], pending["generation"]
+        if not _queued_prompt_retry_is_current(sid, session, generation, stop_event):
+            return False
+    with _session_profile_runtime_scope(session):
+        return _drain_queued_prompt(rid, sid, session, retry_generation=generation, retry_stop_event=stop_event)
+
+
+def _prepare_queued_user_rows_for_turn(session: dict, queued: dict) -> None:
+    """Move accepted rows to the transcript end in FIFO order. Caller holds history_lock at admission."""
+    dispatch_row = _replace_queued_user_row_for_turn(session, queued, is_dispatching=True)
+    still_queued = (([session["queued_prompt"]] if session.get("queued_prompt") else [])
+                    + list(session.get("queued_prompts") or []))
+    for envelope in still_queued:
+        _replace_queued_user_row_for_turn(session, envelope)
+    if dispatch_row is not None:
+        session["_submit_user_row"] = dispatch_row
+    else:
+        session.pop("_submit_user_row", None)
+
+
+def _restore_invalidated_queued_claim(session: dict, queued: dict, rid) -> None:
+    """Re-anchor non-cancelled compression work, never resurrect a Stop/close's cancelled head."""
+    if not _queued_prompt_dispatch_cancelled(session):
+        advanced = session.get("queued_prompt")
+        _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
+        session["_queued_prompt_capacity_wait"] = {"rid": rid, "generation": int(session.get("_queued_prompt_generation", 0))}
+    session["running"] = False
+    _release_hosted_room_turn_slot(session)
+
+
+def _defer_refused_queued_claim(session: dict, queued: dict, rid, generation: int) -> None:
+    """Roll back only an unstarted admission, preserving the accepted envelope and its row IDs."""
+    with session["history_lock"]:
+        if (not _queued_prompt_dispatch_cancelled(session)
+                and int(session.get("_queued_prompt_generation", 0)) == generation):
+            advanced = session.get("queued_prompt")
+            _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
+            session["_queued_prompt_capacity_wait"] = {"rid": rid, "generation": generation}
+        session["running"] = False
+        _release_hosted_room_turn_slot(session)
+
+
+def _drain_queued_prompt(rid, sid: str, session: dict, *, retry_generation=None, retry_stop_event=None) -> bool:
+    """Claim capacity BEFORE consuming an accepted envelope. True also while capacity-blocked:
+    lower-priority follow-ups must not overtake the user's FIFO."""
     with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
+        if (not admitted or _queued_prompt_dispatch_cancelled(session)
+                or not _queued_prompt_retry_is_current(sid, session, retry_generation, retry_stop_event)
+                or not (queued := session.get("queued_prompt")) or session.get("running")):
             return False
         queue_generation = int(session.get("_queued_prompt_generation", 0))
+        # Reserve atomically before removing the head, moving its durable row, or
+        # pinning its transport. Both execution gates below re-use this active lease.
+        refusal = _ensure_active_session_slot(sid, session)
+        if refusal is None:
+            refusal = _activate_active_session_slot(session)
+        if refusal is not None:
+            # Already accepted: registry outages (including legacy untyped refusals) must
+            # retain the same retry as capacity contention. Every tick still fails closed.
+            session["_queued_prompt_capacity_wait"] = {"rid": rid, "generation": queue_generation}
+            return True
+        session.pop("_queued_prompt_capacity_wait", None)
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
         queued_transport = queued.get("transport")
@@ -472,45 +571,43 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             _attach_session_transport(session, queued_transport)
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
-        if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
-            # Generation bump cancelled the claim (Stop, compress re-anchor, …): don't dispatch, but restore the
-            # envelope (claimed head first, then whatever advanced into the slot) so a legitimate follow-up isn't dropped.
-            # See #84417.
-            advanced = session.get("queued_prompt")
-            _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
-            session["running"] = False
+        if (_queued_prompt_dispatch_cancelled(session)
+                or not _queued_prompt_retry_is_current(sid, session, queue_generation, retry_stop_event)):
+            _restore_invalidated_queued_claim(session, queued, rid)
             return True
     kwargs: dict = {"queued_prompt_generation": queue_generation}
+    if queued.get("_queued_display_kind"):
+        kwargs["display_kind"] = queued["_queued_display_kind"]
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
-    # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow
-    # them, and slot the dispatching envelope's fresh row for adoption. EVERY queued envelope is
-    # re-placed in acceptance order: a later-accepted prompt's row must never sit behind while an
-    # earlier one heals past it, or a crash between drains would permanently render the later
-    # prompt before the earlier one. Under history_lock so a concurrent submit can't interleave
-    # its own row write between the re-append and the deactivation.
-    with session["history_lock"]:
-        dispatch_row = _replace_queued_user_row_for_turn(session, queued, is_dispatching=True)
-        still_queued = (([session["queued_prompt"]] if session.get("queued_prompt") else [])
-                        + list(session.get("queued_prompts") or []))
-        for envelope in still_queued:
-            _replace_queued_user_row_for_turn(session, envelope)
-        # The single adoption slot must hold the DISPATCHING envelope's row (the loop above leaves
-        # the last processed one there) or the turn would adopt the wrong prompt's row.
-        if dispatch_row is not None:
-            session["_submit_user_row"] = dispatch_row
-        else:
-            session.pop("_submit_user_row", None)
+    # Row replacement is irreversible: wait for the runner's SECOND admission.
+    # The hook runs under history_lock before the worker starts. Compute-host
+    # envelopes have no local accept-time rows; their child owns persistence.
+    admission_crossed = False
+
+    def on_admitted() -> None:
+        nonlocal admission_crossed
+        admission_crossed = True
+        _prepare_queued_user_rows_for_turn(session, queued)
+
     # The compute-host frame has no author field, so only the inline runner receives it.
     author_kwargs = {"turn_author": queued["turn_author"]} if queued.get("turn_author") else {}
     dispatch_failed = False
     try:
         if not use_compute_host:
-            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
+            started = _run_prompt_submit(rid, sid, session, queued["text"],
+                                         on_admitted=on_admitted, **kwargs, **author_kwargs)
+            if started is False and not admission_crossed:
+                _defer_refused_queued_claim(session, queued, rid, queue_generation)
+                return True
+            dispatch_failed = started is False
         elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
-            with session["history_lock"]:
-                session["running"] = False
-                _clear_inflight_turn(session)
+            # 4090 is emitted exclusively by the bridge's pre-send activation
+            # gate. Transport errors can follow an actual send: NEVER replay them.
+            if (resp.get("error") or {}).get("code") == 4090:
+                _defer_refused_queued_claim(session, queued, rid, queue_generation)
+                return True
+            _notif_release_turn(session)
             _emit("error", sid, {"message": str((resp.get("error") or {}).get("message") or "queued prompt failed")})
             dispatch_failed = True
     except Exception as exc:

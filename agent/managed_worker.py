@@ -197,7 +197,7 @@ class WorkerControls:
                 state['event'].set()
 
     def read(self):
-        from tools.approval import resolve_gateway_approval
+        from tools.approval import resolve_gateway_approval, withdraw_gateway_approval
         try:
             while True:
                 frame = read_frame(sys.stdin.buffer)
@@ -212,9 +212,12 @@ class WorkerControls:
                         or len(frame['value']) > 16384):
                     raise ValueError('invalid_managed_control')
                 if frame['type'] == 'approval':
-                    if frame['value'] not in {'once', 'deny', 'session', 'always'}:
+                    if frame['value'].startswith('cancelled:'):
+                        withdraw_gateway_approval(self.route, frame['prompt_id'], frame['value'][len('cancelled:'):])
+                    elif frame['value'] in {'once', 'deny', 'session', 'always'}:
+                        resolve_gateway_approval(self.route, frame['value'], request_id=frame['prompt_id'])
+                    else:
                         raise ValueError('invalid_managed_control')
-                    resolve_gateway_approval(self.route, frame['value'], request_id=frame['prompt_id'])
                 else:
                     with self.lock:
                         state = self.clarifications.get(frame['prompt_id'])
@@ -229,7 +232,8 @@ class WorkerControls:
 
     def approval(self, data):
         from tools.approval import ack_gateway_approval
-        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit'}
+        fields = {'request_id', 'command', 'description', 'allow_session', 'allow_permanent', 'smart_denied', 'edit',
+                  'timeout_s'}
         self.channel.send('approval', data={k: v for k, v in data.items() if k in fields})
         ack_gateway_approval(self.route, data['request_id'])
 

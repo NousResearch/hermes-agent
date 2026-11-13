@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 # Notifier reaction to a terminal event: "notify" = passive adapter.send only
 # (default); "notify+wake" = send AND wake the destination agent; "wake" = wake only.
 _NOTIFY_DELIVERY_MODES = ("notify", "notify+wake", "wake")
+_APPROVAL_FORWARDING_METADATA_KEY = "kanban_approval_forwarding"
+_APPROVAL_FORWARDING_V1 = "v1"
 
 _SCALAR_TYPES = (str, int, float, bool)
 
@@ -99,9 +101,22 @@ def add_notify_sub(
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
-            "SELECT delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            "SELECT user_id, notifier_profile, delivery_metadata FROM kanban_notify_subs " + _SUB_KEY_WHERE,
             key,
         ).fetchone()
+        approval_opt_in = ((delivery_metadata or {}).get(_APPROVAL_FORWARDING_METADATA_KEY)
+                           == _APPROVAL_FORWARDING_V1)
+        if approval_opt_in:
+            if not user_id or not notifier_profile:
+                raise ValueError("approval forwarding requires an explicit user and notifier profile")
+            mismatched = [
+                column for column, value in (("user_id", user_id), ("notifier_profile", notifier_profile))
+                if existing and existing[column] and str(existing[column]) != str(value)
+            ]
+            if mismatched:
+                raise ValueError(
+                    "approval forwarding cannot change an existing subscription's "
+                    + " or ".join(mismatched) + "; unsubscribe before choosing a new identity")
         existing_metadata = _decode_notify_delivery_metadata(existing["delivery_metadata"]) if existing else {}
         merged_metadata = dict(existing_metadata)
         if delivery_metadata:

@@ -6,7 +6,7 @@ Secret/sudo prompts remain native; no response is published or journaled here.
 from copy import deepcopy
 
 from hermes_state_runtime import RuntimeStoreError
-from tools.approval import list_gateway_approvals, resolve_gateway_approval
+from tools.approval import list_gateway_approvals, resolve_gateway_approval, withdraw_gateway_approval
 
 
 class PendingControls:
@@ -62,6 +62,40 @@ class PendingControls:
                     self.events.publish(session_id, {'prompt_id': prompt_id,
                         'execution_generation': prompt['execution_generation']}, event_type=prompt['kind'] + '.settled')
             return tuple(deepcopy(prompt) for _, prompt in self.pending.values())
+
+    def withdraw(self, session_id, generation, prompt_id, cause):
+        """Cancel one exact unreachable prompt; never convert transport loss into a user denial."""
+        with self.events.lock:
+            entry = self.pending.get(prompt_id)
+            if entry is None:
+                return False
+            route, prompt = entry
+            if prompt['kind'] != 'approval':
+                raise RuntimeStoreError('invalid_params')
+            # A delayed route failure belongs only to its exact execution. Checking before
+            # snapshot cleanup keeps an old generation from retiring its successor's prompts.
+            if prompt['execution_generation'] != generation:
+                return False
+            self.snapshot(session_id, generation)
+            entry = self.pending.get(prompt_id)
+            if entry is None:
+                return False
+            route, prompt = entry
+            if prompt_id in self.remote_responders:
+                try:
+                    self.remote_responders[prompt_id]('approval', prompt_id, 'cancelled:' + cause)
+                except RuntimeStoreError as exc:
+                    # Death/backpressure races are already fail-closed in the child; retire the owner
+                    # projection instead of leaving an actionable stale prompt behind.
+                    if exc.reason not in {'managed_worker_lost', 'worker_control_backpressure'}:
+                        raise
+            elif not withdraw_gateway_approval(route, prompt_id, cause):
+                return False
+            self.remote_responders.pop(prompt_id, None)
+            self.pending.pop(prompt_id, None)
+            self.events.publish(session_id, {'prompt_id': prompt_id, 'execution_generation': generation},
+                                event_type='approval.settled')
+            return True
 
     def respond(self, session_id, generation, prompt_id, response, *, kind="approval"):
         with self.events.lock:

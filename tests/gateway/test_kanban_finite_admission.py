@@ -29,6 +29,10 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
         task = kb.claim_task(conn, task_id)
     config = {'model': {'default': 'loop-model', 'provider': 'custom'},
               'platform_toolsets': {'cli': ['terminal']}}
+    import socket
+    import sys
+    monkeypatch.setitem(sys.modules, 'hermes_bootstrap',
+                        SimpleNamespace(_happy_eyeballs_create_connection=socket.create_connection))
     monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
     ref = SessionRef(str(tmp_path), 'owner-session')
     policies = []
@@ -68,6 +72,13 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
 def kanban_owner(tmp_path, monkeypatch):
     """A real owner authority and a claimed card on its board; call it with the profile config."""
     import json
+    import socket
+    import sys
+
+    # Import the runner, not the launcher: the managed worktree lives below the real Hermes home,
+    # where hermes_bootstrap would inspect/update the live install before the fixture sandbox exists.
+    monkeypatch.setitem(sys.modules, 'hermes_bootstrap',
+                        SimpleNamespace(_happy_eyeballs_create_connection=socket.create_connection))
     from gateway import run
     from gateway.session_controls import AuthorityConnection
     from hermes_cli import kanban_db as kb
@@ -142,6 +153,56 @@ def test_durable_kanban_admission_preserves_headless_policy_in_worker(kanban_own
                 assert result['approved'] is (mode == 'approve')
                 if mode == 'deny':
                     assert 'single' in result['message'].lower()
+        finally:
+            await owner.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', ['smart', 'manual'])
+def test_explicit_broker_marker_reaches_owner_and_managed_worker(kanban_owner, monkeypatch, mode):
+    from contextlib import closing
+    from gateway.kanban_approval_broker import APPROVAL_FORWARDING_METADATA_KEY
+    from gateway.session_contract import SessionRef
+    from gateway.session_finite import finite_turn_required
+    from gateway.session_kanban import run_task
+    from gateway.session_managed_worker import _bootstrap, worker_turn_scope
+    from gateway.session_policy import policy_for_source
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_notify as kbn
+    from hermes_cli.kanban_db_connect import connect
+    from hermes_state_runtime import list_session_admissions
+    from tools.approval import request_tool_approval
+    from tools.approval_context import _is_single_query_approval_context
+
+    owner = kanban_owner({**_CONFIG, 'approvals': {'mode': mode, 'single_query_mode': 'approve'}})
+    with closing(connect(board='owned')) as conn:
+        kbn.add_notify_sub(
+            conn, task_id=owner.params['task_id'], platform='telegram', chat_id='100', user_id='42',
+            thread_id='7', chat_type='thread', notifier_profile='default',
+            delivery_metadata={APPROVAL_FORWARDING_METADATA_KEY: 'v1',
+                               'kanban_approval_task_id': owner.params['task_id']})
+    adapter = SimpleNamespace()
+    monkeypatch.setattr('gateway.kanban_approval_broker.select_approval_subscription',
+                        lambda runner, subs: (adapter, subs[0]) if subs else None)
+    monkeypatch.setenv('HERMES_GATEWAY_SESSION', '1')
+
+    async def scenario():
+        try:
+            first = await run_task(owner.connection, owner.params)
+            assert await run_task(owner.connection, owner.params) == first  # exact retry keeps committed capability
+            sid = first['session_id']
+            [row] = list_session_admissions(owner.authority.db, session_id=sid)
+            assert row['payload']['kanban_approval_broker_v1'] is True
+            policy = policy_for_source(owner.runner, owner.authority.sessions[sid].source)
+            frame = _bootstrap(owner.authority, SessionRef(owner.authority.profile_id, sid), row, policy,
+                               {'execution_id': 'probe'})
+            with worker_turn_scope(frame):
+                assert finite_turn_required() is True
+                assert not _is_single_query_approval_context()
+                result = request_tool_approval('execute_code', 'human broker test')
+                assert result['approved'] is False
+                assert result['status'] == 'approval_required'
         finally:
             await owner.close()
 
@@ -290,6 +351,10 @@ def test_a_client_cannot_mint_the_kanban_card_marker(kanban_owner):
             forged = {'text': 'x', 'kanban_card_v1': {'task_id': owner.params['task_id'], 'run_id': owner.params['run_id']}}
             with pytest.raises(RuntimeStoreError) as refused:
                 await authority.submit(owner.connection.actor, Submission('forged', ref, forged, 'queue'))
+            assert refused.value.reason == 'invalid_params'
+            with pytest.raises(RuntimeStoreError) as refused:
+                await authority.submit(owner.connection.actor, Submission(
+                    'forged-broker', ref, {'text': 'x', 'kanban_approval_broker_v1': True}, 'queue'))
             assert refused.value.reason == 'invalid_params'
             with pytest.raises(RuntimeStoreError) as refused:
                 owner.connection.subscriptions[sid] = object()

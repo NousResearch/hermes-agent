@@ -6,6 +6,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 _finite_turn = ContextVar('finite_turn', default=None)
 _unattended_turn = ContextVar('unattended_turn', default=False)
+_approval_broker_turn = ContextVar('kanban_approval_broker_turn', default=False)
 
 
 def finite_turn_required():
@@ -30,13 +31,20 @@ def unattended_turn():
     return _unattended_turn.get()
 
 
+def approval_broker_turn():
+    """True only for a trusted Kanban admission with a preflight-authorized human broker."""
+    return _approval_broker_turn.get()
+
+
 @contextmanager
-def finite_turn_scope(finite, unattended=False):
+def finite_turn_scope(finite, unattended=False, *, approval_broker=False):
     token = _finite_turn.set(finite)
     unattended_token = _unattended_turn.set(bool(finite and unattended))
+    broker_token = _approval_broker_turn.set(bool(finite and not unattended and approval_broker))
     try:
         yield
     finally:
+        _approval_broker_turn.reset(broker_token)
         _unattended_turn.reset(unattended_token)
         _finite_turn.reset(token)
 
@@ -73,7 +81,8 @@ async def execute_finite_admission(authority, ref, row):
     from gateway.session_display import display_turn_scope, submission_turn_scope
     from gateway.session_surface import surface_turn_scope
     from gateway.session_cli_turn import cli_turn_scope
-    with finite_turn_scope(row['payload'].get('finite', False), row['payload'].get('unattended') is True), \
+    with finite_turn_scope(row['payload'].get('finite', False), row['payload'].get('unattended') is True,
+                           approval_broker=row['payload'].get('kanban_approval_broker_v1') is True), \
             surface_turn_scope(row['payload'].get('surface_v1')), \
             display_turn_scope(row['admission_id'], row['payload'].get('display_v1')), \
             submission_turn_scope(row['admission_id'], row.get('request_id')), \

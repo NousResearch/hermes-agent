@@ -991,7 +991,7 @@ hermes kanban stats [--json]                           # per-status + per-assign
 hermes kanban log <id> [--tail BYTES]                  # worker log from ~/.hermes/kanban/logs/
 hermes kanban notify-subscribe <id>                    # gateway bridge hook (used by /kanban in the gateway)
         --platform <name> --chat-id <id> [--thread-id <id>] [--user-id <id>]
-        [--chat-type dm|group|channel|thread] [--delivery-mode notify|notify+wake|wake]
+        [--chat-type dm|group|channel|thread] [--delivery-mode notify|notify+wake|wake] [--allow-approvals]
 hermes kanban notify-list [<id>] [--json]
 hermes kanban notify-unsubscribe <id>
         --platform <name> --chat-id <id> [--thread-id <id>]
@@ -1112,6 +1112,19 @@ bot> ✓ t_9fc1a3 completed by transcriber
 ```
 
 Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
+
+### Explicit Telegram approval forwarding
+
+An ordinary task subscription never authorizes worker actions. To let a finite worker ask for protected-write approval in Telegram, explicitly opt in one Telegram user and chat (plus `--thread-id` when applicable):
+
+```bash
+hermes kanban notify-subscribe t_abc123 --platform telegram \
+    --chat-id <chat-id> --user-id <telegram-user-id> --allow-approvals
+```
+
+The gateway rechecks the subscription, notifier profile's allowed users, and live Telegram transport for every prompt. Exactly one eligible subscription must match; callbacks are accepted only from that user in that chat/thread, and protected writes still require `Approve once`. Missing or ambiguous routes, send failures, deleted topics, and disconnects withdraw the prompt rather than auto-approving or parking the worker. Approval opt-in is task-specific and is not delegated when notification subscriptions are inherited by child tasks.
+
+The explicit broker exception also lets ordinary terminal/tool approval prompts use Telegram instead of applying the finite-turn denial policy. It does not make clarify prompts interactive or grant approval reachability to unattended turns. Without the exception, existing finite, smart/manual, and unattended policy remains unchanged. Opt-in persists across ordinary notification re-subscription; revoke it with `notify-unsubscribe`. To choose a different approval user or notifier profile, unsubscribe first—an identity-mismatched opt-in is rejected without changing the existing subscription.
 
 Dispatcher workers creating tasks through `kanban_create` or `hermes kanban create`
 copy the owning task's durable notification subscriptions even without `parents`

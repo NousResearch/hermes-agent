@@ -15,6 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
+    import socket
+    import sys
+    # Import runtime code without launcher side effects against the real install surrounding this worktree.
+    monkeypatch.setitem(sys.modules, "hermes_bootstrap",
+                        SimpleNamespace(_happy_eyeballs_create_connection=socket.create_connection))
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -99,6 +104,99 @@ def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
     assert sub["delivery_metadata"] == {
         "chat_type": "thread", "existing": "keep", "parent_chat_id": "parent", "guild_id": "guild",
     }
+
+def test_notify_subscribe_approval_opt_in_is_explicit_and_identity_bound(kanban_home):
+    import argparse
+    from gateway.kanban_approval_broker import APPROVAL_FORWARDING_METADATA_KEY
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="approval route", assignee="worker")
+
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "telegram", "--chat-id", "100",
+        "--thread-id", "7", "--chat-type", "thread", "--user-id", "42", "--allow-approvals",
+    ])
+    assert kc.kanban_command(args) == 0
+
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+    assert sub["user_id"] == "42"
+    assert sub["delivery_metadata"][APPROVAL_FORWARDING_METADATA_KEY] == "v1"
+    assert sub["delivery_metadata"]["kanban_approval_task_id"] == tid
+
+
+@pytest.mark.parametrize(
+    ("existing_user", "requested_user", "requested_profile"),
+    [("41", "42", "default"), ("42", "42", "other")],
+)
+def test_notify_subscribe_approval_opt_in_rejects_identity_mismatch_atomically(
+        kanban_home, existing_user, requested_user, requested_profile):
+    import argparse
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="existing approval route", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="100",
+            user_id=existing_user, notifier_profile="default")
+
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "telegram", "--chat-id", "100",
+        "--user-id", requested_user, "--allow-approvals", "--notifier-profile", requested_profile,
+    ])
+    assert kc.kanban_command(args) == 1
+
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+    assert sub["user_id"] == existing_user
+    assert sub["notifier_profile"] == "default"
+    assert sub["delivery_metadata"] == {}
+
+
+def test_notify_subscribe_approval_opt_in_binds_matching_existing_identity(kanban_home):
+    import argparse
+    from gateway.kanban_approval_broker import APPROVAL_FORWARDING_METADATA_KEY
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="matching approval route", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="100",
+            user_id="42", notifier_profile="default")
+
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "telegram", "--chat-id", "100",
+        "--user-id", "42", "--allow-approvals", "--notifier-profile", "default",
+    ])
+    assert kc.kanban_command(args) == 0
+
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+    assert sub["user_id"] == "42"
+    assert sub["notifier_profile"] == "default"
+    assert sub["delivery_metadata"][APPROVAL_FORWARDING_METADATA_KEY] == "v1"
+
+
+def test_notify_subscribe_approval_opt_in_requires_telegram_user(kanban_home):
+    import argparse
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="approval route requires identity", assignee="worker")
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "telegram", "--chat-id", "100",
+        "--allow-approvals",
+    ])
+
+    assert kc.kanban_command(args) == 1
+    with kbc.connect() as conn:
+        assert kbn.list_notify_subs(conn, tid) == []
+
 
 def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
     """chat_type persists, defaults to 'dm', an explicit re-subscribe is

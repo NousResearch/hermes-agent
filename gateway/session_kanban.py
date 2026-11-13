@@ -131,8 +131,9 @@ async def run_task(connection, params):
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
-    # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
-    # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
+    # Finite like the `chat -q` worker it replaced: normally nobody can answer an approval or clarify in a
+    # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval. The sole
+    # exception is a trusted, preflight-authorized Telegram broker marker; clarify stays headless either way.
     # A retry of an attempt admitted before cards were finite resubmits its committed payload,
     # so the store returns the original receipt instead of admission_conflict.
     from hermes_state_runtime import find_session_admission
@@ -145,10 +146,25 @@ async def run_task(connection, params):
     # lost across an owner restart settles interrupted instead of pausing the card session. An
     # attempt main committed without it resubmits unmarked (same digest, original receipt).
     card = None
-    if committed is None or 'kanban_card_v1' in committed['payload']:
+    if committed is None:
         card = {'board': context.get('board'), 'task_id': params['task_id'], 'run_id': params['run_id']}
+    elif 'kanban_card_v1' in committed['payload']:
+        # Exact retries must not acquire new envelope fields (including the broker's DB route).
+        card = committed['payload']['kanban_card_v1']
+    approval_broker = False
+    if committed is None:
+        from gateway.kanban_approval_broker import approval_subscription_for_task
+        selected = await asyncio.to_thread(approval_subscription_for_task, getattr(authority, 'runner', None),
+                                           context['db'], params['task_id'])
+        approval_broker = selected is not None
+    else:
+        # Exact retries preserve the committed capability. Forwarding revalidates the subscriber on every
+        # prompt, so a revoked route can only withdraw that prompt, never wait for the timeout.
+        approval_broker = committed['payload'].get('kanban_approval_broker_v1') is True
+    if approval_broker and card is not None:
+        card['db'] = context['db']
     receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'),
-                                     _kanban_card=card)
+                                     _kanban_card=card, _kanban_approval_broker=approval_broker)
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
 
 

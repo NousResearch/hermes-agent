@@ -392,6 +392,10 @@ change anything for another agent?" → global, else Agent settings): Account & 
 Appearance, Notifications, Keyboard Shortcuts, Gateways & Machines, Sessions & History,
 About & Updates, Advanced (device-level and remaining global pages), and an Agent
 settings card. Provider accounts and keys live under Agent › Providers & Keys.
+A page's list panel (Agents, Routines; `PageSidebarPanel`) wears the chat sidebar's and the
+Settings column's header: its title 30px in and 30px down on a 36px line, its start row (New agent,
+New routine) 122px under the panel's top where New chat starts, as New chat's borderless light/5 slab
+with rimless mono keycaps, and its open row a light/5 fill with no stroke.
 Every routed page keeps one page frame (`tokens/space.css`): beside a sidebar
 panel the content column starts `--portal-frame-inset` (20px, the freshest frames 1036:7189 /
 895:*) after the panel's divider, on Agents, Settings and Routines alike; without a panel it
@@ -688,6 +692,8 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-rail-fill-selected` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent)) )` | `var(--portal-raw-ink-10)` |  |
 | `--portal-rail-ink` | `var(--portal-raw-ink-40)` | `color-mix(in srgb, var(--ui-base) 48%, transparent)` |  |
 | `--portal-rail-ink-selected` | `var(--portal-text-primary)` | ″ |  |
+| `--portal-panel-action` | `var(--portal-raw-ink-5)` | `var(--portal-raw-ink-2)` | A list panel's start row (New agent, New routine) wears New chat's slab (16292:15511): light/5, no rim; dark/2 on light. |
+| `--portal-panel-action-hover` | `var(--portal-raw-ink-8)` | `var(--portal-raw-ink-5)` |  |
 | `--portal-surface-control` | `var(--portal-raw-ink-5)` | `var(--portal-raw-ink-3)` | Secondary and icon buttons (877:4189) at rest, hover and pressed: one ink step each. |
 | `--portal-surface-control-hover` | `var(--portal-raw-ink-8)` | `var(--portal-raw-ink-5)` |  |
 | `--portal-surface-control-pressed` | `var(--portal-raw-ink-10)` | `var(--portal-raw-ink-8)` |  |
@@ -817,6 +823,10 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-page-rhythm` | `2rem` | ″ |  |
 | `--portal-page-tab-height` | `2rem` | ″ |  |
 | `--portal-page-tab-inset` | `0.75rem` | ″ |  |
+| `--portal-panel-title-top` | `1.875rem` | ″ | A page's list panel (Agents, Routines) shares the chat sidebar's and the Settings column's header (Top 16292:15498, 16292:16360): its title 30px in and 30px down on a 36px line, its first control 122px under the panel's top, where New chat and the Settings rows start. |
+| `--portal-panel-title-inset` | `1.875rem` | ″ |  |
+| `--portal-panel-title-line` | `2.25rem` | ″ |  |
+| `--portal-panel-first-row` | `7.625rem` | ″ |  |
 | `--portal-settings-column` | `40rem` | ″ | Global Settings ("Prod - Desktop" 06 · Settings/Account, Panel/flexible 16292:16447): a 640px column centred in the stage, its header 104px under the stage's top; the header, section heads and card rows share a 32px text inset; cards pad 16px over and under their rows, rows 12px. |
 | `--portal-settings-top` | `var(--portal-page-top)` | ″ |  |
 | `--portal-settings-inset` | `1rem` | ″ |  |

@@ -127,23 +127,43 @@
   width: var(--page-nav-width);
   flex-direction: column;
   gap: 1.5rem;
-  /* The title lands on the Settings column's title (856:2741). */
-  padding: 1.4375rem 1.25rem 1.5rem;
+  padding: var(--portal-panel-title-top) var(--page-panel-inset) 1.5rem;
 }
 
-/* With the column's 24px gap: Figma's title-to-New-agent spacing (895:8991). */
+/* The chat sidebar's header: the title on its 30px inset and 36px line, the start row under it where
+   New chat starts (--portal-panel-first-row). */
 .page-sidebar-panel .page-sidebar-head {
-  margin-bottom: 0.4375rem;
+  margin: 0 0 calc(var(--portal-panel-first-row) - var(--portal-panel-title-top) - var(--portal-panel-title-line) - 1.5rem)
+    calc(var(--portal-panel-title-inset) - var(--page-panel-inset));
 }
 
-/* The start row (New agent 895:9447): a 40px secondary row, 13px label, leading plus. */
+.page-sidebar-panel .page-sidebar-head .page-nav-title {
+  line-height: var(--portal-panel-title-line);
+}
+
+/* The start row (New agent, New routine): New chat's slab (16292:15511), 40px, radius 3, no rim,
+   12px sides, 10px gap, a 16px glyph, Medium label. A secondary button reads its fill and rim from
+   the control tokens (portal-controls.css), so the row restyles it through them. */
 .page-sidebar-panel > button {
+  --portal-control-fill: var(--portal-panel-action);
+  --portal-control-fill-hover: var(--portal-panel-action-hover);
+  --portal-control-stroke: transparent;
+
+  height: 2.5rem;
   min-height: 2.5rem;
   justify-content: flex-start;
   gap: 0.625rem;
-  padding-inline: 0.625rem;
+  padding-inline: 0.75rem;
+  border-radius: var(--portal-radius-control);
   font-size: var(--portal-type-ui-size);
-  font-weight: 400;
+  font-weight: 500;
+}
+
+/* The 16px chrome glyph, as New chat's. */
+.page-sidebar-panel > button > :is(svg, .codicon) {
+  width: var(--titlebar-icon-size);
+  height: var(--titlebar-icon-size);
+  font-size: var(--titlebar-icon-size);
 }
 
 /* The label grows so the row's shortcut keycaps sit at its end (895:9447: ⌘ N). */
@@ -155,17 +175,19 @@
   text-overflow: ellipsis;
 }
 
+/* New chat's keycaps (16292:15520): rimless light/5, the mono font at 11px, 60% ink. */
 .new-agent-row .portal-kbd [data-slot='kbd'] {
   min-width: 1.25rem;
   height: 1.25rem;
   padding-inline: 0.25rem;
-  border: 0.5px solid var(--portal-raw-ink-5);
+  border: 0;
   border-radius: var(--portal-radius-control);
   background: var(--portal-raw-ink-5);
   box-shadow: none;
-  color: var(--ui-text-secondary);
-  font-family: inherit;
+  color: var(--ui-text-tertiary);
+  font-family: var(--portal-font-mono);
   font-size: var(--portal-type-micro-size);
+  font-weight: 400;
   text-transform: uppercase;
 }
 
@@ -213,10 +235,11 @@
   outline-offset: var(--portal-focus-ring-inset);
 }
 
+/* The open item: the Settings column's selection (16292:16373), a light/5 fill with no stroke. */
 .page-sidebar-row[aria-current] {
   border-color: transparent;
   background: var(--portal-neutral-selection-background);
-  box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
+  box-shadow: none;
   color: var(--ui-text-primary);
   font-weight: 500;
 }

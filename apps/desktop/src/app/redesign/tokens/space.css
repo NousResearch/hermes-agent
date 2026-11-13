@@ -107,6 +107,13 @@
   --portal-page-rhythm: 2rem;
   --portal-page-tab-height: 2rem;
   --portal-page-tab-inset: 0.75rem;
+  /* A page's list panel (Agents, Routines) shares the chat sidebar's and the Settings column's header
+     (Top 16292:15498, 16292:16360): its title 30px in and 30px down on a 36px line, its first control
+     122px under the panel's top, where New chat and the Settings rows start. */
+  --portal-panel-title-top: 1.875rem;
+  --portal-panel-title-inset: 1.875rem;
+  --portal-panel-title-line: 2.25rem;
+  --portal-panel-first-row: 7.625rem;
   /* Global Settings ("Prod - Desktop" 06 · Settings/Account, Panel/flexible 16292:16447): a 640px
      column centred in the stage, its header 104px under the stage's top; the header, section heads
      and card rows share a 32px text inset; cards pad 16px over and under their rows, rows 12px. */

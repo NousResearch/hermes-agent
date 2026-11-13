@@ -177,6 +177,10 @@
   );
   --portal-rail-ink: var(--portal-raw-ink-40);
   --portal-rail-ink-selected: var(--portal-text-primary);
+  /* A list panel's start row (New agent, New routine) wears New chat's slab (16292:15511): light/5, no
+     rim; dark/2 on light. */
+  --portal-panel-action: var(--portal-raw-ink-5);
+  --portal-panel-action-hover: var(--portal-raw-ink-8);
   /* Secondary and icon buttons (877:4189) at rest, hover and pressed: one ink step each. */
   --portal-surface-control: var(--portal-raw-ink-5);
   --portal-surface-control-hover: var(--portal-raw-ink-8);
@@ -295,6 +299,8 @@
   /* Light's settings cards are near-white on the page (#F9F9FA, 16292:26032). */
   --portal-settings-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
   --portal-composer-fill: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background));
+  --portal-panel-action: var(--portal-raw-ink-2);
+  --portal-panel-action-hover: var(--portal-raw-ink-5);
   --portal-surface-control: var(--portal-raw-ink-3);
   --portal-surface-control-hover: var(--portal-raw-ink-5);
   --portal-surface-control-pressed: var(--portal-raw-ink-8);

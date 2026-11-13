@@ -142,6 +142,10 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    drained: list[str] = field(default_factory=list)
+    """Task ids whose workers died inside (or freshly after) their owner's update fence —
+    its drain sentinel exit or a fence-correlated kill — and were released to ``ready``
+    WITHOUT counting a failure; a restart wave must never eat a card's budget."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -251,6 +255,8 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
         return ("rate_limited", code)
     if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
+    if code == _kb.KANBAN_OWNER_DRAIN_EXIT_CODE:
+        return ("owner_drain", code)
     return ("nonzero_exit", code)
 
 
@@ -645,8 +651,12 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 
     SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
     task's source phase so the next tick re-spawns the same kind of worker —
-    unless the circuit breaker already gave up, leaving it blocked. Host-local
-    only (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
+    unless the circuit breaker already gave up, leaving it blocked. A kill of
+    an attempt its owner's update fence held (or one whose run never bound a
+    worker: it was still waiting on its owner and never spent the card's
+    budget) books as ``drained`` infrastructure instead — no failure increment;
+    the breaker can't trip. Host-local only (same reasoning as
+    ``detect_crashed_workers``). ``signal_fn`` is a test hook.
     """
     timed_out: list[str] = []
     now = int(time.time())
@@ -671,7 +681,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             continue
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
-        elapsed = now - (_kb._to_epoch(row["active_started_at"]) or now)  # unreadable clock: never kill
+        started_epoch = _kb._to_epoch(row["active_started_at"])
+        elapsed = now - (started_epoch or now)  # unreadable clock: never kill
         limit = int(row["max_runtime_seconds"])
         if elapsed < limit:
             continue
@@ -704,6 +715,13 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
             # meanwhile is invisible to the pid/claim CAS below. Host-local by the filter above.
             if owner_reclaim_blocked_after_kill(conn, tid, signalled=True):
                 continue
+            # A per-limit kill of an attempt its owner's update FENCE held (still fencing at
+            # kill time, or a fence this dispatcher observed inside the attempt's life) books
+            # as the wave's infrastructure — the same rule the dead-worker sweep applies. A
+            # run that never bound a worker at all is also infrastructure: the attempt was
+            # still waiting on its owner, the card never spent any budget. Never a card
+            # failure: two wave-length attempts must not reach the breaker.
+            fenced = _attempt_fenced_out(started_epoch) or _run_never_bound(conn, tid)
             retry_status = _kb._retry_status_for_run(conn, tid)
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
@@ -714,6 +732,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 (retry_status, tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
+                outcome = "drained" if fenced else "timed_out"
                 payload = {
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
@@ -721,24 +740,43 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
+                if fenced:
+                    payload["owner_drain"] = True
+                    payload["infrastructure"] = True
                 run_id = _kb._end_run(
-                    conn, tid, outcome="timed_out", status="timed_out",
+                    conn, tid, outcome=outcome, status=outcome,
                     error=error, metadata=payload,
                 )
-                _kb._append_event(conn, tid, "timed_out", payload, run_id=run_id)
+                _kb._append_event(conn, tid, outcome, payload, run_id=run_id)
                 timed_out.append(tid)
         # Outside the write_txn above because ``_record_task_failure`` opens its
-        # own. If the breaker trips this flips the task to ``blocked`` and emits
-        # ``gave_up`` on top of the ``timed_out`` already emitted.
+        # own. A fence-shaped kill records the infrastructure vehicle (no
+        # ``consecutive_failures`` increment, breaker never consulted); a plain
+        # overslow run still counts, and if the breaker trips this flips the
+        # task to ``blocked`` and emits ``gave_up`` on top of the ``timed_out``.
         if cur.rowcount == 1:
-            _record_task_failure(
-                conn, tid,
-                error=error,
-                outcome="timed_out",
-                release_claim=False,
-                end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
-            )
+            if fenced:
+                _record_task_failure(
+                    conn, tid,
+                    error=error,
+                    outcome="drained",
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={
+                        "pid": pid, "sigkill": killed, "retry_status": retry_status,
+                        "owner_drain": True, "infrastructure": True,
+                    },
+                    infrastructure=True,
+                )
+            else:
+                _record_task_failure(
+                    conn, tid,
+                    error=error,
+                    outcome="timed_out",
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={"pid": pid, "sigkill": killed, "retry_status": retry_status},
+                )
     return timed_out
 
 
@@ -1049,11 +1087,18 @@ class _DeadWorker:
     terminal_provider: bool = False
     """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
     credential/model — trips the breaker on this first occurrence."""
+    infrastructure: bool = False
+    """The card never ran (its owner fenced the host: a drain sentinel exit, or a death this
+    sweep correlated with a live/recent owner update fence). Booked like a spawn refusal:
+    no ``consecutive_failures`` increment and the breaker never hears of it."""
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
+        # doesn't show a phantom crash for a quota wall; a drain requeue is its own
+        # vocabulary so a wave's survivors never read as crashes either.
+        if self.infrastructure:
+            return "drained"
         return "rate_limited" if self.rate_limited else "crashed"
 
 
@@ -1112,6 +1157,20 @@ def _classify_dead_worker_exit(
             {"pid": pid, "claimer": claimer, "exit_code": code, "protocol_violation": True},
             protocol_violation=True,
         )
+    if kind == "owner_drain":
+        # The worker reached the end of its owner-fence wait (discovery kept answering the
+        # update wave), exited the drain sentinel, and never got an answer to submit:
+        # nothing about the card ran, so a wave that outlives a card's budget requeues the
+        # attempt the way a spawn refusal is booked instead of charging the breaker.
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} exited fenced past its owner-drain wait budget (update wave) — "
+            "requeued without counting a failure",
+            "drained",
+            {"pid": pid, "claimer": claimer, "exit_code": code, "owner_drain": True,
+             "infrastructure": True},
+            infrastructure=True,
+        )
     if kind == "rate_limited":
         # Quota wall — NOT a task failure. Release to the source phase and do
         # NOT count a failure so a long quota window can't trip the breaker.
@@ -1144,7 +1203,18 @@ def _classify_dead_worker_exit(
     if code is not None and kind != "unknown":
         event_payload["exit_kind"] = kind
         event_payload["exit_code"] = code
-    return _DeadWorker(kind, code, error_text, "crashed", event_payload)
+    dead = _DeadWorker(kind, code, error_text, "crashed", event_payload)
+    if _drain_correlated(kind, code):
+        # Rebooked in place: a death inside (or freshly after) the owner's update wave is
+        # the host's, not the card's — the infrastructure booking keeps the breaker out of
+        # the wave entirely, and the error text still names the plain exit for the operator.
+        dead.error_text = (
+            f"pid {pid} died during its owner's update fence ({error_text}) — "
+            "an infrastructure death of its host, requeued without counting a failure")
+        dead.event_kind = "drained"
+        dead.event_payload["infrastructure"] = True
+        dead.infrastructure = True
+    return dead
 
 
 @dataclass
@@ -1156,9 +1226,110 @@ class _CrashSweep:
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
+    # Deaths booked as infrastructure (owner-fence): the same tuple shape, accounted
+    # after the txn with ``_record_task_failure(..., infrastructure=True)`` — the
+    # breaker never hears of these.
+    infrastructure_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
+
+
+# How long a sweep may remember an owner update fence it observed: a wave stays in progress
+# across sweeps (each probes the fence live), and a worker the wave SIGINTed mid-run can be
+# swept just before the wave ends — the memory covers that late-swept victim. No persistence:
+# a fresh dispatcher only re-arms from its own probe.
+_RECENT_OWNER_FENCE_TTL_SECONDS = 900
+_owner_fences_seen: list[float] = []
+
+
+def _prune_owner_fences() -> None:
+    """Drop remembered fences older than the wall clock's TTL (no new record)."""
+    now = time.time()
+    while _owner_fences_seen and now - _owner_fences_seen[0] > _RECENT_OWNER_FENCE_TTL_SECONDS:
+        _owner_fences_seen.pop(0)
+
+
+def _note_owner_fence() -> None:
+    """Record wall time the dispatcher observed an owner update fence (deduped, bounded)."""
+    _prune_owner_fences()
+    if not _owner_fences_seen or time.time() - _owner_fences_seen[-1] > 60:
+        _owner_fences_seen.append(time.time())
+
+
+def _owner_update_fenced() -> bool:
+    """True while an update wave owns this install (read-only marker/lock judgment).
+
+    Probes the same fence the owner hands clients as the ``update_paused`` verdict, for the
+    process this dispatcher runs in (the gateway-embedded dispatcher's own profile home and
+    the install root). Never touches the fence or starts anything; unjudgeable = not fenced."""
+    try:
+        from hermes_cli.gateway_runtime import _update_fenced
+        from hermes_constants import get_default_hermes_root, get_process_hermes_home
+        fenced = bool(_update_fenced({get_process_hermes_home(), get_default_hermes_root()}))
+    except Exception:
+        return False
+    if fenced:
+        _note_owner_fence()
+    return fenced
+
+
+def _attempt_fenced_out(started_at: Optional[int]) -> bool:
+    """True when an attempt was waiting out its owner's update fence, not working.
+
+    Used by ``enforce_max_runtime`` to shape a per-limit kill: an attempt the wave held
+    (its owner still fenced now, or a fence the dispatcher already observed inside the
+    attempt's life window) was waiting out infrastructure, so the kill must never be
+    counted against the card — the same ``cost of trusting a stale memory`` reasoning as
+    ``_drain_correlated``: a genuinely overslow card re-proves itself on a later,
+    fence-free death. An unreadable attempt clock is never fenced."""
+    if started_at is None:
+        return False
+    _prune_owner_fences()
+    if _owner_update_fenced():  # the wave holds the owner right now
+        return True
+    return any(observed >= started_at for observed in _owner_fences_seen)
+
+
+def _run_never_bound(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when the task's active run never recorded a bound owner interpreter.
+
+    A ``worker_bound`` is written when the run's work actually starts; a run without
+    one was still waiting on its owner when the enforcement clock ran out — the card
+    never spent any of its budget, so the kill is the launcher's infrastructure (the
+    same reasoning as ``detect_stale_running``, which deliberately not-counts a
+    missing heartbeat). A fence that only lasted a second between ticks is covered
+    here without any memory at all."""
+    row = conn.execute(
+        "SELECT 1 FROM task_events e JOIN tasks t ON t.current_run_id = e.run_id "
+        "WHERE t.id = ? AND e.task_id = t.id AND e.kind = 'worker_bound' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row is None
+
+
+def _drain_correlated(kind: str, code: Optional[int]) -> bool:
+    """True when a plain dead worker is evidence of its owner's update wave, not of the card.
+
+    ``owner_drain`` is the worker's own classification (drain-sentinel exit). Any other death
+    counts only against a fence this sweep can still see, live or recently — the updater
+    normally reclaims dead workers inside the wave (SIGINT during a pause), and the cost of
+    trusting a stale memory over a genuine crash is a silently-requeued attempt that a real,
+    repeatable card fault re-proves on a later, fence-free death."""
+    if kind == "owner_drain":
+        return True
+    if _owner_update_fenced():
+        return True
+    if _owner_fences_seen:
+        _prune_owner_fences()  # never excuse on memory the wall clock has aged out
+        if _owner_fences_seen:
+            # Only kill-shaped deaths: the updater does not replay card faults, it tears down
+            # processes — an exit-1 card crash stayed an exit-1 card crash even minutes after
+            # the wave (until the memory ages out entirely).
+            if kind == "unknown" or kind == "signaled":
+                return True
+            return kind == "nonzero_exit" and code in (130, 143)
+    return False
 
 
 def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> _CrashSweep:
@@ -1233,6 +1404,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+            elif dead.infrastructure:
+                sweep.infrastructure_details.append((row["id"], pid, row["claim_lock"], dead))
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
@@ -1319,6 +1492,27 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     return auto_blocked
 
 
+def _account_infrastructure_deaths(conn: sqlite3.Connection, infrastructure_details: list) -> list[str]:
+    """Book owner-fence (drained) deaths via ``_record_task_failure(infrastructure=True)``.
+
+    The vehicle ships for spawn refusals: ``consecutive_failures`` is left alone, the breaker
+    never trips, and ``check_respawn_guard`` spaces the retries — a restart wave can never eat a
+    card's failure budget because the card never broke. Returns the drained task ids."""
+    drained: list[str] = []
+    for tid, pid, claimer, dead in infrastructure_details:
+        _record_task_failure(
+            conn, tid,
+            error=dead.error_text,
+            outcome="drained",
+            release_claim=False,
+            end_run=False,
+            event_payload_extra={"pid": pid, "claimer": claimer, "infrastructure": True},
+            infrastructure=True,
+        )
+        drained.append(tid)
+    return drained
+
+
 def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
@@ -1327,16 +1521,26 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
-    ``_last_rate_limited`` attribute (the return stays crashed-only).
+    ``_last_rate_limited`` attribute (the return stays crashed-only); a
+    drain-sentinel exit (or a death correlated with its owner's update fence)
+    books the same way via ``_last_drained`` — infrastructure, never a failure.
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
+    # Infrastructure deaths (owner-fence drain) also account outside the txn — without
+    # touching the failure budget at all.
+    drained = (
+        _account_infrastructure_deaths(conn, sweep.infrastructure_details)
+        if sweep.infrastructure_details else []
+    )
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
-    # requeues did NOT count a failure and are NOT crashes.
+    # requeues did NOT count a failure and are NOT crashes; drain requeues are
+    # neither either — ``_last_drained`` keeps them findable without a return-shape change.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_drained = drained  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -1560,7 +1764,8 @@ def check_respawn_guard(
 
     Called per ready/review row before any claim attempt. Priority order:
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
-    refused — no restart-safe scope — within the cooldown; never counted),
+    refused — no restart-safe scope — within the cooldown; never counted) or a
+    ``drained`` one (the owner's update fence: same host condition, same rule),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
@@ -1595,7 +1800,10 @@ def check_respawn_guard(
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "spawn_failed":
+    if latest_run is not None and latest_run["outcome"] in ("spawn_failed", "drained"):
+        # ``drained``: the latest run was the owner's update fence (its drain sentinel or a
+        # fence-correlated kill) — the same host condition as a refused spawn, spaced the
+        # same way and never charged to the card.
         if rl_cooldown > 0 and _kb._json_dict(latest_run["metadata"]).get("infrastructure"):
             ended_at = _kb._to_epoch(latest_run["ended_at"])
             if ended_at is not None and (now - ended_at) < rl_cooldown:
@@ -2228,6 +2436,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.drained.extend(getattr(detect_crashed_workers, "_last_drained", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 

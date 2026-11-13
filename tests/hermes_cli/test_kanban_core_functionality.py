@@ -291,6 +291,17 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
                     "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
                     (old_started, tid),
                 )
+            # The attempt is modelled as a working run, so bind it the way the owner's
+            # admission does (`worker_bound`): an enforcement kill of a never-bound run
+            # is launcher infrastructure by the same card as this test's contract.
+            with kb.write_txn(conn):
+                lock_row = conn.execute(
+                    "SELECT claim_lock, current_run_id FROM tasks WHERE id=?", (tid,)).fetchone()
+                kb._append_event(
+                    conn, tid, "worker_bound",
+                    {"pid": os.getpid(), "claim_lock": lock_row[0], "started_at": "bound"},
+                    run_id=lock_row[1],
+                )
 
             timed_out = kbd.enforce_max_runtime(conn, signal_fn=_signal_fn)
             assert tid in timed_out

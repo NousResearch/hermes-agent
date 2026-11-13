@@ -22,6 +22,13 @@ from typing import Optional
 # ``OWNER_WAIT_S`` is the longest the owner may stay silent between answers before the worker
 # gives up (the first ``kanban.run`` answer has its own wait, ``admission_answer_budget``).
 OWNER_WAIT_S = 180.0
+# A fencing owner is not a silent one: while an update owns the install, the owner keeps
+# ANSWERING — discovery verdicts ``draining``/``starting`` (``update_paused``) and in-band
+# ``runtime_draining`` refusals — for the 10+ minutes an update pause can run. That stretch is
+# bounded by the card's own ``max_runtime_seconds`` (read from the board) instead of the
+# silent-owner wait, so one attempt survives a full update wave instead of dying inside it; a
+# card with no ``max_runtime_seconds`` falls back to this default.
+OWNER_FENCE_DEFAULT_S = 3600.0
 _TRANSIENT_OWNER_STATES = frozenset({'draining', 'starting'})
 # In-band owner refusals that leave the attempt intact: a draining owner admits nothing new, and a
 # retired authority's successor holds the admission the next connection reads.
@@ -45,6 +52,55 @@ def admission_answer_budget():
     return lock_wait + ADMISSION_ANSWER_MARGIN_S
 
 
+class OwnerFenceTimeout(Exception):
+    """The owner kept advertising its fence (a ``draining``/``starting`` discovery verdict, or an
+    in-band ``runtime_draining`` refusal) past the card's fence budget: the update wave won and
+    this attempt never ran anything of the card's. Infrastructure of the host, not a card
+    failure — ``_submit`` converts it into the sweep's distinguishable drain-sentinel exit."""
+
+    def __init__(self, waited_s: float, detail: str):
+        super().__init__(f'Kanban owner draining for {waited_s:.0f}s: {detail}')
+        self.waited_s, self.detail = waited_s, detail
+
+
+def _fence(exc):
+    """The name of the fence *exc* proves the owner still advertises and answers, else None.
+
+    A fence is the owner's OWN verdict or refusal while it is working (discovery
+    ``draining``/``starting``, in-band ``runtime_draining``). A lost transport or a garbled
+    control answer is silence — nothing to extend a wait with."""
+    from hermes_cli.gateway_client import GatewayRPCError, GatewayUnavailableError
+    if isinstance(exc, GatewayRPCError):
+        return 'runtime_draining' if str(exc) == 'runtime_draining' else None
+    if isinstance(exc, GatewayUnavailableError):
+        if exc.state in _TRANSIENT_OWNER_STATES:
+            return exc.reason_code or exc.state or 'draining'
+    return None
+
+
+def _card_max_runtime_seconds(task_id, board_db):
+    """The card's ``max_runtime_seconds`` straight from the board (read-only), else None."""
+    try:
+        import sqlite3
+        from contextlib import closing
+        db = str(Path(board_db).resolve())
+        with closing(sqlite3.connect(f'file:{db}?mode=ro', uri=True)) as conn:
+            row = conn.execute(
+                'SELECT max_runtime_seconds FROM tasks WHERE id = ?', (task_id,)).fetchone()
+        return float(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+
+
+def _fence_budget_s(task_id, board_db):
+    """Seconds a worker keeps waiting while its owner keeps advertising one fence.
+
+    Never below ``OWNER_WAIT_S``: a card whose budget is smaller must not lose the recovery
+    window a silent owner would have gotten — the fence budget only ever lengthens the wait."""
+    limit = _card_max_runtime_seconds(task_id, board_db)
+    return max(OWNER_WAIT_S, limit if limit is not None else OWNER_FENCE_DEFAULT_S)
+
+
 @dataclass
 class _Claim:
     """What the owner has said about this attempt, carried across connections."""
@@ -65,9 +121,13 @@ async def run(params, board_db):
     # A lost socket is not a lost attempt, and exiting here would let ``_watch_submitter`` end the
     # owner's in-flight turn, so the next connection resumes whatever the last one reached. The
     # wait is bounded from the owner's last answer: an owner that keeps answering keeps the
-    # worker, and one that stays silent for ``OWNER_WAIT_S`` fails the worker honestly.
+    # worker, and one that stays silent for ``OWNER_WAIT_S`` fails the worker honestly. A fence
+    # the owner itself advertises (an update wave) is an answer, and waits out the card's fence
+    # budget instead — an update pause routinely runs longer than ``OWNER_WAIT_S``.
     claim = _Claim(answered=time.monotonic())
     failures = 0
+    fenced_since = None  # when the owner began advertising the fence it still advertises
+    fence_budget = None  # the stretch's wait budget, resolved once when its fence appears
     while True:
         seen = claim.answered
         try:
@@ -89,12 +149,32 @@ async def run(params, board_db):
         except (GatewayClientError, WebSocketException, OSError, TimeoutError) as exc:
             if not _restartable(exc):
                 raise
-            if claim.silent_for() >= OWNER_WAIT_S:
-                # WebSocket errors can embed remote bodies; only our own messages are quoted.
-                status = getattr(getattr(exc, 'response', None), 'status_code', None)
-                detail = exc if isinstance(exc, GatewayClientError) else type(exc).__name__ + (
-                    f' (HTTP {status})' if status else '')
-                raise GatewayClientError(f'Kanban owner silent for {claim.silent_for():.0f}s: {detail}') from exc
+            # WebSocket errors can embed remote bodies; only our own messages are quoted.
+            status = getattr(getattr(exc, 'response', None), 'status_code', None)
+            detail = exc if isinstance(exc, GatewayClientError) else type(exc).__name__ + (
+                f' (HTTP {status})' if status else '')
+            if _fence(exc) is not None:
+                # A fence verdict or refusal is an owner answer (it proves the owner lives and
+                # names WHY it cannot serve this attempt): refresh the silent window to THIS
+                # answer and let this stretch wait out the card's fence budget. The budget is
+                # resolved once per stretch and anchored to the fence's START (fenced_since),
+                # so the stretch ends when the wave outlasts it even as every answer keeps the
+                # silent window fresh. When the fence stops being advertised (owner back, or
+                # the wave turned into plain silence by losing its connect path) the
+                # silent-owner rule takes over from the LAST fence answer — the first
+                # post-wave non-fence error must never be judged against an age the fence
+                # answers kept clearing.
+                fenced_since = fenced_since if fenced_since is not None else time.monotonic()
+                claim.answered = time.monotonic()
+                if fence_budget is None:
+                    fence_budget = _fence_budget_s(params['task_id'], board_db)
+                if time.monotonic() - fenced_since >= fence_budget:
+                    raise OwnerFenceTimeout(time.monotonic() - fenced_since, detail) from exc
+            else:
+                fenced_since, fence_budget = None, None
+                if claim.silent_for() >= OWNER_WAIT_S:
+                    raise GatewayClientError(
+                        f'Kanban owner silent for {claim.silent_for():.0f}s: {detail}') from exc
         else:
             return _exit_code(receipt, params, board_db)
         failures = 1 if claim.answered != seen else failures + 1
@@ -185,6 +265,12 @@ def _submit():
         for key in ('HERMES_SESSION_SOURCE', 'HERMES_TENANT', 'TERMINAL_CWD'):
             os.environ.pop(key, None)
         return asyncio.run(run(params, board_db))
+    except OwnerFenceTimeout as exc:
+        # The dead-worker sweep books this exit code as an infrastructure requeue (a spawn
+        # refusal's accounting) — it must never read as a card failure.
+        print(f'Kanban owner fenced past the wait budget: {exc}', file=sys.stderr)
+        from hermes_cli.kanban_db import KANBAN_OWNER_DRAIN_EXIT_CODE
+        return KANBAN_OWNER_DRAIN_EXIT_CODE
     except (KeyError, ValueError, OSError) as exc:
         print(f'Kanban owner refused: {exc}', file=sys.stderr)
         return 1

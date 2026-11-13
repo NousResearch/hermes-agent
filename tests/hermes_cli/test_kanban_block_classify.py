@@ -31,6 +31,12 @@ def _time_out_once(conn, tid: str) -> None:
             "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
             (started, tid),
         )
+    # Invoke the breaker on the vehicle's real contract: an enforcement kill counts only
+    # an attempt whose working turn actually started, so bind the run before the kill.
+    row = conn.execute("SELECT claim_lock, current_run_id FROM tasks WHERE id=?", (tid,)).fetchone()
+    kb._append_event(conn, tid, "worker_bound",
+                     {"pid": os.getpid(), "claim_lock": row[0], "started_at": "bound"},
+                     run_id=row[1])
     assert tid in kbd.enforce_max_runtime(conn, signal_fn=lambda pid, sig: None)
 
 

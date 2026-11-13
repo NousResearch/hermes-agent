@@ -5,6 +5,20 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _clean_owner_fence_memory():
+    """Reset the dispatcher's process-global owner-fence memory before every test.
+
+    ``_note_owner_fence`` records observed update fences in a module-level list so a later
+    sweep can excuse a kill it did not itself witness. That memory is per-process and real in
+    production; in a test session it would leak between tests and silently reclassify the next
+    test's enforcement kill as infrastructure. Clear it so each test sees the memory it built.
+    """
+    from hermes_cli import kanban_db_dispatch as _kbd
+    _kbd._owner_fences_seen.clear()
+    yield
+
+
 @pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Hermes profile.

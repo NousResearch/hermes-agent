@@ -1,0 +1,11 @@
+name: transducer
+repo: https://github.com/arjunbagga-xyz/hermes-transducer
+sha: 1f1c50afa070fc7f342352bfaae4bd104d098387
+title: Transducer
+description: Near-ultrasonic FMCW sonar, mechanical FFT vibrometer, and OS CSPRNG
+  entropy generator using audio hardware.
+maintainer: arjunbagga-xyz
+tier: community
+category: tools
+version: 0.1.0
+docs_url: https://github.com/arjunbagga-xyz/hermes-transducer#readme

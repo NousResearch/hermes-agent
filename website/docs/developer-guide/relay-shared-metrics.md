@@ -571,6 +571,9 @@ collect. Only an accepted positive backend result can start a collector. Stale
 saved/read callbacks retain their original cohort across focus changes and
 renames. An off result revokes that cohort's transferred measurements, but cannot
 answer a newly recreated profile's offer or overwrite a newer owner's UI state.
+If a focus refresh retires the first-run answer's cohort during its save, the
+offer captures again and re-reads backend consent before applying it. It never
+replays an old saved opt-in over a newer withdrawal.
 These local keys are never telemetry dimensions or RPC fields.
 
 Rename waits for telemetry coordination before changing local tab/session

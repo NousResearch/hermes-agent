@@ -90,11 +90,20 @@ export async function answerSharedMetricsOffer(
   profileScope: string
 ): Promise<void> {
   const applyGate = await captureDesktopMetricsGate(profileScope)
-  const consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
+  let consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
 
   // A late answer still withdraws its original cohort, but cannot answer another profile's offer.
   if (!(await applyGate(consent.enabled ? 'on' : 'off'))) {
-    return
+    // A focus refresh may retire this cohort mid-save. Re-read under a fresh capture:
+    // replaying the saved answer instead could resurrect a newer withdrawal.
+    const applyCurrent = await captureDesktopMetricsGate(profileScope)
+    const current = await readSharedMetricsConsent(request)
+
+    if (!current?.decided || !(await applyCurrent(current.enabled ? 'on' : 'off', current.decided))) {
+      return
+    }
+
+    consent = current
   }
 
   recordOnboarding('consent', 'completed')

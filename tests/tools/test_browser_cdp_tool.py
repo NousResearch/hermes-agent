@@ -221,8 +221,11 @@ def fake_supervisor(monkeypatch):
     from tools import browser_supervisor
 
     loop = asyncio.new_event_loop()
+    running = threading.Event()
+    loop.call_soon(running.set)  # fires only once run_forever() is actually running
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
+    assert running.wait(timeout=5), "supervisor loop never started"
     holder: dict = {}
     monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: holder.get("sup"))
 

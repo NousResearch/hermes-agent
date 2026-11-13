@@ -474,6 +474,23 @@ def recover_from_truncation(
         compression_attempts=compression_attempts,
     )
     if getattr(response, "_runaway_repetition", False):
+        # A reasoning-channel loop has not produced the visible answer yet. Replaying the
+        # looped text would re-enter it, but one fresh call with reasoning off can still
+        # write the answer from the tool results already in ``messages``. A second loop,
+        # or a loop in the visible content, still ends the turn.
+        channel = getattr(response, "_runaway_channel", "")
+        if (
+            channel == "reasoning"
+            and not getattr(_retry, "reasoning_runaway_retry_attempted", False)
+        ):
+            _retry.reasoning_runaway_retry_attempted = True
+            agent._ephemeral_reasoning_off = True
+            agent._vprint(
+                f"{agent.log_prefix}↻ Reasoning repetition loop — retrying this call once "
+                "with reasoning off.",
+                force=True, diagnostic=True,
+            )
+            return st.done("continue")
         # The streaming call cut a live repetition loop: a continuation would only re-enter it,
         # whatever the partial or its tool calls look like.
         line, user_response, error = _REPETITION_STREAM_CUT

@@ -243,10 +243,12 @@ def _foreground_gateway_profile(argv: Sequence[str], hermes_home: Path) -> str |
     gateway outside s6. Foreground means ``--no-supervise`` or HERMES_GATEWAY_NO_SUPERVISE on
     ``gateway run`` or bare ``gateway`` (which runs too); the profile is ``-p``/``--profile``,
     else the sticky ``active_profile`` the unsupervised run follows (#22502)."""
+    from hermes_cli._parser import command_argv
     args = _strip_container_argv_prefix(argv)
-    if "gateway" not in args:
+    command = command_argv(args)  # past global flags and their values (`-p gateway gateway run`)
+    if command[:1] != ["gateway"]:
         return None
-    sub = next((a for a in args[args.index("gateway") + 1:] if not a.startswith("-")), None)
+    sub = next((a for a in command[1:] if not a.startswith("-")), None)
     no_supervise = "--no-supervise" in args or \
         os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
     if sub not in (None, "run") or not no_supervise:

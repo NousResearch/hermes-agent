@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ratchet unbound thread handoffs by lexical call site, not by file counts.
 
-A real comment ``thread-hop: ok — <why>`` on the call line or preceding line
+A real comment ``thread-hop: ok — <why>`` on the call line or a standalone preceding comment line
 exempts a site; wrappers do not exempt calls automatically. Matches Thread and
 Timer with an explicit target/function through syntactically imported names
 (even if later rebound), any .submit
@@ -193,6 +193,10 @@ def parse_baseline(text):
     return set(data)
 
 
+def terminal_safe(text):
+    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in text)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('paths', nargs='*')
@@ -236,14 +240,14 @@ def main(argv=None):
             raise ValueError(f'baseline contains {len(stale)} stale site(s); run --update to prune')
         problems = hits.keys() - baseline
         for fingerprint in sorted(problems):
-            print(hits[fingerprint])
+            print(terminal_safe(hits[fingerprint]))
         if problems:
             print(f'{len(problems)} new thread handoff site(s); assess context propagation and document exceptions with {MARKER} — <why>')
             return 1
         print(f'thread-hops: no new sites ({len(hits)} present, {len(baseline)} baselined)')
         return 0
     except (OSError, UnicodeError, SyntaxError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:
-        print(f'thread-hops: {exc}', file=sys.stderr)
+        print(f'thread-hops: {terminal_safe(str(exc))}', file=sys.stderr)
         return 2
 
 

@@ -151,10 +151,11 @@ def test_shared_comment_predicate_and_detached_legacy_parity(monkeypatch):
     from scripts.ci import production_scan
     from scripts import check_detached_spawns as detached
     source = 'x = 1  # detached-spawn: ok - independent preceding statement\nsubprocess.Popen(cmd, start_new_session=True)\n'
-    assert detached._marked(source.splitlines(), 2)
-    assert not production_scan.marked(source.splitlines(), 2, detached.MARKER)
+    lines = list[str](source.splitlines())
+    assert detached._marked(lines, 2)
+    assert not production_scan.marked(lines, 2, detached.MARKER)
     comments = production_scan.comment_lines(source, detached.MARKER)
-    assert production_scan.marked(source.splitlines(), 2, detached.MARKER,
+    assert production_scan.marked(lines, 2, detached.MARKER,
                                   comments=comments, standalone_previous=False)
     assert not detached._marked(['x = "detached-spawn: ok - fake"', 'pass'], 2)
     monkeypatch.setattr(production_scan.tokenize, 'generate_tokens',

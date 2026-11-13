@@ -90,7 +90,7 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only detached-spawns
 
-      - name: Forbid new unbound thread handoffs
+      - name: Ratchet syntactic thread handoff sites
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only thread-hops ${{ inputs.event_name == 'pull_request' && '--base HEAD^1' || '' }}
 

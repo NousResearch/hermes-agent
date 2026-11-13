@@ -294,6 +294,9 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    from agent.redact_secret_sources import publish_secret_source_values
+
+    publish_secret_source_values(home, values)
     return dict(values)
 
 
@@ -1115,6 +1118,9 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     _record_secret_source_writes(home_key, report, supplied, environ_before)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+        from agent.redact_secret_sources import publish_secret_source_values
+
+        publish_secret_source_values(home_path, values)
     _SECRET_SOURCE_RESTORE_BY_HOME[home_key] = {
         n: values[n] for n, a in report.provenance.items() if a.authoritative and n in values}
 

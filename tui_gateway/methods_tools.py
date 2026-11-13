@@ -7,6 +7,7 @@ Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / 
 
 import contextlib
 import sys
+import threading
 from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -1677,32 +1678,49 @@ def _plugin_rows() -> list[dict]:
 # Latest ``on_plugin_loaded`` summaries by plugin name — the TUI server's own subscription, so an
 # install/toggle/update result reports what the load actually activated (#87770). One listener per manager.
 _plugin_activations: dict = {}
-_plugin_activation_subscribed: set = set()
+_plugin_activation_subscribed: dict = {}
+_plugin_activation_lock = threading.RLock()
 
 
 def _ensure_plugin_activation_listener() -> None:
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_cli.plugins import get_plugin_manager, subscribe_plugin_loaded_for_home
     manager = get_plugin_manager()
-    if manager.scope_key in _plugin_activation_subscribed:
-        return
-    _plugin_activation_subscribed.add(manager.scope_key)
+    scope = manager.scope_key
+    with _plugin_activation_lock:
+        if scope in _plugin_activation_subscribed:
+            return
 
-    def _on_loaded(summaries) -> None:
-        for entry in summaries:
-            _plugin_activations[entry["name"]] = entry
-            _plugin_activations[entry["key"]] = entry
-    manager.on_plugin_loaded(_on_loaded)
+    def _on_loaded(source, summaries) -> None:
+        with _plugin_activation_lock:
+            if source._retired:
+                return
+            cached = _plugin_activations.get(scope)
+            if cached is None or cached[0] is not source:
+                cached = _plugin_activations[scope] = (source, {})
+            for entry in summaries:
+                cached[1][entry["name"]] = entry
+                cached[1][entry["key"]] = entry
+    unsubscribe = subscribe_plugin_loaded_for_home(manager, _on_loaded)
+    with _plugin_activation_lock:
+        existing = _plugin_activation_subscribed.setdefault(scope, unsubscribe)
+    if existing is not unsubscribe:
+        unsubscribe()
 
 
 def _with_activation(result: dict, name: str) -> dict:
-    """Fill ``activation`` from this process's listener when the core returned none (the core's own
-    copy carries ``live_now``, which the listener's load-time summary cannot)."""
+    """Fill a missing activation only from the current home's current manager."""
     if result.get("activation"):
         return result
-    for key in (name, result.get("plugin_name"), result.get("name")):
-        if key and key in _plugin_activations:
-            result["activation"] = _plugin_activations[key]
-            break
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    with _plugin_activation_lock:
+        cached = _plugin_activations.get(manager.scope_key)
+        if cached is None or cached[0] is not manager:
+            return result
+        for key in (name, result.get("plugin_name"), result.get("name")):
+            if key and key in cached[1]:
+                result["activation"] = cached[1][key]
+                break
     return result
 
 

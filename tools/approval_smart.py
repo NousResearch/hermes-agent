@@ -63,6 +63,8 @@ def _user_request_enabled() -> bool:
     try:
         value = _ctx._get_approval_config().get("smart_user_request", False)
     except Exception:
+        logger.debug("Smart approvals: approval config unreadable, treating smart_user_request as off",
+                     exc_info=True)
         return False
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -85,7 +87,15 @@ def _current_user_request(session_key: str) -> str:
         rows = SessionDB(read_only=True).get_messages(session_key, latest=True, limit=12)
     except Exception as exc:
         logger.warning("Smart approvals: could not read the session request (%s: %s), judging the command alone",
-                       type(exc).__name__, exc)
+                       type(exc).__name__, exc, exc_info=True)
+        return ""
+    try:
+        from agent.redact import redact_sensitive_text
+    except Exception:
+        # Without redaction the request could carry credentials into the guardian prompt; judge the
+        # command alone rather than risk leaking them.
+        logger.warning("Smart approvals: redaction unavailable, judging the command without the request",
+                       exc_info=True)
         return ""
     for row in reversed(rows or []):
         if (row.get("role") or "") != "user":
@@ -95,10 +105,11 @@ def _current_user_request(session_key: str) -> str:
             continue
         text = content.strip()
         try:
-            from agent.redact import redact_sensitive_text
             text = redact_sensitive_text(text, force=True)
         except Exception:
-            pass
+            logger.warning("Smart approvals: redaction failed, judging the command without the request",
+                           exc_info=True)
+            return ""
         if len(text) > _USER_REQUEST_MAX_CHARS:
             text = text[: _USER_REQUEST_MAX_CHARS - 2].rstrip() + " …"
         return text

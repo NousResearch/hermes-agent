@@ -74,3 +74,18 @@ def test_webhook_script_help_distinguishes_route_and_gateway_profiles():
     assert "-p <name>" not in action.help
     rendered = " ".join(subscribe.format_help().split())
     assert " ".join(action.help.split()) in rendered
+
+
+def test_cron_timezone_and_grace_flags():
+    parser = _build()
+    created = parser.parse_args(
+        ["cron", "create", "0 9 * * *", "hi", "--timezone", "Asia/Hong_Kong",
+         "--grace-minutes", "0"])
+    assert created.timezone == "Asia/Hong_Kong"
+    assert created.grace_minutes == "0", "an int-ish string must survive to the normalizer"
+
+    edited = parser.parse_args(["cron", "edit", "j", "--timezone", "", "--grace-minutes", ""])
+    assert edited.timezone == "", "an empty value is the documented clear"
+    assert edited.grace_minutes == ""
+
+    assert parser.parse_args(["cron", "edit", "j"]).timezone is None

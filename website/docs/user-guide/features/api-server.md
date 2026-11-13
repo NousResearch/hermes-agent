@@ -68,8 +68,95 @@ structured through execution; it is not interpreted as a gateway slash command.
   terminal status and `response.cancelled` / `response.failed` events, including when
   diagnostic text is present. Chat Completions reports `finish_reason: "cancelled"`
   for interrupted turns and `"error"` for failures, not a successful `"stop"`.
+- A turn that runs out of its iteration budget (`agent.max_turns`) still answers with the
+  agent's wrap-up of what it found. Chat Completions delivers that text with
+  `finish_reason: "length"` and `hermes.error_code: "iteration_budget_exhausted"`;
+  Responses reports `status: "incomplete"`. Treat the content as a usable answer to a task
+  that stopped short, not as a cancellation.
 - Session-chat replies include `status`; their streams report matching terminal run
   events. An assistant finalization frame is not itself proof of successful execution.
+
+## Idempotency keys {#idempotency-keys}
+
+`POST /v1/chat/completions` and `POST /v1/responses` accept an `Idempotency-Key` header.
+What a key guarantees depends on the execution mode:
+
+- **Canonical mode** (the gateway runs a session authority): a key is a durable admission
+  identity. The first request with it is admitted and runs once, and the key belongs to
+  that admission from then on. Keys are scoped to the authenticated API profile and
+  credential, so another profile or a rotated `API_SERVER_KEY` reusing the same client
+  key is a new request. The rest of this section describes this mode.
+- **Legacy mode** (no session authority): non-streaming requests are deduplicated by a
+  5-minute in-memory cache. Streaming requests are not deduplicated.
+
+`/v1/runs` keys have their own ledger and 24-hour retention (see the Runs API below).
+
+**Exact retries and conflicts.** A retry is exact when it repeats the key with the same
+identity fields and the same declared target. Changing an identity field, or sending the
+key to another session, is a conflict: it is refused with `admission_conflict` and
+nothing runs. How the refusal arrives depends on the request:
+
+- **Responses** (JSON or streaming) and **non-streaming Chat Completions:** HTTP 409
+  with error code `admission_conflict`.
+- **Streaming Chat Completions:** the stream has already opened with HTTP 200, so the
+  refusal is its last chunk, with `finish_reason: "error"` and `error.message`
+  `"admission_conflict"`, followed by `data: [DONE]`. Check that chunk, not the status.
+
+The identity fields differ by endpoint:
+
+- **Responses:** `input`, `instructions`, `previous_response_id`, `conversation`,
+  `conversation_history`, `model`, `provider`, `model_options` and `tools`, plus
+  `truncation` when sent.
+- **Chat Completions:** the last user message, the earlier messages (unless
+  `X-Hermes-Session-Id` is sent, in which case history comes from the session), the
+  system prompt, and the turn settings such as the requested model, provider and
+  `model_options`. `tools` and `tool_choice` are not part of it: a retry that changes
+  only those replays the original answer instead of a conflict.
+
+Delivery mode is not part of the identity on either endpoint: a retry may switch
+between JSON and `stream: true` and gets the same answer in the requested form.
+
+**Replay and duplicate prevention are separate.** An exact retry replays the original
+answer only while the server still holds the key's request identity together with its
+replay record or a terminal admission the answer can be rebuilt from. Once replay is no
+longer possible, the key still does not run again while its admission evidence remains:
+the retry is refused as a conflict and nothing executes. A Responses retry can instead
+get HTTP 409 `unknown_execution`: the store holds the key's claim (for example one
+recorded by an older release) but no answer, so whether the first attempt ran is
+unknown. It is not permission to resend the work under a new key; the first attempt may
+already have run.
+
+After a session is deleted (`DELETE /api/sessions/{id}`), its admissions are kept as
+tombstones. Seven days after the delete they become eligible for pruning; they are
+removed only when a prune pass runs, and until then the key behaves as below.
+
+- **Chat Completions:** an exact retry replays the original answer without recreating
+  the session, and the key sent to any other session is refused as a conflict.
+  Once the tombstones are pruned, the key can name new work on a valid new target.
+- **Responses:** replay also needs the response store to keep the key's identity, so
+  it can end before the seven days: settled identities are retained in a bounded
+  number, and `DELETE /v1/responses/{id}` removes one at once. A key whose identity is
+  gone answers 409 `admission_conflict`, even on a live session. Once its identity is
+  gone and its tombstones are pruned, the key can name new work.
+
+:::note
+By default the response store retains the 1,000 most recently settled identities per
+profile (10 per stored-response slot). Pending or running identities are not counted
+and are never dropped, and deleting a response removes its identity sooner. This is a
+current default, not a replay guarantee.
+:::
+
+An explicit `X-Hermes-Session-Id` is never remapped. The deleted session's id stays
+retired even after pruning. An exact keyed retry whose identity is still retained there
+replays, and a changed one is refused as a conflict. A request with no retained
+identity there, such as a fresh request or a retry whose identity was pruned, is refused
+with `not_found`.
+
+A Chat Completions request without `X-Hermes-Session-Id` derives its session from the
+system prompt and first user message. A deleted session's id is never reused, so a new
+conversation that opens like a deleted one gets a new session, and its later turns land
+on that same session, including after a restart. An exact keyed retry of a turn from the
+deleted conversation is not moved; it replays as described above.
 
 ## Endpoints
 
@@ -291,94 +378,17 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
-## Browser-extension control
+## Browser-extension control (removed)
 
-Hermes can route browser tools through an authenticated extension that controls
-the browser session associated with the current Hermes session. The feature is
-disabled by default; set `browser.extension_control.enabled` to `true` to opt in:
-
-```yaml
-browser:
-  extension_control:
-    enabled: true
-```
-
-The local API path also requires the API server bearer key. A controller may
-register only for an existing server session. Hermes derives the controller
-principal from authenticated server state; a client-supplied `principal_id` is
-ignored.
-
-Discover the live contract through `GET /v1/capabilities`. The
-`browser_extension_control` object reports whether the feature is enabled, the
-protocol version, transport names, and the exact capability allowlist:
-
-```text
-controller.noop
-browser_back
-browser_click
-browser_navigate
-browser_press
-browser_screenshot
-browser_scroll
-browser_snapshot
-browser_tab_activate
-browser_tabs
-browser_type
-```
-
-Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
-script evaluation, console access, uploads, image extraction, and vision are not
-part of the controller protocol.
-
-When a request has no bound controller identity, or when the feature is disabled,
-Hermes preserves the existing browser backend. Once the gateway binds a
-controller principal and transport family to the request, that extension lane
-is authoritative: missing, ambiguous, disconnected, or incapable controllers
-fail closed instead of silently switching to a different local/cloud browser.
-After an exact controller is selected, its result or error is authoritative and
-Hermes never retries the same action through another backend.
-
-### Local API registration
-
-1. Send an authenticated `POST /v1/browser-control/register` with
-   `protocol_version`, `session_id`, `controller_id`, `browser_profile_id`, and
-   the requested `capabilities`.
-2. Hermes returns a single-use ticket with a 30-second TTL and the filtered,
-   server-bound controller scope.
-3. Open `GET /v1/browser-control/ws` with both WebSocket subprotocols:
-   `hermes-browser-control-v1` and
-   `hermes-browser-control-ticket.<ticket>`.
-
-The ticket is never accepted in the query string. Unknown, expired, reused, or
-malformed tickets fail before WebSocket upgrade.
-
-### Controller frames
-
-Hermes sends `browser.controller.command` frames containing `command_id`,
-`action`, immutable `arguments`, browser/controller ids, and the originating
-`tool_call_id`. The controller replies with `browser.controller.result`, the
-same `command_id`, an exact boolean `ok`, and either `result` or `error`.
-Cancellation and timeout emit `browser.controller.cancel`; late results are
-ignored.
-
-An unexpected socket loss marks the controller offline and preserves work
-already in flight until each command's original deadline. A reconnect with the
-same principal, profile, session, controller id, browser profile, and transport
-identity refreshes the transport without admitting new work before any deferred
-cancels are flushed. Negotiated capabilities may change on that reconnect; they
-are not an identity field. A different controller id or browser profile in the
-same authenticated session lane is a hard replacement: old pending work is
-cancelled before the successor becomes routable. Send
-`browser.controller.detach` on the authenticated controller transport for an
-intentional hard detach — that immediately cancels pending work. Merely closing
-the socket is treated as a recoverable disconnect.
-
-The authenticated dashboard transport exposes the same registration, result,
-heartbeat, capability, and ownership semantics over its Gateway RPC/event
-channel. In both transports, selection requires one unambiguous exact match on
-principal, profile, session, controller, browser profile, transport family, and
-capability. Once selected, a controller failure is authoritative and is never
-retried through a different browser backend.
+The browser-extension controller protocol (`POST /v1/browser-control/register`,
+`GET /v1/browser-control/ws`, the `/v1/artifacts/*` routes, the dashboard
+`browser.controller.*` RPCs and the `browser.extension_control` config key) has
+been removed. It routed the old `browser_navigate`/`browser_click`/… tools,
+which no longer exist: browser automation is now `browser_exec` over CDP. To let
+Hermes drive a browser you already run, point it at that browser's DevTools
+endpoint with `browser.cdp_url` in `config.yaml` or `/browser connect` — see
+[Your own browser via CDP](./browser#your-own-browser-via-cdp-browser-connect).
+Upgrading drops a leftover `browser.extension_control` block from `config.yaml`.
 
 ## Per-request model selection
 
@@ -871,7 +881,7 @@ When CORS is enabled:
 - **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
 - **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
 - **`X-Hermes-Session-Id`** is an allowed request header, so browsers on an allowlisted origin can request session continuation.
-- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
+- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (see [Idempotency keys](#idempotency-keys) for what a key covers and how long it is kept)
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 

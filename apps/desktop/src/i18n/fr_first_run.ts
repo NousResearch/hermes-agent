@@ -28,6 +28,8 @@ export const frFirstRun: FirstRunCopy = {
   skip: 'Ignorer la configuration',
   skipTip: 'Termine la configuration guidée et ouvre une nouvelle discussion.',
   skipFailed: 'Impossible d’ignorer la configuration',
+  slashOffTitle: 'Les commandes slash sont désactivées pendant la configuration',
+  slashOffBody: 'Elles fonctionneront normalement une fois la configuration terminée.',
   localModel: {
     title: 'Cet ordinateur peut exécuter un modèle en local',
     text: (model, size) =>

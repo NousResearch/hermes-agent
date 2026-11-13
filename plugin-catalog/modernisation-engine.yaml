@@ -1,0 +1,43 @@
+name: modernisation-engine
+repo: https://github.com/Sahil-SS9/modernisation-engine
+sha: fa35d9667283ec9c5246257a9ee5b076312fef7d
+description: "Controlled migration engine: maps an existing codebase, turns the behaviour that must survive into reviewable contracts, prepares a separate candidate and records old/new evidence before any production change. Disclosure — 27 tools plus a `hermes modernise` CLI and `/modernise` slash command; `assess`, `plan`, `record` and `recipe` read source trees and files at absolute paths the agent supplies (refusing symlinks, `.env`, `auth.json`, `credentials.json` and SSH keys) and never import or run repository code; `recipe` creates a new directory at an agent-chosen absolute path holding a copy of the source with fixed metadata edits; job records live under the plugin's data directory; only after you set `operator_config` and sign a one-use Ed25519 owner grant do `run`, `cancel` and `recover` invoke the local `docker` CLI, outside Hermes's command-approval prompt, to run, inspect and remove rootless, network-disabled, read-only, resource-limited containers from digest-pinned images you allow-list (never pulled); no network calls, no telemetry, no self-updater."
+maintainer: Sahil-SS9
+tier: community
+category: tools
+docs_url: https://github.com/Sahil-SS9/modernisation-engine
+version: "0.0.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - modernise_status
+    - modernise_assess
+    - modernise_inventory
+    - modernise_plan
+    - modernise_record
+    - modernise_protocol
+    - modernise_response_protocol
+    - modernise_schema
+    - modernise_contract
+    - modernise_prepare
+    - modernise_attempts
+    - modernise_review_request
+    - modernise_review
+    - modernise_rule_review_request
+    - modernise_rule_review
+    - modernise_rule_reviews
+    - modernise_proposal
+    - modernise_build
+    - modernise_run
+    - modernise_resume
+    - modernise_control_request
+    - modernise_cancel
+    - modernise_recover
+    - modernise_recover_build
+    - modernise_recipe
+    - modernise_compare
+    - modernise_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.4"

@@ -72,25 +72,25 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
-def _bind_build_profile_scopes(profile_home: str | None) -> _TurnScopes | None:
-    """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
-    launch profile: its own launch-env secret scope (live env while single-profile, frozen once
-    multiplexing is active — a hosted-room turn for a default member otherwise died at build with
-    ``UnscopedSecretError`` because the launch profile was treated as "no scope"). Fail-open per scope (the build must not die on
-    a scope helper); the terminal installer itself fails closed (malformed policy → refusal scope) so
-    _make_agent's terminal probing / cwd hints resolve the routed profile."""
-    scopes = _TurnScopes()
+def _bind_build_profile_scopes(profile_home: str | None):
+    """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build, as one change;
+    returns its token. ``None`` is the launch profile: its own launch-env secret scope (live env while
+    single-profile, frozen once multiplexing is active — a hosted-room turn for a default member
+    otherwise died at build with ``UnscopedSecretError`` because the launch profile was treated as
+    "no scope"). Fail-open (the build must not die on a scope helper): if the secrets cannot be built,
+    the profile is still bound with an empty secret scope, so its home and terminal policy (a
+    malformed one is a refusal scope) apply and the launch profile's secrets never do."""
     with contextlib.suppress(Exception):
         return _profile_runtime_scope_tokens(profile_home)
-    if profile_home:  # secret/terminal helper failed: keep at least the home + terminal refusal scope
-        scopes.home = set_hermes_home_override(profile_home)
-        with contextlib.suppress(Exception):
-            from tools.terminal_scope import install_profile_terminal_scope
-            scopes.terminal = install_profile_terminal_scope(Path(profile_home))
-    return scopes
+    if not profile_home:
+        return None
+    from agent.runtime_scope import bind_state, scope_for_profile
+    with contextlib.suppress(Exception):
+        return bind_state(scope_for_profile(profile_home), secrets={})
+    return None
 
 
-def _release_build_profile_scopes(scopes: _TurnScopes | None) -> None:
+def _release_build_profile_scopes(scopes) -> None:
     with contextlib.suppress(Exception):
         _release_profile_runtime_scope_tokens(scopes)
 
@@ -281,7 +281,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # MCP fleet, and live-transport sessions are never reaped, so fleets would accumulate.
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
-        except Exception as e:
+        except (Exception, ConfigBackendUnavailable) as e:  # health: allow BLE001 -- reported as agent_error + error event
             from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
             # A client can route "no provider is set up" to its setup flow instead of a dead-end
@@ -422,18 +422,10 @@ def _any_live_session_claims_key(target: str) -> bool:
 
 
 def _with_checkpoints(session, fn):
-    return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
-
-
-def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
-    try:
-        checkpoints = mgr.list_checkpoints(cwd)
-        idx = int(ref) - 1
-    except ValueError:
-        return ref
-    if 0 <= idx < len(checkpoints):
-        return checkpoints[idx].get("hash", ref)
-    raise ValueError(f"Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+    """``fn(mgr, cwd)`` under the session's profile scope: the store is ``<profile home>/checkpoints``
+    (``_resolve_checkpoint_base`` reads the bound HERMES_HOME), the one the session's turns wrote to."""
+    with _session_profile_runtime_scope(session, hydrate_secrets=False):
+        return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
 
 
 # ── Methods: session ─────────────────────────────────────────────────
@@ -617,7 +609,7 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
                   {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
             _maybe_schedule_auto_continue(sid, session, stored_id)
             _start_agent_build(sid, session)
-        except Exception as exc:
+        except (Exception, ConfigBackendUnavailable) as exc:  # health: allow BLE001 -- reported as the resume failure
             if _sessions.get(sid) is not session:
                 return
             message = resume_failed_message(exc)

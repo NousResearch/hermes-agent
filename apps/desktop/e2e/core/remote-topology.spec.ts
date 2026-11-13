@@ -4,7 +4,8 @@
  * filesystem root (./remote-helpers.ts). Only the LLM is faked.
  *
  *  - first chat over the remote route: the turn persists in the BACKEND's
- *    state.db, and the client never starts a local backend;
+ *    state.db and never in the client's. The client may keep This device's own
+ *    gateway connected beside the remote (#147681), but the chat never uses it;
  *  - attaching an image that exists only on the client sends its bytes, never
  *    the client path (#120730): the model receives the image, the client path
  *    never reaches the backend, no "image not found";
@@ -115,8 +116,10 @@ test('remote backend: first chat, image bytes not client paths, rename across a 
       session.expectUserMarkers.push(U(1))
       await assertTranscriptOracle(page, ws, provider, session, 'remote first chat')
       expect(new URL(ws.sockets[0]!.url).port, 'the socket dials the remote backend').toBe(String(backend.port))
-      expect(backendProcesses(clientBox), 'the client spawned no backend of its own').toEqual([])
-      expect(fs.existsSync(path.join(clientBox.hermesHome, 'state.db')), 'no client-side state.db').toBe(false)
+      // Every registered gateway stays connected (#147681), This device included, so the client may
+      // run its own gateway; the chat must still never reach it.
+      expect(backendProcesses(clientBox).length, 'at most This device’s own gateway').toBeLessThanOrEqual(1)
+      expect(storedSessionForMarker(clientBox, 'default', U(1)), 'the turn never persisted client-side').toBeNull()
     })
 
     await test.step('an image that exists only on the client reaches the model as bytes (#120730)', async () => {

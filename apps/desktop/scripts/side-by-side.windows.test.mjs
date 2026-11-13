@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -75,7 +76,13 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
 }
 `)
   checked('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', iconsScript, '-Dir', path.join(desktop, 'assets/appx')])
-  fs.symlinkSync(path.join(repo, 'node_modules'), path.join(work, 'node_modules'), 'junction')
+  // Mirror both install trees so the copied desktop files resolve their
+  // dependencies exactly as they do in the checkout, hoisted or not.
+  for (const dir of ['', 'apps/desktop']) {
+    if (fs.existsSync(path.join(repo, dir, 'node_modules'))) {
+      fs.symlinkSync(path.join(repo, dir, 'node_modules'), path.join(work, dir, 'node_modules'), 'junction')
+    }
+  }
   const env = { ...process.env, HERMES_HOME: path.join(root, 'home'), HERMES_RUNTIME_DIR: path.join(root, 'runtime') }
   for (const key of ['_HERMES_CHANNEL_REQUEST_JSON', 'HERMES_BUILD_COMMIT', 'HERMES_PAYLOAD_TAG', 'HERMES_PAYLOAD_VERSION', 'HERMES_DESKTOP_VARIANT', 'BUILD_NUMBER']) delete env[key]
   const gitEnv = { ...env, GIT_AUTHOR_NAME: 'Native fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_NAME: 'Native fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid', GIT_AUTHOR_DATE: '2026-09-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-09-01T00:00:00Z' }
@@ -131,7 +138,7 @@ foreach ($asset in @(@('Square44x44Logo.png',44,44), @('Square150x150Logo.png',1
       import config from ${JSON.stringify(moduleUrl('apps/desktop/electron-builder.config.cjs'))};
       import { appIdentity } from ${JSON.stringify(moduleUrl('scripts/msix-shared.mjs'))};
       import { stageDesktopLaunchers } from ${JSON.stringify(moduleUrl('apps/desktop/scripts/write-build-stamp.mjs'))};
-      import { AppInfo } from ${JSON.stringify(moduleUrl('node_modules/app-builder-lib/dist/appInfo.js'))};
+      import { AppInfo } from ${JSON.stringify(pathToFileURL(createRequire(path.join(desktop, 'package.json')).resolve('app-builder-lib')).href)};
       import fs from 'node:fs';
       const metadata = { ...JSON.parse(fs.readFileSync(${JSON.stringify(path.join(desktop, 'package.json'))}, 'utf8')), ...config.extraMetadata };
       const executable = new AppInfo({ config, metadata }, null, config.win).productFilename + '.exe';

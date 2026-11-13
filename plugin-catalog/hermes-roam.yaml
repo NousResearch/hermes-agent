@@ -1,0 +1,54 @@
+name: hermes-roam
+repo: https://github.com/vcruz305/hermes-roam
+sha: 8b9fba41fea77f2fe2d6d572cffd43039d2da11f
+description: >-
+  Encrypted, host-scoped sync of the Hermes Agent home between your own machines:
+  an AES-256-GCM sealed bundle of the shared home (config.yaml minus host-scoped
+  keys, SOUL.md, memories, skills) is pushed to storage you own — an S3 or
+  Cloudflare R2 bucket, a private git repository, or a local directory — and
+  pulled back on another machine through a plan-first, journaled, backed-up,
+  roll-back-able install. Secrets (.env, auth.json, API keys) never sync; pulls
+  apply only on explicit user action (the agent cannot apply by default);
+  conflicts are detected with a signed compare-and-swap head, never merged.
+  Every pushed version stays recoverable (hermes roam history / restore).
+  Works across profiles and bots: one store carries every profile (each
+  profile's identity, SOUL, memories, skills and shared config), from any
+  profile context; a profile can be excluded per device.
+  Opt-in, off by default: a read-only, encrypted archive of session
+  transcripts (exported with hermes sessions export --redact) that other
+  devices can list and read, and cron job definitions (pulled jobs land
+  paused until hermes cron resume).
+  Disclosure — network calls only to the user-configured store (boto3 for
+  S3/R2, the git CLI for the git backend) and only when a roam command, tool,
+  slash verb or session hook actually runs; the git backend also runs git as
+  local subprocesses with an allowlisted environment, the opt-in session
+  archive runs hermes sessions export once per profile, and hermes roam auto
+  runs hermes config set, all as bounded local subprocesses; the shared ROAM_ARCHIVE_KEY and S3 credentials come only
+  through Hermes's secret scope, never from files; session hooks run bounded
+  daemon threads; no telemetry, no self-update.
+maintainer: Victor Cruz
+tier: community
+category: tools
+title: "Hermes Roam"
+docs_url: https://github.com/vcruz305/hermes-roam#readme
+readme: true
+requires_hermes: ">=0.22.0"
+version: "0.5.6"
+image: https://raw.githubusercontent.com/vcruz305/hermes-roam/8b9fba41fea77f2fe2d6d572cffd43039d2da11f/assets/catalog-banner.png
+known_issues:
+  - >-
+    The git backend is unsuitable for large homes: git hosts cap file sizes
+    (~100 MB per file on GitHub), so keep the shared home well under ~50 MB
+    there and use the S3/R2 backend for larger homes.
+capabilities:
+  provides_tools:
+    - roam_status
+    - roam_push
+    - roam_pull
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - ROAM_ARCHIVE_KEY

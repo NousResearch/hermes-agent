@@ -18,6 +18,7 @@ import pytest
 import gateway.run as gateway_run
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS,
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,
 )
 from gateway.run import _prepare_gateway_status_message
@@ -43,6 +44,8 @@ NON_COMPRESSION_NOISE = [
         "⚠ Skipping concurrent compression — another path is already "
         "compressing this session. Will retry after it finishes."
     ),
+    # The anti-growth refusal is not routine progress: the opt-in must not release it.
+    COMPRESSION_REFUSED_WOULD_GROW_WARNING,
 ]
 
 

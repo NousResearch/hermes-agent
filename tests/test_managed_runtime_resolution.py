@@ -47,7 +47,7 @@ _KNOWN_PATH_FRAGMENTS = (
 
 # Runtimes Hermes provisions into HERMES_HOME and must therefore resolve
 # through a managed-aware helper rather than PATH.
-_MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx"})
+_MANAGED_COMMANDS = frozenset({"uv", "node", "npm", "npx", "pnpm"})
 
 # Directories that are not Hermes-owned subprocess code: plugins ship their own
 # resolution policy, tests assert against PATH deliberately, and skills/scripts/
@@ -61,6 +61,7 @@ _EXEMPT_DIRS = (
     "evals",
     "website",
     "node_modules",
+    ".build",
     ".cache",
     ".git",
     ".venv",
@@ -79,20 +80,20 @@ _ALLOWED: dict[tuple[str, str], str] = {
     ),
     ("hermes_cli/main_tui_launch.py", "node"): (
         "PM-composed launch context: `which(node)` runs against the PATH "
-        "pm.ensure('node'|'npm') just composed (store dirs first), not the ambient one."
+        "pm.ensure('node'|'pnpm') just composed (store dirs first), not the ambient one."
     ),
-    ("hermes_cli/main_tui_launch.py", "npm"): (
+    ("hermes_cli/main_tui_launch.py", "pnpm"): (
         "Same PM-composed launch context as the node lookup above."
     ),
     ("hermes_cli/source_build.py", "node"): (
         "PM-composed build context: `which(node)` runs against the PATH pm's "
-        "ensure('npm')/env_for('node') just composed, not the ambient one."
+        "ensure('pnpm')/env_for('node') just composed, not the ambient one."
     ),
-    ("hermes_cli/source_build.py", "npm"): (
+    ("hermes_cli/source_build.py", "pnpm"): (
         "Same PM-composed build context as the node lookup above."
     ),
-    ("hermes_cli/main_desktop.py", "npm"): (
-        "Desktop build resolves npm inside the PM-prepared build_env PATH."
+    ("hermes_cli/main_desktop.py", "pnpm"): (
+        "Desktop build resolves pnpm inside the PM-prepared build_env PATH."
     ),
     ("pm/workspace.py", "npm"): (
         "Plugin workspace installs resolve npm inside the PM runner env that "

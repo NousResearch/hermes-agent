@@ -116,12 +116,17 @@ class ReviewIdleQueue:
                 self._thread = threading.Thread(target=self._run, daemon=True, name="bg-review-idle-queue")
                 self._thread.start()
 
-    def _quiet_for(self) -> float:
-        """Seconds this process has been turn-free (0 while a turn runs)."""
+    def quiet_period(self) -> tuple[float, Optional[float]]:
+        """Process-wide quiet clock: (seconds since the last live turn ended, the stamp that quiet period began
+        at). ``(0.0, None)`` while any turn runs or before the first turn ends."""
         with self._lock:
             if self._live_turns > 0 or self._quiet_since is None:
-                return 0.0
-            return self._now() - self._quiet_since
+                return 0.0, None
+            return self._now() - self._quiet_since, self._quiet_since
+
+    def _quiet_for(self) -> float:
+        """Seconds this process has been turn-free (0 while a turn runs)."""
+        return self.quiet_period()[0]
 
     def _pop_dispatchable(self) -> Optional[_PendingReview]:
         """Oldest aged-out item, else the oldest item once quiet+idle hold."""

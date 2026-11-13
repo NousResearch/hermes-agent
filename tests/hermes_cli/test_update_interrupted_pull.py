@@ -725,7 +725,7 @@ def test_an_unmarked_rollback_that_fails_never_reports_the_install_unchanged(che
     root, a, b = checkout
     _git(root, "reset", "-q", "--hard", b)
     er.interrupted_pull_marker(root).mkdir()
-    monkeypatch.setattr(update_cmd, "_validate_critical_files_syntax", lambda _root: (False, "utils.py", "SyntaxError"))
+    monkeypatch.setattr(update_cmd._commit, "tree_syntax_error", lambda _root, _files: ("utils.py", "SyntaxError"))
     real = update_cmd._git_run
 
     def hard_reset_fails(git_cmd, args, *rest, **kw):

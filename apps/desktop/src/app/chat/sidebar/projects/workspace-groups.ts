@@ -65,6 +65,10 @@ export interface SidebarProjectTree {
   // claimed. It has no folder, so no repo/worktree structure — its one lane
   // exists only to carry the rows.
   isNoProject?: boolean
+  // Set only on a project that exists on another gateway (`withGatewayProjectRows`), with the
+  // profile there that a new session in it starts on.
+  connectionId?: string
+  profile?: string
   repos: SidebarWorkspaceTree[]
   sessionCount: number
   // Tokens and spend over the same sessions `sessionCount` counts, summed by
@@ -577,22 +581,37 @@ export function projectOwnerBySessionId(projects: SidebarProjectTree[]): Readonl
  * tip), so the snapshot and the live cache can each hold a different segment
  * of one conversation; the projected row carries its lineage root and chain.
  */
-const conversationIds = (session: SessionInfo): string[] => [
+/**
+ * The gateway profile a row belongs to. Session ids are unique only within one profile's database,
+ * so rows of two owners are never the same conversation, even under one durable id. The default
+ * treats every row as one owner (a single gateway's tree).
+ */
+export type SessionOwnerKey = (session: SessionInfo) => string
+
+const ONE_OWNER: SessionOwnerKey = () => ''
+
+const lineageIds = (session: SessionInfo): string[] => [
   session.id,
   ...(session._lineage_root_id ? [session._lineage_root_id] : []),
   ...(session._lineage_ids ?? [])
 ]
 
-/** A predicate matching any row that is the same conversation as `session`. */
-function sameConversationAs(session: SessionInfo): (row: SessionInfo) => boolean {
-  const ids = new Set(conversationIds(session))
+const conversationIds = (session: SessionInfo, ownerKey: SessionOwnerKey = ONE_OWNER): string[] => {
+  const owner = ownerKey(session)
 
-  return row => conversationIds(row).some(id => ids.has(id))
+  return lineageIds(session).map(id => `${owner}\0${id}`)
+}
+
+/** A predicate matching any row that is the same conversation as `session`. */
+function sameConversationAs(session: SessionInfo, ownerKey?: SessionOwnerKey): (row: SessionInfo) => boolean {
+  const ids = new Set(conversationIds(session, ownerKey))
+
+  return row => conversationIds(row, ownerKey).some(id => ids.has(id))
 }
 
 /** The snapshot's owner for a live row, found by any id its conversation has had. */
 function ownerOf(owners: ReadonlyMap<string, string>, session: SessionInfo): string | undefined {
-  for (const id of conversationIds(session)) {
+  for (const id of lineageIds(session)) {
     const owner = owners.get(id)
 
     if (owner) {
@@ -604,11 +623,11 @@ function ownerOf(owners: ReadonlyMap<string, string>, session: SessionInfo): str
 }
 
 /** Rows minus any that repeat an earlier row's conversation (first wins). */
-function uniqueConversations(rows: SessionInfo[]): SessionInfo[] {
+function uniqueConversations(rows: SessionInfo[], ownerKey?: SessionOwnerKey): SessionInfo[] {
   const seen = new Set<string>()
 
   return rows.filter(row => {
-    const ids = conversationIds(row)
+    const ids = conversationIds(row, ownerKey)
 
     if (ids.some(id => seen.has(id))) {
       return false
@@ -620,8 +639,8 @@ function uniqueConversations(rows: SessionInfo[]): SessionInfo[] {
   })
 }
 
-const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] => {
-  const isSame = sameConversationAs(session)
+const upsertSession = (rows: SessionInfo[], session: SessionInfo, ownerKey?: SessionOwnerKey): SessionInfo[] => {
+  const isSame = sameConversationAs(session, ownerKey)
 
   return [session, ...rows.filter(row => !isSame(row))].sort((a, b) => sessionRecency(b) - sessionRecency(a))
 }
@@ -817,7 +836,8 @@ function overlayHomeLane(
   project: SidebarProjectTree,
   live: SessionInfo[],
   removed: ReadonlySet<string>,
-  owners: ReadonlyMap<string, string>
+  owners: ReadonlyMap<string, string>,
+  ownerKey?: SessionOwnerKey
 ): SidebarProjectTree {
   const ownedElsewhere = (session: SessionInfo): boolean => {
     const owner = ownerOf(owners, session)
@@ -838,7 +858,7 @@ function overlayHomeLane(
     return project
   }
 
-  const sessions = arrivals.reduce(upsertSession, kept)
+  const sessions = arrivals.reduce((rows, session) => upsertSession(rows, session, ownerKey), kept)
   const nextLane = { id: NO_PROJECT_ID, label: project.label, path: null, sessions }
 
   return {
@@ -912,10 +932,11 @@ export function overlayLiveLanes(
   project: SidebarProjectTree,
   live: SessionInfo[],
   removed: ReadonlySet<string> = NO_REMOVED,
-  authoritativeOwners: ReadonlyMap<string, string> = NO_OWNERS
+  authoritativeOwners: ReadonlyMap<string, string> = NO_OWNERS,
+  ownerKey?: SessionOwnerKey
 ): SidebarProjectTree {
   if (project.isNoProject) {
-    return overlayHomeLane(project, live, removed, authoritativeOwners)
+    return overlayHomeLane(project, live, removed, authoritativeOwners, ownerKey)
   }
 
   let changed = false
@@ -949,19 +970,24 @@ export function overlayLiveLanes(
  */
 export function reconcileEnteredProjectSessions(
   live: SessionInfo[],
-  previewSessions: SessionInfo[] | undefined
+  previewSessions: SessionInfo[] | undefined,
+  ownerKey?: SessionOwnerKey
 ): SessionInfo[] {
   if (!previewSessions?.length) {
     return live
   }
 
-  const liveIds = new Set(live.flatMap(conversationIds))
-  const missingPreviews = previewSessions.filter(session => !conversationIds(session).some(id => liveIds.has(id)))
+  const liveIds = new Set(live.flatMap(session => conversationIds(session, ownerKey)))
+
+  const missingPreviews = previewSessions.filter(
+    session => !conversationIds(session, ownerKey).some(id => liveIds.has(id))
+  )
 
   return missingPreviews.length ? [...live, ...missingPreviews] : live
 }
 
 interface PreviewOverlayOptions {
+  ownerKey?: SessionOwnerKey
   removed?: ReadonlySet<string>
   /** The active sort key as an id order; recency when empty. */
   rankIds?: string[]
@@ -973,7 +999,7 @@ export function overlayLivePreviews(
   live: SessionInfo[],
   explicitProjects: ProjectInfo[],
   limit: number,
-  { removed = NO_REMOVED, rankIds }: PreviewOverlayOptions = {}
+  { ownerKey, removed = NO_REMOVED, rankIds }: PreviewOverlayOptions = {}
 ): Record<string, SessionInfo[]> {
   const byProject = new Map<string, SessionInfo[]>()
   const authoritativeOwners = projectOwnerBySessionId(projects)
@@ -1006,7 +1032,9 @@ export function overlayLivePreviews(
 
     // Live rows take precedence (fresher title/activity/working state), and a
     // compressed chat's live tip stands in for the snapshot's older segment.
-    const pool = uniqueConversations([...liveRows, ...base]).sort((a, b) => sessionRecency(b) - sessionRecency(a))
+    const pool = uniqueConversations([...liveRows, ...base], ownerKey).sort(
+      (a, b) => sessionRecency(b) - sessionRecency(a)
+    )
 
     out[node.id] = rankSessions(pool, rankIds).slice(0, limit)
   }

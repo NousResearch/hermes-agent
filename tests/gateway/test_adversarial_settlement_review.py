@@ -35,6 +35,8 @@ async def test_commit_then_error_still_releases_terminal_native_media(tmp_path, 
         assert retained.exists()
         await asyncio.wait_for(authority.sessions['s'].task, 5)
         assert get_session_admission(db, admission_id=receipt.admission_id)['status'] == 'terminal'
+        from gateway.session_runtime_workers import join_authority_work
+        await join_authority_work(authority, timeout=5)
         assert not retained.exists(), 'commit-then-error skipped terminal media cleanup'
 
 

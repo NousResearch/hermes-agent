@@ -25,5 +25,7 @@ def test_cold_import_mutation_binds_owner_across_restart(tmp_path):
     with daemon(tmp_path) as (home, descriptor), httpx.Client(base_url=descriptor['api_origin'], trust_env=False) as client:
         assert client.patch('/api/sessions/cold', headers=headers(ticket(home, descriptor)), json=body).json() == edited.json()
         assert client.get('/api/sessions/cold/mutation-snapshot', headers=headers(ticket(home, descriptor))).status_code == 200
-        denied = client.patch('/api/sessions/cold', headers={'Authorization': 'Bearer normal-http-owner'}, json=body | {'request_id': 'foreign'})
-        assert denied.status_code == 403, denied.text
+        # The dashboard login is the owner the binding names: a new request on the stale revision is
+        # an ordinary revision conflict, not an ownership refusal.
+        login = client.patch('/api/sessions/cold', headers={'Authorization': 'Bearer normal-http-owner'}, json=body | {'request_id': 'login'})
+        assert login.status_code == 409 and 'revision_conflict' in login.text, login.text

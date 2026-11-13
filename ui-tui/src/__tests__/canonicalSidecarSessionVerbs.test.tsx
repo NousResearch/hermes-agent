@@ -16,7 +16,8 @@ import { DEFAULT_THEME } from '../theme.js'
 // Ink verbs that resolve their session_id in the legacy sidecar's own map. On the shared gateway the
 // sidecar never holds the session, so each answered "session not found" (or an empty roster). Every
 // site here must either use what the owner serves or refuse by name, never reach the sidecar verb.
-const SIDECAR_SESSION_VERBS = ['subagent.steer', 'subagent.interrupt', 'session.active_list']
+// The owner serves subagent.steer and subagent.interrupt itself (gateway/session_ancillary.py).
+const SIDECAR_SESSION_VERBS = ['session.active_list']
 
 const owner = (answer: (method: string) => unknown = () => ({})) => {
   const request = vi.fn(async (method: string, _params?: unknown) => {
@@ -71,7 +72,7 @@ async function overlayKey(gw: GatewayClient, key: string, expected = '/agents ki
 
 const SITES: [string, () => Promise<void>][] = [
   [
-    'session.ts::/voice tts (the owner\'s /voice handler holds the session state)',
+    'session.ts::/voice tts (read-aloud runs only in a sidecar turn)',
     async () => {
       patchUiState({ sid: 'owner' })
       const { gw, request } = owner()
@@ -86,34 +87,41 @@ const SITES: [string, () => Promise<void>][] = [
         voice: { setVoiceEnabled: vi.fn(), setVoiceRecordKey: vi.fn(), setVoiceTts: vi.fn() }
       } as never)('/voice tts')
       await new Promise(resolve => setImmediate(resolve))
-      // The session's voice state is the owner's: `/voice tts` runs its `/voice` handler, never the
-      // sidecar's voice.toggle.
-      expect(request).toHaveBeenCalledWith('slash.exec', { command: 'voice tts', session_id: 'owner' })
+      expect(sys).toHaveBeenCalledWith('/voice tts is not available on the shared gateway yet')
       expect(request.mock.calls.some(([method]) => method === 'voice.toggle')).toBe(false)
     }
   ],
   [
-    'agentControls::sendAgentSteer',
+    "agentControls::sendAgentSteer is the owner's subagent.steer",
     async () => {
-      const { gw, request } = owner()
+      const { gw, request } = owner(method => (method === 'subagent.steer' ? { status: 'queued' } : {}))
       const result = await sendAgentSteer(gw, 'owner', 'c1', 'check tests')
-      expect(result).toEqual({ accepted: false, message: '/agents steer is not available on the shared gateway yet' })
+      expect(result.accepted).toBe(true)
+      expect(request).toHaveBeenCalledWith('subagent.steer', {
+        session_id: 'owner',
+        subagent_id: 'c1',
+        text: 'check tests'
+      })
       expect(sidecarCalls(request)).toEqual([])
     }
   ],
   [
-    'agentsOverlay::killOne (x)',
+    "agentsOverlay::killOne (x) is the owner's subagent.interrupt",
     async () => {
-      const { gw, request } = owner()
-      await overlayKey(gw, 'x')
+      const { gw, request } = owner(method => (method === 'subagent.interrupt' ? { found: true } : {}))
+      await overlayKey(gw, 'x', 'c1')
+      await vi.waitFor(() =>
+        expect(request).toHaveBeenCalledWith('subagent.interrupt', { session_id: 'owner', subagent_id: 'c1' })
+      )
       expect(sidecarCalls(request)).toEqual([])
     }
   ],
   [
-    'agentsOverlay::killSubtree (X)',
+    "agentsOverlay::killSubtree (X) is the owner's subagent.interrupt",
     async () => {
-      const { gw, request } = owner()
-      await overlayKey(gw, 'X')
+      const { gw, request } = owner(method => (method === 'subagent.interrupt' ? { found: true } : {}))
+      await overlayKey(gw, 'X', 'killing')
+      expect(request).toHaveBeenCalledWith('subagent.interrupt', { session_id: 'owner', subagent_id: 'c1' })
       expect(sidecarCalls(request)).toEqual([])
     }
   ],

@@ -1,19 +1,17 @@
 # Hermes Agent - Development Guide
 
-For AI coding assistants and developers working on hermes-agent. This root file is a hub: what
-applies everywhere, then a routing table. Each area's `AGENTS.md` loads automatically when you work
-in that directory; read it before editing there. `python scripts/check` caps this file at 12k chars
-and every root-to-area chain at 30k, so it loads whole on 128k+ models: long form goes in the guide.
+This root file is a hub: what applies everywhere, then a routing table. Each area's `AGENTS.md`
+loads automatically when you work in that directory; read it before editing there.
+`python scripts/check` caps this file at 12k chars and every root-to-area chain at 30k: long form
+goes in `website/docs/developer-guide/`.
 
 **Never give up on the right solution.**
 
 ## What Hermes Is
 
-Hermes is a personal AI agent that runs the same agent core across a CLI, a messaging
-gateway (Telegram, Discord, Slack, ~20 platforms), a TUI, and an Electron desktop app. It
-learns across sessions (memory + skills), delegates to subagents, runs scheduled jobs, and
-drives a real terminal and browser. It is extended primarily through **plugins and skills**,
-not by growing the core.
+Hermes is a personal AI agent that runs one agent core across a CLI, a TUI, an Electron desktop
+app, a web dashboard, ACP editors and a messaging gateway (25+ platform plugins). It is extended
+through **plugins and skills**, not by growing the core.
 
 Two invariants shape almost every design decision and are the lens for reviewing any change:
 
@@ -24,6 +22,10 @@ Two invariants shape almost every design decision and are the lens for reviewing
 - **The core is a narrow waist; capability lives at the edges.** Every model tool is sent on
   every API call, so the bar for a new *core* tool is high. New capability should arrive as a
   CLI command + skill, a service-gated tool, or a plugin — not as core surface.
+
+A change to the stock system prompt or `tools[]` fails `tests/ci/test_prompt_surface.py` until
+`scripts/ci/prompt_surface.py render` is committed with it, and that snapshot
+(`tests/fixtures/prompt_surface/`) needs a hermes-agent-core approval to merge.
 
 ## Contribution rubric
 
@@ -54,45 +56,36 @@ Advisories or security@nousresearch.com), never into a public issue, PR, commit 
 hardening is ordinary public work. Name the §2 boundary crossed, with a repro on `main`.
 
 **Footprint ladder** (take the highest rung that solves it): extend existing code → CLI command +
-skill → service-gated tool (`check_fn` answers reachability/opt-in, never per-session surface:
-`tools/AGENTS.md`) → plugin → MCP server in the catalog → new core tool (fundamental, broadly useful,
-unreachable otherwise).
+skill → service-gated tool (`check_fn` answers reachability/opt-in, never per-session surface) →
+plugin → MCP server in the catalog → new core tool (fundamental, broadly useful, unreachable
+otherwise).
 
 ## Development Environment
 
-`source ./activate` (fish: `activate.fish`, PowerShell: `activate.ps1`) provisions and activates the
-PM environment; pick an isolated `HERMES_HOME`/`HERMES_RUNTIME_DIR` first
+`source ./activate` (`activate.fish`, `activate.ps1`) provisions and activates the PM environment; pick an isolated `HERMES_HOME`/`HERMES_RUNTIME_DIR` first
 (`website/docs/reference/package-management.md#developer-workflow`). Tests need the separate test
-environment in `CONTRIBUTING.md`. **`python scripts/check`** runs every blocking lint check CI
-runs, with CI's pinned tools; `--install-hook pre-push` runs it on every push (re-run after
-pulling to refresh the hook). `# noqa` does not waive a ratchet finding:
+environment in `CONTRIBUTING.md`. **`python scripts/check`** (`just check`) runs every blocking
+lint check CI runs, with CI's pinned tools; `--install-hook pre-push` runs it on every push (re-run
+after pulling to refresh the hook). `just` lists every developer command (lefthook calls the same
+recipes); a new command is a `scripts/` file plus a recipe. The `HX0xx`/`PS-P0x` rules and their
+fixes are in `scripts/code_health/config.py`; `# noqa` does not waive a finding,
 `# health: allow <RULE> -- <why>` does.
 
 ## Project Structure
 
-Counts shift constantly; the filesystem is canonical. Load-bearing entry points:
+The filesystem is canonical. Load-bearing entry points:
 
 ```
 hermes-agent/
 ├── run_agent.py          # AIAgent facade; the turn loop lives in agent/turn_*.py
-├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
+├── model_tools.py        # Tool orchestration, handle_function_call(); discovery in tools/registry.py
 ├── toolsets.py           # TOOLSETS dict, _HERMES_CORE_TOOLS
 ├── cli.py                # HermesCLI (REPL, slash dispatch) + hermes_cli/cli_*_mixin.py
 ├── hermes_state.py       # SessionDB facade; hermes_state_*.py siblings
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
-├── agent/                # turn loop phases, providers, memory, compression, prompt builder
-├── hermes_cli/           # CLI subcommands, setup, config, plugins loader, updater, web_routers/
-├── tools/                # Tool implementations (tools/registry.py) + environments/ backends
-├── gateway/              # run.py facade + run_*.py phases + session*.py + platforms/
-├── plugins/              # memory/, context_engine/, model-providers/, kanban/, image_gen/, ...
-├── skills/               # Built-in skills (by category)   optional-skills/: shipped, not active
-├── ui-tui/, tui_gateway/ # Ink terminal UI + its Python JSON-RPC backend (also serves Desktop)
-├── apps/desktop/         # Electron desktop app (+ apps/shared)   web/: dashboard SPA
-├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
-├── pm/, hermes_platform/ # dependency/environment manager; machine facts + executable lookup
 ├── scripts/              # check, run_tests.sh, code_health/, ci/
-├── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
-└── tests/                # Pytest suite, mirrors the source tree
+├── evals/                # live-model A/B and probe harnesses
+└── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
 ```
 
 **User state:** `~/.hermes/config.yaml` (settings), `.env` (secrets only), `logs/` (`hermes logs`);
@@ -101,18 +94,17 @@ all profile-aware via `get_hermes_home()`.
 ### Facade + siblings layout
 
 Every former god file is a **facade** (public entry points + the names other packages import) plus
-**siblings** `<stem>_<topic>.py`, each owning one topic (`hermes_state.py`, `gateway/run.py`,
-`tools/mcp_tool.py`, `hermes_cli/kanban.py`, `hermes_cli/web_server.py`, `cli.py` →
-`hermes_cli/cli_*_mixin.py`, `run_agent.py` → `agent/turn_*.py`).
+**siblings** `<stem>_<topic>.py`, each owning one topic (the tree above, `gateway/run.py`,
+`tools/mcp_tool.py`, `hermes_cli/kanban.py`, `hermes_cli/web_server.py`).
 
 - **Find code by topic:** `grep -rn "def name" <dir>/<stem>_*.py`, not by reading the facade.
 - **Siblings late-import the facade** inside functions; never a module-level cycle.
 - **Patch where production reads:** a sibling doing `from <facade> import name` inside the function
   makes the facade the seam; a patch on the defining module passes silently.
-- **Size and complexity are ratcheted per unit** (`scripts/code_health/config.py`): new functions
-  CC ≤ 20, ≤ 300 lines, nesting ≤ 6; files ≤ 2,000 lines; units already over may only go down (move
-  a function into a sibling to offset growth, or put new tests in a new test file). Behaviour goes
-  in a sibling, never a facade; name ladders become a dict → handler.
+- **Size and complexity are ratcheted per unit:** new functions CC ≤ 20, ≤ 300 lines, nesting ≤ 6;
+  files ≤ 2,000 lines; units already over may only go down (move a function into a sibling to
+  offset growth, or put new tests in a new test file). Behaviour goes in a sibling, never a facade;
+  name ladders become a dict → handler.
 - **No re-export shims for internal moves;** internal paths are not API. Moving a symbol means
   fixing its docs in the same PR (grep `website/docs`, `skills/`, every `AGENTS.md`).
 
@@ -122,7 +114,7 @@ Every former god file is a **facade** (public entry points + the names other pac
   nobody sets, no dead code wired in without E2E proof. Comments keep the WHY, cut the WHAT.
 - **Never infer process identity from argv substrings;** use
   `gateway.status.looks_like_gateway_command_line` / `hermes_cli.update_cmd._hermes_holder_subcommand`
-  (HX003; details `hermes_cli/AGENTS.md`).
+  (HX003).
 - **Never hardcode `~/.hermes`:** `get_hermes_home()` for paths, `display_hermes_home()` for text
   (HX001). `_get_profiles_root()` is HOME-anchored on purpose.
 - **One process serves many profiles.** Code that runs outside a turn (boot probes, eviction,
@@ -130,40 +122,44 @@ Every former god file is a **facade** (public entry points + the names other pac
   explicitly; `os.environ`, module globals and import-time values hold the launch profile's, so an
   unbound read is a silent default-profile leak. Binding points and seams: `gateway/AGENTS.md`
   § Profile scope (HX002/HX004/HX005/HX012, PS-P05/P06).
-- **Machine facts and executable lookup go through `hermes_platform`** (`hermes_platform/AGENTS.md`).
+- **Machine facts and executable lookup go through `hermes_platform`.**
 - **Dependencies carry upper bounds** (`>=floor,<next_major`; git URLs and Actions pinned to a SHA);
   after editing `pyproject.toml` run `hermes pm lock` and commit `uv.lock`; never mutate a Hermes
-  environment with raw pip/uv. Full policy: `pm/AGENTS.md`.
-- **TypeScript (desktop, TUI, website):** feature-owned nanostores over threaded state, thin route
-  roots, narrow hooks and colocated action modules, `interface` for props and shared shapes,
-  table-driven dispatch over condition ladders; `src/app` routes, `src/store` atoms, `src/lib` pure
-  helpers.
+  environment with raw pip/uv.
+- **TypeScript (desktop, TUI):** feature-owned nanostores over threaded state, thin route roots,
+  narrow hooks and colocated action modules, `interface` for props and shared shapes, table-driven
+  dispatch over condition ladders; desktop keeps routes in `src/app`, atoms in `src/store`, pure
+  helpers in `src/lib`.
+- **Don't add core/plugin crossings:** core never imports a specific bundled plugin, and plugins
+  use only the published plugin API (`hermes_cli/data/plugin_api.json`, `ctx`). Existing crossings
+  are baselined; `scripts/boundary_lint.py` fails the test suite (not `scripts/check`) on new ones.
+- **A new config key or slash command ships with its docs** (`tests/ci/test_docs_drift.py`).
 - **Commits and PRs:** rebase onto `main` before merging (a squash from a stale branch silently
   reverts newer fixes); 1–2 invariant tests per fix, proven red on the base.
 - **Tests:** always `scripts/run_tests.sh`, never bare `pytest`; behaviour contracts, never
   change-detectors or source-reading tests; host-specific behaviour is tested on that host with
   `@pytest.mark.platforms(...)`, never by faking `sys.platform`; tests never write to `~/.hermes/`.
-  Everything else: `tests/AGENTS.md`.
 
-## Routing Table — working in X → read X/AGENTS.md
+## Routing Table
 
 | Area | Read | Covers |
 |---|---|---|
-| `run_agent.py`, `agent/` | `agent/AGENTS.md` | turn phases, caching and message-flow invariants, compression, model/aux resolution |
+| `run_agent.py`, `agent/` | `agent/AGENTS.md` | turn phases, message-flow invariants, compression, model/aux resolution, i18n |
 | `cli.py`, `hermes_cli/` | `hermes_cli/AGENTS.md` | CLI mixins, slash registry, config system, skins, `hermes update`, profiles / multiplex |
 | `gateway/` | `gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
-| `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
+| `plugins/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
 | `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | adding tools, registry, toolsets, delegation, session-scoped surface tools |
-| `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy |
+| `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy, boundary lint |
 | `plugin-catalog/` | `plugin-catalog/README.md` | catalog admission rules (mirrored in the developer guide; keep identical) |
 | `tui_gateway/`, `ui-tui/` | `tui_gateway/AGENTS.md` | process model, JSON-RPC transport, slash flow |
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | dashboard embeds the real TUI |
-| `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | `serve` backend, slash palette, Bot Mode |
+| `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | state authority, gateway backend contract, slash palette, Bot Mode |
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | frontmatter, authoring standards, curator |
 | `cron/`, kanban | `cron/AGENTS.md` | scheduler invariants, job fields, kanban dispatcher |
 | `tests/` | `tests/AGENTS.md` | runner, placement, OS markers, `wine2e`, banned test shapes |
-| `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, plugin quarantine |
+| `pm/`, `pyproject.toml` | `pm/AGENTS.md` | pinning policy, PM-owned environments, release-age rule |
 | `hermes_platform/` | `hermes_platform/AGENTS.md` | host facts, resolvers |
+| `acp_adapter/` | `website/docs/developer-guide/acp-internals.md` | ACP server for editors |
+| `providers/` | `providers/README.md` | `ProviderProfile` registry and ABC |
 
-Long-form background: `website/docs/developer-guide/`. Workflow rules (PR/issue/review/salvage
-process) live in the `hermes-agent-dev` skill, not here.
+PR workflow: `CONTRIBUTING.md` (maintainers: the `hermes-agent-dev` skill, not shipped here).

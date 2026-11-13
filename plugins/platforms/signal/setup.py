@@ -21,11 +21,11 @@ def _signal_line_input(prompt_text: str) -> str | None:
 
 def interactive_setup() -> None:
     """``hermes gateway setup`` flow for Signal (registered as the plugin's ``setup_fn``)."""
-    _gw()._print_setup_header("📡 Signal")
+    _gw().print_setup_header("📡 Signal")
 
     existing_url = _gw().get_env_value("SIGNAL_HTTP_URL")
     existing_account = _gw().get_env_value("SIGNAL_ACCOUNT")
-    if not _gw()._confirm_reconfigure("Signal", "SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"):
+    if not _gw().confirm_reconfigure("Signal", "SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"):
         return
 
     print()

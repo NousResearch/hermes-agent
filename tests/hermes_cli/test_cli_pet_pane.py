@@ -140,6 +140,7 @@ def test_pet_resolve_config_enables_and_disables(boba_like):
 
 
 def test_pet_fragments_render_kitty_placeholders(boba_like):
+    from agent import terminal_image
     from agent.pet import render
 
     cli_obj = _make_cli()
@@ -155,7 +156,7 @@ def test_pet_fragments_render_kitty_placeholders(boba_like):
     assert any("\U0010eeee" in text for _, text in frags)
     payload = cli_obj._pet_kitty_payload_for("idle")
     assert payload is not None
-    color = render.kitty_color_hex(payload["image_id"])
+    color = terminal_image.kitty_color_hex(payload["image_id"])
     assert all(f"fg:{color}" in style for style, text in frags if text != "\n")
     assert cli_obj._pet_widget_height() > 0
 

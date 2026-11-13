@@ -34,7 +34,14 @@ class TestMenuLabel:
 
     def test_sending_state_names_the_destination(self):
         label = _shared_metrics_menu_label(_config(enabled=True, send=True))
-        assert "sending to Nous" in label
+        assert "(sending to Nous)" in label
+
+    def test_retired_collect_only_answer_is_named_rather_than_read_off(self):
+        label = _shared_metrics_menu_label(_config(enabled=True, send=False))
+        assert "(collecting locally)" in label
+
+    def test_off(self):
+        assert "(off)" in _shared_metrics_menu_label(_config(enabled=False, send=False))
 
 
 class TestToggle:

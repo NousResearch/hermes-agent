@@ -1,0 +1,19 @@
+name: peakflo-spaces
+title: Spaces by Peakflo
+repo: https://github.com/peakflo/spaces-mcp
+sha: 0bf243cd7f87d4820d8c40b12be48d5b03fce3f5
+subdir: hermes
+version: "1.0.0"
+description: "Hand off repetitive finance and operations work to cloud agents or people through Spaces by Peakflo's hosted MCP server (Streamable HTTP at https://api.peakflo.ai/mcp, OAuth 2.1 sign-in with PKCE, no keys in config): create one-off or recurring (cron) tasks and get a link to follow them, list workflows and their runs, query workspace data tables with read-only SQL, pull aggregated reports on bills, invoices, payables and receivables, search policy documents, and review pending approvals. Bundles the spaces workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to Peakflo's hosted server (api.peakflo.ai) and acts on the user's Spaces workspace with their own role and permissions; the tool set is served by that server at runtime and is not covered by the pinned sha. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. Spaces does not move money, make payments or trade. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only (creating tasks, running workflows, completing approvals, writing data) and refuses them in unattended runs. No telemetry."
+maintainer: Peakflo
+tier: community
+category: automation
+docs_url: https://github.com/peakflo/spaces-mcp/tree/main/hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

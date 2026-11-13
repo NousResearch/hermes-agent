@@ -1,5 +1,6 @@
 """GatewayAgent drives main's HermesCLI callbacks from a scripted gateway (no live gateway)."""
 import asyncio
+import json
 import threading
 from contextlib import asynccontextmanager
 
@@ -7,7 +8,7 @@ import pytest
 
 from hermes_cli.gateway_agent import GatewayAgent
 from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, GatewayConnection
+from hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, GatewayConnection
 
 SID = "local-abc"
 
@@ -144,6 +145,20 @@ def test_approval_request_calls_cli_approval_callback_then_responds(make_agent):
     assert respond == {"session_id": SID, "execution_generation": 7, "prompt_id": "p1", "choice": "once"}
 
 
+def test_connection_card_events_reach_the_cli_card(make_agent):
+    """The gateway runs manage_connections; its card events must reach the CLI's card callbacks."""
+    opened, updates = [], []
+    request = {"op_id": "op1", "seq": 1, "deadline_at": 0, "timeout_seconds": 300,
+               "targets": [{"name": "linear", "kind": "mcp", "action": "install", "state": "pending"}]}
+    update = {**request, "seq": 2, "settled": False}
+    agent, _ = make_agent(
+        [frame("connection.request", request), frame("connection.update", update),
+         frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        connection_callback=opened.append, connection_update_callback=updates.append)
+    agent.run_conversation("connect linear")
+    assert opened == [request] and updates == [update]
+
+
 def test_interrupt_sends_session_interrupt_and_settles_interrupted(make_agent):
     agent, client = make_agent(
         [frame("message.delta", {"text": "w001 "})] + ["wait"] * 20,
@@ -209,32 +224,6 @@ def test_hard_interrupt_is_a_real_method():
     assert inspect.getattr_static(GatewayAgent, "hard_interrupt")
 
 
-def test_manual_compress_is_the_gateway_compress_mutation(make_agent):
-    """Main's /compress (compress_now -> agent._compress_context) commits on the gateway and adopts
-    the compacted transcript; the CLI prints main's \"Compressed: N -> M\" report from it."""
-    from agent.conversation_compression_manual import CompressRequest, compress_now
-    agent, client = make_agent([])
-    compacted = [{"role": "user", "content": "summary", "row_id": 1}, {"role": "assistant", "content": "ok", "row_id": 2}]
-    original = client.rpc
-
-    async def rpc(method, *, _timeout=None, **params):
-        if method == "session.resume":
-            client.calls.append((method, params))
-            done = any(m == "session.mutate" for m, _ in client.calls)
-            return {"revision": 9, "execution_generation": 7, "messages": compacted if done else []}
-        return await original(method, _timeout=_timeout, **params)
-    client.rpc = rpc
-    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(6)]
-    result = compress_now(agent, history, CompressRequest(), task_id=SID)
-    mutate = dict(client.calls)["session.mutate"]
-    assert mutate["operation"] == "compress" and mutate["expected_revision"] == 9 and mutate["payload"] == {}
-    assert mutate["expected_generation"] == 7
-    assert result.status == "compressed"
-    assert result.after_messages == [{"role": "user", "content": "summary"}, {"role": "assistant", "content": "ok"}]
-    assert result.summary["headline"] == "Compressed: 6 → 2 messages"
-    assert agent.context_compressor.compression_count == 1
-
-
 SESSION_USAGE = {"input_tokens": 500, "output_tokens": 80, "cache_read_tokens": 0, "cache_write_tokens": 0,
                  "prompt_tokens": 500, "completion_tokens": 80, "total_tokens": 580, "reasoning_tokens": 0,
                  "api_calls": 5, "last_prompt_tokens": 229, "context_tokens": 229, "context_length": 128000,
@@ -262,6 +251,25 @@ def test_session_usage_event_feeds_mains_status_bar_attributes(make_agent):
     n = len(agent._api_latency_history)
     assert n == 1 and round(sum(agent._api_output_history) / sum(agent._api_latency_history)) == 116
     assert agent.get_rate_limit_state() is None
+
+
+def test_gateway_session_usage_frame_feeds_the_status_bar_mid_turn(make_agent):
+    """The frame the gateway really publishes (`usage_frame`: flat counters plus the nested TUI
+    `usage` view) lands the flat counters, not the nested view, on main's attributes mid-turn."""
+    from gateway.session_usage import usage_frame
+    usage = dict(SESSION_USAGE, compression_count=2)
+    seen = []
+    agent, _ = make_agent([frame("session.usage", usage_frame(usage), admission=None),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    agent.context_compressor.context_length = 0
+    # Runs after the agent's own listener: what the status bar shows right after the mid-turn frame.
+    agent._state().usage_listeners.append(lambda cached: seen.append((
+        dict(cached), agent.session_api_calls, agent.context_compressor.context_length,
+        agent.context_compressor.compression_count, list(agent._api_latency_history))))
+    agent.run_conversation("q")
+    cached, *bar = seen[0]
+    assert bar == [5, 128000, 2, [0.2]]
+    assert cached["api_calls"] == 5 and "context_max" not in cached
 
 
 def test_turn_end_reads_session_stats_cumulative(make_agent):
@@ -419,6 +427,21 @@ def test_reasoning_level_change_is_the_session_reasoning_mutation(make_agent):
     assert agent2.reasoning_config == {"enabled": False}
 
 
+def test_an_explicit_level_the_session_already_inherits_is_still_committed(make_agent):
+    """``/reasoning high`` (the rebuilt agent) or a model pick's ``--reasoning high`` while the session runs
+    high by inheritance: still the owner's reasoning mutation, so a later profile change can't move it. An
+    implicit re-derivation (/new, a one-turn restore) of the same level commits nothing."""
+    from types import SimpleNamespace
+    from hermes_cli.cli_model_switch_mixin import _apply_reasoning_after_switch
+    agent, client = make_agent([])
+    agent.connection.state(SID).info["reasoning_effort"] = "high"
+    GatewayAgent(connection=agent.connection, session_id=SID, reasoning_config={"enabled": True, "effort": "high"},
+                 push_reasoning=True)
+    _apply_reasoning_after_switch(SimpleNamespace(agent=agent), "high", persist_global=False)
+    agent.reasoning_config = {"enabled": True, "effort": "high"}
+    assert [p["payload"] for m, p in client.calls if m == "session.mutate"] == [{"effort": "high"}] * 2
+
+
 def test_a_config_resolved_effort_never_overrides_the_sessions_launch_policy(make_agent):
     """Building the agent with the CLI's config-resolved effort (no /reasoning pick) commits nothing:
     a resumed `-q --resume` must keep the session's frozen --reasoning, not the profile default."""
@@ -463,6 +486,34 @@ def test_gateway_sudo_request_opens_mains_sudo_panel_and_replies_with_the_value(
         set_sudo_password_callback(None)
     assert asked == [1]
     assert replies == [("srq-abc", {"value": "pw-from-panel"})]
+
+
+@pytest.mark.parametrize(("method", "params", "setter", "callback", "expected"), [
+    ("vault.code", {"site": "example.com", "hint": ""}, "set_code_prompt_callback",
+     lambda site, hint: "123456", "123456"),
+    ("vault.unlock_prompt", {"backend": "bitwarden", "display_name": "Bitwarden"}, "set_unlock_prompt_callback",
+     lambda backend, name: "master", "master"),
+    ("vault.save_login", {"origin": "https://example.com", "site": "example.com"}, "set_save_login_prompt_callback",
+     lambda origin, site: {"identifier": "me@example.com", "password": "pw"},
+     json.dumps({"identifier": "me@example.com", "password": "pw"})),
+    ("vault.save_login", {"origin": "https://example.com", "site": "example.com"}, "set_save_login_prompt_callback",
+     lambda origin, site: None, ""),
+])
+def test_gateway_vault_requests_open_mains_panels_and_reply_with_the_value(make_agent, method, params, setter,
+                                                                           callback, expected):
+    """The gateway's ``vault.*`` server→client requests are answered by main's vault panels (the turn's
+    registered callbacks); a classic CLI viewer no longer leaves them to time out."""
+    from agent.vault_backends import unlock
+    request = {"jsonrpc": "2.0", "id": "srq-vault", "method": method, "params": {"session_id": SID, **params}}
+    agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    getattr(unlock, setter)(callback)
+    try:
+        agent.run_conversation("sign in")
+    finally:
+        getattr(unlock, setter)(None)
+    assert replies == [("srq-vault", {"value": expected})]
 
 
 def test_connection_reply_sends_a_jsonrpc_response_frame():
@@ -712,11 +763,28 @@ def test_a_transport_loss_at_submit_is_still_gateway_connection():
     assert result["failure_reason"] == "gateway_connection" and result["failure_retryable"] is False
 
 
+def test_a_submit_that_never_left_keeps_the_turn_for_the_resend():
+    """NOT_SENT: the owner never saw the prompt. The CLI keeps the turn's local state (no history row,
+    the ``/model --once`` pick) so the resend is the same turn, as a pre-submit notice does."""
+    conn = GatewayConnection(connect=connect_with(RefusingClient(GatewayClientError(NOT_SENT))))
+    conn.start(5)
+    try:
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        pick = {"model": "picked-model", "provider": "openrouter"}
+        agent._turn_route, agent._turn_reasoning = dict(pick), None
+        result = agent.run_conversation("q", conversation_history=[])
+        assert result["failed"] is True and result["error"] == NOT_SENT
+        assert result["admitted"] is False and result["messages"] == []
+        assert agent._turn_route == pick  # the pick is still owed
+    finally:
+        conn.close()
+
+
 def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it(make_agent):
-    """/model, /model --once and /new's reset to the config default call main's
-    ``agent.switch_model`` (#134889 M1). The gateway commits the target as a generation-fenced
-    ``session.mutate model`` (no key or endpoint leaves the CLI), and the agent main rebuilds for the
-    next turn reads the committed model from the session, not the old one."""
+    """A session-scoped ``/model`` calls ``agent.switch_model`` (#134889 M1). The gateway commits
+    the target as a generation-fenced ``session.mutate model`` (no key or endpoint leaves the CLI),
+    and the agent main rebuilds for the next turn reads the committed model from the session.
+    ``/model --once`` is not this path: that pick is one admission's ``model_override``."""
     agent, client = make_agent([], model="old-model", provider="openrouter")
     agent.switch_model(new_model="new-model", new_provider="anthropic", api_key="sk-local",
                        base_url="https://example.invalid", api_mode="anthropic_messages", capabilities=None)
@@ -823,3 +891,280 @@ def test_a_background_review_summary_during_a_turn_is_printed_like_mains(make_ag
     agent._print_fn = printed.append
     agent.run_conversation("hi")
     assert printed == ["  💾 Self-improvement review: Memory updated"]
+
+
+def test_another_viewer_completing_the_clarify_batch_releases_mains_panel(make_agent, monkeypatch):
+    """Another viewer (Desktop/Ink) locks every answer of the batch the classic CLI is showing: the
+    gateway settles it and withdraws the request (``request.cancel`` reason ``resolved``). main's real
+    batch panel (``CLIModalMixin._clarify_callback``) blocks the agent thread, so the withdrawal must
+    close it from the connection thread; the pump then reads the turn's completion instead of sitting
+    in the modal until clarify_timeout."""
+    import cli
+    from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
+    monkeypatch.setattr(cli, "CLI_CONFIG", {"agent": {"clarify_timeout": 60}})
+    panel = _make_cli_stub()
+    panel._ring_bell = lambda **kw: None
+    request = {"jsonrpc": "2.0", "id": "srq-clr", "method": "clarify", "params": {"session_id": SID, "questions": [
+        {"qid": "q0", "question": "colour?", "choices": ["red", "blue"]},
+        {"qid": "q1", "question": "size?", "choices": ["s", "l"]}]}}
+    withdrawn = frame("request.cancel", {"id": "srq-clr", "method": "clarify", "reason": "resolved"}, admission=None)
+    agent, _client = make_agent(
+        [request, "wait", withdrawn, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+        clarify_callback=panel._clarify_callback, modal_withdraw_callback=panel._withdraw_gateway_modal)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    out = {}
+    worker = threading.Thread(target=lambda: out.update(agent.run_conversation("ask")), daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the CLI stayed blocked in its clarify panel"
+    assert panel._clarify_state is None
+    assert out["completed"] is True or out.get("final_response") is not None
+    # Its late reply is a cancel the gateway drops (the request is already settled).
+    assert replies == [("srq-clr", {"answers": {}, "outcome": "cancelled"})]
+
+
+@pytest.mark.parametrize("method", ["vault.code", "vault.unlock_prompt", "vault.save_login"])
+def test_another_viewer_answering_a_vault_prompt_releases_mains_panel(make_agent, method):
+    """The vault prompts open main's panels on the sudo panel's state. When a Desktop or Ink viewer answers
+    first, the gateway withdraws the request and the CLI's panel must close, or the pump sits in the modal
+    until its own 120-180 s deadline instead of reading the rest of the turn."""
+    from unittest.mock import MagicMock
+    from agent.vault_backends import unlock
+    from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
+    panel = _make_cli_stub()
+    panel._sudo_state = None
+    panel._sudo_deadline = 0
+    panel._ring_bell = lambda **kw: None
+    panel._capture_modal_input_snapshot = MagicMock()
+    panel._restore_modal_input_snapshot = MagicMock()
+    params = {"vault.code": {"site": "example.com", "hint": ""},
+              "vault.unlock_prompt": {"backend": "bitwarden", "display_name": "Bitwarden"},
+              "vault.save_login": {"origin": "https://example.com", "site": "example.com"}}[method]
+    request = {"jsonrpc": "2.0", "id": "srq-vlt", "method": method, "params": {"session_id": SID, **params}}
+    withdrawn = frame("request.cancel", {"id": "srq-vlt", "method": method, "reason": "resolved"}, admission=None)
+    agent, _client = make_agent([request, "wait", withdrawn, frame("message.complete", {"text": "ok", "outcome": "completed"})],
+                                modal_withdraw_callback=panel._withdraw_gateway_modal)
+    replies = []
+    agent.connection.reply = lambda rid, result: replies.append((rid, result)) or True
+    out = {}
+
+    def run():
+        unlock.set_code_prompt_callback(panel._vault_code_callback)
+        unlock.set_unlock_prompt_callback(panel._vault_unlock_callback)
+        unlock.set_save_login_prompt_callback(panel._vault_save_login_callback)
+        try:
+            out.update(agent.run_conversation("sign in"))
+        finally:
+            unlock.set_code_prompt_callback(None)
+            unlock.set_unlock_prompt_callback(None)
+            unlock.set_save_login_prompt_callback(None)
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(10)
+    assert not worker.is_alive(), "the CLI stayed blocked in its vault panel"
+    assert panel._sudo_state is None
+    assert replies == [("srq-vlt", {"value": ""})]
+
+
+def test_a_withdrawal_for_another_request_leaves_the_panel_open(make_agent):
+    agent, _client = make_agent([])
+    closed = []
+    agent.modal_withdraw_callback = closed.append
+    agent._open_request = ("srq-mine", "clarify")
+    agent._on_request_withdrawn({"id": "srq-other", "method": "clarify", "reason": "resolved"})
+    assert closed == []
+    agent._on_request_withdrawn({"id": "srq-mine", "method": "clarify", "reason": "resolved"})
+    assert closed == ["clarify"]
+
+
+def test_ctrl_c_during_the_first_api_call_keeps_mains_estimate_marker(make_agent):
+    """T4: Ctrl+C while the turn's first request is in flight. The gateway agent counted the attempt
+    (``api_calls: 1`` in the turn result) but no response priced the ask, so main's in-process bar kept
+    the previous turn's anchor and estimated the ask (``~``). The stand-in must not anchor after the ask."""
+    from agent.usage_anchor import anchored_context_tokens
+    usage = dict(SESSION_USAGE, context_tokens=700, api_calls=2)  # no response: cumulative calls unchanged
+    agent, client = make_agent([frame("message.complete", {"text": "", "outcome": "cancelled", "status": "interrupted"})],
+                               result={"final_response": "", "api_calls": 1, "interrupted": True, "messages": []})
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats":
+            return usage
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.session_api_calls = 2
+    agent.run_conversation("story", conversation_history=[{"role": "user", "content": "a"},
+                                                          {"role": "assistant", "content": "b"}])
+    anchor = agent._turn_base_usage_anchor
+    assert anchor["base_count"] == 2  # the unanswered ask is the estimated delta: main's `~`
+    assert anchored_context_tokens(agent._session_messages, anchor, charge_stale_thinking=False) == 700
+
+
+def test_a_voice_stopped_reply_returns_without_waiting_for_a_turn():
+    """TUI-26: the owner answers a typed stop phrase in a LOCAL voice chat (turned on by another
+    viewer) with ``{voice_stopped: true}`` and admits nothing, so no ``message.complete`` will ever
+    come: the classic CLI returns at once with the stop notice instead of pumping forever."""
+    from agent.i18n import t
+
+    class Client(FakeClient):
+        async def rpc(self, method, *, _timeout=None, **params):
+            if method == "prompt.submit":
+                self.calls.append((method, params))
+                return {"voice_stopped": True}
+            return await super().rpc(method, _timeout=_timeout, **params)
+
+    client = Client([])
+    conn = GatewayConnection(connect=connect_with(client))
+    conn.start(5)
+    conn.state(SID)
+    try:
+        printed = []
+        agent = GatewayAgent(connection=conn, session_id=SID)
+        agent._print_fn = printed.append
+        done = {}
+        worker = threading.Thread(target=lambda: done.setdefault("r", agent.run_conversation(
+            "stop", conversation_history=[{"role": "user", "content": "hi"}])), daemon=True)
+        worker.start()
+        worker.join(8)
+        assert not worker.is_alive(), "run_conversation hung waiting for a turn that was never admitted"
+        result = done["r"]
+        assert result["voice_stopped"] is True and not result["failed"] and result["final_response"] == ""
+        assert result["messages"] == [{"role": "user", "content": "hi"}], "nothing was admitted"
+        assert "prompt.receipt" not in [m for m, _ in client.calls]
+        assert any(t("cli.voice.stop_phrase_typed") in line for line in printed), printed
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("mode", ["steer", "interrupt"])
+def test_a_voice_stopped_correction_is_consumed_not_requeued(make_agent, mode):
+    """TUI-26 (Greptile): a bare stop typed while a turn runs reaches ``session.steer`` /
+    ``session.redirect``; the owner ends the LOCAL voice chat and answers ``{voice_stopped: true}``.
+    The classic CLI must take the text as consumed: re-queuing it would submit ``stop`` again once
+    voice is already off, and that becomes an agent turn."""
+    import queue
+
+    from cli import HermesCLI
+
+    agent, client = make_agent([])
+    agent._generation = 7
+    agent._supports_active_turn_redirect = True
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method in {"session.steer", "session.redirect"}:
+            client.calls.append((method, params))
+            return {"voice_stopped": True}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    printed = []
+    agent._print_fn = printed.append
+    shell = object.__new__(HermesCLI)
+    shell.busy_input_mode = mode
+    shell.agent = agent
+    shell._pending_input, shell._interrupt_queue = queue.Queue(), queue.Queue()
+    agent._turn_ask_index = 3  # the running turn's ask; a consumed stop must leave it alone
+    shell._tui_enter_while_busy("stop", [], "stop")
+    assert shell._pending_input.empty() and shell._interrupt_queue.empty(), "consumed stop was re-queued"
+    sent = [m for m, _ in client.calls if m.startswith("session.")]
+    assert sent == [{"steer": "session.steer", "interrupt": "session.redirect"}[mode]]
+    assert agent._turn_ask_index == 3, "the running turn's history changed for a consumed stop"
+
+
+def test_a_session_switch_drops_the_previous_sessions_figures(make_agent):
+    """/new, /resume and /branch repoint ``session_id`` then call ``reset_session_state``: the bar and
+    /usage show the target's gateway figures (``session.stats``), never the session left behind, and
+    a late frame of the old session does not repaint them."""
+    agent, client = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    assert agent.session_api_calls == 5 and agent._api_latency_history
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.stats" and params.get("session_id") == "local-other":
+            return {"api_calls": 3, "input_tokens": 9}
+        return await original(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    agent.connection.state("local-other").messages = [{"role": "user", "content": "earlier"}]  # resumed
+    agent.session_id = "local-other"
+    agent.reset_session_state()
+    assert (agent.session_api_calls, agent.session_input_tokens, agent.session_output_tokens) == (3, 9, 0)
+    assert agent.context_compressor.last_prompt_tokens == 0 and agent._api_latency_history == []
+    agent.connection.state(SID).apply_usage(dict(SESSION_USAGE, api_calls=6))
+    assert agent.session_api_calls == 3
+    assert agent._on_request_withdrawn not in agent.connection.state(SID).request_listeners
+
+
+def test_new_session_reads_zero_without_a_stats_round_trip(make_agent):
+    """/new lands on a session the gateway just created (no transcript, no usage): its figures are
+    known zero, so the reset makes no ``session.stats`` call."""
+    agent, client = make_agent([])
+    agent.connection.state(SID).apply_usage(SESSION_USAGE)
+    agent.session_id = "local-fresh"
+    client.calls.clear()
+    agent.reset_session_state()
+    assert agent.session_api_calls == 0 and agent._api_latency_history == []
+    assert [method for method, _ in client.calls] == []
+
+
+def test_todo_updates_after_a_session_switch_reach_the_cli_todo_store(make_agent):
+    """/new, /resume and /branch give the agent a fresh ``tools.todo_tool.TodoStore``; the gateway's
+    later ``todo.updated`` must still land where the CLI reads it (``read()``: the pet's done-plan beat)."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_commands_mixin import _sync_agent_to_session
+    todos = [{"id": "1", "content": "ship it", "status": "completed"}]
+    agent, _ = make_agent([frame("todo.updated", {"todos": todos, "revision": 1}),
+                           frame("message.complete", {"text": "x", "outcome": "completed"})])
+    cli = SimpleNamespace(agent=agent, conversation_history=[])
+    _sync_agent_to_session(cli, SID, parent_session_id="", reason="resume")
+    agent.run_conversation("plan")
+    assert agent._todo_store.read() == todos
+
+
+def _resume_with_todos(client, todos, revision):
+    """``client``'s ``session.resume`` answers as the gateway does for a session with a plan."""
+    original = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        reply = await original(method, _timeout=_timeout, **params)
+        if method == "session.resume":
+            reply = dict(reply, stored_session_id=params["session_id"],
+                         todo_state={"todos": todos, "revision": revision})
+        return reply
+    client.rpc = rpc
+
+
+def test_resume_restores_the_sessions_todos_into_the_cli_todo_store(make_agent):
+    """/resume and /branch attach through ``session.resume``; main then swaps in a fresh ``TodoStore``,
+    which starts with the gateway's ``todo_state`` (revision kept), not empty until the next ``todo.updated``."""
+    from types import SimpleNamespace
+
+    from hermes_cli.cli_commands_mixin import _sync_agent_to_session
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    todos = [{"id": "1", "content": "ship it", "status": "in_progress"}]
+    agent, client = make_agent([])
+    _resume_with_todos(client, todos, 4)
+    agent._session_db = GatewaySessionStore(agent.connection)
+    _sync_agent_to_session(SimpleNamespace(agent=agent, conversation_history=[]), "local-other",
+                           parent_session_id="", reason="resume")
+    assert agent._todo_store.snapshot() == {"todos": todos, "revision": 4}
+
+
+def test_startup_resume_builds_the_agent_with_the_sessions_todos(make_agent):
+    """``chat -c`` attaches (``open_session``) before it builds the agent, whose store starts with the
+    snapshot; a later ``todo.updated`` of that session is what the next swapped-in store starts with."""
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from tools.todo_tool import TodoStore
+    todos = [{"id": "1", "content": "ship it", "status": "completed"}]
+    agent, client = make_agent([])
+    _resume_with_todos(client, todos, 2)
+    store = GatewaySessionStore(agent.connection)
+    store.attach("local-resumed")
+    resumed = GatewayAgent(connection=agent.connection, session_db=store, session_id="local-resumed")
+    assert resumed._todo_store.snapshot() == {"todos": todos, "revision": 2}
+    later = [dict(todos[0], status="in_progress")]
+    agent.connection.state("local-resumed").apply_event("todo.updated", {"todos": later, "revision": 3})
+    resumed._todo_store = TodoStore()
+    assert resumed._todo_store.snapshot() == {"todos": later, "revision": 3}

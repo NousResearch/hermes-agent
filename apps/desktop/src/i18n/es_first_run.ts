@@ -28,6 +28,8 @@ export const esFirstRun: FirstRunCopy = {
   skip: 'Omitir configuración',
   skipTip: 'Termina la configuración guiada y abre un chat nuevo.',
   skipFailed: 'No se pudo omitir la configuración',
+  slashOffTitle: 'Los comandos con barra no están disponibles durante la configuración',
+  slashOffBody: 'Funcionarán con normalidad cuando termine la configuración.',
   localModel: {
     title: 'Este ordenador puede ejecutar un modelo localmente',
     text: (model, size) =>

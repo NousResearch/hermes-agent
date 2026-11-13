@@ -68,6 +68,7 @@ def test_every_root_module_imported_by_packaged_code_is_shipped():
     shipped = {n for n in _root_py_modules() if not n.startswith("_test_")}
     paths = [p for n in shipped if (p := REPO_ROOT / f"{n}.py").is_file()]
     for pkg in PACKAGES:
+        assert (REPO_ROOT / pkg).is_dir(), f"{pkg}/ is gone: update PACKAGES, or this test checks nothing there"
         paths.extend((REPO_ROOT / pkg).rglob("*.py"))
     missing = {f: sorted(n for n in names if n not in shipped) for f, names in _imported_root_names(paths).items()}
     missing = {f: v for f, v in missing.items() if v}

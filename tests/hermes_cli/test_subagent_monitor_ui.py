@@ -60,3 +60,45 @@ def test_extended_tail_is_bounded_and_literal(tmp_path):
     assert 'last activity' in tail and '\x1b' not in tail
     assert len(tail) <= 32768
     assert 'not available' in read_tail(str(tmp_path / 'missing.log'))
+
+
+def test_a_stalled_steer_never_freezes_the_monitor(monkeypatch):
+    """Steer runs off the UI loop: while the backend call hangs, the monitor still repaints and Esc
+    still closes it; the answer lands in the notice line when it arrives."""
+    import threading
+    from hermes_cli.cli_subagent_monitor import SubagentMonitor, build_monitor_application
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+    from tools import delegate_tool_registry as registry
+    monkeypatch.setattr(registry, '_active_subagents', {})
+    registry._register_subagent(dict(subagent_id='only', goal='only', owner_agent_session_id='owner',
+                                     started_at=1, status='running', agent=SimpleNamespace()))
+    dock = SubagentMonitor(SimpleNamespace(agent=SimpleNamespace(session_id='owner')))
+    dock.refresh()
+    release, entered = threading.Event(), threading.Event()
+
+    def stalled(action, message=None, *, target=None):
+        entered.set()
+        release.wait(5)
+        return {'note': 'steered late'}
+    monkeypatch.setattr(dock, 'control', stalled)
+
+    async def run():
+        with create_pipe_input() as pipe:
+            app = build_monitor_application(dock, input=pipe, output=DummyOutput())
+            rendered = asyncio.Event()
+            app.after_render += lambda app: rendered.set()
+            task = asyncio.create_task(app.run_async())
+            await asyncio.wait_for(rendered.wait(), 3)
+            rendered.clear()
+            pipe.send_text('sFocus\r')
+            await asyncio.wait_for(rendered.wait(), 3)  # repainted while the call is still hanging
+            await asyncio.get_running_loop().run_in_executor(None, entered.wait, 3)
+            assert entered.is_set() and not release.is_set()
+            rendered.clear()
+            pipe.send_text('\x1b')  # Esc still closes it mid-call
+            await asyncio.wait_for(rendered.wait(), 3)
+            pipe.send_text('\x1b')
+            await asyncio.wait_for(task, 3)
+            release.set()
+    asyncio.run(run())

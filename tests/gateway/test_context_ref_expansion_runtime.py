@@ -39,7 +39,6 @@ def _make_runner() -> GatewayRunner:
     # Attrs touched by _resolve_session_agent_runtime on a bare test runner
     # (mirrors tests/gateway/test_empty_model_recovery.py).
     runner._session_model_overrides = {}
-    runner._last_resolved_model = {}
     runner._service_tier = None
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()

@@ -31,6 +31,7 @@ class _RecordingAdapter:
 
     def __init__(self):
         self.calls = []  # (kind, monotonic_ts, content)
+        self.deleted = []  # (chat_id, message_id)
 
     async def send(self, chat_id=None, content=None, reply_to=None, metadata=None, **kw):
         self.calls.append(("send", time.monotonic(), content))
@@ -39,6 +40,10 @@ class _RecordingAdapter:
     async def edit_message(self, chat_id=None, message_id=None, content=None, finalize=False, metadata=None, **kw):
         self.calls.append(("edit", time.monotonic(), content))
         return SimpleNamespace(success=True, message_id=message_id)
+
+    async def delete_message(self, chat_id, message_id):
+        self.deleted.append((chat_id, message_id))
+        return True
 
     async def send_stream_frame(self, *a, **kw):
         return False
@@ -180,27 +185,99 @@ class TestReasoningEntitySafety:
         assert content.startswith("**> 💭 thinking..."), f"expected leading **>, got: {content}"
         assert content.endswith("||"), f"expected trailing ||, got: {content}"
 
-    def test_large_reasoning_is_chunked_into_safe_bubbles(self):
-        """Reasoning exceeding ~2000 chars is cleanly chunked into self-contained
-        bubbles so truncate_message never splits a quote and breaks entities."""
+    def test_large_reasoning_is_windowed_into_single_safe_bubble(self, monkeypatch, tmp_path):
+        """Long reasoning (>3200 chars) stays in one live bubble via sliding window and seals cleanly."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_FLUSH_SECONDS", 6.0)
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_FIRST_BUBBLE_SECONDS", 0.6)
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_RETAIN_BUBBLES", 3)
+
         adapter = _RecordingAdapter()
         consumer = _consumer(adapter)
 
         async def scenario():
             task = asyncio.create_task(consumer.run())
-            # Feed 3500 chars across multiple lines
-            for i in range(35):
-                consumer.on_reasoning(f"line {i:02d} " + ("x" * 90) + "\n")
+            for i in range(40):
+                consumer.on_reasoning(f"line {i:02d} " + ("x" * 120) + "\n")
             await asyncio.sleep(0.3)
             consumer.finish()
             await task
 
         _run(scenario())
-        bubbles = _bubbles(adapter)
-        assert len(bubbles) >= 2, f"expected at least 2 safe bubbles, got: {len(bubbles)}"
-        assert "💭 thinking..." in bubbles[0][1]
-        assert "💭 thinking... (cont.)" in bubbles[1][1]
-        for idx, (_, b) in enumerate(bubbles):
-            assert b.startswith("**> "), f"bubble {idx} should start with **>, got: {b[:20]}"
-            assert b.endswith("||"), f"bubble {idx} should end with ||, got: {b[-20:]}"
+        all_bubbles = [(kind, c) for kind, _, c in adapter.calls if "💭" in (c or "")]
+        assert len(all_bubbles) >= 2, f"expected live send + sealed edit, got: {all_bubbles}"
+        send_bubbles = [c for kind, c in all_bubbles if kind == "send"]
+        assert len(send_bubbles) == 1, f"expected a single live reasoning bubble, got {len(send_bubbles)}"
+        final_kind, final_content = all_bubbles[-1]
+        assert final_kind == "edit"
+        assert final_content.startswith("**> 💭 thinking..."), f"expected sealed header, got: {final_content[:40]}"
+        assert final_content.endswith("||"), f"expected sealed || ending, got: {final_content[-20:]}"
+        assert "earlier thinking omitted" in final_content
+        assert len(final_content) <= 3800
+
+    def test_live_reasoning_streams_via_edit_message(self, monkeypatch, tmp_path):
+        """Reasoning updates after the first bubble edit the same Telegram message in place."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_FLUSH_SECONDS", 0.15)
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_FIRST_BUBBLE_SECONDS", 0.05)
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_MIN_INITIAL_CHARS", 5)
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_RETAIN_BUBBLES", 3)
+
+        adapter = _RecordingAdapter()
+        consumer = _consumer(adapter)
+
+        async def scenario():
+            task = asyncio.create_task(consumer.run())
+            consumer.on_reasoning("First thought chunk.")
+            await asyncio.sleep(0.25)
+            consumer.on_reasoning(" Second thought chunk.")
+            await asyncio.sleep(0.30)
+            consumer.finish()
+            await task
+
+        _run(scenario())
+        sends = [c for c in adapter.calls if c[0] == "send" and "💭" in (c[2] or "")]
+        edits = [c for c in adapter.calls if c[0] == "edit" and "💭" in (c[2] or "")]
+        assert len(sends) == 1, f"expected 1 reasoning send, got {len(sends)}"
+        assert len(edits) >= 2, f"expected >=2 edits (live update + seal), got {len(edits)}"
+        assert not sends[0][2].endswith("||")
+        assert "▉" in sends[0][2]
+        assert edits[-1][2].startswith("**> 💭 thinking...")
+        assert edits[-1][2].endswith("||")
+
+    def test_retains_up_to_three_bubbles_and_vaporizes_oldest(self, monkeypatch, tmp_path):
+        """When >3 thinking bubbles accumulate for a chat, the oldest ones are deleted."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_RETAIN_BUBBLES", 3)
+
+        async def scenario():
+            for idx in range(1, 6):
+                adapter = _RecordingAdapter()
+                consumer = _consumer(adapter)
+                consumer._reasoning_live_msg_id = f"r_{idx}"
+                await consumer._close_reasoning_phase(f"Reasoning {idx}")
+                if idx <= 3:
+                    assert adapter.deleted == []
+                elif idx == 4:
+                    assert adapter.deleted == [(consumer.chat_id, "r_1")]
+                elif idx == 5:
+                    assert adapter.deleted == [(consumer.chat_id, "r_2")]
+
+        _run(scenario())
+
+    def test_immediate_vaporize_when_retain_is_zero(self, monkeypatch, tmp_path):
+        """When _REASONING_RETAIN_BUBBLES == 0, closing the reasoning phase deletes the bubble immediately."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_RETAIN_BUBBLES", 0)
+
+        adapter = _RecordingAdapter()
+        consumer = _consumer(adapter)
+
+        async def scenario():
+            consumer._reasoning_live_msg_id = "r_live"
+            await consumer._close_reasoning_phase("Some thinking")
+            assert adapter.deleted == [(consumer.chat_id, "r_live")]
+            assert consumer._reasoning_live_msg_id is None
+
+        _run(scenario())
 

@@ -364,6 +364,7 @@ class StreamFallbackMixin:
             # Do NOT set _already_sent: commentary is interim, and the flag would
             # suppress the real final after multiple tool calls.
             if result.success:
+                self._last_commentary_msg_id = getattr(result, "message_id", None)
                 self._notify_new_message()
                 # Lets run.py confirm whether an interim send carried the final.
                 # Record the exact delivered text so run.py can confirm whether an interim "preview"

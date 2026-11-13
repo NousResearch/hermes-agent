@@ -182,6 +182,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # first bubble gets the fast path again — "first bubble is fast,
         # later bubbles keep cadence" without extra state machines.
         self._reasoning_bubble_count: int = 0
+        # Live streaming + vaporize/retain state for 💭 reasoning bubbles.
+        self._reasoning_live_msg_id: Optional[str] = None
+        self._reasoning_phase_text: str = ""
+        self._reasoning_last_sent_content: str = ""
+        self._last_commentary_msg_id: Optional[str] = None
         # True when at least one reasoning bubble was delivered this turn —
         # suppresses the gateway's final 💭 prepend when streaming already
         # showed the reasoning live (mirrors the CLI's reasoning box).
@@ -446,21 +451,20 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     # ── live reasoning flush cadence ──────────────────────────────────────
 
-    _REASONING_FLUSH_CHARS = 4096     # flush partial text at this length
-    _REASONING_FLUSH_SECONDS = 10.0   # ... or when buffer is this old
-    # 아빠 지정 규격 (2026-10-21): 10초당 4096자 단위 플러시, 10초보다 빨리 끝나면 바로 출력.
-    # 2.5초 조기 플러시는 3~4초짜리 짧은 씽킹을 2개의 자투리 버블로 강제 분할하므로 10초로 통일.
-    _REASONING_FIRST_BUBBLE_SECONDS = 10.0
+    _REASONING_FLUSH_CHARS = 3200          # sliding window cap inside one live bubble
+    _REASONING_FLUSH_SECONDS = 1.0         # live edit cadence (matches Telegram 1s/chat budget)
+    _REASONING_FIRST_BUBBLE_SECONDS = 0.6  # fast initial appearance
+    _REASONING_MIN_INITIAL_CHARS = 12      # avoid spawning a bubble on 1-2 stray tokens
+    # Completed 💭 bubbles kept per chat before oldest ones vaporize via deleteMessage
+    # (0 = vaporize immediately when answer starts; 3 = keep up to 3 recent thinking cards).
+    _REASONING_RETAIN_BUBBLES = 3
+    _REASONING_RETAIN_LOCK = threading.Lock()
 
     def _reasoning_flush_due(self) -> bool:
-        """True when the buffered reasoning should be flushed as a bubble."""
+        """True when buffered reasoning should be pushed as a live stream frame."""
         if not self._reasoning_buf:
             return False
         now = time.monotonic()
-        # Buffer-age cadence (primary): guarantees a bubble at least every
-        # _REASONING_FLUSH_SECONDS while reasoning streams continuously.
-        # A silence-only timer never fires mid-stream (every delta resets
-        # it), which delayed the first bubble to the full char threshold.
         if self._reasoning_first_bubble_due():
             return True
         if self._reasoning_first_delta_ts and (
@@ -472,19 +476,186 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return False
 
     def _reasoning_first_bubble_due(self) -> bool:
-        """First bubble of a reasoning phase flushes early so the user sees
-        something right after TTFT instead of staring at nothing for the
-        full cadence window.  Only the FIRST bubble gets this fast path —
-        subsequent bubbles keep the regular cadence to avoid spam."""
+        """First bubble of a reasoning phase flushes early once enough chars arrive."""
         return bool(
             self._reasoning_buf
             and not self._reasoning_bubble_count
             and self._reasoning_first_delta_ts
             and (
+                len(self._reasoning_buf) >= self._REASONING_MIN_INITIAL_CHARS
+                or self._reasoning_live_msg_id is not None
+            )
+            and (
                 time.monotonic() - self._reasoning_first_delta_ts
                 >= self._REASONING_FIRST_BUBBLE_SECONDS
             )
         )
+
+    def _can_edit_reasoning_live(self) -> bool:
+        """True when the adapter supports in-place editing of an open 💭 bubble."""
+        return bool(
+            getattr(self.adapter, "SUPPORTS_MESSAGE_EDITING", True)
+            and callable(getattr(self.adapter, "edit_message", None))
+        )
+
+    @staticmethod
+    def _reasoning_retained_store_path() -> Optional[str]:
+        """Return path to the persisted retained-reasoning-IDs queue, or None."""
+        try:
+            import os
+            from hermes_constants import get_hermes_home
+            return os.path.join(str(get_hermes_home()), "state", "reasoning_retained_ids.json")
+        except Exception:
+            return None
+
+    @classmethod
+    def _push_and_pop_retained_reasoning_ids(
+        cls, chat_id: str, new_msg_id: str, retain_limit: int,
+    ) -> list[str]:
+        """Append ``new_msg_id`` for ``chat_id`` and return overflow IDs to delete."""
+        import json
+        import os
+        path = cls._reasoning_retained_store_path()
+        if not path or not new_msg_id or new_msg_id == "__no_edit__":
+            return []
+        key = str(chat_id)
+        with cls._REASONING_RETAIN_LOCK:
+            try:
+                with open(path, "r", encoding="utf-8-sig") as fh:
+                    data = json.load(fh)
+                if not isinstance(data, dict):
+                    data = {}
+            except (FileNotFoundError, ValueError, OSError):
+                data = {}
+            ids = [str(x) for x in (data.get(key) or []) if x]
+            if str(new_msg_id) not in ids:
+                ids.append(str(new_msg_id))
+            if retain_limit <= 0:
+                overflow, kept = ids, []
+            elif len(ids) > retain_limit:
+                overflow = ids[:-retain_limit]
+                kept = ids[-retain_limit:]
+            else:
+                overflow, kept = [], ids
+            data[key] = kept
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                from utils import atomic_json_write
+                atomic_json_write(path, data, indent=None)
+            except Exception as e:
+                logger.debug("Failed to persist retained reasoning IDs: %s", e)
+            return overflow
+
+    def _window_reasoning_lines(self, lines: list[str]) -> list[str]:
+        """Keep the trailing lines within ``_REASONING_FLUSH_CHARS`` so one bubble never overflows."""
+        budget = self._REASONING_FLUSH_CHARS
+        selected: list[str] = []
+        total = 0
+        for ln in reversed(lines):
+            ln_len = len(ln) + 1
+            if selected and total + ln_len > budget:
+                break
+            selected.append(ln)
+            total += ln_len
+        selected.reverse()
+        if len(selected) < len(lines):
+            selected.insert(0, "... (earlier thinking omitted) ...")
+        return selected
+
+    def _render_reasoning_quote(self, lines: list[str], *, streaming: bool) -> str:
+        """Render reasoning lines as a Telegram blue blockquote.
+
+        During live streaming (``streaming=True``), omit the ``||`` collapse mark so
+        newly typed lines stay visible in real time. When sealing (``streaming=False``),
+        emit an expandable blockquote (``**>`` + trailing ``||``).
+        """
+        windowed = self._window_reasoning_lines(lines)
+        if streaming:
+            all_lines = ["💭 thinking... ▉"] + windowed
+            return "\n".join(f"> {ln}" for ln in all_lines)
+        all_lines = ["💭 thinking..."] + windowed
+        return "\n".join(
+            (f"**> {ln}" if i == 0 else f"> {ln}") + ("||" if i == len(all_lines) - 1 else "")
+            for i, ln in enumerate(all_lines)
+        )
+
+    def _prepare_reasoning_lines(self, raw_text: str) -> list[str]:
+        """Sanitize and normalize accumulated phase text into non-empty quote lines."""
+        cleaned = ensure_closed_code_fences(
+            self._clean_for_display(raw_text)
+        ).strip()
+        if not cleaned:
+            return []
+        sanitized = cleaned.replace("||", "|\\|")
+        return [ln.replace("\t", "    ") for ln in sanitized.splitlines() if ln.strip()]
+
+    async def _push_reasoning_live(self, delta_text: str, *, seal: bool) -> None:
+        """Stream reasoning text into a single live blue-blockquote bubble via send/edit."""
+        if delta_text:
+            self._reasoning_phase_text += delta_text
+        lines = self._prepare_reasoning_lines(self._reasoning_phase_text)
+        if not lines:
+            return
+        can_edit = self._can_edit_reasoning_live()
+        # Live stream uses open blockquote while streaming; non-editable adapters send sealed.
+        rendered = self._render_reasoning_quote(
+            lines, streaming=(not seal and can_edit),
+        )
+        if self._reasoning_live_msg_id is not None and can_edit:
+            if rendered == self._reasoning_last_sent_content:
+                return
+            try:
+                eres = await self.adapter.edit_message(
+                    chat_id=self.chat_id,
+                    message_id=self._reasoning_live_msg_id,
+                    content=rendered,
+                    finalize=seal,
+                    metadata=self._metadata_for_send(final=False),
+                )
+            except Exception as e:
+                logger.debug("Live reasoning edit failed: %s", e)
+                eres = None
+            if getattr(eres, "success", False):
+                self._reasoning_last_sent_content = rendered
+                self._reasoning_bubble_count += 1
+                self.reasoning_delivered = True
+                return
+            # Edit failed — reset live id and fall back to fresh send.
+            self._reasoning_live_msg_id = None
+
+        self._last_commentary_msg_id = None
+        if await self._send_commentary(rendered):
+            self._reasoning_bubble_count += 1
+            self.reasoning_delivered = True
+            self._reasoning_last_sent_content = rendered
+            if self._last_commentary_msg_id and can_edit:
+                self._reasoning_live_msg_id = str(self._last_commentary_msg_id)
+
+    async def _close_reasoning_phase(self, delta_text: str) -> None:
+        """Seal or vaporize the current reasoning phase when answer/tool/done arrives."""
+        retain_limit = getattr(self, "_REASONING_RETAIN_BUBBLES", 3)
+        if retain_limit <= 0:
+            # Immediate vaporize mode: delete the live preview bubble so it dissolves.
+            if self._reasoning_live_msg_id:
+                await self._delete_previews(
+                    {self._reasoning_live_msg_id}, label="Reasoning-vaporize", retry_on_false=True,
+                )
+        else:
+            if delta_text or self._reasoning_live_msg_id is not None:
+                await self._push_reasoning_live(delta_text, seal=True)
+            if self._reasoning_live_msg_id:
+                overflow_ids = self._push_and_pop_retained_reasoning_ids(
+                    self.chat_id, self._reasoning_live_msg_id, retain_limit,
+                )
+                if overflow_ids:
+                    await self._delete_previews(
+                        overflow_ids, label="Reasoning-prune", retry_on_false=True,
+                    )
+
+        self._reasoning_live_msg_id = None
+        self._reasoning_phase_text = ""
+        self._reasoning_last_sent_content = ""
+        self._reasoning_bubble_count = 0
 
     def flush_pending_sync(self, timeout: float = 5.0) -> bool:
         """Block the agent worker thread until everything queued so far is delivered:
@@ -649,89 +820,27 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         return
 
                 # ── Live reasoning flush ─────────────────────────────────
-                # Emit buffered reasoning as an interim 💭 bubble when: the
-                # stream is ending (got_done), a tool boundary arrived, or
-                # the time/length threshold tripped.  Sent BEFORE the
-                # content update below so the bubble lands above the answer.
+                # Stream buffered reasoning into a single live blue-blockquote
+                # bubble via edit_message; on phase end (answer start / tool
+                # boundary / done), seal or vaporize per _REASONING_RETAIN_BUBBLES.
                 should_edit = self._should_edit(tick)
-                if self._reasoning_buf and (
+                _phase_ended = (
                     tick.got_done
                     or tick.got_segment_break
-                    or self._reasoning_flush_due()
-                    or (should_edit and self._accumulated)
+                    or (should_edit and bool(self._accumulated))
+                )
+                if (self._reasoning_buf or (self._reasoning_live_msg_id is not None and _phase_ended)) and (
+                    _phase_ended or self._reasoning_flush_due()
                 ):
                     _rtext = self._reasoning_buf
                     self._reasoning_buf = ""
-                    # Whether this flush ENDS the reasoning phase (stream
-                    # done / tool boundary / real content arriving). Only
-                    # then does the next reasoning delta start a NEW phase
-                    # whose first bubble earns the fast path again; a
-                    # mid-phase time/length flush must keep the cadence,
-                    # or every bubble would re-trigger the fast path.
-                    _phase_ended = (
-                        tick.got_done
-                        or tick.got_segment_break
-                        or (should_edit and self._accumulated)
-                    )
-                    # Age clock restarts for the next bubble's cadence.
                     self._reasoning_first_delta_ts = time.monotonic()
                     self._reasoning_last_delta_ts = time.monotonic()
-                    _rtext = ensure_closed_code_fences(
-                        self._clean_for_display(_rtext)
-                    ).strip()
-                    if _rtext:
-                        # Render as a Telegram EXPANDABLE blockquote (blue
-                        # accent bar, collapsed to ~3 lines until tapped) —
-                        # G-레미's suggestion via dad (2026-10-19).  The
-                        # adapter converts "> "-prefixed lines to blockquote
-                        # entities; the official MarkdownV2 expandability
-                        # mark is a leading '**>' and trailing '||' on the LAST quoted line
-                        # (core.telegram.org/bots/api).
-                        #
-                        # Collapse-safety & Anti-leak guarantees (Dad & Remi 2026-10-21):
-                        # 1. Sanitize any literal '||' inside reasoning text to prevent
-                        #    accidental Telegram spoiler entities (mosaic blur) or unpaired
-                        #    spoiler errors that break MarkdownV2 parse.
-                        # 2. Prepend '**>' to line 1 and '>' to subsequent lines.
-                        # 3. Chunk reasoning into self-contained <=2000 character bubbles
-                        #    so truncate_message never splits a quote into (1/2) pieces,
-                        #    which would shatter the blockquote and dump raw plain text ("하얀 씽킹").
-                        _sanitized = _rtext.replace("||", "|\\|")
-                        _raw_lines = [
-                            ln.replace("\t", "    ")
-                            for ln in _sanitized.splitlines() if ln.strip()
-                        ]
-                        if _raw_lines:
-                            _max_chunk_chars = 2000
-                            _bubble_chunks: list[list[str]] = []
-                            _curr_lines: list[str] = []
-                            _curr_len = 0
-                            for ln in _raw_lines:
-                                if _curr_len + len(ln) > _max_chunk_chars and _curr_lines:
-                                    _bubble_chunks.append(_curr_lines)
-                                    _curr_lines = []
-                                    _curr_len = 0
-                                _curr_lines.append(ln)
-                                _curr_len += len(ln)
-                            if _curr_lines:
-                                _bubble_chunks.append(_curr_lines)
-
-                            for _b_idx, _b_lines in enumerate(_bubble_chunks):
-                                _hdr = "💭 thinking..." if (self._reasoning_bubble_count == 0 and _b_idx == 0) else "💭 thinking... (cont.)"
-                                _all_lines = [_hdr] + _b_lines
-                                _quoted = "\n".join(
-                                    (f"**> {ln}" if _i == 0 else f"> {ln}") + ("||" if _i == len(_all_lines) - 1 else "")
-                                    for _i, ln in enumerate(_all_lines)
-                                )
-                                _rok = await self._send_commentary(_quoted)
-                                if _rok:
-                                    self._reasoning_bubble_count += 1
-                                    self.reasoning_delivered = True
-                        self._last_edit_time = time.monotonic()
                     if _phase_ended:
-                        # New phase starts with the next delta (if any):
-                        # re-arm the first-bubble fast path for it.
-                        self._reasoning_bubble_count = 0
+                        await self._close_reasoning_phase(_rtext)
+                    else:
+                        await self._push_reasoning_live(_rtext, seal=False)
+                    self._last_edit_time = time.monotonic()
 
                 if should_edit and (
                     self._accumulated or (self._use_native_streaming and self._tool_progress_active)
@@ -1131,6 +1240,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             await self._abandon_native_stream()
         if best_effort_ok and not self._final_response_sent:
             self._mark_final_delivered(record=self._accumulated)
+        if self._reasoning_live_msg_id:
+            with contextlib.suppress(Exception):
+                await self._delete_previews(
+                    {self._reasoning_live_msg_id}, label="Reasoning-cancel",
+                )
+            self._reasoning_live_msg_id = None
+            self._reasoning_phase_text = ""
 
     def _wake_flush_waiters(self) -> None:
         """Wake still-queued _FLUSH waiters so a consumer dying mid-flush

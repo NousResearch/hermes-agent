@@ -444,7 +444,7 @@ def _sync_permanent_from_disk(approved: set, key: str) -> None:
 
 
 def _session_grant_key(session_key: str) -> str | tuple[str, str]:
-    """A room member's session grant cannot authorize a child running as another profile.
+    """A parent's session grant cannot authorize a child running as another profile (any route, room or not).
 
     Ordinary turns keep their legacy session key. A profile route runs with its own
     home/credentials; approvals in that child are keyed by both the session and home.

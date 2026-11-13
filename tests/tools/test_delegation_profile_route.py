@@ -486,6 +486,24 @@ def test_room_members_session_grant_cannot_preapprove_a_profile_routed_child(two
         reset_current_session_key(session_token)
 
 
+def test_routed_childs_session_grant_stays_in_its_profile_and_ends_with_the_session(two_profiles, monkeypatch):
+    """A 'session' grant given inside a profile-routed child covers that child's profile only, and
+    ``clear_session`` (gateway /new, /stop) retires it with the conversation's other grants."""
+    from tools import approval
+    from tools.delegate_tool_routes import delegated_profile_scope
+
+    _, coder = two_profiles
+    monkeypatch.setattr(approval, "_session_approved", {})
+    session_key, pattern_key = "routed-child-grant-test", "world/other-writable permissions"
+    with delegated_profile_scope(coder):
+        approval.approve_session(session_key, pattern_key)
+        assert approval.is_approved(session_key, pattern_key)
+    assert not approval.is_approved(session_key, pattern_key)
+    approval.clear_session(session_key)
+    with delegated_profile_scope(coder):
+        assert not approval.is_approved(session_key, pattern_key)
+
+
 def test_child_routed_back_to_the_launch_profile_uses_the_launch_profiles_container(two_profiles):
     """A ``coder`` chat on a default-launched gateway (its turn bound to coder, HERMES_SESSION_PROFILE=coder) routing
     a child to ``default`` runs that child in default's persistent container, not the parent chat's."""

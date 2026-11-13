@@ -146,7 +146,8 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
         stack.callback(reset_secret_scope, set_secret_scope(owner_secret_scope(home), profile_home=str(home)))
         # This route's own scope marks the child: a hosted room's execution
         # policy was signed for the delegating member's profile and must not
-        # govern this differently-profiled child's approval decisions.
+        # govern this differently-profiled child's approval decisions, and the
+        # parent's "session" grants do not cover this profile (any route).
         stack.callback(reset_profile_routed, bind_profile_routed())
         if routed:
             stack.callback(reset_multiplex_context, set_multiplex_context(True))

@@ -1313,6 +1313,7 @@ platform:
       send: "✅ Send"
       selected_count: "Selected: {count}"
       select_one: "Select at least one option first."
+      toggle_failed: "Couldn't update the selection — tap again."
       expired_toast: "⚠️ This prompt expired — please /retry."
       expired_body: "⚠️ This question expired or the session reset — please /retry."
       type_answer: "✏️ Type your answer in the chat."

@@ -143,6 +143,45 @@ class TestMultiSelectCallbacks:
             assert _clean_answer(cm._entries["cidR"].response, True) == ["red", "green"]
 
     @pytest.mark.asyncio
+    async def test_refused_toggle_edit_keeps_the_visible_selection(self):
+        """A pick Telegram refused to show must not be submitted by Send."""
+        from telegram.error import BadRequest
+        from tools import clarify_gateway as cm
+        adapter = _make_adapter()
+        msg = _prompt(adapter, "cidF")
+        cm.register("cidF", "sk-multi", "Pick", ["red", "green", "blue"], multi_select=True)
+
+        await _tap(adapter, msg, "cl:cidF:t0")
+        refused = AsyncMock(side_effect=BadRequest("Bad Request: message can't be edited"))
+        query = AsyncMock()
+        query.data, query.message = "cl:cidF:t2", msg
+        query.from_user = MagicMock(id="777", first_name="Tester")
+        query.edit_message_reply_markup = refused
+        update = MagicMock(callback_query=query)
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+        query.answer.assert_called_once()
+        await _tap(adapter, msg, "cl:cidF:go")
+
+        from tools.clarify_tool import _clean_answer
+        with cm._lock:
+            assert _clean_answer(cm._entries["cidF"].response, True) == ["red"]
+
+    @pytest.mark.asyncio
+    async def test_tap_on_an_expired_card_retires_it(self):
+        from tools import clarify_gateway as cm
+        adapter = _make_adapter()
+        msg = _prompt(adapter, "cidX")
+        cm.register("cidX", "sk-multi", "Pick", ["red", "green"], multi_select=True)
+        cm.resolve_gateway_clarify("cidX", "typed answer")  # answered elsewhere (typed reply / timeout)
+
+        query = await _tap(adapter, msg, "cl:cidX:t0")
+
+        assert "cidX" not in adapter._clarify_state
+        assert query.edit_message_text.call_args.kwargs["reply_markup"] is None
+        assert "expired" in query.edit_message_text.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
     async def test_toggle_off_before_send(self):
         from tools import clarify_gateway as cm
         adapter = _make_adapter()

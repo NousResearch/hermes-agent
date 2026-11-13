@@ -1258,6 +1258,7 @@ platform:
       send: "✅ 보내기"
       selected_count: "선택됨: {count}"
       select_one: "먼저 옵션을 하나 이상 선택하세요."
+      toggle_failed: "선택을 업데이트하지 못했습니다. 다시 눌러 주세요."
       expired_toast: "⚠️ 이 프롬프트가 만료되었어요 — /retry를 실행해 주세요."
       expired_body: "⚠️ 이 질문이 만료되었거나 세션이 초기화되었어요 — /retry를 실행해 주세요."
       type_answer: "✏️ 채팅에 답변을 입력해 주세요."

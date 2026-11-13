@@ -1258,6 +1258,7 @@ platform:
       send: "✅ Senden"
       selected_count: "Ausgewählt: {count}"
       select_one: "Wähle zuerst mindestens eine Option."
+      toggle_failed: "Auswahl konnte nicht aktualisiert werden – bitte erneut tippen."
       expired_toast: "⚠️ Diese Abfrage ist abgelaufen — bitte /retry."
       expired_body: "⚠️ Diese Frage ist abgelaufen oder die Sitzung wurde zurückgesetzt — bitte /retry."
       type_answer: "✏️ Geben Sie Ihre Antwort im Chat ein."

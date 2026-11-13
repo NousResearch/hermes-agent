@@ -1258,6 +1258,7 @@ platform:
       send: "✅ 傳送"
       selected_count: "已選擇：{count}"
       select_one: "請先至少選擇一個選項。"
+      toggle_failed: "無法更新選擇，請再點一次。"
       expired_toast: "⚠️ 此提示已逾期 — 請使用 /retry。"
       expired_body: "⚠️ 此問題已逾期或工作階段已重設 — 請使用 /retry。"
       type_answer: "✏️ 請在聊天中輸入你的答案。"

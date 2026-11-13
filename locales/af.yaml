@@ -1258,6 +1258,7 @@ platform:
       send: "✅ Stuur"
       selected_count: "Gekies: {count}"
       select_one: "Kies eers ten minste een opsie."
+      toggle_failed: "Kon nie die keuse bywerk nie — tik weer."
       expired_toast: "⚠️ Hierdie prompt het verval — gebruik asseblief /retry."
       expired_body: "⚠️ Hierdie vraag het verval of die sessie is herstel — gebruik asseblief /retry."
       type_answer: "✏️ Tik jou antwoord in die klets."

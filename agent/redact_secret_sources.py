@@ -31,13 +31,13 @@ _VALUES_BY_HOME: dict[str, tuple[str, ...]] = {}
 
 
 def _worth_registering(name: str, value: str) -> bool:
-    from agent.redact import _key_has_secret_keyword, redact_sensitive_text
+    from agent.redact import _key_has_secret_keyword, redact_credential_shapes
 
     stripped = value.strip()
     if len(stripped) < _MIN_VALUE_CHARS:
         return False
     return ("\n" in stripped or _key_has_secret_keyword(name)
-            or redact_sensitive_text(stripped, force=True) != stripped)
+            or redact_credential_shapes(stripped, force=True) != stripped)
 
 
 def publish_secret_source_values(hermes_home: str | Path, values: dict[str, str]) -> None:
@@ -52,8 +52,12 @@ def publish_secret_source_values(hermes_home: str | Path, values: dict[str, str]
             # How a tool that serialises its result as JSON (MCP, read_file of a .json) carries it.
             exact[json.dumps(value)[1:-1]] = None
             exact[json.dumps(value, ensure_ascii=False)[1:-1]] = None
+    key = hermes_home_key(hermes_home)
+    if not exact:  # revoked or never supplied: unregister, and keep the empty-registry fast path
+        _VALUES_BY_HOME.pop(key, None)
+        return
     # Longest first, so a value that is a substring of another never shadows its superstring.
-    _VALUES_BY_HOME[hermes_home_key(hermes_home)] = tuple(sorted(exact, key=len, reverse=True))
+    _VALUES_BY_HOME[key] = tuple(sorted(exact, key=len, reverse=True))
 
 
 def redact_secret_source_values(text: str) -> str:

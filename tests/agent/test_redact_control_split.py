@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_for_egress, redact_sensitive_text
 
 
 @pytest.fixture(autouse=True)
@@ -56,3 +56,12 @@ def test_orphan_escape_never_turns_later_prose_into_noise():
 def test_coloured_prose_is_untouched():
     text = "\x1b[1mbold\x1b[0m plain \x1b[32msk-learn\x1b[0m"
     assert _redact(text) == text
+
+
+@pytest.mark.parametrize("seq", ["\x1b(B\x1b[m", "\x1b(B", "\x1b7", "\x1b8", "\x1bM", "\x1bOA"])
+def test_non_csi_escape_before_token_masks(seq):
+    # ``tput sgr0`` emits ``ESC ( B ESC [ m``; sc/rc/ri and SS3 cursor keys glue a letter likewise.
+    body = "Q" * 40
+    text = f"\x1b[31mOPENAI key:{seq}sk-" + "proj-" + body
+    assert body[:12] not in _redact(text)
+    assert body[:12] not in redact_for_egress(text)

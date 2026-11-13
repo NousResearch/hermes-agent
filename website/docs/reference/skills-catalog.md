@@ -80,6 +80,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`microsoft-office`](../user-guide/skills/bundled/productivity/productivity-microsoft-office.md) | Create, read, and edit Word, PowerPoint, and Excel files. | `productivity/microsoft-office` |
 | [`pdf`](../user-guide/skills/bundled/productivity/productivity-pdf.md) | PDF files: create, read, merge, fill, OCR, edit text. | `productivity/pdf` |
 | [`product-price-monitor`](../user-guide/skills/bundled/productivity/productivity-product-price-monitor.md) | Watch product, flight, or listing prices; alert on target. | `productivity/product-price-monitor` |
+| [`prompt-command-generator`](../user-guide/skills/bundled/productivity/productivity-prompt-command-generator.md) | Draft reusable prompts and reviewable shell commands. | `productivity/prompt-command-generator` |
 | [`teams-meeting-pipeline`](../user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline.md) | Teams meeting summaries, job replay, Graph subscriptions. | `productivity/teams-meeting-pipeline` |
 | [`weekly-review-planning`](../user-guide/skills/bundled/productivity/productivity-weekly-review-planning.md) | Weekly reset: commitments, stalled work, next-week plan. | `productivity/weekly-review-planning` |
 

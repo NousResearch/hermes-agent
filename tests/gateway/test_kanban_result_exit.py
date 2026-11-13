@@ -75,3 +75,19 @@ def test_managed_start_failure_books_the_one_shot_credential_exit(tmp_path, monk
 
     session_kanban.record_start_failure(frame, error)
     assert session_kanban.worker_exit_code(path, context) == expected
+
+
+def test_managed_result_redacts_the_reply_the_worker_log_quotes(tmp_path, monkeypatch):
+    """The submitter prints ``last_output`` into the durable worker log (#63594): a secret the
+    final reply quotes must be masked before it is booked, like comments and summaries."""
+    path, context = _bound_claim(tmp_path, monkeypatch)
+    secret = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    monkeypatch.setattr(session_kanban, "_run_task_turns",
+                        lambda *_args: {"completed": True, "final_response": f"token is {secret}"})
+    frame = {"policy": {"kanban_json": json.dumps(context)}}
+
+    session_kanban.run_worker_turns(SimpleNamespace(), frame, [])
+
+    output = session_kanban.worker_result(path, context)["last_output"]
+    assert output.startswith("token is ")
+    assert secret not in output

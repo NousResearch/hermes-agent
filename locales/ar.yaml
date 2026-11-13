@@ -2647,6 +2647,7 @@ cli:
     ctx_pinned: " مثبّت"
     ctx_fallback: " احتياطي"
     ctx_unknown: "السياق --"
+    weekly_usage: "أسبوع {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 المخبأ ({count} عنصر)"
     stash_header_other: "📌 المخبأ ({count} عناصر)"

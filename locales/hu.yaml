@@ -2664,6 +2664,7 @@ cli:
     ctx_pinned: " rögzítve"
     ctx_fallback: " alapértelmezett"
     ctx_unknown: "ctx --"
+    weekly_usage: "hét {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Félretéve ({count} elem)"
     stash_header_other: "📌 Félretéve ({count} elem)"

@@ -2647,6 +2647,7 @@ cli:
     ctx_pinned: " pionnáilte"
     ctx_fallback: " cúltaca"
     ctx_unknown: "ctx --"
+    weekly_usage: "seachtain {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Taisce ({count} mhír)"
     stash_header_other: "📌 Taisce ({count} mír)"

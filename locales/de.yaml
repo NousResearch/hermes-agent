@@ -2647,6 +2647,7 @@ cli:
     ctx_pinned: " angeheftet"
     ctx_fallback: " Fallback"
     ctx_unknown: "ctx --"
+    weekly_usage: "Wo. {percent}%"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Stash ({count} Eintrag)"
     stash_header_other: "📌 Stash ({count} Einträge)"

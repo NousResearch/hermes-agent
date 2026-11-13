@@ -83,11 +83,13 @@ scrapling extract fetch 'https://example.com' output.md \
 ### Extract Cloudflare-Protected Page
 
 ```bash
-scrapling extract stealthy-fetch 'https://protected-site.com' output.html \
+scrapling extract fetch 'https://protected-site.com' output.html \
   --solve-cloudflare \
   --block-webrtc \
   --hide-canvas
 ```
+
+`extract fetch` already uses `StealthyFetcher` in Scrapling 0.5.x — there is no separate stealth subcommand.
 
 ### POST Request
 

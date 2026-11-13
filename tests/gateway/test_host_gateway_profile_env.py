@@ -8,6 +8,7 @@ and a duplicate refusal must say which claim came from the environment.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -135,6 +136,24 @@ class TestHostGatewaySpawnEnv:
         env = GatewayShutdownMixin._restart_watcher_env()
         assert env.get("HERMES_HOME") == str(worker_home)
         assert env.get("TELEGRAM_BOT_TOKEN") == _WORKER_TOKEN
+
+    def test_restart_watcher_restores_checkout_pythonpath(self, tmp_path, monkeypatch):
+        """The watcher env builders strip Hermes-owned PYTHONPATH entries; the
+        restart watcher must get the running checkout's root back, or the
+        respawned `hermes gateway restart` fails with "No module named
+        'hermes_cli'" (#152714)."""
+        from gateway.run_shutdown import GatewayShutdownMixin
+
+        _default_home, worker_home = _two_homes(tmp_path)
+        _inherit_worker_env(monkeypatch, worker_home)
+        user_lib = tmp_path / "user-lib"
+        user_lib.mkdir()
+        monkeypatch.setenv("PYTHONPATH", str(user_lib))
+        env = GatewayShutdownMixin._restart_watcher_env()
+        repo_root = str(Path(__file__).resolve().parents[2])
+        pythonpath = env.get("PYTHONPATH", "").split(os.pathsep)
+        assert pythonpath[0] == repo_root
+        assert str(user_lib) in pythonpath
 
     def test_restart_watcher_does_not_inherit_profile_token(self, tmp_path, monkeypatch):
         """The detached restart child is built with served_profile_child_env, not os.environ.copy()."""

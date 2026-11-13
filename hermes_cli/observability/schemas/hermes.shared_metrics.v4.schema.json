@@ -2774,6 +2774,7 @@
                     "local_changes_parked",
                     "lock_held",
                     "managed_install",
+                    "merge_abort_failed",
                     "merge_conflict",
                     "none",
                     "not_git_checkout",

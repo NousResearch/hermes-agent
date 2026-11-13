@@ -795,6 +795,11 @@ class TestStrictUrlCredentialRedaction:
                 "//***:***@x.test/path",
             ),
             (
+                "https://bucket.s3.example/o.png?X-Amz-Expires=60&X-Amz-Security-Token=STS_SECRET&X-Amz-Signature=SIG",
+                "STS_SECRET",
+                "https://bucket.s3.example/o.png?X-Amz-Expires=60&X-Amz-Security-Token=***&X-Amz-Signature=***",
+            ),
+            (
                 "https://Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e:@llm-proxy.example/v1",
                 "Zq8vT3kP9wLm2xR7nB4cY6fH1dJ5sA0e",
                 "https://***:***@llm-proxy.example/v1",

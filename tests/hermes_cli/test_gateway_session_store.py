@@ -89,6 +89,35 @@ def test_a_finite_run_creates_mains_oneshot_session_so_bare_c_finds_it(store, mo
     assert client.calls[-1][1]["source"] == "cli"
 
 
+@pytest.mark.parametrize("launch, parameters, pinned", [
+    ({"model": "m1"}, ["model", "pin_route"], True),  # a typed -m on a gateway that takes the field
+    ({"model": "m1"}, ["model"], False),  # an older gateway: the create stays valid, unpinned
+    ({"model": None, "provider": "p"}, ["model", "provider", "pin_route"], False),  # no -m: nothing pinned
+])
+def test_a_typed_model_pins_the_route_where_the_gateway_takes_it(launch, parameters, pinned, monkeypatch):
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+
+    class Describing(FakeClient):
+        async def rpc(self, method, *, _timeout=None, **params):
+            if method == "runtime.describe":
+                self.calls.append((method, params))
+                return {"session_create": {"parameters": parameters}}
+            return await super().rpc(method, _timeout=_timeout, **params)
+    client = Describing()
+
+    @asynccontextmanager
+    async def connect():
+        yield client
+    conn = GatewayConnection(connect=connect)
+    conn.start(5)
+    try:
+        GatewaySessionStore(conn).open_session(cli(), launch)
+    finally:
+        conn.close()
+    _method, params = [call for call in client.calls if call[0] == "session.create"][-1]
+    assert params.get("pin_route") is (True if pinned else None)
+
+
 def test_resume_attaches_and_unknown_target_is_left_to_mains_not_found_path(store):
     db, client = store
     assert db.open_session(cli("local-old", resumed=True)) == "local-old"

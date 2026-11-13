@@ -457,6 +457,7 @@ const ComposerPane = memo(function ComposerPane({
         cols={composer.cols}
         queued={composer.queuedDisplay}
         queueEditIdx={composer.queueEditIdx}
+        queueRecoveryHint={composer.queueRecoveryHint}
         t={ui.theme}
       />
 

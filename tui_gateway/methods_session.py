@@ -143,10 +143,10 @@ def _auto_resume_denied_source(row: dict) -> bool:
     return source in _LISTING_DENY_SOURCES or source == "unknown"
 
 
-def _listing_rows(db, limit: int, **kwargs) -> list:
+def _listing_rows(db, limit: int, *, filter_sources: bool = True, **kwargs) -> list:
     """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied."""
     rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True, compact_rows=True, **kwargs)
-    return [row for row in rows if not _denied_source(row)]
+    return [row for row in rows if not _denied_source(row)] if filter_sources else rows
 
 
 def _snapshot_sessions(rid):
@@ -534,30 +534,28 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
 
 
 @method("session.list")
-@_with_db(5006, session_scoped=False)
-def _(rid, params: dict, db) -> dict:
+def _(rid, params: dict) -> dict:
+    from .session_list_paging import list_bounds, stored_page
     try:
-        if title_lookup := _str_param(params, "title"):
-            return _session_list_by_title(rid, db, title_lookup)
-        limit = int(params.get("limit", 200) or 200)
-        # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
-        # surfaces that OWN hidden sessions (Bots pane, pickers).
-        from pathlib import Path
-
-        from hermes_cli.session_listing import show_subagent_sessions
-
-        # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
-        # A store without a path has no profile config to read, so it keeps the default shape.
-        db_path = getattr(db, "db_path", None)
-        include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
-        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
-                             include_subagents=include_subagents)[:limit]
-        # No live_message_count here on purpose: the bulk listing serves rows whose open
-        # paths never demand history (expectHistory defaults false); the count is a
-        # per-session scan and would turn one listing call into hundreds of them.
-        return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
-    except Exception as e:
-        return _err(rid, 5006, str(e))
+        offset, limit = list_bounds(params)
+    except ValueError as exc:
+        return _err(rid, 4000, f"invalid params: {exc}")
+    with _profile_db(params) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5006)
+        try:
+            if title_lookup := _str_param(params, "title"):
+                reply = _session_list_by_title(rid, db, title_lookup)
+                if 'result' in reply:
+                    reply['result'].update(offset=offset, limit=limit, has_more=False)
+                return reply
+            rows, has_more = stored_page(db, offset=offset, limit=limit,
+                include_hidden=_flag(params, "include_hidden"), listing=_listing_rows)
+            return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows],
+                             "offset": offset, "limit": limit, "has_more": has_more})
+        except Exception as exc:
+            logger.exception("session.list failed")
+            return _err(rid, 5006, str(exc))
 
 
 @method("session.most_recent")

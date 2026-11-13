@@ -1,0 +1,92 @@
+{
+  "id": 1,
+  "result": {
+    "sessions": [
+      {
+        "id": "long",
+        "session_id": "long",
+        "resolved_id": "long",
+        "title": "",
+        "preview": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
+        "source": "tui",
+        "started_at": 1793929630.362297,
+        "message_count": 1,
+        "model": "preview-model",
+        "running": false
+      },
+      {
+        "id": "empty",
+        "session_id": "empty",
+        "resolved_id": "empty",
+        "title": "",
+        "preview": "",
+        "source": "tui",
+        "started_at": 1793929630.3616,
+        "message_count": 0,
+        "model": "preview-model",
+        "running": false
+      },
+      {
+        "id": "tool",
+        "session_id": "tool",
+        "resolved_id": "tool",
+        "title": "",
+        "preview": "",
+        "source": "tui",
+        "started_at": 1793929630.3605068,
+        "message_count": 1,
+        "model": "preview-model",
+        "running": false
+      },
+      {
+        "id": "assistant",
+        "session_id": "assistant",
+        "resolved_id": "assistant",
+        "title": "",
+        "preview": "",
+        "source": "tui",
+        "started_at": 1793929630.3594801,
+        "message_count": 1,
+        "model": "preview-model",
+        "running": false
+      },
+      {
+        "id": "system",
+        "session_id": "system",
+        "resolved_id": "system",
+        "title": "",
+        "preview": "",
+        "source": "tui",
+        "started_at": 1793929630.3585012,
+        "message_count": 1,
+        "model": "preview-model",
+        "running": false
+      },
+      {
+        "id": "titled",
+        "session_id": "titled",
+        "resolved_id": "titled",
+        "title": "Explicit title",
+        "preview": "Preview loses to title",
+        "source": "tui",
+        "started_at": 1793929630.357121,
+        "message_count": 1,
+        "model": "preview-model",
+        "running": false
+      },
+      {
+        "id": "preview",
+        "session_id": "preview",
+        "resolved_id": "preview",
+        "title": "",
+        "preview": "First user preview",
+        "source": "tui",
+        "started_at": 1793929630.354524,
+        "message_count": 4,
+        "model": "preview-model",
+        "running": false
+      }
+    ],
+    "scope": "stored"
+  }
+}

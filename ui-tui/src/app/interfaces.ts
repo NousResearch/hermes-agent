@@ -481,6 +481,7 @@ export interface ComposerState {
   pasteExpanded: boolean
   queueEditIdx: null | number
   queuedDisplay: string[]
+  queueRecoveryHint?: string
   tokens: ComposerToken[]
 }
 
@@ -609,6 +610,8 @@ export interface SlashHandlerContext {
     hasSelection: boolean
     openEditor: () => Promise<void>
     queueRef: MutableRefObject<QueueItem[]>
+    refresh?: () => void
+    removeQueue: ComposerActions['removeQueue']
     restoreDraft?: ComposerActions['restoreDraft']
     selection: SelectionApi
     setInput: StateSetter<string>
@@ -682,6 +685,7 @@ export interface AppLayoutComposerProps {
   pasteHint: null | 'collapse' | 'expand'
   queueEditIdx: null | number
   queuedDisplay: string[]
+  queueRecoveryHint?: string
   submit: (value: string) => void
   updateInput: StateSetter<string>
   voiceRecordKey: ParsedVoiceRecordKey

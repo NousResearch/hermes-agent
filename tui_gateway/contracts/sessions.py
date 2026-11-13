@@ -220,7 +220,8 @@ method("session.activate", params=SessionActivateParams, result=SessionActivateR
 
 class SessionListParams(ProfileParams):
     title: str | None = None  # exact-title lookup (title as identity); windowless
-    limit: int | None = None
+    limit: int | None = Field(default=None, strict=True, ge=1, le=200)
+    offset: int = Field(default=0, strict=True, ge=0, le=9007199254740991)
     include_hidden: bool = False
 
 
@@ -243,6 +244,9 @@ class SessionListRow(Result):
 
 class SessionListResult(Result):
     sessions: list[SessionListRow]
+    offset: int = 0
+    limit: int = 200
+    has_more: bool = False
 
 
 method("session.list", params=SessionListParams, result=SessionListResult,

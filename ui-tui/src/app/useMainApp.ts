@@ -1199,6 +1199,8 @@ export function useMainApp(gw: GatewayClient) {
           hasSelection,
           openEditor: composerActions.openEditor,
           queueRef: composerRefs.queueRef,
+          refresh: () => composerActions.setQueueEdit(null),
+          removeQueue: composerActions.removeQueue,
           restoreDraft: composerActions.restoreDraft,
           selection,
           setInput: composerActions.setInput
@@ -1571,6 +1573,7 @@ export function useMainApp(gw: GatewayClient) {
           : null,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
+      queueRecoveryHint: composerState.queueRecoveryHint,
       submit,
       updateInput,
       voiceRecordKey

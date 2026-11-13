@@ -4,6 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { isServerQueued } from '../app/pendingBubbles.js'
+import { isQueueItemProtected } from '../app/queueCommands.js'
 import { captureDestination, type SubmissionDestination } from '../app/submissionDestination.js'
 import { $uiState, getUiState, patchUiState } from '../app/uiStore.js'
 import { t } from '../i18n/runtime.js'
@@ -211,6 +212,17 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
   )
 
   const serverRows = (ui.info?.pending_submissions ?? []).filter(isServerQueued)
+  const head = queueRef.current[0]
+  const hasAuthorityReceipt = head && (ui.info?.pending_submissions ?? []).some(
+    receipt =>
+      head.submissionId === (receipt.input_id ?? receipt.admission_id) &&
+      Boolean(head.destination?.storedSid) &&
+      head.destination?.storedSid === receipt.target_session_id &&
+      (head.destination?.ownerHome ?? head.destination?.profileHome) === receipt.target_profile_home
+  )
+  const queueRecoveryHint = head?.failed === true && !head.inFlight && !hasAuthorityReceipt
+    ? t(head.legacyAttempted ? 'canonical.submit.deliveryNotResent' : 'canonical.queue.blockedRecovery')
+    : undefined
 
   const queuedDisplay = [
     ...queueRef.current.map(item => `${item.failed ? t('canonical.queue.unconfirmedPrefix') : ''}${item.display}`),
@@ -491,11 +503,11 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
         return void cancelServerRow(server).catch(() => undefined)
       }
 
-      if (queueRef.current[i]?.inFlight) {
+      const item = queueRef.current[i]
+
+      if (item && isQueueItemProtected(item, getUiState().info?.pending_submissions)) {
         return
       }
-
-      const item = queueRef.current[i]
 
       if (item) {
         removePendingInput(item)
@@ -517,6 +529,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     queueEditRef,
     queueRef,
     queuedDisplay,
+    queueRecoveryHint,
     removeQ,
     setQueueEdit,
     takeQ

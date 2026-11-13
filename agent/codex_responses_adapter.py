@@ -553,6 +553,12 @@ def _replay_message_items(
     trimmed by the transport (``codex_reasoning_trimmed``) — and the message goes out as content/status/phase
     only. Reasoning-free turns keep their id.
     """
+    from agent.context_compressor import is_compaction_summary_message
+
+    # The compressor can merge a handoff into a previously emitted reply.
+    # Its saved message items still contain the old text. Serialize the rewritten content.
+    if msg.get("codex_message_items") and is_compaction_summary_message(msg):
+        return []
     replayed: list[dict[str, Any]] = []
     linked_to_reasoning = bool(msg.get("codex_reasoning_trimmed")) or any(
         isinstance(ri, dict) and ri.get("encrypted_content") for ri in _as_list(msg.get("codex_reasoning_items"))

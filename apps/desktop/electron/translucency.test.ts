@@ -26,6 +26,8 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  LINUX_TRANSPARENT_SURFACE,
+  linuxTransparentWindows,
   nativeOpacityFor,
   normalizeBook,
   normalizeMaterial,
@@ -43,6 +45,7 @@ import {
   translucencySupportedOn,
   vibrancyFor,
   windowBackgroundMaterialOptions,
+  windowBackingColor,
   windowBackingOptions,
   windowOpacityFor,
   windowOpacityOptions,
@@ -738,5 +741,28 @@ describe('resolving the book for the painted appearance', () => {
 
     expect(resolveTranslucency(book, 'light', false).mode).toBe('clear')
     expect(resolveTranslucency(book, 'dark', false).mode).toBe('clear')
+  })
+})
+
+describe('Linux transparent windows (opt-in)', () => {
+  // Linux: no native glass, so the default state is not glass.
+  const linuxState = defaultTranslucencyState('dark', false, false)
+
+  it('is on only for Linux with HERMES_DESKTOP_TRANSPARENT=1', () => {
+    expect(linuxTransparentWindows('linux', { HERMES_DESKTOP_TRANSPARENT: '1' })).toBe(true)
+    expect(linuxTransparentWindows('linux', {})).toBe(false)
+    expect(linuxTransparentWindows('linux', { HERMES_DESKTOP_TRANSPARENT: 'true' })).toBe(false)
+    expect(linuxTransparentWindows('darwin', { HERMES_DESKTOP_TRANSPARENT: '1' })).toBe(false)
+    expect(linuxTransparentWindows('win32', { HERMES_DESKTOP_TRANSPARENT: '1' })).toBe(false)
+  })
+
+  it('creates an opted-in window transparent with a clear backing, never faded', () => {
+    expect(LINUX_TRANSPARENT_SURFACE).toEqual({ transparent: true, backgroundColor: '#00000000' })
+    expect(LINUX_TRANSPARENT_SURFACE).not.toHaveProperty('opacity')
+  })
+
+  it('keeps the runtime backing clear for an opted-in window only', () => {
+    expect(windowBackingColor(linuxState, '#111111', true)).toBe('#00000000')
+    expect(windowBackingColor(linuxState, '#111111', false)).toBe('#111111')
   })
 })

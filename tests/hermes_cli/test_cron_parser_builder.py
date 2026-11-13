@@ -42,6 +42,20 @@ def test_cron_accept_hooks_flag_on_run_and_tick():
     assert ns2.accept_hooks is True
 
 
+def test_cron_repeat_accepts_user_facing_strings():
+    parser = _build()
+    for seq, expected in [
+        (["cron", "create", "in 1h", "x", "--repeat", "forever"], "forever"),
+        (["cron", "create", "in 1h", "x", "--repeat", "once"], "once"),
+        (["cron", "create", "in 1h", "x", "--repeat", "3"], "3"),
+        (["cron", "edit", "j", "--repeat", "once"], "once"),
+    ]:
+        ns = parser.parse_args(seq)
+        assert ns.repeat == expected, f"{seq} must reach the normalizer as {expected!r}"
+
+    assert parser.parse_args(["cron", "create", "in 1h", "x"]).repeat is None
+
+
 def test_cron_timezone_and_grace_flags():
     parser = _build()
     created = parser.parse_args(

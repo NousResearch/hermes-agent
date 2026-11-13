@@ -240,3 +240,15 @@ def test_bare_url_reaches_the_chat_as_literal_text(adapter, url):
     assert re.search(r"(?<!\\)[*_~|]", out) is None
     italic = adapter.format_message(f"*Open {url} now*")
     assert mdv2_error(italic) is None and url in re.sub(r"\\(.)", r"\1", italic[1:-1])
+
+
+@pytest.mark.parametrize("wrapped, rendered", [
+    ("*https://example.com/*", "_https://example\\.com/_"),
+    ("**https://example.com/**", "*https://example\\.com/*"),
+    ("~~https://example.com/~~", "~https://example\\.com/~"),
+])
+def test_emphasis_wrapping_a_url_that_ends_in_slash_still_renders(adapter, wrapped, rendered):
+    """A trailing mark after ``/`` is URL text (``/web/*``) unless the URL opens with that same mark."""
+    out = adapter.format_message(f"see {wrapped} ok")
+    assert mdv2_error(out) is None
+    assert out == f"see {rendered} ok"

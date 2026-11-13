@@ -396,14 +396,15 @@ _URL_TAIL_CHARS = '.,;:!?\'"*_~|'
 _URL_PATH_MARKS = '*_~'  # inside a URL path a trailing wildcard is URL text, never an emphasis closer
 
 
-def _url_end(url: str) -> int:
+def _url_end(url: str, opener: str = '') -> int:
     """Length of *url* without trailing prose punctuation; a ``)`` stays only while it closes a ``(``,
-    and a ``*``/``_``/``~`` right after a ``/`` stays (``/web/*``). One pass: the paren balance is
-    counted once and updated while trimming."""
+    and a ``*``/``_``/``~`` right after a ``/`` stays (``/web/*``) unless *opener*, the character just
+    before the URL, is that same mark: then it closes emphasis around the URL (``*https://x.com/*``).
+    One pass: the paren balance is counted once and updated while trimming."""
     end, unclosed = len(url), url.count(')') - url.count('(')
     while end:
         ch = url[end - 1]
-        if ch in _URL_PATH_MARKS and end >= 2 and url[end - 2] == '/':
+        if ch in _URL_PATH_MARKS and end >= 2 and url[end - 2] == '/' and ch != opener:
             break
         if ch == ')' and unclosed > 0:
             unclosed -= 1
@@ -421,7 +422,7 @@ def _stash_bare_urls(text: str, stash) -> str:
     instead of pairing into italic/strike/spoiler marks that drop characters or hide the URL."""
     def _one(m) -> str:
         url = m.group(0)
-        end = _url_end(url)
+        end = _url_end(url, text[m.start() - 1] if m.start() else '')
         return stash(_escape_mdv2(url[:end])) + url[end:]
 
     return _BARE_URL_RE.sub(_one, text)

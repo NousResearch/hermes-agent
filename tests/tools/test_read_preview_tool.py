@@ -2,6 +2,8 @@
 
 import json
 
+from tests.tools import desktop_read_redaction as drr
+
 from tools import read_preview_tool as rp
 
 
@@ -64,3 +66,15 @@ def test_empty_answer_names_both_cases_and_the_remedy():
     assert "call open_preview first" in result["error"]
     assert "timed out" in result["error"]
     assert "older than this backend" in result["error"]
+
+
+def test_output_is_redacted():
+    drr.assert_redacted(rp.read_preview_tool(callback=lambda **_: json.dumps(drr.PAYLOAD)))
+
+
+def test_redaction_failure_does_not_leak(monkeypatch):
+    drr.assert_fail_closed(monkeypatch, lambda cb: rp.read_preview_tool(callback=cb))
+
+
+def test_non_string_leaves_kept():
+    drr.assert_non_string_leaves_kept(lambda cb: rp.read_preview_tool(callback=cb))

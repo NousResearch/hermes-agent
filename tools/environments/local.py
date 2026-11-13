@@ -1315,7 +1315,8 @@ class LocalEnvironment(BaseEnvironment):
         # See #38249.
         import glob
         try:
-            stale = glob.glob(f"{self._snapshot_path}.tmp.*")
+            # Delegated children's per-task snapshots (``_task_snapshot_path``) and their temps.
+            stale = glob.glob(f"{self._snapshot_path}.tmp.*") + glob.glob(f"{self._snapshot_path[:-3]}-*.sh*")
         except Exception:
             stale = []
         for f in (self._snapshot_path, self._cwd_file, *stale):

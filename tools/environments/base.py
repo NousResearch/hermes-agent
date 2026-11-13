@@ -7,6 +7,8 @@ or a temp file (local). Cohesive pieces live in sibling modules (``base_output``
 ``base_session_env``, ``base_wait``, ``path_utils``).
 """
 
+import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -16,6 +18,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -65,6 +68,23 @@ _live_foreground_cond = threading.Condition(threading.RLock())
 _exit_fenced = False  # one-way, set by the hard-exit kill: no foreground command spawns after it
 _spawns_in_flight = 0  # past the fence check, child maybe alive, not yet in _live_foreground
 _HARD_KILL_BUDGET_S = 0.5
+
+# Task ids whose shell state a command reads and writes, own id first, then its delegation
+# ancestors; empty means the environment's own snapshot. One environment serves a parent and
+# its delegate_task children (shared sandbox, #16177), so without this a child's ``export``
+# became the parent's shell state (#84536).
+_shell_state_chain: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "terminal_shell_state_chain", default=())
+
+
+@contextmanager
+def shell_state_scope(chain: tuple[str, ...]):
+    """Run commands against the per-task snapshot of ``chain[0]`` (seeded from its ancestors)."""
+    token = _shell_state_chain.set(tuple(chain))
+    try:
+        yield
+    finally:
+        _shell_state_chain.reset(token)
 
 
 def _enter_foreground_spawn() -> bool:
@@ -415,14 +435,19 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             logger.debug("Could not refresh profile-scoped snapshot exclusions", exc_info=True)
         return tuple(sorted(self._snapshot_passthrough_names))
 
-    def _snapshot_script_kwargs(self, cwd: str) -> dict:
+    def _task_snapshot_path(self, task_id: str) -> str:
+        """Per-task snapshot beside the environment's own (``cleanup`` globs the prefix)."""
+        digest = hashlib.sha256(task_id.encode()).hexdigest()[:16]
+        return f"{self._snapshot_path[:-len('.sh')]}-{digest}.sh"
+
+    def _snapshot_script_kwargs(self, cwd: str, snap: str | None = None) -> dict:
         """Quoting inputs shared by the bootstrap and per-command wrapper scripts.
         ``_quote_cwd_for_cd`` / ``_quote_shell_path`` (not bare shlex.quote) let the Windows
         subclass rewrite ``C:\\...`` to ``/c/...`` so ``cd`` resolves and MSYS doesn't choke."""
         return dict(
             quoted_cwd=self._quote_cwd_for_cd(cwd),
-            quoted_snap=self._quote_shell_path(self._snapshot_path),
-            snap_tmp_template=self._quote_shell_path(self._snapshot_path + _SNAP_TMP_SUFFIX),
+            quoted_snap=self._quote_shell_path(snap or self._snapshot_path),
+            snap_tmp_template=self._quote_shell_path((snap or self._snapshot_path) + _SNAP_TMP_SUFFIX),
             cwd_marker=self._cwd_marker)
 
     def init_session(self):
@@ -486,13 +511,16 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
 
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Full bash script: source snapshot, cd, run, re-dump env, emit CWD markers."""
+        chain = [self._task_snapshot_path(t) for t in _shell_state_chain.get()]
+        seeds = [self._quote_shell_path(p) for p in (*chain[1:], self._snapshot_path)] if chain else []
         return _wrap_command_script(
             command,
             passthrough_names=self._snapshot_excluded_passthrough_names(),
             snapshot_ready=self._snapshot_ready,
             persist_env=self._persist_env,
             pipe_marker=self._pipe_marker,
-            **self._snapshot_script_kwargs(cwd))
+            seed_snaps=seeds,
+            **self._snapshot_script_kwargs(cwd, chain[0] if chain else None))
 
     @staticmethod
     def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:

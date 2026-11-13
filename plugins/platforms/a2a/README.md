@@ -19,6 +19,8 @@ gateway:
       enabled: true
       extra:
         port: 9900
+        input_wait_timeout_seconds: 86400
+        task_retention_seconds: 86400
 
 # peers you want to call (outbound):
 a2a_agents:
@@ -52,6 +54,61 @@ and push notification configs (inline or via
 **live** agent session — the same agent that's talking to you, with full
 memory — and the reply is returned over A2A. Completed tasks stay queryable
 via `tasks/get`.
+
+### Send, retrieve, and continue tasks
+
+Send a task and receive its ID immediately:
+
+```bash
+curl http://localhost:9900/ -H 'Content-Type: application/json' -d '{
+  "jsonrpc": "2.0", "id": 1, "method": "SendMessage",
+  "params": {
+    "message": {"role": "ROLE_USER", "messageId": "request-1", "parts": [{"text": "Research this topic"}]},
+    "configuration": {"returnImmediately": true}
+  }
+}'
+```
+
+Save `result.task.id` and `result.task.contextId`. Use the returned task ID to
+check progress or retrieve the result:
+
+```bash
+curl http://localhost:9900/ -H 'Content-Type: application/json' -d '{
+  "jsonrpc": "2.0", "id": 2, "method": "GetTask",
+  "params": {"id": "<task-id>"}
+}'
+```
+
+If the task asks for input (`TASK_STATE_INPUT_REQUIRED` or
+`TASK_STATE_AUTH_REQUIRED`), answer with its `taskId` and a fresh `messageId`:
+
+```bash
+curl http://localhost:9900/ -H 'Content-Type: application/json' -d '{
+  "jsonrpc": "2.0", "id": 3, "method": "SendMessage",
+  "params": {"message": {
+    "role": "ROLE_USER", "messageId": "request-2", "taskId": "<task-id>",
+    "parts": [{"text": "Focus on the Python implementation"}]
+  }}
+}'
+```
+
+- Without `returnImmediately`, `SendMessage` waits for a result or request for input.
+- Use `SendStreamingMessage` for live updates; save the IDs from its first Task event.
+  A disconnected client does not cancel accepted work. Reconnect with
+  `SubscribeToTask` or retrieve the result with `GetTask`.
+- A `taskId` continues that interrupted task; `contextId` alone starts a new task
+  in the conversation. If both are sent, they must match. Finished tasks cannot restart.
+- Use `CancelTask` with `params.id` to cancel a task; this does not guarantee that
+  already-running tools stop. Retry requests refused for temporary capacity limits.
+- `extra.input_wait_timeout_seconds` cancels unanswered input/auth waits (default
+  24 hours). Polling does not extend this deadline.
+- `extra.task_retention_seconds` removes terminal results after 24 hours by default;
+  the 500-terminal-task cap may remove them sooner. Task IDs do not survive a Hermes restart.
+  Neither setting limits healthy running work.
+
+For authenticated servers, add `-H 'Authorization: Bearer <token>'` to each request.
+Forwarding to another Hermes profile has additional recovery limits; see
+[DESIGN.md](DESIGN.md#forwarded-owner-link-failure-limitation).
 
 ## Security
 
@@ -89,8 +146,8 @@ via `tasks/get`.
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply; the orphan sweep never fails a task before this window (floor 300s) or while a request still waits on it. |
+| `A2A_REPLY_TIMEOUT` | `300` | Grace period before orphaned work is marked failed (seconds, clamped to 300–86400); also the default forwarded-profile reply timeout. Does not limit healthy local execution or HTTP waits. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 
-See `DESIGN.md` for architecture and the requirement-tracing table.
+See [DESIGN.md](DESIGN.md) for architecture, lifecycle internals, and protocol compatibility notes.

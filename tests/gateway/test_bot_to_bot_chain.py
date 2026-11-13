@@ -6,6 +6,7 @@ produced an outbound one (runtime notices included) and nothing counted the exch
 """
 
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +62,22 @@ def test_a_second_ask_before_any_reply_is_not_a_reply(clock):
     assert guard.chain_admit(CHAT, PEER, "thanks", is_bot=True) == (False, "reply_to_reply")
 
 
+def test_a_refused_message_does_not_extend_the_exchange(clock):
+    """Only an admitted hop keeps a chain alive (#154840). A peer that retries a refused ask more often
+    than ``cooldown_seconds`` used to push the exchange's deadline out with every retry, so the chat
+    stayed blocked until a human posted. The window is measured from the last admitted hop."""
+    guard = _guard(clock, cooldown_seconds=600)
+    assert guard.chain_admit(CHAT, PEER, "what is 2+2?", is_bot=True) == (True, "ok")
+    guard.note_reply(CHAT, PEER)  # our "4" went out, so its next message answers an answer
+    clock.advance(100)
+    assert guard.chain_admit(CHAT, PEER, "did you get that?", is_bot=True) == (False, "reply_to_reply")
+    clock.advance(200)
+    assert guard.chain_admit(CHAT, PEER, "did you get that?", is_bot=True) == (False, "reply_to_reply")
+    # 700 s after the one admitted hop: the exchange is over even though the refusals were more recent.
+    clock.advance(400)
+    assert guard.chain_admit(CHAT, PEER, "PR #1234 is ready for review", is_bot=True) == (True, "ok")
+
+
 def test_the_same_ask_repeated_inside_one_chain_is_one_hop(clock):
     guard = _guard(clock, bot_replies_expect_reply=True)
     assert guard.chain_admit(CHAT, PEER, "Interrupting current task", is_bot=True) == (True, "ok")
@@ -77,7 +94,7 @@ def test_chain_rules_follow_enabled_and_config(clock):
 
 
 @pytest.mark.asyncio
-async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatch, clock):
+async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatch, clock, caplog):
     from gateway.platforms.base import MessageEvent
     from gateway.run import GatewayRunner
 
@@ -106,7 +123,10 @@ async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatc
         assert await runner._hm_admit_event(first) is not None
     finally:
         executing_admission.reset(token)
-    assert await runner._hm_admit_event(_event(PEER, "answer to your answer", True)) is None
+    with caplog.at_level(logging.INFO, logger="gateway.authz_mixin"):
+        assert await runner._hm_admit_event(_event(PEER, "answer to your answer", True)) is None
+    # An operator can tell what was dropped: the refused text rides the INFO line (#154840).
+    assert "answer to your answer" in caplog.text
     assert await runner._hm_admit_event(_event(HUMAN, "hi", False)) is not None
     assert await runner._hm_admit_event(_event(PEER, "new question", True)) is not None
 

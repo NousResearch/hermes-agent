@@ -722,8 +722,9 @@ class GatewayAuthorizationMixin:
         allowed, state = self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().chain_admit(
             self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""), is_bot=is_bot))
         if not allowed:
-            logger.info("Bot loop guard ended a bot exchange in %s chat %s (%s from %s; gateway.bot_loop_guard).",
-                        source.platform.value if source.platform else "", source.chat_id, state, source.user_id)
+            logger.info("Bot loop guard ended a bot exchange in %s chat %s (%s from %s; gateway.bot_loop_guard): %r",
+                        source.platform.value if source.platform else "", source.chat_id, state, source.user_id,
+                        str(event.text or ""))
         return allowed
 
     def _note_bot_reply(self, source) -> None:

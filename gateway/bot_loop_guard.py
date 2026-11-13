@@ -159,7 +159,8 @@ class BotLoopGuard:
 
     def chain_admit(self, conversation: Hashable, sender: str, text: str, *, is_bot: bool) -> tuple[bool, str]:
         """Apply the chain rules to one admitted inbound message. Returns ``(allowed, state)``; state is
-        ``disabled``, ``human`` (chain reset), ``ok``, ``max_hops``, ``duplicate`` or ``reply_to_reply``."""
+        ``disabled``, ``human`` (chain reset), ``ok``, ``max_hops``, ``duplicate`` or ``reply_to_reply``.
+        Only an admitted hop refreshes the exchange, so a refused message does not extend it (#154840)."""
         settings = self._settings()
         if not settings.enabled:
             return True, "disabled"
@@ -172,7 +173,6 @@ class BotLoopGuard:
             chain = self._chains.get(conversation)
             if chain is None or now - chain.updated > settings.cooldown_seconds:
                 chain = self._chains[conversation] = _Chain()
-            chain.updated = now
             ask = (sender, hashlib.sha256(" ".join(str(text or "").split()).encode()).hexdigest())
             if ask in chain.asks:
                 return False, "duplicate"
@@ -180,6 +180,7 @@ class BotLoopGuard:
                 return False, "reply_to_reply"
             if chain.hops >= settings.max_hops:
                 return False, "max_hops"
+            chain.updated = now
             chain.hops += 1
             chain.asks.add(ask)
             return True, "ok"

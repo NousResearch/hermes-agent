@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts 切換純 TTS 模式 — 代理以語音回覆，但你仍以打字輸入提示。"
   t344: "/reload-skills 會重新掃描 ~/.hermes/skills/，讓直接放入的技能無需重啟工作階段即可出現。"
   t345: "/indicator kaomoji|emoji|unicode|ascii 可選擇代理執行期間 TUI 顯示的忙碌指示器樣式。"
-  t346: "/debug 會上傳摘要（版本、設定鍵名、錯誤計數；不含日誌文字）並回傳可分享的連結 — 在聊天中也能用。"
+  t346: "/debug upload 會上傳摘要（版本、設定鍵名、錯誤計數；不含日誌文字）並回傳可分享的連結 — 在聊天中也能用。"
   t347: "hermes -z \"<prompt>\" 是最純粹的單次執行：只將最終答案輸出到 stdout，別無其他 — 最適合在腳本中串接管線。"
   t348: "hermes chat --pass-session-id 會將工作階段 ID 注入系統提示詞，讓代理能自我引用。"
   t349: "hermes chat --image path/to/pic.png 可為單次 -q 查詢附加本機圖片，不需另外上傳。"

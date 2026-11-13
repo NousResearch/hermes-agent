@@ -4242,7 +4242,7 @@ tips:
   t343: "/voice tts bascule en mode TTS seul — l'agent répond à voix haute mais vous continuez à taper vos prompts."
   t344: "/reload-skills rescanne ~/.hermes/skills/ pour que les skills déposées apparaissent sans redémarrer la session."
   t345: "/indicator kaomoji|emoji|unicode|ascii choisit le style de l'indicateur d'activité de la TUI affiché pendant les exécutions de l'agent."
-  t346: "/debug téléverse un résumé (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) et renvoie un lien partageable — fonctionne aussi dans le chat."
+  t346: "/debug upload téléverse un résumé (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) et renvoie un lien partageable — fonctionne aussi dans le chat."
   t347: "hermes -z \"<prompt>\" est le one-shot le plus pur : la réponse finale sur stdout, rien d'autre — idéal pour les pipes dans des scripts."
   t348: "hermes chat --pass-session-id injecte l'ID de session dans le prompt système pour que l'agent puisse y faire référence lui-même."
   t349: "hermes chat --image path/to/pic.png joint une image locale à une requête -q unique, sans étape de téléversement séparée."

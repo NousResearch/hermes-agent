@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts skakel slegs-TTS-modus aan of af — die agent antwoord hardop, maar jy tik steeds jou prompte."
   t344: "/reload-skills skandeer ~/.hermes/skills/ weer sodat inprop-vaardighede verskyn sonder om die sessie te herbegin."
   t345: "/indicator kaomoji|emoji|unicode|ascii kies die styl van die TUI-besig-aanwyser wat tydens agent-lopies gewys word."
-  t346: "/debug laai 'n opsomming op (weergawes, konfigurasiesleutels, foutetellings; geen logteks nie) en gee 'n deelbare skakel terug — werk ook in die klets."
+  t346: "/debug upload laai 'n opsomming op (weergawes, konfigurasiesleutels, foutetellings; geen logteks nie) en gee 'n deelbare skakel terug — werk ook in die klets."
   t347: "hermes -z \"<prompt>\" is die suiwerste eenmalige lopie: finale antwoord op stdout, niks anders nie — ideaal om in skripte te pyp."
   t348: "hermes chat --pass-session-id spuit die sessie-ID in die stelselprompt in sodat die agent daarna kan verwys."
   t349: "hermes chat --image path/to/pic.png heg 'n plaaslike beeld aan 'n enkele -q-navraag sonder 'n aparte oplaaistap."

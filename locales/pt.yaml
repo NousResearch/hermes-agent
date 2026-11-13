@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts alterna o modo somente TTS — o agente responde em voz alta, mas você continua digitando seus prompts."
   t344: "/reload-skills verifica novamente ~/.hermes/skills/ para que skills adicionadas apareçam sem reiniciar a sessão."
   t345: "/indicator kaomoji|emoji|unicode|ascii escolhe o estilo do indicador de ocupado da TUI mostrado durante as execuções do agente."
-  t346: "/debug envia um resumo (versões, chaves de configuração, contagens de erros; sem texto de logs) e retorna um link compartilhável — funciona no chat também."
+  t346: "/debug upload envia um resumo (versões, chaves de configuração, contagens de erros; sem texto de logs) e retorna um link compartilhável — funciona no chat também."
   t347: "hermes -z \"<prompt>\" é o modo one-shot mais puro: só a resposta final no stdout, nada mais — ideal para pipes em scripts."
   t348: "hermes chat --pass-session-id injeta o ID da sessão no prompt do sistema para que o agente possa referenciá-lo."
   t349: "hermes chat --image path/to/pic.png anexa uma imagem local a uma única consulta -q sem uma etapa separada de envio."

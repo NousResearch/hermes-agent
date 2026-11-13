@@ -586,7 +586,7 @@ hermes debug share [options]
 | `--local` | 在本地打印报告而非上传。 |
 | `--no-redact` | 关闭 `--nous` / `--local` 日志的密钥脱敏。对公共粘贴无影响，公共粘贴从不包含日志文本。 |
 
-**公共粘贴（默认）。** 上传内容是白名单摘要，绝不包含日志行或消息文本：Hermes、Python 和操作系统版本；安装方式；已连接平台和已配置内置工具集的名称；`config.yaml` 中设置了哪些键（仅键名，无值；提供商、MCP 服务器等用户命名的条目只计数不列名）；以及近期日志中按 logger、异常类和 HTTP 状态统计的警告/错误数。gateway 的 `/debug` 命令和仪表盘的 **Share debug report** 按钮上传的也是这份摘要。依次尝试的粘贴服务：paste.rs、dpaste.com。
+**公共粘贴（默认）。** 上传内容是白名单摘要，绝不包含日志行或消息文本：Hermes、Python 和操作系统版本；安装方式；已连接平台和已配置内置工具集的名称；`config.yaml` 中设置了哪些键（仅键名，无值；提供商、MCP 服务器等用户命名的条目只计数不列名）；以及近期日志中按 logger、异常类和 HTTP 状态统计的警告/错误数。gateway 的 `/debug upload` 命令和仪表盘的 **Share debug report** 按钮上传的也是这份摘要。依次尝试的粘贴服务：paste.rs、dpaste.com。
 
 **私有包（`--nous`）。** 完整调试报告、系统 dump 以及 agent、gateway、GUI/仪表盘和桌面端日志（每文件 512 KB），以及存在时的更新与桌面更新交接日志，会发送到 Nous 私有诊断存储。除非设置 `--no-redact`，密钥会被脱敏；日志中的其他个人数据（名称、ID、消息文本）不会被脱敏。返回的查看链接仅供 Nous 团队使用，14 天后自动删除。
 

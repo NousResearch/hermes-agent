@@ -133,3 +133,16 @@ def test_a_managed_worker_auth_failure_offers_the_agents_key_action(tmp_path, mo
 def test_a_successful_turn_completes_without_a_surface():
     complete = _complete('done', {'result': {'final_response': 'done', 'messages': []}, 'usage': {}})
     assert complete['status'] == 'complete' and 'error_surface' not in complete
+
+
+_FALLBACK_SIGNED_OUT = {'failure_reason': 'auth', 'failure_retryable': False, 'error': 'HTTP 401: Not logged in',
+                        'primary_auth_failure': {'provider': 'nous', 'error': 'No access token found for Nous Portal login.',
+                                                 'relogin': 'hermes portal'}}
+_DIRECTSDK = {'provider': 'claude-subscription-directsdk-experimental', 'model': 'claude-opus-5-5'}
+
+
+def test_a_turn_whose_primary_login_lapsed_offers_the_primary_sign_in():
+    """The primary fell back at route time and the fallback failed too: the card's Sign in action is the primary's."""
+    surface = _complete(*_authority_turn(Platform.LOCAL, _FALLBACK_SIGNED_OUT, identity=_DIRECTSDK))['error_surface']
+    assert (surface['layer'], surface['auth_kind'], surface['provider']) == ('auth', 'oauth', 'nous')
+    assert surface['provider_label'] == 'Nous Portal'

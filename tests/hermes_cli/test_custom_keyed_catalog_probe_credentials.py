@@ -186,3 +186,54 @@ def test_custom_probe_with_no_declared_entry_gates_the_openai_key_on_its_host(
         monkeypatch.delenv(var, raising=False)
 
     assert custom_catalog_probe_api_key({"provider": "custom", "base_url": base_url}, base_url) == expected
+
+
+def test_picker_bare_row_runs_a_key_cmd_helper_only_when_it_probes(tmp_path, monkeypatch, catalog_server):
+    """Cache-only picker builds (status, non-blocking GUI reads) must not run the entry's key_cmd
+    helper; a probing build mints it and sends the token."""
+    import sys
+
+    from hermes_cli.model_switch_providers import list_authenticated_providers
+
+    url, seen = catalog_server
+    runs = tmp_path / "runs.txt"
+    helper = tmp_path / "mint.py"
+    helper.write_text(f"open({str(runs)!r}, 'a').write('x')\nprint('cmd-token')\n", encoding="utf-8")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "my-combo", "provider": "litellm", "base_url": url},
+        "providers": {"litellm": {"name": "my litellm", "base_url": url, "key_cmd": f'"{sys.executable}" "{helper}"'}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    def build(**kw):
+        list_authenticated_providers(current_provider="custom", current_base_url=url, for_picker=True,
+                                     current_model="my-combo", **kw)
+
+    for _ in range(2):
+        build(refresh=False, probe_current_custom_provider=False, non_blocking_catalogs=True)
+    assert not runs.exists() and seen == []
+    build(refresh=True, probe_current_custom_provider=True)
+    assert runs.read_text() == "x"
+    assert seen == ["Bearer cmd-token"]
+
+
+def test_custom_catalog_mints_a_key_cmd_entrys_token_before_probing(tmp_path, monkeypatch, catalog_server):
+    """``provider_model_ids("custom")`` hands the key to a plain-string probe: the owning entry's
+    ``key_cmd`` source must be minted, never sent as its object repr."""
+    import sys
+
+    url, seen = catalog_server
+    helper = tmp_path / "mint.py"
+    helper.write_text("print('cmd-token')\n", encoding="utf-8")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "my-combo", "provider": "custom", "base_url": url},
+        "providers": {"litellm": {"name": "my litellm", "base_url": url, "key_cmd": f'"{sys.executable}" "{helper}"'}},
+    }), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    assert models_mod.provider_model_ids("custom", force_refresh=True) == ["proxy-small-mini"]
+    assert seen == ["Bearer cmd-token"]

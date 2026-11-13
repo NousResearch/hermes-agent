@@ -1090,7 +1090,7 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
         from hermes_cli.auth_declared_providers import custom_catalog_probe_api_key
         from hermes_cli.config import load_config
         cfg_model = load_config().get("model")
-        probe_key = custom_catalog_probe_api_key(cfg_model if isinstance(cfg_model, dict) else {}, api_url)
+        probe_key = custom_catalog_probe_api_key(cfg_model if isinstance(cfg_model, dict) else {}, api_url, minted=False)
         discovered, native_catalog_empty = _discover_endpoint_models(
             probe_key, api_url, "custom", False, headers=None, api_mode=None,
             probe_live=bool(b.refresh or (b.probe_current_custom_provider and is_current)),

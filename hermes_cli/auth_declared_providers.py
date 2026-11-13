@@ -103,14 +103,15 @@ def relay_probe_api_key(provider_id: str, relay: str, api_key: str, cred_base_ur
     return api_key if origin[1] and origin == base_url_origin(cred_base_url) else ""
 
 
-def custom_catalog_probe_api_key(model_cfg: dict[str, Any], base_url: str) -> str:
+def custom_catalog_probe_api_key(model_cfg: dict[str, Any], base_url: str, *, minted: bool = True) -> Any:
     """Key for a bare ``custom`` catalog probe of *base_url*, else ``""`` (keyless).
 
     The runtime resolver's order (#145452): ``model.api_key`` / ``model.key_env`` when *base_url*
     is ``model.base_url``, then the key of
     a ``providers:`` entry owning the URL; only a URL no entry declares a credential for falls back
     to ``CUSTOM_API_KEY`` and the host-gated env keys (#91308), so an ambient OpenAI or OpenRouter
-    key never reaches a third-party endpoint.
+    key never reaches a third-party endpoint. ``minted=False`` hands back a ``key_cmd`` entry's token
+    source unminted, for callers that mint only when they actually probe (the picker's cache reads).
     """
     from agent.command_token_source import materialize_probe_api_key
     from agent.secret_scope import get_secret_str
@@ -123,6 +124,6 @@ def custom_catalog_probe_api_key(model_cfg: dict[str, Any], base_url: str) -> st
         return own
     declared, entry_key = _owning_entry_credential(rp, base_url)
     if declared:
-        return materialize_probe_api_key(entry_key)
+        return materialize_probe_api_key(entry_key) if minted else entry_key
     candidates = [get_secret_str("CUSTOM_API_KEY", "").strip(), *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     return next((c for c in candidates if rp.has_usable_secret(c)), "")

@@ -39,6 +39,9 @@ class _FakeRegistry:
     def is_completion_consumed(self, session_id):
         return session_id in self._completion_consumed
 
+    def completion_already_observed(self, session_id):
+        return session_id in self._completion_consumed
+
 
 def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
     """Create a GatewayRunner with notifications set to 'all'."""

@@ -7967,7 +7967,9 @@ def test_run_prompt_submit_requeues_foreign_completion(
         process_registry._completion_consumed.discard(event["session_id"])
 
 
-def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp_path):
+def test_run_prompt_submit_skips_completion_observed_by_poll(monkeypatch, tmp_path):
+    """#94455: the turn polled the exited process and already has its result, so the queued
+    completion must not start a second turn after the first one ends."""
     import queue as _queue_mod
 
     from tools.process_registry import process_registry
@@ -7985,7 +7987,7 @@ def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp
         "session_key": "session-a",
         "command": "safe-test-command",
         "exit_code": 0,
-        "output": "observed but not consumed",
+        "output": "observed by poll after exit",
     }
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     isolated_queue.put(event)
@@ -7997,9 +7999,7 @@ def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp
     try:
         server._run_prompt_submit("rid-a", "sid_a", session, "session-a-turn")
 
-        assert turns[0] == "session-a-turn"
-        assert len(turns) == 2
-        assert "proc_polled" in turns[1]
+        assert turns == ["session-a-turn"]
         assert isolated_queue.empty()
     finally:
         server._sessions.pop("sid_a", None)

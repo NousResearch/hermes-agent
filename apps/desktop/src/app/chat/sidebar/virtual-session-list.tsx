@@ -87,16 +87,49 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const density = useStore($sessionListDensity)
 
+  // estimateSize runs BEFORE paint, for every row that has never been
+  // on-screen yet — including every row revealed by a resize, a scroll into
+  // new territory, or a measurement-invalidating prop change. The constants
+  // below are a cross-platform guess; this machine's actual font metrics,
+  // DPI and locale routinely render a few px taller or shorter. Each miss
+  // opens the exact window #88473/#73629/#83813 documented (rows placed by
+  // the estimate, then snapped to their real position one frame later — a
+  // transient overlap/flicker that reproduces on every fresh row, not just
+  // once). The constants stay as the seed for the very first row of a kind,
+  // but every row after that is estimated from what THIS session's own
+  // rows actually measured, which tracks reality far closer than a constant
+  // ever can and shrinks the error window on every subsequent reveal.
+  const measuredSizeRef = useRef<{ divider: number; row: number }>({
+    divider: DIVIDER_ESTIMATE_PX,
+    row: card ? SESSION_CARD_ROW_ESTIMATE_PX : sessionRowEstimate(density)
+  })
+
+  // Tracks which (card, density) the cache above was last seeded for. Reset
+  // happens inline below, DURING render — not in a useEffect: a ref write
+  // inside useEffect lags one render behind the prop it mirrors (project
+  // eslint rule no-restricted-syntax, born from #80560-class stale-ref bugs).
+  // That exact lag bit this cache during development: an effect-based reset
+  // fired after mount and discarded the first real measurement a moment
+  // after trackMeasuredSize captured it, pinning the cache on the constant
+  // for the rest of the session — silent, no exception, functionally
+  // identical to shipping the plain constant back.
+  const measuredSizeModeRef = useRef(`${card}:${density}`)
+  const measuredSizeMode = `${card}:${density}`
+
+  if (measuredSizeModeRef.current !== measuredSizeMode) {
+    measuredSizeModeRef.current = measuredSizeMode
+    measuredSizeRef.current = {
+      divider: DIVIDER_ESTIMATE_PX,
+      row: card ? SESSION_CARD_ROW_ESTIMATE_PX : sessionRowEstimate(density)
+    }
+  }
+
   const virtualizer = useVirtualizer({
     count: listRows.length,
     estimateSize: (index: number) => {
       const row = listRows[index]
 
-      if (row?.kind === 'divider') {
-        return DIVIDER_ESTIMATE_PX
-      }
-
-      return card ? SESSION_CARD_ROW_ESTIMATE_PX : sessionRowEstimate(density)
+      return row?.kind === 'divider' ? measuredSizeRef.current.divider : measuredSizeRef.current.row
     },
     getItemKey: index => {
       const row = listRows[index]
@@ -111,8 +144,36 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
   // Rows are measured after paint, so changing density OR toggling Inbox
   // cards must invalidate cached measurements from the previous mode before
-  // off-screen rows re-enter (#88473).
-  useEffect(() => virtualizer.measure(), [card, density, virtualizer])
+  // off-screen rows re-enter (#88473). The estimate cache itself is reset
+  // inline above (same card/density inputs); this effect only owns the
+  // TanStack remeasure side effect, which belongs in useEffect.
+  useEffect(() => {
+    virtualizer.measure()
+  }, [card, density, virtualizer])
+
+  // Captures each row's REAL rendered height as TanStack measures it, so the
+  // next not-yet-seen row of the same kind estimates from observed reality
+  // instead of the constant. One element resize (a title wrapping to a
+  // second line, a PR chip appearing) cannot skew it either: this takes the
+  // most recent measurement, not an average, so it always reflects the
+  // current mode's actual row shape.
+  const trackMeasuredSize = (row: SidebarListRow | undefined, el: Element | null) => {
+    if (!el || !row) {
+      return
+    }
+
+    const height = el.getBoundingClientRect().height
+
+    if (height <= 0) {
+      return
+    }
+
+    if (row.kind === 'divider') {
+      measuredSizeRef.current.divider = height
+    } else {
+      measuredSizeRef.current.row = height
+    }
+  }
 
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()
@@ -138,7 +199,15 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       const open = dividerToggle?.open(row.key) ?? true
 
       return (
-        <div data-index={virtualItem.index} key={row.key} ref={virtualizer.measureElement} style={itemStyle}>
+        <div
+          data-index={virtualItem.index}
+          key={row.key}
+          ref={el => {
+            virtualizer.measureElement(el)
+            trackMeasuredSize(row, el)
+          }}
+          style={itemStyle}
+        >
           <SidebarDateDivider
             action={dividerAction}
             label={label}
@@ -180,11 +249,27 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     const rowKey = `${session.profile ?? ''}::${session.id}`
 
     return reorderable ? (
-      <div data-index={virtualItem.index} key={rowKey} ref={virtualizer.measureElement} style={itemStyle}>
+      <div
+        data-index={virtualItem.index}
+        key={rowKey}
+        ref={el => {
+          virtualizer.measureElement(el)
+          trackMeasuredSize(row, el)
+        }}
+        style={itemStyle}
+      >
         <VirtualSortableRow rowProps={commonProps} session={session} />
       </div>
     ) : (
-      <div data-index={virtualItem.index} key={rowKey} ref={virtualizer.measureElement} style={itemStyle}>
+      <div
+        data-index={virtualItem.index}
+        key={rowKey}
+        ref={el => {
+          virtualizer.measureElement(el)
+          trackMeasuredSize(row, el)
+        }}
+        style={itemStyle}
+      >
         <SidebarSessionRow {...commonProps} session={session} />
       </div>
     )

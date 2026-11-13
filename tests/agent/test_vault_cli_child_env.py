@@ -63,6 +63,35 @@ def test_bws_fetch_child_gets_only_allowlisted_env(monkeypatch, tmp_path, multip
 
 
 @pytest.mark.usefixtures("provider_env")
+def test_bws_fetch_child_env_comes_from_the_per_fetch_view(monkeypatch, tmp_path):
+    # Under multiplex the per-fetch view is the profile's env; the process env
+    # belongs to the launch profile and must not leak into the child.
+    monkeypatch.setenv("BWS_CONFIG_FILE", "/launch/bws/config")
+    monkeypatch.setenv("BWS_PROFILE", "launch")
+    view = {
+        "PATH": "/profile/bin",
+        "HTTPS_PROXY": "http://profile-proxy.example:8080",
+        "BWS_CONFIG_FILE": "/profile/bws/config",
+        "BWS_PROFILE": "profile-b",
+        "OPENAI_API_KEY": "view-provider-key",
+    }
+    seen = _capture(monkeypatch, base)
+    fake = tmp_path / "bws"
+    fake.write_text("", encoding="utf-8")
+    token = base.set_source_environment(view)
+    try:
+        bw.fetch_bitwarden_secrets(access_token="0.t", project_id="12345678-1234-1234-1234-123456789abc", binary=fake, use_cache=False)
+    finally:
+        base.reset_source_environment(token)
+    env = seen[-1]
+    _assert_no_provider_keys(env)
+    assert env["PATH"] == "/profile/bin"
+    assert env["HTTPS_PROXY"] == "http://profile-proxy.example:8080"
+    assert env["BWS_CONFIG_FILE"] == "/profile/bws/config"
+    assert env["BWS_PROFILE"] == "profile-b"
+
+
+@pytest.mark.usefixtures("provider_env")
 def test_bws_project_list_probe_gets_only_allowlisted_env(monkeypatch):
     monkeypatch.setenv("BWS_SERVER_URL", "https://vault.bitwarden.eu")
     monkeypatch.setenv("BWS_CONFIG_FILE", "/etc/bws/config")

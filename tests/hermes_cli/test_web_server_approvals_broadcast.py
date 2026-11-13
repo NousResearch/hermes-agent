@@ -36,13 +36,13 @@ def broadcast_calls(monkeypatch):
     import sys
 
     calls = []
-    # tests/conftest.py's session-reaper teardown walks tui_gateway.server
+    # tests/conftest.py's session-reaper teardown walks hermes_agent.tui_gateway.server
     # attributes; the stub must carry an empty _sessions to survive it.
     stub = types.SimpleNamespace(
         broadcast_session_info=lambda: calls.append(True),
         _sessions={},
     )
-    monkeypatch.setitem(sys.modules, "tui_gateway.server", stub)
+    monkeypatch.setitem(sys.modules, "hermes_agent.tui_gateway.server", stub)
     return calls
 
 
@@ -134,10 +134,10 @@ class TestApprovalsSaveBroadcast:
     def test_gateway_not_imported_is_a_noop(self, client, monkeypatch):
         import sys
 
-        monkeypatch.delitem(sys.modules, "tui_gateway.server", raising=False)
+        monkeypatch.delitem(sys.modules, "hermes_agent.tui_gateway.server", raising=False)
         resp = client.put("/api/config", json={"config": {"approvals": {"mode": "smart"}}})
         assert resp.status_code == 200
-        assert "tui_gateway.server" not in sys.modules, (
+        assert "hermes_agent.tui_gateway.server" not in sys.modules, (
             "the broadcast seam must not IMPORT the gateway; a process "
             "without one has no sessions to notify"
         )
@@ -192,8 +192,8 @@ class TestApprovalsSaveBroadcast:
 
 class TestGatewayBroadcastHelper:
     def test_broadcast_session_info_emits_for_live_sessions(self, _isolate_hermes_home, monkeypatch):
-        """tui_gateway.server.broadcast_session_info walks _sessions and emits."""
-        from tui_gateway import server
+        """hermes_agent.tui_gateway.server.broadcast_session_info walks _sessions and emits."""
+        from hermes_agent.tui_gateway import server
 
         emitted = []
         monkeypatch.setattr(
@@ -213,7 +213,7 @@ class TestGatewayBroadcastHelper:
         """/approvals <mode> through the slash worker persists config out of
         band; the mirror must repaint live sessions and the bare read-only
         form must not."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         calls = []
         monkeypatch.setattr(server, "broadcast_session_info", lambda: calls.append(True))

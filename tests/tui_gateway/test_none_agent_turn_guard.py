@@ -12,8 +12,8 @@ from __future__ import annotations
 import threading
 import types
 
-from tui_gateway import server
-from tui_gateway.user_messages import AGENT_BUILD_ABANDONED
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.user_messages import AGENT_BUILD_ABANDONED
 
 
 class _InlineThread:
@@ -101,7 +101,7 @@ def test_replaced_record_build_records_reason_and_leaves_agent_unset(monkeypatch
 def test_build_finishing_after_close_records_reason_and_closes_orphan(monkeypatch, tmp_path):
     """A build that finishes after ``session.close`` popped its record closes the late agent and
     records why nothing attached, exactly like the replaced-before-attach exit (#49852)."""
-    from tui_gateway import entry
+    from hermes_agent.tui_gateway import entry
 
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)
     monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)

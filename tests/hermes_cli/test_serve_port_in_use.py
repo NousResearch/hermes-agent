@@ -185,7 +185,7 @@ def test_ephemeral_port_zero_unaffected(tmp_path):
 def test_ready_sentinel_arrives_on_stdout_not_stderr(tmp_path):
     """#96282 — the Desktop spawn watches child.stdout for the READY sentinel.
 
-    ``tui_gateway.server`` (imported on the serve startup path since 6d4e851d8
+    ``hermes_agent.tui_gateway.server`` (imported on the serve startup path since 6d4e851d8
     for the flush-on-SIGTERM handlers) redirects ``sys.stdout`` to
     ``sys.stderr`` at import time. If the sentinel is printed through the
     redirected ``sys.stdout``, it lands on stderr and the desktop times out

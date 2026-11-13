@@ -8,7 +8,7 @@ TUI and Desktop keep the sealed interim AND render the final: the reply shows tw
 import contextlib
 from types import SimpleNamespace
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from agent.stream_delivery import StreamDeliveryMixin
 
 

@@ -5,7 +5,7 @@ Runs a real subprocess with a temp HERMES_HOME whose config.yaml contains a
 
 Asserts the two halves of the contract:
 
-  1. A migrated BEHAVIORAL site (``tui_gateway.server._load_cfg``) resolves the
+  1. A migrated BEHAVIORAL site (``hermes_agent.tui_gateway.server._load_cfg``) resolves the
      env-expanded AND managed-overlaid values — the drift bug this branch fixes.
   2. A WRITE-BACK site round-trips the raw user file without leaking managed
      values, expanded literals, or merged defaults into it.
@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 def _run_py(code: str, env_extra: dict[str, str], tmp_path: Path) -> dict:
     """Run ``code`` in a subprocess; results come back via a JSON file.
 
-    A file (not stdout) because importing ``tui_gateway.server`` re-routes
+    A file (not stdout) because importing ``hermes_agent.tui_gateway.server`` re-routes
     the real stdout into its JSON-RPC transport.
     """
     import os

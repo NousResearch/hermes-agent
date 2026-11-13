@@ -1,4 +1,4 @@
-"""Tests: spawn_tree.* JSON-RPC handlers (tui_gateway/methods_session.py).
+"""Tests: spawn_tree.* JSON-RPC handlers (hermes_agent/tui_gateway/methods_session.py).
 
 A parseable-but-non-object snapshot file must not wedge ``spawn_tree.list``
 (the legacy per-file scan called ``raw.get`` outside its suppress guard) and
@@ -7,7 +7,7 @@ must not satisfy the ``spawn_tree.load`` result contract.
 
 import json
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 
 def test_spawn_tree_list_survives_non_dict_snapshot(tmp_path, monkeypatch):

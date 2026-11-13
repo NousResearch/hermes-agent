@@ -29,7 +29,7 @@ def _probe_script(path: Path, out: Path, names) -> Path:
 
 
 def _compute_host_seen(child_env, monkeypatch, names):
-    from tui_gateway.host_supervisor import HostSupervisor
+    from hermes_agent.tui_gateway.host_supervisor import HostSupervisor
 
     hello = ("import json, os, sys; print(json.dumps({'type': 'hello', 'seen': "
              f"{{n: os.environ.get(n) for n in {names!r}}}}}), flush=True); sys.stdin.readline()")

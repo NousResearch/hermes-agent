@@ -107,7 +107,7 @@ def display_projection(history, profile_home, image_urls=True):
     ``_history_to_messages`` (compaction handoffs stripped, ``/steer`` unwrapped, tool rows
     labelled from the paired assistant ``tool_calls``), never a re-implementation. ``image_urls=False``:
     image parts read ``[image]``."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     rows = [{**row, '_row_id': row['row_id']} if 'row_id' in row else row for row in history]
     return server._history_to_messages(rows, profile_home=profile_home, image_urls=image_urls)
 
@@ -123,8 +123,8 @@ async def _resume_transcript(authority, ref, snapshot, history, omit):
     """A resume reply's transcript fields. *omit* (``omit_messages``): no rows and ``messages_omitted``, the
     stored count and the todo plan of the physical target the attach resolved, as the stdio resume answers
     it; the display-row lineage read is skipped (the todo lookup still walks the lineage's todo rows)."""
-    # Its home module, not tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
-    from tui_gateway.tool_progress import _todo_state_from_history
+    # Its home module, not hermes_agent.tui_gateway.server: importing the stdio sidecar points sys.stdout at stderr.
+    from hermes_agent.tui_gateway.tool_progress import _todo_state_from_history
     if not omit:
         # The newest todo result in the transcript, the snapshot the session's agent hydrates
         # from and its ``todo.updated`` frames carried: a viewer attaching shows the plan now.
@@ -220,7 +220,7 @@ class AuthorityConnection:
 
     def handlers(self):
         """Method → handler for every verb ``dispatch`` serves outside the group controls; each
-        name is declared in ``tui_gateway/contracts`` (``METHODS`` or ``CANONICAL_METHODS``)."""
+        name is declared in ``hermes_agent/tui_gateway/contracts`` (``METHODS`` or ``CANONICAL_METHODS``)."""
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
                     'plugins.list': self.plugins_list, 'command.observe': self.command_observe,
@@ -327,13 +327,13 @@ class AuthorityConnection:
             if method in _PROFILE_IMPLICIT:
                 params = {key: value for key, value in params.items() if key != 'profile'}
         ref = SessionRef(self.actor.profile_id, params.get('session_id', ''))
-        from tui_gateway.contracts.registry import (
+        from hermes_agent.tui_gateway.contracts.registry import (
             CANONICAL_METHODS, METHODS, canonical_param_problems, check_params_accepted, check_result,
             unknown_method_message,
         )
         contract = CANONICAL_METHODS.get(method)
         if contract is not None and (problems := canonical_param_problems(contract, params)):
-            # The declared wire contract (``tui_gateway/contracts/canonical.py``) is the closed
+            # The declared wire contract (``hermes_agent/tui_gateway/contracts/canonical.py``) is the closed
             # key set: an unknown or missing key never reaches the handler.
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
@@ -852,7 +852,7 @@ class AuthorityConnection:
         from gateway.session_config import local_voice_enabled
         if not local_voice_enabled(ref.session_id):
             return False
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         return await asyncio.to_thread(server._consume_typed_stop_phrase, text, ref.session_id, emit=False)
 
     def submission(self, ref, params):

@@ -1,6 +1,6 @@
 """Hosted Group Chat rooms (``groups.*``) and cross-connection bot relay (``bot_relay.*``).
 
-Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py``. Room / event / page shapes are produced by
+Handlers: ``hermes_agent/tui_gateway/methods_groups.py``, ``hermes_agent/tui_gateway/methods_bot_relay.py``. Room / event / page shapes are produced by
 ``gateway/hosted_rooms.py`` (``_room_from_row`` / ``_event_from_row`` / ``read_events``) and
 ``gateway/hosted_room_replicas.py``; the RoomLink catalog by ``gateway/hosted_room_peer.py``.
 """

@@ -168,7 +168,7 @@ def test_kill9_mid_compaction_leaves_state_consistent_and_resumable(make_scenari
     assert count == len(active_rows(rows_after)), "session message_count disagrees with the live rows"
 
     # Resumable: a fresh agent reclaims the dead holder's lease, compacts, and continues.
-    from tui_gateway.server import _compress_session_history
+    from hermes_agent.tui_gateway.server import _compress_session_history
 
     sc.install()
     sc.resume_from_db()

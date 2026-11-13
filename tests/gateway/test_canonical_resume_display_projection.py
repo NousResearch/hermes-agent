@@ -1,6 +1,6 @@
 """A resumed canonical session renders through main's display projection (TUI parity, PR #106742).
 
-Main's TUI sidecar answered ``session.resume`` with ``tui_gateway.session_history._history_to_messages``:
+Main's TUI sidecar answered ``session.resume`` with ``hermes_agent.tui_gateway.session_history._history_to_messages``:
 compaction handoffs stripped, ``/steer`` rows unwrapped to the user's words, tool rows labelled from the
 paired assistant ``tool_calls``. The canonical snapshot carries raw stored rows (the controls need their
 ``content``/``row_id``), so a client that renders asks for ``display_projection`` and receives the same
@@ -57,7 +57,7 @@ async def test_resume_display_projection_matches_main(tmp_path, monkeypatch):
     result = reply['result']
     shown = result['display_messages']
     # Main's projection, byte-for-byte, over the same stored rows.
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     raw = db.get_messages_as_conversation('old-tui', include_row_ids=True)
     assert shown == server._history_to_messages(raw, profile_home=str(tmp_path))
     texts = json.dumps(shown)

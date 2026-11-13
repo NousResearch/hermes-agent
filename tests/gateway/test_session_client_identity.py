@@ -42,7 +42,7 @@ async def test_a_named_client_reaches_session_info_and_launch_request(tmp_path, 
         assert info['source'] == 'tui'
         ref, policy = _create(owner, connection.actor, home, 'bare-name', client={'name': 'x'})
         assert _info(owner, ref, policy, monkeypatch)['client'] == {'name': 'x'}
-        from tui_gateway.contracts.registry import CANONICAL_METHODS
+        from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
         CANONICAL_METHODS['session.create'].params.model_validate(
             {'request_id': 'r', 'source': 'tui', 'client': dict(TERN)})
         assert CANONICAL_METHODS['session.info'].result.model_fields['client']
@@ -174,7 +174,7 @@ async def test_a_named_create_and_resume_return_snapshots_that_match_their_contr
     """``session.create`` / ``session.resume`` return ``local_session_info`` as the snapshot's ``info``."""
     from gateway.session_controls import AuthorityConnection
     from tests.gateway.test_local_source_labels import _authority
-    from tui_gateway.contracts.registry import CANONICAL_METHODS
+    from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
     authority, _store = await _authority(tmp_path, monkeypatch)
     monkeypatch.setenv('HERMES_HOME', authority.profile_id)
     conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'owner'})

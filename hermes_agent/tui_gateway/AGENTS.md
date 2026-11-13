@@ -1,4 +1,4 @@
-# tui_gateway/ + ui-tui/ — the TUI and its JSON-RPC backend
+# hermes_agent/tui_gateway/ + ui-tui/ — the TUI and its JSON-RPC backend
 
 Applies on top of the root `AGENTS.md`. The TUI fully replaces the classic prompt_toolkit CLI;
 activate with `hermes --tui` or `HERMES_TUI=1`. `tui_gateway` is ALSO the backend the Desktop app
@@ -25,12 +25,12 @@ Never move agent behaviour into the renderer.
 
 ## Transport
 
-Newline-delimited JSON-RPC frames over a WebSocket (`/api/ws`, `tui_gateway/ws.py`) or stdio
-(`tui_gateway/entry.py`), peer-to-peer. On the owner's ticketed socket, session methods (the
+Newline-delimited JSON-RPC frames over a WebSocket (`/api/ws`, `hermes_agent/tui_gateway/ws.py`) or stdio
+(`hermes_agent/tui_gateway/entry.py`), peer-to-peer. On the owner's ticketed socket, session methods (the
 `hermes-gateway-v1` `CANONICAL_METHODS` below) go to the session authority; other methods reach these
 handlers only with a full interactive grant (`ws_legacy_fallback.py`). Client→server method calls, server→client
 **requests** (the agent asking the user something: `approval`, `clarify`, `sudo`, `secret`, `vault.*`,
-`connection`, the desktop read/act bridges) and server→client `event` notifications. `tui_gateway/server.py`
+`connection`, the desktop read/act bridges) and server→client `event` notifications. `hermes_agent/tui_gateway/server.py`
 is the facade with the method/event catalog; methods live in `methods_*.py` siblings (`methods_config`,
 `methods_complete`, `methods_browser`, `methods_bot_relay`, ...), event publishing in
 `event_publisher.py` / `event_replay.py`, server→client requests in `server_requests.py` (`send()` blocks
@@ -43,7 +43,7 @@ fast for it instead of stalling the agent for the deadline. Desktop reaches the 
 via `apps/shared` (`JsonRpcGatewayClient`, `onRequest`). New RPC = a new `methods_<topic>.py` or an entry
 in an existing topical sibling, registered in the table — no `if method == ...` chain (root shape rules).
 
-**The wire is declared in Python and generated for TypeScript** (`tui_gateway/contracts/`). Every method
+**The wire is declared in Python and generated for TypeScript** (`hermes_agent/tui_gateway/contracts/`). Every method
 has a `Params` + `Result` model, every server→client request a `Params` + `Result`, every event a
 `Payload` — one Pydantic class each, `extra="forbid"` by default (`OpenModel` for producer-owned dicts).
 `register_method` refuses an undeclared name at import; the dispatcher rejects unknown param keys
@@ -88,7 +88,7 @@ enter `_session_profile_runtime_scope(session)` around `on_session_end`, the mem
 threads start via `agent.memory_provider.spawn_context_thread`, never bare `threading.Thread`;
 children act for the served profile through `tools/environments/local.py::served_profile_child_env`
 (`hermes -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Grep for
-unscoped handlers before adding one: `rg -n "^(async )?def " tui_gateway/methods_*.py | rg -v
+unscoped handlers before adding one: `rg -n "^(async )?def " hermes_agent/tui_gateway/methods_*.py | rg -v
 _profile_scoped`. Probe with two on-disk homes and a `.env` name present only in the secondary:
 call the method for that session and assert the secondary's value resolves and the launch
 profile's does not, and that `os.environ` is unchanged afterwards.
@@ -150,7 +150,7 @@ retains its legacy unscoped contract.
 `commands.catalog` (empty-query list) includes built-ins, user `quick_commands`, plugin commands,
 and skill-derived commands. `complete.slash` uses the existing CLI completer (registry, plugins,
 skills/bundles, argument completions); quick commands remain catalog-only. Shared data builders
-live in `tui_gateway/command_discovery.py`, without importing the legacy server. Definitions
+live in `hermes_agent/tui_gateway/command_discovery.py`, without importing the legacy server. Definitions
 come from `hermes_cli/commands.py` (`hermes_cli/AGENTS.md`).
 
 The canonical gateway exposes the same two discovery RPCs through `gateway/session_discovery.py`.

@@ -279,10 +279,10 @@ def _current_home_thread() -> Optional[threading.Thread]:
 def mcp_discovery_in_flight() -> bool:
     """True if THIS module's discovery thread (for the current profile home) is still running.
 
-    Mirrors ``tui_gateway.entry.mcp_discovery_in_flight``; surfaces that start discovery here
+    Mirrors ``hermes_agent.tui_gateway.entry.mcp_discovery_in_flight``; surfaces that start discovery here
     (desktop, dashboard sidecar) populate this thread, so the late-refresh scheduler consults both.
 
-    Those processes populate THIS module's ``_mcp_discovery_thread``, not ``tui_gateway.entry``'s, so the
+    Those processes populate THIS module's ``_mcp_discovery_thread``, not ``hermes_agent.tui_gateway.entry``'s, so the
     late-refresh scheduler must consult both to decide whether a slow server's tools are still pending (see
     #51587).
     """

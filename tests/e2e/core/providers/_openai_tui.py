@@ -1,4 +1,4 @@
-"""Minimal stdio JSON-RPC driver for a REAL ``python -m tui_gateway.entry`` process —
+"""Minimal stdio JSON-RPC driver for a REAL ``python -m hermes_agent.tui_gateway.entry`` process —
 the backend the Ink TUI and Desktop talk to (one long-lived agent across turns)."""
 
 from __future__ import annotations

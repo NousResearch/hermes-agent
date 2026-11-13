@@ -9,8 +9,8 @@ import pytest
 from gateway import hosted_room_driver as driver, hosted_room_links, hosted_rooms
 from tests.gateway.test_session_group_peers import (
     gateway as gateway_fixture, linked_peer as linked_peer_fixture, linked_room, _seat, call, invite, _owed, _grant_error)
-from tui_gateway import methods_groups, methods_groups_forward, server
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+from hermes_agent.tui_gateway import methods_groups, methods_groups_forward, server
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
 
 gateway = gateway_fixture
 linked_peer = linked_peer_fixture
@@ -138,7 +138,7 @@ async def test_expiring_active_peer_can_stop_without_holding_publication_locks(g
 async def test_registration_during_disband_preserves_surviving_grants(gateway, monkeypatch, linked_peer, surface, phase, outcome):
     from gateway.platforms import api_server_runs
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
-    from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+    from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
     async def complete(adapter, run, **kwargs):
         adapter._set_run_status(run.run_id, 'completed', output='peer reply', completed=True)

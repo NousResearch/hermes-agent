@@ -129,7 +129,7 @@ def test_real_profile_pin_follows_the_managed_overlay(homes):
 
 def test_browser_status_reports_the_cdp_url_the_browser_tool_reads(homes, monkeypatch):
     """``/browser status`` shows what the next browser call connects to: the managed ``browser.cdp_url``."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home, managed = homes
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)

@@ -1,5 +1,5 @@
 """Contracts: billing / subscription / usage envelopes, delegation controls, handoff, message
-reactions, pet generation and ``project.facts`` (handlers in ``tui_gateway/methods_session.py``).
+reactions, pet generation and ``project.facts`` (handlers in ``hermes_agent/tui_gateway/methods_session.py``).
 
 Billing routes are FAIL-OPEN: a logged-out / unreachable portal answers an ``ok`` result whose
 ``error`` carries the typed code (``_serialize_billing_error``) — never a JSON-RPC error — so the
@@ -18,7 +18,7 @@ from .registry import method
 
 
 class BillingEnvelope(Result):
-    """``tui_gateway/billing_view.py::_serialize_billing_error`` on failure (``ok`` false + typed
+    """``hermes_agent/tui_gateway/billing_view.py::_serialize_billing_error`` on failure (``ok`` false + typed
     ``error``); success routes add their own fields. ``payload`` is the raw portal body (error
     extras such as ``remainingUsd``, or the NAS success body on pending-change routes)."""
 
@@ -573,7 +573,7 @@ class PetHatchParams(ProfileParams):
     provider: str | None = None
 
 
-# TODO(common): ``tui_gateway/server.py::_pet_sprite_payload`` is one shape for ``pet.info`` and
+# TODO(common): ``hermes_agent/tui_gateway/server.py::_pet_sprite_payload`` is one shape for ``pet.info`` and
 # ``pet.hatch``; consolidate with the pets contract module. Every field optional: ``pet.hatch``
 # emits ``{}`` when the installed pet cannot be reloaded.
 class PetSpritePayload(Result):

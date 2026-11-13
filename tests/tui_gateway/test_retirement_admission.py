@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def runtime(monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     from hermes_cli import backend_retirement
 
     fence = backend_retirement.RetirementFence()

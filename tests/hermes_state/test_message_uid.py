@@ -469,7 +469,7 @@ class TestPersistedMergeWitness:
 def test_a_branch_copy_writes_the_uids_its_live_history_keeps(tmp_path):
     """The branch child keeps using the copied live dicts; rows minted with other uids would restore a
     different identity than the running agent saw. A dict without a uid gets one on both sides."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

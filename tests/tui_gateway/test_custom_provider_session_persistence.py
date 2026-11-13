@@ -69,7 +69,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
     def test_persists_menu_key_instead_of_resolved_custom(self, monkeypatch):
         monkeypatch.setattr(rp, "load_config", lambda: LEGACY_LIST_CONFIG)
 
-        from tui_gateway.server import _runtime_model_config
+        from hermes_agent.tui_gateway.server import _runtime_model_config
 
         config = _runtime_model_config(_custom_agent())
 
@@ -83,7 +83,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
     def test_keeps_bare_custom_when_no_entry_matches(self, monkeypatch):
         monkeypatch.setattr(rp, "load_config", dict)
 
-        from tui_gateway.server import _runtime_model_config
+        from hermes_agent.tui_gateway.server import _runtime_model_config
 
         config = _runtime_model_config(_custom_agent())
 
@@ -95,7 +95,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
 
         monkeypatch.setattr(rp, "load_config", _boom)
 
-        from tui_gateway.server import _runtime_model_config
+        from hermes_agent.tui_gateway.server import _runtime_model_config
 
         agent = _custom_agent()
         agent.provider = "anthropic"
@@ -114,14 +114,14 @@ def _make_agent_with_override(override, monkeypatch, config, model_cfg=None):
 
     fake_cfg = {"agent": {"system_prompt": ""}, "model": model_cfg or {"default": "unused"}}
     with (
-        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
-        patch("tui_gateway.server._get_db", return_value=MagicMock()),
-        patch("tui_gateway.server._load_reasoning_config", return_value=None),
-        patch("tui_gateway.server._load_service_tier", return_value=None),
-        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch("hermes_agent.tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("hermes_agent.tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("hermes_agent.tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("hermes_agent.tui_gateway.server._load_service_tier", return_value=None),
+        patch("hermes_agent.tui_gateway.server._load_enabled_toolsets", return_value=None),
         patch("run_agent.AIAgent") as mock_agent,
     ):
-        from tui_gateway.server import _make_agent
+        from hermes_agent.tui_gateway.server import _make_agent
 
         _make_agent("sid-custom", "key-custom", model_override=override)
 
@@ -135,7 +135,7 @@ class TestResumeRoundTrip:
         configured" before the fix)."""
         monkeypatch.setattr(rp, "load_config", lambda: LEGACY_LIST_CONFIG)
 
-        from tui_gateway.server import (
+        from hermes_agent.tui_gateway.server import (
             _runtime_model_config,
             _stored_session_runtime_overrides,
         )
@@ -240,7 +240,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
         monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
-        from tui_gateway.server import _runtime_model_config
+        from hermes_agent.tui_gateway.server import _runtime_model_config
 
         agent = _custom_agent(base_url="")  # the regression vector
         config = _runtime_model_config(agent)
@@ -252,7 +252,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
         monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         # A poisoned row from before the fix: bare custom, no base_url.
         row = {
@@ -302,7 +302,7 @@ class TestBareCustomNoBaseUrlHealsFromConfig:
             def create_session(self, key, **kwargs):
                 captured.update(kwargs)
 
-        from tui_gateway import server as srv
+        from hermes_agent.tui_gateway import server as srv
 
         monkeypatch.setattr(srv, "_get_db", lambda: _DB())
         monkeypatch.setattr(srv, "_resolve_model", lambda: "mimo-v2.5-pro")
@@ -379,7 +379,7 @@ class TestStaleProviderNameFallsBack:
         monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "model": "mimo-v2.5-pro",
@@ -399,7 +399,7 @@ class TestStaleProviderNameFallsBack:
         monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "model": "mimo-v2.5-pro",
@@ -426,7 +426,7 @@ class TestStaleProviderNameFallsBack:
         monkeypatch.setattr(rp, "load_config", lambda: config)
         monkeypatch.setattr(rp, "_get_model_config", dict)
 
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "model": "no-such-model",
@@ -445,7 +445,7 @@ class TestStaleProviderNameFallsBack:
         monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "model": "mimo-v2.5-pro",
@@ -470,7 +470,7 @@ class TestOverridesHaveRoutableProvider:
         monkeypatch.setattr(rp, "load_config", lambda: NAMED_CONFIG)
         monkeypatch.setattr(rp, "_get_model_config", lambda: NAMED_CONFIG["model"])
 
-        from tui_gateway.server import _overrides_have_routable_provider
+        from hermes_agent.tui_gateway.server import _overrides_have_routable_provider
 
         assert (
             _overrides_have_routable_provider(
@@ -514,7 +514,7 @@ class TestRoomPlumbingRuntimeOverrides:
     def test_marked_row_returns_no_overrides(self):
         """A row carrying the room_plumbing marker never restores a stored
         provider pin — resume falls back to the profile's CURRENT config."""
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "model": "openai/gpt-5.6-luna-pro",
@@ -526,7 +526,7 @@ class TestRoomPlumbingRuntimeOverrides:
         assert _stored_session_runtime_overrides(row) == {}
 
     def test_marked_row_dict_model_config(self):
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "model": "openai/gpt-5.6-luna-pro",
@@ -537,7 +537,7 @@ class TestRoomPlumbingRuntimeOverrides:
     def test_legacy_group_title_shape_still_skipped(self):
         """Rows from older desktop builds (hidden + "Group:" title, no
         marker) keep the legacy guard: they also rebuild from current config."""
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "title": "Group: Ceo, Product Designer, Cfo, COO, CTO, Coding",
@@ -551,7 +551,7 @@ class TestRoomPlumbingRuntimeOverrides:
     def test_normal_row_still_restores_stored_runtime(self):
         """The intended stored-runtime restore is untouched for normal 1:1
         chats: reopening an old chat shows the model it actually used."""
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "title": "Analyze business idea gaps",
@@ -569,7 +569,7 @@ class TestRoomPlumbingRuntimeOverrides:
     def test_hidden_normal_chat_untouched_by_legacy_shape(self):
         """A hidden NON-room chat (hidden without a "Group:" title) keeps the
         stored-runtime restore — the legacy shape is narrow on purpose."""
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "title": "My hidden scratchpad",
@@ -596,7 +596,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         ``session.resume`` on the deferred (cold, agent-less) path restores the pin while B's config.yaml
         model is unchanged, and drops it once B's profile model moves. Launch home A has a different
         model the whole time, so the compare must run under B's scope, not the launch profile's."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
@@ -671,7 +671,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         chat-scoped pick a mid-chat switch records: the record carries the OWNING profile's model as the
         divergence marker (not the launch profile's), the first row write persists it, and the resume read
         under that profile restores model AND provider instead of the ambient fallback (#123805)."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
@@ -709,7 +709,7 @@ class TestFollowProfileConfigRuntimeOverrides:
 
     def test_profile_model_change_supersedes_composer_override_on_resume_and_live(self, monkeypatch):
         """Changing the Bot profile invalidates both stored and live chat pins."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/new-default", "nous"))
         row = {
@@ -749,7 +749,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         """A row carrying the follow_profile_config marker never restores a
         stored provider pin — resume falls back to the profile's CURRENT
         config."""
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "model": "openai/gpt-5.6-luna-pro",
@@ -772,7 +772,7 @@ class TestFollowProfileConfigRuntimeOverrides:
         (identified by the exact title "Bot Chat"). They must also rebuild
         from the profile's CURRENT config — the live-report shape where every
         pre-existing Bot Chat stayed pinned to a deleted provider."""
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         for hidden in (0, 1):
             row = {
@@ -789,7 +789,7 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_bot_chat_prefix_title_is_not_backfilled(self):
         """Only the EXACT canonical title matches the legacy backfill — a
         user chat that merely mentions bots keeps its stored runtime."""
-        from tui_gateway.server import _stored_session_runtime_overrides
+        from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 
         row = {
             "title": "Bot Chat ideas for my app",
@@ -806,7 +806,7 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_persists_contract_marker(self, monkeypatch):
         """_ensure_session_db_row stamps follow_profile_config into the row's
         model_config when the session carries the contract."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         captured = {}
 
@@ -831,7 +831,7 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_omits_marker_without_contract(self, monkeypatch):
         """Sessions without the contract do NOT get the marker — normal chats
         keep the stored-runtime restore."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
 
         captured = {}
 
@@ -879,7 +879,7 @@ class TestRuntimeModelConfigDropsStaleKeys:
     def test_falsy_provider_drops_stale_existing_provider(self):
         """Agent inherits the profile default (empty provider): the previously
         persisted provider must NOT survive the merge."""
-        from tui_gateway.server import _runtime_model_config
+        from hermes_agent.tui_gateway.server import _runtime_model_config
 
         existing = {
             "model": "deepseek/deepseek-v4-flash-0731",
@@ -897,7 +897,7 @@ class TestRuntimeModelConfigDropsStaleKeys:
     def test_falsy_model_drops_stale_existing_model(self):
         """Mirror the provider rule: an empty agent model cannot keep the row's
         old model as its own."""
-        from tui_gateway.server import _runtime_model_config
+        from hermes_agent.tui_gateway.server import _runtime_model_config
 
         agent = _agent_like(model="", provider="nous")
         existing = {"model": "meituan/longcat-2.0:free", "provider": "nous"}
@@ -907,7 +907,7 @@ class TestRuntimeModelConfigDropsStaleKeys:
         assert config["provider"] == "nous"
 
     def test_truthy_provider_overwrites_stale_existing(self):
-        from tui_gateway.server import _runtime_model_config
+        from hermes_agent.tui_gateway.server import _runtime_model_config
 
         existing = {
             "model": "deepseek/deepseek-v4-flash-0731",
@@ -924,7 +924,7 @@ class TestRuntimeModelConfigDropsStaleKeys:
         NOT resurrect the stale endpoint on resume — the chat falls back to
         the row's billing provider (the profile default) instead of the stale
         VeniceAI/empero route."""
-        from tui_gateway.server import (
+        from hermes_agent.tui_gateway.server import (
             _runtime_model_config,
             _stored_session_runtime_overrides,
         )
@@ -953,7 +953,7 @@ class TestRuntimeModelConfigDropsStaleKeys:
         """First write (no existing row): the merge starts from an empty dict
         and reflects only the agent's current identity — no stale keys, no
         crash on the None existing_config."""
-        from tui_gateway.server import _runtime_model_config
+        from hermes_agent.tui_gateway.server import _runtime_model_config
 
         config = _runtime_model_config(_agent_like(provider="nous"), None)
 

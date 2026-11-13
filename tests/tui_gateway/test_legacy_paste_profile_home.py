@@ -2,9 +2,9 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
-from tui_gateway.ws_legacy_fallback import dispatch_legacy
+from hermes_agent.tui_gateway.ws_legacy_fallback import dispatch_legacy
 
 
 def test_secondary_profile_paste_lands_in_its_own_home(tmp_path, monkeypatch):

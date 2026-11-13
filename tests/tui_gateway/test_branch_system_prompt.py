@@ -11,7 +11,7 @@ from pathlib import Path
 
 def test_persist_branch_copies_the_parent_system_prompt(tmp_path, monkeypatch):
     from hermes_agent.hermes_state import SessionDB
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / ".hermes"
     home.mkdir()

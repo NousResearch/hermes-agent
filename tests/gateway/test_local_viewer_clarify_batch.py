@@ -54,7 +54,7 @@ def test_batch_is_one_request_and_the_panels_answers_return(monkeypatch):
     assert params == {'session_id': 's1', 'questions': [
         {'qid': 'q0', 'question': 'colour?', 'choices': ['red', 'blue'], 'multi_select': False},
         {'qid': 'q1', 'question': 'size?', 'multi_select': False}]}
-    from tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
+    from hermes_agent.tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
     assert validate_params(SERVER_REQUESTS['clarify'], params)[1] is None
     resolve({'jsonrpc': '2.0', 'id': requests[0]['id'],
              'result': {'answers': {'q0': 'red', 'q1': None, 'zz': 'x'}, 'outcome': 'submitted'}})

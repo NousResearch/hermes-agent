@@ -1,9 +1,9 @@
 """The session owner's server→client requests to a local viewer, and who may settle them.
 
-The owner sends a request frame (``tui_gateway/contracts/server_requests.py``: ``sudo``, ``secret``,
+The owner sends a request frame (``hermes_agent/tui_gateway/contracts/server_requests.py``: ``sudo``, ``secret``,
 ``clarify``, the Desktop UI requests) to the viewers attached to a session's event stream and blocks the
 agent thread until one answers, the turn is interrupted, or it times out: the canonical side of main's
-sidecar ``tui_gateway/server_requests.py``. A viewer answers with a JSON-RPC response frame
+sidecar ``hermes_agent/tui_gateway/server_requests.py``. A viewer answers with a JSON-RPC response frame
 (:func:`resolve`) or, for a batch clarify, per question with ``clarify.lock`` (:func:`lock_answer`); both go
 through :func:`may_settle`, and a batch's terminal result comes from ``tools.clarify_batch.settle_batch``,
 the rule the sidecar uses too. Values are never published, journaled or logged: they travel only in the

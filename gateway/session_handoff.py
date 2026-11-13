@@ -1,5 +1,5 @@
 """``handoff.request`` / ``handoff.state`` / ``handoff.fail`` on the shared owner (Desktop and CLI
-``/handoff``), as the per-TUI sidecar serves them (``tui_gateway/methods_session.py``).
+``/handoff``), as the per-TUI sidecar serves them (``hermes_agent/tui_gateway/methods_session.py``).
 
 The owner only writes the session row's ``pending`` handoff; the gateway's handoff watcher claims it,
 repoints the platform's home route at the session and runs the synthetic turn there. ``dispatch``

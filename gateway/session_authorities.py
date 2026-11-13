@@ -337,7 +337,7 @@ def owner_scope(authority, *, hydrate_secrets=False):
     from contextlib import nullcontext
     runner = getattr(authority, 'runner', None)
     if not getattr(getattr(runner, 'config', None), 'multiplex_profiles', False):
-        from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+        from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
         return launch_profile_scope_if_multiplexed()
     home = Path(str(authority.profile_id))
     if not home.is_absolute() or not home.is_dir():

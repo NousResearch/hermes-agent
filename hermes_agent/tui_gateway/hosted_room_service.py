@@ -24,15 +24,15 @@ from gateway.hosted_room_policy_checkpoint import HostedRoomPolicyCheckpoint, Po
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog, HostedMemberDispatch, PROTOCOL_VERSION, room_grant_hard_expiry,
     room_grant_needs_dispatch_refresh)
-from tui_gateway import hosted_room_prepare_stall as prepare_stall
-from tui_gateway import hosted_room_router_call as router_call
-from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
-from tui_gateway.hosted_room_member_activity import (
+from hermes_agent.tui_gateway import hosted_room_prepare_stall as prepare_stall
+from hermes_agent.tui_gateway import hosted_room_router_call as router_call
+from hermes_agent.tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
+from hermes_agent.tui_gateway.hosted_room_member_activity import (
     forget_task_progress, record_task_progress, task_is_active, task_progress)
-from tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
-from tui_gateway.hosted_room_peer_http import (
+from hermes_agent.tui_gateway.hosted_room_server_rpc import HostedRoomServerRPC
+from hermes_agent.tui_gateway.hosted_room_peer_http import (
     PeerRunsHTTPClient, PeerRunsHTTPError, digest_reauthorization_error)
-from tui_gateway.hosted_room_peer_transport import (
+from hermes_agent.tui_gateway.hosted_room_peer_transport import (
     HostedRoomPeerClient, PeerHostedRoomTransport, PeerMemberRoute, build_member_dispatch)
 
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0

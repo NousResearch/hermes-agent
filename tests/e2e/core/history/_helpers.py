@@ -382,7 +382,7 @@ class GatewayError(RuntimeError):
 
 
 class TuiGateway:
-    """The real ``python -m tui_gateway.entry`` stdio JSON-RPC server (what the TUI spawns)."""
+    """The real ``python -m hermes_agent.tui_gateway.entry`` stdio JSON-RPC server (what the TUI spawns)."""
 
     def __init__(self, env: dict[str, str], cwd: Path, spawned: Spawned, *, ready_timeout: float = 120.0):
         self.env, self.cwd, self.spawned, self.ready_timeout = env, str(cwd), spawned, ready_timeout

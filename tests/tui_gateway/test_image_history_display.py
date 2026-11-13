@@ -2,7 +2,7 @@
 
 import base64
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def test_verified_native_image_history_reconciles_without_inline_payload(tmp_path):

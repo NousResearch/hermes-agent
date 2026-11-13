@@ -2,7 +2,7 @@
 turn once, resuming the DM row the failed attempt already persisted.
 
 ``hermes peer dm`` is the third Bot-DM transport. The local (``tools.bot_mode_dm``) and relayed
-(``tui_gateway.methods_bot_relay``) lanes both re-run a transiently failed turn once and resume the
+(``hermes_agent.tui_gateway.methods_bot_relay``) lanes both re-run a transiently failed turn once and resume the
 row the failed attempt left as the transcript's unanswered tail (``tools/bot_failure_reasons``
 ``retry_action`` / ``RESUME_UNANSWERED_TURN``); the peer lane ran the turn once and handed whatever
 came back — the provider's 429 paragraph — to the sender as the reply.

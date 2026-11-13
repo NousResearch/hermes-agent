@@ -6,7 +6,7 @@ import pytest
 
 from gateway import hosted_room_discussion as discussion
 from gateway import hosted_room_driver as driver
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 from tests.tui_gateway.test_hosted_room_service import _FakeRPC, _server
 
 

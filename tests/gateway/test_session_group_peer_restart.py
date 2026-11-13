@@ -12,8 +12,8 @@ from tests.gateway.test_api_unknown_resolution import (
 )
 from tests.gateway import test_session_group_peers as peers
 from tests.waiting import async_wait_until
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-from tui_gateway.hosted_room_peer_transport import build_member_dispatch
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_peer_transport import build_member_dispatch
 
 gateway, linked_peer = peers.gateway, peers.linked_peer
 

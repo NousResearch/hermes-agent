@@ -1,4 +1,4 @@
-"""Regression test: importing tui_gateway.entry off the main thread must not crash.
+"""Regression test: importing hermes_agent.tui_gateway.entry off the main thread must not crash.
 
 Background
 ----------
@@ -8,7 +8,7 @@ Background
 ``ValueError: signal only works in main thread of the main interpreter``.
 
 The Desktop/WebSocket agent-build path (``server._build``) runs in a daemon
-thread and does ``from tui_gateway.entry import ensure_mcp_discovery_started``
+thread and does ``from hermes_agent.tui_gateway.entry import ensure_mcp_discovery_started``
 (server.py:1866).  On that path ``entry.main()`` is never run, so the worker
 thread performs the *first* import of ``entry`` — which crashed and aborted
 MCP discovery startup (#72667, regression from the 2026-07-26 websocket-MCP
@@ -32,7 +32,7 @@ REPO_ROOT = "."
 
 
 def _spawn_worker_import_entry():
-    """Run `import tui_gateway.entry` for the first time inside a worker thread.
+    """Run `import hermes_agent.tui_gateway.entry` for the first time inside a worker thread.
 
     Returns (returncode, stdout, stderr).
     """
@@ -43,7 +43,7 @@ def _spawn_worker_import_entry():
         "errs = []\n"
         "def _worker():\n"
         "    try:\n"
-        "        import tui_gateway.entry\n"
+        "        import hermes_agent.tui_gateway.entry\n"
         "    except Exception as e:\n"
         "        errs.append(repr(e))\n"
         "t = threading.Thread(target=_worker, daemon=True)\n"
@@ -70,7 +70,7 @@ def _spawn_worker_import_entry():
 
 @pytest.mark.platforms("linux")
 def test_entry_imports_cleanly_from_worker_thread():
-    """First import of tui_gateway.entry from a worker thread must succeed."""
+    """First import of hermes_agent.tui_gateway.entry from a worker thread must succeed."""
     rc, out, err = _spawn_worker_import_entry()
     # entry import may emit to stdout or stderr depending on the runner; check both.
     combined = out + err

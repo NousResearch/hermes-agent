@@ -11,7 +11,7 @@ import contextlib
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from hermes_agent.hermes_state import SessionDB
 
 

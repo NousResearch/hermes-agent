@@ -503,7 +503,7 @@ def test_run_budget_is_a_frozen_launch_option(tmp_path):
 
 def test_run_budget_passes_the_session_create_contract():
     """The canonical dispatcher refuses undeclared session.create keys before the policy sees them."""
-    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
     from gateway.session_policy import CREATE_FIELDS
     contract = CANONICAL_METHODS['session.create']
     assert canonical_param_problems(contract, {'request_id': 'r', 'source': 'cli', 'run_budget': 120.0}) == []

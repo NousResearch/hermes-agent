@@ -21,13 +21,13 @@ def _connector_rpc_error(rid, code, reason, message):
 
 
 def _refusals():
-    from tui_gateway import connector_refusals
+    from hermes_agent.tui_gateway import connector_refusals
 
     return connector_refusals
 
 
 def _connector_auth_error(rid, exc):
-    from tui_gateway.connector_refusals import auth_refusal
+    from hermes_agent.tui_gateway.connector_refusals import auth_refusal
 
     return _connector_rpc_error(rid, *auth_refusal(exc))
 
@@ -35,7 +35,7 @@ def _connector_auth_error(rid, exc):
 def _connector_guard(fn):
     def handler(rid, params):
         from tools.connectors.gateway.errors import GatewayAuthError
-        from tui_gateway.connector_refusals import REQUEST_FAILED
+        from hermes_agent.tui_gateway.connector_refusals import REQUEST_FAILED
 
         try:
             return fn(rid, params)
@@ -55,7 +55,7 @@ def _connector_owner_matches(sid, owner, profile_home):
 
 
 def _session_owner(rid, owner):
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
     sid = owner.session_id
     _, session = _current_session_steer_authority(sid)
@@ -74,7 +74,7 @@ def _session_owner(rid, owner):
 
 def _account_gate_closed(rid):
     from tools.connectors import connectors_available
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
     if connectors_available():
         return None
@@ -85,7 +85,7 @@ def _account_identity_error(rid):
     """Connecting from the Connectors page is the user asking for apps: create the guest identity
     here when the user has none. Page reads and operation polls never call this."""
     from tools.connectors import ensure_guest_identity
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
     if setup_error := ensure_guest_identity():
         return _connector_rpc_error(rid, 5034, ConnectorErrorReason.connector_request_failed, setup_error)
@@ -133,8 +133,8 @@ def _session_connector_rpc(rid, request, session, action):
     import uuid
 
     from tools.connectors import live
-    from tui_gateway.connector_payload import connector_ui_payload
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
     sid = request.owner.session_id
     enabled, disabled, error = _session_connector_gate(rid, session, action)
@@ -182,7 +182,7 @@ def _session_connector_rpc(rid, request, session, action):
 
 def _connector_rows(rows):
     from tools.connectors.gateway.wire import ConnectorListItem
-    from tui_gateway.connector_payload import connector_ui_payload
+    from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
 
     return connector_ui_payload([
         ConnectorListItem.model_validate(row).model_dump(mode="json", by_alias=False)
@@ -207,7 +207,7 @@ def _account_connector_list(rid):
 def _account_connector_connect(rid, request):
     from tools.connectors import account
     from tools.connectors.managed import DESKTOP_PAGE
-    from tui_gateway.connector_payload import connector_ui_payload
+    from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
     action = "reconnect" if request.reconnect else "connect"
     try:
         start = account.find_or_start_operation(
@@ -230,7 +230,7 @@ def _account_connector_connect(rid, request):
 
 
 def _connector_rpc(rid, params, action):
-    from tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorsConnectParams, ConnectorsListParams
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorsConnectParams, ConnectorsListParams
 
     model = ConnectorsListParams if action == "status" else ConnectorsConnectParams
     request, session, error = _connector_params(rid, params, model)
@@ -262,8 +262,8 @@ def _connector_rpc(rid, params, action):
 
 def _reissue(rid, operation, args, *, initiator=None):
     from tools.connectors.run import reissue
-    from tui_gateway.connector_payload import connector_ui_payload
-    from tui_gateway.connector_refusals import REISSUE_REFUSALS
+    from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
+    from hermes_agent.tui_gateway.connector_refusals import REISSUE_REFUSALS
 
     reason = reissue(operation, args["connectors"], initiator=initiator)
     if reason in REISSUE_REFUSALS:
@@ -272,7 +272,7 @@ def _reissue(rid, operation, args, *, initiator=None):
 
 
 def _operation_params(rid, params):
-    from tui_gateway.contracts.connectors_operation import ConnectionOperationParams
+    from hermes_agent.tui_gateway.contracts.connectors_operation import ConnectionOperationParams
 
     return _connector_params(rid, params, ConnectionOperationParams)
 
@@ -331,7 +331,7 @@ def _operation_for_request(rid, request, session):
 @method("connectors.operation.status")
 @_connector_guard
 def _(rid, params):
-    from tui_gateway.connector_payload import connector_ui_payload
+    from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
 
     request, session, error = _operation_params(rid, params)
     if error:
@@ -358,8 +358,8 @@ def _(rid, params):
 def _(rid, params):
     from pydantic import ValidationError
 
-    from tui_gateway.connector_refusals import INVALID_ANSWER
-    from tui_gateway.contracts.connectors_operation import ConnectionAnswer
+    from hermes_agent.tui_gateway.connector_refusals import INVALID_ANSWER
+    from hermes_agent.tui_gateway.contracts.connectors_operation import ConnectionAnswer
 
     envelope = {key: value for key, value in params.items() if key != "result"}
     request, session, error = _operation_params(rid, envelope)
@@ -382,7 +382,7 @@ def _(rid, params):
 def _apply_connection_answer(rid, answer, operation):
     from tools.connectors.operation import IllegalTransition
     from tools.connectors.run import respond
-    from tui_gateway.connector_refusals import INVALID_ANSWER
+    from hermes_agent.tui_gateway.connector_refusals import INVALID_ANSWER
 
     try:
         settled = respond(operation, answer.model_dump_json(exclude_none=True))
@@ -401,8 +401,8 @@ def _operation_view(operation):
 
 def _connection_update(operation, change, snapshot):
     from hermes_constants import get_process_hermes_home, hermes_home_key
-    from tui_gateway import server
-    from tui_gateway.connector_payload import connector_ui_payload
+    from hermes_agent.tui_gateway import server
+    from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
 
     payload = _snapshot_view(snapshot)
     if change:

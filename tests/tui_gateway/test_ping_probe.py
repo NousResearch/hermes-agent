@@ -1,4 +1,4 @@
-"""Tests for the ``ping`` liveness probe (tui_gateway/server.py).
+"""Tests for the ``ping`` liveness probe (hermes_agent/tui_gateway/server.py).
 
 The desktop client probes ``ping`` after sleep/wake to distinguish a
 half-open TCP socket (connectionState still ``open`` while every RPC hangs)
@@ -8,7 +8,7 @@ answered synchronously on the WS reader thread, no session, no IO, no agent.
 
 from __future__ import annotations
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 def _call(method: str, params: dict) -> dict:
     """Invoke a registered RPC method and return its result dict."""

@@ -79,7 +79,7 @@ class _ToolRPC:
 
 
 def test_groups_state_names_the_tool_a_member_transport_reports(tmp_path: Path):
-    from tui_gateway.hosted_room_service import HostedRoomService
+    from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
     server = SimpleNamespace(_methods={}, _sessions={}, _sessions_lock=threading.Lock())
     service = HostedRoomService(server, db_path=tmp_path / "state.db")
     service.rpc = service.runtime.rpc = _ToolRPC()
@@ -100,7 +100,7 @@ def test_groups_state_names_the_tool_a_member_transport_reports(tmp_path: Path):
 
         service.rpc.on_terminal({"status": "settled", "text": "Build logs are clean."})
         wait_until(lambda: scout_activity() == {}, timeout=5)
-        from tui_gateway.hosted_room_member_activity import task_progress
+        from hermes_agent.tui_gateway.hosted_room_member_activity import task_progress
         assert task_progress("room-1", service.rpc.task.task_id, 1) == {}
     finally:
         service.stop(timeout=5)

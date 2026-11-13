@@ -4,7 +4,7 @@ A native Desktop on a standalone ``hermes serve``/``hermes dashboard`` (no sessi
 its rooms in the root ``shared-state.db`` and drives them in that process (``tui_gateway``
 route), while the gateway keeps its own in the profile's ``state.db`` (owner claim and epoch fence
 in the room insert's transaction). Once a gateway serves the profile, the standalone backend
-forwards ``groups.*`` to it (``tui_gateway/methods_groups_forward.py``); this module moves the rooms
+forwards ``groups.*`` to it (``hermes_agent/tui_gateway/methods_groups_forward.py``); this module moves the rooms
 that backend already hosts into the gateway's store so the one list shows them.
 
 Each room moves in two crash-safe steps, so it is driven by exactly one process:
@@ -26,7 +26,7 @@ never reads again. A crash between the steps is finished by the next start.
 ``shared-state.db`` is one root file with no profile column, so only the root home's gateway (the
 default profile, whose ``state.db`` sits beside it) imports. A standalone room that was not imported
 stays listed and driven by the standalone backend from every profile's view, and a named profile's
-view reaches the imported ones on the root gateway (``tui_gateway/methods_groups_forward.py``), so
+view reaches the imported ones on the root gateway (``hermes_agent/tui_gateway/methods_groups_forward.py``), so
 no view loses a room it showed before.
 
 The import runs when the gateway builds its room service (before ``ready``) and once more right

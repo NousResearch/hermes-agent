@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from gateway.owner_identity import host_owner_subject
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
-from tui_gateway.transport import bind_transport, reset_transport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
 _LOADED_USER = "alice"
 # A signed-in login is the machine owner (gateway.owner_identity): its row carries the owner's OS

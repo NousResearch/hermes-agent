@@ -88,7 +88,7 @@ method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,
 
 
 class ImageMeta(Result):
-    """``tui_gateway/server.py::_image_meta`` — dimensions when PIL can open the file."""
+    """``hermes_agent/tui_gateway/server.py::_image_meta`` — dimensions when PIL can open the file."""
 
     name: str | None = None
     width: int | None = None

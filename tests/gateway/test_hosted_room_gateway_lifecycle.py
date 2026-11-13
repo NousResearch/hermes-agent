@@ -11,7 +11,7 @@ import pytest
 
 from gateway import hosted_room_driver, hosted_rooms
 from gateway.run import GatewayRunner
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 
 class _RPC:
@@ -78,7 +78,7 @@ def _wait_for(predicate, timeout=3.0):
 
 @pytest.mark.asyncio
 async def test_messaging_gateway_supervisor_starts_without_dashboard(monkeypatch):
-    from tui_gateway import methods_groups
+    from hermes_agent.tui_gateway import methods_groups
 
     state = {"running": False, "starts": 0}
 
@@ -114,7 +114,7 @@ async def test_messaging_gateway_supervisor_starts_without_dashboard(monkeypatch
 
 @pytest.mark.asyncio
 async def test_dead_room_worker_is_restarted_by_gateway_task_supervision(monkeypatch):
-    from tui_gateway import methods_groups
+    from hermes_agent.tui_gateway import methods_groups
 
     starts = {"count": 0}
 

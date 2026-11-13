@@ -69,7 +69,7 @@ def test_local_viewer_turn_prompts_and_saves_the_secret(monkeypatch):
         worker.join(5)
     assert request['params'] == {'session_id': 's1', 'env_var': 'HAB_KEY', 'prompt': 'Enter the key',
                                  'metadata': {'skill_name': 'hab-skill'}}
-    from tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
+    from hermes_agent.tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
     assert validate_params(SERVER_REQUESTS['secret'], request['params'])[1] is None
     assert saved == [('HAB_KEY', 'sekrit')]
     assert out['missing_names'] == [] and out['gateway_setup_hint'] is None

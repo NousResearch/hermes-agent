@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from hermes_cli.active_sessions import ActiveSessionLease, try_acquire_active_session
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _lease(tmp_path: Path, key: str = "stored-session") -> ActiveSessionLease:

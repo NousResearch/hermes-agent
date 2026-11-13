@@ -8,8 +8,8 @@ import threading
 import pytest
 
 from tests.waiting import async_wait_until
-from tui_gateway.transport import FanoutTransport, StdioTransport
-from tui_gateway.ws import WSTransport
+from hermes_agent.tui_gateway.transport import FanoutTransport, StdioTransport
+from hermes_agent.tui_gateway.ws import WSTransport
 
 
 def _event(text, session_id="session"):

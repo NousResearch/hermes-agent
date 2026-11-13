@@ -1,7 +1,7 @@
 """An attach payload over its cap is refused in one sentence naming its size and the cap.
 
 ``image.attach_bytes`` (native Desktop's remote pastes), ``pdf.attach`` and ``file.attach`` decode
-base64 payloads in ``tui_gateway/prompt_attachments.py``, which refuses a payload over its cap
+base64 payloads in ``hermes_agent/tui_gateway/prompt_attachments.py``, which refuses a payload over its cap
 either before decoding (the base64 text is too long) or after. Either way the client reads main's
 wording, ``<what> too large (<n> bytes; cap is <m> MB)``.
 """
@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 _MIB = 1024 * 1024
 

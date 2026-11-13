@@ -87,7 +87,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
         # (#118538). Resolved at call time like the launch state.db handle: a harness that
         # re-homes the process after import must not read the old home's .env. Secrets are
         # unstamped: this IS the process's own profile, and the stamp marks a FOREIGN home.
-        from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+        from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
         home = _launch_home()
         multiplex = is_multiplex_active()
         bound = bind_state(scope_for_profile(home), secrets=launch_secret_scope(home), stamp_home=False,

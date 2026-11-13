@@ -104,7 +104,7 @@ def forwardable(refusal: Any, session: dict, text: Any, params: dict) -> bool:
 
 def _payload_for(event_type: str, payload: Any) -> dict | None:
     """The owner payload projected onto this wire's contract for ``event_type`` (None: drop it)."""
-    from tui_gateway.contracts.registry import EVENTS
+    from hermes_agent.tui_gateway.contracts.registry import EVENTS
     contract = EVENTS.get(event_type)
     if contract is None or contract.payload is None or not isinstance(payload, dict):
         return None
@@ -238,7 +238,7 @@ def forward_prompt(sid: str, session: dict, text: str, *, emit=None, home: Path 
     Raises ``OwnerNotRunning`` when no gateway serves the home, ``OwnerUnavailable`` (or the
     client's refusal) when the owner did not take it, and ``OwnerUnconfirmed`` when the prompt may
     be queued there: the receipt timed out, or the owner was lost or failed after the request was sent."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     key = str(session.get("session_key") or "")
     if not key:
         raise OwnerUnavailable("the chat has no stored session yet")

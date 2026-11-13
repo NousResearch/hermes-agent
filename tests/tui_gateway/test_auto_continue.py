@@ -1,6 +1,6 @@
 """Crash-interrupted turns auto-continue on the next session.resume.
 
-A turn's durable marker (tui_gateway/turn_marker.py) is written when the turn
+A turn's durable marker (hermes_agent/tui_gateway/turn_marker.py) is written when the turn
 starts running and cleared when it concludes — success, handled error, or
 interrupt. Only a process death leaves it behind, so a marker found at resume
 time is positive proof the turn never finished. Contract pinned here:
@@ -32,8 +32,8 @@ from pathlib import Path
 
 import pytest
 
-from tui_gateway import server
-from tui_gateway.turn_marker import (
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.turn_marker import (
     clear_turn_marker,
     marker_writer_state,
     read_turn_marker,
@@ -562,7 +562,7 @@ def test_failed_agent_build_leaves_marker_for_retry(
 _CHILD_WRITER = """
 import os, sys, time
 from pathlib import Path
-from tui_gateway.turn_marker import record_turn_start
+from hermes_agent.tui_gateway.turn_marker import record_turn_start
 
 home = Path(sys.argv[1])
 record_turn_start(home, "session-key", "interrupted prompt")

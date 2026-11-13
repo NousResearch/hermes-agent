@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 MINTED_KEY = "20260828_053121_3427a9"  # the morning's lost session shape
 EXISTING_KEY = "20260827_224618_956bf8"

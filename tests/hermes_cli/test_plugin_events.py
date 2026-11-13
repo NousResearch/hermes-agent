@@ -2,7 +2,7 @@
 
 A plugin backend pushes events to its own desktop half through
 ``hermes_cli.plugin_events`` instead of importing
-``tui_gateway.server._broadcast_global_event``.
+``hermes_agent.tui_gateway.server._broadcast_global_event``.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from hermes_cli import plugin_events
 
 
 class _Peer:
-    """A connected client as the gateway sees it (``tui_gateway.transport.Transport``)."""
+    """A connected client as the gateway sees it (``hermes_agent.tui_gateway.transport.Transport``)."""
 
     def __init__(self):
         self.frames: list[dict] = []
@@ -26,7 +26,7 @@ class _Peer:
 
 
 def test_broadcast_reaches_a_registered_client_as_a_namespaced_global_event():
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     peer = _Peer()
     server.register_live_transport(peer)
@@ -53,8 +53,8 @@ def test_broadcast_from_a_turn_isolation_child_reaches_the_parent_gateways_clien
     import os
     import threading
 
-    from tui_gateway import server
-    from tui_gateway import compute_host
+    from hermes_agent.tui_gateway import server
+    from hermes_agent.tui_gateway import compute_host
 
     monkeypatch.setenv("HERMES_COMPUTE_HOST_HEARTBEAT_SECS", "0")
     monkeypatch.setenv("HERMES_COMPUTE_HOST_CHILD", "0")
@@ -93,7 +93,7 @@ def test_broadcast_from_a_turn_isolation_child_reaches_the_parent_gateways_clien
 
 def test_broadcast_without_a_gateway_module_is_a_logged_no_op(monkeypatch, caplog):
     """A plugin-only process (``hermes plugins validate`` importing the backend) has no
-    ``tui_gateway.server``; the documented "safe from any handler" promise must hold there too."""
+    ``hermes_agent.tui_gateway.server``; the documented "safe from any handler" promise must hold there too."""
     import builtins
     import logging
 
@@ -126,7 +126,7 @@ def test_broadcast_without_a_gateway_module_is_a_logged_no_op(monkeypatch, caplo
     ],
 )
 def test_names_that_cannot_form_a_namespaced_event_are_refused_before_emit(monkeypatch, plugin_id, event, payload, exc):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(server, "_broadcast_global_event", lambda *_a, **_k: pytest.fail("must not emit"))
     with pytest.raises(exc):

@@ -131,7 +131,7 @@ def _(rid, params):
     scope = params if isinstance(params, dict) else {}
     if not str(scope.get("profile") or "").strip():
         # A legacy-fallback socket ticketed to a non-launch profile answers for that profile only.
-        from tui_gateway.ws_legacy_fallback import connection_profile_home
+        from hermes_agent.tui_gateway.ws_legacy_fallback import connection_profile_home
         if home := connection_profile_home():
             scope = {"profile": Path(home).name}
     counts = {}

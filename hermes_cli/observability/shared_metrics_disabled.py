@@ -57,7 +57,7 @@ def current_surface() -> str | None:
         return web_setup_surface()
     if surface == "tui_gateway":
         try:
-            from tui_gateway.server import _resolve_session_platform
+            from hermes_agent.tui_gateway.server import _resolve_session_platform
 
             return _resolve_session_platform()
         except Exception:

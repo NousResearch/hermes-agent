@@ -57,7 +57,7 @@ def runtime(request, tmp_path, monkeypatch):
 
     from agent import billing_usage, billing_view, secret_scope, subscription_view
     from hermes_cli import auth, nous_account, nous_billing
-    from tui_gateway import launch_profile_policy, server
+    from hermes_agent.tui_gateway import launch_profile_policy, server
 
     for key in ("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL", "NOUS_INFERENCE_BASE_URL",
                 "HERMES_DEV_BILLING_FIXTURE", "HERMES_DEV_SUBSCRIPTION_FIXTURE", "HERMES_DEV_CREDITS_FIXTURE"):

@@ -33,7 +33,7 @@ async def _connect(tmp_path, monkeypatch, *, native=True, config=None):
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -63,7 +63,7 @@ async def _connect(tmp_path, monkeypatch, *, native=True, config=None):
 
 
 async def _request(conn, rid, method, params):
-    from tui_gateway.ws import _dispatch_request
+    from hermes_agent.tui_gateway.ws import _dispatch_request
     reply = await _dispatch_request(conn.connection, {"jsonrpc": "2.0", "id": rid, "method": method,
                                                       "params": params}, method, conn.transport)
     if reply is None:
@@ -81,7 +81,7 @@ async def test_a_fresh_install_is_offered_onboarding_once_the_desktop_says_it_is
         before = await _request(conn, 1, "onboarding.state", {"assume_fresh": True})
         assert before["result"]["eligible"] is False
 
-        from tui_gateway import server_requests
+        from hermes_agent.tui_gateway import server_requests
         await _request(conn, 2, "client.capabilities", {"server_requests": True})
         declared = await _request(conn, 3, "client.capabilities", {"desktop_local": True})
         assert "result" in declared, declared
@@ -191,7 +191,7 @@ async def test_a_fresh_launch_claims_the_trial_and_opens_onboarding_on_it(tmp_pa
 @pytest.mark.asyncio
 async def test_the_first_local_desktop_connection_runs_the_desktop_boot_work(tmp_path, monkeypatch):
     from hermes_cli import anon_auth, free_tier_bootstrap, onboarding_run
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     seen = []
     monkeypatch.setattr(onboarding_run, "latch_first_install", lambda: seen.append(anon_auth.on_local_desktop_backend()))
     monkeypatch.setattr(server, "_local_desktop_boot_started", False)
@@ -214,7 +214,7 @@ def test_the_desktop_boot_work_runs_for_the_launch_profile_whichever_profile_con
     from agent import secret_scope
     from hermes_cli import free_tier_bootstrap, onboarding_run
     from hermes_constants import get_hermes_home, get_process_hermes_home, set_hermes_home_override
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch = get_process_hermes_home()
     secondary = tmp_path / "profiles" / "work"
     secondary.mkdir(parents=True)
@@ -299,7 +299,7 @@ async def test_a_desktop_boot_that_could_not_record_the_install_tries_again_on_t
     """The gateway outlives app launches. A first boot whose install record failed (a locked
     config.yaml) is retried when the Desktop next connects, as the per-launch ``hermes serve`` did."""
     from hermes_cli import free_tier_bootstrap, onboarding_run
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     attempts = []
 
     def latch():

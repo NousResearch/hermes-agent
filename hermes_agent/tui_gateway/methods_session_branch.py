@@ -1,6 +1,6 @@
 """Branch (session.branch / session.branch_whole) helpers (``methods_session`` split).
 
-Moved verbatim from ``tui_gateway/methods_session.py`` (file-line ratchet, #66663 CI repair):
+Moved verbatim from ``hermes_agent/tui_gateway/methods_session.py`` (file-line ratchet, #66663 CI repair):
 the bodies close over server.py globals through ``method_ctx.bind_module`` exactly as before —
 publication still runs from the parent's ``register()``.
 """

@@ -6,7 +6,7 @@ a failed read is ``ok: false`` (not an RPC error), and nothing lands in the prof
 
 import subprocess
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _manage(**params):

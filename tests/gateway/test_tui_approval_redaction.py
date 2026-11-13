@@ -2,7 +2,7 @@
 
 Follow-up to #50767, which redacted the chat-platform and SSE/API approval
 transports. The TUI JSON-RPC transport is the third egress: three
-`register_gateway_notify` callbacks in `tui_gateway/server.py` emit the raw
+`register_gateway_notify` callbacks in `hermes_agent/tui_gateway/server.py` emit the raw
 `approval_data` (with an unredacted `command`) to the TUI client. They now
 route through the module-level `_emit_approval_request` helper, which redacts
 `payload["command"]` via the shared `gateway.run._redact_approval_command` seam
@@ -18,7 +18,7 @@ class TestTuiApprovalEmitRedaction:
     @staticmethod
     def _sent(monkeypatch):
         """Capture the ``approval`` server request frame ``_emit_approval_request`` sends."""
-        from tui_gateway import server as tui_server, server_requests
+        from hermes_agent.tui_gateway import server as tui_server, server_requests
 
         sent = {}
         monkeypatch.setattr(server_requests, "send_async",

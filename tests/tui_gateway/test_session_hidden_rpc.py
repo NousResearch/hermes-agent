@@ -13,8 +13,8 @@ Covers the two seams Bot Mode's "sessions are always hidden" policy leans on:
 
 import pytest
 
-import tui_gateway.server as srv
-import tui_gateway.methods_session
+import hermes_agent.tui_gateway.server as srv
+import hermes_agent.tui_gateway.methods_session
 from hermes_agent.hermes_state import SessionDB
 
 

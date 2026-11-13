@@ -27,7 +27,7 @@ async def discover_commands(authority, actor, params, *, completion=False):
         if params.get('profile') and not profile_matches_home(params['profile'], home):
             raise RuntimeStoreError('profile_mismatch')
         from gateway.run import _profile_runtime_scope
-        from tui_gateway.command_discovery import command_catalog, slash_completions
+        from hermes_agent.tui_gateway.command_discovery import command_catalog, slash_completions
         with _profile_runtime_scope(home):
             return (slash_completions(params.get('text', ''), scope=scope) if completion
                     else command_catalog(scope=scope))

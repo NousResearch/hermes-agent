@@ -1,5 +1,5 @@
 """Tools / toolsets / MCP servers / plugins / skills / learning graph / reload contracts
-(``tui_gateway/methods_tools.py``).
+(``hermes_agent/tui_gateway/methods_tools.py``).
 
 Every ``mcp.servers.*``, ``mcp.catalog``, ``skills.manage`` and ``plugins.manage`` handler runs under
 ``_profile_scoped_rpc`` and the desktop routes them via ``requestGatewayForProfile`` /
@@ -381,7 +381,7 @@ class McpServerSource(WireEnum):
 
 
 class McpServerSummary(Result):
-    """``tui_gateway/mcp_rpc_helpers.summarize_server`` — a server's config without secret values."""
+    """``hermes_agent/tui_gateway/mcp_rpc_helpers.summarize_server`` — a server's config without secret values."""
 
     name: str
     transport: str

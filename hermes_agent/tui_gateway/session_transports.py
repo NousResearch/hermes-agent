@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from tui_gateway.method_ctx import bind_module
+from hermes_agent.tui_gateway.method_ctx import bind_module
 
 # Leaf lock: callers may hold sessions/history locks, never acquire them here.
 _session_transport_lock = threading.RLock()
@@ -62,8 +62,8 @@ def _session_client_answers_requests(sid: str) -> bool:
     update separately from this backend; the stdio TUI ships with it). No attached client is still True — the
     question waits in ``open_requests`` for the reconnect replay. Compute-host relays and other non-client
     transports never count."""
-    from tui_gateway import server_requests
-    from tui_gateway.ws import WSTransport
+    from hermes_agent.tui_gateway import server_requests
+    from hermes_agent.tui_gateway.ws import WSTransport
     clients = [peer for peer in _session_live_transports(_sessions.get(sid)) if isinstance(peer, WSTransport)]
     return not clients or any(server_requests.answers_requests(peer) for peer in clients)
 
@@ -71,8 +71,8 @@ def _session_client_answers_requests(sid: str) -> bool:
 def _session_answering_clients(sid: str) -> list:
     """The live WebSocket clients attached to *sid* that advertised answering server→client requests:
     the windows whose unanimous "not shown here" settles a window-owned request (server_requests.py)."""
-    from tui_gateway import server_requests
-    from tui_gateway.ws import WSTransport
+    from hermes_agent.tui_gateway import server_requests
+    from hermes_agent.tui_gateway.ws import WSTransport
     return [peer for peer in _session_live_transports(_sessions.get(sid))
             if isinstance(peer, WSTransport) and server_requests.answers_requests(peer)]
 

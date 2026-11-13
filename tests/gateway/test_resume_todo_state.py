@@ -36,9 +36,9 @@ async def test_resume_carries_the_newest_todo_snapshot(tmp_path, monkeypatch):
 
 
 def test_the_home_module_reads_the_snapshot_when_imported_directly():
-    """``tool_progress`` bodies are also rebound onto ``tui_gateway.server``; the module's own copy (what the
+    """``tool_progress`` bodies are also rebound onto ``hermes_agent.tui_gateway.server``; the module's own copy (what the
     gateway imports) must not lean on the server's globals for ``json``/``logger``."""
-    from tui_gateway.tool_progress import _todo_state_from_history
+    from hermes_agent.tui_gateway.tool_progress import _todo_state_from_history
     call = {'id': 'call-1', 'type': 'function', 'function': {'name': 'todo_list', 'arguments': '{}'}}
     history = [{'role': 'assistant', 'content': '', 'tool_calls': [call]},
                {'role': 'tool', 'tool_call_id': 'call-1', 'content': json.dumps({'todos': TODOS, 'revision': 2})}]
@@ -47,18 +47,18 @@ def test_the_home_module_reads_the_snapshot_when_imported_directly():
 
 @pytest.mark.asyncio
 async def test_resume_leaves_the_gateway_processs_stdout_alone(tmp_path, monkeypatch):
-    """Importing ``tui_gateway.server`` (the stdio JSON-RPC sidecar) points ``sys.stdout`` at stderr, so the
+    """Importing ``hermes_agent.tui_gateway.server`` (the stdio JSON-RPC sidecar) points ``sys.stdout`` at stderr, so the
     resume path must not import it: a CLI sharing the process would print to stderr from then on."""
-    import tui_gateway
+    import hermes_agent.tui_gateway as tui_gateway  # noqa: PLR0402
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     _todo_turn(authority.db, physical, 'call-1', TODOS, 2)
-    monkeypatch.delitem(sys.modules, 'tui_gateway.server', raising=False)
+    monkeypatch.delitem(sys.modules, 'hermes_agent.tui_gateway.server', raising=False)
     monkeypatch.delattr(tui_gateway, 'server', raising=False)
     monkeypatch.setattr(sys, 'stdout', sys.stdout)  # restored even if the import below swaps it
     stdout = sys.stdout
     assert (await _resume(authority, actor, ref))['todo_state'] == {'todos': TODOS, 'revision': 2}
     assert sys.stdout is stdout
-    assert 'tui_gateway.server' not in sys.modules
+    assert 'hermes_agent.tui_gateway.server' not in sys.modules
 
 
 def test_a_later_null_resume_clears_the_clients_todo_seed():

@@ -3,7 +3,7 @@
 Normal local Ink startup now ensures the profile's ordinary gateway through
 `ensure_gateway_runtime`, obtains an instance/profile-bound private control ticket,
 and connects over authenticated WebSocket. The short Python bootstrap subprocess
-is only a client; Ink no longer starts `tui_gateway.entry` or owns an agent loop.
+is only a client; Ink no longer starts `hermes_agent.tui_gateway.entry` or owns an agent loop.
 The ticket travels through a private child pipe and WebSocket subprotocol, never
 in an endpoint URL or discovery receipt. Explicit remote URLs remain remote: a
 failed connection cannot fall back to a local daemon.

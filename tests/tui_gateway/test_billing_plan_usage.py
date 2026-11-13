@@ -12,7 +12,7 @@ import pytest
 import hermes_cli.model_picker_usage as mpu
 import hermes_cli.nous_account as na
 from tests.usage_window_fixtures import usage_window
-from tui_gateway import billing_view as srv
+from hermes_agent.tui_gateway import billing_view as srv
 
 _WINDOW = usage_window(day_used_bp=1000, week_used_bp=500, month_used_bp=250, top_tier_used_bp=0,
                        day_resets_at_ms=1, week_resets_at_ms=2, month_resets_at_ms=3)

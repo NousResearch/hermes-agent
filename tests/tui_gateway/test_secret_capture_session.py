@@ -23,7 +23,7 @@ def _gateway(monkeypatch):
     monkeypatch.setattr(threading, "excepthook", threading.excepthook)
     from agent.vault_backends import unlock
     from tools import project_tools, skills_tool, terminal_tool, terminal_tool_sudo
-    from tui_gateway import server, server_requests
+    from hermes_agent.tui_gateway import server, server_requests
 
     monkeypatch.setattr(terminal_tool, "_callback_tls", threading.local())
     monkeypatch.setattr(unlock, "_callback_tls", threading.local())

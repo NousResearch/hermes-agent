@@ -25,7 +25,7 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 class _InlineThread:
     """Run the turn synchronously so tests observe its final state."""
@@ -93,7 +93,7 @@ def test_accepted_and_finished_records_on_success(turn_env, caplog):
     )
     session = _session(agent=agent, running=True)
 
-    with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
         server._run_prompt_submit("rid", "ui-sid", session, SECRETISH_PROMPT)
 
     accepted = _records(caplog, "tui prompt accepted")
@@ -136,7 +136,7 @@ def test_turn_settles_before_post_turn_trim(turn_stubs, monkeypatch, caplog, set
     session = _session(agent=agent, running=True)
     monkeypatch.setattr(server, "_sessions", {"ui-sid": session})
     try:
-        with caplog.at_level(logging.INFO, logger="tui_gateway.server"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tui_gateway.server"):
             assert server._run_prompt_submit("rid", "ui-sid", session, "hi")
             assert entered.wait(timeout=5)
             assert session["running"] is False

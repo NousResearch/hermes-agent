@@ -64,7 +64,7 @@ def _via_gateway(home):
 
 
 def _via_tui(home):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     session = {"agent": None}
     server._apply_model_switch(
         "sid", session, "claude-haiku --provider anthropic --global", confirm_expensive_model=True)

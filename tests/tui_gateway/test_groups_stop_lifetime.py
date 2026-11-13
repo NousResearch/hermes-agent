@@ -14,8 +14,8 @@ from tests.tui_gateway.test_hosted_room_stop_replay import _service
 
 @pytest.fixture(params=["canonical", "standalone"])
 def controls(request, tmp_path, monkeypatch):
-    import tui_gateway.server as srv
-    from tui_gateway import methods_groups_forward
+    import hermes_agent.tui_gateway.server as srv
+    from hermes_agent.tui_gateway import methods_groups_forward
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with SessionDB(tmp_path / "state.db") as db:

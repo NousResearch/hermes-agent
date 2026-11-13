@@ -2,7 +2,7 @@
 
 import pytest
 
-import tui_gateway.server as tui_server
+import hermes_agent.tui_gateway.server as tui_server
 
 
 class TestTUIPerModelReasoningConfig:

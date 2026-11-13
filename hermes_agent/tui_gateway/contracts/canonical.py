@@ -154,7 +154,7 @@ class CanonicalSessionInfoParams(Params):
 
 class SessionInventoryFields(Result):
     """Main's banner / status-bar inventory (``gateway/session_local_inventory.py::session_inventory``):
-    the shapes ``tui_gateway/server.py::_session_info`` sent, computed for the session's frozen policy.
+    the shapes ``hermes_agent/tui_gateway/server.py::_session_info`` sent, computed for the session's frozen policy.
     ``enabled_toolsets`` / ``tool_availability`` / ``context_length`` feed the classic CLI banner."""
 
     provider: str | None = None

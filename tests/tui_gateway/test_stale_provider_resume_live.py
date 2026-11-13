@@ -4,7 +4,7 @@ custom provider, through the REAL gateway dispatch path.
 This is the live-report shape from Discord (endpoints "deleted ages ago"
 coming back, Bot Chats pinned to dead providers): a real ``state.db`` session
 row whose persisted ``model_config`` names a custom provider that no longer
-exists in config.yaml, resumed through ``tui_gateway.server.handle_request``
+exists in config.yaml, resumed through ``hermes_agent.tui_gateway.server.handle_request``
 (the same dispatch the Desktop WebSocket transport funnels into) with
 ``eager_build: true`` so the REAL ``_make_agent`` → ``AIAgent`` construction
 runs synchronously — no mocks, no pre-seeded sessions.
@@ -81,7 +81,7 @@ def live_home(monkeypatch):
                     pass
 
     from hermes_agent import hermes_state
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     # The launch DB handle and the module-level home snapshot are import-time
     # caches — repoint both at the isolated home for the duration of the test

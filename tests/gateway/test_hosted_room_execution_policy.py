@@ -23,8 +23,8 @@ from gateway.hosted_room_peer import (
     verify_room_grant,
 )
 from tools import approval_context
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-from tui_gateway.hosted_room_service import _RouteStatusPeerClient
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_service import _RouteStatusPeerClient
 
 
 def _policy(*, approval_mode: str = "manual", max_turns: int = 12) -> dict:

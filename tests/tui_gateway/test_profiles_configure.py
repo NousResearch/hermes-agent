@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture

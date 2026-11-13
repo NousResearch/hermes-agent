@@ -200,7 +200,7 @@ async def _native_turn_across_activation(tmp_path, profile_home):
     from gateway.session import SessionSource, SessionStore
     from gateway.session_authority import LiveSession, initialize_session_authority
     from gateway.session_controls import AuthorityConnection
-    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+    from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 
     started, release, seen = asyncio.Event(), asyncio.Event(), []
 

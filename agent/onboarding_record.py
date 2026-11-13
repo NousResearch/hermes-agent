@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 KEY = "onboarding_run"
 
 # Told when a run stops being in progress: ``{run_id, stored_session_id, outcome}``. The gateway sends
-# it to every window (tui_gateway/methods_onboarding.py::register).
+# it to every window (hermes_agent/tui_gateway/methods_onboarding.py::register).
 _ended_listeners: list[Callable[[dict], None]] = []
 
 

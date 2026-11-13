@@ -2,7 +2,7 @@
 
 A batch (``clarify`` server request with question ids) is answered per question with ``clarify.lock``
 and ends one of four ways: the last lock, a closing response frame, a timeout, or an interrupt/cancel.
-Main's TUI sidecar (``tui_gateway/server_requests.py``) and the session owner
+Main's TUI sidecar (``hermes_agent/tui_gateway/server_requests.py``) and the session owner
 (``gateway/session_server_requests.py``) both settle batches; each used to compute ``{answers, outcome}``
 itself and they drifted. Both call :func:`settle_batch`, so the model is told the same thing on every
 surface.

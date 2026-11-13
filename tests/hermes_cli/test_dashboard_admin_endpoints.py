@@ -273,7 +273,7 @@ class ScopedProvMemoryProvider(MemoryProvider):
         (``probe_availability`` swallows the ``UnscopedSecretError``)."""
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
-        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+        from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 
         home = get_hermes_home()
         (home / ".env").write_text("SCOPEDPROV_API_KEY=launch-key\n", encoding="utf-8")

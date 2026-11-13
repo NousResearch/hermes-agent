@@ -6,7 +6,7 @@ from typing import Dict, List, Any, Set, Optional, Tuple
 # Shared tool list for CLI and all messaging platform toolsets (edit once, all
 # platforms follow). Desktop GUI affordances are deliberately NOT here: they live
 # in `desktop_ui`/`project`, enabled per desktop-sourced session by the GUI gateway
-# (tui_gateway/server.py::_load_enabled_toolsets). HA, kanban and computer_use
+# (hermes_agent/tui_gateway/server.py::_load_enabled_toolsets). HA, kanban and computer_use
 # entries are further gated by their tools' check_fns.
 _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
@@ -62,7 +62,7 @@ def _core_without(*excluded, kanban=True):
 # tts, image_gen, cron, kanban and computer-use.
 _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", kanban=False)
 
-# Toolsets a CLIENT adds to its own sessions (tui_gateway/server.py::_gui_surface_toolsets), never
+# Toolsets a CLIENT adds to its own sessions (hermes_agent/tui_gateway/server.py::_gui_surface_toolsets), never
 # config: another surface lacking them made no configuration choice.
 CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui", "catalog"})
 
@@ -130,7 +130,7 @@ TOOLSETS = {
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),
 
     # GUI-renderer affordances, enabled per desktop-sourced SESSION by the GUI
-    # gateway (tui_gateway/server.py::_load_enabled_toolsets) — never by a
+    # gateway (hermes_agent/tui_gateway/server.py::_load_enabled_toolsets) — never by a
     # process env var, which is blind to a desktop client on a remote backend.
     "desktop_ui": _ts(
         "Desktop GUI affordances — in-app terminal/browser panes, pane focus, "

@@ -13,7 +13,7 @@ The client entrypoint is `src/entry.tsx`. It exits early if `stdin` is not a TTY
 `GatewayClient` spawns:
 
 ```text
-python -m tui_gateway.entry
+python -m hermes_agent.tui_gateway.entry
 ```
 
 Interpreter resolution uses `HERMES_PYTHON`, supplied by the CLI launcher or
@@ -24,7 +24,7 @@ checkout venv directories for a different interpreter.
 The transport is newline-delimited JSON-RPC over stdio:
 
 ```text
-ui-tui/src                  tui_gateway/
+ui-tui/src                  hermes_agent/tui_gateway/
 -----------                 -------------
 entry.tsx                   entry.py
   -> GatewayClient            -> request loop
@@ -505,7 +505,7 @@ ui-tui/
 Related Python side:
 
 ```text
-tui_gateway/
+hermes_agent/tui_gateway/
   entry.py               stdio entrypoint
   server.py              RPC handlers and session logic
   render.py              optional rich/ANSI bridge

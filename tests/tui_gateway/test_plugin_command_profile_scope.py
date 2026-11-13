@@ -73,7 +73,7 @@ def test_launch_only_plugin_command_not_fired_in_secondary_chat(plugin_homes):
     """command.dispatch's plugin stage must consult the SESSION's registry: a command registered
     only in the launch profile returns None here (falls through) instead of running a foreign
     plugin with no credential scope."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     res = server._dispatch_plugin(
         1, {}, _infra_session(plugin_homes["secondary"]), "launchonly", "hi"
@@ -84,7 +84,7 @@ def test_launch_only_plugin_command_not_fired_in_secondary_chat(plugin_homes):
 def test_secondary_plugin_command_runs_under_its_own_scope(plugin_homes):
     """The secondary's own plugin resolves in its registry AND runs with its secrets: the handler
     sees the secondary's home and PROBE_KEY, not the launch profile's."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     res = server._dispatch_plugin(
         1, {}, _infra_session(plugin_homes["secondary"]), "infraonly", "hi"
@@ -98,7 +98,7 @@ def test_secondary_plugin_command_runs_under_its_own_scope(plugin_homes):
 def test_slash_exec_launch_only_falls_through_in_secondary_chat(plugin_homes):
     """slash.exec's plugin branch takes the same scoped lookup: /launchonly in a secondary chat
     must NOT run the plugin — it falls through to the slash worker like any unknown command."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     session = _infra_session(plugin_homes["secondary"])
     worker = MagicMock()
@@ -124,7 +124,7 @@ def test_launch_profile_chat_reads_its_own_secret_once_multiplexed(plugin_homes)
     the launch profile's .env instead of raising UnscopedSecretError."""
     from agent.secret_scope import set_multiplex_active
 
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     session = {"session_key": "s-launch", "cwd": "", "profile_home": None}
     server._sessions["sid-launch"] = session
@@ -146,7 +146,7 @@ def test_builtin_slash_exec_runs_when_the_profile_secret_bind_fails(plugin_homes
     not turn every built-in reaching slash.exec into ``Plugin command error`` (review of #153538)."""
     from hermes_cli import env_loader
 
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     def _boom(home):
         raise RuntimeError("secret source unavailable")
@@ -172,7 +172,7 @@ def test_sessionless_dispatch_runs_the_named_profiles_plugin(plugin_homes, monke
     own plugin with its own secret, and never the launch profile's plugin with the launch secret."""
     from agent.secret_scope import set_multiplex_active
 
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(server, "_profile_home",
                         lambda p: plugin_homes["secondary"] if p == "infra" else None)
@@ -193,7 +193,7 @@ def test_plugin_that_reads_a_secret_while_registering_loads_in_its_profile(plugi
     registering fails to load (UnscopedSecretError) and its command is never found."""
     from agent.secret_scope import set_multiplex_active
 
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     secondary = plugin_homes["secondary"]
     pkg = secondary / "plugins" / "probe-reg"

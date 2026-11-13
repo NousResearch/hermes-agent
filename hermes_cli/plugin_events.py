@@ -14,7 +14,7 @@ The desktop half filters for its own name::
     host.onEvent('plugin.rss-reader.feed.updated', ({ payload }) => …)
 
 This module is the sanctioned door for that: plugin backends must never import
-``tui_gateway.server`` privates (``_broadcast_global_event``), whose signature
+``hermes_agent.tui_gateway.server`` privates (``_broadcast_global_event``), whose signature
 is core-internal. The ``plugin.`` prefix keeps plugin traffic out of core's own
 event names (``skin.changed``, ``session.reclaimed``, …).
 
@@ -81,9 +81,9 @@ def broadcast_plugin_event(plugin_id: str, event: str, payload: Optional[dict[st
 
     # Late import: plugin backends load before the gateway server is up in some
     # hosts (CLI tooling imports plugin_api modules for route inspection), and
-    # tui_gateway.server pulls in the transport stack.
+    # hermes_agent.tui_gateway.server pulls in the transport stack.
     try:
-        from tui_gateway.server import _broadcast_global_event
+        from hermes_agent.tui_gateway.server import _broadcast_global_event
     except ImportError:
         # A plugin-only process (``hermes plugins validate`` importing the backend, a trimmed
         # install) has no gateway at all: nobody to deliver to, and the handler must not die for it.

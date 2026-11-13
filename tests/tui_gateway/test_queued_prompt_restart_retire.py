@@ -10,7 +10,7 @@ restart == never drained. Rows are deactivated, never deleted, the same marking 
 import types
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _desktop_session(monkeypatch, db):

@@ -39,9 +39,9 @@ def resolve_chat_cwd(raw: Optional[str]) -> Optional[str]:
 
 
 def _collect_workspaces(profile: Optional[str], scan: bool) -> dict:
-    # The dashboard hosts the in-process gateway (``web_server`` imports ``tui_gateway.server``
+    # The dashboard hosts the in-process gateway (``web_server`` imports ``hermes_agent.tui_gateway.server``
     # at startup), so the sidebar's repo-discovery helpers are already bound there.
-    import tui_gateway.server as gateway
+    import hermes_agent.tui_gateway.server as gateway
     from hermes_cli import projects_db as pdb
 
     # Browsing never bootstraps the owner's session store: a profile whose gateway has not

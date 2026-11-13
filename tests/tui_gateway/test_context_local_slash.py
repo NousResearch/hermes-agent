@@ -19,7 +19,7 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _live_session(agent, messages=2):

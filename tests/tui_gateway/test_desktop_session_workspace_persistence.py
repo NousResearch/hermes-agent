@@ -10,7 +10,7 @@ actually adopted it, and a launch-dir fallback still persists nothing.
 import os
 
 from hermes_agent.hermes_state import SessionDB
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _gateway_with_db(monkeypatch, tmp_path):

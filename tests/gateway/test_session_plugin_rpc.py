@@ -206,7 +206,7 @@ async def test_owner_advertises_plugin_rpc_and_the_contract_declares_its_namespa
     finally:
         await owner.close()
     assert 'plugin-rpc-v1' in described['result']['capabilities']
-    from tui_gateway.contracts import registry
+    from hermes_agent.tui_gateway.contracts import registry
     namespace = registry.CANONICAL_NAMESPACES['plugin.{plugin_id}.{name}']
     assert (namespace.prefix, namespace.capability) == ('plugin.', 'plugin-rpc-v1')
     assert not any(name.startswith(namespace.prefix) for name in registry.CANONICAL_METHODS)

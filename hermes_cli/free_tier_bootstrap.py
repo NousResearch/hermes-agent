@@ -1,7 +1,7 @@
 """Record of who carries inference, for ``setup.status`` and ``setup.ready``.
 
 It runs once per process on a daemon thread: at ``hermes serve`` boot, and on the gateway when the
-local Desktop first connects (``tui_gateway.methods_onboarding.begin_local_desktop_boot``). It never
+local Desktop first connects (``hermes_agent.tui_gateway.methods_onboarding.begin_local_desktop_boot``). It never
 creates an identity: the desktop's welcome-trial claim (``hermes_cli.welcome_trial``) and the first
 hosted connector action are the only creators. For the desktop's local backend it first records a
 fresh install's onboarding decision (``onboarding_run.latch_first_install``) and settles a claim cut
@@ -274,7 +274,7 @@ def _due_changed() -> None:
 
 def _broadcast(record: SetupRecord) -> None:
     try:
-        from tui_gateway.server import _broadcast_global_event
+        from hermes_agent.tui_gateway.server import _broadcast_global_event
         _broadcast_global_event(SETUP_READY_EVENT, record.as_payload())
     except Exception as exc:  # no serve process (plain CLI): nobody to tell
         logger.debug("setup.ready not broadcast: %s", exc)

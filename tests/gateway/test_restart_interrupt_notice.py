@@ -19,7 +19,7 @@ from gateway.session_settlement_recovery import (
     SHUTDOWN_INTERRUPT_NOTICE,
     _publish_completion,
 )
-from tui_gateway.contracts.registry import EVENTS
+from hermes_agent.tui_gateway.contracts.registry import EVENTS
 
 pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
 

@@ -178,7 +178,7 @@ def _emit_cancel(req: ServerRequest, reason: str) -> None:
 
 
 def _register(req: ServerRequest) -> None:
-    from tui_gateway.contracts import registry as contracts
+    from hermes_agent.tui_gateway.contracts import registry as contracts
 
     contract = contracts.SERVER_REQUESTS.get(req.method)
     if contract is None:

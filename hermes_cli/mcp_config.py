@@ -923,7 +923,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
     # The probe triggers the OAuth flow (browser redirect + callback capture). Its bound must outlast
     # the oauth.timeout callback window (plus headroom for the token exchange), or a user who raised
     # oauth.timeout still gets cut off at the old fixed floor — matching the GUI re-auth path in
-    # web_server_mcp.py and tui_gateway/mcp_oauth_sessions.py. force_interactive_oauth: `hermes mcp
+    # web_server_mcp.py and hermes_agent/tui_gateway/mcp_oauth_sessions.py. force_interactive_oauth: `hermes mcp
     # login` is explicitly user-initiated even when stdin isn't a TTY (desktop / agent-spawned
     # terminals), where _is_interactive() alone would refuse to open a browser.
     try:

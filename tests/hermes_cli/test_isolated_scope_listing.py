@@ -98,8 +98,8 @@ def test_isolated_named_profile_lists_only_itself(client, homes, monkeypatch):
     assert _sidebar_ids(client) == {"worker-chat"}
     assert _cron_ids(client) == {"worker-job"}
 
-    import tui_gateway.server as srv
-    from tui_gateway.methods_complete import _profile_mention_items
+    import hermes_agent.tui_gateway.server as srv
+    from hermes_agent.tui_gateway.methods_complete import _profile_mention_items
 
     rows = srv._methods["profiles.list"](1, {"include_sessions": False})["result"]["profiles"]
     assert [row["name"] for row in rows] == ["worker"]
@@ -121,7 +121,7 @@ def test_unscoped_backends_still_list_every_profile(client, homes, monkeypatch, 
     assert client.get("/api/status").json()["isolated_profile"] is None
     assert _sidebar_ids(client) == {"default-chat", "worker-chat"}
     assert _cron_ids(client) == {"default-job", "worker-job"}
-    from tui_gateway.methods_complete import _profile_mention_items
+    from hermes_agent.tui_gateway.methods_complete import _profile_mention_items
     assert {item["text"] for item in _profile_mention_items("")} == {"@default", "@worker", "@hermes"}
 
 

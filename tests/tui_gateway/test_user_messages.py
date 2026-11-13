@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from tui_gateway.user_messages import agent_init_failed_message
+from hermes_agent.tui_gateway.user_messages import agent_init_failed_message
 
 
 @pytest.mark.parametrize("exc_text", [

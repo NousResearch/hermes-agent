@@ -1,5 +1,5 @@
 """``runtime.describe`` carries the owning profile's resolved skin: main's TUI booted its theme from
-``gateway.ready.skin`` (``tui_gateway/entry.py`` / ``ws.py`` ``resolve_skin()``), and the canonical
+``gateway.ready.skin`` (``hermes_agent/tui_gateway/entry.py`` / ``ws.py`` ``resolve_skin()``), and the canonical
 client publishes its own ready from this discovery reply (FINDINGS row 3: ``-p work`` with
 ``display.skin: ares`` must boot Ares, not the default gold theme)."""
 from pathlib import Path
@@ -24,7 +24,7 @@ async def test_runtime_describe_carries_the_profiles_resolved_skin(tmp_path, mon
         skin = described['result']['skin']
         assert skin['name'] == 'ares'
         assert skin['colors'] and skin['branding']
-        from tui_gateway.contracts.registry import CANONICAL_METHODS
+        from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
         CANONICAL_METHODS['runtime.describe'].result.model_validate(described['result'])
     finally:
         await conn.close()
@@ -41,7 +41,7 @@ async def test_runtime_describe_advertises_clarify_batch(tmp_path, monkeypatch):
     try:
         described = await conn.dispatch({'id': 0, 'method': 'runtime.describe', 'params': {}})
         assert 'clarify-batch-v1' in described['result']['capabilities']
-        from tui_gateway.contracts.registry import CANONICAL_METHODS
+        from hermes_agent.tui_gateway.contracts.registry import CANONICAL_METHODS
         assert 'clarify_batch' in CANONICAL_METHODS['prompt.submit'].params.model_fields
     finally:
         await conn.close()

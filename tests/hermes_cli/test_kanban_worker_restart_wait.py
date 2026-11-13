@@ -153,7 +153,7 @@ def _owner_rig(tmp_path, monkeypatch, *, old_owner=False):
 
     async def fallback(*args):
         pytest.fail("a ticketed native socket must not enter the legacy fallback")
-    monkeypatch.setattr("tui_gateway.ws.handle_ws", handle)
+    monkeypatch.setattr("hermes_agent.tui_gateway.ws.handle_ws", handle)
     monkeypatch.setattr(web, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     monkeypatch.setattr(web_server_chat, "_ws_request_is_allowed", lambda ws: True)
     api = GatewayRuntimeAPI(fallback, runner, web.app)

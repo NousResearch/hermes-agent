@@ -7,8 +7,8 @@ import threading
 
 import pytest
 
-from tui_gateway import server
-from tui_gateway import ws as ws_mod
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway import ws as ws_mod
 
 
 

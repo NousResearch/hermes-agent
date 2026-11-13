@@ -1,7 +1,7 @@
 """Reproduction: /personality (desktop config.set) clobbers agent.system_prompt.
 
 The desktop/TUI backend exposes a `config.set key=personality` RPC
-(tui_gateway/server.py, the `@method("config.set")` handler). When the user
+(hermes_agent/tui_gateway/server.py, the `@method("config.set")` handler). When the user
 selects a personality (the desktop "assistant style" picker routes here), the
 handler does:
 
@@ -33,7 +33,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 import hermes_yaml as yaml
 
 

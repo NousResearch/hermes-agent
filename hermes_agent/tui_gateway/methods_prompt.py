@@ -733,7 +733,7 @@ def _submit_to_ledger_owner(rid, sid, session, text, params, refusal) -> dict:
     runs here. An ``unknown`` admission, or work no running gateway will finish, keeps its refusal
     (only Discard / a gateway resume resolves it); anything else that cannot be queued is refused
     with the reason and the advice to send when the turn ends."""
-    from tui_gateway import owner_forward
+    from hermes_agent.tui_gateway import owner_forward
     not_owned = _err(rid, 4090, str(refusal), {"reason": getattr(refusal, "reason", None) or "SESSION_NOT_OWNED"})
     if getattr(refusal, "ledger_status", None) == "unknown":
         return not_owned
@@ -1282,7 +1282,7 @@ def _(rid, params: dict) -> dict:
         answer = json.dumps(answer, ensure_ascii=False)
     if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     try:
         remaining = server_requests.lock_answer(request_id, question_id, answer)
     except ValueError as e:
@@ -1302,7 +1302,7 @@ def _(rid, params: dict) -> dict:
     result = params.get("result")
     if not request_id or not isinstance(result, dict):
         return _err(rid, 4002, "id and an object result required")
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
     frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
     if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
         return _ok(rid, {"status": "ok"})
@@ -1421,7 +1421,7 @@ def _preview_restart_prompt(url: str, cwd: str, context: str, has_history: bool)
 def _validated_preview_cwd(cwd: str) -> str:
     """The client's cwd as an existing absolute directory, else ``""``. A malformed client path
     (embedded NUL, a missing dir) is "no validated cwd", never an error."""
-    import os  # this module's globals are bound by tui_gateway.server; the gateway calls it unbound
+    import os  # this module's globals are bound by hermes_agent.tui_gateway.server; the gateway calls it unbound
 
     try:
         preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ""

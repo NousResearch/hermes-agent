@@ -6,7 +6,7 @@ import io
 import pytest
 
 from gateway.runtime_ownership import OwnershipConflict, ProfileOwnership
-from tui_gateway import entry
+from hermes_agent.tui_gateway import entry
 
 
 def _stub_startup(monkeypatch, opened):

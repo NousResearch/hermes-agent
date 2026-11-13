@@ -8,7 +8,7 @@ from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input, list_session_admissions,
     recover_session_inputs, resolve_unknown_session_input,
 )
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 class _InlineThread:

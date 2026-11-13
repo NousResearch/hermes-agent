@@ -24,7 +24,7 @@ from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
-from tui_gateway import server as tui_server
+from hermes_agent.tui_gateway import server as tui_server
 
 
 # ---------------------------------------------------------------------------

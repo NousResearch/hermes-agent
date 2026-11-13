@@ -20,7 +20,7 @@ dashboard surface, mounted by `hermes_cli/web_server.py` (+ `web_server_*.py` si
 **Do not re-implement the primary chat experience in React.** Transcript, composer/input flow
 (including slash-command behaviour), and the PTY-backed terminal belong to the embedded TUI; anything
 added to Ink shows up here automatically. If you are rebuilding the transcript or composer for the
-dashboard, stop and extend Ink (`tui_gateway/AGENTS.md`).
+dashboard, stop and extend Ink (`hermes_agent/tui_gateway/AGENTS.md`).
 
 **Structured React UI around the TUI is fine when it is not a second chat surface.** Sidebar
 widgets, inspectors, summaries, status panels (`ChatSidebar`, `ModelPickerDialog`, `ToolCall`)

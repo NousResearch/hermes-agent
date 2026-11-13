@@ -72,7 +72,7 @@ async def test_model_prepare_waiting_on_a_contended_writer_keeps_the_loop_live(t
             last = now
     # The first dispatch imports the wire-contract registry (a one-time cold import of a few hundred
     # ms on a loaded runner); warm it so the probe measures the prepare writer wait, not module load.
-    import tui_gateway.contracts.registry
+    import hermes_agent.tui_gateway.contracts.registry
     tick = asyncio.create_task(ticker())
     try:
         await async_wait_until(lambda: gaps, timeout=10, what='the loop-stall probe ticking')

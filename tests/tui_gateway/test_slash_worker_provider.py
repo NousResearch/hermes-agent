@@ -12,7 +12,7 @@ worker argv must carry ``--provider`` and the child must hand it to ``HermesCLI`
 
 from types import SimpleNamespace
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 class _Popen:
@@ -95,7 +95,7 @@ def test_slash_worker_child_forwards_provider_to_hermes_cli(monkeypatch):
     import sys as _sys
     import types
 
-    import tui_gateway.slash_worker as sw
+    import hermes_agent.tui_gateway.slash_worker as sw
 
     built = {}
 

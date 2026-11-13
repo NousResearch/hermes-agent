@@ -3,7 +3,7 @@
 Regression guard for the Windows ``hermes gateway restart`` silent-outage bug:
 the previous loose substring match (``"... gateway" in cmdline``) false-matched
 ``gateway status``/``dashboard`` siblings and unrelated processes such as
-``python -m tui_gateway``, which let ``restart()`` race a still-draining old
+``python -m hermes_agent.tui_gateway``, which let ``restart()`` race a still-draining old
 process and ``status``/``start`` report false positives.
 """
 

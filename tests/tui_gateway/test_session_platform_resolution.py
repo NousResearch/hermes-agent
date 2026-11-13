@@ -22,13 +22,13 @@ import pytest
 
 def _reload_resolver():
     # Plain import — every resolver under test reads the env at CALL time, so
-    # no reload is needed. importlib.reload(tui_gateway.server) would
+    # no reload is needed. importlib.reload(hermes_agent.tui_gateway.server) would
     # re-register the module's atexit hooks (thread-pool shutdown +
     # _shutdown_sessions) on every test; duplicated hooks race the stderr
     # buffer at interpreter shutdown (Fatal Python error:
     # _enter_buffered_busy) — same flake class as PR #34217. Name kept for
     # the existing call sites.
-    import tui_gateway.server as _srv
+    import hermes_agent.tui_gateway.server as _srv
     return _srv
 
 

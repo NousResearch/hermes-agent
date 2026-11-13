@@ -3,7 +3,7 @@
 PERSISTED transcript and spawn the background review on the live agent, instead of falling
 back to the isolated slash worker and answering "Nothing to refine yet" (#93918, #83455).
 
-Covers tui_gateway/methods_slash.py `_format_live_refine_output`.
+Covers hermes_agent/tui_gateway/methods_slash.py `_format_live_refine_output`.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ import contextlib
 import threading
 from unittest.mock import patch
 
-from tui_gateway import server
-from tui_gateway.transport import StdioTransport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.transport import StdioTransport
 
 
 def _live_session(agent, *, session_key: str, history: list):

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 import hermes_yaml as yaml
 
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 def _write_plugin_config(tmp_path, monkeypatch, entry: dict) -> None:

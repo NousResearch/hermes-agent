@@ -13,7 +13,7 @@ from websockets.exceptions import InvalidStatus
 @pytest.mark.asyncio
 async def test_http_lifespan_does_not_start_or_stop_runtime_services(monkeypatch):
     from hermes_cli import web_server as web
-    from tui_gateway import methods_groups
+    from hermes_agent.tui_gateway import methods_groups
 
     calls = []
     monkeypatch.setenv("HERMES_DESKTOP", "1")

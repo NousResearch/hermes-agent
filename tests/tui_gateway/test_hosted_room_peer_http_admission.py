@@ -6,7 +6,7 @@ import urllib.error
 import pytest
 
 from tests.tui_gateway import test_hosted_room_peer_http as peer_http
-from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
+from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPError
 
 peer_server = peer_http.peer_server
 

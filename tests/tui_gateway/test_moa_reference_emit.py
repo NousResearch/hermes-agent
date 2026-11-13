@@ -31,7 +31,7 @@ def server():
     ):
         import importlib
 
-        mod = importlib.import_module("tui_gateway.server")
+        mod = importlib.import_module("hermes_agent.tui_gateway.server")
 
     yield mod
     mod._sessions.clear()

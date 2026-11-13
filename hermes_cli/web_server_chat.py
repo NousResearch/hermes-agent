@@ -574,7 +574,7 @@ def _resolve_chat_argv(
 
     # Without the attach URL, gatewayClient bootstraps through the profile's own
     # gateway (ui-tui/scripts/gateway_bootstrap.py) under the HERMES_HOME set above;
-    # it never spawns a standalone `tui_gateway.entry` writer.
+    # it never spawns a standalone `hermes_agent.tui_gateway.entry` writer.
     if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url()):
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 

@@ -209,7 +209,7 @@ def _canonical_ledger_refusal(session: dict):
         "durable queue. Resume it through the gateway (hermes chat --resume, Desktop or the TUI) to "
         "resolve it; nothing was run here.", SESSION_NOT_OWNED)
     # prompt.submit forwards a typed prompt to the owner's FIFO for work that ends on its own
-    # (tui_gateway/owner_forward.py); an ``unknown`` admission is never forwarded past.
+    # (hermes_agent/tui_gateway/owner_forward.py); an ``unknown`` admission is never forwarded past.
     refusal.ledger_status = row[0]
     return refusal
 
@@ -303,7 +303,7 @@ def _release_hosted_room_turn_slot(session: dict) -> None:
     Call under ``history_lock`` next to ``running = False`` so the next admission never observes the
     stale lease and then runs lease-less; ``_admit_prompt_turn`` re-claims on the following turn.
     """
-    from tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE
+    from hermes_agent.tui_gateway.hosted_room_driver import ROOM_SESSION_SOURCE
     if _session_source(session) == ROOM_SESSION_SOURCE:
         _release_active_session_slot(session)
 
@@ -664,7 +664,7 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
         _teardown_session(session, end_reason=end_reason)
     finally:
         # finally: a raising finalize (callers log and move on) must still free the ring.
-        from tui_gateway.event_replay import forget_session
+        from hermes_agent.tui_gateway.event_replay import forget_session
         forget_session(session.get("_sid") or "")
     return True
 

@@ -5,7 +5,7 @@ The renderer's handler ships in the desktop bundle; the tools are offered by the
 backend. An app build older than the tools has no handler for the request, so
 nothing ever answers and the agent blocks for the whole 45s deadline — once per
 action the model tries, stacking per turn exactly like the tour timeouts
-(#94272). Same ladder as ``tui_gateway.server._tour_request``, plus a
+(#94272). Same ladder as ``hermes_agent.tui_gateway.server._tour_request``, plus a
 cooldown-gated reprobe: unlike tour support, a preview pane can OPEN later in
 the session, so an unanswered probe condemns the bridge for a cooldown window
 only, with a single in-flight reprobe per session.
@@ -19,7 +19,7 @@ import json
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.fixture

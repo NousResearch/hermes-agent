@@ -35,7 +35,7 @@ async def test_replay_matches_subscription_watermark_or_requires_snapshot(tmp_pa
     from gateway.session_authority import LiveSession, initialize_session_authority
     from gateway.session_contract import SessionRef, Submission
     from gateway.session_controls import AuthorityConnection
-    from tui_gateway import event_replay
+    from hermes_agent.tui_gateway import event_replay
 
     # Small real rings exercise truncation and cross-session eviction without
     # a timing race or a thousand model calls. Execution/storage are real;

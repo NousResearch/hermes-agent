@@ -4,7 +4,7 @@ descendant that outlives it must not survive the stop (#112631).
 ``hermes update`` / ``hermes dashboard --stop`` fall back to ``_kill_pids_posix`` for a
 manually-started backend. Its lifespan teardown blocks on ``stop_hosted_room_service(timeout=5.0)``
 before ``PTY_REGISTRY.close_all()`` runs; a SIGKILL inside that window orphans the ui-tui /
-tui_gateway.entry children, which keep the deleted ``state.db-wal`` inode open until the next
+hermes_agent.tui_gateway.entry children, which keep the deleted ``state.db-wal`` inode open until the next
 start aborts with ``DeletedWalGenerationError``. A wedged descendant defeats any finite grace, so
 the kill sequence sweeps the dashboard-owned tree after the root — but never the detached
 messaging-gateway bots the dashboard launched with ``start_new_session``. Real child processes,

@@ -9,7 +9,7 @@ import pytest
 
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 @pytest.mark.parametrize("kind", ["completion", "watch_match"])

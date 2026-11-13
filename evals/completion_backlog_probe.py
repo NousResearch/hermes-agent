@@ -26,7 +26,7 @@ def probe(surface, scenario, directory):
     from cli import HermesCLI
     from tools import process_registry as pr
     from tools.process_registry_notifications import format_process_notification
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)

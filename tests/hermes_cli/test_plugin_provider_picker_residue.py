@@ -119,7 +119,7 @@ def test_oauth_plugin_status_follows_the_credential_pool(plugin):
 
 def test_any_external_process_plugin_counts_as_signed_in_when_its_binary_resolves(plugin, monkeypatch, tmp_path):
     """The Desktop ``explicit_only`` filter (``build_model_options_payload`` behind
-    ``tui_gateway/methods_complete.py::model.options``) keeps an out-of-tree ACP row exactly like the
+    ``hermes_agent/tui_gateway/methods_complete.py::model.options``) keeps an out-of-tree ACP row exactly like the
     bundled one: binary resolves → auth evidence; missing binary → hidden."""
     import providers
     from hermes_cli import auth

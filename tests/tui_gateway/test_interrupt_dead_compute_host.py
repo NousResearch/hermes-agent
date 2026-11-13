@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 class _DeadComputeHost:
@@ -115,7 +115,7 @@ def test_a_successor_turn_that_replaced_inflight_is_not_clobbered(monkeypatch):
 
 
 def test_supervisor_reports_pending_turns_per_session():
-    from tui_gateway.host_supervisor import HostSupervisor
+    from hermes_agent.tui_gateway.host_supervisor import HostSupervisor
 
     supervisor = HostSupervisor.__new__(HostSupervisor)  # __init__ would spawn a child
     supervisor._lock = threading.RLock()

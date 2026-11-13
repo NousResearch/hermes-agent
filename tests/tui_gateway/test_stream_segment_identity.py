@@ -1,4 +1,4 @@
-"""A prompt turn's message.* frames carry its wire identity (tui_gateway/stream_segments.py).
+"""A prompt turn's message.* frames carry its wire identity (hermes_agent/tui_gateway/stream_segments.py).
 
 The desktop upserts a re-sent frame by this identity instead of painting a second copy (#144609):
 message.start names the turn, every delta its turn, segment (interim seals before it) and UTF-16
@@ -10,7 +10,7 @@ off and on (test_prompt_submit_golden_transcript_matches_flag_off_and_on).
 import threading
 import types
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 
 class _ImmediateThread:

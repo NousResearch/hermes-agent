@@ -11,7 +11,7 @@ import pytest
 
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch, claim_session_input
-from tui_gateway.server import _teardown_session
+from hermes_agent.tui_gateway.server import _teardown_session
 
 
 def _session(tmp_path, monkeypatch, source, session_id):
@@ -88,7 +88,7 @@ async def test_reap_of_a_segment_of_an_adopted_conversation_respects_the_owner_l
     from gateway.session_contract import SessionActor
     from gateway.session_local_recovery import reopen_local_session
     from gateway.session_local_title import resolve_titled_session
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())

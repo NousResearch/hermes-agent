@@ -3,7 +3,7 @@
 
 One row per handler ``hermes serve`` exposes: every HTTP/WebSocket route of the shared FastAPI app
 (``hermes_cli.web_server.app``, imported the way ``serve`` imports it, ``HERMES_SERVE_HEADLESS=1``)
-and every JSON-RPC method a ``/api/ws`` client can call (the legacy ``tui_gateway.server._methods``
+and every JSON-RPC method a ``/api/ws`` client can call (the legacy ``hermes_agent.tui_gateway.server._methods``
 table plus the verbs the session authority serves). ``gateway.ping``, the ``/api/ws`` heartbeat, is
 answered by the transport before dispatch and has no row. Dashboard-plugin API routes depend on which
 plugins are installed and enabled, so they are one row: the ``/api/plugins/{name}/{path}`` mount. Plugin
@@ -11,9 +11,9 @@ JSON-RPC methods are one row too: the declared ``plugin.{plugin_id}.{name}`` nam
 
 Columns are derived from code, never judged:
 
-* RPC ``current_path`` uses the tables ``/api/ws`` dispatch reads (``tui_gateway/ws.py``): served by
+* RPC ``current_path`` uses the tables ``/api/ws`` dispatch reads (``hermes_agent/tui_gateway/ws.py``): served by
   the authority (``AuthorityConnection.handlers`` + group verbs + ``profiles.list``), else legacy
-  fallback or refused per ``tui_gateway/ws_legacy_fallback.py::legacy_fallback_allowed``. A connector
+  fallback or refused per ``hermes_agent/tui_gateway/ws_legacy_fallback.py::legacy_fallback_allowed``. A connector
   verb the authority serves only for a session-owned call (``gateway/session_connections.py``) falls
   back for an account-owned one. Without an authority (standalone ``serve``/``dashboard``) every
   legacy method runs in-process on ``server.dispatch``.
@@ -76,9 +76,9 @@ def _collect() -> dict:
     from gateway.session_controls import AuthorityConnection
     from gateway.session_group_controls import GROUP_METHODS
     from hermes_cli.web_server import app
-    from tui_gateway import server
-    from tui_gateway.contracts.registry import CANONICAL_NAMESPACES
-    from tui_gateway.ws_legacy_fallback import legacy_fallback_allowed
+    from hermes_agent.tui_gateway import server
+    from hermes_agent.tui_gateway.contracts.registry import CANONICAL_NAMESPACES
+    from hermes_agent.tui_gateway.ws_legacy_fallback import legacy_fallback_allowed
 
     interactive = SimpleNamespace(capabilities=_PURPOSE_CAPABILITIES["interactive"])
 
@@ -114,7 +114,7 @@ def _facts() -> dict:
     """:func:`_collect` in a child interpreter with ``serve``'s import environment and a throwaway
     HERMES_HOME, so the route set never depends on the caller's process state or real profile."""
     with tempfile.TemporaryDirectory(prefix="serve-ledger-") as scratch:
-        # The facts go to a file: importing tui_gateway.server takes over stdout for its JSON-RPC.
+        # The facts go to a file: importing hermes_agent.tui_gateway.server takes over stdout for its JSON-RPC.
         home, out = Path(scratch) / "home", Path(scratch) / "facts.json"
         home.mkdir()
         env = {**os.environ, "HERMES_HOME": str(home), "HERMES_SERVE_HEADLESS": "1"}

@@ -9,7 +9,7 @@ from hermes_constants import get_hermes_home, reset_hermes_home_override, set_he
 
 @pytest.fixture
 def profile_b(tmp_path, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
     monkeypatch.setattr(server, "_arm_barge_listener_if_enabled", lambda: None)
     home = tmp_path / "profiles" / "b"
@@ -35,7 +35,7 @@ def _speaker(monkeypatch):
 
 def test_the_voice_fallback_speaks_as_the_turn_profile(profile_b, monkeypatch):
     from types import SimpleNamespace
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     seen, done = _speaker(monkeypatch)
     server._after_complete_turn("sid", {}, SimpleNamespace(tts_queue=None), "the reply")
     assert done.wait(10)
@@ -43,7 +43,7 @@ def test_the_voice_fallback_speaks_as_the_turn_profile(profile_b, monkeypatch):
 
 
 def test_speaker_keeps_caller_profile(profile_b, monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     seen, done = _speaker(monkeypatch)
     server._speak_text_with_barge("the reply")
     assert done.wait(10)
@@ -53,7 +53,7 @@ def test_speaker_keeps_caller_profile(profile_b, monkeypatch):
 def test_voice_tts_rpc_speaks_as_the_requested_profile(tmp_path, monkeypatch):
     """The registered ``voice.tts`` handler binds ``params.profile`` and both thread hops keep it;
     without a profile it stays on the launch home."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     launch, worker = tmp_path / "launch", tmp_path / "profiles" / "b"
     launch.mkdir()
     worker.mkdir(parents=True)

@@ -57,8 +57,8 @@ def target_scope(home: Path):
     profile does. The install writes its tree, config and ``.env`` there. The home override is
     bound for the launch profile too: the calling thread may carry another profile's override, and
     an unbound launch scope would leave it in place."""
-    from tui_gateway import server
-    from tui_gateway.launch_profile_policy import launch_profile_runtime_scope
+    from hermes_agent.tui_gateway import server
+    from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_runtime_scope
 
     launch = home.resolve() == Path(server._hermes_home).resolve()
     scope = (launch_profile_runtime_scope(server._hermes_home) if launch
@@ -69,7 +69,7 @@ def target_scope(home: Path):
 
 def _named_home(name: str) -> Path:
     """The home of the profile the Advanced modal named; raises for one that does not exist."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     return server._profile_home(name) or Path(server._hermes_home)
 

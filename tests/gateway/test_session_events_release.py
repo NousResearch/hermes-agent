@@ -1,6 +1,6 @@
 """A gateway session's replay frames live only as long as the session does.
 
-Each live session's ``SessionEvents`` stamps its frames into ``tui_gateway.event_replay`` under a private
+Each live session's ``SessionEvents`` stamps its frames into ``hermes_agent.tui_gateway.event_replay`` under a private
 lookup key. Before this, nothing released that key when the session ended: a closed or deleted session's
 ring stayed until the shared 64-session cap evicted it, and its counters stayed for the life of the process.
 A session that is only detached (resumable) keeps its ring, since a reconnect replays from it.
@@ -13,7 +13,7 @@ from tests.gateway.test_viewer_close_lifecycle import _call, _open, _owner
 
 
 def _recorded(key):
-    from tui_gateway import event_replay
+    from hermes_agent.tui_gateway import event_replay
     return (key in event_replay._replay_buffers or key in event_replay._replay_next_seq
             or key in event_replay._replay_evicted_through)
 
@@ -45,7 +45,7 @@ async def test_closing_the_last_viewer_frees_the_ring_and_detach_keeps_it(tmp_pa
 
 def test_a_dropped_session_stream_leaves_nothing_in_the_shared_cache():
     from gateway.session_events import SessionEvents
-    from tui_gateway import event_replay
+    from hermes_agent.tui_gateway import event_replay
 
     kept, dropped = SessionEvents(), SessionEvents()
     for stream in (kept, dropped):
@@ -62,7 +62,7 @@ def test_a_dropped_session_stream_leaves_nothing_in_the_shared_cache():
 
 def test_a_finalizer_that_finds_the_lock_held_defers_the_release_without_blocking():
     from gateway.session_events import SessionEvents
-    from tui_gateway import event_replay
+    from hermes_agent.tui_gateway import event_replay
 
     dropped = SessionEvents()
     dropped.publish('s', {'n': 0})

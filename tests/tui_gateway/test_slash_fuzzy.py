@@ -1,14 +1,14 @@
 """Tests for the description-aware slash fuzzy scorer (grok-cli port).
 
-Covers ``tui_gateway.slash_fuzzy`` (scoring tiers, catalog merge, stable
+Covers ``hermes_agent.tui_gateway.slash_fuzzy`` (scoring tiers, catalog merge, stable
 ordering) and how ``_rank_slash_completions`` consumes the ``score_of``
 lookup: skill rows sort by fuzzy score first, then usage, then name.
 """
 
 import math
 
-from tui_gateway.command_discovery import _rank_slash_completions
-from tui_gateway.slash_fuzzy import (
+from hermes_agent.tui_gateway.command_discovery import _rank_slash_completions
+from hermes_agent.tui_gateway.slash_fuzzy import (
     fuzzy_rank_slash_items,
     normalize_slash_search_query,
     score_slash_completion_item,
@@ -187,7 +187,7 @@ def test_repo_file_cache_sweeps_expired_roots_on_write(tmp_path, monkeypatch):
     used to be checked only on read, pinning every worktree listing for the process lifetime."""
     import time
 
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     now = [1000.0]
     monkeypatch.setattr(time, "monotonic", lambda: now[0])

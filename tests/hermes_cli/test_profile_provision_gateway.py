@@ -41,14 +41,14 @@ def _raise(exc):
 def test_the_contract_carries_the_cli_receipt_itself():
     """One definition: the contract's ``receipt`` is the dataclass the CLI builds and reads back."""
     from typing import Optional
-    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesCreateResult
+    from hermes_agent.tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesCreateResult
     assert ProfilesCreateResult.model_fields["receipt"].annotation == Optional[ProfileCreateReceipt]
 
 
 def test_clone_config_copies_the_callers_profile_and_reports_it(root):
     """``--clone`` sends ``clone_config`` with no ``clone_from``: the gateway copies the profile it runs
     in, and ``report`` returns what the CLI prints."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     (root / "SOUL.md").write_text("I am the root's soul.\n")  # only a clone copies it
     clone = server._methods["profiles.create"](
         1, {"name": "copy", "no_alias": True, "clone_config": True, "report": True})["result"]
@@ -71,7 +71,7 @@ def test_a_refused_create_answers_with_its_type_and_whole_text(root, monkeypatch
     from hermes_cli import profile_provision
     from hermes_cli.gateway_client import rpc_error
     from hermes_cli.profile_provision import refusal_from
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     profiles.create_profile("taken", no_alias=True)
     error = server._methods["profiles.create"](1, {"name": "taken", "no_alias": True})["error"]
     assert error["code"] == 4062
@@ -330,7 +330,7 @@ def test_a_url_gateway_creates_in_this_terminals_profile(root, monkeypatch):
     copies work, not the gateway's launch profile. A profile it can't serve refuses before any create."""
     from hermes_cli.gateway_client import rpc_error
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
-    from tui_gateway import ws_legacy_fallback
+    from hermes_agent.tui_gateway import ws_legacy_fallback
     monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "wss://gw.invalid/api/ws")
     request = ProfileCreateRequest(name="x", alias=False, clone_config=True)
     sent = _gateway(monkeypatch, {"ok": True, "receipt": _receipt()})
@@ -361,7 +361,7 @@ def test_refusals_the_cli_never_reports_as_maybe_created(root, monkeypatch):
     from hermes_cli.gateway_client import GatewayRPCError, rpc_error
     from hermes_cli.profile_provision import refusal
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     request = ProfileCreateRequest(name="x", alias=False)
     import json
     try:
@@ -409,7 +409,7 @@ def test_a_config_outage_mid_create_is_an_unknown_outcome(root, monkeypatch, whe
     from hermes_cli.config_backend import ConfigBackendUnavailable
     from hermes_cli.gateway_client import rpc_error
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
-    from tui_gateway.server import handle_request  # the real dispatcher (rebound onto server)
+    from hermes_agent.tui_gateway.server import handle_request  # the real dispatcher (rebound onto server)
     if where == "create":
         monkeypatch.setattr(profile_provision, "provision_profile", _raise(ConfigBackendUnavailable("backend down")))
     else:  # the profile is published; reading what the CLI prints fails
@@ -436,7 +436,7 @@ def test_a_handler_failure_named_like_a_routing_refusal_is_an_unknown_outcome(ro
     from hermes_cli.config_backend import ConfigBackendUnavailable
     from hermes_cli.gateway_client import rpc_error
     from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway
-    from tui_gateway.server import handle_request
+    from hermes_agent.tui_gateway.server import handle_request
     monkeypatch.setattr(ProfileCreateReceipt, "of", _raise(ConfigBackendUnavailable(reason)))
     real = handle_request({"jsonrpc": "2.0", "id": 1, "method": "profiles.create",
                            "params": {"name": "w3", "no_alias": True, "report": True}})["error"]

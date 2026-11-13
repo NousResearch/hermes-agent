@@ -50,7 +50,7 @@ def start_hosted_room_service():
     if _bound_server is None:
         return None
     from gateway.hosted_rooms import default_db_path
-    from tui_gateway.hosted_room_service import HostedRoomService
+    from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
     db_path = default_db_path()
     with _service_lock:
         if _service is not None and _service.db_path != db_path:
@@ -321,8 +321,8 @@ def _(rid, params: dict, service) -> dict:
     from gateway.hosted_rooms import (
         AuthorityConflictError, OwedRevokesFullError, RoomNotFoundError,
         local_authority_gateway_id, room_state)
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
-    from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
+    from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+    from hermes_agent.tui_gateway.hosted_room_peer_transport import PeerMemberRoute, route_identity
     target_url, transport_security = validate_room_link_url(params.get("target_url"))
     catalog = GatewayRoomCatalog.from_mapping(params.get("catalog"))
     if ROOM_LINK_PROTOCOL_VERSION not in catalog.protocol_versions:
@@ -338,7 +338,7 @@ def _(rid, params: dict, service) -> dict:
         # Owed at the URL this handler probes (``hermes serve`` takes the caller's URL, as it always
         # has), so a grant it was handed is never forgotten while it could still pass.
         service.owe_grant_revoke(room_id=room_id, member_id=member_id, target_url=target_url, grant=grant)
-    from tui_gateway.hosted_room_service import route_publication_lock
+    from hermes_agent.tui_gateway.hosted_room_service import route_publication_lock
 
     def check_grant_scope(room) -> None:
         if not room_grant_matches_scope(
@@ -434,7 +434,7 @@ def _(rid, params: dict, db_path) -> dict:
         db_path, include_disbanded=params.get("include_disbanded") is True, limit=limit,
         offset=offset)
     next_offset = offset + limit if len(rooms) == limit else None
-    from tui_gateway.methods_groups_forward import local_rooms
+    from hermes_agent.tui_gateway.methods_groups_forward import local_rooms
     return _ok(rid, {"rooms": local_rooms(rooms), "next_offset": next_offset})
 
 
@@ -521,13 +521,13 @@ def _(rid, params: dict, service) -> dict:
         return disband_with_state()
     if existing.get("disbanded_at") is not None:
         return disband_with_state(existing)
-    from tui_gateway.hosted_room_service import disband_fence, route_publication_lock
+    from hermes_agent.tui_gateway.hosted_room_service import disband_fence, route_publication_lock
     with disband_fence(service, room_id):
         service.stop_room(
             room_id, cancel_id=str(params.get("cancel_id") or "room-disbanded"),
             require_acknowledged=True)
-        from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-        from tui_gateway.hosted_room_service import RoomDisbandRefusedError
+        from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+        from hermes_agent.tui_gateway.hosted_room_service import RoomDisbandRefusedError
         for attempt in range(3):
             try:
                 service.revoke_room_routes(room_id)

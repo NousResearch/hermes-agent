@@ -101,7 +101,7 @@ def test_a_tag_pin_records_the_commit_and_the_tag_it_satisfies(home, repo, monke
 
 
 def test_the_gateway_marks_an_already_exists_refusal_so_the_dialog_offers_force():
-    from tui_gateway.methods_tools import _refusal_data
+    from hermes_agent.tui_gateway.methods_tools import _refusal_data
 
     assert _refusal_data({"ok": False, "error": "x", "exists": True}) == {"reason": "exists"}
     assert _refusal_data({"ok": False, "error": "x", "source_moved": True}) == {"reason": "source_moved"}

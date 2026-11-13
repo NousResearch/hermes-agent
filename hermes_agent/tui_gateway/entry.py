@@ -15,13 +15,13 @@ import time
 import traceback
 from contextlib import suppress
 
-from tui_gateway._env import env_float
-from tui_gateway._stdin_recovery import handle_spurious_eof
+from hermes_agent.tui_gateway._env import env_float
+from hermes_agent.tui_gateway._stdin_recovery import handle_spurious_eof
 
-from tui_gateway import server
-from tui_gateway.event_replay import replay_epoch
-from tui_gateway.server import _CRASH_LOG, _err, dispatch, resolve_skin, write_json
-from tui_gateway.transport import TeeTransport
+from hermes_agent.tui_gateway import server
+from hermes_agent.tui_gateway.event_replay import replay_epoch
+from hermes_agent.tui_gateway.server import _CRASH_LOG, _err, dispatch, resolve_skin, write_json
+from hermes_agent.tui_gateway.transport import TeeTransport
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def _install_sidecar_publisher() -> None:
     url = os.environ.get("HERMES_TUI_SIDECAR_URL")
     if not url:
         return
-    from tui_gateway.event_publisher import WsPublisherTransport
+    from hermes_agent.tui_gateway.event_publisher import WsPublisherTransport
     server._stdio_transport = TeeTransport(server._stdio_transport, WsPublisherTransport(url))
 
 
@@ -170,7 +170,7 @@ def _log_signal(signum: int, frame) -> None:
     # atexit (_shutdown_sessions) can be blocked past the grace window by a worker holding
     # the GIL/_stdout_lock; finalize explicitly so unpersisted messages reach state.db first.
     with suppress(Exception):
-        from tui_gateway.server import _shutdown_sessions
+        from hermes_agent.tui_gateway.server import _shutdown_sessions
         _shutdown_sessions()
     # Unwind the main thread so atexit + finalisers run; the daemon timer is the safety net.
     sys.exit(0)
@@ -238,7 +238,7 @@ def mcp_discovery_in_flight() -> bool:
 
     There are two independent discovery-thread owners by surface: the stdio ``hermes --tui`` path spawns ITS
     thread here (``_mcp_discovery_thread``), while the desktop app + dashboard WebSocket sidecar
-    (``tui_gateway/ws.py``) and ``hermes dashboard`` spawn theirs via
+    (``hermes_agent/tui_gateway/ws.py``) and ``hermes dashboard`` spawn theirs via
     ``hermes_cli.mcp_startup.start_background_mcp_discovery``. The late-refresh scheduler imports this
     function regardless of surface, so it MUST consult both — checking only the entry thread left the
     desktop/dashboard surfaces with no late refresh, so a slow MCP server's tools never surfaced for the

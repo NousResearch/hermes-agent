@@ -2017,7 +2017,7 @@ def _(rid, params: dict, session: dict) -> dict:
                 return _err(rid, 5008, f"undo: {exc}")
     if removed:  # Ink /retry is undo + resend and says so via ``intent`` (helper: methods_tools).
         _tui_model_friction("retry" if params.get("intent") == "retry" else "undo", session)
-    return _ok(rid, {"removed": removed, **_tools_mod("tui_gateway.checkpoints").undo_hint_fields(session, rewound, params)})
+    return _ok(rid, {"removed": removed, **_tools_mod("hermes_agent.tui_gateway.checkpoints").undo_hint_fields(session, rewound, params)})
 
 
 def _save_via_compute_host(rid, params: dict) -> dict:
@@ -2314,7 +2314,7 @@ def _(rid, params: dict) -> dict:
         last_seen = int(params.get("last_seen", 0))
     except (TypeError, ValueError):
         return _err(rid, -32602, "invalid params: last_seen must be an integer")
-    from tui_gateway import event_replay as er
+    from hermes_agent.tui_gateway import event_replay as er
     frames = er.events_since(sid, last_seen)
     # ``epoch``: in-process seq — clients reset watermarks when this differs from gateway.ready's.
     # ``open_requests``: server→client requests still unanswered — the ring cannot carry "a question still
@@ -2326,7 +2326,7 @@ def _(rid, params: dict) -> dict:
 @method("session.events.stats")
 def _(rid, params: dict) -> dict:
     """Replay-buffer telemetry (ops/debug)."""
-    from tui_gateway import event_replay
+    from hermes_agent.tui_gateway import event_replay
     return _ok(rid, event_replay.replay_stats())
 
 

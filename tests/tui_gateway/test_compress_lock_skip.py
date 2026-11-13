@@ -54,7 +54,7 @@ def test_compress_session_history_raises_on_lock_skip():
     """When _compression_skipped_due_to_lock is set on the agent,
     _compress_session_history must raise CompressionLockHeld with
     the holder string so callers can surface a clear message."""
-    from tui_gateway.server import _compress_session_history, CompressionLockHeld
+    from hermes_agent.tui_gateway.server import _compress_session_history, CompressionLockHeld
 
     history = _make_history()
     agent = _make_lock_skip_agent("pid=99999:tid=1:agent=1:nonce=abc")
@@ -78,7 +78,7 @@ def test_compress_session_history_raises_on_lock_skip():
 
 
 def test_session_compress_rpc_returns_lock_held_payload():
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     agent = _make_lock_skip_agent("pid=4242")
     session = _make_session(agent, _make_history())
@@ -111,7 +111,7 @@ def test_session_compress_rpc_returns_lock_held_payload():
 def test_command_dispatch_compress_reports_lock_skip_as_output_not_error():
     """CompressionLockHeld must NOT fall through to the generic
     'compress failed' error handler — it's a clean no-op with feedback."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     agent = _make_lock_skip_agent("pid=5150")
     session = _make_session(agent, _make_history())
@@ -143,7 +143,7 @@ def test_command_dispatch_compress_reports_lock_skip_as_output_not_error():
 
 
 def test_mirror_slash_side_effects_reports_lock_skip():
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     agent = _make_lock_skip_agent("pid=6161")
     session = _make_session(agent, _make_history())

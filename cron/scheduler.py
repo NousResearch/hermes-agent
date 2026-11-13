@@ -3215,7 +3215,7 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     from agent.secret_scope import set_multiplex_context, set_secret_scope
     from cron.scheduler_provider import routed_profile_fire
     from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from tui_gateway.launch_profile_policy import owner_secret_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     home = Path(_get_hermes_home())
     hydrate_profile_secret_sources(home)

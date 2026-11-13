@@ -1,11 +1,11 @@
 """The browser vault's prompts (unlock, save login, one-time code) for a local viewer's turn.
 
-Main's TUI sidecar registered the three vault callbacks per session (``tui_gateway/agent_callbacks.py``):
+Main's TUI sidecar registered the three vault callbacks per session (``hermes_agent/tui_gateway/agent_callbacks.py``):
 ``browser_vault`` asked the renderer through ``vault.unlock_prompt``, ``vault.save_login`` and ``vault.code``
 server→client requests, and the Desktop and Ink cards answered with ``{value}``. On the session authority no
 callback was registered, so every Desktop chat reported ``prompt_unavailable`` ("this session cannot ask the
 user") and a site's emailed or texted code could not be entered at all. Here the owner sends the same request
-frames (``tui_gateway/contracts/server_requests.py``) to the viewers attached to the session's event stream and
+frames (``hermes_agent/tui_gateway/contracts/server_requests.py``) to the viewers attached to the session's event stream and
 blocks the agent thread until one answers, the turn is interrupted, or it times out. Passwords and codes are
 never published, journaled or logged: they travel only in the viewer's response frame. The request registry
 itself is ``gateway/session_server_requests.py``.
@@ -18,7 +18,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Main's sidecar deadlines (``tui_gateway/agent_callbacks.py``).
+# Main's sidecar deadlines (``hermes_agent/tui_gateway/agent_callbacks.py``).
 UNLOCK_TIMEOUT_S = 120
 SAVE_LOGIN_TIMEOUT_S = 180
 CODE_TIMEOUT_S = 180
@@ -26,7 +26,7 @@ CODE_TIMEOUT_S = 180
 
 def release_unlocks(session_id) -> None:
     """The session closed: lock the password managers it unlocked, as the sidecar's session end does
-    (``tui_gateway/session_lifecycle.py`` ``_lock_vault_managers``). Other sessions keep theirs."""
+    (``hermes_agent/tui_gateway/session_lifecycle.py`` ``_lock_vault_managers``). Other sessions keep theirs."""
     try:
         from agent.vault_backends import unlock
         unlock.release_session(session_id)

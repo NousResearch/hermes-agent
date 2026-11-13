@@ -282,7 +282,7 @@ async def test_restart_wait_cuts_sockets_opened_before_it(tmp_path, monkeypatch,
     async def fallback(*args):
         pytest.fail("a ticketed native socket must not enter the legacy fallback")
 
-    monkeypatch.setattr("tui_gateway.ws.handle_ws", handle)
+    monkeypatch.setattr("hermes_agent.tui_gateway.ws.handle_ws", handle)
     monkeypatch.setattr(web, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     monkeypatch.setattr(web_server_chat, "_ws_request_is_allowed", lambda ws: True)
     frame = json.dumps({"method": "prompt.receipt"})
@@ -321,7 +321,7 @@ async def test_restart_wait_lets_a_webapp_tab_dial_back_in_to_answer_the_parked_
     from gateway.session_authority import LiveSession, SessionAuthority
     from tests.hermes_cli.test_webapp_socket_tickets import _SESSION, serve_webapp
     from tests.waiting import async_wait_until
-    from tui_gateway import server as tui_server
+    from hermes_agent.tui_gateway import server as tui_server
 
     web = serve_webapp(tmp_path, monkeypatch).server
     runner = SimpleNamespace(_draining=False, _running=True, session_runtime_descriptor={"state": "ready"},
@@ -415,7 +415,7 @@ async def test_restart_wait_admits_a_browser_ticket_only_where_its_gate_redeems_
     async def handle(ws, **kwargs):
         reached.append(kwargs)
 
-    monkeypatch.setattr("tui_gateway.ws.handle_ws", handle)
+    monkeypatch.setattr("hermes_agent.tui_gateway.ws.handle_ws", handle)
     sent = []
 
     async def receive():

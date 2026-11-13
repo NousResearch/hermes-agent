@@ -983,7 +983,7 @@ DEFAULT_CONFIG = {
     "dashboard": {
         # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
         "theme": "default",
-        # Process-isolation rollout controls. Read via the raw config loader, so tui_gateway.server
+        # Process-isolation rollout controls. Read via the raw config loader, so hermes_agent.tui_gateway.server
         # also owns explicit defaults.
         "turn_isolation": False,
         "compute_host_heartbeat_secs": 15,
@@ -2145,7 +2145,7 @@ DEFAULT_CONFIG = {
         #     profile's, but it is new reachable surface, so audit any reverse proxy that assumed
         #     /p/ was dead.
         #   • SECRET SCOPE — eager multi-profile activation no longer consults the flag
-        #     (tui_gateway/launch_profile_policy.py), so a host with a leftover servable profile
+        #     (hermes_agent/tui_gateway/launch_profile_policy.py), so a host with a leftover servable profile
         #     dir flips eager=false/reads-open -> eager=true/fail-closed: an UNSCOPED `get_secret`
         #     now raises UnscopedSecretError, and a key that lives ONLY in the unit's
         #     `Environment=` (no .env) disappears from file-built scopes. A genuinely

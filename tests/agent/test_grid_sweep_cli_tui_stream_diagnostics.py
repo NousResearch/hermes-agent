@@ -74,12 +74,12 @@ def test_invalid_config_int_print_honors_policy_log_always(tmp_path, monkeypatch
 # --- agent/turn_tool_validation.py auto-repair notice ------------------------------------------
 
 
-# --- TUI (functions are rebound onto tui_gateway.server by bind_module) -------------------------
+# --- TUI (functions are rebound onto hermes_agent.tui_gateway.server by bind_module) -------------------------
 
 @pytest.mark.parametrize("setting", MODES)
 def test_tui_goal_compression_recovery_notice_honors_policy(tmp_path, monkeypatch, setting):
     _policy(tmp_path, monkeypatch, setting)
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload: emitted.append((ev, payload)))
     monkeypatch.setattr(server, "_plan_goal_compression_recovery",
@@ -96,7 +96,7 @@ def test_tui_preview_restart_status_warning_honors_policy(tmp_path, monkeypatch,
     """The preview-restart progress panel's status_callback: warning rows follow the TUI policy;
     ordinary status rows and tool progress always render."""
     _policy(tmp_path, monkeypatch, setting)
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload: emitted.append(payload["text"]))
     monkeypatch.setattr(server, "_session_get", lambda sid: {"agent": types.SimpleNamespace(_notification_config=None)}, raising=False)

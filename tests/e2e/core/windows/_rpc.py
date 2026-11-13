@@ -1,4 +1,4 @@
-"""Minimal stdio JSON-RPC client for ``python -m tui_gateway.entry`` — the process the Ink
+"""Minimal stdio JSON-RPC client for ``python -m hermes_agent.tui_gateway.entry`` — the process the Ink
 TUI spawns on every OS. Frames are UTF-8 JSON lines with non-ASCII left literal, exactly
 what Node's ``JSON.stringify`` + ``stdin.write`` produce, so the pipe encoding the gateway
 applies on Windows is part of what is under test."""

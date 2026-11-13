@@ -26,7 +26,7 @@ def test_submit_error_log_contains_task_and_safe_reason_only(db, monkeypatch, ca
 
     monkeypatch.setattr(rpc, 'submit', refuse)
     runtime = _runtime(db, rpc)
-    with caplog.at_level(logging.WARNING, logger='tui_gateway.hosted_room_driver'):
+    with caplog.at_level(logging.WARNING, logger='hermes_agent.tui_gateway.hosted_room_driver'):
         runtime._process_room(BINDING)
         runtime._record_error('worker cycle failed: PRIVATE_SECRET_SENTINEL')
         runtime._record_error('stop remains pending: PRIVATE_BODY_SENTINEL')
@@ -40,7 +40,7 @@ def test_submit_error_log_contains_task_and_safe_reason_only(db, monkeypatch, ca
 def test_legal_long_wait_can_complete_without_stop_or_resubmit(db, monkeypatch, waiting_for_approval):
     """Simulated monotonic elapsed time, not a paid/real hour-long model run."""
     from gateway import hosted_room_driver as state
-    from tui_gateway import hosted_room_driver as driver
+    from hermes_agent.tui_gateway import hosted_room_driver as driver
     elapsed = [0.0]
     monkeypatch.setattr(driver, 'time', SimpleNamespace(monotonic=lambda: elapsed[0]))
     identity = _identity()

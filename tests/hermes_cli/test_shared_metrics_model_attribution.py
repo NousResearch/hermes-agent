@@ -202,7 +202,7 @@ def test_tui_switch_before_first_prompt_blames_the_configured_route(
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text(
         f"model:\n  provider: {provider}\n  default: {model}\n" + (f"  base_url: {base_url}\n" if base_url else ""))
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(server, "_hermes_home", home)  # captured at first import
     result = SimpleNamespace(

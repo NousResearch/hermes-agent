@@ -1,5 +1,5 @@
 """A local viewer's turn asks for the sudo password through the TUI's masked prompt, as main's sidecar
-did (``tui_gateway/agent_callbacks.py`` ``set_sudo_password_callback``): FINDINGS row 9, where the
+did (``hermes_agent/tui_gateway/agent_callbacks.py`` ``set_sudo_password_callback``): FINDINGS row 9, where the
 canonical owner registered no callback and ``sudo`` failed headless in 0.1 s."""
 import threading
 import time
@@ -46,7 +46,7 @@ def test_sudo_request_reaches_the_viewer_and_its_answer_returns():
     _wait_for(lambda: any(f.get('method') == 'sudo' for f in peer.frames))
     request = next(f for f in peer.frames if f.get('method') == 'sudo')
     assert request['params'] == {'session_id': 's1', 'command': 'sudo true'}
-    from tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
+    from hermes_agent.tui_gateway.contracts.registry import SERVER_REQUESTS, validate_params
     assert validate_params(SERVER_REQUESTS['sudo'], request['params'])[1] is None
     answer = {'jsonrpc': '2.0', 'id': request['id'], 'result': {'value': 'hunter2'}}
     assert is_response_frame(answer) and resolve(answer)

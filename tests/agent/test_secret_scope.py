@@ -245,7 +245,7 @@ class TestScopeSetupRecovery:
         """The token never reaches the caller when the bind raises, so nothing may be left
         bound (home override + secret scope). Driven through ``server`` — the split module's
         functions run rebound on server.py's globals (``bind_module``)."""
-        from tui_gateway import server
+        from hermes_agent.tui_gateway import server
         from hermes_constants import get_hermes_home_override
 
         home = tmp_path / "profiles" / "b"

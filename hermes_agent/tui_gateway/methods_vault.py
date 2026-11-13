@@ -194,8 +194,8 @@ def _(rid, params: dict) -> dict:
 
     from tools.browser_vault_preview import run_preview_vault
     from tools.browser_vault_tool import browser_vault_fill
-    from tui_gateway import server_requests
-    from tui_gateway.transport import current_transport
+    from hermes_agent.tui_gateway import server_requests
+    from hermes_agent.tui_gateway.transport import current_transport
 
     from agent.vault_backends import UnlockRequired, backend_for_handle
 

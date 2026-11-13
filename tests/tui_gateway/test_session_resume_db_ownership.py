@@ -2,7 +2,7 @@
 
 In app-global remote mode a resume for another local profile opens a DEDICATED
 ``SessionDB(db_path=<profile>/state.db)`` handle (the ``session.resume`` handler
-in tui_gateway/methods_session.py). That handle is the caller's to close until
+in hermes_agent/tui_gateway/methods_session.py). That handle is the caller's to close until
 it is handed to the long-lived agent by ``_init_session`` — and
 ``_init_session`` never closes a caller-supplied ``session_db`` (its
 ``_init_owns_db`` stays False for that case).
@@ -33,7 +33,7 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 
 
 class _RecordingDB:

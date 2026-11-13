@@ -6,8 +6,8 @@ import time
 import uuid
 import weakref
 
-from tui_gateway import event_replay
-from tui_gateway.transport import FanoutTransport
+from hermes_agent.tui_gateway import event_replay
+from hermes_agent.tui_gateway.transport import FanoutTransport
 
 
 class SessionEvents:

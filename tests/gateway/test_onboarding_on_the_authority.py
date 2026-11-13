@@ -32,7 +32,7 @@ async def _desktop(tmp_path, monkeypatch, turns):
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
     from gateway.session_controls import AuthorityConnection
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -66,7 +66,7 @@ async def _desktop(tmp_path, monkeypatch, turns):
 
 
 async def _request(desktop, rid, method, params):
-    from tui_gateway.ws import _dispatch_request
+    from hermes_agent.tui_gateway.ws import _dispatch_request
     reply = await _dispatch_request(desktop.connection, {"jsonrpc": "2.0", "id": rid, "method": method,
                                                          "params": params}, method, desktop.transport)
     if reply is None:

@@ -9,7 +9,7 @@ import pytest
 
 def test_foreign_rpc_preview_import_and_profile_isolation(tmp_path, monkeypatch):
     from hermes_agent.hermes_state import SessionDB
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

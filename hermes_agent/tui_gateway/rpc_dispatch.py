@@ -51,11 +51,11 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool (returns None; the worker writes its own
     response via the bound transport), everything else inline (returns the response dict).
     *transport* pins every write of this request — events included — to that transport;
-    omitted → the module stdio transport (``tui_gateway.entry`` behaviour)."""
+    omitted → the module stdio transport (``hermes_agent.tui_gateway.entry`` behaviour)."""
     t = transport or _stdio_transport
     token = bind_transport(t)
     try:
-        from tui_gateway import server_requests
+        from hermes_agent.tui_gateway import server_requests
         if server_requests.is_response_frame(req):
             # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
             if not server_requests.resolve_response(req, t) and not _relay_compute_host_response(req):

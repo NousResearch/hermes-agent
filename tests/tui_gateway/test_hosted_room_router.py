@@ -15,8 +15,8 @@ from gateway import hosted_room_router as router
 from gateway import hosted_rooms
 from gateway.hosted_room_context import set_room_context
 from tests.waiting import wait_until
-from tui_gateway import hosted_room_router_call as router_call
-from tui_gateway.hosted_room_service import HostedRoomService
+from hermes_agent.tui_gateway import hosted_room_router_call as router_call
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 PROFILES = ("research", "build", "review")
 ROOM_ID = "router-room"

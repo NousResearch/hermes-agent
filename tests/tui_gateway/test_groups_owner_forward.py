@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import tui_gateway.server as srv
-from tui_gateway import methods_groups, owner_forward
+import hermes_agent.tui_gateway.server as srv
+from hermes_agent.tui_gateway import methods_groups, owner_forward
 
 MEMBERS = [{"member_id": "default", "profile": "default", "handle": "hermes"},
            {"member_id": "ops", "profile": "ops", "handle": "ops"}]
@@ -107,7 +107,7 @@ def test_owner_refusal_is_returned_not_run_locally(home, monkeypatch):
 ])
 def test_only_sends_refused_before_forwarding_are_marked_unsent(home, monkeypatch, failure, method, code, data):
     from hermes_cli.gateway_client import GatewayRPCError
-    from tui_gateway import methods_groups_forward
+    from hermes_agent.tui_gateway import methods_groups_forward
 
     monkeypatch.setattr(methods_groups_forward, "_standalone_holder", lambda _: "gateway")
     _discovery(monkeypatch, {"absent": "absent", "busy": "conflict"}.get(failure, "ready"))
@@ -156,7 +156,7 @@ def test_gateway_less_list_hides_rooms_handed_to_the_gateway(home):
 
 
 def test_a_starting_gateway_is_waited_for_and_nothing_lands_locally(home, owner, monkeypatch):
-    from tui_gateway import methods_groups_forward
+    from hermes_agent.tui_gateway import methods_groups_forward
     monkeypatch.setattr(methods_groups_forward, "_READY_POLL_S", 0.0, raising=False)
     _discovery(monkeypatch, "starting", "starting", "ready")
 
@@ -207,7 +207,7 @@ def test_a_handed_room_is_never_renamed_in_the_standalone_store_while_its_gatewa
     import sqlite3
     from gateway.hosted_rooms import default_db_path, list_rooms
     from gateway.hosted_rooms_gateway_import import import_standalone_rooms
-    from tui_gateway.methods_groups_forward import OWNER_LOST_CODE
+    from hermes_agent.tui_gateway.methods_groups_forward import OWNER_LOST_CODE
     _discovery(monkeypatch, "absent")
     srv._methods["groups.create"](1, {"room_id": "room-desk", "name": "Before", "members": MEMBERS})
     target = default_db_path().with_name("state.db")

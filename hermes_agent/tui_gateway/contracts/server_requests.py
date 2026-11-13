@@ -171,7 +171,7 @@ class ApprovalChoice(WireEnum):
 
 
 class ApprovalRequestParams(ServerRequestParams):
-    """``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side."""
+    """``hermes_agent/tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side."""
 
     request_id: str
     command: str = ""

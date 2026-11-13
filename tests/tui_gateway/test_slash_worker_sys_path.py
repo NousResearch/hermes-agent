@@ -1,11 +1,11 @@
-"""Regression tests for tui_gateway/slash_worker.py sys.path hardening (issue #51286).
+"""Regression tests for hermes_agent/tui_gateway/slash_worker.py sys.path hardening (issue #51286).
 
-The slash-command worker is spawned as ``-m tui_gateway.slash_worker`` and
+The slash-command worker is spawned as ``-m hermes_agent.tui_gateway.slash_worker`` and
 inherits the user's CWD. A local package (e.g. ``utils/``) in that CWD shadows
 the installed hermes ``utils`` module and crashes the worker on ``import cli``
 (``ImportError: cannot import name 'atomic_replace' from 'utils'``).
 
-#51693 added this guard to the sibling entrypoints ``tui_gateway/entry.py`` and
+#51693 added this guard to the sibling entrypoints ``hermes_agent/tui_gateway/entry.py`` and
 ``hermes_agent/acp_adapter/entry.py`` (via the shared ``hermes_bootstrap.harden_import_path``
 helper) but missed this child, so the crash still reproduced. slash_worker.py
 must run the guard before its first non-stdlib import.
@@ -32,7 +32,7 @@ def test_slash_worker_imports_from_cwd_with_colliding_utils(tmp_path):
     env["PYTHONPATH"] = str(PROJECT_ROOT)
 
     result = subprocess.run(
-        [sys.executable, "-c", "import tui_gateway.slash_worker"],
+        [sys.executable, "-c", "import hermes_agent.tui_gateway.slash_worker"],
         cwd=tmp_path,
         env=env,
         capture_output=True,

@@ -18,7 +18,7 @@ guard is covered in ``tests/hermes_cli/test_picker_prewarm.py``):
   must not prevent ``main()`` from reaching the read loop.
 
 Harness: same style as tests/tui_gateway/test_tui_entry_mcp_owner.py — import
-``tui_gateway.entry`` and monkeypatch its module attributes, running the real
+``hermes_agent.tui_gateway.entry`` and monkeypatch its module attributes, running the real
 ``main()`` with stubbed I/O collaborators (no subprocess, no real gateway).
 """
 
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import io
 
-from tui_gateway import entry
+from hermes_agent.tui_gateway import entry
 from hermes_cli import model_switch_providers
 
 

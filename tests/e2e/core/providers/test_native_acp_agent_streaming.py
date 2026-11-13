@@ -7,7 +7,7 @@ emitted reach the user's surface BEFORE the turn completes, so a long turn never
 
 Two real surfaces, each timestamped against the fake's own clock (same host):
 
-* the Desktop/TUI event stream (``python -m tui_gateway.entry`` over stdio): ``reasoning.delta`` /
+* the Desktop/TUI event stream (``python -m hermes_agent.tui_gateway.entry`` over stdio): ``reasoning.delta`` /
   ``message.delta`` events carrying the agent's text (#120550);
 * ACP composition — Hermes itself served as an ACP agent (``hermes acp``) on top of an ``external_process``
   ACP provider: the outer client must get ``session/update`` chunks before the inner turn ends (#101507).

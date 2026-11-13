@@ -1,4 +1,4 @@
-from tui_gateway.contracts.connectors import (
+from hermes_agent.tui_gateway.contracts.connectors import (
     ConnectorAccountsParams,
     ConnectorAccountsRemoveParams,
     ConnectorAccountsRenameParams,
@@ -62,7 +62,7 @@ def _(rid, request):
     from tools.connectors.portal.client import PortalConnectorClient
     from tools.connectors.portal.errors import InvalidConnectorSlug
     from tools.connectors.portal.tools_cache import read_tools
-    from tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorToolsResult
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorToolsResult
 
     client = PortalConnectorClient()
     client.require_authentication()
@@ -83,7 +83,7 @@ def _(rid, request):
 def _(rid, _params):
     from tools.connectors.portal.client import PortalConnectorClient
     from tools.managed_tool_gateway import read_nous_access_token
-    from tui_gateway.contracts.connectors import ConnectorsCatalogResult
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorsCatalogResult
 
     client = PortalConnectorClient()
     catalog = client.catalog() if read_nous_access_token() else client.public_catalog()
@@ -102,7 +102,7 @@ def _(rid, _params):
 def _(rid, request):
     from tools.connectors.portal.client import PortalConnectorClient
     from tools.managed_tool_gateway import read_nous_access_token
-    from tui_gateway.contracts.connectors import ConnectorAccountRow, ConnectorAccountsResult
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorAccountRow, ConnectorAccountsResult
 
     accounts = PortalConnectorClient().list_accounts() if read_nous_access_token() else []
     rows = [account for account in accounts if request.connector is None or account["connector"] == request.connector]
@@ -111,7 +111,7 @@ def _(rid, request):
 
 
 def _account_row(account):
-    from tui_gateway.contracts.connectors import ConnectorAccountRow
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorAccountRow
 
     return ConnectorAccountRow(
         connection_id=account["connectionId"],
@@ -144,7 +144,7 @@ def _(rid, request):
         ToolGatewayError,
     )
     from tools.connectors.portal.client import PortalConnectorClient
-    from tui_gateway.contracts.connectors import ConnectorErrorReason
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
     try:
         account = PortalConnectorClient().rename_account(request.connection_id, request.alias)
@@ -177,7 +177,7 @@ def _(rid, request):
 def _(rid, request):
     from tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
     from tools.connectors.portal.client import PortalConnectorClient
-    from tui_gateway.contracts.connectors import ConnectorAccountsRemoveResult, ConnectorErrorReason
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorAccountsRemoveResult, ConnectorErrorReason
 
     try:
         removed = PortalConnectorClient().delete_account(request.connection_id)
@@ -209,7 +209,7 @@ def _(rid, request):
 def _(rid, _params):
     from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
     from tools.connectors.portal.client import PortalConnectorClient
-    from tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorPolicyGetResult, ConnectorPolicyLayer
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorPolicyGetResult, ConnectorPolicyLayer
 
     try:
         client = PortalConnectorClient()
@@ -242,7 +242,7 @@ def _(rid, request):
     from tools.connectors.gateway.errors import GatewayAuthError, ToolGatewayError
     from tools.connectors.portal.client import PortalConnectorClient
     from tools.connectors.portal.policy import InvalidMemberPolicy, compose_connector_write, compose_tools_write
-    from tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorPolicySetResult, ToolsChange
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason, ConnectorPolicySetResult, ToolsChange
 
     try:
         client = PortalConnectorClient()
@@ -265,7 +265,7 @@ def _(rid, request):
 
 
 def _policy_rule_fields(body):
-    from tui_gateway.contracts.connectors import ConnectorPolicyTags
+    from hermes_agent.tui_gateway.contracts.connectors import ConnectorPolicyTags
 
     if body.mode in ("unrestricted", "deny-all"):
         return {}
@@ -277,7 +277,7 @@ def _policy_rule_fields(body):
 
 
 def _contract_policy_body(body):
-    from tui_gateway.contracts import connectors as contract
+    from hermes_agent.tui_gateway.contracts import connectors as contract
 
     models = {
         "unrestricted": contract.ConnectorPolicyUnrestrictedBody,
@@ -289,7 +289,7 @@ def _contract_policy_body(body):
 
 
 def _contract_policy_effective(effective):
-    from tui_gateway.contracts import connectors as contract
+    from hermes_agent.tui_gateway.contracts import connectors as contract
 
     models = {
         "unrestricted": contract.ConnectorPolicyEffectiveUnrestricted,

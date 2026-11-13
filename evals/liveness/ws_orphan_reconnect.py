@@ -17,8 +17,8 @@ home = tempfile.mkdtemp(prefix="hermes-orphan-wire-")
 os.environ.clear()
 os.environ.update(HOME=home, HERMES_HOME=home + "/.hermes", PATH="/usr/bin:/bin")
 sys.path.insert(0, str(repo))
-from tui_gateway import server as s
-from tui_gateway.ws import handle_ws
+from hermes_agent.tui_gateway import server as s
+from hermes_agent.tui_gateway.ws import handle_ws
 from fastapi import FastAPI, WebSocket
 import uvicorn
 from websockets.sync.client import connect

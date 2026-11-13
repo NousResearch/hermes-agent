@@ -4,7 +4,7 @@ Protocol: reads JSON lines from stdin {id, command}, writes {id, ok, output|erro
 """
 
 # Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory from shadowing Hermes's own
-# top-level modules: this worker is spawned as ``-m tui_gateway.slash_worker`` with the user's CWD, so
+# top-level modules: this worker is spawned as ``-m hermes_agent.tui_gateway.slash_worker`` with the user's CWD, so
 # ``import cli`` would otherwise resolve ``utils`` to a colliding local package and crash the child in a
 # retry loop. ``hermes_bootstrap`` lives at the repo root (no collision risk), so importing it first is safe.
 # ``hermes_bootstrap`` lives at the repo root, so importing it is safe before the guard runs (its name won't
@@ -25,7 +25,7 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
-from tui_gateway._stdin_recovery import handle_spurious_eof
+from hermes_agent.tui_gateway._stdin_recovery import handle_spurious_eof
 
 if TYPE_CHECKING:
     from cli import HermesCLI

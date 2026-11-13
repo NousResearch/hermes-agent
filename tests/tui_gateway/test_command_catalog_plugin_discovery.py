@@ -8,7 +8,7 @@ the classic CLI then refuses dispatch instead of letting a same-named skill or b
 from importlib import import_module
 from types import SimpleNamespace
 
-from tui_gateway.command_discovery import command_catalog
+from hermes_agent.tui_gateway.command_discovery import command_catalog
 
 
 def _catalog(get_plugin_commands):

@@ -11,7 +11,7 @@ import types
 
 import pytest
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 PASSWORD = "synthetic-key-button-pw"
 ORIGIN = "https://login.example.test"
@@ -36,7 +36,7 @@ def login(tmp_path, monkeypatch):
 @pytest.fixture
 def window(monkeypatch):
     """The renderer answering ``preview.act`` vault requests for its pinned tab."""
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     state = {"origin": ORIGIN, "calls": []}
 
@@ -86,7 +86,7 @@ def test_key_button_refuses_another_origin_before_resolving_the_password(login, 
 
 @pytest.mark.parametrize("relayed", [False, True])
 def test_preview_vault_request_is_live_only_and_still_resolves(monkeypatch, relayed):
-    from tui_gateway import server_requests
+    from hermes_agent.tui_gateway import server_requests
 
     server = srv
 

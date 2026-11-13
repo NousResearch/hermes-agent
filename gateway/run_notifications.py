@@ -1270,7 +1270,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             # No routed profile: the launch profile's own completion. Bind ITS scope once the
             # process multiplexes — unscoped, a fail-closed ledger read raises on a legitimate
             # launch-profile event (no-op while single-profile).
-            from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+            from hermes_agent.tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
             return async_launch_profile_scope_if_multiplexed()
         profile_home = self._resolve_profile_home_for_source(source)
         if get_hermes_home_override() == str(profile_home):
@@ -1282,7 +1282,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Scope of the served profile whose own store holds a raw api_server session (its events name no
         profile), else the launch profile's, as for any unrouted event."""
         from gateway.run import _async_profile_runtime_scope
-        from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
+        from hermes_agent.tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
         served = await asyncio.to_thread(self._served_api_server_wake_profile, evt, raw_sid)
         if served:
             source = SessionSource(platform=Platform.API_SERVER, chat_id=raw_sid, profile=served)

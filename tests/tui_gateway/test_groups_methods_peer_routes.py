@@ -6,9 +6,9 @@ import threading
 import pytest
 
 from gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
-import tui_gateway.server as srv
-from tui_gateway import methods_groups
-from tui_gateway.hosted_room_service import HostedRoomService
+import hermes_agent.tui_gateway.server as srv
+from hermes_agent.tui_gateway import methods_groups
+from hermes_agent.tui_gateway.hosted_room_service import HostedRoomService
 
 from tests.tui_gateway import test_groups_methods as groups_methods
 
@@ -82,7 +82,7 @@ def _serve_peer_client(monkeypatch, room, *, during_probe=lambda: None):
                     "authority_epoch": room["authority_epoch"], "member_id": "member-peer",
                     "target_profile": "reviewer", "catalog": catalog}
 
-    monkeypatch.setattr("tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient", FakeClient)
+    monkeypatch.setattr("hermes_agent.tui_gateway.hosted_room_peer_http.PeerRunsHTTPClient", FakeClient)
     params = {"room_id": "room-1", "member_id": "member-peer", "target_url": "https://peer.example.test",
               "target_profile": "reviewer", "grant": _scoped_grant(room), "catalog": catalog}
     return params, probes
@@ -107,7 +107,7 @@ def test_serve_disband_and_register_never_leave_a_route_or_a_grant_behind(home, 
     that ended first is owed, never probed; one that Disband overtakes during the probe or before
     publication is refused and owed too."""
     from gateway import hosted_room_links
-    from tui_gateway import hosted_room_peer_transport
+    from hermes_agent.tui_gateway import hosted_room_peer_transport
     room = _create_room()
 
     def disband():

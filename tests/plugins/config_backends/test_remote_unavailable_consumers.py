@@ -95,7 +95,7 @@ def test_cron_pin_refuses_instead_of_dropping_the_lock(monkeypatch, tmp_path):
 
 
 def test_tui_profile_cwd_returns_none(monkeypatch, tmp_path):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     monkeypatch.setattr(server, "config_exists", _outage)
     assert server._profile_configured_cwd(tmp_path) is None
     assert server._default_session_cwd()  # the session-create tail still answers a cwd
@@ -106,7 +106,7 @@ def test_tui_raw_config_read_is_a_failed_read_that_refuses_to_save(monkeypatch, 
     write-back primitive refuses to persist it, so the RPC answers an error instead of dying
     or saving a ``{}`` over the plane's document."""
     from hermes_cli.config_read_errors import FailedConfigRead, _refuse_failed_read
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     server._drop_cfg_cache()
     # _load_cfg_raw looks both up on hermes_cli.config_backend, as main's seam test expects.
     monkeypatch.setattr("hermes_cli.config_backend.config_version", _outage)
@@ -123,7 +123,7 @@ def test_tui_raw_config_read_is_a_failed_read_that_refuses_to_save(monkeypatch, 
 def test_prompt_attachments_degrade_to_the_profile_home_store(monkeypatch, tmp_path):
     """``file.attach`` keeps working: storage falls back to ``""`` (the profile-home store the
     sandbox mounts and the vision allowlist always cover)."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     monkeypatch.setattr("hermes_cli.config_backend.config_exists", _outage)
     assert server._profile_attachments_storage(tmp_path) == ""
     session = {"profile_home": str(tmp_path), "cwd": str(tmp_path)}
@@ -134,7 +134,7 @@ def test_prompt_attachments_degrade_to_the_profile_home_store(monkeypatch, tmp_p
 
 def test_tui_pooled_rpc_answers_once_with_the_outage(monkeypatch):
     """The request owner: a long handler that hits the outage still writes one error frame."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     monkeypatch.setitem(server._methods, "cc.refused", lambda rid, params: _outage())
     monkeypatch.setattr(server, "_LONG_HANDLERS", server._LONG_HANDLERS | {"cc.refused"})
     written = threading.Event()
@@ -157,7 +157,7 @@ def test_tui_pooled_rpc_answers_once_with_the_outage(monkeypatch):
 def test_tui_agent_build_thread_reports_the_outage(monkeypatch):
     """The deferred agent-build thread records ``agent_error`` and releases its waiters (a
     SystemExit would have ended the thread with ``agent_ready`` never set)."""
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
     sid = "build-outage"
     session = {"session_key": "k", "agent": None, "agent_ready": threading.Event(),
                "history_lock": threading.Lock(), "profile_home": None}
@@ -167,7 +167,7 @@ def test_tui_agent_build_thread_reports_the_outage(monkeypatch):
     monkeypatch.setattr(server, "_make_agent", lambda *a, **k: _outage())
     monkeypatch.setattr(server, "_deferred_build_agent_kwargs", lambda current, db: {})
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
-    monkeypatch.setattr("tui_gateway.entry.ensure_mcp_discovery_started", lambda: None, raising=False)
+    monkeypatch.setattr("hermes_agent.tui_gateway.entry.ensure_mcp_discovery_started", lambda: None, raising=False)
     server._start_agent_build(sid, session)
     session["_agent_build_thread"].join(10)
     assert session["agent_ready"].is_set()
@@ -229,7 +229,7 @@ def test_compute_host_turn_answers_turn_error(monkeypatch):
     """The dashboard compute host's turn worker answers ``turn.error`` and keeps serving."""
     import io
     import json as _json
-    from tui_gateway.compute_host import ComputeHost
+    from hermes_agent.tui_gateway.compute_host import ComputeHost
     out = io.StringIO()
     host = ComputeHost(stdout=out, heartbeat_secs=0)
     monkeypatch.setattr(host, "_ensure_server_session", lambda server, frame: _outage())

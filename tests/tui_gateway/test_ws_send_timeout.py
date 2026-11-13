@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from tui_gateway.ws import WSTransport
+from hermes_agent.tui_gateway.ws import WSTransport
 
 
 class _StalledWS:
@@ -38,7 +38,7 @@ class _FastWS:
 
 def test_stalled_send_closes_socket_and_releases_queued_reply(monkeypatch):
     # raising=False: on a base without the deadline the test must fail on the SYMPTOM (sends never terminate).
-    monkeypatch.setattr("tui_gateway.ws._WS_SEND_DEADLINE_S", 0.05, raising=False)
+    monkeypatch.setattr("hermes_agent.tui_gateway.ws._WS_SEND_DEADLINE_S", 0.05, raising=False)
 
     async def _run() -> None:
         ws = _StalledWS()

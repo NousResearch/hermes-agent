@@ -22,7 +22,7 @@ def _spawns(captured, *needles):
 
     These tests patch ``<module>.subprocess.run``, which is the shared
     ``subprocess`` module singleton — so the patch is process-wide. Importing
-    ``tui_gateway.server`` kicks off ``prefetch_update_check`` (a daemon thread
+    ``hermes_agent.tui_gateway.server`` kicks off ``prefetch_update_check`` (a daemon thread
     that shells out to ``git ... origin`` with ``text=True, timeout=5``), and
     that call can land in ``captured`` mid-test. Matching the distinctive argv
     tokens of the call under test (e.g. ``--show-toplevel``, ``ls-files``) keeps
@@ -229,7 +229,7 @@ def _patch_hide_flags(monkeypatch):
 
 
 def test_tui_shell_exec_rpc_hides_console_window(monkeypatch):
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     captured = []
 

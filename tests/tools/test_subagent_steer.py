@@ -366,7 +366,7 @@ class TestSubagentSteerRPC:
             return None
 
     def _call(self, params: dict, *, transport=None, session_record=None) -> dict:
-        import tui_gateway.server as srv
+        import hermes_agent.tui_gateway.server as srv
 
         session_id = params.get("session_id")
         if session_id:
@@ -580,7 +580,7 @@ class TestSubagentSteerRPC:
             _unregister_subagent("sid-rpc-recycled-session")
 
     def test_server_resolves_exact_runtime_authority_from_dispatch_context(self):
-        import tui_gateway.server as srv
+        import hermes_agent.tui_gateway.server as srv
 
         owner_transport = self._Transport()
         owner_record = {
@@ -624,7 +624,7 @@ class TestSubagentSteerRPC:
         }
 
     def test_delegate_capture_uses_dispatch_runtime_artifacts(self):
-        import tui_gateway.server as srv
+        import hermes_agent.tui_gateway.server as srv
         from tools import delegate_tool
 
         owner_transport = self._Transport()
@@ -667,9 +667,9 @@ class TestSubagentSteerRPC:
         }
 
     def test_commissioning_context_rejects_recycled_runtime_session_record(self):
-        import tui_gateway.server as srv
+        import hermes_agent.tui_gateway.server as srv
         from tools import delegate_tool
-        from tui_gateway.transport import bind_transport, reset_transport
+        from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
         owner_transport = self._Transport()
         original_record = {
@@ -813,7 +813,7 @@ class TestSubagentSteerRPC:
                 _unregister_subagent(f"sid-concurrent-{i}")
 
     def test_owner_still_works_after_unrelated_dispatch_queries(self):
-        import tui_gateway.server as srv
+        import hermes_agent.tui_gateway.server as srv
 
         owner_transport = self._Transport()
         owner_record = {

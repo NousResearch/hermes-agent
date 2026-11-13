@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
 
-from tui_gateway.hosted_room_peer_http import (
+from hermes_agent.tui_gateway.hosted_room_peer_http import (
     MAX_PEER_ERROR_RESPONSE_BYTES,
     MAX_PEER_RESPONSE_BYTES,
     PeerRunsHTTPClient,
@@ -512,7 +512,7 @@ def test_peer_http_error_body_is_never_exposed_or_logged(monkeypatch, caplog):
 
     monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", rejected)
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
-    caplog.set_level("DEBUG", logger="tui_gateway.hosted_room_peer_http")
+    caplog.set_level("DEBUG", logger="hermes_agent.tui_gateway.hosted_room_peer_http")
 
     with pytest.raises(PeerRunsHTTPError) as caught:
         client._request(

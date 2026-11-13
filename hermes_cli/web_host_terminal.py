@@ -110,7 +110,7 @@ def resolve_argv(
     from hermes_platform.host.facts import os_family
     from tools.environments.local import build_subprocess_env, served_profile_child_env
     from tools.terminal_scope import enforce_no_refusal, get_terminal_scope
-    from tui_gateway.launch_profile_policy import (
+    from hermes_agent.tui_gateway.launch_profile_policy import (
         activate_multi_profile_hosting, launch_profile_runtime_scope,
     )
 

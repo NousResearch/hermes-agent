@@ -11,7 +11,7 @@ still refused.
 
 import pytest
 
-from tui_gateway import event_replay
+from hermes_agent.tui_gateway import event_replay
 
 
 @pytest.fixture(autouse=True)
@@ -23,7 +23,7 @@ def _clean_replay_ring():
 
 def _contract():
     # Importing the package registers every method contract, including session.events.since.
-    from tui_gateway.contracts import registry as contracts
+    from hermes_agent.tui_gateway.contracts import registry as contracts
 
     return contracts, contracts.METHODS["session.events.since"]
 
@@ -48,7 +48,7 @@ def test_legacy_events_since_still_refuses_other_unknown_keys():
 
 def test_legacy_events_since_dispatch_refuses_other_unknown_keys():
     # Through the production dispatch, not just the model: ``replay_epoch`` is the only new key.
-    from tui_gateway import server
+    from hermes_agent.tui_gateway import server
 
     response = server.handle_request(
         {
@@ -71,7 +71,7 @@ def test_legacy_events_since_dispatch_refuses_other_unknown_keys():
     ids=["with-replay-epoch", "without-replay-epoch"],
 )
 def test_legacy_events_since_replays_missed_events_and_open_requests(params):
-    from tui_gateway import server, server_requests
+    from hermes_agent.tui_gateway import server, server_requests
 
     for n in (1, 2):
         event_replay._stamp_event(

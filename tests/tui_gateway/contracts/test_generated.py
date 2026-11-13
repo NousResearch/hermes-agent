@@ -1,4 +1,4 @@
-"""The committed TypeScript + OpenRPC contract files are exactly what ``tui_gateway/contracts``
+"""The committed TypeScript + OpenRPC contract files are exactly what ``hermes_agent/tui_gateway/contracts``
 renders, and the contract catalog covers the whole wire.
 
 Regenerate with ``.venv/bin/python scripts/gen_gateway_contracts.py`` when a model changes. The
@@ -62,8 +62,8 @@ def emitted_event_names() -> set[str]:
         names.update(_LITERAL_EMIT.findall(text))
         names.update(_LITERAL_FRAME.findall(text))
         names.update(_SIDE_AGENT.findall(text))
-    from tui_gateway.agent_callbacks import _CHILD_DELTA_EVENTS
-    from tui_gateway.change_watcher import _CHANGE_WATCHES
+    from hermes_agent.tui_gateway.agent_callbacks import _CHILD_DELTA_EVENTS
+    from hermes_agent.tui_gateway.change_watcher import _CHANGE_WATCHES
 
     names.update(_CHANGE_WATCHES)
     names.update(_CHILD_DELTA_EVENTS.values())
@@ -90,7 +90,7 @@ def sent_server_requests() -> set[str]:
 def test_catalog_covers_the_whole_wire():
     """Every registered method, every emitted event and every sent server request has a contract,
     and no contract is orphaned (a deleted handler must take its contract with it)."""
-    from tui_gateway import server
-    from tui_gateway.contracts import registry
+    from hermes_agent.tui_gateway import server
+    from hermes_agent.tui_gateway.contracts import registry
 
     registry.assert_complete(server._methods, emitted_event_names(), sent_server_requests())

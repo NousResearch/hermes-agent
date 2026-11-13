@@ -115,7 +115,7 @@ def bind_state(
     if home is None:
         return push_state(scope=scope, home=None, secrets=None, terminal=None)
     from tools.terminal_scope import prepare_profile_terminal_scope
-    from tui_gateway.launch_profile_policy import owner_secret_scope
+    from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     if secrets is None:
         # Built under the target's home, as main's per-turn loader did: hydration reads the
@@ -155,7 +155,7 @@ def _bind_whole_profile(
     ``.env`` and sources only, stamped as routed. A caller's *env_overlay* replaces the default."""
     from agent.secret_scope import _is_process_home
     if _is_process_home(Path(scope.agent)):  # the pinned launch identity, not a mirrored HERMES_HOME
-        from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
+        from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
         return bind_state(scope, secrets=launch_secret_scope(Path(scope.agent)) if secrets is None else secrets,
                           stamp_home=False, env_overlay=launch_terminal_env() if env_overlay is None else env_overlay,
                           defer_terminal=defer_terminal)

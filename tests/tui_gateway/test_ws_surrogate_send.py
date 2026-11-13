@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from tui_gateway.ws import WSTransport, _sanitize_ws_text
+from hermes_agent.tui_gateway.ws import WSTransport, _sanitize_ws_text
 
 
 LONE_SURROGATE = "\ud83d"

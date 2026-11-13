@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from tests.tui_gateway.test_auto_continue import turn_env, marker_home, _session
 
 
@@ -40,7 +40,7 @@ def test_diagnostic_turn_runs_but_never_echoes_on_wire(turn_env, marker_home, mo
 
 
 def test_restart_preserves_diagnostic_category_through_marker(turn_env, marker_home, monkeypatch):
-    from tui_gateway.turn_marker import read_turn_marker
+    from hermes_agent.tui_gateway.turn_marker import read_turn_marker
     session = _session()
     server._record_turn_marker(session, "engine diagnostic",
                                notification_category="diagnostic")

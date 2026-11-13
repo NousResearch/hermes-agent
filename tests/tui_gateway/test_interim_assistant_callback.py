@@ -16,15 +16,15 @@ def test_agent_cbs_includes_interim_callback_when_enabled():
     the returned dict and, when invoked, must emit a message.interim event
     with the text and already_streamed flag passed through.
     """
-    from tui_gateway.server import _agent_cbs
+    from hermes_agent.tui_gateway.server import _agent_cbs
 
     emitted: list[tuple] = []
 
     def fake_emit(event_type, sid, payload=None):
         emitted.append((event_type, sid, payload))
 
-    with patch("tui_gateway.server._load_cfg", return_value={}), \
-         patch("tui_gateway.server._emit", side_effect=fake_emit):
+    with patch("hermes_agent.tui_gateway.server._load_cfg", return_value={}), \
+         patch("hermes_agent.tui_gateway.server._emit", side_effect=fake_emit):
         cbs = _agent_cbs("test-session")
 
         assert "interim_assistant_callback" in cbs

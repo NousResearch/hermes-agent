@@ -8,9 +8,9 @@ import types
 
 import pytest
 
-from tui_gateway import server
+from hermes_agent.tui_gateway import server
 from hermes_cli import anon_auth, free_tier_offer
-from tui_gateway.free_tier_task_done import note_task_done
+from hermes_agent.tui_gateway.free_tier_task_done import note_task_done
 
 CLEAN = {"completed": True, "final_response": "Here is your plan.", "user_intervened": False}
 

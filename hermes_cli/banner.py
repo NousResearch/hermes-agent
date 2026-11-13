@@ -261,7 +261,7 @@ def _skip_background_prefetch() -> bool:
     import, and any test that patches the process-wide ``subprocess`` singleton
     (``patch("subprocess.run")`` / ``patch("subprocess.Popen")``) can record
     that stray spawn in place of the call it meant to pin.  Importing
-    ``tui_gateway.server`` starts this prefetch, which is what flaked
+    ``hermes_agent.tui_gateway.server`` starts this prefetch, which is what flaked
     tests/tui_gateway/test_bot_relay_methods.py.
     Nothing under pytest needs a live update check; tests that exercise the
     prefetch itself monkeypatch this predicate to False.

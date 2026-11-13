@@ -2,7 +2,7 @@
 
 A ``[System: …]`` ``role=user`` row persisted without a ``display_kind`` is model-facing
 recovery scaffolding (e.g. the stream-timeout nudge appended by the turn-truncation path).
-The gateway's own history projection (``tui_gateway.session_history._history_to_messages``)
+The gateway's own history projection (``hermes_agent.tui_gateway.session_history._history_to_messages``)
 drops these rows, but this REST projection feeds the Desktop's transcript prefetch, which
 addresses VISIBLE user rows by durable row id — and a scaffold row can never resolve as a
 rewind/regenerate target (the gateway truncation resolver refuses it fail-closed), so

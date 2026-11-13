@@ -7,7 +7,7 @@ renderer needs the flag to replace the streamed bubble even without a prefix mat
 import contextlib
 from types import SimpleNamespace
 
-import tui_gateway.server as srv
+import hermes_agent.tui_gateway.server as srv
 
 
 def _turn(result):

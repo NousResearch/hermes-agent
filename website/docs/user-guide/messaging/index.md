@@ -386,10 +386,11 @@ scheduled heartbeats, and messages known to be unaddressed keep their existing s
 even with `allow_silence: false`.
 
 A room's `allow_silence` overrides the platform's. Hermes looks the room up chat ID → thread ID →
-parent ID, as for other channel overrides, and the first entry that sets `allow_silence` wins,
-including an explicit `false`. An entry that sets only other keys (say a thread with just
-`model:`) inherits from the next entry, then from the platform. With nothing set anywhere, the
-default reply policy applies. Room IDs must match the chat ID exactly: a WhatsApp group is
+parent ID, as for other channel overrides, and the first matching entry is the room's, including
+an explicit `false`. An entry that sets only other keys (say a thread with just `model:`) also
+matches first, so it takes the platform's value, not its parent channel's: repeat `allow_silence`
+there to keep a parent's room opt-in. A quoted `"false"` counts as `false`; opting in takes a real
+`true`. With nothing set anywhere, the default reply policy applies. Room IDs must match the chat ID exactly: a WhatsApp group is
 `<id>@g.us`, while a direct chat may arrive as `<number>@s.whatsapp.net` or `<id>@lid`.
 
 With `display.suppress_warning_notifications` on for the chat's platform, the notice itself is

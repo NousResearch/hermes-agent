@@ -193,3 +193,15 @@ async def test_suppression_never_newly_silences_a_dm(monkeypatch, tmp_path, plat
 
     assert response == ("" if silent else _unexpected_silence_reply())
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform_block", [
+    {"allow_silence": "false"}, {"channel_overrides": {CHANNEL_ID: {"allow_silence": "false"}}},
+], ids=["platform", "room"])
+async def test_a_quoted_false_keeps_the_notice_at_either_level(monkeypatch, tmp_path, platform_block):
+    _profile({**GLOBAL, "platforms": {"slack": platform_block}})
+    from gateway.config import load_gateway_config
+    runner = _runner(monkeypatch, tmp_path)
+    runner.config = load_gateway_config()
+
+    assert await _live(runner, _event(_slack_source())) == _unexpected_silence_reply()

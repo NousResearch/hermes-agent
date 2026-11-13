@@ -416,6 +416,35 @@ function enqueueDeliveryStatus(args) {
 
 let sock = null;
 let connectionState = 'disconnected';
+// systemd stops the bridge with SIGTERM. Node's default action exits on the spot, which
+// leaves the Baileys websocket half-closed and any in-flight auth-state write unfinished.
+// Close both deliberately instead, and never let systemd's SIGKILL be what stops us.
+let shuttingDown = false;
+let httpServer = null;
+
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`🛑 ${signal} received — closing WhatsApp socket and HTTP server`);
+  try {
+    httpServer?.close();
+  } catch (err) {
+    console.error(`http server close failed: ${err?.message || err}`);
+  }
+  try {
+    // end(undefined) closes the websocket WITHOUT logging the session out, so the
+    // stored creds stay valid on the next start.
+    sock?.end?.(undefined);
+  } catch (err) {
+    console.error(`socket end failed: ${err?.message || err}`);
+  }
+  // Bounded: 2s is enough for the creds write to flush, and keeps us well inside
+  // TimeoutStopSec instead of being killed mid-flush.
+  setTimeout(() => process.exit(0), 2000).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
@@ -497,6 +526,9 @@ async function startSocket() {
     }
 
     if (connection === 'close') {
+      if (shuttingDown) {
+        return; // deliberate shutdown, not a dropped connection
+      }
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       connectionState = 'disconnected';
 
@@ -1274,6 +1306,7 @@ if (PAIR_ONLY) {
     console.log();
     scheduleReconnect(0);
   });
+  httpServer = server;
   // Without this handler an EADDRINUSE (an old bridge that has not released the port yet) crashes
   // with a bare stack trace; the adapter's reconnect loop retried blind. Fail loudly and fast.
   server.on('error', (err) => {

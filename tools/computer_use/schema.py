@@ -44,9 +44,9 @@ _PROPERTIES: dict[str, Any] = {
         "type": "string",
         "enum": ["som", "vision", "ax"],
         "description": (
-            "Capture mode. `som` (default) is a screenshot with numbered overlays on every "
-            "interactable element plus the AX tree — best for vision models, lets you click by "
-            "element index. `vision` is a plain screenshot. `ax` is the accessibility tree only "
+            "Capture mode. `som` (default) is a screenshot plus the numbered list of interactable "
+            "elements (nothing is drawn on the image; the list is the map) — best for vision models, lets you "
+            "click by element index. `vision` is a plain screenshot. `ax` is the accessibility tree only "
             "(no image; useful for text-only models)."
         ),
     },
@@ -76,8 +76,8 @@ _PROPERTIES: dict[str, Any] = {
     "element": {
         "type": "integer",
         "description": (
-            "The 1-based SOM index returned by the last `capture(mode='som')` call. Strongly "
-            "preferred over raw coordinates."
+            "The element index (starts at #0, the window) from the last `capture(mode='som'|'ax')` "
+            "call; a `vision` capture has none. Strongly preferred over raw coordinates."
         ),
     },
     "coordinate": {
@@ -195,7 +195,7 @@ COMPUTER_USE_SCHEMA: dict[str, Any] = {
         "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window; separate "
         "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
         "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
-        "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
+        "action='capture' (mode='som' gives the numbered element list), then click by `element` "
         "index; re-capture after state-changing actions (or pass capture_after=true). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "
         "syntax when the user asks to see it — not for captures used only for control."

@@ -15,6 +15,8 @@ _FOREGROUND_UNSUPPORTED_MSG = ("The connected cua-driver action schema does not 
                                "package version describes the live schema.")
 # (what, extra args) pointer addressing form; ``extra`` is None when the caller did not supply that form and
 # may be a callable when computing it has side effects (capability probes) that must follow the refusal checks.
+_NO_ELEMENTS_MSG = ("No element list for the current capture: capture with mode='som' or 'ax' first, or click by "
+                    "coordinate (window-local screenshot pixels).")
 _Variant = tuple[str, None | dict[str, Any] | Callable[[], dict[str, Any]]]
 
 def _refuse(action: str, message: str, **fields: Any) -> ActionResult:
@@ -29,6 +31,14 @@ class _InputMixin:
         if self._active_pid is None or (need_window and self._active_window_id is None):
             return _refuse(action, _NO_TARGET_MSG), {}
         return None, {"pid": self._active_pid, **({"window_id": self._active_window_id} if need_window else {})}
+
+    def _no_element_list(self, action: str, *elements: Optional[int]) -> Optional[ActionResult]:
+        """Refuse an element-index target when the latest capture carried no element tree (vision mode, or only a
+        target selection): the driver would see a bare element_index and reject it as ``snapshot_id_required`` with
+        an escalate verdict. ``None`` (class default) means unknown, e.g. a driver that never reported elements."""
+        if any(e is not None for e in elements) and getattr(self, "_snapshot_has_elements", None) is False:
+            return _refuse(action, _NO_ELEMENTS_MSG, code="no_elements")
+        return None
 
     def _pointer_args(self, tool: str, args: dict[str, Any], variants: Sequence[_Variant],
                       missing_msg: Optional[str]) -> Optional[ActionResult]:
@@ -101,6 +111,8 @@ class _InputMixin:
         button_norm = (button or "left").lower()
         if button_norm not in {"left", "right", "middle"}:
             return _refuse("click", f"unknown button {button!r} — expected left, right, middle.")
+        if refusal := self._no_element_list("click", element):
+            return refusal
         tool, args["button"] = ("double_click" if click_count == 2 else "click"), button_norm
         refusal = self._pointer_args(tool, args, (
             ("element_index click", {"element_index": element} if element is not None else None),
@@ -115,6 +127,7 @@ class _InputMixin:
              button: str = "left", modifiers: Optional[list[str]] = None,
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("drag")
+        refusal = refusal or self._no_element_list("drag", from_element, to_element)
         if refusal is None:
             refusal = self._pointer_args("drag", args, (
                 ("element-based drag", {"from_element": from_element, "to_element": to_element}
@@ -130,6 +143,8 @@ class _InputMixin:
                delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("scroll")
         if refusal is not None:
+            return refusal
+        if refusal := self._no_element_list("scroll", element):
             return refusal
         args.update(direction=direction, amount=max(1, min(50, amount)))
         # An element without a known window_id is not an addressing form here; scrolling then falls through
@@ -168,4 +183,6 @@ class _InputMixin:
             return refusal
         if element is None:
             return _refuse("set_value", "set_value requires element= (element index).")
+        if refusal := self._no_element_list("set_value", element):
+            return refusal
         return self._action("set_value", {**args, "element_index": element, "value": value})

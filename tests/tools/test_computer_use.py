@@ -1588,8 +1588,8 @@ class TestClickButtonPassthrough:
         # Pretend capture() ran and resolved a target.
         backend._active_pid = 111
         backend._active_window_id = 222
+        backend._snapshot_has_elements = True  # a capture with an element tree preceded these clicks
         return backend
-
 
     def test_middle_button_actually_passes_through(self):
         """The Surface 5 regression guard: the middle button must NOT
@@ -1663,6 +1663,7 @@ class TestKeyboardWindowIdRouting:
         }
         backend._active_pid = 111
         backend._active_window_id = 222
+        backend._snapshot_has_elements = True  # a capture with an element tree preceded these clicks
         return backend
 
     def test_type_text_carries_window_id(self):
@@ -1998,6 +1999,7 @@ class TestElementTokenAttachment:
         backend._session.supports_capability = _supports
         backend._active_pid = 111
         backend._active_window_id = 222
+        backend._snapshot_has_elements = True  # a capture with an element tree preceded these clicks
         return backend
 
     def test_token_attached_when_tool_advertises_capability(self):
@@ -2022,7 +2024,6 @@ class TestElementTokenAttachment:
         backend.click(element=5, button="left")
         _, args = backend._session.call_tool.call_args.args
         assert args["element_token"] == "s00000001:5"
-
 
     def test_capture_refreshes_snapshot_tokens(self):
         """A fresh capture should overwrite any stale tokens from a
@@ -2066,7 +2067,6 @@ class TestElementTokenAttachment:
 
         # Stale 99 token is gone; only the two new tokens remain.
         assert backend._snapshot_tokens == {1: "snap2:1", 2: "snap2:2"}
-
 
 class TestSessionLifecycle:
     """Surface gap (audit June 2026): Hermes never declared a cua-driver

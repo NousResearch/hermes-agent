@@ -17,7 +17,7 @@ from agent.provider_base import ProviderBase
 class UIElement:
     """One interactable element on the current screen."""
 
-    index: int                       # 1-based SOM index
+    index: int                       # SOM index, 0-based (#0 is the window)
     role: str                        # AX role (AXButton, AXTextField, ...)
     label: str = ""                  # AXTitle / AXDescription / AXValue snippet
     bounds: tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
@@ -34,8 +34,8 @@ class UIElement:
 @dataclass
 class CaptureResult:
     """Result of a screen capture call. mode="vision" → png_b64 only; mode="ax" → elements
-    only; mode="som" (default) → both: the PNG already carries numbered overlays drawn by
-    the backend and `elements` holds the matching index → element mapping."""
+    only; mode="som" (default) → both: the PNG plus `elements`, the numbered index → element list
+    (no overlay is drawn on the image)."""
 
     mode: str
     width: int                      # screenshot width (logical px, pre-Anthropic-scale)
@@ -76,7 +76,7 @@ class ActionResult:
     meta: dict[str, Any] = field(default_factory=dict)  # debugging / telemetry extras
     verified: Optional[bool] = None  # AX read-back: True confirmed, False unconfirmed, None n/a
     effect: Optional[str] = None     # "confirmed" | "unverifiable" | "suspected_noop"
-    # {"recommended": "px"|"foreground"|"page", "reason": str} — only when driver recommends climbing
+    # {"target" (cua-driver 0.21+) or "recommended" (older): "px"|"foreground"|"page", "reason": str} — only when climbing
     escalation: Optional[dict[str, Any]] = None
     path: Optional[str] = None       # delivery rung that ran (e.g. "ax", "x11_pixel", "cgevent_fg")
     degraded: Optional[bool] = None  # AX walk found no actionable elements (act by px instead)
@@ -88,7 +88,7 @@ class ComputerUseBackend(ABC):
     """Lifecycle: `start()` before first use, `stop()` at shutdown. Pointer/keyboard actions
     take ``delivery_mode`` (background (default) | foreground) and ``bring_to_front``;
     ``button`` is left | right | middle; ``modifiers`` a list of key names. ``element`` args
-    are 1-based SOM indices from a prior capture. `direction` is up | down | left | right and
+    are SOM indices (0-based) from a prior capture. `direction` is up | down | left | right and
     `amount` is wheel ticks; `keys` is a combo such as 'cmd+s', 'ctrl+alt+t', 'return'."""
 
     @abstractmethod

@@ -1,7 +1,7 @@
 ---
 name: computer-use
 description: "Drive the desktop background-first; escalate on signal."
-version: 2.1.0
+version: 2.2.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT
 platforms: [macos, windows, linux]
@@ -32,7 +32,8 @@ the driver's `get_window_state`; `element=N` is a Hermes argument that the
 wrapper translates into the driver's `element_token` handle. If you see a
 driver-side error mentioning `snapshot_id`, `element_token`, or "no reviewed
 risk classification", you (or a stale description) called the raw driver
-vocabulary — go back to the actions below.
+vocabulary — go back to the actions below. (The one exception is a bare
+`element_index` after a `vision` capture — see Failure modes.)
 
 ## The canonical workflow
 
@@ -45,13 +46,15 @@ computer_use(action="capture", mode="som", app="<the app you're driving>")
 Returns a screenshot plus an indexed element list like:
 
 ```
-#1  AXButton 'Back' @ (12, 80, 28, 28) [Chrome]
-#2  AXTextField 'Address bar' @ (80, 80, 900, 32) [Chrome]
-#7  Link 'Sign In' @ (900, 420, 80, 24) [Chrome]
+#0  AXWindow 'Example' @ (100, 60, 1000, 700) [Chrome]
+#1  AXButton 'Back' @ (112, 140, 28, 28) [Chrome]
+#2  AXTextField 'Address bar' @ (180, 140, 900, 32) [Chrome]
+#7  Link 'Sign In' @ (1000, 480, 80, 24) [Chrome]
 ...
 ```
 
-The `#N` index is the ONLY element handle you use. Behind it the wrapper
+Indices start at `#0`, which is the window itself. The bounds are in desktop
+coordinates (see "Clicking by coordinate"). The `#N` index is the ONLY element handle you use. Behind it the wrapper
 keeps this snapshot's opaque per-element token and sends it with every
 `element=N` action, so a click on an index from a superseded snapshot is
 refused explicitly (`stale`) instead of landing on the wrong control.
@@ -70,6 +73,33 @@ computer_use(action="click", element=7)
 
 Much more reliable than pixel coordinates for every model. Claude was
 trained on both; other models are often only reliable with indices.
+
+An index only exists after a `som` or `ax` capture. After `mode="vision"`
+(or before any capture) there is no element list, and Hermes refuses
+`element=N` itself, with `code:"no_elements"` and a `recapture` verdict,
+without sending anything to the driver. Re-capture with `som` or `ax`, or
+click by coordinate.
+
+### Clicking by coordinate
+
+`coordinate=[x, y]` is **window-local screenshot pixels**: the origin is the
+top-left of the captured window's screenshot, not of the desktop. Element
+bounds in the list are in desktop coordinates, so to turn bounds into a
+coordinate subtract the window origin (the bounds of `#0`, the `AXWindow`
+element): for a window at `(100, 60)` and a button at `(112, 140, 28, 28)`,
+click its centre at `[26, 94]` (112 - 100 + 14, 140 - 60 + 14). If the screenshot size differs from the window's (downscaled, or 2x on Retina),
+the capture summary gives the scale to divide by. Passing desktop coordinates fails with "outside window ... background
+delivery refused". The capture summary prints the window origin whenever it
+is not (0, 0).
+
+`app="screen"` is the exception: a composited full-screen image with no
+elements (image only), and `app="desktop"` captures the OS desktop shell
+(wallpaper, icons, taskbar) with its elements. For these, bounds and the
+screenshot share the desktop space except on HiDPI, where the summary reports
+the scale between them.
+
+To target a window exactly, `capture` also takes `pid=` and `window_id=`
+(from `list_windows`), used when `app=` cannot resolve it, such as some X11 apps.
 
 **Step 3 — Verify.** After any state-changing action, re-capture. You
 can save a round-trip by asking for the post-action capture inline:
@@ -100,7 +130,7 @@ Configure `auxiliary.vision` in `config.yaml` to pick that model, or use
 ## Actions
 
 ```
-capture           mode=som|vision|ax   app=…  (default: current app)
+capture           mode=som|vision|ax   app=…|screen|desktop   pid=…  window_id=…  (default: frontmost window)
 click             element=N     OR     coordinate=[x, y]    button=left|right|middle
 double_click      element=N     OR     coordinate=[x, y]
 right_click       element=N     OR     coordinate=[x, y]
@@ -132,13 +162,24 @@ but that is the first rung, not the only one. Every input action returns a
 structured verdict; read it and climb only when the driver tells you to.
 
 Returned fields (present when the driver supports them):
+- `verdict`: Hermes's own next step, always present: `{decision, hint}`.
+  `decision` is `"done"` (confirmed, stop), `"verify_fresh_state"` (delivered
+  but unproven: re-capture and check before any retry), `"escalate"` (the input
+  likely did not land: climb one rung, following `escalation.target` when
+  present) or `"recapture"` (Hermes refused the request before sending anything,
+  e.g. `no_elements`: capture with `som`/`ax` and ask again). Follow
+  `verdict.decision`; the fields below are the evidence behind it.
 - `effect`: `"confirmed"` (driver read the result back — done), `"unverifiable"`
   (delivered, but confirm it yourself by re-capturing), or `"suspected_noop"`
   (ran but almost certainly did nothing).
-- `escalation`: `{recommended: "px" | "foreground", reason}` — present
-  only when there's a next rung to try.
+- `escalation`: `{target: "px" | "foreground", reason}` — present only when
+  there's a next rung to try (older drivers call the key `recommended`; Hermes echoes either as
+  `verdict.recommended`).
+- `meta.route`: how the driver delivered it (`accessibility`,
+  `synthetic_events`, …) — useful context, not a verdict.
 - `code`: a structured refusal like `"background_unavailable"`,
-  `"foreground_unsupported"`, or `"stale"` (re-capture, then retry by index).
+  `"foreground_unsupported"`, `"no_elements"` or `"stale"` (re-capture, then
+  retry by index).
 - `verified`: `true` only on AX read-back.
 
 Walk it in order:
@@ -146,12 +187,12 @@ Walk it in order:
 1. **Element, background (default).** `click(element=N)`. If `effect:"confirmed"`,
    you're done.
 2. **Fresh verification.** `effect:"unverifiable"` means inspect a fresh
-   capture/state before any retry. Do this even when `escalation.recommended`
-   is present; it is advisory, not proof that successful input should repeat.
-3. **Pixel, background.** After `effect:"suspected_noop"` or a structured
-   refusal recommends `"px"` (or a `degraded` capture has no elements), click
-   by `coordinate=[x,y]` instead of `element`.
-4. **Foreground.** After `effect:"suspected_noop"`,
+   capture/state before any retry (`verdict.decision` is `verify_fresh_state`).
+   Do this even when `escalation` is present; it is advisory, not proof that successful input should repeat.
+3. **Pixel, background.** When `verdict.decision` is `escalate` and
+   `escalation.target` is `"px"` (or a `degraded` capture has no elements),
+   click by window-local `coordinate=[x,y]` instead of `element`.
+4. **Foreground.** When `escalation.target` is `"foreground"`,
    `code:"background_unavailable"`, or a verified pixel no-op,
    re-issue the SAME action with `delivery_mode="foreground"`. This briefly
    raises the window and restores focus after; pair with `bring_to_front=True`
@@ -173,9 +214,9 @@ Walk it in order:
 
 ```
 computer_use(action="click", element=7)
-# → {effect: "suspected_noop", escalation: {recommended: "foreground", ...}}
+# → {verdict: {decision: "escalate", ...}, escalation: {target: "foreground", reason: "..."}}
 computer_use(action="click", element=7, delivery_mode="foreground")
-# → {effect: "unverifiable", path: "x11_pixel_fg"}   then re-capture to confirm
+# → {verdict: {decision: "verify_fresh_state", ...}}   then re-capture to confirm
 ```
 
 **Escalate to foreground as a REACTION to a returned signal, never as a
@@ -263,6 +304,22 @@ it. You rarely need to focus explicitly — passing `app=...` to
 `capture` will target that app's frontmost window and every following
 input action goes to that same window (input actions ignore `app=`).
 
+## Privacy — captures carry more than the app
+
+Even an app-scoped `som` or `ax` capture can include system UI such as the
+macOS Apple menu, whose Recent Items lists recent file names and whose Log
+Out item shows the user's full name. Treat any capture, from any app, as
+possibly holding personal data: read only what the task needs, and don't
+repeat or save it beyond that.
+
+Hermes saves capture files in its cache: screenshots at
+`~/.hermes/cache/images/computer_use_*` and element-tree spills at
+`~/.hermes/cache/computer_use/elements_*`. When a task is finished, delete
+those files, every time and not only after sensitive panes.
+
+cua-driver sends content-free telemetry by default; `cua-driver telemetry
+status` shows it and `cua-driver telemetry disable` turns it off.
+
 ## Delivering screenshots to the user
 
 When the user is on a messaging platform (Telegram, Discord, etc.) and
@@ -301,9 +358,10 @@ in your conversation context.
 | `cua-driver not installed` | Run `hermes computer-use install`, or `hermes tools` and enable Computer Use |
 | Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
 | `code:"stale"` / "element_token is stale" | Indices belong to one snapshot. Re-`capture`, read the new indices, then act. Never reuse an index across a capture |
-| "bare element_index is not accepted" / `snapshot_id_required` | The driver saw a raw index without its token. This is a wrapper defect, not something you fix by passing `snapshot_id` (Hermes has no such argument). Re-capture once; if it repeats, tell the user to run `hermes update` and fall back to `coordinate=[x, y]` from the capture's bounds meanwhile |
+| `code:"no_elements"` (Hermes), or the driver's "bare element_index is not accepted" / `snapshot_id_required` | The latest capture has no element list: it was `mode="vision"`, or nothing was captured since the target changed. Re-capture with `mode="som"` or `"ax"` and use the new indices, or click by window-local `coordinate=`. Don't pass `snapshot_id` (Hermes has no such argument). If it repeats right after a `som`/`ax` capture that listed the element, it is a wrapper defect: tell the user to run `hermes update` |
+| "window-local point … lies outside window … background delivery refused" | `coordinate=` was given in desktop coordinates. Subtract the window origin (bounds of `#0`) from the element bounds; see "Clicking by coordinate" |
 | "tool 'capture' has no reviewed risk classification" / `Unknown tool` | Something called the driver's MCP vocabulary directly (`capture`, `screenshot`, `get_window_state`, `click` with raw args). Only the `computer_use(action=…)` vocabulary in this file exists on the Hermes side |
-| Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), then foreground. Browser chrome/native prompts remain native; page content is a separate toolset. Don't conclude the app is undrivable |
+| Click had no effect | Read `verdict.decision`. `verify_fresh_state` → fresh capture/state before retry, even with an escalation hint. `escalate` → climb the ladder named by `escalation.target`: coordinate (px), then foreground. Browser chrome/native prompts remain native; page content is a separate toolset. Don't conclude the app is undrivable |
 | Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
 | `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
 | `hermes computer-use doctor` says "could not be started … Access is denied" (Windows) | The Hermes venv interpreter can't execute a binary under `C:\Program Files\WindowsApps`; the tool itself may still work because the shell resolves another copy on PATH. Fix once: reinstall cua-driver with the upstream installer (lands under the user profile) or set `HERMES_CUA_DRIVER_CMD` to a copy outside `WindowsApps`. The same denial spams `errors.log` for any other `WindowsApps` binary Hermes spawns (e.g. `bws.exe`) |
@@ -335,8 +393,9 @@ cua-driver team ships and maintains for every other agent harness.
 cua-driver skills install
 ```
 
-links the pack into `~/.hermes/skills/cua-driver` (Hermes is a detected
-agent; `cua-driver skills status` shows the link state). You'll then have:
+links the pack into `~/.hermes/skills/cua-driver`; `cua-driver skills status`
+lists Hermes with that path as a link target and shows its link state. You'll
+then have:
 
 - `SKILL.md` — the cross-platform core (snapshot invariant, no-
   foreground contract, click dispatch, AX tree mechanics)

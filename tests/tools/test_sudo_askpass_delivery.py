@@ -1,9 +1,11 @@
 """Sudo password delivery through an askpass helper.
 
 Where the backend's sudo supports ``-A`` (per-environment capability probe), the command gets
-the askpass prologue and exactly ONE password line on stdin; the prologue reads that line, so
-the rest of stdin reaches the command untouched and each sudo gets the password through its
-helper. Everywhere else the command and stdin stay byte-for-byte the stdin form.
+the askpass prologue and the same password lines on stdin as the stdin form; the prologue takes
+them off stdin once its helper is set up, so the rest of stdin reaches the command untouched and
+each sudo gets the password through its helper. When setup fails at run time the lines stay on
+stdin and each sudo reads one, as in the stdin form. Everywhere else the command and stdin stay
+byte-for-byte the stdin form.
 """
 
 import os
@@ -22,6 +24,8 @@ from tools import terminal_tool_sudo_askpass as askpass
 from tools.environments.base import BaseEnvironment
 
 PW = "synthetic-pw-7"
+PRE = askpass.SUDO_ASKPASS_PREFIX
+OPT = askpass.SUDO_ASKPASS_SUFFIX.strip()
 TOKEN = askpass.SUDO_ASKPASS_TIMEOUT_TOKEN
 NOPASSWD_PROBE = "sudo -n true"
 
@@ -81,13 +85,12 @@ def test_askpass_form_prologue_plus_rewrite_and_one_password_line(configured_pas
     env = _RecordingEnv()
     exec_command, sudo_stdin = env._prepare_command(command)
 
-    rewritten = command.replace("sudo", 'SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A')
-    rewritten = rewritten.replace('/usr/bin/SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A',
-                                  'SUDO_ASKPASS="$__hermes_sudo_dir/a" /usr/bin/sudo -A')
-    assert exec_command == askpass.build_prologue(count, TOKEN) + rewritten
+    rewritten = command.replace("sudo", f"{PRE}sudo {OPT}")
+    rewritten = rewritten.replace(f"/usr/bin/{PRE}sudo {OPT}", f"{PRE}/usr/bin/sudo {OPT}")
+    assert exec_command == askpass.build_prologue(count, TOKEN, False) + rewritten
     assert f"__hermes_sudo_n={count}\n" in exec_command
     assert PW not in exec_command
-    assert sudo_stdin == PW + "\n"
+    assert sudo_stdin == (PW + "\n") * count
 
 
 @pytest.mark.parametrize("command", ["sudo id -u", "sudo a && sudo b && sudo c"])
@@ -96,9 +99,9 @@ def test_execute_hands_backend_one_password_line_then_caller_stdin(configured_pa
     env.execute(command, stdin_data="caller-1\ncaller-2\n")
 
     (wrapped, stdin_data, _timeout), = env.command_runs()
-    assert stdin_data == PW + "\ncaller-1\ncaller-2\n"
+    assert stdin_data == (PW + "\n") * command.count("sudo") + "caller-1\ncaller-2\n"
     assert PW not in wrapped
-    assert 'SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A' in wrapped
+    assert f"{PRE}sudo {OPT}" in wrapped
 
 
 # --- 2. timeout token ------------------------------------------------------------------------------
@@ -111,7 +114,7 @@ def test_execute_fills_timeout_token_with_effective_timeout_plus_30(configured_p
 
     (wrapped, _stdin, run_timeout), = env.command_runs()
     assert TOKEN not in wrapped
-    assert f"__hermes_sudo_t={expected}\n" in wrapped
+    assert f"__hermes_sudo_t={expected};" in wrapped
     assert run_timeout == (timeout or 10)
 
 
@@ -253,9 +256,8 @@ def test_empty_configured_password_gets_one_empty_line_in_askpass_form(monkeypat
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
     env = _RecordingEnv()
     exec_command, sudo_stdin = env._prepare_command("sudo a && sudo b")
-    assert exec_command == askpass.build_prologue(2, TOKEN) + (
-        'SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A a && SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A b')
-    assert sudo_stdin == "\n"
+    assert exec_command == askpass.build_prologue(2, TOKEN, False) + f"{PRE}sudo {OPT} a && {PRE}sudo {OPT} b"
+    assert sudo_stdin == "\n\n"
 
 
 # --- 7. has_own_stdin_or_askpass table ----------------------------------------------------------------
@@ -314,9 +316,7 @@ def test_default_rewrite_is_unchanged_and_askpass_rewrite_prefixes_each_sudo():
     assert terminal_tool_sudo._rewrite_real_sudo_invocations(command) == (
         "sudo -S -p '' a && '/opt/my tools/sudo' -S -p '' -u root b; env -i sudo -S -p '' c", 3)
     assert terminal_tool_sudo._rewrite_real_sudo_invocations(command, askpass=True) == (
-        'SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A a && '
-        "SUDO_ASKPASS=\"$__hermes_sudo_dir/a\" '/opt/my tools/sudo' -A -u root b; "
-        'env -i SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A c', 3)
+        f"{PRE}sudo {OPT} a && {PRE}'/opt/my tools/sudo' {OPT} -u root b; env -i {PRE}sudo {OPT} c", 3)
 
 
 # --- output consumers: wrong-password text from both forms ------------------------------------------
@@ -555,12 +555,14 @@ def test_live_prologue_ignores_aliases_and_functions_for_its_commands(tmp_path):
 @_needs_posix_shell
 @pytest.mark.parametrize("special", ['"', "\\", "$", "`"])
 def test_live_temp_path_with_quote_special_char_is_setup_failure(tmp_path, special):
+    """Setup refuses the path, and the sudo then reads its password line from stdin as the stdin form does."""
     odd = tmp_path / f"t{special}x"
     odd.mkdir()
     sudo = _write_fake_sudo(tmp_path / "bin")
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(f"{sudo} id -u", askpass=True)
     proc = _bash(askpass.build_prologue(count, "20") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(odd)})
-    assert proc.returncode != 0
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(os.getuid())
     assert list(odd.iterdir()) == []
     assert _bash(askpass.CAPABILITY_PROBE, env_vars={"TMPDIR": str(odd)}).returncode == 1
 
@@ -607,6 +609,62 @@ def test_live_sudos_that_ask_at_the_same_time_are_each_served(tmp_path):
 
 
 @_needs_posix_shell
+def test_live_setup_failure_at_run_time_falls_back_to_the_stdin_form(live_env):
+    """The temp dir goes away after the capability probe passed: every sudo still authenticates from stdin."""
+    env, sudo, _ = live_env
+    env.execute("export TMPDIR=/nonexistent-hermes-sudo-dir")
+    drop = f"rm -f {Path(sudo).parent / 'ticket'}"
+    rc, output = _run(env, f"{sudo} id -u; {drop}; {sudo} id -u; cat", "rest\n")
+    assert rc == 0, output
+    assert output.split() == [str(os.getuid())] * 2 + ["rest"]
+
+
+@_needs_posix_shell
+def test_live_unused_serving_is_gone_once_the_command_returns(live_env):
+    """A counted sudo that never asks, plus a background child that outlives the command: nothing is left to read."""
+    env, sudo, temp_dir = live_env
+    rc, output = _run(env, f"{sudo} true && {sudo} id -u; sleep 15 >/dev/null 2>&1 &")
+    assert rc == 0, output
+    wait_until(lambda: not list(temp_dir.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
+
+
+@_needs_posix_shell
+def test_live_backgrounded_sudo_is_served_after_the_shell_exits(tmp_path):
+    sudo = _write_fake_sudo(tmp_path / "bin")
+    out = tmp_path / "out"
+    body = f"( sleep 3; {sudo} id -u > {out} 2>&1 ) &"
+    command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(body, askpass=True)
+    assert askpass.has_background_sudo(body)
+    proc = _bash(askpass.build_prologue(count, "20", True) + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    assert proc.returncode == 0, proc.stderr
+    wait_until(lambda: out.exists() and out.read_text().strip() == str(os.getuid()), timeout=10,
+               what="backgrounded sudo authenticated")
+    wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=8, what="askpass dir removed")
+
+
+@pytest.mark.parametrize(("command", "expected"), [
+    ("sudo a", False),
+    ("sudo a && sudo b", False),
+    ("sudo a && sudo b; nohup sleep 20 >/dev/null 2>&1 &", False),
+    ("sudo a 2>&1; sleep 5 &", False),
+    ("sudo a &> out; sleep 5 &", False),
+    ("sleep 5 & sudo a", False),
+    ("sudo a\nsleep 5 &", False),
+    ("sudo a &", True),
+    ("sudo a & wait", True),
+    ("sudo a && sudo b &", True),
+    ("sudo a | tee log &", True),
+    ("( sleep 3; sudo a ) &", True),
+    ("{ sleep 3; sudo a; } &", True),
+    ("f() { :; sudo a; }; f &", True),
+    ("( sudo a; sleep 1 & )", True),
+    ("echo hi &", False),
+])
+def test_has_background_sudo_table(command, expected):
+    assert askpass.has_background_sudo(command) is expected
+
+
+@_needs_posix_shell
 def test_live_orphan_holding_fd_19_does_not_keep_the_writer_past_the_timeout(tmp_path):
     sudo = _write_fake_sudo(tmp_path / "bin")
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(
@@ -639,7 +697,7 @@ def test_capability_probe_live_passes_with_askpass_capable_sudo(tmp_path, config
     _write_fake_sudo(tmp_path / "bin")
     env = _probe_env(tmp_path, tmp_path / "bin")
     exec_command, sudo_stdin = env._prepare_command("sudo id -u")
-    assert exec_command == askpass.build_prologue(1, TOKEN) + 'SUDO_ASKPASS="$__hermes_sudo_dir/a" sudo -A id -u'
+    assert exec_command == askpass.build_prologue(1, TOKEN, False) + f"{PRE}sudo {OPT} id -u"
     assert sudo_stdin == PW + "\n"
     assert list(tmp_path.glob("hermes-sudo.*")) == []
 

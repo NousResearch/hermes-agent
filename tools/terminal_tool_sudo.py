@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 
+from tools.terminal_tool_sudo_askpass import SUDO_ASKPASS_PREFIX, SUDO_ASKPASS_SUFFIX
 from utils import env_var_enabled
 
 # Log-record parity with the origin module.
@@ -326,7 +327,8 @@ def _rewrite_real_sudo_invocations(command: str, askpass: bool = False) -> tuple
     Follow ordinary env options/assignments, not shell payloads or env split strings:
     interpreting those requires a second parser and rewriting inside another quoting layer.
     Each counted sudo gets `` -S -p ''`` appended; with ``askpass=True`` it is instead prefixed
-    with ``SUDO_ASKPASS="$__hermes_sudo_dir/a"`` and gets `` -A`` (see ``terminal_tool_sudo_askpass``).
+    with ``SUDO_ASKPASS="$__hermes_sudo_dir/a"`` and gets an option word the askpass prologue
+    sets to ``-A``, or to ``-S -p ''`` when its setup fails (see ``terminal_tool_sudo_askpass``).
     """
     out: list[str] = []
     sudo_count = 0
@@ -377,7 +379,7 @@ def _rewrite_real_sudo_invocations(command: str, askpass: bool = False) -> tuple
         env_options = in_env
         if executable == "sudo":
             if askpass:
-                out[-1] = 'SUDO_ASKPASS="$__hermes_sudo_dir/a" ' + out[-1] + " -A"
+                out[-1] = SUDO_ASKPASS_PREFIX + out[-1] + SUDO_ASKPASS_SUFFIX
             else:
                 out[-1] += " -S -p ''"
             sudo_count += 1
@@ -509,11 +511,15 @@ def _transform_sudo_command(
 
     if has_configured_password or sudo_password:
         from tools.terminal_tool_sudo_askpass import (
-            SUDO_ASKPASS_TIMEOUT_TOKEN, build_prologue, has_own_stdin_or_askpass,
+            SUDO_ASKPASS_TIMEOUT_TOKEN, build_prologue, has_background_sudo, has_own_stdin_or_askpass,
         )
+        # sudo -S reads one line per invocation: compound `sudo a && sudo b` needs one line each.
+        # The askpass form gets the same lines: its prologue takes them off stdin once the helper
+        # is set up, and leaves them for ``-S`` when setup fails at run time.
+        password_lines = (sudo_password + "\n") * sudo_count
         if askpass_supported is not None and not has_own_stdin_or_askpass(command) and askpass_supported():
             askpass_command = _rewrite_real_sudo_invocations(command, askpass=True)[0]
-            return build_prologue(sudo_count, SUDO_ASKPASS_TIMEOUT_TOKEN) + askpass_command, sudo_password + "\n"
-        # sudo -S reads one line per invocation: compound `sudo a && sudo b` needs one line each.
-        return transformed, (sudo_password + "\n") * sudo_count
+            prologue = build_prologue(sudo_count, SUDO_ASKPASS_TIMEOUT_TOKEN, has_background_sudo(command))
+            return prologue + askpass_command, password_lines
+        return transformed, password_lines
     return command, None

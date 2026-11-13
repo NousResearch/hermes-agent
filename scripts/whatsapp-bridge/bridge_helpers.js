@@ -87,6 +87,37 @@ export function createBoundedMessageStore(limit = 512) {
 }
 
 /**
+ * Baileys ``getMessage`` resolution for E2EE / linked-device retries.
+ *
+ * Returning ``{ conversation: '' }`` for missing keys fabricates user-visible
+ * blank bubbles during session churn (#63647). Prefer the real payload from
+ * the bounded message store when available; otherwise return ``undefined``
+ * so Baileys fails the retry handshake without emitting empty content.
+ */
+export function resolveGetMessagePayload(messageStore, key) {
+  const id = key?.id;
+  if (!id || !messageStore || typeof messageStore.get !== 'function') {
+    return undefined;
+  }
+  const stored = messageStore.get(id);
+  if (!stored) {
+    return undefined;
+  }
+  // Prefer the full WebMessageInfo.message when present; avoid inventing text.
+  if (stored.message && typeof stored.message === 'object') {
+    return stored.message;
+  }
+  // Some remember() paths store a synthetic ``message`` field separately.
+  if (stored && typeof stored === 'object' && stored.conversation !== undefined) {
+    const text = stored.conversation;
+    if (typeof text === 'string' && text.length > 0) {
+      return { conversation: text };
+    }
+  }
+  return undefined;
+}
+
+/**
  * Bounded cache of the already-downloaded media (and plain text) for
  * recently seen inbound messages, keyed by "chatId:messageId".
  *

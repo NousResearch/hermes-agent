@@ -237,6 +237,29 @@ def _reclaim_idle_released_lease(session: dict):
     return refusal
 
 
+class SessionNotOwned(RuntimeError):
+    """An off-turn transcript writer found its idle-released lease taken: nothing was written.
+    Handlers let it through their catch-alls; dispatch answers it ``4090`` like a refused submit."""
+
+    def __init__(self, refusal):
+        super().__init__(str(refusal))
+        self.refusal = refusal
+        self.reason = getattr(refusal, "reason", None) or "SESSION_NOT_OWNED"
+
+
+def _require_transcript_owner(session: dict) -> None:
+    """Gate for every off-turn writer of this record's transcript (rewind, model-switch marker, manual compress),
+    under ``history_lock``: re-claim an idle-released lease or raise ``SessionNotOwned``. A write counts as activity,
+    so the idle reaper cannot release the lease again before the writer finishes."""
+    if (refusal := _reclaim_idle_released_lease(session)) is not None:
+        raise SessionNotOwned(refusal)
+    session["last_active"] = time.time()
+
+
+def _session_not_owned_err(rid, exc: SessionNotOwned) -> dict:
+    return _err(rid, 4090, str(exc), {"reason": exc.reason})
+
+
 def _detached_lease_holder(session: dict, key: str) -> tuple[str, dict] | None:
     """A sibling runtime of ``session`` (same key, same profile) holding an unreleased lease with no client.
     Caller holds ``_sessions_lock``."""

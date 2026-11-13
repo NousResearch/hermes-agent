@@ -792,8 +792,10 @@ def _lock_in_submit_turn(
         # The ownership check above ran before this lock: the idle reaper (which releases under it) may have
         # freed the lease since, and another surface claimed and extended the transcript. Re-claim here,
         # before the cut and the turn's writes; a refusal (an ActiveSessionRefusal str) writes nothing.
-        if (refusal := _reclaim_idle_released_lease(session)) is not None:
-            return refusal, fields
+        try:
+            _require_transcript_owner(session)
+        except SessionNotOwned as exc:
+            return exc.refusal, fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(

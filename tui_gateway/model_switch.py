@@ -253,6 +253,8 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
 
 def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot):
     """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts."""
+    with session.get("history_lock") or contextlib.nullcontext():
+        _require_transcript_owner(session)  # the marker below writes the chat's transcript
     try:
         agent.switch_model(
             new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,

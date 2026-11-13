@@ -496,6 +496,9 @@ def _compute_host_slash(sid: str, session: dict, name: str, command: str) -> tup
     waits longer and installs a late-ack adopter so a slow compression still lands here."""
     route_name = f"slash.{name}"
     is_compress = name == "compress"
+    if name != "personality":  # the host's /model marker and /compress commit write this chat's transcript
+        with session["history_lock"]:
+            _require_transcript_owner(session)
 
     def _on_late_ack(late: dict, _sid=sid) -> None:
         _adopt_late_compute_host_compress_ack(_sid, session, late, route_name=route_name)
@@ -537,6 +540,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return mirror(sid, session, agent, arg) or ""
     except CompressionBusy as e:  # a turn won the race after the unlocked running check above
         return str(e)
+    except SessionNotOwned:
+        raise  # another surface owns the chat: the RPC answers 4090, not a sync warning
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

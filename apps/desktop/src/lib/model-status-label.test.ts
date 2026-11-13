@@ -33,6 +33,11 @@ describe('model-status-label', () => {
     expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
   })
 
+  it('keeps LongCat hyphenated as Meituan names it', () => {
+    expect(displayModelName('meituan/longcat-2.5:free')).toBe('LongCat-2.5:Free')
+    expect(displayModelName('longcat-2.5')).toBe('LongCat-2.5')
+  })
+
   it('keeps the vendor casing the model id does not carry (#85849)', () => {
     expect(displayModelName('glm-5.2')).toBe('GLM 5.2')
     expect(displayModelName('zai-org/glm-5.1')).toBe('GLM 5.1')

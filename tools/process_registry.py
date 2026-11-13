@@ -2011,7 +2011,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # not suppress the watcher's autonomous turn (#10156), an acknowledged handled result must (#94455).
             # A preview taken before the reader's final drain is partial and must not suppress the completion.
             if not finalizing:
-                self._poll_observed.add(session_id)
+                self._poll_observed.add(session.id)
                 if acknowledge:
                     self._completion_consumed.add(session.id)
         if session.detached and not session.output_log:

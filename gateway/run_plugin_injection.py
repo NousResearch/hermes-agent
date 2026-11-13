@@ -76,13 +76,31 @@ def wake_background_wait(authority, ref, *, person_input=False):
     wait = getattr(live, "background_wait", None)
     if wait is None or wait.is_set():
         return
-    if not person_input:
-        from gateway.session_unattended_unknown import is_unattended
-        from hermes_state_runtime import list_session_admissions
-        if not any(row["status"] == "queued" and not is_unattended(row)
-                   for row in list_session_admissions(authority.db, session_id=ref.session_id)):
-            return
-    wait.set()
+    if person_input:
+        wait.set()
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _wake_if_person_queued(authority, ref, wait)
+        return
+    # On the gateway loop (``_schedule``, the drain stamping the wait): the ledger read runs in a
+    # worker, never on the loop; the waiting turn polls the event, so a late set still ends it.
+    loop.run_in_executor(None, contextvars.copy_context().run, _wake_if_person_queued, authority, ref,
+                         wait).add_done_callback(_log_wake_failure)
+
+
+def _wake_if_person_queued(authority, ref, wait):
+    from gateway.session_unattended_unknown import is_unattended
+    from hermes_state_runtime import list_session_admissions
+    if any(row["status"] == "queued" and not is_unattended(row)
+           for row in list_session_admissions(authority.db, session_id=ref.session_id)):
+        wait.set()
+
+
+def _log_wake_failure(future):
+    if not future.cancelled() and future.exception() is not None:
+        logger.warning("Plugin turn background-wait check failed", exc_info=future.exception())
 
 
 def person_input_joined_turn(runner, session_key):

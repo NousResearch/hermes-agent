@@ -184,8 +184,10 @@ class GatewayRuntimeInitMixin:
             logger.warning("SQLite session store not available: %s", e, exc_info=True)
             self._session_db_init_error = str(e)  # surfaced on the home channel(s) once connected
 
-        # Opportunistic state.db maintenance (prune + optional VACUUM), at most once per min_interval_hours.
-        # A few blocking seconds per day is fine for a long-lived gateway; failures log, never raise.
+        # Opportunistic state.db maintenance (archive + prune), at most once per min_interval_hours. Never
+        # VACUUM here: this runs before the control socket and adapters, and a full rewrite held the boot for
+        # tens of minutes on a multi-GB store over NFS; space is reclaimed incrementally by the housekeeping
+        # tick once serving (``gateway.run_housekeeping_state_db``). Failures log, never raise.
         # Surface the failure to the user via their home channel(s) once the gateway connects. Without this,
         # state.db corruption or NFS/SMB lock failures silently degrade the entire gateway — messages may
         # flow but nothing is persisted, and the user has no indication until they try /resume and find
@@ -200,7 +202,7 @@ class GatewayRuntimeInitMixin:
         _housekeeping_chore(
             "state.db startup maintenance",
             lambda: _for_each_served_profile(
-                self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions)))
+                self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions, startup=True)))
         # Checkpoint store pruning is a housekeeping chore (``_housekeeping_checkpoint_prune``), not a
         # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
         # here it ran before the control socket, adapters and the code_sha stamp — so the first

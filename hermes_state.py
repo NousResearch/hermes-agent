@@ -803,6 +803,16 @@ class SessionDB(
         )
         try:
             conn.row_factory = sqlite3.Row
+            # A brand-new store is created INCREMENTAL so a live gateway can give freed pages back
+            # in batches (reclaim_free_pages_incrementally). Only legal before the first table and
+            # before WAL is enabled; an existing store needs one full VACUUM to switch, so it is
+            # left to SessionDB.vacuum(). A sibling's lock blocking the header read means the file
+            # is not new: the open goes on and the mode is left as it is.
+            try:
+                if conn.execute("PRAGMA page_count").fetchone()[0] == 0:
+                    conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            except sqlite3.OperationalError:
+                pass
             mode = apply_wal_with_fallback(conn, db_label="state.db")
             # "wal" is also the *assumed* mode when the on-disk probe was blocked by a concurrent opener
             # (#86515): the lock-free mode=ro read pool needs a confirmed WAL header, so confirm it here.

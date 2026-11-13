@@ -2267,8 +2267,8 @@ DEFAULT_CONFIG = {
         # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
         # nested under their parent. Off by default: they are machinery, not conversations.
         "show_subagents": False,
-        # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE, #54189). It blocks
-        # writes (~seconds per 100MB): only at startup, only when ≥1 session went AND freelist/page_count > 25%.
+        # Return a prune's freed space to the disk (SQLite never does on DELETE, #54189): a gateway in short incremental
+        # batches while serving (never a full VACUUM, never at boot); the CLI by VACUUM when freelist/page_count > 25%.
         "vacuum_after_prune": True,
         # Minimum days between VACUUM rewrites; pruning keeps its normal cadence.
         "min_vacuum_interval_days": 30,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -15,6 +16,9 @@ from hermes_startup_watchdog import report_startup_progress
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
+
+_AUTO_VACUUM_INCREMENTAL = 2  # PRAGMA auto_vacuum: 0 NONE, 1 FULL, 2 INCREMENTAL
+_INCREMENTAL_HINTED: set[str] = set()  # stores already told they need the one-time optimize
 
 _LAST_ACTIVE_SQL = _sql_session_last_active("s")
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
@@ -487,6 +491,12 @@ class SessionMaintenanceMixin:
             # PASSIVE, not TRUNCATE: a manual `hermes sessions vacuum` runs in a transient CLI
             # process; a TRUNCATE reset here would race a live gateway writer.
             self._try_checkpoint("PASSIVE", "WAL checkpoint (PASSIVE) before VACUUM failed: %s")
+            # Only a full rewrite can switch an existing store's auto_vacuum mode, so every one
+            # leaves it INCREMENTAL: from then on a live gateway gives freed pages back to the disk
+            # in short batches (reclaim_free_pages_incrementally) and never needs another stop.
+            # Set only when it differs: on a store already INCREMENTAL the PRAGMA writes the header.
+            if self._conn.execute("PRAGMA auto_vacuum").fetchone()[0] != _AUTO_VACUUM_INCREMENTAL:
+                self._conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
             self._conn.execute("VACUUM")
             # VACUUM rewrites every page THROUGH the WAL; without this TRUNCATE a 3 GB DB leaves a 3 GB -wal.
             self._try_checkpoint("TRUNCATE", "WAL checkpoint (TRUNCATE) after VACUUM failed: %s")
@@ -495,10 +505,68 @@ class SessionMaintenanceMixin:
             self._record_db_file_identity()
         return optimized
 
+    def reclaim_free_pages_incrementally(
+        self, batch_pages: int = 256, budget_s: float = 20.0, pause_s: float = 0.05,
+    ) -> dict[str, Any]:
+        """Give free pages back to the disk without a full VACUUM; safe beside live writers.
+
+        Each batch is one ``PRAGMA incremental_vacuum(batch_pages)`` inside its own short
+        ``_execute_write`` transaction, so the write lock is held for one batch at a time and
+        any other writer (this process or another) gets it between batches. The pass stops at
+        *budget_s* or when the freelist is drained; a batch that cannot get the lock within the
+        ordinary write patience ends the pass, and the next housekeeping tick resumes. No
+        checkpoint reset and no rewrite, so the WAL generation other holders use is untouched.
+
+        Needs ``auto_vacuum=INCREMENTAL``, which only a full VACUUM can switch an existing store
+        to (:meth:`vacuum` does). A store still on NONE is left alone, with one INFO line naming
+        the one-time ``hermes sessions optimize``. Never raises; returns ``{"incremental",
+        "reclaimed_pages", "batches"}``, plus ``"error"`` when a batch failed.
+        """
+        result: dict[str, Any] = {"incremental": False, "reclaimed_pages": 0, "batches": 0}
+        values = self._page_pragmas(("auto_vacuum", "freelist_count", "page_size"),
+                                    "Could not read auto_vacuum state: %s")
+        if values is None:
+            return result
+        mode, free_pages, page_size = values
+        result["incremental"] = mode == _AUTO_VACUUM_INCREMENTAL
+        if free_pages < batch_pages:
+            return result
+        if mode != _AUTO_VACUUM_INCREMENTAL:
+            if str(self.db_path) not in _INCREMENTAL_HINTED:  # once per store per process
+                _INCREMENTAL_HINTED.add(str(self.db_path))
+                logger.info(
+                    "state.db holds %d MB of free pages it cannot give back to the disk while in "
+                    "use: the store predates incremental auto-vacuum. Run `hermes sessions optimize` "
+                    "once with Hermes stopped; after that freed space is reclaimed in the background.",
+                    free_pages * page_size >> 20)
+            return result
+
+        def _batch(conn) -> int:
+            before = conn.execute("PRAGMA freelist_count").fetchone()[0]
+            conn.execute(f"PRAGMA incremental_vacuum({int(batch_pages)})").fetchall()
+            return before - conn.execute("PRAGMA freelist_count").fetchone()[0]
+
+        deadline = time.monotonic() + budget_s
+        try:
+            while time.monotonic() < deadline:
+                reclaimed = self._execute_write(_batch)
+                result["batches"] += 1
+                result["reclaimed_pages"] += reclaimed
+                if reclaimed < batch_pages:
+                    break
+                time.sleep(pause_s)  # let a queued writer take the lock between batches
+        except (sqlite3.Error, RuntimeError) as exc:  # busy past patience, closed/fenced handle
+            logger.debug("state.db incremental vacuum stopped: %s", exc)
+            result["error"] = str(exc)
+        if result["reclaimed_pages"]:
+            logger.info("state.db incremental vacuum: returned %d MB to the disk",
+                        result["reclaimed_pages"] * page_size >> 20)
+        return result
+
     def maybe_auto_prune_and_vacuum(
         self, retention_days: int = 90, min_interval_hours: int = 24, vacuum: bool = True,
         sessions_dir: Optional[Path] = None, min_vacuum_interval_days: int = 30,
-        min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO,
+        min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO, full_vacuum: bool = True,
     ) -> dict[str, Any]:
         """Idempotent startup auto-maintenance (never raises): prune inactive sessions, reap stale open
         state-owned rows, optional VACUUM.  Runs at most once per ``min_interval_hours``; VACUUM has its own
@@ -517,6 +585,10 @@ class SessionMaintenanceMixin:
         When *sessions_dir* is provided, on-disk transcript files (``.json`` / ``.jsonl`` /
         ``request_dump_*``) for pruned sessions are removed as part of the same sweep (issue #3015).
         Messaging and UI sources are never touched here. See #54189.
+        ``full_vacuum=False`` (a serving gateway) never runs the full rewrite: VACUUM holds the write
+        lock for its whole duration (minutes on a multi-GB store, far longer over NFS), which froze
+        startup and would stall every writer mid-serving. That caller reclaims through
+        :meth:`reclaim_free_pages_incrementally` on its housekeeping thread instead.
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
@@ -558,7 +630,7 @@ class SessionMaintenanceMixin:
             # freelist ratio passed — it holds an exclusive lock for a full rewrite.
             since_vacuum = _seconds_since(now, self.get_meta("last_vacuum"))
             vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
-            if vacuum and pruned > 0 and vacuum_due:
+            if vacuum and full_vacuum and pruned > 0 and vacuum_due:
                 result["freelist_ratio"] = ratio = self._freelist_ratio()
                 # Same admission `hermes sessions optimize` runs: VACUUM plus the TRUNCATE checkpoint
                 # retire the WAL generation a sibling writer (gateway, Desktop, dashboard, cron) still

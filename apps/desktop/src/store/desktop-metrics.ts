@@ -7,8 +7,8 @@
  * Opt-in only. Everything here is gated on `$desktopMetricsGate`, the focused
  * profile's `telemetry.shared_metrics.enabled` as last read from the backend
  * (the same switch the consent strip and Settings › Privacy write). While it is
- * not `on` nothing is persisted and nothing is sent; turning it off purges the
- * local state and tells main to drop its pending renderer-crash record. Binding
+ * not `on` no measurements are persisted or sent; turning it off purges payloads,
+ * revokes sleeping peer collectors, and drops main's pending renderer-crash record. Binding
  * another (connection, profile) forgets the gate until that profile's switch is
  * read, so nothing of one profile is ever kept or sent under another's.
  *
@@ -27,15 +27,19 @@
  * awaiting the backend's ack, and the onboarding latch (steps sent / still open).
  * Every change re-reads the record, so peer windows of one profile add to it
  * instead of overwriting each other; the backend latches each day and area once.
+ * Frame histograms and visible time use single-writer journals under the same scope's `:frames`
+ * family. A finished day waits for peer visible tails to checkpoint or exceed the suspend limit.
+ * Off retains only a payload-free revocation token; no local owner id crosses the RPC boundary.
  */
 
-import { JsonRpcGatewayError, randomUuid } from '@hermes/shared'
+import { randomUuid } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { KEYBIND_ACTION_IDS, KEYBIND_READONLY } from '@/lib/keybinds/actions'
 import { readJson, writeJson } from '@/lib/storage'
 
+import { type DesktopFrameConsent, DesktopFrameMetrics } from './desktop-metrics-frames'
 import type { SharedMetricsRequester } from './shared-metrics'
 
 // ── closed vocabularies ───────────────────────────────────────────────────────
@@ -358,10 +362,10 @@ interface DayAggregate {
   actions: Record<string, number>
   botCount: number
   day: string
-  /** Long frames per bucket while visible, uncapped (one RPC per finished day carries them). */
-  frames: Partial<Record<LongFrameBucket, number>>
+  /** Pre-journal payload, retained only until its deterministic copy is durably observed. */
+  frames?: Partial<Record<LongFrameBucket, number>>
+  visibleMs?: number
   modes: Partial<Record<DesktopMode, ModeDay>>
-  visibleMs: number
 }
 
 interface MetricsState {
@@ -395,7 +399,9 @@ const openFlows = new Map<DesktopFlowId, boolean>()
 let pendingDrop: { detail: BackendDisconnectDetail; timer: ReturnType<typeof setTimeout> } | null = null
 let lastBackendExitAt = 0
 const recentClicks = new Map<string, number[]>()
-let visibleWindow: { maxSpanMs: number; since: number | null } | null = null
+let visibleMaxSpanMs = 0
+let frameMetrics: DesktopFrameMetrics | null = null
+let gateOwner = 0
 
 /** FNV-1a: the local key never carries a profile name. */
 function scopeKey(value: string): string {
@@ -416,8 +422,8 @@ function utcDay(now = Date.now()): string {
   return new Date(now).toISOString().slice(0, 10)
 }
 
-function emptyDay(day: string): DayAggregate {
-  return { actions: {}, botCount, day, frames: {}, modes: {}, visibleMs: 0 }
+function emptyDay(day: string, botCount: number): DayAggregate {
+  return { actions: {}, botCount, day, modes: {} }
 }
 
 /** Anything for `shared_metrics.desktop_daily` (button presses, mode use). */
@@ -428,15 +434,11 @@ function dayHasDailyUse(day: DayAggregate): boolean {
   )
 }
 
-function dayHasUse(day: DayAggregate): boolean {
-  return day.visibleMs > 0 || Object.values(day.frames).some(n => (n ?? 0) > 0) || dayHasDailyUse(day)
-}
-
 function finite(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
 }
 
-function readDay(raw: unknown): DayAggregate | null {
+function readDay(raw: unknown, collector: DesktopFrameMetrics): DayAggregate | null {
   if (!raw || typeof raw !== 'object' || typeof (raw as DayAggregate).day !== 'string') {
     return null
   }
@@ -458,7 +460,7 @@ function readDay(raw: unknown): DayAggregate | null {
     }
   }
 
-  const frames: DayAggregate['frames'] = {}
+  const frames: Partial<Record<LongFrameBucket, number>> = {}
 
   for (const bucket of LONG_FRAME_BUCKETS) {
     const count = finite(source.frames?.[bucket])
@@ -468,19 +470,26 @@ function readDay(raw: unknown): DayAggregate | null {
     }
   }
 
+  const visibleMs = finite(source.visibleMs)
+
+  const legacy = visibleMs > 0 || Object.keys(frames).length > 0
+    ? { frames, visibleMs }
+    : null
+
+  const adopted = legacy ? collector.adopt(source.day as string, legacy) : true
+
   return {
     actions,
     botCount: finite(source.botCount),
     day: source.day as string,
-    frames,
-    modes,
-    visibleMs: finite(source.visibleMs)
+    ...(!adopted && legacy ? legacy : {}),
+    modes
   }
 }
 
-function readState(): MetricsState {
-  const raw = readJson<Partial<MetricsState>>(stateKey())
-  const today = (raw && readDay(raw.today)) || emptyDay(utcDay())
+function readState(key: string, collector: DesktopFrameMetrics, observedBotCount: number): MetricsState {
+  const raw = readJson<Partial<MetricsState>>(key)
+  const today = (raw && readDay(raw.today, collector)) || emptyDay(utcDay(), observedBotCount)
 
   return {
     areas: Array.isArray(raw?.areas) ? raw.areas.filter(a => typeof a === 'string') : [],
@@ -489,49 +498,71 @@ function readState(): MetricsState {
       open: raw?.onboarding?.open && typeof raw.onboarding.open === 'object' ? { ...raw.onboarding.open } : {},
       sent: Array.isArray(raw?.onboarding?.sent) ? raw.onboarding.sent.filter(s => typeof s === 'string') : []
     },
-    pending: Array.isArray(raw?.pending) ? raw.pending.map(readDay).filter((d): d is DayAggregate => d !== null) : [],
+    pending: Array.isArray(raw?.pending)
+      ? raw.pending.map(day => readDay(day, collector)).filter((day): day is DayAggregate => day !== null)
+      : [],
     today,
     v: 1
   }
 }
 
 /** Close out a finished day (into `pending`) when the UTC date moved; true when it did. */
-function rollDay(current: MetricsState, now = Date.now()): boolean {
+function rollDay(current: MetricsState, now: number, observedBotCount: number): boolean {
   const day = utcDay(now)
 
   if (current.today.day === day) {
     return false
   }
 
-  if (dayHasUse(current.today)) {
+  if (dayHasDailyUse(current.today) || current.today.frames || current.today.visibleMs) {
     current.pending = [...current.pending, current.today].slice(-PENDING_DAYS_MAX)
   }
 
-  current.today = emptyDay(day)
+  current.today = emptyDay(day, observedBotCount)
   current.areas = []
   current.caps = {}
 
   return true
 }
 
-/** Run `fn` on this profile's stored record and write it back — only while collection is on.
- *  Read fresh each time (peer windows share it); never nest (the inner write would be lost). */
-function withState<T>(fn: (current: MetricsState) => T): T | undefined {
-  if ($desktopMetricsGate.get() !== 'on') {
+/** Serialize the complete read/modify/write with profile retirement. Callbacks are synchronous;
+ * effects run after ownership is released. Network receipts must pass their original collector. */
+function withState<T = void>(
+  fn?: (current: MetricsState) => T,
+  after?: (result: T) => void,
+  collector = frameMetrics
+): Promise<T | undefined> | undefined {
+  if ($desktopMetricsGate.get() !== 'on' || !collector?.isCurrent() || frameMetrics !== collector) {
     return undefined
   }
 
-  const current = readState()
-  const now = Date.now()
+  const owner = scope
+  const key = stateKey()
+  const observedBotCount = botCount
+  const currentOwner = () => scope === owner && frameMetrics === collector && $desktopMetricsGate.get() === 'on'
 
-  creditVisibleTime(current, now)
+  // One phase publishes both the observed visible-time boundary and its aggregate mutation.
+  // A later view switch does not discard already queued observations from this valid cohort.
+  return collector.checkpoint(Date.now(), () => {
+    const current = readState(key, collector, observedBotCount)
 
-  rollDay(current, now)
-  const result = fn(current)
+    rollDay(current, Date.now(), observedBotCount)
+    const result = fn?.(current)
 
-  writeJson(stateKey(), current)
+    writeJson(key, current)
 
-  return result
+    return result
+  })?.then(result => {
+    if (!currentOwner() || !collector.isCurrent()) {
+      return undefined
+    }
+
+    if (result !== undefined) {
+      after?.(result)
+    }
+
+    return result
+  })
 }
 
 function send(method: string, params: Record<string, unknown>): void {
@@ -565,15 +596,23 @@ function takeCap(current: MetricsState, key: string, cap: number): boolean {
 
 /** An area opened. Reported once per UTC day; the open time also arms quick_close. */
 export function recordFeatureUse(area: DesktopFeatureArea, now = Date.now()): void {
-  withState(current => {
-    areaOpenedAt.set(area, now)
+  if ($desktopMetricsGate.get() !== 'on' || !frameMetrics?.isCurrent()) {
+    return
+  }
 
+  areaOpenedAt.set(area, now)
+  void withState(current => {
     if (current.areas.includes(area)) {
-      return
+      return false
     }
 
     current.areas = [...current.areas, area]
-    send('shared_metrics.desktop_feature_use', { area })
+
+    return true
+  }, fresh => {
+    if (fresh) {
+      send('shared_metrics.desktop_feature_use', { area })
+    }
   })
 }
 
@@ -666,15 +705,14 @@ export function cancelPendingBackendDrop(): void {
 }
 
 export function recordFriction(kind: DesktopFrictionKind, detail: DesktopFrictionDetail): void {
-  withState(current => {
-    if (
-      !takeCap(current, `friction:${kind}:${detail}`, kind === 'slow_frame' ? SLOW_FRAME_DAILY_CAP : FRICTION_DAILY_CAP)
-    ) {
-      return
+  void withState(
+    current => takeCap(current, `friction:${kind}:${detail}`, kind === 'slow_frame' ? SLOW_FRAME_DAILY_CAP : FRICTION_DAILY_CAP),
+    fresh => {
+      if (fresh) {
+        send('shared_metrics.desktop_friction', { detail, kind })
+      }
     }
-
-    send('shared_metrics.desktop_friction', { detail, kind })
-  })
+  )
 }
 
 export function recordDislike(
@@ -683,15 +721,13 @@ export function recordDislike(
   setting?: string,
   profile?: null | string
 ): void {
-  withState(current => {
-    if (!takeCap(current, `dislike:${signal}`, DISLIKE_DAILY_CAP)) {
-      return
+  void withState(current => takeCap(current, `dislike:${signal}`, DISLIKE_DAILY_CAP), fresh => {
+    if (fresh) {
+      send('shared_metrics.desktop_dislike', {
+        ...(setting ? { setting, signal, target: 'setting' } : { signal, target }),
+        ...(profile ? { profile } : {})
+      })
     }
-
-    send('shared_metrics.desktop_dislike', {
-      ...(setting ? { setting, signal, target: 'setting' } : { signal, target }),
-      ...(profile ? { profile } : {})
-    })
   })
 }
 
@@ -734,7 +770,7 @@ export function recordFeatureToggle(toggle: DesktopFeatureToggle, wasOn: boolean
 export function recordAction(rawAction: string, via: DesktopActionVia, now = Date.now()): void {
   const action = ACTION_IDS.has(rawAction) ? rawAction : 'other'
 
-  withState(current => {
+  void withState(current => {
     const key = `${action}|${via}`
 
     current.today.actions[key] = (current.today.actions[key] ?? 0) + 1
@@ -761,7 +797,7 @@ export function noteInteraction(now = Date.now(), mode: DesktopMode = $workspace
 
   lastInteractionAt = now
 
-  withState(current => {
+  void withState(current => {
     const entry = (current.today.modes[mode] ??= { activeMs: 0, messages: 0 })
 
     if (gap > 0 && gap <= ACTIVE_IDLE_GAP_MS) {
@@ -772,88 +808,44 @@ export function noteInteraction(now = Date.now(), mode: DesktopMode = $workspace
 
 /** The user sent a message from a session in `mode` (a bot-owned tile is `bots`). */
 export function noteMessageSent(mode: DesktopMode = $workspaceMode.get()): void {
-  const onboarded = withState(current => {
+  void withState(current => {
     const entry = (current.today.modes[mode] ??= { activeMs: 0, messages: 0 })
 
     entry.messages += 1
 
     return current.onboarding.sent.some(key => !key.startsWith('first_message:'))
+  }, onboarded => {
+    if (onboarded) {
+      recordOnboarding('first_message', 'completed')
+    }
   })
-
-  if (onboarded) {
-    recordOnboarding('first_message', 'completed')
-  }
 }
 
 /** A batch of long animation frames seen while the window was visible (durations in ms). */
 export function recordLongFrames(durations: readonly number[]): void {
-  withState(current => {
-    for (const duration of durations) {
-      const bucket = longFrameBucket(duration)
-
-      if (bucket) {
-        current.today.frames[bucket] = (current.today.frames[bucket] ?? 0) + 1
-      }
-    }
-  })
-}
-
-/** The store owns the span so any event that rolls or flushes a day credits its visible tail first. */
-function creditVisibleTime(current: MetricsState, now: number): void {
-  if (!visibleWindow) {
-    return
-  }
-
-  let since = visibleWindow.since
-
-  visibleWindow.since = document.visibilityState === 'visible' ? now : null
-
-  if (since === null || now <= since || now - since > visibleWindow.maxSpanMs) {
-    return
-  }
-
-  while (since < now) {
-    const day = utcDay(since)
-    const until = Math.min(now, Date.parse(day) + 24 * 60 * 60_000)
-
-    if (current.today.day < day) {
-      rollDay(current, since)
-    }
-
-    let entry = current.today.day === day ? current.today : current.pending.find(pending => pending.day === day)
-
-    if (!entry) {
-      entry = emptyDay(day)
-      current.pending = [...current.pending, entry].slice(-PENDING_DAYS_MAX)
-    }
-
-    entry.visibleMs += until - since
-    since = until
-  }
-}
-
-function restartVisibleTime(): void {
-  if (visibleWindow) {
-    visibleWindow.since = $desktopMetricsGate.get() === 'on' && document.visibilityState === 'visible' ? Date.now() : null
+  if ($desktopMetricsGate.get() === 'on') {
+    frameMetrics?.record(durations.map(longFrameBucket).filter((bucket): bucket is LongFrameBucket => bucket !== null))
   }
 }
 
 /** Main-window lifetime; spans longer than the tick period plus slack are uncredited suspend gaps. */
 export function trackDesktopVisibleTime(maxSpanMs: number): () => void {
-  visibleWindow = { maxSpanMs, since: null }
-  restartVisibleTime()
+  visibleMaxSpanMs = maxSpanMs
+  frameMetrics?.track(maxSpanMs)
 
   return () => {
-    withState(() => undefined)
-    visibleWindow = null
+    frameMetrics?.track(0)
+    visibleMaxSpanMs = 0
   }
 }
 
 /** Configured bots (Bot Mode roster = Hermes profiles) — a count, never names. */
 export function setDesktopBotCount(count: number): void {
-  botCount = Math.max(0, Math.floor(finite(count)))
-  withState(current => {
-    current.today.botCount = Math.max(current.today.botCount, botCount)
+  const observed = Math.max(0, Math.floor(finite(count)))
+
+  botCount = observed
+  void withState(current => {
+    current.today.botCount = Math.max(current.today.botCount, observed)
   })
 }
 
@@ -870,6 +862,23 @@ function heldForConsent(replay: () => void): boolean {
   return true
 }
 
+function updateOnboarding(current: MetricsState, step: DesktopOnboardingStep, event: DesktopOnboardingEvent): boolean {
+  if (event === 'reached') {
+    current.onboarding.open[step] = LAUNCH_ID
+  } else {
+    delete current.onboarding.open[step]
+  }
+
+  const key = `${step}:${event}`
+  const fresh = !current.onboarding.sent.includes(key)
+
+  if (fresh) {
+    current.onboarding.sent.push(key)
+  }
+
+  return fresh
+}
+
 /** One first-run step transition, once per (step, event) per profile. A step
  *  reached but not completed is remembered; if it is still open on a later
  *  load, it was abandoned. */
@@ -878,23 +887,7 @@ export function recordOnboarding(step: DesktopOnboardingStep, event: DesktopOnbo
     return
   }
 
-  withState(current => {
-    const open = { ...current.onboarding.open }
-
-    if (event === 'reached') {
-      open[step] = LAUNCH_ID
-    } else {
-      delete open[step]
-    }
-
-    current.onboarding.open = open
-    const key = `${step}:${event}`
-    const fresh = !current.onboarding.sent.includes(key)
-
-    if (fresh) {
-      current.onboarding.sent = [...current.onboarding.sent, key]
-    }
-
+  void withState(current => updateOnboarding(current, step, event), fresh => {
     if (fresh) {
       send('shared_metrics.desktop_onboarding', { event, step })
     }
@@ -908,7 +901,7 @@ export function closeOnboardingStep(step: DesktopOnboardingStep): void {
     return
   }
 
-  withState(current => {
+  void withState(current => {
     const open = { ...current.onboarding.open }
 
     delete open[step]
@@ -919,12 +912,27 @@ export function closeOnboardingStep(step: DesktopOnboardingStep): void {
 // ── lifecycle ─────────────────────────────────────────────────────────────────
 
 function reportAbandonedSteps(): void {
-  const open = withState(current => Object.entries(current.onboarding.open)) ?? []
+  void withState(current => {
+    const abandoned: DesktopOnboardingStep[] = []
 
-  for (const [step, launch] of open) {
-    if (launch !== LAUNCH_ID) {
-      recordOnboarding(step as DesktopOnboardingStep, 'abandoned')
+    for (const [step, launch] of Object.entries(current.onboarding.open)) {
+      if (launch !== LAUNCH_ID && updateOnboarding(current, step as DesktopOnboardingStep, 'abandoned')) {
+        abandoned.push(step as DesktopOnboardingStep)
+      }
     }
+
+    return abandoned
+  }, abandoned => {
+    for (const step of abandoned) {
+      send('shared_metrics.desktop_onboarding', { event: 'abandoned', step })
+    }
+  })
+}
+
+function flushFrameDays(owner: string, requester: SharedMetricsRequester, collector: DesktopFrameMetrics | null): void {
+  if (collector && scope === owner && request === requester && $desktopMetricsGate.get() === 'on') {
+    void collector.flush(requester, () =>
+      frameMetrics === collector && scope === owner && request === requester && $desktopMetricsGate.get() === 'on')
   }
 }
 
@@ -937,11 +945,27 @@ async function flushPendingDays(): Promise<void> {
 
   try {
     // Pinned to the profile and gateway that started the flush: a switch mid-await stops it.
-    const [owner, requester] = [scope, request]
+    const [owner, requester, collector] = [scope, request, frameMetrics]
 
-    for (let day = withState(current => current.pending[0]); day; day = withState(current => current.pending[0])) {
+    await collector?.ready
+
+    if (scope !== owner || request !== requester || frameMetrics !== collector) {
+      return
+    }
+
+    for (
+      let day = await withState(current => current.pending[0], undefined, collector);
+      day;
+      day = await withState(current => current.pending[0], undefined, collector)
+    ) {
       const reported = day.day
-      const settled = () => scope === owner && request === requester
+
+      const settled = () => scope === owner && request === requester && frameMetrics === collector &&
+        $desktopMetricsGate.get() === 'on' && collector?.isCurrent() === true
+
+      if (!settled()) {
+        return
+      }
 
       if (dayHasDailyUse(day)) {
         if (!(await sendDaily(requester, day)) || !settled()) {
@@ -949,7 +973,7 @@ async function flushPendingDays(): Promise<void> {
         }
 
         // A consent withdrawal purges the entry, including an off→on flip during the await.
-        const kept = withState(current => {
+        const kept = await withState(current => {
           const entry = current.pending.find(pending => pending.day === reported)
 
           if (entry) {
@@ -958,21 +982,27 @@ async function flushPendingDays(): Promise<void> {
           }
 
           return entry !== undefined
-        })
+        }, undefined, collector)
 
         if (!kept) {
           return
         }
       }
 
-      if (day.visibleMs > 0 && (!(await sendLongFrames(requester, day)) || !settled())) {
-        return
+      if (day.frames || day.visibleMs) {
+        const adopted = collector?.adopt(day.day, { frames: day.frames ?? {}, visibleMs: day.visibleMs ?? 0 })
+
+        if (!adopted) {
+          break
+        }
       }
 
-      withState(current => {
+      await withState(current => {
         current.pending = current.pending.filter(entry => entry.day !== reported)
-      })
+      }, undefined, collector)
     }
+
+    flushFrameDays(owner, requester, collector)
   } catch {
     // A flap: the day stays pending for the next attach.
   } finally {
@@ -997,29 +1027,6 @@ async function sendDaily(requester: SharedMetricsRequester, day: DayAggregate): 
   })
 
   return result?.recorded === true
-}
-
-/** True once settled. A backend without the method (-32601: older than the histogram) settles it
- *  unrecorded, so the day never sticks behind a report that runtime cannot take. */
-async function sendLongFrames(requester: SharedMetricsRequester, day: DayAggregate): Promise<boolean> {
-  try {
-    const result = await requester<{ recorded?: boolean }>('shared_metrics.desktop_long_frames', {
-      day: day.day,
-      frames: LONG_FRAME_BUCKETS.filter(bucket => (day.frames[bucket] ?? 0) > 0).map(bucket => ({
-        bucket,
-        count: day.frames[bucket]!
-      })),
-      visible_ms: day.visibleMs
-    })
-
-    return result?.recorded === true
-  } catch (error) {
-    if (error instanceof JsonRpcGatewayError && error.code === -32601) {
-      return true
-    }
-
-    throw error
-  }
 }
 
 /** Renderer crashes main persisted while this renderer (or its predecessor) was gone. */
@@ -1051,7 +1058,7 @@ async function drainRendererCrashes(): Promise<void> {
 
 /** Send everything waiting: queued events, finished days, abandoned steps, crashes. */
 export function flushDesktopMetrics(): void {
-  if ($desktopMetricsGate.get() !== 'on' || !request) {
+  if ($desktopMetricsGate.get() !== 'on' || !request || !frameMetrics?.isCurrent()) {
     return
   }
 
@@ -1078,43 +1085,122 @@ function tellMain(on: boolean): void {
 }
 
 function forgetInMemory(): void {
+  gateOwner += 1
   queue = []
   areaOpenedAt.clear()
   openFlows.clear()
   recentClicks.clear()
   cancelPendingBackendDrop()
 
-  if (visibleWindow) {
-    visibleWindow.since = null
-  }
+  frameMetrics?.stop()
+  frameMetrics = null
 }
 
-/** Apply the focused profile's collection switch. Off purges everything local. `decided` false
- *  (first-run offer unanswered) keeps the pre-consent onboarding transitions for a later yes. */
-export function setDesktopMetricsGate(next: DesktopMetricsGate, decided = true): void {
-  if (next === 'off' && decided) {
+function closeDesktopMetricsGate(decided: boolean): void {
+  if (decided) {
     preConsent = null
   }
 
+  $desktopMetricsGate.set('off')
+  forgetInMemory()
+  tellMain(false)
+}
+
+/** Capture before an asynchronous consent read/write. A withdrawal owns its original permit
+ * even after a rename or focus change; a positive result never authorizes a newer bound owner. */
+export async function captureDesktopMetricsGate(profileScope?: string): Promise<(
+  next: DesktopMetricsGate,
+  decided?: boolean
+) => Promise<boolean>> {
+  const ownerScope = profileScope === undefined ? scope : scopeKey(profileScope)
+  const key = `${STATE_KEY}:${ownerScope}`
+  const collector = ownerScope === scope ? frameMetrics : null
+  const owner = gateOwner
+  const captured = await DesktopFrameMetrics.captureCoordinated(key)
+  const ownsView = () => ownerScope === scope && owner === gateOwner && collector === frameMetrics
+  const sameCohort = (value: DesktopFrameConsent) => value.epoch === captured.epoch && value.consent === captured.consent
+
+  async function withdrawCapturedConsent(decided: boolean): Promise<boolean> {
+    const currentOwner = ownsView() && sameCohort(DesktopFrameMetrics.capture(key))
+
+    if (currentOwner) {
+      closeDesktopMetricsGate(decided)
+    }
+
+    const closedOwner = gateOwner
+
+    const revoked = await DesktopFrameMetrics.purge(key, captured)
+    const current = DesktopFrameMetrics.capture(key)
+    const after = revoked.after ?? captured
+
+    // The receipt distinguishes our own epoch retirement from another renderer replacing
+    // this same scope while we awaited ownership. A stale Off still revokes its old permit.
+    return currentOwner && ownerScope === scope && gateOwner === closedOwner && frameMetrics === null &&
+      (!revoked.before || sameCohort(revoked.before)) &&
+      current.epoch === after.epoch && current.consent === after.consent &&
+      (!revoked.after || current.active === revoked.after.active)
+  }
+
+  return async (next, decided = true) => {
+    if (next === 'off') {
+      return withdrawCapturedConsent(decided)
+    }
+
+    // Validation must not mint a replacement cohort for an old asynchronous result.
+    const current = await DesktopFrameMetrics.captureCoordinated(key, false)
+
+    if (!ownsView() || current.epoch !== captured.epoch || current.consent !== captured.consent ||
+      (captured.active && !current.active)) {
+      return false
+    }
+
+    setDesktopMetricsGate(next, captured)
+    const acceptedOwner = gateOwner
+    const acceptedCollector = frameMetrics
+
+    await acceptedCollector?.ready
+
+    if (ownerScope !== scope || gateOwner !== acceptedOwner || frameMetrics !== acceptedCollector) {
+      return false
+    }
+
+    // A failed telemetry initializer is not a failed consent save. Only a newer persisted
+    // owner/withdrawal invalidates the accepted view, not storage or coordinator availability.
+    if (next === 'on' && !acceptedCollector?.isCurrent()) {
+      const settled = DesktopFrameMetrics.capture(key)
+
+      return settled.epoch === captured.epoch && settled.consent === captured.consent &&
+        (!captured.active || settled.active)
+    }
+
+    return true
+  }
+}
+
+/** Only an accepted, captured consent result may create a collector. */
+function setDesktopMetricsGate(next: Exclude<DesktopMetricsGate, 'off'>, captured: DesktopFrameConsent): void {
   if (next === $desktopMetricsGate.get()) {
-    return
+    if (next !== 'on' || frameMetrics?.isCurrent()) {
+      return
+    }
+
+    forgetInMemory()
   }
 
   $desktopMetricsGate.set(next)
-  restartVisibleTime()
 
-  if (next === 'off') {
-    forgetInMemory()
-    writeJson(stateKey(), null)
-    tellMain(false)
-
-    return
+  if (next !== 'on') {
+    frameMetrics?.stop()
+    frameMetrics = null
   }
 
   if (next === 'on') {
     const held = preConsent ?? []
 
     preConsent = null
+    gateOwner += 1
+    frameMetrics = new DesktopFrameMetrics(stateKey(), captured)
+    frameMetrics.track(visibleMaxSpanMs)
     tellMain(true)
     flushDesktopMetrics()
     held.forEach(replay => replay())
@@ -1138,9 +1224,42 @@ export function bindDesktopMetrics(next: SharedMetricsRequester | null, profileS
   flushDesktopMetrics()
 }
 
+/** Profile deletion also revokes sleeping windows before their next frame checkpoint. */
+export function dropDesktopMetricsForProfile(profile: string, connectionId = 'local'): void {
+  for (const connection of connectionId === 'local' ? ['', 'local'] : [connectionId]) {
+    const key = `${STATE_KEY}:${scopeKey(`${connection}|${profile}`)}`
+
+    if (key === stateKey()) {
+      forgetInMemory()
+      $desktopMetricsGate.set(null)
+    }
+
+    void DesktopFrameMetrics.purge(key)
+  }
+}
+
+/** Renames are local, like migrateTilesForProfile. Move the whole family without retaining names. */
+export async function migrateDesktopMetricsForProfile(from: string, to: string): Promise<void> {
+  if (from === to) {
+    return
+  }
+
+  for (const connection of ['', 'local']) {
+    const oldKey = `${STATE_KEY}:${scopeKey(`${connection}|${from}`)}`
+    const newKey = `${STATE_KEY}:${scopeKey(`${connection}|${to}`)}`
+
+    if (oldKey === stateKey() || newKey === stateKey()) {
+      forgetInMemory()
+      $desktopMetricsGate.set(null)
+    }
+
+    await DesktopFrameMetrics.migrate(oldKey, newKey)
+  }
+}
+
 /** Periodic/visibility tick: roll the day over and send what finished. */
-export function tickDesktopMetrics(now = Date.now()): void {
-  withState(current => void rollDay(current, now))
+export function tickDesktopMetrics(): void {
+  void withState()
   void flushPendingDays()
 }
 
@@ -1153,7 +1272,9 @@ export function resetDesktopMetricsForTests(): void {
   flushingDays = false
   botCount = 0
   lastInteractionAt = 0
-  visibleWindow = null
+  frameMetrics?.stop()
+  frameMetrics = null
+  visibleMaxSpanMs = 0
   areaOpenedAt.clear()
   openFlows.clear()
   recentClicks.clear()

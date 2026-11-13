@@ -133,7 +133,10 @@ export function createPluginFiles(pluginId: string): PluginFiles {
       try {
         const result = await door.request(pluginId, {
           buttonLabel: translateNow('skills.plugins.folderAccess.pickerButton'),
-          title: options?.title?.trim() || translateNow('skills.plugins.folderAccess.pickerTitle', name),
+          title:
+            typeof options?.title === 'string' && options.title.trim()
+              ? options.title.trim()
+              : translateNow('skills.plugins.folderAccess.pickerTitle', name),
           defaultPath: options?.defaultPath
         })
 

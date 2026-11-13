@@ -32,7 +32,7 @@ def _empty_object_schema() -> dict[str, Any]:
     return {"type": "object", "properties": {}, "required": []}
 
 
-def _repair_schema(node: Any) -> Any:
+def _repair_schema(node: Any, *, nested: bool = True) -> Any:
     """Recursively apply the Moonshot repairs to a schema node."""
     if isinstance(node, list):
         return [_repair_schema(item) for item in node]
@@ -81,14 +81,23 @@ def _repair_schema(node: Any) -> Any:
 
     # Rule 4.
     if repaired.get("type") == "object":
-        repaired = _ensure_required_array(repaired)
+        repaired = _ensure_required_array(repaired, nested=nested)
 
     return repaired
 
 
-def _ensure_required_array(node: dict[str, Any]) -> dict[str, Any]:
+def _ensure_required_array(node: dict[str, Any], *, nested: bool = True) -> dict[str, Any]:
     """Guarantee an object schema carries a ``required`` list, pruning names not in
-    ``properties`` (Moonshot also rejects dangling names). Mutates and returns ``node``."""
+    ``properties`` (Moonshot also rejects dangling names). Mutates and returns ``node``.
+
+    A NESTED free-form object (no declared ``properties``, or an empty set) must ALSO
+    carry explicit ``additionalProperties: true``: Moonshot's constrained tool-call
+    decoding treats such an object as closed and can then only emit ``{}`` — measured
+    2026-11-01, every bridged ``tool_call`` arrived with ``arguments: {}`` until the
+    keyword was added. ``true`` is the JSON Schema default, so this is a semantic no-op
+    for every other consumer. Top-level parameters (``nested=False``) are exempt: an
+    empty ``properties`` there means a genuinely no-argument tool, where emitting ``{}``
+    is the correct outcome."""
     props = node.get("properties")
     req = node.get("required")
     if isinstance(req, list):
@@ -96,6 +105,8 @@ def _ensure_required_array(node: dict[str, Any]) -> dict[str, Any]:
             node["required"] = [r for r in req if r in props]
     else:
         node["required"] = []
+    if nested and (not isinstance(props, dict) or not props) and "additionalProperties" not in node:
+        node["additionalProperties"] = True
     return node
 
 
@@ -134,13 +145,13 @@ def sanitize_moonshot_tool_parameters(parameters: Any) -> dict[str, Any]:
     """Deep-copied, Moonshot-compatible object schema; input is not mutated."""
     if not isinstance(parameters, dict):
         return _empty_object_schema()
-    repaired = _repair_schema(copy.deepcopy(parameters))
+    repaired = _repair_schema(copy.deepcopy(parameters), nested=False)
     if not isinstance(repaired, dict):
         return _empty_object_schema()
     # Top-level must be an object schema.
     repaired["type"] = "object"
     repaired.setdefault("properties", {})
-    return _ensure_required_array(repaired)
+    return _ensure_required_array(repaired, nested=False)
 
 
 def sanitize_moonshot_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

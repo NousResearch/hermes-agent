@@ -239,6 +239,52 @@ class TestRequiredArray:
         assert out["type"] == "object"
         assert out["required"] == []
 
+    def test_freeform_nested_object_stays_open(self):
+        # Regression: a free-form object (no properties) given only "required": [] was
+        # treated as closed by Moonshot's grammar decoder — bridged tool_call arguments
+        # always arrived as {} (2026-11-01). It must gain additionalProperties: true.
+        params = {
+            "type": "object",
+            "properties": {
+                "calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "arguments": {"type": "object", "description": "free-form"},
+                        },
+                        "required": ["name", "arguments"],
+                    },
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        args = out["properties"]["calls"]["items"]["properties"]["arguments"]
+        assert args["additionalProperties"] is True
+        assert args["required"] == []
+
+    def test_empty_properties_object_also_stays_open(self):
+        params = {"type": "object",
+                  "properties": {"filter": {"type": "object", "properties": {}}}}
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["filter"]["additionalProperties"] is True
+
+    def test_explicit_additional_properties_not_overridden(self):
+        params = {"type": "object",
+                  "properties": {"filter": {"type": "object", "additionalProperties": False}}}
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["filter"]["additionalProperties"] is False
+
+    def test_object_with_properties_gains_no_additional_properties(self):
+        params = {"type": "object",
+                  "properties": {"q": {"type": "string"},
+                                 "filter": {"type": "object",
+                                            "properties": {"k": {"type": "string"}}}}}
+        out = sanitize_moonshot_tool_parameters(params)
+        assert "additionalProperties" not in out["properties"]["filter"]
+        assert "additionalProperties" not in out
+
 
 class TestToolListSanitizer:
     """sanitize_moonshot_tools() walks an OpenAI-format tool list."""

@@ -110,6 +110,9 @@ def _repair_object_shape(node, *, _object_root=False):
             # OpenAI-compatible backends (#56123); ``[]`` is valid everywhere (Gemini included).
             required = repaired.get("required")
             props = repaired.get("properties") or {}
+            if _object_root:
+                from tools.schema_sanitizer import preserve_root_union_properties
+                props = preserve_root_union_properties(repaired).get("properties", props)
             repaired["required"] = ([r for r in required if isinstance(r, str) and r in props]
                                     if isinstance(required, list) else [])
     return repaired
@@ -126,8 +129,9 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
     * Missing or ``null`` ``type`` on an object-shaped node is coerced to ``"object"`` (some servers omit
     it). See PR #4897. * When an ``object`` node lacks ``properties``, an empty ``properties`` dict is added
-    so ``required`` entries don't dangle. * ``required`` arrays are pruned to only names that exist in
-    ``properties``; otherwise Google AI Studio / Gemini 400s with ``property is not defined``. See PR #4651.
+    so ``required`` entries don't dangle. * ``required`` arrays retain declared property names,
+    including inline root union fields projected by the provider sanitizer; otherwise Google AI
+    Studio / Gemini 400s with ``property is not defined``. See PR #4651.
     * MCP/Pydantic optional fields commonly arrive as ``anyOf: [{...}, {"type": "null"}], default: null``.
     """
     if not schema:

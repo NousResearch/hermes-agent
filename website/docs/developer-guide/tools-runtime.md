@@ -117,6 +117,16 @@ The main entry point is `model_tools.get_tool_definitions(enabled_toolsets, disa
 
 5. **Dynamic schema patching** — after filtering, schemas such as `execute_code`, `browser_cdp` and `delegate_task` are dynamically adjusted to only reference tools that actually passed filtering (prevents model hallucination of unavailable tools).
 
+Root `anyOf`/`oneOf` parameter schemas expose the union of their inline branch fields before
+provider-incompatible root combinators are removed. Existing root properties keep ownership;
+conflicting field schemas remain alternatives, and only requirements shared by every branch are
+promoted. This projection is a model hint: MCP servers still validate their original schemas.
+Dispatch decodes unambiguous container strings before reversing provider-safe property names once,
+including nested array items. Legitimate string alternatives and ambiguous wire names are preserved.
+Local references retain the existing dispatch-time resolver. References into removed root union
+arms are inlined in the provider schema; unresolved or cyclic targets lose only that provider hint.
+Root `allOf` and referenced branch fields are not projected.
+
 ### Legacy toolset names
 
 Old toolset names with `_tools` suffixes (e.g., `web_tools`, `terminal_tools`) are mapped to their modern tool names via `_LEGACY_TOOLSET_MAP` for backward compatibility.

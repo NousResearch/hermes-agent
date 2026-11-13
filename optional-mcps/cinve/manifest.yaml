@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: cinve
+description: >-
+  Showtimes, ticket prices, concessions and seat maps for cinemas in
+  Venezuela (Cinex, Cines Unidos, Supercines and more).
+source: https://cinve.kevinbravo.com/install
+
+# Operator-hosted remote MCP over Streamable HTTP. Public queries work
+# anonymously; OAuth 2.1 (PKCE S256, CIMD or Dynamic Client Registration)
+# adds an optional cinema-account connection for member prices and seat
+# maps. The consent page lets the user continue without connecting a
+# cinema. Nothing is installed locally.
+transport:
+  type: http
+  url: https://cinve.kevinbravo.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - cinve
+    - cartelera
+    - cinex
+    - cines unidos
+  hosts:
+    - cinve.kevinbravo.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize Cinve (or run
+  `hermes mcp login cinve`). Connecting a cinema account there is
+  optional: public showtimes and prices work without one. Restart the
+  session so the tools load.
+
+  Cinve never asks for passwords in chat and never books or buys
+  tickets.

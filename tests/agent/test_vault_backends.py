@@ -289,3 +289,29 @@ def test_onepassword_service_account_refusals_name_the_real_cause(fake_op_servic
     assert all(json.loads(a)[:2] != ["item", "get"] for a in log.read_text(encoding="utf-8-sig").splitlines())
     with pytest.raises(RuntimeError, match="DecodeSACredentials"):
         new_backend().resolve_password("op:item-c")
+
+
+def test_onepassword_desktop_app_integration_unlock_with_empty_stdout(monkeypatch):
+    """When 1Password CLI delegates auth to the 1Password desktop app (Touch ID / Windows Hello),
+    `op signin --raw` exits 0 with empty stdout instead of emitting an OP_SESSION token."""
+    from pathlib import Path
+    from types import SimpleNamespace
+    from agent.vault_backends import onepassword as op_mod
+    from agent.vault_backends import unlock as unlock_mod
+
+    unlock_mod.lock("onepassword")
+    monkeypatch.setattr("agent.secret_scope.get_secret", lambda _name, default="": default)
+    monkeypatch.setattr(op_mod, "find_op", lambda _p="": Path("/usr/local/bin/op"))
+    monkeypatch.setattr(
+        op_mod,
+        "run_with_stdin_secret",
+        lambda *_a, **_kw: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    backend = op_mod.OnePasswordLoginBackend({})
+    assert not backend.is_unlocked()
+    backend.unlock("biometric-or-master")
+    assert backend.is_unlocked()
+    env = backend._env(unlock_mod.get_session_token("onepassword"))
+    assert "OP_SESSION" not in env
+    unlock_mod.lock("onepassword")

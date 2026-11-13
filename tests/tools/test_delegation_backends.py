@@ -243,7 +243,7 @@ def test_a_saved_switch_refuses_the_previous_backends_parameter_and_names_the_fi
         assert (home / "config.yaml").read_bytes() == before
 
         set_global_backend("probe-profiles", session_key="chat-a")
-        assert yaml.safe_load((home / "config.yaml").read_text())["delegation"]["backend"] == "probe-profiles"
+        assert yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["delegation"]["backend"] == "probe-profiles"
         out = json.loads(delegate_task(tasks=[
             {"goal": "the quick thing", "option": "fast"},
             {"goal": "a plain task"},
@@ -264,6 +264,45 @@ def test_a_saved_switch_refuses_the_previous_backends_parameter_and_names_the_fi
         assert [b["model"] for b in recorded] == ["profile-default-model", "work-model"]
     finally:
         _registry.restore_registration("probe-profiles", profiles, None)
+        manager.unload()
+
+
+def test_a_raw_model_pin_on_a_task_is_refused_never_run_on_the_default_route(tmp_path, monkeypatch, recorded):
+    """No backend reads a task's own ``model``/``provider``/``toolsets``: a task carrying one is refused alone (it
+    would run on a route nobody asked for), pointing at named routes, never at the user's ``delegation.model``."""
+    _, manager = _home(tmp_path, monkeypatch, {}, plugins=())
+    try:
+        from tools.delegate_tool import delegate_task
+
+        out = json.loads(delegate_task(tasks=[
+            {"goal": "a task pinned to a cheap model", "model": "cheap-model", "provider": "openrouter"},
+            {"goal": "a task asking for its own tools", "toolsets": ["web"]},
+            {"goal": "a plain delegated task", "model": None},
+        ], parent_agent=_parent()))
+        pinned, tooled, plain = out["results"]
+        assert pinned["status"] == tooled["status"] == "error" and plain["status"] == "completed"
+        assert pinned["error"].startswith("Task 0: delegate_task has no per-task 'model', 'provider' field")
+        assert "`hermes delegation config`" in pinned["error"] and "delegation.model" not in pinned["error"]
+        assert "the parent's toolsets" in tooled["error"]
+        assert [b["model"] for b in recorded] == [None]
+    finally:
+        manager.unload()
+
+
+def test_a_raw_model_pin_beside_a_backends_named_routes_points_at_them(tmp_path, monkeypatch, recorded):
+    _, manager = _home(tmp_path, monkeypatch, {"backend": "probe-options", "backends": {"probe-options": {"options": OPTIONS}}})
+    try:
+        from tools.delegate_tool import delegate_task
+
+        out = json.loads(delegate_task(tasks=[
+            {"goal": "summarize the quick thing", "option": "fast", "model": "deep-model"},
+            {"goal": "summarize the quick thing", "option": "fast"},
+        ], parent_agent=_parent()))
+        pinned, fast = out["results"]
+        assert pinned["status"] == "error" and pinned["route"] == {"backend": "probe-options", "refused": True}
+        assert "'probe-options' delegation backend picks each child's route through 'option'" in pinned["error"]
+        assert fast["status"] == "completed" and [b["model"] for b in recorded] == ["fast-model"]
+    finally:
         manager.unload()
 
 

@@ -146,8 +146,8 @@ terminal("cd spikes/001-websocket-streaming && python main.py")
 
 ```
 delegate_task(tasks=[
-    {"goal": "Build 002a-pdf-parse-pdfjs: ...", "toolsets": ["terminal", "file", "web"]},
-    {"goal": "Build 002b-pdf-parse-camelot: ...", "toolsets": ["terminal", "file", "web"]},
+    {"goal": "Build 002a-pdf-parse-pdfjs: ..."},
+    {"goal": "Build 002b-pdf-parse-camelot: ..."},
 ])
 ```
 

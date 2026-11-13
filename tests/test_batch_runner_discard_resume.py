@@ -11,8 +11,8 @@ trajectories.jsonl merge excludes.
 import json
 from unittest.mock import MagicMock, patch
 
-import batch_runner
-from batch_runner import (
+from hermes_agent import batch_runner
+from hermes_agent.batch_runner import (
     BatchRunner,
     _entry_prompt_text,
 )

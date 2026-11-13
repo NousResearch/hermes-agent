@@ -182,10 +182,10 @@ This is ideal for building specialized agents — a code reviewer, a documentati
 
 ## Batch Processing
 
-For running many prompts in parallel, Hermes includes `batch_runner.py`. It manages concurrent `AIAgent` instances with proper resource isolation:
+For running many prompts in parallel, Hermes includes `hermes_agent/batch_runner.py`. It manages concurrent `AIAgent` instances with proper resource isolation:
 
 ```bash
-python batch_runner.py --input prompts.jsonl --output results.jsonl
+python hermes_agent/batch_runner.py --input prompts.jsonl --output results.jsonl
 ```
 
 Each prompt gets its own `task_id` and isolated environment. If you need custom batch logic, you can build your own using `AIAgent` directly:

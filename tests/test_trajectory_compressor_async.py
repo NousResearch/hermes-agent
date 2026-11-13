@@ -17,14 +17,14 @@ import pytest
 
 
 class TestAsyncClientLazyCreation:
-    """trajectory_compressor.py — _get_async_client()"""
+    """hermes_agent/trajectory_compressor.py — _get_async_client()"""
 
 
 
     def test_get_async_client_creates_fresh_each_call(self):
         """Each call to _get_async_client() creates a NEW client instance,
         so it binds to the current event loop."""
-        from trajectory_compressor import TrajectoryCompressor
+        from hermes_agent.trajectory_compressor import TrajectoryCompressor
 
         comp = TrajectoryCompressor.__new__(TrajectoryCompressor)
         comp.config = MagicMock()
@@ -56,7 +56,7 @@ class TestAsyncClientLazyCreation:
 @pytest.mark.asyncio
 async def test_generate_summary_async_kimi_omits_temperature():
     """Kimi models should have temperature omitted — server manages it."""
-    from trajectory_compressor import CompressionConfig, TrajectoryCompressor, TrajectoryMetrics
+    from hermes_agent.trajectory_compressor import CompressionConfig, TrajectoryCompressor, TrajectoryMetrics
 
     config = CompressionConfig(
         summarization_model="kimi-for-coding",
@@ -89,7 +89,7 @@ async def test_generate_summary_async_kimi_omits_temperature():
 async def test_process_entry_async_passes_non_dict_through():
     """A scalar JSONL line used to crash on '"conversations" not in entry';
     unknown shapes pass through byte-faithful."""
-    from trajectory_compressor import TrajectoryCompressor
+    from hermes_agent.trajectory_compressor import TrajectoryCompressor
 
     compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
     entry, _metrics = await compressor.process_entry_async(42)

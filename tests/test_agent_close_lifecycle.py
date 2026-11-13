@@ -4,7 +4,7 @@ Four long-lived surfaces build a one-shot ``AIAgent`` and, before this fix,
 never called ``close()`` — the owner boundary that releases memory-provider
 sessions, tool subprocesses and httpx clients:
 
-* ``batch_runner._process_single_prompt`` — one agent per prompt, N prompts
+* ``hermes_agent.batch_runner._process_single_prompt`` — one agent per prompt, N prompts
   per batch process: an unclosed agent leaked terminals/VMs/clients for the
   batch's whole run.
 * ``plugins.platforms/feishu/feishu_comment._run_comment_agent`` — one agent
@@ -71,7 +71,7 @@ class TestBatchRunnerClosesAgent:
     CONFIG = {"model": "m", "max_iterations": 1, "distribution": "d", "verbose": False}
 
     def test_agent_closed_after_successful_prompt(self, monkeypatch):
-        import batch_runner
+        from hermes_agent import batch_runner
         RecordingAgent.use(monkeypatch, where="batch_runner.AIAgent")
         monkeypatch.setattr(batch_runner, "sample_toolsets_from_distribution", lambda name: [])
 
@@ -82,7 +82,7 @@ class TestBatchRunnerClosesAgent:
         assert RecordingAgent.instances[0].closed
 
     def test_agent_closed_when_run_fails(self, monkeypatch):
-        import batch_runner
+        from hermes_agent import batch_runner
 
         class FailingAgent(RecordingAgent):
             def __init__(self, *args, **kwargs):
@@ -91,7 +91,7 @@ class TestBatchRunnerClosesAgent:
 
         FailingAgent.reset()
         FailingAgent.instances = []
-        monkeypatch.setattr("batch_runner.AIAgent", FailingAgent)
+        monkeypatch.setattr("hermes_agent.batch_runner.AIAgent", FailingAgent)
         monkeypatch.setattr(batch_runner, "sample_toolsets_from_distribution", lambda name: [])
 
         result = batch_runner._process_single_prompt(0, {"prompt": "hi"}, 0, self.CONFIG)

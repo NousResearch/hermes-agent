@@ -60,8 +60,10 @@ async def run(params, board_db):
     from agent.retry_utils import jittered_backoff
     from hermes_cli.gateway_client import connect_gateway, GatewayClientError, outside_restart_wait
     from websockets.exceptions import WebSocketException
+    from hermes_cli.kanban_db_transport import KanbanHostRefusalError, KanbanTurnUnknownError
     if os.environ.get('HERMES_TUI_GATEWAY_URL'):
-        raise GatewayClientError('Kanban requires the assigned local profile owner')
+        # Nothing was submitted and nothing can run: a topology refusal, not a card failure.
+        raise KanbanHostRefusalError('Kanban requires the assigned local profile owner')
     # A lost socket is not a lost attempt, and exiting here would let ``_watch_submitter`` end the
     # owner's in-flight turn, so the next connection resumes whatever the last one reached. The
     # wait is bounded from the owner's last answer: an owner that keeps answering keeps the
@@ -94,9 +96,19 @@ async def run(params, board_db):
                 status = getattr(getattr(exc, 'response', None), 'status_code', None)
                 detail = exc if isinstance(exc, GatewayClientError) else type(exc).__name__ + (
                     f' (HTTP {status})' if status else '')
-                raise GatewayClientError(f'Kanban owner silent for {claim.silent_for():.0f}s: {detail}') from exc
+                message = f'Kanban owner silent for {claim.silent_for():.0f}s: {detail}'
+                # The redial loop already absorbed every recoverable loss; reaching here means the
+                # owner has been silent past ``OWNER_WAIT_S``. ``claim`` says which half of the
+                # attempt that ended: an admission id means the owner checked the claim and printed
+                # its session, so the turn may have completed and already pushed.
+                # A timeout with NO admission id is ambiguous too: the frame reached the owner and
+                # only its answer is missing, and the ``owner_admitted`` marker commits in the same
+                # transaction as that answer — so the claim may be admitted with nobody watching it.
+                if claim.admission_id is not None or isinstance(exc, TimeoutError):
+                    raise KanbanTurnUnknownError(message, session_id=claim.session_id) from exc
+                raise KanbanHostRefusalError(message) from exc
         else:
-            return _exit_code(receipt, params, board_db)
+            return _exit_code(receipt, params, board_db, claim)
         failures = 1 if claim.answered != seen else failures + 1
         # Jittered (1-2 s first, up to 16 s): workers of one dead owner do not all redial, and so
         # start a replacement, in the same instant.
@@ -144,10 +156,14 @@ async def _await_receipt(client, params, board_db, claim):
     return receipt
 
 
-def _exit_code(receipt, params, board_db):
-    from hermes_cli.gateway_client import GatewayClientError
+def _exit_code(receipt, params, board_db, claim):
+    from hermes_cli.kanban_db_transport import KanbanTurnUnknownError
     if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
+        # The owner admitted the claim and then could not settle it (its admission write never
+        # got the board lock, or it died mid-turn). Ambiguous by definition: the turn may have
+        # completed and pushed, so this is the reconcile lane, never a counted card crash.
+        raise KanbanTurnUnknownError('Kanban execution unknown; retained by owner',
+                                     session_id=claim.session_id)
     from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.
@@ -173,6 +189,10 @@ def main():
 
 
 def _submit():
+    # Local, like every other hermes_cli import in this module: the interpreter this runs under is
+    # not dependency-ready until hermes_bootstrap has put the repo root on sys.path.
+    from hermes_cli.kanban_db_transport import (
+        KanbanHostRefusalError, KanbanTurnUnknownError, submitter_exit_code)
     try:
         params = {'board': os.environ['HERMES_KANBAN_BOARD'], 'task_id': os.environ['HERMES_KANBAN_TASK'],
             'run_id': int(os.environ['HERMES_KANBAN_RUN_ID']), 'claim_lock': os.environ['HERMES_KANBAN_CLAIM_LOCK']}
@@ -185,9 +205,14 @@ def _submit():
         for key in ('HERMES_SESSION_SOURCE', 'HERMES_TENANT', 'TERMINAL_CWD'):
             os.environ.pop(key, None)
         return asyncio.run(run(params, board_db))
-    except (KeyError, ValueError, OSError) as exc:
+    except (KeyError, ValueError, OSError, KanbanHostRefusalError, KanbanTurnUnknownError) as exc:
+        # Every one of these used to return 1, and 1 books as a card crash: a stalled tick cost
+        # every card in it a counted failure, and the identical-text breaker tripped at 1. The
+        # class says which outcome this was -- never reached, admitted then lost, or answered and
+        # refused -- so the exit code can say so too. ``GatewayClientError`` is a ``ValueError``,
+        # which is why it arrives here at all.
         print(f'Kanban owner refused: {exc}', file=sys.stderr)
-        return 1
+        return submitter_exit_code(exc)
 
 
 if __name__ == '__main__':

@@ -15,6 +15,7 @@ from websockets.exceptions import InvalidMessage
 
 from hermes_cli import gateway_client, kanban_worker_client
 from hermes_cli.gateway_runtime_discovery import DiscoveryError
+from hermes_cli.kanban_db_transport import KanbanTurnUnknownError
 
 GUE = gateway_client.GatewayUnavailableError
 
@@ -194,8 +195,13 @@ async def test_connecting_is_not_an_answer(monkeypatch, _worker_env, clock):
     # budget, so this still ends at OWNER_WAIT_S instead of redialling forever.
     owner = _Owner(receipts=["pending"] + [_disconnect()] * 200)
 
-    with pytest.raises(gateway_client.GatewayClientError, match=r"owner silent for 1[89]\ds"):
+    # The owner DID admit this attempt before the budget ran out, so giving up on it is the
+    # reconcile outcome (`kanban_worker_client` maps it to the never-counted exit 70), not a bare
+    # transport error. The budget itself is unchanged: it still ends at OWNER_WAIT_S rather than
+    # redialling forever, which is what this guard is for.
+    with pytest.raises(KanbanTurnUnknownError, match=r"owner silent for 1[89]\ds") as give_up:
         await _run(owner, monkeypatch, _worker_env)
+    assert give_up.value.session_id == "s1"
     assert owner.calls.count("kanban.run") == 1
 
 
@@ -210,8 +216,12 @@ async def test_an_owner_silent_for_the_whole_budget_fails_the_worker(monkeypatch
     # Every restart shape still ends at OWNER_WAIT_S when it never clears.
     owner = _Owner(connects=[None], receipts=["pending", _disconnect()], after=fault)
 
-    with pytest.raises(gateway_client.GatewayClientError, match=rf"owner silent for 1[89]\ds: {fault}"):
+    # Every shape here follows a successful `kanban.run`, so the attempt was admitted before the
+    # budget expired: the give-up is the reconcile outcome, and it carries the session the retry
+    # must resume instead of re-deriving. Which fault kept the dial from recovering is still named.
+    with pytest.raises(KanbanTurnUnknownError, match=rf"owner silent for 1[89]\ds: {fault}") as give_up:
         await _run(owner, monkeypatch, _worker_env)
+    assert give_up.value.session_id == "s1"
     assert clock.now >= kanban_worker_client.OWNER_WAIT_S
     # Jittered exponential backoff (capped at 8-16 s) between dials, not one dial a second.
     assert 3 < owner.dials < 40 and owner.calls.count("kanban.run") == 1
@@ -224,7 +234,9 @@ async def test_giving_up_on_a_refused_handshake_names_the_status(monkeypatch, _w
     refused = InvalidStatus(SimpleNamespace(status_code=403, headers={}, body=b"remote body"))
     owner = _Owner(connects=[None] + [refused] * 60, receipts=["pending", _disconnect()])
 
-    with pytest.raises(gateway_client.GatewayClientError, match=r"InvalidStatus \(HTTP 403\)$"):
+    # Admitted-then-unsalvageable, so the reconcile outcome; the HTTP status is still what the
+    # give-up quotes (the body is not), which is this guard's point.
+    with pytest.raises(KanbanTurnUnknownError, match=r"InvalidStatus \(HTTP 403\)$"):
         await _run(owner, monkeypatch, _worker_env)
 
 

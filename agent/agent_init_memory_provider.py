@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 from agent.agent_init_params import _GATEWAY_IDENTITY_PARAMS
@@ -102,6 +103,41 @@ def _stored_transcript_kwargs(agent) -> dict[str, Any]:
     return {"resumed": resumed, "message_count": count}
 
 
+def _session_project_id(session_db, session_id: str, hermes_home) -> str | None:
+    """Resolve the workspace recorded for this session in its owner's store."""
+    from hermes_cli import projects_db
+
+    try:
+        if session_db is None or Path(session_db.db_path).resolve().parent != Path(hermes_home).resolve():
+            return None
+        registry = Path(hermes_home) / "projects.db"
+        if not registry.is_file():
+            return None
+        row = session_db.get_session(session_id) or {}
+        cwd = row.get("cwd")
+        if not cwd:
+            return None
+        owner_id = str(row.get("chat_id") or "")
+        route = row.get("session_key") or ""
+        if session_id.startswith("local-") or owner_id.startswith("local-") or route.split(":", 3)[2:3] == ["local"]:
+            from hermes_state_local import local_receipt
+
+            # Canonical sessions may display a different directory from the one
+            # their owner resolved for execution. Use the frozen execution cwd.
+            receipt = local_receipt(session_db, owner_id)
+            if receipt["route"] != route or session_id not in receipt.get("lineage", [owner_id]):
+                return None
+            cwd = receipt["policy"]["cwd"]
+        if not cwd or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
+            return None
+        with projects_db.connect_closing(registry) as conn:
+            project = projects_db.project_for_path(conn, cwd)
+        return project.id if project is not None else None
+    except Exception:  # health: allow BLE001 -- unavailable attribution must not disable the provider
+        logger.debug("Could not resolve memory provider session project", exc_info=True)
+        return None
+
+
 def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
     """Scoping kwargs for ``MemoryManager.initialize_all`` (status_callback is CLI-only:
     gateway status travels a different path and the indicator no-ops without it)."""
@@ -114,6 +150,11 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         "agent_context": getattr(agent, "memory_agent_context", None)
         or (platform if platform in ("cron", "subagent") else "primary"),
     }
+    kwargs["_session_db"] = agent._session_db
+    kwargs["session_project_id"] = (
+        _session_project_id(agent._session_db, agent.session_id, kwargs["hermes_home"])
+        if kwargs["agent_context"] == "primary" else None
+    )
     # Documented in MemoryProvider.initialize: forks tell their shape apart by platform + parent.
     if getattr(agent, "_parent_session_id", None):
         kwargs["parent_session_id"] = agent._parent_session_id

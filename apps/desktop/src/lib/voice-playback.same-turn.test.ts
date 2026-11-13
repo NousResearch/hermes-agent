@@ -13,6 +13,7 @@ vi.mock('@/lib/voice-client-direct', () => ({
 vi.mock('@/hermes', () => ({
   getApiRequestConnection: () => null,
   getApiRequestProfile: () => null,
+  setApiRequestProfile: vi.fn(),
   speakText: vi.fn(async () => {
     throw new Error('no audio in test')
   })

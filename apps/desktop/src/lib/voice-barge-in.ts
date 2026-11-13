@@ -24,6 +24,7 @@
 //   trigger) so intra-word energy dips don't reset progress.
 
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
+import { audioInputConstraints, isMissingDeviceError } from '@/lib/voice-devices'
 import { startVoiceLevelMeter } from '@/lib/voice-level-meter'
 import { $voiceSilenceMs } from '@/store/voice-prefs'
 
@@ -213,9 +214,21 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
         return
       }
 
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      })
+      const bargeConstraints: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true }
+
+      try {
+        // Same pinned microphone as the recorder: listening on the default while recording from
+        // another device would make barge-in react to a microphone nobody is speaking into.
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioInputConstraints(bargeConstraints) })
+      } catch (error) {
+        if (!isMissingDeviceError(error)) {
+          throw error
+        }
+
+        console.warn('[hermes] configured microphone unavailable for barge-in detection, using the system default', error)
+
+        stream = await navigator.mediaDevices.getUserMedia({ audio: bargeConstraints })
+      }
 
       if (disposed) {
         cleanup()

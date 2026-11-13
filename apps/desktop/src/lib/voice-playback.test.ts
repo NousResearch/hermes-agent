@@ -33,6 +33,10 @@ vi.mock('@hermes/shared', async importOriginal => {
 vi.mock('@/hermes', () => ({
   getApiRequestProfile: () => null,
   getApiRequestConnection: () => null,
+  // Loading the playback module now reaches the config-record cache (the voice
+  // device picker's reader), and that store subscribes the active profile at
+  // import time — see local-models-settings.test.tsx for the same entry.
+  setApiRequestProfile: vi.fn(),
   speakText: vi.fn(async () => ({
     data_url: 'data:audio/mpeg;base64,AAAA',
     mime_type: 'audio/mpeg',

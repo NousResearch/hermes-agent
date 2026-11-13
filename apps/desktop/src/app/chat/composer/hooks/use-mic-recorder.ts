@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { hostHas } from '@/lib/host-capabilities'
 import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
+import { audioInputConstraints, isMissingDeviceError } from '@/lib/voice-devices'
 import { startVoiceLevelMeter } from '@/lib/voice-level-meter'
 
 type BrowserAudioContext = typeof AudioContext
@@ -307,9 +308,22 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     let stream: MediaStream
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      })
+      const constraints: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true }
+
+      try {
+        // The configured microphone is pinned: a silent switch to the default is exactly the
+        // behaviour that setting exists to prevent. An unplugged device raises
+        // OverconstrainedError, which falls back below rather than failing the recording.
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioInputConstraints(constraints) })
+      } catch (error) {
+        if (!isMissingDeviceError(error)) {
+          throw error
+        }
+
+        console.warn('[hermes] configured microphone unavailable for recording, using the system default', error)
+
+        stream = await navigator.mediaDevices.getUserMedia({ audio: constraints })
+      }
     } catch (error) {
       checkCurrent()
       throw micError(error, copy)

@@ -54,10 +54,10 @@ _WRAPPER_QUERY_OPTIONS = {
     "sudo": {"-l", "--list", "-v", "--validate", "-k", "-K", "--reset-timestamp", "--remove-timestamp"},
 }
 
-# GNU timeout parses its duration with strtod (`.5`, `1e3`, `0x10`, `inf`, `infinity`) plus one
-# s/m/h/d suffix; the numeric options (nice -n, ionice -n, sudo -C) take a plain integer.
+# GNU timeout durations: optional `+`, decimal/exponent, hex integer, inf/infinity, one s/m/h/d
+# suffix (`-` is rejected); the numeric options (nice -n, ionice -n, sudo -C) take a plain integer.
 _WRAPPER_DURATION_RE = re.compile(
-    r"(?:(?i:inf(?:inity)?)|0[xX][0-9a-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)[smhd]?")
+    r"\+?(?:(?i:inf(?:inity)?)|0[xX][0-9a-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)[smhd]?")
 _WRAPPER_NUMBER_RE = re.compile(r"[+-]?\d+")
 
 # su / runuser: options that take a separate value (util-linux su-common.c), and the command option.

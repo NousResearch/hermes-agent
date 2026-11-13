@@ -638,20 +638,49 @@ def hold_claim(child: Any, parent_agent: Any, sid: str, record: dict[str, Any]) 
     child._delegate_claim = (_db_path_for(parent_agent), sid, record["state"])
 
 
-def release_unstarted(child: Any) -> None:
-    """Hand back the claim of a continued child whose run ended before ``record_start`` (idempotent)."""
+def release_unstarted(child: Any) -> bool:
+    """Hand back the claim of a continued child whose run ended before ``record_start`` (idempotent). True when
+    the hand-back committed (or there was none); a failed one is queued for ``retry_hand_backs``."""
     claim = getattr(child, "_delegate_claim", None)
     durable = getattr(child, "_delegate_durable", None)
     if not isinstance(claim, tuple) or (isinstance(durable, dict) and durable.get("pending") is None):
-        return
-    child._delegate_claim = None
+        return True
     path, sid, state = claim
     # A stop that reached this registered child before it ran (an automatic run failing closed) is the parent's
     # decision: the row ends ``stopped``, never handed back for the scheduler to resume.
     stopped = (getattr(child, "_delegate_run_origin", None) == "auto"
                and getattr(child, "_delegate_stop_requested", False) is True)
-    _write(path, lambda conn: _hand_back(conn, sid, "stopped" if stopped else state,
-                                         promised=False if stopped else None, owner_pid=os.getpid()))
+    pending = (path, sid, "stopped" if stopped else state, False if stopped else None)
+    committed = _hand_back_pending(pending)
+    if not committed:  # the store is busy: the queue owns the claim now, and the scheduler's tick retries it
+        with _PENDING_HAND_BACKS_LOCK:
+            _PENDING_HAND_BACKS.append(pending)
+    child._delegate_claim = None
+    return committed
+
+
+# Hand-backs whose write failed (``release_unstarted``): a row left ``claimed`` by this live process is invisible to
+# the scheduler and to boot recovery, so a promised child would never report while the process lives.
+_PENDING_HAND_BACKS: list[tuple[Optional[Path], str, str, Optional[bool]]] = []
+_PENDING_HAND_BACKS_LOCK = threading.Lock()
+
+
+def _hand_back_pending(pending: tuple[Optional[Path], str, str, Optional[bool]]) -> bool:
+    """One hand-back attempt; True once it committed (a row no longer ``claimed`` by this process counts)."""
+    path, sid, state, promised = pending
+    return _write(path, lambda conn: (_hand_back(conn, sid, state, promised=promised, owner_pid=os.getpid()),
+                                      True)[1]) is True
+
+
+def retry_hand_backs() -> None:
+    """Scheduler tick: retry each queued hand-back once, keeping only the ones that still failed."""
+    with _PENDING_HAND_BACKS_LOCK:
+        queued = list(_PENDING_HAND_BACKS)
+        _PENDING_HAND_BACKS.clear()
+    failed = [p for p in queued if not _hand_back_pending(p)]
+    if failed:
+        with _PENDING_HAND_BACKS_LOCK:
+            _PENDING_HAND_BACKS.extend(failed)
 
 
 def last_workspace(parent_agent: Any, sid: str) -> Optional[dict[str, Any]]:

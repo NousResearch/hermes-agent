@@ -34,6 +34,16 @@ _BLOCKED = [
     "X=1 nice reboot",
     "xargs reboot",
     "xargs -n1 reboot",
+    # A quoted verb behind a wrapper or separator is dequoted like the bare `"reboot"`.
+    'nice "reboot"',
+    "timeout 5 'reboot'",
+    "nice 're'boot",
+    'command "shutdown" -h now',
+    f'nice "{_R}" -rf /',
+    "su -c 'nice \"reboot\"'",
+    "sh -c 'nice \"reboot\"'",
+    'ls; "reboot"',
+    'ls && sudo "reboot"',
 ]
 
 _ALLOWED = [
@@ -47,6 +57,10 @@ _ALLOWED = [
     "ionice -p 1 reboot",
     "sh -c 'echo nice reboot'",
     "nice -n 5 -- echo reboot",
+    'nice "echo" reboot',
+    'command -v "reboot"',
+    'git commit -m "x; reboot"',
+    "su -c 'nice \"echo\" reboot'",
 ]
 
 

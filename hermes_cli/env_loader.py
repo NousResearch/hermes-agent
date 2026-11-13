@@ -15,6 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
+from hermes_constants import hermes_home_key, is_launch_only_env_key
 from hermes_cli.left_core_migration import profile_env_names
 from utils import atomic_replace, mkstemp_beside
 
@@ -454,6 +455,9 @@ def _load_dotenv_with_fallback(
         for name, value in resolved.items():
             if value is None or (not override and name in os.environ):
                 continue
+            if is_launch_only_env_key(name):
+                _warn_launch_only_key(f"dotenv {path}", name)
+                continue  # deployment bootstrap knob (#135200, #144685)
             current = os.environ.get(name)
             record = _DOTENV_PUBLISHED.get(name)
             ours = record is not None and current == record[1]
@@ -466,8 +470,38 @@ def _load_dotenv_with_fallback(
     # Every key this file defines, for the launch-residue strip: dotenv never unsets, so a key later
     # removed from the launch .env stays in os.environ and a re-parse of the file no longer names it.
     # Managed keys are recorded separately: they are administrator policy, not launch-profile residue.
-    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(name for name, _value in assignments)
+    # Launch-only keys are recorded nowhere: they were never published, so a leftover file entry must
+    # not strip the launch value from a routed child either (#135200).
+    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(
+        name for name, _value in assignments if not is_launch_only_env_key(name))
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
+
+
+_LAUNCH_ONLY_WARNED: set[tuple[str, str, str]] = set()
+
+
+def _warn_launch_only_key(source: str, name: str) -> None:
+    """Log a skipped launch-only key once per (profile home, source, name): the gateway reloads
+    ``.env`` every turn, and a multiplex process serves several homes that each deserve the warning."""
+    marker = (hermes_home_key(), source, name)
+    if marker not in _LAUNCH_ONLY_WARNED:
+        _LAUNCH_ONLY_WARNED.add(marker)
+        logger.warning("%s: ignoring launch-only key %s — only the launch environment may set it",
+                       source, name)
+
+
+def bridge_config_scalars(cfg: dict, target) -> None:
+    """Copy top-level ``config.yaml`` scalars into ``target`` (env or scope mapping) where unset.
+
+    Launch-only keys are refused like a ``.env`` entry: config.yaml is user-writable, so a
+    ``HERMES_MANAGED_DIR:`` line there must not repoint the managed scope (#135200, #144685)."""
+    for name, value in cfg.items():
+        if not isinstance(value, (str, int, float, bool)) or name in target:
+            continue
+        if is_launch_only_env_key(name):
+            _warn_launch_only_key("config.yaml", name)
+            continue
+        target[name] = str(value)
 
 
 def _dotenv_assignments(path: Path) -> list:

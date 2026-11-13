@@ -43,7 +43,7 @@ from hermes_constants import (
     _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home, get_process_hermes_home
+from hermes_constants import LAUNCH_ONLY_ENV_KEYS, get_hermes_home, is_launch_only_env_key, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
@@ -131,7 +131,7 @@ _ENV_VAR_NAME_DENYLIST: frozenset[str] = frozenset({
     "HERMES_YOLO_MODE", "HERMES_ACCEPT_HOOKS", "HERMES_REDACT_SECRETS",
     "HERMES_INTERACTIVE", "HERMES_EXEC_ASK", "HERMES_GATEWAY_SESSION",
     "HERMES_CRON_SESSION", "HERMES_SINGLE_QUERY_SESSION",
-    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"})
+    "HERMES_SESSION_KEY", "HERMES_SESSION_PLATFORM"}) | LAUNCH_ONLY_ENV_KEYS
 
 
 def _env_var_policy_name(key: str, *, is_windows: Optional[bool] = None) -> str:
@@ -2533,7 +2533,7 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
     # dashboard launch scope), so a same-request read after the write must see it there too; a
     # routed profile's value never reaches the shared process env.
     targets = [scope] if isinstance(scope, dict) else []
-    if not routed and (scope is None or isinstance(scope, dict)):
+    if not routed and not is_launch_only_env_key(key) and (scope is None or isinstance(scope, dict)):
         targets.append(os.environ)
     for target in targets:
         if value is None:
@@ -2679,7 +2679,7 @@ def reload_env() -> int:
     env_vars = load_env()
     count = 0
     for key, value in env_vars.items():
-        if os.environ.get(key) != value:
+        if not is_launch_only_env_key(key) and os.environ.get(key) != value:  # launch-only: never from .env (#135200)
             os.environ[key] = value
             count += 1
     known = set() if dotenv_unreadable(get_env_path()) else set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS

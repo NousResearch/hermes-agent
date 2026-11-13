@@ -138,12 +138,13 @@ export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<HermesGit
 
 export type RepoChangeKind = 'added' | 'conflicted' | 'modified'
 
-// Absolute file path → its git change kind, for VS Code-style file-tree tinting.
-// Reuses the bounded per-CWD repo-status probes (capped file list); git reports
-// repo-root-relative paths, so we join them onto their corresponding probed cwd.
-// Deletions never appear — the file is gone from disk, so there's no tree row to tint.
-export const $repoChangeByPath = computed([$repoStatusByCwd], byCwd => {
-  const map = new Map<string, RepoChangeKind>()
+const CHANGE_PRIORITY: Record<RepoChangeKind, number> = { added: 0, conflicted: 2, modified: 1 }
+
+// Aggregate from the bounded Git status list, not the lazily loaded tree, so
+// collapsed folders can show changes without reading any descendants from disk.
+const $repoChanges = computed([$repoStatusByCwd], byCwd => {
+  const files = new Map<string, RepoChangeKind>()
+  const directories = new Map<string, RepoChangeKind>()
 
   for (const [cwd, status] of Object.entries(byCwd)) {
     const root = (cwd || '').trim().replace(/[/\\]+$/, '')
@@ -153,23 +154,43 @@ export const $repoChangeByPath = computed([$repoStatusByCwd], byCwd => {
     }
 
     for (const file of status.files) {
-      const cleanPath = (file.path || '').replace(/^[/\\]+/, '')
+      const cleanPath = (file.path || '').replace(/^[/\\]+|\/+$/g, '')
       const kind: RepoChangeKind = file.conflicted ? 'conflicted' : file.untracked ? 'added' : 'modified'
-      map.set(`${root}/${cleanPath}`, kind)
+      files.set(`${root}/${cleanPath}`, kind)
+
+      let parent = cleanPath
+      let lastSlash = parent.lastIndexOf('/')
+
+      while (lastSlash > 0) {
+        parent = parent.slice(0, lastSlash)
+        const directory = `${root}/${parent}`
+        const previous = directories.get(directory)
+
+        if (!previous || CHANGE_PRIORITY[kind] > CHANGE_PRIORITY[previous]) {
+          directories.set(directory, kind)
+        }
+
+        lastSlash = parent.lastIndexOf('/')
+      }
     }
   }
 
-  return map
+  return { directories, files }
 })
+
+// Keep direct Git entries separate: an aggregate 'added' folder does not mean
+// its clean siblings are untracked. Only a direct untracked-directory entry can
+// confer 'added' on its descendants.
+export const $repoChangeByPath = computed($repoChanges, changes => changes.files)
 
 /**
  * Per-row Git decoration subscription. A visible file row reads one scalar, so
  * a fresh repo-status map only re-renders that row when its own kind changed.
- * Supports directory inheritance for untracked folders under `--untracked-files=normal`.
+ * Includes ancestor aggregation and inheritance from truly untracked folders.
  */
 export function repoChangeKindForPath(path: string): ReadableAtom<RepoChangeKind | undefined> {
-  return computed($repoChangeByPath, changes => {
-    const direct = changes.get(path)
+  return computed($repoChanges, ({ directories, files }) => {
+    const direct = files.get(path)
 
     if (direct) {
       return direct
@@ -186,14 +207,14 @@ export function repoChangeKindForPath(path: string): ReadableAtom<RepoChangeKind
       }
 
       parent = parent.slice(0, lastSlash)
-      const parentKind = changes.get(parent)
+      const parentKind = files.get(parent)
 
       if (parentKind === 'added') {
         return 'added'
       }
     }
 
-    return undefined
+    return directories.get(path)
   })
 }
 

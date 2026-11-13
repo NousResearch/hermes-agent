@@ -5697,7 +5697,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 if numbered:
                     hint = f"{numbered}\n\n{hint}"
                 view = ClarifyChoiceView(
-                    choices=clean_choices, clarify_id=clarify_id,
+                    choices=clean_choices, clarify_id=clarify_id, session_key=session_key,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
@@ -6683,10 +6683,11 @@ def _define_discord_view_classes() -> None:
         gateway clarify entry immediately; ``Other`` flips to text-capture (next message answers).
         Single-use: after the first valid click all buttons disable."""
 
-        def __init__(self, choices: list[str], clarify_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+        def __init__(self, choices: list[str], clarify_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None, *, session_key: str = ""):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
+            self.session_key = session_key
             for index, choice in enumerate(self.choices):
                 button = discord.ui.Button(
                     label=self._button_label(index, choice), style=discord.ButtonStyle.primary,
@@ -6754,11 +6755,7 @@ def _define_discord_view_classes() -> None:
                                     unauth_msg=_unauthorized(), refusal=lambda uid: clarify_refusal(self.clarify_id, uid, extra=self.answer_extra)):
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
-            await self._finish(
-                interaction, discord.Color.green(),
-                t("platform.discord.prompt.answered_by", user=display_name, choice=choice), log_edit_failure=True)
-            # Round-trip the canonical choice text from the entry, not the button label.
-            resolved_text: Optional[str] = None
+            resolved_text: Optional[str] = None  # Canonical choice text, not the button label.
             try:
                 from tools.clarify_gateway import get_pending
                 entry = get_pending(self.clarify_id)
@@ -6770,7 +6767,7 @@ def _define_discord_view_classes() -> None:
                 resolved_text = choice
             try:
                 from tools.clarify_gateway import resolve_gateway_clarify
-                resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
+                resolved = resolve_gateway_clarify(self.clarify_id, resolved_text, session_key=self.session_key)
                 logger.info(
                     "Discord clarify button resolved (id=%s, choice_index=%d, user=%s, ok=%s)",
                     self.clarify_id, index, getattr(getattr(interaction, "user", None), "id", "?"), resolved,
@@ -6778,6 +6775,11 @@ def _define_discord_view_classes() -> None:
                 logger.debug("Discord clarify choice text (id=%s): %.100r", self.clarify_id, resolved_text)
             except Exception as exc:
                 logger.error("Discord clarify resolve_gateway_clarify failed (id=%s): %s", self.clarify_id, exc)
+                resolved = False
+            color = discord.Color
+            await self._finish(interaction, color.green() if resolved else color.greyple(),
+                t("platform.discord.prompt.answered_by", user=display_name, choice=choice) if resolved
+                else t("platform.discord.prompt.expired_footer"), log_edit_failure=True)
 
         async def _on_other(self, interaction: discord.Interaction) -> None:
             """Flip the clarify entry into text-capture mode."""

@@ -1068,9 +1068,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         self._approval_resolved: dict[Any, bool] = {}
         self._approval_request_ids: dict[Any, str] = {}  # same key → tools.approval request id
         self._clarify_resolved: dict[Any, bool] = {}
-        # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
+        # clarify_id → (channel_id, message_ts, rendered_question, session_key) to bind replies and retire a
         # card whose clarify ended without a click (timeout, reset, superseding prose).
-        self._clarify_messages: dict[str, tuple[str, str, str]] = {}
+        self._clarify_messages: dict[str, tuple[str, str, str, str]] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
         # Mirrors _approval_resolved / _clarify_resolved: bounded, and the
@@ -5553,7 +5553,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         if result.success and result.message_id:
             question_text, _blocks = _build()
             response_channel = str((result.raw_response or {}).get("channel") or chat_id)
-            self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text)
+            self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text, session_key)
             self._trim_oldest_dict_entries(self._clarify_messages, self._CLARIFY_MESSAGE_MAX)
         return result
 
@@ -5779,7 +5779,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         target = self._clarify_messages.pop(clarify_id, None)
         if target is None:
             return
-        channel_id, msg_ts, question_text = target
+        channel_id, msg_ts, question_text, _session_key = target
         # A late action handler must be a no-op while the best-effort chat.update is in flight.
         self._clarify_resolved[msg_ts] = True
         await self._update_clarify_message(channel_id, msg_ts, question_text, notice)
@@ -5796,13 +5796,16 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         clarify_id, token = value.split("|", 1)
         if await self._refuse_other_requester(clarify_refusal(clarify_id, user_id, extra=self.config.extra), body):
             return
+        target = self._clarify_messages.get(clarify_id)
+        if target is None or target[:2] != (channel_id, msg_ts):  # Reject forged values before consuming the guard.
+            return
+        session_key = target[3]
         # Double-click guard — atomic pop (mirrors approval).
         if self._clarify_resolved.pop(msg_ts, True):
             return
         original_text = self._section_text(message, limit=None)
         from tools import clarify_gateway as _clarify_mod
-        # "Other" → text-capture mode: mark_awaiting_text flips the entry and the
-        # gateway's text-intercept resolves it from the user's next message.
+        # "Other" flips the entry to text capture; the gateway intercepts the user's next message.
         expired_text = t("platform.slack.clarify.expired", user=user_name)
         if action_id == "hermes_clarify_other" or token == "other":
             if not _clarify_mod.mark_awaiting_text(clarify_id):
@@ -5810,8 +5813,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
                 self._clarify_messages.pop(clarify_id, None)
                 await self._update_clarify_message(channel_id, msg_ts, original_text, expired_text)
                 return
-            # Not terminal: the clarify stays pending for typed text, so keep the card entry —
-            # the gateway still has to retire it on timeout / reset / typed answer.
+            # Keep the pending card for retirement on timeout / reset / typed answer.
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text, t("platform.slack.clarify.awaiting", user=user_name))
             return
@@ -5834,7 +5836,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         if resolved_text is None:
             resolved_text = f"choice {idx + 1}"  # model-facing fallback; stays English
             display_text = t("platform.slack.clarify.choice_n", n=str(idx + 1))
-        if _clarify_mod.resolve_gateway_clarify(clarify_id, resolved_text):
+        if _clarify_mod.resolve_gateway_clarify(clarify_id, resolved_text, session_key=session_key):
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text,
                 t("platform.slack.clarify.resolved", user=user_name, choice=display_text))

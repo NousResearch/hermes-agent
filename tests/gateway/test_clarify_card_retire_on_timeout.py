@@ -81,7 +81,7 @@ def _run_clarify(adapter, questions=_ONE_QUESTION, answers=(), via_tool=False):
         seen["n"] += 1
         target = answers[index] if index < len(answers) else None
         if target is not None:
-            cm.resolve_gateway_clarify(kwargs["clarify_id"], target)
+            cm.resolve_gateway_clarify(kwargs["clarify_id"], target, session_key=kwargs["session_key"])
         return entry
 
     with patch.object(cm, "register", _register), \
@@ -196,7 +196,7 @@ def test_skip_hint_only_on_messaging_platforms(platform, hinted):
 
     def _register(**kwargs):
         entry = real_register(**kwargs)
-        cm.resolve_gateway_clarify(kwargs["clarify_id"], "a")
+        cm.resolve_gateway_clarify(kwargs["clarify_id"], "a", session_key=kwargs["session_key"])
         return entry
     with patch.object(cm, "register", _register), \
             patch("tools.clarify_gateway.get_clarify_timeout", return_value=0.05):

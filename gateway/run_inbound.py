@@ -439,7 +439,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # execute, and that steer cannot drain until the clarify tool returns.
             # Read before the release awaits the card update: the turn may end meanwhile.
             _generation = self._current_session_run_generation(_quick_key)
-            if await self._release_pending_clarify(_pending_clarify, source):
+            if await self._release_pending_clarify(_pending_clarify, source, session_key=_quick_key):
                 # The user moved on: their message takes over the turn whatever busy_input_mode
                 # says (queue or steer would leave the agent carrying on without the answer).
                 # Bound to this turn's run generation: once it ends, the normal policy applies.
@@ -468,8 +468,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         from gateway.slash_access import policy_for_runner_source
         return policy_for_runner_source(self, event.source)
 
-    async def _release_pending_clarify(self, pending, source) -> bool:
+    async def _release_pending_clarify(self, pending, source, *, session_key: str) -> bool:
         """Withdraw *pending* as CANCELLED and retire its card; False if it already settled.
+
+        The cancel is bound to *session_key*: a prompt owned by another session is left untouched.
 
         Adapters with a persistent native card (Slack Block Kit) retire it now, before the message
         that could not answer it is routed, so its buttons stop advertising a dead answer path. The
@@ -477,7 +479,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         expiry notice (scheduled once the wait unblocks) finds nothing and stays a no-op.
         """
         from tools import clarify_gateway as _clarify_mod
-        if not _clarify_mod.resolve_gateway_clarify(pending.clarify_id, _clarify_mod.CANCELLED):
+        if not _clarify_mod.resolve_gateway_clarify(pending.clarify_id, _clarify_mod.CANCELLED, session_key=session_key):
             return False
         _clarify_adapter = self._delivery_adapter_for(source)
         # Class lookup: a MagicMock adapter must not fabricate the method.
@@ -501,7 +503,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         pending = _clarify_mod.get_pending_for_session(session_key, include_choice_prompts=True)
         if pending is None:
             return False
-        released = await self._release_pending_clarify(pending, source)
+        released = await self._release_pending_clarify(pending, source, session_key=session_key)
         if released:
             logger.info(
                 "Released pending clarify %s before a command that needed the turn (session=%s)",

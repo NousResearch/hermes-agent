@@ -4544,7 +4544,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._clarify_state.pop(clarify_id, None)
         try:
             from tools.clarify_gateway import resolve_gateway_clarify
-            resolved = resolve_gateway_clarify(clarify_id, resolved_text)
+            resolved = resolve_gateway_clarify(clarify_id, resolved_text, session_key=prompt.session_key)
         except Exception as exc:
             logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
             resolved = False

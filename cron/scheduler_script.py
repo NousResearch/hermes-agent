@@ -94,6 +94,19 @@ def _get_media_send_timeout() -> int:
     return _DEFAULT_MEDIA_SEND_TIMEOUT if resolved is None else resolved
 
 
+def _media_scaled_timeout(base: float, media_files) -> float:
+    """``base`` widened for the on-disk ``(path, is_voice)`` attachments the way the gateway's own
+    upload deadline grows (``gateway.platforms.helpers.scaled_upload_deadline``): a platform answers
+    an upload only once the file arrived, so a fixed cap reported a delivered file as failed."""
+    from gateway.platforms.helpers import media_upload_seconds, scaled_upload_deadline
+    return scaled_upload_deadline(base, media_upload_seconds(path for path, _voice in media_files or ()))
+
+
+def _media_send_timeout_for(media_path) -> float:
+    """``_get_media_send_timeout()`` for one attachment, widened by its upload time."""
+    return _media_scaled_timeout(_get_media_send_timeout(), [(media_path, False)])
+
+
 def _get_session_db_timeout() -> float:
     """Bound on run_job's SessionDB init: HERMES_CRON_SESSION_DB_TIMEOUT env, then
     ``cron.session_db_timeout_seconds`` (in DEFAULT_CONFIG), then 10s. Unlike sibling timeouts,
@@ -444,6 +457,9 @@ def _run_job_script(
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
     ``.py`` scripts (#8714).
     """
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("cron_scripts", "A cron script"):
+        return False, refusal
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err

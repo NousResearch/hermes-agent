@@ -13,10 +13,10 @@ import json
 import math
 import sqlite3
 from contextlib import closing
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Literal, get_args
+from typing import Any, Callable, Literal, NamedTuple, get_args
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, compact_json, connect, fenced_update, identifier, table_columns, text,
@@ -33,6 +33,8 @@ TERMINAL_TASK_RETENTION_SECONDS = 30 * 24 * 60 * 60
 MAX_RETAINED_TERMINAL_TASKS = 2048
 MAX_TASK_PRUNE_BATCH = 1000
 TASK_STATUSES = frozenset(get_args(TaskStatus))
+# The live rows a room's status shows one by one (member activity, Retry); the rest are only counted.
+SHOWN_TASK_STATUSES = ("queued", "running", "stopping", "indeterminate", "deferred")
 TERMINAL_STATUSES = frozenset({"settled", "failed", "cancelled"})
 
 _TASK_PAYLOAD_REQUIRED_FIELDS = frozenset({"target_profile", "prompt", "source_event_seq"})
@@ -377,10 +379,10 @@ def _load_task(conn: sqlite3.Connection, identity: TaskIdentity, *, required: bo
     return row
 
 
-def _tasks_in_order(conn: sqlite3.Connection, room_id: str, status: str | None = None) -> list[sqlite3.Row]:
-    where, params = ("", (room_id,)) if status is None else (" AND status=?", (room_id, status))
+def _tasks_in_order(conn: sqlite3.Connection, room_id: str, statuses: tuple[str, ...] = ()) -> list[sqlite3.Row]:
+    where = f" AND status IN ({','.join('?' * len(statuses))})" if statuses else ""
     sql = f"SELECT * FROM hosted_room_driver_tasks WHERE room_id=?{where} {_TASK_ORDER}"
-    return conn.execute(sql, params).fetchall()
+    return conn.execute(sql, (room_id, *statuses)).fetchall()
 
 
 def _load_active_room(conn: sqlite3.Connection, room_id: str) -> sqlite3.Row:
@@ -415,10 +417,16 @@ def _lease_row_matches(row: sqlite3.Row | None, lease: DriverLease) -> bool:
     ) == (lease.gateway_id, lease.authority_epoch, lease.process_generation, lease.lease_generation)
 
 
-def _require_active_lease(conn: sqlite3.Connection, lease: DriverLease, *, now: float) -> sqlite3.Row:
+def _require_active_lease(
+    conn: sqlite3.Connection, lease: DriverLease, *, now: float, allow_expired: bool = False
+) -> sqlite3.Row:
+    """Authority match + lease-row generation match + unreleased must hold; ``allow_expired``
+    additionally tolerates plain expiry of our own lease (live first-party settlement only)."""
     _require_room_authority(conn, lease.room_id, lease.gateway_id, lease.authority_epoch)
     row = conn.execute(_SELECT_LEASE, (lease.room_id,)).fetchone()
-    if not _lease_row_matches(row, lease) or row["released_at"] is not None or float(row["expires_at"]) <= now:
+    if not _lease_row_matches(row, lease) or row["released_at"] is not None or (
+        not allow_expired and float(row["expires_at"]) <= now
+    ):
         raise StaleLeaseError("driver lease is stale or expired")
     return row
 
@@ -487,12 +495,14 @@ def _transition(
     db_path: DbPath, identity: TaskIdentity, *, sql: str, set_params: tuple[Any, ...], fence_params: tuple[Any, ...],
     stale: str, now: float, lease: DriverLease | None = None, lease_first: bool = True,
     replay: Callable[[sqlite3.Row], dict[str, Any] | None] | None = None,
-    guard: Callable[[sqlite3.Row], None] | None = None) -> dict[str, Any]:
+    guard: Callable[[sqlite3.Row], None] | None = None,
+    allow_expired_lease: bool = False) -> dict[str, Any]:
     """Run one fenced task transition: load -> idempotent replay -> lease/fence guard -> UPDATE.
 
     ``sql`` binds ``(*set_params, room_id, task_id, *fence_params)`` and must hit exactly one row or ``stale``
     is raised. ``lease_first`` checks the lease before the row load (recovery paths) instead of after the
-    replay (settlement paths: an identical replay still succeeds after the lease moved on).
+    replay (settlement paths: an identical replay still succeeds after the lease moved on);
+    ``allow_expired_lease`` relaxes only that post-replay check and never the lease-first one.
     """
     params = (*set_params, identity.room_id, identity.task_id, *fence_params)
     with _transaction(db_path) as conn:
@@ -502,7 +512,7 @@ def _transition(
         if replay is not None and (replayed := replay(row)) is not None:
             return replayed
         if lease is not None and not lease_first:
-            _require_active_lease(conn, lease, now=now)
+            _require_active_lease(conn, lease, now=now, allow_expired=allow_expired_lease)
         if guard is not None:
             guard(row)
         fenced_update(conn, sql, params, StaleTaskError(stale))
@@ -686,13 +696,21 @@ def start_task(
 
 
 def settle_task(
-    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock
+    db_path: DbPath, attempt: TaskAttempt, *, settlement_id: Any, status: TerminalStatus, result: Any, clock: Clock,
+    allow_expired_lease: bool = False
 ) -> dict[str, Any]:
-    """Commit one terminal result if every lease and task fence still matches."""
+    """Commit one terminal result if every lease and task fence still matches.
+
+    ``allow_expired_lease`` serves the live in-process terminal callback only: plain expiry of our
+    own unreleased, un-reclaimed lease must not discard an already-completed first-party result, so
+    the post-replay check drops only its ``expires_at > now`` term. Reclaim, release and authority
+    transfer still fence; historical harvest paths keep the strict check.
+    """
     now, replay, set_params = _settlement(settlement_id, status, result, clock)
     return _run_fence_transition(
         db_path, attempt, guard_stale="task attempt is stale or cancelled", lease_first=False, now=now, replay=replay,
-        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement")
+        sql=_SETTLE_RUNNING_SQL, set_params=set_params, stale="task changed during settlement",
+        allow_expired_lease=allow_expired_lease)
 
 
 def settle_stopping_task(
@@ -900,7 +918,7 @@ def recover_room(db_path: DbPath, lease: DriverLease, *, clock: Clock) -> dict[s
         from gateway.hosted_room_work_records import capture_transition_locked
         capture_transition_locked(conn, lease.room_id)
         return {
-            status: [_task_identity_from_row(row) for row in _tasks_in_order(conn, lease.room_id, status)]
+            status: [_task_identity_from_row(row) for row in _tasks_in_order(conn, lease.room_id, (status,))]
             for status in ("queued", "indeterminate")}
 
 
@@ -916,7 +934,53 @@ def list_tasks(db_path: DbPath, *, room_id: Any, status: TaskStatus | None = Non
     if status is not None and status not in TASK_STATUSES:
         raise DriverValidationError("invalid task status")
     with closing(_connect(db_path)) as conn:
-        return [_task_from_row(row) for row in _tasks_in_order(conn, room_id, status)]
+        return [_task_from_row(row) for row in _tasks_in_order(conn, room_id, () if status is None else (status,))]
+
+
+def room_task_summary(
+        db_path: DbPath, *, room_id: Any, statuses: Iterable[str]) -> tuple[dict[str, int], list[dict[str, Any]]]:
+    """``({status: count}, tasks in those statuses, in admission order)`` for one room from one read
+    snapshot: retained terminal tasks are only counted (status index), never decoded."""
+    room_id = _identifier(room_id, label="room_id")
+    statuses = tuple(statuses)
+    if any(status not in TASK_STATUSES for status in statuses):
+        raise DriverValidationError("invalid task status")
+    with closing(_connect(db_path)) as conn, conn:
+        # Python's sqlite3 runs SELECTs in autocommit; the explicit BEGIN makes both reads one WAL snapshot,
+        # so a task moving between them is neither doubled nor lost. ``with conn`` ends it.
+        conn.execute("BEGIN")
+        counts = {str(status): int(count) for status, count in conn.execute(
+            "SELECT status, COUNT(*) FROM hosted_room_driver_tasks WHERE room_id=? GROUP BY status", (room_id,))}
+        rows = _tasks_in_order(conn, room_id, statuses) if statuses else []
+    return counts, [_task_from_row(row) for row in rows]
+
+
+class RoomChangeRows(NamedTuple):
+    next_seq: int
+    revision: int
+    tasks: tuple
+
+
+def room_change_rows(conn: sqlite3.Connection, statuses: tuple[str, ...] = SHOWN_TASK_STATUSES) -> dict[str, RoomChangeRows]:
+    """Per live room in one store, what its log and ``groups.state`` read from the store, for a change
+    signature: ``RoomChangeRows(next_seq, revision, ((task_id, status, execution_generation, cancel_generation), ...))``
+    over the tasks in ``statuses``. ``next_seq`` moves on every append and ``revision`` on a rename,
+    membership or authority edit; the generations move a Retry that keeps its status. A disbanded room is
+    left out (its key going away is the change). Each room's rows are read through the status index
+    (``room_id, status`` prefix) and sorted here: an ``ORDER BY task_id`` would make SQLite walk the room's
+    retained terminal tasks through the primary key instead."""
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('hosted_rooms', 'hosted_room_driver_tasks')")}
+    if "hosted_rooms" not in tables:
+        return {}
+    rooms = conn.execute("SELECT room_id, next_seq, revision FROM hosted_rooms WHERE disbanded_at IS NULL").fetchall()
+    if "hosted_room_driver_tasks" not in tables:
+        return {room_id: RoomChangeRows(next_seq, revision, ()) for room_id, next_seq, revision in rooms}
+    query = f"""SELECT task_id, status, execution_generation, cancel_generation FROM hosted_room_driver_tasks
+                WHERE room_id=? AND status IN ({','.join('?' * len(statuses))})"""
+    return {room_id: RoomChangeRows(
+                next_seq, revision, tuple(sorted(tuple(row) for row in conn.execute(query, (room_id, *statuses)))))
+            for room_id, next_seq, revision in rooms}
 
 
 def prune_published_terminal_tasks(

@@ -57,6 +57,8 @@ export const esLocalModels: TranslationOverride<Translations['settings']['localM
   updateTitle: 'Hay una actualización del motor',
   updateDetail: (next, current) =>
     `Hay una compilación más reciente de llama.cpp (${next}) lista para instalar; tienes ${current}. Los modelos siguen funcionando durante la descarga.`,
+  updateSameBuildDetail: tag =>
+    `Hermes ahora incluye llama.cpp ${tag} con archivos que necesita para funcionar. Al actualizar, el motor se vuelve a descargar; los modelos siguen funcionando durante la descarga.`,
   updateAction: 'Actualizar motor',
   updating: 'Actualizando el motor…',
   upToDateTitle: 'Motor actualizado',

@@ -1183,9 +1183,25 @@ async def test_long_non_ascii_command_keeps_button_data_small():
     cannot push the card past Teams' ~28 KB limit."""
     adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
     adapter._app, adapter._send_card = object(), AsyncMock()
+    adapter.send = AsyncMock(return_value=MagicMock(success=True))  # the full command, sent before the card
     command = "cat > notes.md <<'EOF'\n" + "这是一个很长的中文文档内容。" * 200 + "\nEOF"
     buttons = []
     with patch.object(sys.modules[TeamsAdapter.__module__], "ExecuteAction", lambda **kw: buttons.append(kw)):
         await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
     assert len(buttons) == 4
     assert sum(len(json.dumps(b["data"], ensure_ascii=False).encode()) for b in buttons) < 1024
+
+
+@pytest.mark.anyio
+async def test_shortened_card_preview_says_where_the_full_command_is():
+    """Teams rebuilds its card from ``prompt.command``; a cut preview must still carry the shared notice."""
+    adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+    adapter._app, adapter._send_card = object(), AsyncMock()
+    adapter.send = AsyncMock(return_value=MagicMock(success=True, raw_response=None))  # the full command
+    texts = []
+    module = sys.modules[TeamsAdapter.__module__]
+    with patch.object(module, "ExecuteAction", lambda **kw: kw), \
+            patch.object(module, "TextBlock", lambda text="", **kw: texts.append(text)):
+        await adapter.send_exec_approval(chat_id="c1", command="echo " + "C" * 5000, session_key="s1")
+    card_text = " ".join(texts)
+    assert "Preview shortened" in card_text and "5005" in card_text

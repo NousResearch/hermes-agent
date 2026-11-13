@@ -1,0 +1,44 @@
+name: mapdesk
+title: MapDesk
+repo: https://github.com/mackydubzz/hermes-mapdesk
+sha: eaaea7102e5d6396840850ee968fe46aea025f41
+description: >-
+  A GIS workspace inside Hermes Desktop. Import GeoJSON, CSV, KML/KMZ, GPX,
+  XLSX, zipped shapefiles and bounded public ArcGIS layers; style, query and
+  select layers; run geodesic buffer, dissolve, clip, centroid, hull and
+  points-in-polygon analysis; export GeoPackage, shapefile, KMZ, GeoJSON, CSV
+  and PNG, from chat or from the map pane. Works with no account on a keyless
+  OpenFreeMap basemap; a public Mapbox token is optional. Disclosure: the map
+  pane loads version-pinned, SRI-checked MapLibre GL JS (unpkg) or Mapbox GL
+  JS, and basemap tiles from OpenFreeMap, Esri ArcGIS Online (satellite),
+  the Terrarium elevation set on Amazon S3 (terrain) or Mapbox (billed to your
+  token). ArcGIS imports contact the source you choose, and geocoding a CSV by
+  an address column in the pane sends those addresses to OpenStreetMap
+  Nominatim. Layers stay in the profile's plugin data folder. No telemetry, no
+  self-updater, no shell commands.
+maintainer: mackydubzz
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+version: "0.3.0"
+docs_url: https://github.com/mackydubzz/hermes-mapdesk#readme
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/mackydubzz/hermes-mapdesk/eaaea7102e5d6396840850ee968fe46aea025f41/docs/screenshots/01-overview.jpg
+  - https://raw.githubusercontent.com/mackydubzz/hermes-mapdesk/eaaea7102e5d6396840850ee968fe46aea025f41/docs/screenshots/02-corridor-analysis.jpg
+  - https://raw.githubusercontent.com/mackydubzz/hermes-mapdesk/eaaea7102e5d6396840850ee968fe46aea025f41/docs/screenshots/03-radius-selection.jpg
+known_issues:
+  - Requires Hermes Desktop for the map pane; enable the Desktop component after installation.
+capabilities:
+  provides_tools:
+    - mapdesk_status
+    - mapdesk_import
+    - mapdesk_layer
+    - mapdesk_selection
+    - mapdesk_query
+    - mapdesk_analyze
+    - mapdesk_view
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

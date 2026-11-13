@@ -9,18 +9,17 @@ it answers anything.
 
 from __future__ import annotations
 
-import itertools
 import json
 import logging
 from typing import Any, Optional
 
 from agent.i18n import t
-from gateway.platforms.base import SendResult
+from gateway.platforms.helpers import prompt_id_counter
+from gateway.platforms.base import SendResult, describe_proxy_error, env_proxy_for_redaction
 
 logger = logging.getLogger(__name__)
 
 _BUTTON_LABEL_MAX = 40
-
 
 class FeishuChoiceCardsMixin:
     """Clarify and choice-picker cards for ``FeishuAdapter`` (needs its card/state helpers)."""
@@ -38,7 +37,7 @@ class FeishuChoiceCardsMixin:
         self._clarify_state: dict[str, dict[str, str]] = {}
         # picker_id -> {session_key, message_id, chat_id, body, choices, on_choice_selected, metadata}
         self._choice_picker_state: dict[int, dict[str, Any]] = {}
-        self._choice_picker_counter = itertools.count(1)
+        self._choice_picker_counter = prompt_id_counter()
 
     # --- clarify ---
     async def send_clarify(
@@ -76,8 +75,8 @@ class FeishuChoiceCardsMixin:
                 chat_id, card, metadata, "send_clarify failed", state_map=self._clarify_state,
                 state_id=clarify_id, session_key=session_key, extra_state={"question": str(question)})
         except Exception as exc:
-            logger.warning("[Feishu] send_clarify failed: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            logger.warning("[Feishu] send_clarify failed: %s", (shown := describe_proxy_error(exc, env_proxy_for_redaction(f"https://open.{'larksuite.com' if self._domain_name == 'lark' else 'feishu.cn'}"))) or exc, exc_info=not shown)
+            return SendResult(success=False, error=shown or str(exc))
 
     @staticmethod
     def _clarify_card(body: str, template: str, *, actions: Optional[list] = None) -> dict[str, Any]:
@@ -103,7 +102,11 @@ class FeishuChoiceCardsMixin:
         checked = self._validate_card_action(event=event, state=state, label="clarify", ident=clarify_id)
         if checked is None:
             return self._card_response()
-        user_name = checked[2]
+        open_id, _chat_id, user_name, user_id, _union_id = checked
+        from gateway.approval_actor import clarify_refusal, refusal_text
+        # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
+        if requester := clarify_refusal(clarify_id, user_id or open_id, extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
         from tools import clarify_gateway
 
         entry = clarify_gateway.get_pending(clarify_id)
@@ -177,8 +180,8 @@ class FeishuChoiceCardsMixin:
                 extra_state={"header": header, "body": body, "choices": choices,
                              "on_choice_selected": on_choice_selected, "metadata": metadata})
         except Exception as exc:
-            logger.warning("[Feishu] send_choice_picker failed: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+            logger.warning("[Feishu] send_choice_picker failed: %s", (shown := describe_proxy_error(exc, env_proxy_for_redaction(f"https://open.{'larksuite.com' if self._domain_name == 'lark' else 'feishu.cn'}"))) or exc, exc_info=not shown)
+            return SendResult(success=False, error=shown or str(exc))
         if result.success:
             # Snapshot: the SDK callback thread pops from this dict concurrently.
             for stale in [k for k, v in list(self._choice_picker_state.items()) if k != picker_id and v["chat_id"] == chat_id]:
@@ -195,6 +198,9 @@ class FeishuChoiceCardsMixin:
         checked = self._validate_card_action(event=event, state=state, label="choice picker", ident=picker_id)
         if checked is None:
             return self._card_response()
+        from gateway.approval_actor import picker_refusal, refusal_text
+        if requester := picker_refusal(state["on_choice_selected"], checked[3] or checked[0], extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # another member's tap: only they see it, card stays open
         token = str(action_value.get("hermes_choice_picker_action") or "")
         choices = state["choices"]
         if not (token.isdigit() and int(token) < len(choices)):
@@ -222,8 +228,13 @@ class FeishuChoiceCardsMixin:
         action = getattr(getattr(data, "event", None), "action", None)
         if action is not None:
             action.value = ((payload.get("event") or {}).get("action") or {}).get("value")
-        card = getattr(self._on_card_action_trigger(data), "card", None)
-        return {"card": {"type": card.type, "data": card.data}} if card is not None else {}
+        response = self._on_card_action_trigger(data)
+        body: dict[str, Any] = {}
+        if (card := getattr(response, "card", None)) is not None:
+            body["card"] = {"type": card.type, "data": card.data}
+        if (toast := getattr(response, "toast", None)) is not None:  # a refusal only the clicker sees
+            body["toast"] = {"type": toast.type, "content": toast.content}
+        return body
 
     async def _apply_choice_picker_selection(self, state: dict[str, Any], value: str) -> None:
         """Run the picker's applier and send its confirmation to the chat."""

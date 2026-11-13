@@ -112,8 +112,7 @@ jobs:
         #
         # No --files: the runner discovers the suite itself. The discovered
         # set is identical to the list the removed matrix job used to pass in.
-        run: |
-          scripts/run_tests.sh
+        run: just test-all
         env:
           HERMES_TEST_SLICE: ${{ matrix.slice }}/3
           HERMES_TEST_FORKSERVER: "1"
@@ -216,9 +215,11 @@ jobs:
           set -o pipefail
           log="$RUNNER_TEMP/messaging-gateway.log"
           scripts/run_tests.sh -rs \
+            tests/gateway/test_session_terminal_cwd_restart.py \
             tests/gateway/test_native_role_reauthorization.py \
             tests/gateway/test_native_telegram_startup_recovery.py \
             tests/gateway/test_native_pause_notice.py \
+            tests/gateway/test_reset_paused_queue_notice.py \
             tests/gateway/test_native_reply_crash_recovery.py | tee "$log"
           summary=$(grep '^=== Summary:' "$log")
           case "$summary" in
@@ -329,7 +330,7 @@ jobs:
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
-          # N-1 = `git describe --tags --abbrev=0 HEAD~1`.
+          # The upgrade start version is the newest release behind HEAD (tests/e2e/core/upgrade/_install_helpers.upgrade_base).
           fetch-depth: 0
           fetch-tags: true
 

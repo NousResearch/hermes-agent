@@ -1,0 +1,34 @@
+name: artemis
+title: Artemis
+repo: https://github.com/LukeJJones/artemis
+sha: 6e4ef6f361212276202a8c43ea16efab876bb08f
+description: Mobile web companion for canonical Hermes Bot Chats using full-owner Web Access.
+maintainer: LukeJJones
+tier: community
+category: web
+requires_hermes: ">=0.23.0"
+version: "0.0.5"
+docs_url: https://github.com/LukeJJones/artemis#set-up-and-open
+readme: true
+platforms: [windows]
+image: https://raw.githubusercontent.com/LukeJJones/artemis/6e4ef6f361212276202a8c43ea16efab876bb08f/docs/images/artemis-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/LukeJJones/artemis/6e4ef6f361212276202a8c43ea16efab876bb08f/docs/images/conversation-dark.png
+  - https://raw.githubusercontent.com/LukeJJones/artemis/6e4ef6f361212276202a8c43ea16efab876bb08f/docs/images/home.png
+  - https://raw.githubusercontent.com/LukeJJones/artemis/6e4ef6f361212276202a8c43ea16efab876bb08f/docs/images/sidebar-pink.png
+  - https://raw.githubusercontent.com/LukeJJones/artemis/6e4ef6f361212276202a8c43ea16efab876bb08f/docs/images/sidebar-accent-picker-lime.png
+  - https://raw.githubusercontent.com/LukeJJones/artemis/6e4ef6f361212276202a8c43ea16efab876bb08f/docs/images/sidebar-lime.png
+  - https://raw.githubusercontent.com/LukeJJones/artemis/6e4ef6f361212276202a8c43ea16efab876bb08f/docs/images/conversation-light.png
+known_issues:
+  - Full-owner browser authority, not chat-only or independently device-revocable access.
+  - Requires operator-configured Hermes Bot Mode, Web Access, HTTPS/WSS and correct sign-in callback/origin settings for remote use.
+  - Windows local admission/hosting verified; remote OAuth, physical-browser accessibility and canonical model/history continuity are not certified by those checks.
+  - Uploads, real profile portraits, Rooms navigation, production Stop and PWA/offline support are not implemented.
+  - The previous artemis-owner-proof identity is a separate installation; follow the documented disable/remove-old and enable-new migration. No automatic rename or old-route redirect.
+  - Use Hermes 0.23.1 or newer for catalog installation; older clients may fall back to an outdated catalog and fail to find Artemis.
+  - If Artemis is On but its opening URL says Plugin not found, open /api/dashboard/plugins/rescan on your Hermes origin in the same signed-in browser, then retry /dashboard-plugins/artemis/open.html.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

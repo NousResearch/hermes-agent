@@ -46,6 +46,10 @@ function fixture() {
       return Promise.resolve({ ...wire.params, detached })
     }
 
+    if (wire.method === 'setup.status') {
+      return Promise.resolve({ provider_configured: true })
+    }
+
     throw new Error(`unexpected viewer operation: ${wire.method}`)
   })
 

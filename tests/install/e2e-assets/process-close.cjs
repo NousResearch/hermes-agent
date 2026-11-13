@@ -1,3 +1,5 @@
+const fs = require('node:fs')
+
 // Observe at launch: a renderer can close before the native process and its
 // stdio pipes. Playwright's driver exit cleanup tree-kills until that close.
 function observeProcessClose(child) {
@@ -29,4 +31,13 @@ function observeProcessClose(child) {
   }
 }
 
-module.exports = { observeProcessClose }
+// The main process reports updater failures on its own stdout/stderr (the
+// Windows App Installer checker's stderr goes nowhere else). Synchronous
+// appends survive the driver's process.exit right after the app closes.
+function recordProcessOutput(child, file) {
+  for (const name of ['stdout', 'stderr']) {
+    child[name]?.on('data', chunk => fs.appendFileSync(file, `[${name}] ${chunk}`))
+  }
+}
+
+module.exports = { observeProcessClose, recordProcessOutput }

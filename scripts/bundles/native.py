@@ -16,12 +16,14 @@ from pm.install import _lockfile
 from pm.lock import Facts
 from pm.registry import get_package, walk
 from pm.store import current_target
+from pm.testenv import DEVELOPER_TOOLS
 
 def _bundle_package_names() -> list[str]:
     names = [
         n
         for n in _lockfile().names()
-        if not get_package(n).internal or n == "uv"
+        # Developer tools (just) are never part of a user install.
+        if (not get_package(n).internal or n == "uv") and n not in DEVELOPER_TOOLS
     ]
     if "python" not in names:
         names.append("python")
@@ -361,8 +363,9 @@ def main() -> int:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--tui", type=Path)
     parser.add_argument("--web", type=Path)
+    parser.add_argument("--webapp", type=Path)
     args = parser.parse_args()
-    args.frontends = {name: path for name in ("tui", "web") if (path := getattr(args, name)) is not None}
+    args.frontends = {name: path for name in ("tui", "web", "webapp") if (path := getattr(args, name)) is not None}
     return _stage_native(args)
 
 

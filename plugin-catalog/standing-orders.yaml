@@ -1,0 +1,29 @@
+name: standing-orders
+repo: https://github.com/jaxsonsprinkles/standing-orders
+sha: 2fc0bfb6ae9bb8d57375efa5a9f1db0a8e474af3
+title: Standing Orders
+description: "Plain-English camera triggers that wake your agent. Say \"tell me if I leave my mug on the desk for 10 seconds\"; the camera stays silent until it is true, then Hermes starts a turn with a short clip as evidence. macOS only; not a safety or security system. Disclosure — Runs a gateway platform that opens the macOS webcam in a background thread only while at least one order is armed (1–2 frames per second), or whenever the gateway runs if you turn on `record_when_idle`; keeps a rolling local recording of those periods (60 min / 2 GB, deleted when the last order is disarmed) plus event clips (kept until `hermes orders purge`) under HERMES_HOME/plugin-data/standing-orders; frame crops and one reference frame per new order are sent to your configured Hermes model through ctx.llm; armed orders start Hermes turns unattended with camera-derived text, and those turns get all core tools unless `platform_toolsets.standing_orders` is set."
+maintainer: jaxsonsprinkles
+tier: community
+category: automation
+requires_hermes: ">=0.22.7"
+version: "0.1.0"
+docs_url: https://github.com/jaxsonsprinkles/standing-orders
+screenshots:
+  - https://raw.githubusercontent.com/jaxsonsprinkles/standing-orders/2fc0bfb6ae9bb8d57375efa5a9f1db0a8e474af3/docs/images/mug-test-1.png
+  - https://raw.githubusercontent.com/jaxsonsprinkles/standing-orders/2fc0bfb6ae9bb8d57375efa5a9f1db0a8e474af3/docs/images/mug-test-2.png
+readme: true
+platforms: [macos]
+capabilities:
+  provides_tools:
+    - so_create_order
+    - so_arm
+    - so_disarm
+    - so_list_orders
+    - so_status
+    - so_backtest
+    - so_correct
+    - so_add_list_item
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -582,6 +582,24 @@ def settle_held_final(agent, result: Any) -> None:
     result.update(final_response=final, response_transformed=transformed, pre_transform_response=None)
 
 
+def fence_result_reply(result: Any) -> None:
+    """Strip echoed ``<memory-context>`` spans from ``final_response``/``pre_transform_response`` (#81312).
+    A non-streamed reply reaches adapters (email bodies included) only through ``final_response``;
+    ``result["messages"]`` and the stored row keep the raw text (API Runs transcripts, ``get_messages``)."""
+    if not isinstance(result, dict):
+        return
+    from agent.memory_context import fence_recalled_context
+    # ``pre_transform_response`` is display text too: replay-gap recovery and post-stream suffix
+    # painting deliver it.
+    for key in ("final_response", "pre_transform_response"):
+        raw = result.get(key)
+        fenced = fence_recalled_context(raw) if isinstance(raw, str) else raw
+        if fenced != raw:
+            result[key] = fenced
+            if key == "final_response" and result.get("error") == raw:
+                result["error"] = fenced
+
+
 def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
     """``pre_transform_response`` for a turn result: a held turn's original never leaves the agent
     (receipts, replay-gap recovery, post-stream suffix painting all see only the rewrite)."""
@@ -628,6 +646,7 @@ def finalize_turn(
 
     vetoed = _turn_exit_reason == PRE_LLM_BLOCK_EXIT_REASON  # a pre_llm_call block: no model call at all
 
+    agent._empty_response_retry_hint = None
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,

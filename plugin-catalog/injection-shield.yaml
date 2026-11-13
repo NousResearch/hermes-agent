@@ -1,0 +1,31 @@
+# Catalog entry for injection-shield (subdir of the MOTHR/security-suite monorepo).
+# Owner submission (Rule 5): submitted by MOTHR, owner of the plugin repo.
+# Validated with `hermes plugins validate` + `hermes plugins doctor --ci`
+# at this exact commit against a fresh clone.
+name: injection-shield
+repo: https://github.com/MOTHR/hermes-security-suite
+sha: ec34c448db2ca22551c36f3e0092dbf25cf0c0d5
+subdir: "injection-shield"
+description: "Injection-Shield — defends Hermes agents against prompt-injection attacks via tool outputs and untrusted content. Validates LLM responses, audits risky tool calls. Modes: audit / enforcement. Disclosure — privacy-shield sees every user message, outgoing LLM request and assistant reply. Its llm_request middleware rewrites the user messages in each cloud request (current prompt, earlier turns and injected context; Ollama is exempt) to replace detected personal data with tokens, and its transform_llm_output hook puts the real values back into replies on whitelisted channels (telegram, desktop, cli, kanban by default; cron only when you opt in). The token-to-value mapping is kept AES-256-GCM-encrypted in `~/.hermes/privacy/mapping.db` (restored attachments go under `~/.hermes/privacy/restore/`), and the audit trail is written to `~/.hermes/profiles/default/workspace/privacy-shield-audit.jsonl` plus a rotating log, whichever profile is running. The plugin reads its key `PRIVACY_SHIELD_KEY` through the Hermes secret scope, and the restore chat id from `PRIVACY_SHIELD_RESTORE_CHAT_ID` or your `pass` entry `hermes/telegram/chat_id`. The dashboard/Desktop Controls pane and `privacy-shield set-mode` write its settings into `config.yaml` under `plugins.entries.privacy-shield`. The optional doctor/cleanup shell wrappers under `scripts/cron/` are never installed by the plugin: if you schedule them yourself, they read the key from your `pass` store and call a `telegram-alert.sh` under `$HERMES_HOME/profiles/sysadmin/scripts/` if one exists. The plugin itself makes no network calls. Disclosure — injection-shield sees every tool call and tool result, MCP tool descriptions, each user prompt with its conversation history, and every model reply. It adds a firewall instruction block to each prompt as hook context. In enforcement mode it can block tool calls and replace suspicious tool results or model output (the default is audit mode, which only logs). It writes an audit log of detected attempts to `~/.hermes/profiles/<profile>/workspace/05-Logs-Snapshots/prompt-injection-attempts.log`, and keeps MCP trust/integrity hash stores under `~/.hermes/profiles/default/workspace/05-Logs-Snapshots/`. When you set `INJECTION_SHIELD_TELEGRAM_CHAT_ID` and `INJECTION_SHIELD_TELEGRAM_BOT_TOKEN`, it sends alert summaries (violation types, counts and time, no matched text) to `api.telegram.org` with your own bot token. Its dashboard/Desktop controls pane saves settings into `config.yaml` under `plugins.entries.injection-shield`. It installs no cron or launchd jobs."
+maintainer: MOTHR
+tier: community
+category: general
+docs_url: https://github.com/MOTHR/hermes-security-suite#readme
+version: "0.8.2"
+requires_hermes: ">=0.21.5"
+readme: true
+platforms: []
+known_issues:
+  - "Formal multi-agent security audit covers privacy-shield; the equivalent formal audit for injection-shield is still pending (status: triple peer review + 410+ regression tests; see SECURITY-AUDIT.md in the repo)."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - post_llm_call
+    - transform_tool_result
+    - transform_llm_output
+  provides_middleware: []
+  requires_env:
+    - INJECTION_SHIELD_TELEGRAM_BOT_TOKEN

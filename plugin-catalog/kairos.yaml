@@ -1,0 +1,43 @@
+name: kairos
+repo: https://github.com/Gens-ai/Kairos
+sha: 1f2acfab7afdca26e2fb0e669072d664700439e6
+description: "The god of the opportune moment, now working for Hermes. It waits for a clean stopping point to offer a short break or a wind-down at the bedtime you chose, saves your place so stopping costs nothing, and reports only what your data supports. Disclosure — reads Hermes's own session store (state.db, read-only: message timestamps, roles and tool names, no message text) to chart when you work; `sleep_import` reads the sleep export file you or the agent name (CSV, Gadgetbridge SQLite, Xiaomi folder), and `kairos_wearable` calls only MCP servers you list in `plugins.entries.kairos.mcp_allowlist`; adds short blocks to the conversation through `pre_llm_call` (wind-down nudge, break suggestion, the opt-in pomodoro offer, and once per new session the handoff note the agent saved when you last stopped, kept in the plugin's data folder), never into cron or subagent turns; `on_session_end` records, with the pomodoro on, when each turn ended, whether it completed, and its tool-call count (timestamps and counts only, in the plugin's own database); the optional quiet-hours guard can require approval for or block destructive terminal/file/code tool calls during hours you set."
+maintainer: Gens-ai
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/Gens-ai/Kairos#readme
+version: "0.7.0"
+image: https://raw.githubusercontent.com/Gens-ai/Kairos/1f2acfab7afdca26e2fb0e669072d664700439e6/assets/marketplace.png
+screenshots:
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/1f2acfab7afdca26e2fb0e669072d664700439e6/docs/screenshots/pomodoro-nudge.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/1f2acfab7afdca26e2fb0e669072d664700439e6/docs/screenshots/settings-pomodoro.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/1f2acfab7afdca26e2fb0e669072d664700439e6/docs/screenshots/pane.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/1f2acfab7afdca26e2fb0e669072d664700439e6/docs/screenshots/settings-kairos.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/1f2acfab7afdca26e2fb0e669072d664700439e6/docs/screenshots/settings-nudges.png
+  - https://raw.githubusercontent.com/Gens-ai/Kairos/1f2acfab7afdca26e2fb0e669072d664700439e6/docs/screenshots/settings-schedule.png
+readme: true
+platforms: [linux, macos]
+title: Kairos
+capabilities:
+  provides_tools:
+    - sleep_log
+    - sleep_import
+    - kairos_activity
+    - kairos_report
+    - kairos_guard
+    - kairos_goal
+    - kairos_commitment
+    - kairos_winddown
+    - kairos_checkin
+    - kairos_wearable
+    - kairos_ping
+    - kairos_pomodoro
+  provides_hooks:
+    - on_session_start
+    - post_tool_call
+    - pre_llm_call
+    - pre_tool_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

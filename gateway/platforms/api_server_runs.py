@@ -142,7 +142,10 @@ _FIXED_EVENT_FIELDS = {
     "tool.completed": lambda tool, preview, kw: {
         "tool": tool, "duration": round(kw.get("duration", 0), 3), "error": kw.get("is_error", False),
         **_call_id(kw)},
-    "reasoning.available": lambda tool, preview, kw: {"text": preview or ""}}
+    "reasoning.available": lambda tool, preview, kw: {"text": preview or ""},
+    "tool.progress": lambda tool, preview, kw: {
+        "name": tool, "message": preview, "progress": kw.get("progress"),
+        "total": kw.get("total"), "percent": kw.get("percent"), **_call_id(kw)}}
 _TOOL_COMPLETED_PREVIEW_MAX_CHARS = 500
 
 
@@ -386,7 +389,13 @@ def _make_run_event_callback(self, run_id: str, loop: asyncio.AbstractEventLoop,
             if event_type == "tool.completed":
                 event_fields["preview"] = _tool_completed_preview(
                     kwargs.get("result"), redact_sensitive_text)
-            _push(_run_event(run_id, event_type, **event_fields))
+            elif event_type == "tool.progress" and isinstance(event_fields.get("message"), str):
+                # The MCP server's own free text: force secret redaction, matching subagent
+                # free text, before the message reaches the public run SSE stream.
+                event_fields["message"] = redact_sensitive_text(event_fields["message"], force=True)
+            event = _run_event(run_id, event_type)
+            event.update(event_fields)
+            _push(event)
         elif event_type in {"subagent.start", "subagent.complete"}:
             event = _run_event(run_id, event_type)
             if preview is not None:
@@ -1131,7 +1140,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
                     run.admission, stream_delta_callback=_text_cb,
-                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
+                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete,
+                    tool_progress_callback=tool_cb)
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (

@@ -357,10 +357,15 @@ async def observe_api_turn(admitted, **kwargs):
     if observers is None:
         observers = authority.api_observers = {}
     observer = {key: kwargs[key] for key in _OBSERVER_KEYS if kwargs.get(key) is not None}
-    if kwargs.get('tool_progress_callback') is not None and not observer.keys() & _TOOL_SINKS:
-        # Progress-only (the session chat stream): the producer's own tool.started / tool.completed
-        # events with its preview and failure verdict. Structured observers keep only theirs.
-        observer['tool_progress_callback'] = kwargs['tool_progress_callback']
+    tool_progress = kwargs.get('tool_progress_callback')
+    if tool_progress is not None:
+        if observer.keys() & _TOOL_SINKS:
+            # Structured observers already get tool.started/tool.completed through their own
+            # dedicated sinks; only tool.progress (live MCP ticks) has no other delivery path.
+            def tool_progress(event_type, *args, _inner=tool_progress, **kw):
+                if event_type not in ('tool.started', 'tool.completed'):
+                    return _inner(event_type, *args, **kw)
+        observer['tool_progress_callback'] = tool_progress
     registered = observers.setdefault(row['admission_id'], [])
     registered.append(observer)
     try:
@@ -502,7 +507,7 @@ def wire_api_observers(agent, owner, want_interim):
     progress = agent.tool_progress_callback
 
     def tool_progress_callback(event_type, *args, **kwargs):
-        if event_type in ('tool.started', 'tool.completed'):
+        if event_type in ('tool.started', 'tool.completed', 'tool.progress'):
             publish_api_tool_progress(authority, session_id, generation, event_type, *args, **kwargs)
         if progress is not None:
             return progress(event_type, *args, **kwargs)

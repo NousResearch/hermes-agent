@@ -118,6 +118,7 @@ _HERMES_CORE_TOOLS = [
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
     "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+    "nopecha_recognition",
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
@@ -334,7 +335,7 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp",
             "browser_dialog", "web_search",
             "smart_browser",
-            "browser_use_cloud"
+            "browser_use_cloud", "nopecha_recognition"
         ],
         "includes": []
     },

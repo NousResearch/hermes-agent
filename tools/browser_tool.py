@@ -2479,14 +2479,6 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         ]
         title_lower = title.lower()
 
-        if any(pattern in title_lower for pattern in blocked_patterns):
-            response["bot_detection_warning"] = (
-                f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
-                "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
-                "4) Some sites have very aggressive bot detection that may be unavoidable."
-            )
-
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
@@ -2505,6 +2497,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
 
         # Auto-take a compact snapshot so the model can act immediately
         # without a separate browser_snapshot call.
+        snapshot_text = ""
         try:
             snap_result = _run_browser_command(nav_session_key, "snapshot", ["-c"])
             if snap_result.get("success"):
@@ -2520,12 +2513,70 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         except Exception as e:
             logger.debug("Auto-snapshot after navigate failed: %s", e)
 
+        # Merge supervisor state (pending dialogs + frame tree) when a CDP
+        # supervisor is attached to this task -- gives the CAPTCHA classifier
+        # below access to iframe urls/titles (reCAPTCHA/hCaptcha/Turnstile/
+        # etc). No-op otherwise (default local Playwright backend, Camofox --
+        # those fall back to title/snapshot-text signals only). See
+        # website/docs/developer-guide/browser-supervisor.md.
+        frame_tree = None
+        try:
+            from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+            _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
+            if _supervisor is not None:
+                _sv_snap = _supervisor.snapshot()
+                if _sv_snap.active:
+                    response.update(_sv_snap.to_dict())
+                    frame_tree = _sv_snap.frame_tree
+        except Exception as _sv_exc:
+            logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
+
+        # CAPTCHA / access-restriction classification -- shared across browser
+        # call sites, see tools/browser_captcha_detection.py. Distinguishes a
+        # normal page from an active CAPTCHA/verification challenge from a
+        # flat access-denied refusal (the old title-keyword-only check below
+        # could not tell these apart). Also wired into browser_snapshot.
+        try:
+            from tools.browser_captcha_detection import classify_page
+            _detection = classify_page(
+                title=title, url=final_url, snapshot_text=snapshot_text, frame_tree=frame_tree,
+            )
+            if _detection["classification"] != "normal":
+                response["captcha_detection"] = _detection
+                try:
+                    _hostname = urllib.parse.urlparse(final_url or url).hostname or ""
+                except Exception:
+                    _hostname = ""
+                logger.info(
+                    "browser_navigate captcha_detection: task_id=%s hostname=%s classification=%s confidence=%s provider_hint=%s",
+                    effective_task_id, _hostname, _detection["classification"],
+                    _detection["confidence"], _detection["provider_hint"],
+                )
+                if _detection["classification"] == "captcha":
+                    response["bot_detection_warning"] = (
+                        f"Page title '{title}' suggests an active verification challenge is "
+                        f"blocking this page (signals: {_detection['signals']}). If this site "
+                        f"and workflow are authorized for automated verification, use "
+                        f"nopecha_recognition to recognize the challenge -- do not attempt to "
+                        f"bypass it any other way."
+                    )
+                else:
+                    response["bot_detection_warning"] = (
+                        f"Page title '{title}' suggests the site refused this request outright "
+                        f"(signals: {_detection['signals']}), not a CAPTCHA to solve. Use the "
+                        f"site's own permitted access method instead of retrying automatically."
+                    )
+        except Exception as _det_exc:
+            logger.debug("captcha classification failed: %s", _det_exc)
+            if any(pattern in title_lower for pattern in blocked_patterns):
+                # Fallback to the legacy title-only signal if the shared
+                # classifier itself errors out, so a regression there doesn't
+                # silently remove detection entirely.
+                response["bot_detection_warning"] = (
+                    f"Page title '{title}' suggests bot detection. The site may have blocked this request."
+                )
+
         return json.dumps(response, ensure_ascii=False)
-    else:
-        return json.dumps({
-            "success": False,
-            "error": result.get("error", "Navigation failed")
-        }, ensure_ascii=False)
 
 
 def browser_snapshot(
@@ -2578,6 +2629,7 @@ def browser_snapshot(
         # Merge supervisor state (pending dialogs + frame tree) when a CDP
         # supervisor is attached to this task. No-op otherwise. See
         # website/docs/developer-guide/browser-supervisor.md.
+        frame_tree = None
         try:
             from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
             _supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
@@ -2585,8 +2637,34 @@ def browser_snapshot(
                 _sv_snap = _supervisor.snapshot()
                 if _sv_snap.active:
                     response.update(_sv_snap.to_dict())
+                    frame_tree = _sv_snap.frame_tree
         except Exception as _sv_exc:
             logger.debug("supervisor snapshot merge failed: %s", _sv_exc)
+
+        # CAPTCHA / access-restriction classification -- same shared
+        # classifier browser_navigate uses (tools/browser_captcha_detection.py).
+        # No page <title> available at this call site (snapshot-only, no nav
+        # metadata) -- relies on visible snapshot text + frame_tree instead,
+        # which is exactly the case this call site adds over browser_navigate
+        # (e.g. a challenge that appeared after a click, with no re-navigation).
+        try:
+            from tools.browser_captcha_detection import classify_page
+            _detection = classify_page(title="", url="", snapshot_text=snapshot_text, frame_tree=frame_tree)
+            if _detection["classification"] != "normal":
+                response["captcha_detection"] = _detection
+                try:
+                    import urllib.parse as _urllib_parse
+                    _top_url = (frame_tree or {}).get("top", {}).get("url", "") if frame_tree else ""
+                    _hostname = _urllib_parse.urlparse(_top_url).hostname or ""
+                except Exception:
+                    _hostname = ""
+                logger.info(
+                    "browser_snapshot captcha_detection: task_id=%s hostname=%s classification=%s confidence=%s provider_hint=%s",
+                    effective_task_id, _hostname, _detection["classification"],
+                    _detection["confidence"], _detection["provider_hint"],
+                )
+        except Exception as _det_exc:
+            logger.debug("captcha classification failed: %s", _det_exc)
 
         return json.dumps(response, ensure_ascii=False)
     else:
@@ -3281,7 +3359,12 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             f"User's question: {question}\n\n"
             f"Provide a detailed and helpful answer based on what you see in the screenshot. "
             f"If there are interactive elements, describe them. If there are verification challenges "
-            f"or CAPTCHAs, describe what type they are and what action might be needed. "
+            f"or CAPTCHAs, describe what type they are (reCAPTCHA image grid, FunCAPTCHA, GeeTest, "
+            f"Cloudflare Turnstile, AWS WAF audio challenge, text CAPTCHA, etc.) and whether it's an "
+            f"active challenge to solve vs. a flat access-denied page with no challenge. If it is a "
+            f"recognizable image-grid CAPTCHA (e.g. reCAPTCHA) and the workflow is authorized for "
+            f"automated verification, mention that the nopecha_recognition tool can be used with this "
+            f"screenshot to get click positions -- do not attempt to solve or bypass it any other way. "
             f"Focus on answering the user's specific question."
         )
 

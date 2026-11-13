@@ -591,6 +591,85 @@ Responds to a native JS dialog (`alert` / `confirm` / `prompt` / `beforeunload`)
 
 **Frame tree** inside `browser_snapshot.frame_tree` is capped to 30 frames and OOPIF depth 2 to keep payloads bounded on ad-heavy pages. A `truncated: true` flag surfaces when limits were hit; agents needing the full tree can use `browser_cdp` with `Page.getFrameTree`.
 
+## CAPTCHA Detection & Recognition
+
+`browser_navigate` and `browser_snapshot` automatically classify every loaded
+page as one of three things, instead of treating every "blocked"-looking page
+the same way:
+
+| Classification | Meaning |
+|---|---|
+| `normal` | Nothing unusual. |
+| `captcha` | An active verification challenge is blocking the page (reCAPTCHA, Cloudflare Turnstile/interstitial, FunCAPTCHA, GeeTest, AWS WAF, a generic "verify you're human" wall). |
+| `access_denied` | The site refused the request outright, with no challenge to solve (403 page, flat block page, geofencing). |
+
+Detection uses, strongest signal first: the CDP supervisor's `frame_tree`
+(iframe URLs/titles matching known CAPTCHA widget hosts -- only available
+when a CDP endpoint is attached, see `browser_dialog` above for the
+availability matrix), then page-title keywords, then visible
+accessibility-tree text. A bare ambiguous word like "blocked" with no
+CAPTCHA-specific corroboration classifies as `access_denied` at low
+confidence, not `captcha` -- the agent should not assume a solvable challenge
+just because a page looks unfriendly.
+
+When classification is `captcha`, the result appears as a `captcha_detection`
+object (`classification`, `confidence`, `provider_hint`, `signals`) alongside
+a `bot_detection_warning` string in the tool response.
+
+### Decision logic
+
+1. Stop normal navigation; the session itself is left untouched.
+2. Check `captcha_detection.classification`:
+   - `access_denied` → do not attempt recognition. Use the site's own
+     permitted access method, or stop and report to the user.
+   - `captcha` → continue to step 3, but only if this site and workflow are
+     authorized for automated verification. Hermes does not assume CAPTCHA
+     recognition authorizes bypassing a site's anti-bot controls.
+3. If `provider_hint` is `recaptcha` (currently the only recognized type --
+   see below), take a screenshot of the challenge (`browser_vision`) and call
+   `nopecha_recognition` with it.
+4. Act on the result through the normal browser tools (`browser_click`,
+   etc.) yourself -- `nopecha_recognition` never submits anything to the
+   website or injects a token. It only tells you what to click / what the
+   text says.
+5. If the challenge type isn't supported, or NopeCHA rejects the request, or
+   the site blocks automation regardless -- stop and report the issue. Do
+   not retry the same rejected request repeatedly, and do not attempt
+   alternative bypass techniques.
+
+### `nopecha_recognition`
+
+Recognizes a CAPTCHA using [NopeCHA](https://nopecha.com/)'s Recognition API
+-- returns what to click or what text is shown. Currently supports
+`challenge_type="recaptcha"` only (image-grid challenges). Provide the
+challenge image via `image_path` (a local screenshot/crop, e.g. from
+`browser_vision`) or `image_data` (already base64-encoded) -- exactly one of
+the two.
+
+**Auth:** set `NOPECHA_API_KEY` for paid mode, or leave it unset for free
+mode (no signup, IP-bucketed, ~100 credits per ~23h rolling window --
+*not* a fixed daily/midnight reset). In practice, free mode has proven
+unreliable for this integration's scripted-API calling pattern -- NopeCHA's
+free-tier risk model can flag even a residential IP as `ip_ineligible`
+("Banned IP") after a handful of calls, not just datacenter IPs. Treat a
+paid key as the realistic default for production use; free mode as a
+best-effort fallback. See [environment variables](/reference/environment-variables#tool-apis) for `NOPECHA_API_KEY` / `NOPECHA_ENABLED`.
+
+**Testing free-tier access without a key:** leave `NOPECHA_API_KEY` unset and
+call `nopecha_recognition`, or check quota directly with
+`tools.nopecha_client.get_status()` (`GET https://api.nopecha.com/v1/status`)
+-- a 200 with `credit`/`quota`/`duration` fields means this IP is currently
+eligible; a 403 with `{"error":12,"message":"Banned IP"}` means it isn't, and
+a paid key is required from this network.
+
+**Unsupported / not yet wired:** NopeCHA's other Recognition-API types
+(`funcaptcha`, `funcaptcha_match`, `awscaptcha`, `geetest`, `lemincaptcha`,
+`textcaptcha`) are specified in `tools/nopecha_client.py` but not yet
+exercised against a real job each, so they're not exposed on this tool.
+NopeCHA's separate Token API (solved tokens for direct site-widget
+injection) is intentionally never called by Hermes -- recognition only,
+never automatic token submission.
+
 ## Practical Examples
 
 ### Filling Out a Web Form

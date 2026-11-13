@@ -148,6 +148,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `CAMOFOX_ADOPT_EXISTING_TAB` | Set to `true` to reuse an existing Camofox tab before creating a new one |
 | `BROWSER_INACTIVITY_TIMEOUT` | Browser session inactivity timeout in seconds |
 | `AGENT_BROWSER_ARGS` | Extra Chromium launch flags (comma- or newline-separated). Hermes auto-injects `--no-sandbox,--disable-dev-shm-usage` when running as root or on AppArmor-restricted unprivileged user namespaces (Ubuntu 23.10+, DGX Spark, many container images); set this manually only to override or add other flags. |
+| `NOPECHA_API_KEY` | NopeCHA CAPTCHA Recognition API key ([nopecha.com](https://nopecha.com/)). Optional -- leave unset/empty for free mode (IP-bucketed, ~100 credits/23h, unreliable in practice for scripted use -- see `tools/nopecha_client.py`). |
+| `NOPECHA_ENABLED` | Set to `false` to disable the `nopecha_recognition` tool entirely (default: enabled, in free mode if no key is set) |
+| `NOPECHA_MODE` | Informational only (`free`/`paid`) -- actual mode is determined by whether `NOPECHA_API_KEY` is set, not by this variable |
 | `FAL_KEY` | Image generation ([fal.ai](https://fal.ai/)) |
 | `GROQ_API_KEY` | Groq Whisper STT API key ([groq.com](https://groq.com/)) |
 | `ELEVENLABS_API_KEY` | ElevenLabs premium TTS voices ([elevenlabs.io](https://elevenlabs.io/)) |

@@ -196,13 +196,32 @@
      "enabled": true
     }
    },
+   "extra_headers": {
+    "x-session-affinity": "wire-snapshot"
+   },
    "messages": [
     {
-     "content": "You are a test agent.",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "You are a test agent.",
+       "type": "text"
+      }
+     ],
      "role": "system"
     },
     {
-     "content": "list files",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "list files",
+       "type": "text"
+      }
+     ],
      "role": "user"
     },
     {
@@ -220,12 +239,28 @@
      ]
     },
     {
-     "content": "a.txt\nb.txt",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "a.txt\nb.txt",
+       "type": "text"
+      }
+     ],
      "role": "tool",
      "tool_call_id": "call_1"
     },
     {
-     "content": "thanks, now summarize",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "thanks, now summarize",
+       "type": "text"
+      }
+     ],
      "role": "user"
     }
    ],
@@ -259,13 +294,32 @@
      "enabled": false
     }
    },
+   "extra_headers": {
+    "x-session-affinity": "wire-snapshot"
+   },
    "messages": [
     {
-     "content": "You are a test agent.",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "You are a test agent.",
+       "type": "text"
+      }
+     ],
      "role": "system"
     },
     {
-     "content": "list files",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "list files",
+       "type": "text"
+      }
+     ],
      "role": "user"
     },
     {
@@ -283,12 +337,28 @@
      ]
     },
     {
-     "content": "a.txt\nb.txt",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "a.txt\nb.txt",
+       "type": "text"
+      }
+     ],
      "role": "tool",
      "tool_call_id": "call_1"
     },
     {
-     "content": "thanks, now summarize",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "thanks, now summarize",
+       "type": "text"
+      }
+     ],
      "role": "user"
     }
    ],
@@ -322,13 +392,32 @@
      "enabled": true
     }
    },
+   "extra_headers": {
+    "x-session-affinity": "wire-snapshot"
+   },
    "messages": [
     {
-     "content": "You are a test agent.",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "You are a test agent.",
+       "type": "text"
+      }
+     ],
      "role": "system"
     },
     {
-     "content": "list files",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "list files",
+       "type": "text"
+      }
+     ],
      "role": "user"
     },
     {
@@ -346,12 +435,28 @@
      ]
     },
     {
-     "content": "a.txt\nb.txt",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "a.txt\nb.txt",
+       "type": "text"
+      }
+     ],
      "role": "tool",
      "tool_call_id": "call_1"
     },
     {
-     "content": "thanks, now summarize",
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "thanks, now summarize",
+       "type": "text"
+      }
+     ],
      "role": "user"
     }
    ],
@@ -2073,6 +2178,296 @@
     }
    ],
    "model": "gpt-5.5",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  }
+ },
+ "base-url:ai-gateway": {
+  "api_mode": "chat_completions",
+  "base_url": "https://ai-gateway.vercel.sh/v1",
+  "high": {
+   "extra_body": {
+    "reasoning": {
+     "effort": "high",
+     "enabled": true
+    }
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "You are a test agent.",
+       "type": "text"
+      }
+     ],
+     "role": "system"
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "list files",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "a.txt\nb.txt",
+       "type": "text"
+      }
+     ],
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "thanks, now summarize",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "anthropic/claude-opus-5.5",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "model": "anthropic/claude-opus-5.5",
+  "off": {
+   "extra_body": {
+    "reasoning": {
+     "effort": "none",
+     "enabled": false
+    }
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "You are a test agent.",
+       "type": "text"
+      }
+     ],
+     "role": "system"
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "list files",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "a.txt\nb.txt",
+       "type": "text"
+      }
+     ],
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "thanks, now summarize",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "anthropic/claude-opus-5.5",
+   "timeout": 1800.0,
+   "tools": [
+    {
+     "function": {
+      "description": "Run a shell command.",
+      "name": "terminal",
+      "parameters": {
+       "properties": {
+        "command": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command"
+       ],
+       "type": "object"
+      }
+     },
+     "type": "function"
+    }
+   ]
+  },
+  "unset": {
+   "extra_body": {
+    "reasoning": {
+     "effort": "medium",
+     "enabled": true
+    }
+   },
+   "messages": [
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "You are a test agent.",
+       "type": "text"
+      }
+     ],
+     "role": "system"
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "list files",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    },
+    {
+     "content": "",
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "function": {
+        "arguments": "{\"command\": \"ls\"}",
+        "name": "terminal"
+       },
+       "id": "call_1",
+       "type": "function"
+      }
+     ]
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "a.txt\nb.txt",
+       "type": "text"
+      }
+     ],
+     "role": "tool",
+     "tool_call_id": "call_1"
+    },
+    {
+     "content": [
+      {
+       "cache_control": {
+        "type": "ephemeral"
+       },
+       "text": "thanks, now summarize",
+       "type": "text"
+      }
+     ],
+     "role": "user"
+    }
+   ],
+   "model": "anthropic/claude-opus-5.5",
    "timeout": 1800.0,
    "tools": [
     {

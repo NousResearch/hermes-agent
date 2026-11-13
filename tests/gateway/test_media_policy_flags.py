@@ -119,11 +119,14 @@ def test_value_an_older_config_set_stored_keeps_its_meaning(homes, stored, expec
     assert media_policy.media_delivery_trust_recent() is expected
 
 
-def test_unset_config_keeps_the_knob_default(homes):
+@pytest.mark.parametrize("cfg", [{}, {"strict": None, "trust_recent_files": None}])
+def test_unset_config_keeps_the_knob_default(homes, cfg):
+    """Unset or an explicit null (``hermes config set gateway.strict null``) keeps the knob default;
+    ``{}`` alone never reaches the None branch, because the defaults merge fills it in."""
     _, routed = homes
     from gateway import media_policy
 
-    _write_gateway(routed, {})
+    _write_gateway(routed, cfg)
     assert _under(routed, media_policy.media_delivery_strict) is False
     assert _under(routed, media_policy.media_delivery_trust_recent) is True
 

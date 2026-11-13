@@ -12,7 +12,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, ClassVar, Dict, Optional, Any, Tuple, List
+from typing import Awaitable, Callable, ClassVar, Collection, Dict, Optional, Any, Tuple, List
 
 aiohttp: Any = None
 try:
@@ -68,11 +68,11 @@ try:  # sibling modules; support both package and flat plugin-dir import
     from .adapter_socket_lifecycle import SlackSocketLifecycleMixin
     from .adapter_image_batch import collect_image_uploads
     from .adapter_forwarded import (
-        append_forwards, files_with_forwarded, forward_section, is_forward, is_shared_message,
+        append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
         slack_file_marker as _slack_file_marker)
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from adapter_forwarded import (  # type: ignore
-        append_forwards, files_with_forwarded, forward_section, is_forward, is_shared_message,
+        append_forwards, files_with_forwarded, is_forward, own_bot_ids, shared_message_sections,
         slack_file_marker as _slack_file_marker)
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
     from adapter_slash_lane import SlashHandoffLanes  # type: ignore
@@ -622,15 +622,15 @@ def _render_slack_table_block(
     return text
 
 
-def _extract_text_from_slack_attachments(attachments: list, bot_uid: str = "") -> str:
+def _extract_text_from_slack_attachments(attachments: list, own_ids: Collection[str] = (),
+                                         seen_text: str = "") -> str:
     """Extract readable text from legacy ``attachments`` (alert/CI bots post empty ``text``).
-    Prefers structured fields; uses ``fallback`` only when nothing else exists."""
+    Prefers structured fields; uses ``fallback`` only when nothing else exists. Forwards and
+    linked messages render first, under the same budget and dedupe as the live inbound path."""
     if not attachments:
         return ""
-    lines: list[str] = []
+    lines = shared_message_sections(attachments, _extract_text_from_slack_blocks, own_ids, seen_text)
     for att in attachments:
-        if is_shared_message(att, bot_uid):  # forwards/linked messages ARE content
-            lines.append(forward_section(att, _extract_text_from_slack_blocks))
         # Other permalink unfurls echo our own message (inbound path skips them too).
         if not isinstance(att, dict) or att.get("is_msg_unfurl") or is_forward(att):
             continue
@@ -4674,9 +4674,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             text = self._append_block_text(
                 text, blocks, self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
         # Forwards (``is_share``) carry the content the user is pointing at; unfurls are previews.
-        text = append_forwards(
-            text, event.get("attachments"), _extract_text_from_slack_blocks,
-            self._team_bot_user_ids.get(dedup_team_id, self._bot_user_id) or "")
+        text = append_forwards(text, event.get("attachments"), _extract_text_from_slack_blocks,
+                               own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
         text = self._append_link_unfurls(text, event.get("attachments") or [])
         ts = event.get("ts", "")
         outer_team_id = dedup_team_id
@@ -5850,7 +5849,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
     # ----- Thread context fetching -----
 
     @staticmethod
-    def _render_message_text(msg: dict, bot_uid: str = "") -> str:
+    def _render_message_text(msg: dict, bot_uid: str = "", own_ids: Collection[str] = ()) -> str:
         """Display text for a message: ``text`` minus bot mentions plus readable block/attachment
         text, URLs and file markers (no JSON dump, unlike ``_serialize_slack_blocks_for_agent``)."""
         msg_text = (msg.get("text") or "").strip()
@@ -5879,7 +5878,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # Legacy ``attachments``: alerting/CI bots often post empty ``text`` with
         # the real content in attachment fields or nested blocks.
         attachments = msg.get("attachments") or []
-        attachments_text = _extract_text_from_slack_attachments(attachments, bot_uid).strip()
+        attachments_text = _extract_text_from_slack_attachments(
+            attachments, own_ids or ({bot_uid} - {""}), msg_text).strip()
         if attachments_text and _unseen(attachments_text, msg_text):
             extras.append(attachments_text)
         if blocks:
@@ -6013,7 +6013,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             skip_for_delta = bool(after_ts and msg_ts and msg_ts <= after_ts)
             if skip_for_delta and not is_parent:
                 continue
-            msg_text = self._render_message_text(msg, bot_uid=bot_uid)
+            msg_text = self._render_message_text(
+                msg, bot_uid=bot_uid, own_ids=own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
             if not msg_text:
                 continue
             if bot_uid:
@@ -6113,7 +6114,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             if parent.get("ts", "") != thread_ts:
                 return ""
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-            text = self._render_message_text(parent, bot_uid=bot_uid or "")
+            text = self._render_message_text(
+                parent, bot_uid=bot_uid or "", own_ids=own_bot_ids(self._bot_user_id, self._team_bot_user_ids))
             if strip_bot_mention and bot_uid:
                 text = text.replace(f"<@{bot_uid}>", "").strip()
             return text

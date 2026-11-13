@@ -354,3 +354,59 @@ async def test_thread_root_forwarded_image_is_recovered(adapter):
     urls, _types = await adapter._collect_thread_root_images(
         channel_id="C_CHAN", thread_ts="1793899999.000001", team_id="")
     assert urls == ["/tmp/hermes-cached.png"]
+
+
+# -- review follow-ups: shared budget, block order, quoted source, echo across workspaces --------
+
+
+def test_history_shares_one_budget_across_forwards(adapter):
+    """Thread history gets the same single body budget as the live path, not one per forward."""
+    long = [_share(author_name=n, ts=f"179383002{i}.0", from_url=f"{PERMALINK}{i}", text="y" * 6000,
+                   message_blocks=None) for i, n in enumerate(("Ana", "Ben", "Cy"))]
+    rendered = adapter._render_message_text({"text": "", "attachments": long}, bot_uid="U_BOT")
+    assert rendered.count("Forwarded Slack message from") == 3
+    assert len(rendered) < 10_000
+
+
+@pytest.mark.asyncio
+async def test_forwarded_app_blocks_keep_their_order(adapter):
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": "Quarterly numbers"}},
+              _rich(_section(_text("rich body line"))),
+              {"type": "section", "text": {"type": "mrkdwn", "text": "closing explanation"}}]
+    att = _share(text="", fallback="", message_blocks=[{"message": {"blocks": blocks}}])
+    msg = await _delivered(adapter, _event(attachments=[att]))
+    assert msg.text.index("Quarterly numbers") < msg.text.index("rich body line") < msg.text.index(
+        "closing explanation")
+
+
+@pytest.mark.asyncio
+async def test_quoted_forward_keeps_its_source_and_files(adapter):
+    quoted = "the deploy failed twice on the staging box"
+    att = _share(text=quoted, message_blocks=None, files=[{"id": "F9", "name": "log.txt", "mimetype": "text/plain"}])
+    with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock, return_value=b"x"):
+        msg = await _delivered(adapter, _event(text=f"<@U_BOT> {quoted}", attachments=[att]))
+    assert msg.text.count(quoted) == 1
+    assert "Forwarded Slack message from Scout" in msg.text and PERMALINK in msg.text
+    assert "log.txt" in msg.text
+
+
+@pytest.mark.asyncio
+async def test_own_message_from_another_workspace_is_still_an_echo(adapter):
+    """Multi-workspace: each team has its own bot user; a permalink to our message in team B
+    pasted into team A must not come back as someone else's linked message."""
+    adapter._team_bot_user_ids = {"T_TEAM": "U_BOT", "T_OTHER": "U_BOT_B"}
+    own_b = {"is_msg_unfurl": True, "author_id": "U_BOT_B", "text": "our reply in the other team",
+             "from_url": PERMALINK}
+    msg = await _delivered(adapter, _event(text=f"<@U_BOT> see <{PERMALINK}>", attachments=[own_b]))
+    assert "our reply in the other team" not in msg.text
+
+
+@pytest.mark.asyncio
+async def test_same_message_as_forward_and_unfurl_renders_once(adapter):
+    unfurl = {"is_msg_unfurl": True, "author_id": "U0SCOUT", "author_name": "Scout", "text": CI_BODY,
+              "from_url": PERMALINK + "?thread_ts=1793830020.123456&cid=G0PRIV",
+              "channel_id": "G0PRIV", "ts": "1793830020.123456"}
+    msg = await _delivered(adapter, _event(text=f"<@U_BOT> <{PERMALINK}>", attachments=[unfurl, _share()]))
+    assert msg.text.count(CI_BODY) == 1
+    assert "Forwarded Slack message from Scout" in msg.text
+    assert "Linked Slack message" not in msg.text

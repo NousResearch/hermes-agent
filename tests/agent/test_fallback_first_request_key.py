@@ -37,8 +37,9 @@ def _add_pool_key(provider, entry_id, key, base_url, priority):
         source=SOURCE_MANUAL, access_token=key, base_url=base_url))
 
 
-def _setup(provider, env_var, url, strategy=None):
-    """``.env`` key spent and benched, a higher-priority key for another endpoint, a healthy key for ``url``."""
+def _setup(provider, env_var, url, strategy=None, bench_model=None):
+    """``.env`` key spent and benched (for ``bench_model`` only, when given), a higher-priority key for
+    another endpoint, a healthy key for ``url``."""
     home = Path(os.environ["HERMES_HOME"])
     (home / ".env").write_text(f"{env_var}={_ENV_KEY}\n")
     if strategy:
@@ -46,21 +47,23 @@ def _setup(provider, env_var, url, strategy=None):
     _add_pool_key(provider, "other-endpoint", _OTHER_KEY, "https://relay.example/v1", priority=1)
     _add_pool_key(provider, "healthy", _POOL_KEY, url, priority=10)
     load_pool(provider).mark_exhausted_and_rotate(
-        status_code=429, api_key_hint=_ENV_KEY, failure_reason="insufficient_quota")
+        status_code=429, api_key_hint=_ENV_KEY, failure_reason="usage_window" if bench_model else "insufficient_quota",
+        **({"model": bench_model} if bench_model else {}))
 
 
-@pytest.mark.parametrize("provider,env_var,pool_url,entry_url,sent_url", [
-    (_TOKEN_PLAN, "ALIBABA_TOKEN_PLAN_API_KEY", _TOKEN_PLAN_URL, None, _TOKEN_PLAN_URL),
-    # MiniMax rows keep the /anthropic URL; a saved entry names the /v1 sibling the resolver calls.
+@pytest.mark.parametrize("provider,env_var,pool_url,entry_url,sent_url,model,bench_model", [
+    (_TOKEN_PLAN, "ALIBABA_TOKEN_PLAN_API_KEY", _TOKEN_PLAN_URL, None, _TOKEN_PLAN_URL, "some-model", None),
+    # MiniMax rows keep the /anthropic URL; a saved entry names the /v1 sibling the resolver calls. The entry's
+    # vendor-prefixed model is sent, and benched, as the bare id.
     ("minimax", "MINIMAX_API_KEY", "https://api.minimax.io/anthropic", "https://api.minimax.io/v1",
-     "https://api.minimax.io/v1"),
+     "https://api.minimax.io/v1", "minimax/MiniMax-M2.7", "MiniMax-M2.7"),
 ])
 def test_the_first_fallback_request_uses_the_healthy_key_for_its_endpoint(provider, env_var, pool_url, entry_url,
-                                                                          sent_url):
+                                                                          sent_url, model, bench_model):
     from agent.chat_completion_helpers import try_activate_fallback
 
-    _setup(provider, env_var, pool_url)
-    agent = _agent({"provider": provider, "model": "some-model", **({"base_url": entry_url} if entry_url else {})})
+    _setup(provider, env_var, pool_url, bench_model=bench_model)
+    agent = _agent({"provider": provider, "model": model, **({"base_url": entry_url} if entry_url else {})})
 
     assert try_activate_fallback(agent) is True
 

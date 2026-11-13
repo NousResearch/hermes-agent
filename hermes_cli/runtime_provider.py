@@ -750,7 +750,7 @@ class PoolChoice:
         the caller named it (an alias keeps its own pool, which recovery after a 429 matches against).
         Providers whose endpoint follows from the key, or whose profile resolves its own secret, keep
         the resolver's key: a pool row's key would go to the endpoint derived from another key."""
-        from agent.auxiliary_client import _to_openai_base_url
+        from agent.auxiliary_client import _normalize_resolved_model, _to_openai_base_url
         from hermes_cli.auth import _API_KEY_BASE_URL_RESOLVERS
         from providers import get_provider_profile
         profile = get_provider_profile(provider)
@@ -761,7 +761,7 @@ class PoolChoice:
         except Exception as exc:  # health: allow BLE001 -- an unreadable pool leaves the resolver's own key
             logger.warning("Could not load the %s credential pool: %s", pool_name, exc)
             return None
-        self.model = model or self.model
+        self.model = _normalize_resolved_model(model or self.model, provider)  # the model recovery benches under
         self.picked = choose_pool_key(pool, provider, model=self.model, endpoint_url=endpoint_url,
                                       as_called=_to_openai_base_url, mode="choose")
         self._endpoint_url = endpoint_url

@@ -24,7 +24,7 @@ name: sluice-search
 title: Sluice
 repo: https://github.com/abhigyan-chatterjee/sluice
 sha: 2737453c61497a22b8bfd533a726ddf3c79d9a30
-description: Tiered free-first web search and extraction router and backend manager for Hermes
+description: "Tiered free-first web search and extraction router and backend manager for Hermes Disclosure — routes web search and page extraction through third-party engines the user enables (keyless public endpoints such as DuckDuckGo via ddgs and the keyless modes of Exa, Parallel, Firecrawl, Tavily and Keenable; paid APIs with the user's own keys; an optional local SearXNG), so queries and fetched URLs go to those services; fetches pages itself with httpx and, when installed, a headless Playwright Chromium and a local Camofox server, refusing redirects and later navigations to private or metadata addresses on the httpx and Chromium paths (Camofox's own redirects are not checked); `hermes sluice-search install` runs npm/podman/docker/playwright installs (Camofox pinned by digest/version) with a minimal environment."
 maintainer: Abhigyan Chatterjee
 version: "1.0.0"
 tier: community

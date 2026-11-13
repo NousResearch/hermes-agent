@@ -1257,8 +1257,8 @@ def _fast_mode_route_supported(
     elif is_grok_46_family(str(model_id or "")):
         allowed = {"xai": "api.x.ai"}
     else:
-        from hermes_cli.providers import is_official_openai_host
-        if is_official_openai_host(str(base_url or "")):
+        from hermes_cli.models_fast_regions import openai_fast_region_allows
+        if openai_fast_region_allows(base_url, model_id):
             base_url = "https://api.openai.com"  # Eligibility only; the runtime URL stays regional.
         allowed = {"openai": "api.openai.com", "openai-api": "api.openai.com", "openai-codex": "chatgpt.com"}
     if provider and normalize_provider(provider) not in allowed:

@@ -1,14 +1,14 @@
 name: claim-receipts
 repo: https://github.com/gwelby/claim-receipts
-sha: 46421a8b76255f15b54f1f71bb65d4e2af64e383
+sha: ebd51c4f5857467c0f94adeda5d81e477e4d17db
 title: "Claim Receipts: what the agent said vs what it did"
-description: "Records the file changes and commands a session's hooks observe, then gives each prose claim in the session one of four verdicts against that record: backed, unbacked, unverifiable, contradicted. Compares a claim with a capture; does not prove it true. Disclosure — reads Hermes's own session database (state.db in the active profile) read-only at session end; writes an append-only ledger and per-session receipts under the plugin data dir, including file paths, terminal command strings (stored as typed, so inline secrets in a command are kept) and excerpts of the assistant's claims; runs no shell commands; no network."
+description: "Records the file changes and commands a session's hooks observe, then gives each prose claim in the session one of four verdicts against that record: backed, unbacked, unverifiable, contradicted. Compares a claim with a capture; does not prove it true. Disclosure — reads Hermes's own session database (state.db in the active profile) read-only at session end; writes an append-only ledger and per-session receipts under the plugin data dir, including file paths, terminal command strings (credential values redacted before storage since 0.1.1, with a SHA-256 digest of the exact command kept for identity; ledgers written by earlier versions are not rewritten, and an unlisted secret shape is still stored as typed) and excerpts of the assistant's claims; runs no shell commands; no network."
 maintainer: gwelby
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/gwelby/claim-receipts
-version: "0.1.0"
+version: "0.1.1"
 platforms: [linux]
 capabilities:
   provides_tools: []

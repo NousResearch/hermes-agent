@@ -54,6 +54,7 @@ vi.mock('@/lib/remark-soft-breaks', async importActual => {
   }
 })
 
+import { I18nProvider } from '@/i18n'
 import type * as MarkdownPreprocess from '@/lib/markdown-preprocess'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import type * as RemarkSoftBreaks from '@/lib/remark-soft-breaks'
@@ -188,6 +189,29 @@ describe('MarkdownTextContent streaming render path', () => {
 
     expect(container.innerHTML).toBe(await freshHtml(CORPUS, false))
     expect(container.textContent).not.toContain('private chain of thought')
+  })
+
+  it('recovers a listing that fell back while streaming without reparsing settled markdown', async () => {
+    const text = 'Before the listing.\n\n```listing\n{"address":"123 Main St","url":"https://example.com/listing"}\n```'
+
+    const content = (running: boolean) => (
+      <I18nProvider><MarkdownTextContent isRunning={running} text={text} /></I18nProvider>
+    )
+
+    // Warm the lazy renderer so the running mount actually reaches its fallback.
+    const warm = render(content(false))
+    await waitFor(() => expect(warm.container.querySelector('[data-slot="aui_listing-card"]')).not.toBeNull())
+    warm.unmount()
+
+    const { container, rerender } = render(content(true))
+    await settled(container, 'example.com/listing')
+    expect(container.querySelector('[data-slot="aui_listing-card"]')).toBeNull()
+    blockParses.count = 0
+
+    rerender(content(false))
+    await waitFor(() => expect(container.querySelector('[data-slot="aui_listing-card"]')).not.toBeNull())
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com/listing')
+    expect(blockParses.count).toBe(0)
   })
 
   it('ends a stream without re-parsing settled blocks, and highlights the code that streamed plain', async () => {

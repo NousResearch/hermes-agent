@@ -146,3 +146,14 @@ def test_a_turn_whose_primary_login_lapsed_offers_the_primary_sign_in():
     surface = _complete(*_authority_turn(Platform.LOCAL, _FALLBACK_SIGNED_OUT, identity=_DIRECTSDK))['error_surface']
     assert (surface['layer'], surface['auth_kind'], surface['provider']) == ('auth', 'oauth', 'nous')
     assert surface['provider_label'] == 'Nous Portal'
+
+
+def test_a_messaging_turn_whose_primary_login_lapsed_also_names_the_primary():
+    surface = _complete(*_authority_turn(Platform.TELEGRAM, _FALLBACK_SIGNED_OUT, identity=_DIRECTSDK))['error_surface']
+    assert (surface['provider'], surface['auth_kind']) == ('nous', 'oauth')
+
+
+def test_a_turn_without_a_lapsed_primary_keeps_its_own_provider_on_the_card():
+    failure = {k: v for k, v in _FALLBACK_SIGNED_OUT.items() if k != 'primary_auth_failure'}
+    surface = _complete(*_authority_turn(Platform.LOCAL, failure, identity=_DIRECTSDK))['error_surface']
+    assert surface['provider'] == _DIRECTSDK['provider']

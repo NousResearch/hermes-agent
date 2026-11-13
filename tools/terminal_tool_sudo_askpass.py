@@ -48,7 +48,7 @@ _PROLOGUE_TEMPLATE = (
     "  \\builtin printf '#!/bin/sh\\nexec /bin/cat -- \"%s\" 2>/dev/null\\n' \"$__hermes_sudo_dir/p\""
     ' > "$__hermes_sudo_dir/a" && \\command chmod 700 "$__hermes_sudo_dir/a"\n'
     '( ( \\exec 8<"$__hermes_sudo_dir/l" 19>&- </dev/null >/dev/null 2>&1\n'
-    "    \\builtin trap '' HUP PIPE\n"
+    "    \\builtin trap '' HUP PIPE; \\builtin trap '\\builtin :' TERM\n"
     "    __hermes_sudo_n=@COUNT@\n"
     "    { __hermes_sudo_i=0\n"
     '  while \\builtin test "$__hermes_sudo_i" -lt "$__hermes_sudo_n"; do\n'

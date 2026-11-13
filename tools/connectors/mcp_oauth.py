@@ -56,14 +56,15 @@ def probe_with_rollback(
         tools = _probe_single_server(
             server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
         if not _oauth_tokens_present(server_name):
-            details["initialized"] = False
             no_token = RuntimeError(
                 "The server responded, but no OAuth token was obtained — "
                 "this provider may require a manually-registered OAuth client.")
             no_token.failure_class = "auth_required"  # type: ignore[attr-defined]
             raise no_token
     except Exception as exc:
-        if not details.get("initialized"):
+        # ``initialize`` answering is an authorization only when a token landed: a server that
+        # takes a static header, or no credential at all, answers it without one.
+        if not details.get("initialized") or not _oauth_tokens_present(server_name):
             undo()
             raise
         tools, discovery_error = [], exception_message(exc)
@@ -319,6 +320,8 @@ def start(
         raise RuntimeError(f"'{server_name}' is not a configured MCP server")
     if not cfg.get("url"):
         raise RuntimeError(f"'{server_name}' is a stdio server: it takes env keys, not OAuth")
+    if cfg.get("headers") and cfg.get("auth") != "oauth":
+        raise RuntimeError(f"'{server_name}' uses header/API-key auth, not OAuth")
     cfg["auth"] = "oauth"
     hermes_home = str(get_hermes_home().expanduser().resolve(strict=False))
     flow = DashboardOAuthFlow(

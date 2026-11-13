@@ -182,6 +182,60 @@ async def test_a_bare_refusal_does_not_warn(tmp_path, caplog):
         db.close()
 
 
+@pytest.mark.asyncio
+async def test_the_canonical_gate_names_the_refused_fields_on_the_wire(tmp_path):
+    """``session.create`` with a key outside the closed contract set refuses in the dispatcher
+    before any handler: the frame carries the plural ``fields`` key paths (#145286)."""
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        epoch = begin_runtime_epoch(db, instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
+                                     db=db, epoch=epoch)
+
+        class Connection(AuthorityConnection):
+            def handlers(self):
+                async def probe(ref, params):
+                    raise AssertionError('the canonical gate must refuse before any handler')
+                return {'session.create': probe}
+
+        connection = Connection(authority, object(), {'user_id': 'human'})
+        reply = await connection.dispatch({'id': 9, 'method': 'session.create', 'params': {'bogus': 1}})
+        assert reply['error']['message'] == 'invalid_params'
+        assert reply['error']['data'] == {'reason': 'invalid_params', 'fields': ['bogus']}
+    finally:
+        db.close()
+
+
+def test_refusal_text_renders_the_refused_fields_list():
+    """The canonical gate names its refusals as the plural ``fields`` key-path list; the copy must
+    render it, not drop it for the bare code (#145286)."""
+    from hermes_cli.cli_chat_error_copy import refusal_text
+    from hermes_cli.gateway_client import GatewayRPCError
+
+    exc = GatewayRPCError('invalid_params', 4001, {
+        'reason': 'invalid_params', 'fields': ['bogus', 'toolsets.0']})
+    assert refusal_text(exc) == 'invalid_params (bogus, toolsets.0)'
+
+
+def test_the_copy_names_the_fields_the_canonical_gate_refused():
+    """The canonical gate's plural ``fields`` reaches ``GatewayRPCError.data``, but the panel read
+    only the singular ``field``: a session.create refusal rendered as the bare code wrapped in the
+    provider-connection copy (#145286)."""
+    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+    from hermes_cli.gateway_client import rpc_error
+
+    exc = rpc_error({'code': 4001, 'message': 'invalid_params',
+                     'data': {'reason': 'invalid_params', 'fields': ['bogus']}})
+    assert exc.data['fields'] == ['bogus']
+    message = agent_init_failure_message(exc)
+    assert 'invalid_params' in message and 'bogus' in message
+
+
 def test_the_cli_copy_names_the_field_a_user_reads():
     """The panel line said ``invalid_params`` alone; it now carries the check (#138748)."""
     from hermes_cli.cli_chat_error_copy import agent_init_failure_message
@@ -202,6 +256,76 @@ def test_a_refusal_without_a_named_field_reads_exactly_as_before():
     message = agent_init_failure_message(GatewayRPCError('storage_unavailable', 5001,
                                                          {'reason': 'storage_unavailable'}))
     assert message.count('storage_unavailable') == 1 and '(' not in message
+
+
+@pytest.mark.asyncio
+async def test_a_canonical_refusal_on_the_panel_is_not_a_model_connection_failure(tmp_path):
+    """The path a user actually reads — dispatch → rpc_error → ``agent_init_failure_message``: the
+    copy names every refused key path and no longer tells the user to repair a model connection
+    that was never dialed (#145286's expected behaviour)."""
+    from agent import i18n
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+    from hermes_cli.gateway_client import rpc_error
+
+    i18n.reset_language_cache()
+    db = SessionDB(db_path=tmp_path / 'state.db')
+    try:
+        epoch = begin_runtime_epoch(db, instance_id='test')
+        authority = SessionAuthority(SimpleNamespace(), profile_id='test', instance_id='test',
+                                     db=db, epoch=epoch)
+
+        class Connection(AuthorityConnection):
+            def handlers(self):
+                async def probe(ref, params):
+                    raise AssertionError('the canonical gate must refuse before any handler')
+                return {'session.create': probe}
+
+        connection = Connection(authority, object(), {'user_id': 'human'})
+        reply = await connection.dispatch({'id': 10, 'method': 'session.create',
+                                           'params': {'bogus': 1, 'another_bad': 2}})
+        message = agent_init_failure_message(rpc_error(reply['error']))
+    finally:
+        db.close()
+        i18n.reset_language_cache()
+    assert 'invalid_params' in message and 'bogus' in message and 'another_bad' in message, message
+    lowered = message.lower()
+    assert 'model connection' not in lowered and 'hermes doctor' not in lowered, message
+    assert '/model' not in message, message
+
+
+def test_a_handler_owned_refusal_does_not_read_as_a_model_connection_failure():
+    """A handler-owned singular refusal is still a refusal: the panel names the check without the
+    provider-connection wrapper (#145286)."""
+    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+    from hermes_cli.gateway_client import GatewayRPCError
+
+    exc = GatewayRPCError('invalid_params', 4001, {
+        'reason': 'invalid_params', 'field': 'toolsets',
+        'detail': "unknown or invalid toolset name: 'gone_plugin'"})
+    message = agent_init_failure_message(exc)
+    assert 'toolsets' in message and 'gone_plugin' in message, message
+    lowered = message.lower()
+    assert 'model connection' not in lowered and 'hermes doctor' not in lowered, message
+
+
+def test_an_unreachable_gateway_keeps_the_model_connection_copy(monkeypatch):
+    """The refusal copy is only for refusals: a gateway that cannot be reached at all keeps the
+    provider-connection copy and its repair advice (#145286)."""
+    from agent import i18n
+    from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+    from hermes_cli.gateway_client import GatewayUnavailableError
+
+    monkeypatch.setenv('HERMES_LANGUAGE', 'en')
+    i18n.reset_language_cache()
+    try:
+        message = agent_init_failure_message(GatewayUnavailableError('no ready owner', 'draining'))
+    finally:
+        i18n.reset_language_cache()
+    assert 'model connection' in message.lower() and 'no ready owner' in message, message
 
 
 def test_a_bypass_launch_without_a_model_names_the_model():

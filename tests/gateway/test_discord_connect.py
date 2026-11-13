@@ -979,38 +979,3 @@ async def test_opus_probe_runs_off_the_loop_once_per_process(monkeypatch):
     assert await adapter.connect(is_reconnect=True) is True
     await adapter.disconnect()
     assert loop_free == [True]
-
-
-@pytest.mark.asyncio
-async def test_a_fresh_connect_resolves_a_configured_username_again(tmp_path, monkeypatch):
-    """A username resolved on one connection must be resolved again on the next connect(): the account
-    that held it may have renamed, and the name's new holder is the one the operator allowlisted."""
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("DISCORD_ALLOWED_USERS", raising=False)
-    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
-    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
-    monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(
-        message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False))
-    holder = {"alice": 111}
-
-    class GuildBot(FakeBot):
-        @property
-        def guilds(self):
-            return [SimpleNamespace(name="g", members=[_member(holder["alice"], "alice")], member_count=1)]
-
-    monkeypatch.setattr(discord_platform.commands, "Bot", lambda **kw: GuildBot(intents=kw["intents"]))
-    monkeypatch.setattr(DiscordAdapter, "_run_post_connect_initialization", AsyncMock())
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={"allow_from": ["alice"]}))
-    token = set_multiplex_context(True)
-    try:
-        assert await adapter.connect() is True
-        assert adapter._is_allowed_user("111") is True
-        holder["alice"] = 222  # 111 renamed; another account now holds "alice"
-        assert await adapter.connect() is True
-        verdicts = (adapter._is_allowed_user("222"), adapter._is_allowed_user("111"))
-    finally:
-        reset_multiplex_context(token)
-        await adapter.disconnect()
-    assert verdicts == (True, False)

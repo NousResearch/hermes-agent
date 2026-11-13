@@ -1,0 +1,57 @@
+"""A configured Discord username keeps exactly its current holder's access across reconnects.
+
+connect() resolves ``allow_from`` usernames to IDs on its first ``on_ready``; a fresh connection must
+resolve them again (the account may have renamed) (#154562).
+"""
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from gateway.config import PlatformConfig
+from tests.gateway.test_discord_connect import FakeBot, _member, discord_platform
+from plugins.platforms.discord.adapter import DiscordAdapter
+
+
+@pytest.fixture
+def connectable(tmp_path, monkeypatch):
+    """A real connect() against a fake bot whose guild has one member holding ``holder["alice"]``."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for var in ("DISCORD_ALLOWED_USERS", "HERMES_BRIDGED_DISCORD_ALLOWED_USERS"):
+        monkeypatch.setenv(var, "")  # setenv first so teardown also removes what the loader bridges in
+        monkeypatch.delenv(var)
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status_scoped_locks.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: SimpleNamespace(
+        message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False))
+    holder = {"alice": 111}
+
+    class GuildBot(FakeBot):
+        @property
+        def guilds(self):
+            return [SimpleNamespace(name="g", members=[_member(holder["alice"], "alice")], member_count=1)]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", lambda **kw: GuildBot(intents=kw["intents"]))
+    monkeypatch.setattr(DiscordAdapter, "_run_post_connect_initialization", AsyncMock())
+    return holder
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_connect_resolves_a_configured_username_again(connectable):
+    """A username resolved on one connection must be resolved again on the next connect(): the account
+    that held it may have renamed, and the name's new holder is the one the operator allowlisted."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra={"allow_from": ["alice"]}))
+    token = set_multiplex_context(True)
+    try:
+        assert await adapter.connect() is True
+        assert adapter._is_allowed_user("111") is True
+        connectable["alice"] = 222  # 111 renamed; another account now holds "alice"
+        assert await adapter.connect() is True
+        verdicts = (adapter._is_allowed_user("222"), adapter._is_allowed_user("111"))
+    finally:
+        reset_multiplex_context(token)
+        await adapter.disconnect()
+    assert verdicts == (True, False)
+

@@ -1010,6 +1010,13 @@ def _schedule_ws_orphan_reap(
                 current.pop("_client_gone_interrupt_polls", None)
                 _pending_ws_reaps.pop(sid, None)
                 return
+            if current.get("room_plumbing"):
+                # A hosted-room member session outlives its viewer: the room driver owns its
+                # lifecycle (created with close_on_disconnect=False). Reaping it here ends the
+                # canonical "Group: <room>" session, and the next member turn's create then dies
+                # on the UNIQUE title index — the room goes silent for good.
+                _pending_ws_reaps.pop(sid, None)
+                return
             if _session_has_active_delegations(sid, current) or (
                     not current.get("running")
                     and not current.get("_client_gone_interrupt_requested")

@@ -138,3 +138,10 @@ def test_the_release_tag_notice_names_the_lock_too(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert calls[0][0] == "rev-parse"
     assert f"Could not fetch the v0.23.1 tag (fatal: Unable to create '{LOCK_PATH}': File exists.)" in out
+
+
+def test_remote_stderr_paragraph_cannot_hide_the_local_lock_refusal():
+    """A remote banner can precede git's own refusal and subsequent advice."""
+    stderr = "remote: Server-side notice before fetch failure\n\n" + STALE_LOCK_STDERR
+    detail = _git_failure_line()(_failed_git(stderr))
+    assert detail == f"fatal: Unable to create '{LOCK_PATH}': File exists."

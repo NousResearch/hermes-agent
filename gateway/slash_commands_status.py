@@ -368,16 +368,14 @@ class GatewayStatusCommandsMixin:
         incl. provider-only ones, then the profile's config) inside the owning profile's scope, which
         slash dispatch does not bind on a multiplexed runner. ``("", "")`` when it cannot resolve: the
         recorded route is then left as is rather than replaced by a guess."""
-        notice = getattr(self, "_pre_agent_fallback_notice", None)  # the turn's one-shot slot, not ours
         try:
             with self._profile_scope_for_source(source):
+                # record_notice=False: the runner's fallback notice is another turn's one-shot slot.
                 model, runtime = self._resolve_session_agent_runtime(
-                    source=source, session_key=session_key, fallback=False)
+                    source=source, session_key=session_key, fallback=False, record_notice=False)
         except Exception:  # health: allow BLE001 -- /status is fail-open; the turn reports the error
             logger.debug("/status could not resolve the next turn's route", exc_info=True)
             return "", ""
-        finally:
-            self._pre_agent_fallback_notice = notice
         # The agent records its runtime provider as the usage row's billing_provider.
         return _clean_str(model), _clean_str(runtime.get("provider"))
 

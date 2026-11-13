@@ -482,7 +482,21 @@ async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_fi
         from agent.secret_scope import get_secret  # profile-scoped: never borrow another profile's token
         token = get_secret("TELEGRAM_BOT_TOKEN", "") or ""
     extra = getattr(pconfig, "extra", None) or {}
-    return await _send_telegram(
+    result = await _send_telegram(
         token, chat_id, message, media_files=media_files, thread_id=thread_id,
         disable_link_previews=bool(extra.get("disable_link_previews")), force_document=force_document,
         extra=extra, notify=notify)
+    return _explain_username_chat_not_found(result, chat_id)
+
+
+def _explain_username_chat_not_found(result, chat_id):
+    """The Bot API resolves ``@username`` only for public channels and supergroups, so a home channel
+    set to a person's handle answers every send with a bare "Chat not found" (#95121)."""
+    from plugins.platforms.telegram.telegram_ids import looks_like_telegram_username
+    error = result.get("error") if isinstance(result, dict) else None
+    if not error or "chat not found" not in str(error).lower() or not looks_like_telegram_username(chat_id):
+        return result
+    hint = (f" Telegram resolves '{str(chat_id).strip()}' only when it is a public channel or supergroup, never "
+            "a private chat. Use the numeric chat id instead (for the home channel: send /sethome in that "
+            "chat, or set TELEGRAM_HOME_CHANNEL to the id).")
+    return {**result, "error": str(error).rstrip(". ") + "." + hint}

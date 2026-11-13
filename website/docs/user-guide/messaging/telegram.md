@@ -488,6 +488,7 @@ TELEGRAM_HOME_CHANNEL_NAME="My Notes"
 
 :::tip
 Group chat IDs are negative numbers (e.g., `-1001234567890`). Your personal DM chat ID is the same as your user ID.
+An `@username` works only for a public channel or supergroup: Telegram answers "Chat not found" for a person's handle, so use the numeric ID for a DM home.
 :::
 
 ### Cron deliveries in topic mode

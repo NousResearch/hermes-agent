@@ -53,6 +53,16 @@ def _yaml_error_details(exc: Exception) -> str:
     return " ".join(text.split())
 
 
+def config_parse_failure_reason(exc: Exception) -> str:
+    """One line naming a YAML problem and where it is, for a caller's own message.
+
+    ``format_config_parse_failure`` speaks to a user whose running Hermes fell back to
+    defaults; a dependency install that cannot read the file needs the same reason without
+    the fallback copy (#152306)."""
+    where = _yaml_error_location(exc)
+    return f"{_yaml_error_details(exc)} ({where})" if where else _yaml_error_details(exc)
+
+
 def format_config_parse_failure(config_path: Path, exc: Exception, *, fallback: str = "defaults") -> str:
     """User copy for an unparseable config.yaml: what happened, what Hermes is doing, how to fix.
     Only the problem line/column is printed; the raw PyYAML text goes to a ``Details:`` line."""

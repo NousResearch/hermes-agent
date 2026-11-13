@@ -130,6 +130,50 @@ def test_enabled_read_refuses_invalid_existing_config(homes, content):
         pstate.enabled_plugins_ordered()
     assert config.read_bytes() == before
 
+def test_duplicate_key_error_names_the_key_line_and_the_fix(homes):
+    """Regression for #152306: a bootstrap install stopped at `pm install failed`, while the
+    only thing wrong was a duplicated top-level key in config.yaml. The message naming just the
+    path left the user nothing to act on."""
+    default_home, _ = homes
+    config = default_home / "config.yaml"
+    config.write_text(
+        "terminal:\n  backend: local\n\ntelemetry:\n  on: true\n\nterminal:\n  backend: remote\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as failure:
+        pstate.read_home_selection(default_home)
+    message = str(failure.value)
+    assert str(config) in message
+    assert 'duplicate key "terminal"' in message
+    assert "line 7" in message, "the duplicate's own line, not the first mapping's"
+    assert "hermes config edit" in message
+
+def test_syntax_error_names_the_problem_line_not_just_the_path(homes):
+    """The same boundary for a plain YAML syntax error: the cause is what the user must see."""
+    default_home, _ = homes
+    config = default_home / "config.yaml"
+    config.write_text("plugins:\n  enabled: [a, b\n", encoding="utf-8")
+    with pytest.raises(ValueError) as failure:
+        pstate.read_home_selection(default_home)
+    message = str(failure.value)
+    assert str(config) in message
+    assert "line" in message
+    assert "hermes config check" in message
+
+def test_unreadable_config_names_the_os_error_not_only_the_path(homes):
+    """An OSError carries its own reason; 'could not read' plus a path hid it."""
+    default_home, _ = homes
+    config = default_home / "config.yaml"
+    config.write_text("plugins: {enabled: []}\n", encoding="utf-8")
+    config.chmod(0o000)
+    try:
+        with pytest.raises(ValueError) as failure:
+            pstate.read_home_selection(default_home)
+    finally:
+        config.chmod(0o600)
+    assert str(config) in str(failure.value)
+    assert "Permission denied" in str(failure.value)
+
 def test_verify_skips_bad_secondary_but_admission_refuses_it(homes, caplog):
     from pm.workspace import enabled_member_dirs, enabled_plugin_dirs
 

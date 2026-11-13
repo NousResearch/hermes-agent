@@ -36,3 +36,23 @@ def test_idle_preconnect_does_not_delay_the_provider_login_code():
         assert out["returned_at"] - sent_at < 5
     finally:
         idle.close()
+
+
+def test_slow_client_still_delivers_the_provider_login_code():
+    """A request line sent after 2.5 s (an SSH-tunnelled callback) is served, not dropped."""
+    handler, result = _make_loopback_callback_handler("/callback", display_name="Probe")
+    server = _bind_loopback_callback_server("127.0.0.1", 0, handler, err=AuthError, bind_failed_code="bind")
+    out: dict = {}
+    waiter = threading.Thread(target=lambda: out.update(result=_serve_loopback_callback(
+        server, result, timeout_seconds=30, err=AuthError, timeout_code="t")), daemon=True)
+    waiter.start()
+    try:
+        with socket.create_connection(server.server_address, timeout=10) as sock:
+            time.sleep(2.5)  # health: allow HX013 -- the late request line IS the behaviour under test
+            sock.sendall(b"GET /callback?code=slow&state=s1 HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            reply = sock.recv(8192)
+        assert reply.startswith(b"HTTP/1.0 200"), reply[:80]
+    finally:
+        waiter.join(timeout=10)
+    assert not waiter.is_alive(), "listener never returned the code"
+    assert (out["result"]["code"], out["result"]["state"]) == ("slow", "s1")

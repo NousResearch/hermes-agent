@@ -40,7 +40,10 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { readChatPanelCollapsed, toggleChatPanelCollapsed } from "@/lib/chat-panel-collapsed";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
-import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import {
+  bindPtyCompositionBridge,
+  createPtyCompositionForwarder,
+} from "@/lib/pty-composition";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -831,29 +834,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const isMobileLike =
         typeof navigator !== "undefined" &&
         /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-      const markReplacementInput = (ev: Event) => {
-        const input = ev as InputEvent;
-        if (
-          shouldTreatInputAsMobileReplacement(
-            input.inputType,
-            input.data,
-            isMobileLike,
-          )
-        ) {
+      mobileInputCleanup = bindPtyCompositionBridge(textarea, compositionForwarder, {
+        isMobileInput: () => isMobileLike,
+        armReplacementWindow: () => {
           mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        }
-      };
-      const markCompositionEnd = (ev: CompositionEvent) => {
-        mobileReplacementInputUntilRef.current = Date.now() + MOBILE_REPLACEMENT_WINDOW_MS;
-        compositionForwarder.onCompositionEnd(ev.data);
-      };
-
-      textarea.addEventListener("beforeinput", markReplacementInput, true);
-      textarea.addEventListener("compositionend", markCompositionEnd, true);
-      mobileInputCleanup = () => {
-        textarea.removeEventListener("beforeinput", markReplacementInput, true);
-        textarea.removeEventListener("compositionend", markCompositionEnd, true);
-      };
+        },
+        isReplacementInput: (input) =>
+          shouldTreatInputAsMobileReplacement(input.inputType, input.data, isMobileLike),
+      });
     }
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and

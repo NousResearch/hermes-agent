@@ -52,6 +52,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
+| `hermes tts` | Serve the configured TTS provider over an OpenAI-compatible HTTP API (`hermes tts serve`). See [TTS](../user-guide/features/tts.md#serving-tts-over-an-openai-compatible-api-hermes-tts-serve). |
 | `hermes egress` | Outbound credential-injection firewall for remote terminal sandboxes (iron-proxy). Disabled by default. See [Egress proxy](../user-guide/egress/iron-proxy.md). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |

@@ -22,6 +22,62 @@ from agent.i18n import t
 
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
+# Streaming-TTS drain limits. A *total* deadline is the wrong tool: a long reply, or a slow
+# engine (Edge ~4 s per sentence over the network, local engines more), legitimately outlives
+# any fixed window — and cutting it drops audio mid-sentence and, because streaming TTS prints
+# each sentence as it is spoken, the rest of the answer never reaches the screen either.
+_TTS_STALL_SECONDS = 60.0            # no speaker output for this long => the engine is wedged
+_TTS_DRAIN_CEILING_SECONDS = 1800.0  # absolute backstop for one reply's playback
+_TTS_NO_SIGNAL_SECONDS = 600.0       # fallback when playback state can't be observed
+
+_log = logging.getLogger(__name__)
+
+
+def _await_tts_drain(thread: threading.Thread) -> bool:
+    """Wait for streaming TTS to finish playing; True when the worker exited on its own.
+
+    Progress-based, not clock-based: keep waiting while audio is actually coming out of the
+    speaker, and give up only after ``_TTS_STALL_SECONDS`` of silence (a wedged provider) or the
+    ``_TTS_DRAIN_CEILING_SECONDS`` backstop. If playback state is never observed at all (no
+    audio backend to ask), fall back to a generous total deadline so the old behaviour can't
+    silently get worse.
+    """
+    try:
+        from tools.voice_mode import is_audio_output_active
+    except (ImportError, OSError):  # audio stack missing: keep the historical fixed window
+        thread.join(timeout=120)
+        return not thread.is_alive()
+    started = last_audio = time.monotonic()
+    saw_audio = False
+    gave_up = ""
+    while thread.is_alive():
+        now = time.monotonic()
+        if now - started > _TTS_DRAIN_CEILING_SECONDS:
+            gave_up = "ceiling"
+            break
+        try:
+            playing = bool(is_audio_output_active())
+        except Exception:  # health: allow BLE001 -- a broken audio backend must never abort the turn; logged below
+            _log.debug("streaming TTS playback probe failed", exc_info=True)
+            playing = False
+        if playing:
+            saw_audio = True
+            last_audio = now
+        elif saw_audio:
+            if now - last_audio > _TTS_STALL_SECONDS:
+                gave_up = f"no audio for {_TTS_STALL_SECONDS:.0f}s"
+                break
+        elif now - started > _TTS_NO_SIGNAL_SECONDS:
+            gave_up = "playback state never observable"
+            break
+        thread.join(timeout=0.25)
+    if gave_up:
+        # Same wording style as the release path's "TTS CUT" line, so one grep finds both.
+        _log.info("Streaming TTS drain gave up after %.0fs (%s); cutting playback",
+                  time.monotonic() - started, gave_up)
+        return False
+    return True
+
 
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
@@ -501,10 +557,11 @@ class CLIChatTurnMixin:
         if turn.use_streaming_tts and turn.text_queue is not None:
             turn.text_queue.put(None)  # end-of-text sentinel
             if turn.tts_thread is not None:
-                turn.tts_thread.join(timeout=120)
-                # A timed-out join leaves tts_normal_exit False so the release path's
-                # stop_event kills the runaway worker.
-                turn.tts_normal_exit = not turn.tts_thread.is_alive()
+                # Inactivity deadline, not a fixed 120 s total: a long answer legitimately takes
+                # minutes to speak, and cutting it also cut the printed answer (streaming TTS
+                # prints each sentence as it speaks). False => the release path cuts a wedged
+                # worker and the rest of the reply is not left hanging.
+                turn.tts_normal_exit = _await_tts_drain(turn.tts_thread)
         # Drain the StdoutProxy buffer so tool/status lines render ABOVE the response
         # box; the sleep lets the renderer paint before we draw.
         sys.stdout.flush()

@@ -143,15 +143,16 @@ def _tail_server_stderr(server_name: str, *, max_bytes: int = 8192, max_lines: i
         return ""
 
 
-# Env vars safe to pass to stdio subprocesses (no secrets).
-# Proxy keys are forwarded independently in both common cases so stdio MCP
-# children inherit the parent process's outbound proxy (http/https/no_proxy
-# and ALL_PROXY, matching other Hermes proxy consumers). Unset keys stay
-# absent; do not glob on "PROXY" — that would leak custom secret-named vars.
+# Env vars safe to pass to stdio subprocesses (no secrets). The proxy and CA-bundle keys are
+# how a child reaches the network the same way Hermes does: without them a server behind a
+# corporate proxy or TLS inspection connects fine and then times out or fails
+# CERTIFICATE_VERIFY_FAILED on every tool call. Exact names only: a "*PROXY*" glob would pass
+# custom secret-named vars. Unset keys stay absent.
 _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
 })
 
 # Windows process/location vars needed by launcher-style tools (e.g. Docker Desktop's MCP plugin discovery).

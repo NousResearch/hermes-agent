@@ -20,7 +20,7 @@ _FILLER = r"(?:\w+\s+){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
 # "forget your original instructions" (#26977); shared with tools/skills_guard.py.
-FORGET_RULES_RE = (r"(?<!n't\s)(?<!not\s)(?<!never\s)\bforget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
+FORGET_RULES_RE = (r"(?<!n[’']t\s)(?<!nt\s)(?<!not\s)(?<!never\s)\bforget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
                    r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)\b")
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"

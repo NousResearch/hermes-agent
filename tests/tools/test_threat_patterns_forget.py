@@ -12,6 +12,8 @@ _PAYLOADS = [
 ]
 _BENIGN = [
     "Don't forget to follow all the setup instructions.",
+    "Don’t forget your instructions for the release checklist.",
+    "dont forget your previous instructions about formatting",
     "Forget your password? Follow the reset instructions.",
     "Never forget your rules of thumb for code review.",
     "forget the old config",

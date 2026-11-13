@@ -22,7 +22,8 @@ LEGACY_SID = '20261022_101500_a1b2c3'
 HISTORY_SID = '20261021_090000_d4e5f6'
 API_SID = 'api-chat'
 _CONFIG = ('model:\n  default: frozen-model\n  provider: custom\n  base_url: http://127.0.0.1:9/v1\n'
-           '  api_key: sk-rename-test\n')
+           '  api_key: sk-rename-test\n'
+           'mcp_servers: {docs: {url: http://127.0.0.1:9/mcp, headers: {Authorization: Bearer-mcp-token}}}\n')
 
 
 def _owner(profile_id, transport='socket'):
@@ -105,7 +106,11 @@ def _assert_restored(authority, home, name, sids):
         policy = restore_policy(local_receipt(authority.db, sid)['policy'])
         if policy.config_secret_ref:
             with _profile_runtime_scope(home, {}):
-                assert recover_config_secrets(authority, policy)[('model', 'api_key')] == 'sk-rename-test'
+                secrets = recover_config_secrets(authority, policy)
+                assert secrets[('model', 'api_key')] == 'sk-rename-test'
+                # A non-route MCP header must survive the move without changing credentials.
+                assert secrets[('mcp_servers', 'docs', 'headers')] == {
+                    'Authorization': 'Bearer-mcp-token'}
 
 
 @pytest.mark.asyncio

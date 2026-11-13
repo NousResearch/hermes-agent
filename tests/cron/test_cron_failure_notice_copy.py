@@ -7,7 +7,7 @@ does with its verdict, not the verdict itself.
 
 import re
 
-import cron.scheduler as scheduler
+from cron import scheduler
 from cron.scheduler import _compose_run_delivery, _summarize_cron_failure_for_delivery
 
 JOB = {"name": "Morning brief", "id": "ab12cd34"}
@@ -15,7 +15,7 @@ _HTTP_LEAD = re.compile(r"failed: (HTTP|Error code:|provider )")
 
 
 def _no_chain(monkeypatch):
-    monkeypatch.setattr(scheduler, "load_config", lambda: {})
+    monkeypatch.setattr(scheduler, "load_config", dict)
     monkeypatch.setattr(scheduler, "get_fallback_chain", lambda cfg: [])
 
 

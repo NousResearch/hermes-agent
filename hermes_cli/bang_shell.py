@@ -72,7 +72,7 @@ def check_bang_approval(command: str) -> dict:
     """Run *command* through the terminal tool's approval gate.
 
     Reuses ``tools.terminal_tool._check_all_guards`` — exactly what ``terminal_tool()`` calls — so the
-    hardline blocklist, user deny rules, tirith findings, and the dangerous-command prompt all apply
+    hardline blocklist, user deny rules and the dangerous-command prompt all apply
     to user-typed bang commands too. Returns the gate's ``{"approved": bool, "message": ...}``;
     falls back to *approved* only when the gate itself cannot be imported (a broken install, not a
     policy decision).

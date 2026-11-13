@@ -15,7 +15,7 @@ import os
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -61,7 +61,6 @@ def main() -> int:
         outbox_directory=scratch / "outbox",
     )
 
-    today = datetime.now(timezone.utc).date().isoformat()
     # The generator only exports COMPLETED periods, so the realistic E2E
     # package is yesterday's. It also has to be: the consent gate only
     # releases a package once its whole period is confirmed consented, and
@@ -69,7 +68,7 @@ def main() -> int:
     from datetime import timedelta
 
     period_day = (
-        datetime.now(timezone.utc).date() - timedelta(days=1)
+        datetime.now(UTC).date() - timedelta(days=1)
     ).isoformat()
 
     # Open the consent window before the period, confirm it after — exactly
@@ -84,7 +83,7 @@ def main() -> int:
             reconcile_send_consent(
                 connection,
                 True,
-                now=datetime.now(timezone.utc) - timedelta(days=2),
+                now=datetime.now(UTC) - timedelta(days=2),
             )
             reconcile_send_consent(connection, True)
     real_install_id = str(uuid.uuid4())
@@ -99,7 +98,7 @@ def main() -> int:
             "schema_version": "hermes.shared_metrics.v2",
             "package_id": package_id,
             "install_id": real_install_id,
-            "generated_at": datetime.now(timezone.utc).isoformat().replace(
+            "generated_at": datetime.now(UTC).isoformat().replace(
                 "+00:00", "Z"
             ),
             "period_start": f"{period_day}T00:00:00Z",

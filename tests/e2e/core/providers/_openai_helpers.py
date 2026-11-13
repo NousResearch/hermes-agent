@@ -137,7 +137,7 @@ class Home:
         return env
 
     def write(self, config: dict[str, Any], dotenv: dict[str, str] | None = None,
-              auth: dict[str, Any] | None = None) -> "Home":
+              auth: dict[str, Any] | None = None) -> Home:
         self.hermes_home.mkdir(parents=True, exist_ok=True)
         self.project.mkdir(parents=True, exist_ok=True)
         base = {"updates": {"check": False}, "agent": {"api_max_retries": 2},
@@ -215,7 +215,7 @@ def oneshot(h: Home, prompt: str, *args: str, resume: str | None = None, timeout
     if resume:
         argv += ["--resume", resume]
     proc = subprocess.run(hermes_argv(*argv), cwd=h.project, env=h.env(env), capture_output=True,
-                          text=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL)
+                          text=True, encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, check=False)
     usage = json.loads(usage_file.read_text(encoding="utf-8")) if usage_file.exists() else {}
     return Run(proc, usage)
 

@@ -30,18 +30,23 @@ import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
+import { createInterface } from 'node:readline/promises';
+import { attachPasskeyFlow, loadPasskeySigner } from './passkey_socket.js';
 import { matchesAllowedSender, matchesAllowedUser, matchesInboundWhatsAppGroup, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { bridgeAuthProof, createBridgeAuthMiddleware } from './bridge_auth.js';
 import {
   addMentions,
   buildPollPayload,
   createReconnectScheduler,
   createVersionResolver,
+  installConsoleStamps,
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
   createQuotedMediaCache,
+  deliveryStatusEvent,
   extractBridgeEvent,
   getMessageContent,
   inboundReadReceiptKeys,
@@ -50,7 +55,11 @@ import {
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  writeJsonLine,
 } from './bridge_helpers.js';
+
+// First statement: helpers capture console.log as a default at call time below.
+installConsoleStamps();
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -107,13 +116,35 @@ const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
 // keeps serving the old behavior forever).
 let SCRIPT_HASH = '';
 try {
-  SCRIPT_HASH = createHash('sha256')
-    .update(readFileSync(fileURLToPath(import.meta.url)))
-    .digest('hex')
-    .slice(0, 16);
+  // bridge_auth.js is in the hash: an adapter must never adopt a bridge whose auth code is stale.
+  const entryPath = fileURLToPath(import.meta.url);
+  const digest = createHash('sha256');
+  for (const sourcePath of [entryPath, path.join(path.dirname(entryPath), 'bridge_auth.js')]) {
+    digest.update(path.basename(sourcePath));
+    digest.update('\0');
+    digest.update(readFileSync(sourcePath));
+    digest.update('\0');
+  }
+  SCRIPT_HASH = digest.digest('hex').slice(0, 16);
 } catch {}
 const PAIR_ONLY = args.includes('--pair-only');
+// Exit status the gateway adapter reads as a non-retryable "pair with a passkey first" (PASSKEY_REQUIRED_EXIT in adapter.py).
+const PASSKEY_REQUIRED_EXIT = 78;
 const PAIR_JSON = args.includes('--pair-json');
+const PASSKEY_BROWSER = getArg('passkey-browser', '');
+let passkeySigner;
+try {
+  passkeySigner = await loadPasskeySigner(PASSKEY_BROWSER, {
+    pairOnly: PAIR_ONLY, pairJson: PAIR_JSON, isTTY: process.stdin.isTTY,
+  });
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
+// Per-session secret the adapter spawned us with. Loopback binding does not identify the caller:
+// any local process can POST /send on this port, so every API route demands this bearer and
+// /auth-proof lets the adapter verify a listener knows the secret before handing it over.
+const BRIDGE_TOKEN = process.env.HERMES_WHATSAPP_BRIDGE_TOKEN || '';
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const WHATSAPP_GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || 'pairing').trim().toLowerCase();
@@ -224,7 +255,7 @@ function redactWhatsAppId(value) {
 function emitDebugEvent(payload) {
   if (!WHATSAPP_DEBUG) return;
   try {
-    console.log(JSON.stringify({ event: 'debug', ...payload }));
+    writeJsonLine({ event: 'debug', ...payload });
   } catch {}
 }
 
@@ -293,7 +324,7 @@ function pollAggregationSummary(aggregation) {
 function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates, selectedOptions, aggregation }) {
   const firstUpdate = pollUpdates?.[0] || {};
   try {
-    console.log(JSON.stringify({
+    writeJsonLine({
       event: 'poll_update_decode',
       sourcePath,
       pollId: pollId || '',
@@ -302,7 +333,7 @@ function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates
       hasVote: !!firstUpdate.vote,
       selectedOptionsLength: selectedOptions?.length || 0,
       aggregation: pollAggregationSummary(aggregation),
-    }));
+    });
   } catch {}
 }
 
@@ -322,7 +353,7 @@ function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
   // inject agent-visible messages on every vote.
   if (!pollId || !recentlySentIds.has(pollId)) {
     if (WHATSAPP_DEBUG) {
-      try { console.log(JSON.stringify({ event: 'ignored', reason: 'foreign_poll_update', pollId })); } catch {}
+      try { writeJsonLine({ event: 'ignored', reason: 'foreign_poll_update', pollId }); } catch {}
     }
     return;
   }
@@ -370,18 +401,41 @@ function rememberSentId(id) {
   recentlySentIds.remember(id);
 }
 
+// Receipts get their own bound: one reply to a large group brings a receipt per member, and in the
+// shared queue that burst evicted inbound messages still waiting for the next poll.
+const deliveryQueue = [];
+
+function enqueueDeliveryStatus(args) {
+  const event = deliveryStatusEvent({ ...args, isOwnSend: id => recentlySentIds.has(id) });
+  if (!event) return;
+  deliveryQueue.push(event);
+  if (deliveryQueue.length > MAX_QUEUE_SIZE) {
+    deliveryQueue.shift();
+  }
+}
+
 let sock = null;
 let connectionState = 'disconnected';
 
 function emitPairEvent(event) {
   if (!PAIR_JSON) return;
   try {
-    console.log(JSON.stringify({ ts: Date.now(), ...event }));
+    writeJsonLine({ ts: Date.now(), ...event });
   } catch {}
 }
 
 const scheduleReconnect = createReconnectScheduler(() => startSocket());
 const getWAVersion = createVersionResolver(fetchLatestBaileysVersion);
+
+async function confirmPasskeyCode(code, signal) {
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await terminal.question(`Does the code ${code} match your phone? [y/N] `, { signal });
+    if (answer.trim().toLowerCase() !== 'y') throw new Error('Owner declined passkey confirmation');
+  } finally {
+    terminal.close();
+  }
+}
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -406,7 +460,29 @@ async function startSocket() {
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
 
+  attachPasskeyFlow(sock, { logger, signAssertion: passkeySigner, confirmCode: confirmPasskeyCode });
   sock.ev.on('connection.update', (update) => {
+    if (update.passkeyRequired && passkeySigner) {
+      if (!PAIR_JSON) console.log('Complete passkey verification in the browser window.');
+    } else if (update.passkeyRequired && !PAIR_ONLY && (connectionState === 'connected' || state.creds.me?.id)) {
+      // A paired gateway session keeps running, whether open or still logging in after a reconnect (rc13
+      // acked and ignored this request before passkey support): exiting with PASSKEY_REQUIRED_EXIT would
+      // park a working gateway as non-retryable. Pair-only still fails so setup never reports a pairing
+      // the server questioned.
+      console.warn('WhatsApp sent a passkey request to an already connected session; ignoring it.');
+    } else if (update.passkeyRequired) {
+      // The dashboard's pairing watcher only understands error events; no signer is ever loaded there.
+      emitPairEvent({ event: 'error', error: 'passkey_required' });
+      console.error('WhatsApp requires passkey verification. Pair with --passkey-browser and a local Chrome/Edge executable.');
+      process.exit(PAIR_ONLY ? 1 : PASSKEY_REQUIRED_EXIT);
+    }
+    if (update.passkeyError) {
+      // Name and message only: the cause (missing browser, cancelled prompt, declined code, failed query)
+      // is what the user needs; assertion and credential bytes never reach the error text.
+      const { name, message } = update.passkeyError;
+      console.error(`WhatsApp passkey verification failed: ${name || 'Error'}: ${message || 'unknown error'}`);
+      process.exit(1);
+    }
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
@@ -414,7 +490,8 @@ async function startSocket() {
         emitPairEvent({ event: 'qr', qr });
       } else {
         console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
-        qrcode.generate(qr, { small: true });
+        // The QR block is multi-line art; a stamp on its first row would skew it.
+        qrcode.generate(qr, { small: true }, (code) => process.stdout.write(`${code}\n`));
         console.log('\nWaiting for scan...\n');
       }
     }
@@ -463,8 +540,13 @@ async function startSocket() {
     }
   });
 
+  sock.ev.on('message-receipt.update', (receipts) => {
+    for (const { key, receipt } of receipts || []) enqueueDeliveryStatus({ key, receipt });
+  });
+
   sock.ev.on('messages.update', async (updates) => {
     for (const { key, update } of updates || []) {
+      if (update?.status !== undefined) enqueueDeliveryStatus({ key, update });
       if (!update?.pollUpdates) continue;
       const pollCreationId = key?.id || update.pollUpdates?.[0]?.pollCreationMessageKey?.id;
       const pollCreation = messageStore.get(pollCreationId);
@@ -582,12 +664,12 @@ async function startSocket() {
           if (decision.action === 'drop_disabled') continue;
           if (decision.action === 'drop_allowlist') {
             try {
-              console.log(JSON.stringify({
+              writeJsonLine({
                 event: 'ignored',
                 reason: 'allowlist_mismatch_owner_chat',
                 chatId,
                 senderId,
-              }));
+              });
             } catch {}
             continue;
           }
@@ -628,12 +710,12 @@ async function startSocket() {
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
           try {
-            console.log(JSON.stringify({
+            writeJsonLine({
               event: 'ignored',
               reason: 'self_chat_mode_rejects_non_self',
               chatId,
               senderId,
-            }));
+            });
           } catch {}
           continue;
         }
@@ -648,13 +730,13 @@ async function startSocket() {
             || matchesAllowedSender(senderId, senderAltId, ALLOWED_USERS, SESSION_DIR);
         if (!intakeAllowed) {
           try {
-            console.log(JSON.stringify({
+            writeJsonLine({
               event: 'ignored',
               reason: isGroup ? 'group_policy_rejected' : 'allowlist_mismatch',
               chatId,
               senderId,
               senderAltId,
-            }));
+            });
           } catch {}
           continue;
         }
@@ -792,7 +874,6 @@ async function startSocket() {
 
 // HTTP server
 const app = express();
-app.use(express.json());
 
 // Host-header validation — defends against DNS rebinding.
 // The bridge binds loopback-only (127.0.0.1) but a victim browser on
@@ -825,9 +906,27 @@ app.use((req, res, next) => {
   next();
 });
 
+// Challenge-response identity proof: the adapter sends a fresh nonce and no credential, and
+// adopts this listener only when the returned HMAC shows it already holds the session secret.
+// Registered BEFORE the bearer gate so the adapter never discloses the secret to an impostor
+// that bound the port first (it could otherwise replay a reflected bearer as its own proof).
+app.get('/auth-proof', (req, res) => {
+  const challenge = req.headers['x-hermes-bridge-challenge'];
+  if (typeof challenge !== 'string' || !challenge) {
+    return res.status(400).json({ error: 'Missing bridge challenge' });
+  }
+  res.json({ authProof: bridgeAuthProof(BRIDGE_TOKEN, challenge) });
+});
+
+// Every other route (including /health and /messages — inbound text is as sensitive as outbound)
+// requires `Authorization: Bearer <HERMES_WHATSAPP_BRIDGE_TOKEN>`. JSON bodies are parsed only
+// after the gate so an unauthenticated caller cannot drive the body parser.
+app.use(createBridgeAuthMiddleware(BRIDGE_TOKEN));
+app.use(express.json());
+
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
-  const msgs = messageQueue.splice(0, messageQueue.length);
+  const msgs = messageQueue.splice(0, messageQueue.length).concat(deliveryQueue.splice(0, deliveryQueue.length));
   res.json(msgs);
 });
 
@@ -1126,6 +1225,8 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    // path.resolve, not realpath: the adapter compares against os.path.abspath, which keeps symlinks.
+    session: path.resolve(SESSION_DIR),
     capabilities: { outboundMentions: true },
   });
 });
@@ -1148,7 +1249,12 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
-  app.listen(PORT, '127.0.0.1', () => {
+  if (!BRIDGE_TOKEN) {
+    // Refusing beats serving: without a secret every local process could read and send as the user.
+    console.error('HERMES_WHATSAPP_BRIDGE_TOKEN is required; start the bridge through `hermes gateway`.');
+    process.exit(1);
+  }
+  const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
@@ -1167,5 +1273,15 @@ if (PAIR_ONLY) {
     }
     console.log();
     scheduleReconnect(0);
+  });
+  // Without this handler an EADDRINUSE (an old bridge that has not released the port yet) crashes
+  // with a bare stack trace; the adapter's reconnect loop retried blind. Fail loudly and fast.
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      console.error(`FATAL: port ${PORT} already in use on 127.0.0.1 — another bridge or process is listening there.`);
+    } else {
+      console.error(`FATAL: bridge HTTP server error: ${err && err.message ? err.message : err}`);
+    }
+    process.exit(1);
   });
 }

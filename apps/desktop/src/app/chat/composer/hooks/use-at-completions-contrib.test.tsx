@@ -131,6 +131,31 @@ describe('contributed @ completion sources', () => {
     expect(rows.some(label => label.toLowerCase() === '@default')).toBe(true)
   })
 
+  it('keeps a contributed row that declares its own text as a handle', async () => {
+    vi.useFakeTimers()
+    // A bot whose mention tag IS its profile name claims that same name. The
+    // claim is meant to retire the gateway's twin row, not the declaring row:
+    // filtering both deleted the bot from the picker entirely while it stayed
+    // listed in the Bots pane, and only a profile whose friendly name differed
+    // from its raw name (`default` tagged `hermes`) survived — which is why
+    // this read as "only the default bot is mentionable".
+    addSource('bots', q =>
+      'cur'.startsWith(q) ? [{ insert: '@curio', meta: 'Bot · Curio', handles: ['@curio'] }] : []
+    )
+
+    const gateway = gatewayStub([
+      { text: '@curio', display: '@curio', meta: 'agent profile' },
+      { text: '@file:src/curio.md', display: 'curio.md', meta: 'file' }
+    ])
+
+    const { result } = renderHook(() => useAtCompletions({ gateway: gateway as never, sessionId: 's1', cwd: '/repo' }))
+
+    const rows = await searchAndRead(result, 'cur')
+
+    expect(rows.filter(label => label.toLowerCase() === '@curio')).toEqual(['@curio'])
+    expect(rows.some(label => label.includes('curio.md'))).toBe(true)
+  })
+
   it('drops rows when the query does not match the source filter', async () => {
     vi.useFakeTimers()
     addSource('bots', q => ('researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot' }] : []))

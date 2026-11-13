@@ -1,11 +1,12 @@
-"""A path-scoped authorization server whose RFC 8414 metadata names its origin (#116233).
+"""Metadata documents whose issuer the SDK's exact-string check (RFC 8414 §3.3) refuses but Hermes accepts.
 
 Strava's MCP connector advertises ``authorization_servers: ["https://www.strava.com/mcp-issuer"]`` and
-serves ``/.well-known/oauth-authorization-server/mcp-issuer`` with ``issuer: "https://www.strava.com"``.
-The SDK's exact-string issuer check (RFC 8414 §3.3) rejected that document and discovery never completed.
-Hermes accepts exactly this shape — the document fetched from the well-known URL derived from the advertised
-identifier, naming that identifier's origin — through the real provider flow; every other mismatch is still
-rejected.
+serves ``/.well-known/oauth-authorization-server/mcp-issuer`` with ``issuer: "https://www.strava.com"``
+(#116233): accepted when the document comes from the well-known URL derived from the advertised identifier
+and names that identifier's origin. Otter.ai advertises ``https://otter.ai/`` while its document names
+``https://otter.ai`` (#132233): a root issuer differing only by its trailing slash is accepted, the SDK's
+own ``issuers_match`` rule. Every other mismatch is still rejected, and an issuer equal to the advertised
+identifier is left to the SDK.
 """
 from __future__ import annotations
 
@@ -56,20 +57,20 @@ def _asm(issuer):
 class _StandIn:
     """Resource + authorization server behind one httpx MockTransport; ``issuer_doc`` maps ASM path -> document."""
 
-    def __init__(self, httpx, issuer_doc):
-        self.httpx, self.issuer_doc, self.hits = httpx, issuer_doc, []
+    def __init__(self, httpx, issuer_doc, advertised=ADVERTISED):
+        self.httpx, self.issuer_doc, self.advertised, self.hits = httpx, issuer_doc, advertised, []
 
     def __call__(self, request):
         url = str(request.url)
         path = urlsplit(url).path
         self.hits.append((request.method, url))
-        j = lambda status, body, **h: self.httpx.Response(status, json=body, headers=h, request=request)  # noqa: E731
+        j = lambda status, body, **h: self.httpx.Response(status, json=body, headers=h, request=request)
         if url == RESOURCE:
             if request.headers.get("Authorization") == "Bearer AT-1":
                 return j(200, {"ok": True})
             return j(401, {}, **{"WWW-Authenticate": 'Bearer resource_metadata="https://res.example/.well-known/oauth-protected-resource"'})
         if url == "https://res.example/.well-known/oauth-protected-resource":
-            return j(200, {"resource": RESOURCE, "authorization_servers": [ADVERTISED]})
+            return j(200, {"resource": RESOURCE, "authorization_servers": [self.advertised]})
         if url.startswith(AS_ORIGIN) and path in self.issuer_doc:
             return j(200, self.issuer_doc[path])
         if url == f"{AS_ORIGIN}/register":
@@ -80,7 +81,7 @@ class _StandIn:
         return j(404, {})
 
 
-async def _run_flow(tmp_path, monkeypatch, issuer_doc):
+async def _run_flow(tmp_path, monkeypatch, issuer_doc, advertised=ADVERTISED, iss=AS_ORIGIN):
     from mcp.shared.auth import OAuthClientMetadata
     from pydantic import AnyUrl
 
@@ -98,14 +99,14 @@ async def _run_flow(tmp_path, monkeypatch, issuer_doc):
         seen["state"] = parse_qs(urlsplit(url).query)["state"][0]
 
     async def callback():
-        return _authorization_code_result("code-1", seen["state"], iss=AS_ORIGIN)
+        return _authorization_code_result("code-1", seen["state"], iss=iss)
 
     storage = HermesTokenStorage("srv")
     provider = _HERMES_PROVIDER_CLS(
         server_name="srv", server_url=RESOURCE, storage=storage,
         client_metadata=OAuthClientMetadata(redirect_uris=[AnyUrl("http://127.0.0.1:1/cb")], client_name="Hermes Agent"),
         redirect_handler=redirect, callback_handler=callback)
-    standin = _StandIn(httpx, issuer_doc)
+    standin = _StandIn(httpx, issuer_doc, advertised)
     async with httpx.AsyncClient(auth=provider, transport=httpx.MockTransport(standin)) as client:
         response = await client.get(RESOURCE)
     return response, standin, seen, provider
@@ -136,3 +137,44 @@ async def test_other_issuer_shapes_are_still_rejected(tmp_path, monkeypatch, iss
     with pytest.raises((OAuthFlowError, OAuthRegistrationError)):
         await _run_flow(tmp_path, monkeypatch, issuer_doc)
     assert not (tmp_path / "mcp-tokens" / "srv.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("advertised", "issuer"), [
+    pytest.param(f"{AS_ORIGIN}/", AS_ORIGIN, id="advertised-with-slash"),  # Otter.ai, #132233
+    pytest.param(AS_ORIGIN, f"{AS_ORIGIN}/", id="document-with-slash"),
+])
+async def test_root_issuer_differing_only_by_its_trailing_slash_completes_the_flow(
+        tmp_path, monkeypatch, advertised, issuer):
+    root_doc = {"/.well-known/oauth-authorization-server": _asm(issuer)}
+    response, _, _, _ = await _run_flow(tmp_path, monkeypatch, root_doc, advertised=advertised, iss=issuer)
+
+    assert response.status_code == 200
+    assert json.loads((tmp_path / "mcp-tokens" / "srv.client.json").read_text())["issuer"] == advertised
+
+
+@pytest.mark.asyncio
+async def test_path_scoped_issuer_differing_only_by_a_trailing_slash_is_still_rejected(tmp_path, monkeypatch):
+    from mcp.client.auth.exceptions import OAuthFlowError
+
+    with pytest.raises(OAuthFlowError, match="issuer mismatch"):
+        await _run_flow(tmp_path, monkeypatch, {PATH_DOC: _asm(f"{ADVERTISED}/")}, iss=f"{ADVERTISED}/")
+    assert not (tmp_path / "mcp-tokens" / "srv.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_issuer_equal_to_the_advertised_identifier_is_left_to_the_sdk():
+    from tools.mcp_oauth_provider import HermesProviderMixin
+    from tools.mcp_tool import sdk_httpx
+
+    class _Provider(HermesProviderMixin):
+        context: SimpleNamespace
+
+    httpx = sdk_httpx()
+    provider = _Provider.__new__(_Provider)
+    provider.context = SimpleNamespace(auth_server_url=f"{AS_ORIGIN}/", oauth_metadata=None)
+    request = httpx.Request("GET", f"{AS_ORIGIN}/.well-known/oauth-authorization-server")
+    response = httpx.Response(200, json=_asm(f"{AS_ORIGIN}/"), request=request)
+
+    assert await provider._hermes_accept_origin_issued_metadata(response) is response
+    assert provider.context.oauth_metadata is None

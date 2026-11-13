@@ -166,6 +166,7 @@ class TestSubprocessChildCovered:
             text=True,
             env=env,
             timeout=120,
+            check=False,
         )
         assert proc.returncode != 0
         assert "live-system guard" in proc.stderr
@@ -192,6 +193,7 @@ class TestSubprocessChildCovered:
             text=True,
             env=env,
             timeout=120,
+            check=False,
         )
         assert proc.returncode == 0, proc.stderr
         assert "OK" in proc.stdout

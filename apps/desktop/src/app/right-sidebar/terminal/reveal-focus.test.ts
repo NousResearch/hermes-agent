@@ -76,6 +76,7 @@ beforeEach(() => {
   unmountKeybinds = renderHook(
     () =>
       useKeybinds({
+        requestGateway: vi.fn(),
         archiveSelectedSession: () => undefined,
         openNewSessionTab: () => undefined,
         startFreshSession: () => undefined,
@@ -166,6 +167,7 @@ function statusbarSelect() {
     () =>
       useStatusbarItems({
         agentsOpen: false,
+        changeSessionCwd: async () => {},
         chatOpen: true,
         commandCenterOpen: false,
         extraLeftItems: [],

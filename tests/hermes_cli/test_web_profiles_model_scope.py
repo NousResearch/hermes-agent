@@ -12,9 +12,9 @@ secrets) around both the validate and save spans.
 import pytest
 
 pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from agent import secret_scope  # noqa: E402
+from agent import secret_scope
 
 ACME_YAML = (
     "custom_providers:\n"
@@ -178,3 +178,11 @@ def test_model_set_names_target_from_a_backend_launched_as_another_profile(homes
         assert resp.status_code == 200, resp.text
         assert probe["api_key"] == "profile-key"
         assert model_of(demo) == "acme/mini" and model_of(root) is None
+
+
+def test_a_rejected_model_pick_is_a_400_with_the_reason(client, monkeypatch):
+    from hermes_cli.model_switch import ModelSwitchResult
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+                        lambda **_kw: ModelSwitchResult(success=False, error_message="Unknown provider 'nope'."))
+    resp = client.put("/api/profiles/demo/model", json={"provider": "nope", "model": "m"})
+    assert (resp.status_code, resp.json()["detail"]) == (400, "Unknown provider 'nope'.")

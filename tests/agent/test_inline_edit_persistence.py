@@ -26,7 +26,7 @@ def test_edit_preview_is_durable_before_emission_and_display_only(
     from tools.environments.local import LocalEnvironment
     from tools.file_operations import ShellFileOperations
     from tools.terminal_tool import register_task_env_overrides, clear_task_env_overrides
-    import tools.file_tools as file_tools
+    from tools import file_tools
     import model_tools
     import tui_gateway.server as progress
 

@@ -11,6 +11,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     ContextCompressor,
 )
+import itertools
 
 
 @pytest.fixture()
@@ -64,7 +65,7 @@ def _compress(compressor: ContextCompressor, messages: list[dict]) -> list[dict]
 
 
 def _assert_no_adjacent_user_roles(messages: list[dict]) -> None:
-    for previous, current in zip(messages, messages[1:]):
+    for previous, current in itertools.pairwise(messages):
         assert (previous.get("role"), current.get("role")) != ("user", "user")
 
 

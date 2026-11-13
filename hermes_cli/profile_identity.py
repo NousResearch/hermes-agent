@@ -237,3 +237,19 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
                 with contextlib.suppress(Exception):
                     release_or_close(db)
     return migrated
+
+
+def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
+    """Append ``old_canon`` to the renamed profile's ``previous_names`` history.
+    Best-effort: never raises, so a metadata write failure cannot fail the rename.
+
+    Only reached for a real slug change — ``rename_profile`` returns early for the
+    default profile (display-name only) and refuses ``old == new`` (target exists)."""
+    from hermes_cli import profiles as _profiles
+    try:
+        history = _profiles.read_profile_meta(new_dir).get("previous_names") or []
+        if old_canon not in history:
+            history = [*history, old_canon]
+        _profiles.write_profile_meta(new_dir, previous_names=history)
+    except Exception as exc:  # unwritable / corrupt profile.yaml — history is advisory
+        _profiles.logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)

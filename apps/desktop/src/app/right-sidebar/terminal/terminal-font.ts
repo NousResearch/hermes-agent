@@ -128,7 +128,12 @@ export async function applyTerminalFontFamily({
 
   term.options.fontFamily = fontFamily
   fit()
-  clearTextureAtlas()
+
+  try {
+    clearTextureAtlas()
+  } catch {
+    // WebGL context lost or uninitialized — the DOM fallback has no atlas.
+  }
 
   if (term.rows > 0) {
     term.refresh(0, term.rows - 1)

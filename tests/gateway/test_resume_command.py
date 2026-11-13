@@ -104,6 +104,32 @@ class TestHandleResumeCommand:
 
 
     @pytest.mark.asyncio
+    async def test_resume_other_session_notices_paused_messages_left_behind(self, tmp_path, monkeypatch):
+        """A /resume route switch must tell the chat about queued messages left behind (#145177)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("saved_session", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("saved_session", "Earlier Work")
+        db.create_session("paused_session", "telegram", user_id="12345", chat_id="67890")
+
+        async def count_paused(_runner, session_id):
+            assert session_id == "paused_session"  # must inspect the departed route, not the target
+            return 2
+
+        monkeypatch.setattr("gateway.slash_commands_session.paused_followers", count_paused)
+        event = _make_event(text="/resume Earlier Work")
+        runner = _make_runner(session_db=db, current_session_id="paused_session", event=event)
+
+        reply = await runner._handle_resume_command(event)
+
+        assert "Earlier Work" in reply
+        assert "2 message" in reply and "/resume paused_session" in reply
+        assert "/discard" in reply
+        runner.session_store.switch_session.assert_called_once()
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_session_model_overrides(self, tmp_path):
         """Resume must not carry a previous session's /model override into the
         restored conversation, while leaving other chats' overrides intact (#10702)."""
@@ -127,6 +153,7 @@ class TestHandleResumeCommand:
         }
 
         await runner._handle_resume_command(event)
+        assert runner.session_store.switch_session.call_args.kwargs["preserve_prompt_pin"] is False
         # The resumed chat's override + pending note are cleared...
         assert key not in runner._session_model_overrides
         assert key not in runner._pending_model_notes
@@ -152,14 +179,12 @@ class TestHandleResumeCommand:
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
                               event=event)
         key = _session_key_for_event(event)
-        runner._last_resolved_model = {
-            key: "gpt-5",
-            "agent:main:telegram:dm:other": "keep-me",
-        }
+        runner._session_state(key).conversation.last_resolved_model = "gpt-5"
+        runner._session_state("agent:main:telegram:dm:other").conversation.last_resolved_model = "keep-me"
 
         await runner._handle_resume_command(event)
-        assert key not in runner._last_resolved_model
-        assert runner._last_resolved_model["agent:main:telegram:dm:other"] == "keep-me"
+        assert not runner._session_state(key).conversation.last_resolved_model
+        assert runner._session_state("agent:main:telegram:dm:other").conversation.last_resolved_model == "keep-me"
         db.close()
 
 

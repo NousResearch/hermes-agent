@@ -21,9 +21,9 @@ def policy(request, monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_signal_pacing_producer_keeps_actual_image_delivery(policy, monkeypatch, tmp_path):
-    import gateway.platforms.signal as module
+    import plugins.platforms.signal.adapter as module
     adapter = module.SignalAdapter(PlatformConfig())
-    scheduler = SimpleNamespace(state=lambda: {}, estimate_wait=lambda n: 120,
+    scheduler = SimpleNamespace(state=dict, estimate_wait=lambda n: 120,
         acquire=AsyncMock(), report_rpc_duration=AsyncMock())
     monkeypatch.setattr(module, "get_scheduler", lambda: scheduler)
     adapter._stop_typing_indicator = AsyncMock()

@@ -63,8 +63,8 @@ _VERIFY_TIMEOUT = 15
 from hermes_constants import PROFILE_ID_RE as _PROFILE_ID_RE
 
 _SUPERVISOR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
-_UNIT_RE = re.compile(r"^hermes-serve(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")
-_SERVE_UNIT_PATTERN = "hermes-serve*"
+_UNIT_RE = re.compile(r"^hermes-(serve|dashboard)(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")
+_SERVE_UNIT_PATTERNS = ("hermes-serve*", "hermes-dashboard*")
 _SCOPE_LABELS = ("user", "system")
 _UNIT_RESTART_TIMEOUT = 60
 _UNIT_SETTLE_ATTEMPTS = 10
@@ -107,8 +107,9 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
 
     One updater environment relaunches EVERY profile, so a child for another profile would inherit
     this process's authorization gates (``DISCORD_ALLOWED_CHANNELS``, ``GATEWAY_ALLOW_ALL_USERS`` ...)
-    and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270). Gates are
-    dropped when *profile* is not the launch profile; a same-profile child keeps an operator export.
+    and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270) — and the
+    launch profile's bot tokens, so an API-only sibling polled the root bot (#135792). A sibling's env is
+    the one the normal restart watcher gets; a same-profile child keeps an operator export.
 
     Restarting the host multiplexer from a named profile does not copy this process's environ: the
     child is ``host_gateway_child_env`` (``served_profile_child_env`` for the default root) so the
@@ -118,12 +119,16 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     target = profile if profile is not None else launch
     if target == "default" and launch != "default":
         from tools.environments.local import host_gateway_child_env
+        _adopt_parent_provenance()
         env = host_gateway_child_env()
     else:
-        env = os.environ.copy()
+        env = None
         if profile is not None and profile != launch:
-            from tools.environments.local_env_policy import strip_profile_gate_env
-            strip_profile_gate_env(env)
+            from hermes_cli.gateway_restart_env import profile_gateway_restart_env
+            _adopt_parent_provenance()
+            from hermes_cli.profiles import get_profile_dir
+            env = profile_gateway_restart_env(str(get_profile_dir(profile)))
+        env = os.environ.copy() if env is None else env
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)
     env[_RECOVERY_ENV] = "1"
@@ -136,8 +141,12 @@ def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     else:
+        # detached-spawn: ok — awaited with a timeout; the gateway restart it runs must not share the updater's group
         kwargs["start_new_session"] = True
-    argv = [sys.executable, "-m", "hermes_cli.main", "-p", profile, "gateway", "restart"]
+    # `--interrupt`: the update owns this restart (drain-first, 31637312899); a live session must not
+    # strand the profile on pre-update code the way a refusal would. `--detach`: this bounded call
+    # must not itself become a service-less profile's gateway (killed at the timeout below).
+    argv = [sys.executable, "-m", "hermes_cli.main", "-p", profile, "gateway", "restart", "--interrupt", "--detach"]
     return _succeeded(_run_quiet(run, argv, timeout=_PROFILE_RESTART_TIMEOUT, **kwargs))
 
 
@@ -271,21 +280,22 @@ def _systemctl_scopes() -> list[tuple[str, list[str]]]:
 
 
 def _listed_serve_units(scope: list[str], *, run: Callable[..., Any]) -> list[str]:
-    """Serve units systemd knows about in one scope, validated by name."""
-    result = _run_quiet(
-        run,
-        scope + ["list-units", _SERVE_UNIT_PATTERN, "--plain", "--no-legend", "--no-pager"],
-        timeout=_VERIFY_TIMEOUT,
-    )
-    if result is None:
-        return []
-    # The glob is a systemd pattern, not a name gate (`hermes-serve*` also matches
-    # `hermes-server.service`): require the exact base unit or the profile family.
+    """Serve/dashboard units systemd knows about in one scope, validated by name."""
     units: list[str] = []
-    for line in (getattr(result, "stdout", "") or "").splitlines():
-        parts = line.split()
-        if parts and _UNIT_RE.fullmatch(parts[0]) and parts[0] not in units:
-            units.append(parts[0])
+    for pattern in _SERVE_UNIT_PATTERNS:
+        result = _run_quiet(
+            run,
+            scope + ["list-units", pattern, "--plain", "--no-legend", "--no-pager"],
+            timeout=_VERIFY_TIMEOUT,
+        )
+        if result is None:
+            continue
+        # The glob is a systemd pattern, not a name gate (`hermes-serve*` also matches
+        # `hermes-server.service`): require the exact base unit or the profile family.
+        for line in (getattr(result, "stdout", "") or "").splitlines():
+            parts = line.split()
+            if parts and _UNIT_RE.fullmatch(parts[0]) and parts[0] not in units:
+                units.append(parts[0])
     return units
 
 
@@ -351,7 +361,7 @@ def _normalized_skips(skip_units: Iterable[Any]) -> tuple[set[tuple[str, str]], 
 def restart_serve_units(
     *, skip_units: Iterable[Any] = (), run: Callable[..., Any] = subprocess.run, sleep: Callable[[float], Any] = time.sleep
 ) -> dict[str, list[str]]:
-    """Restart every active ``hermes-serve*`` systemd unit from this process.
+    """Restart every active ``hermes-serve*``/``hermes-dashboard*`` systemd unit from this process.
 
     Units are enumerated from systemd, never from the update inventory, so a manually launched or
     Desktop-owned ``hermes serve`` (no unit) structurally cannot be touched here.
@@ -385,10 +395,34 @@ def restart_serve_units(
     }
 
 
+# The updater's env provenance (which names its secret sources and dotenvs supplied), from the payload.
+_parent_provenance: dict[str, list[str]] = {}
+
+
+def _read_env_provenance(raw) -> None:
+    """Keep the updater's env provenance: this interpreter inherited the values only, and a sibling's
+    env is stripped by provenance. An older updater sends none; a malformed block is refused."""
+    if raw is None:
+        return
+    if not isinstance(raw, dict) or any(
+        not isinstance(names, list) or any(not isinstance(name, str) for name in names) for names in raw.values()
+    ):
+        raise ValueError("recovery env_provenance block is invalid")
+    _parent_provenance.update(raw)
+
+
+def _adopt_parent_provenance() -> None:
+    """Record the updater's provenance as this process's own, right before a routed child env is built
+    (only then: a same-profile restart imports no Hermes code)."""
+    from hermes_cli.env_loader import adopt_env_provenance
+    adopt_env_provenance(_parent_provenance)
+
+
 def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str]]:
     payload = json.load(stream)
     if not isinstance(payload, dict):
         payload = {}
+    _read_env_provenance(payload.get("env_provenance"))
     profiles = payload.get("profiles")
     if not isinstance(profiles, list):
         raise ValueError("recovery payload must contain a profiles list")

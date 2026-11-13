@@ -21,7 +21,7 @@ def _provider_reset_delay(reset_at) -> float | None:
     return None
 
 
-def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -> bool:
+def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> bool:
     """Opt-in ``fallback.min_switch_reset_seconds`` (default 0 = off, #117484): when the primary's
     rate limit reopens sooner than N seconds, switching model mid-task costs more than waiting, so
     the fallback walk is skipped and the retry loop's own backoff rides out the window. Only for
@@ -42,8 +42,24 @@ def switch_deferred_by_reset(agent, reason: "FailoverReason | None", reset_at) -
     return True
 
 
+def _on_primary_route(agent) -> bool:
+    """True when the agent's live route IS the ``_primary_runtime`` snapshot: provider, model and
+    endpoint, the triple that keys a fallback entry (``_fallback_entry_key``). A provider name
+    alone is not an identity: two ``custom`` endpoints (or one provider's other model) share it."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    rt = getattr(agent, "_primary_runtime", None) or {}
+    if not str(rt.get("provider") or "").strip():
+        return False
+
+    def ident(provider, model, base_url):
+        return (str(provider or "").strip().lower(), str(model or "").strip(), normalize_route_base_url(base_url or ""))
+
+    live = ident(getattr(agent, "provider", ""), getattr(agent, "model", ""), getattr(agent, "base_url", ""))
+    return live == ident(rt.get("provider"), rt.get("model"), rt.get("base_url"))
+
+
 def _arm_rate_limit_cooldown(
-    agent, reason: "FailoverReason | None", reset_at=None,
+    agent, reason: FailoverReason | None, reset_at=None,
 ) -> int | None:
     """Arm the primary cooldown until the provider reset, or use exponential backoff.
 
@@ -55,9 +71,7 @@ def _arm_rate_limit_cooldown(
     """
     if reason not in _RATE_LIMIT_FAILOVER_REASONS:
         return None
-    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
-    primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
-    if getattr(agent, "_fallback_activated", False) and not (primary_provider and current_provider == primary_provider):
+    if getattr(agent, "_fallback_activated", False) and not _on_primary_route(agent):
         return None
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1

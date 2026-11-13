@@ -57,7 +57,7 @@ def prefetch(*, timeout: float = _DEFAULT_TIMEOUT) -> None:
         global _prefetching
         try:
             fetch_manifest(timeout=timeout)
-        except Exception as exc:  # noqa: BLE001 - best-effort warm
+        except Exception as exc:
             logger.debug("petdex manifest prefetch failed: %s", exc)
         finally:
             _prefetching = False
@@ -78,7 +78,7 @@ class ManifestEntry:
     zip_url: str
 
     @classmethod
-    def from_dict(cls, data: dict) -> "ManifestEntry":
+    def from_dict(cls, data: dict) -> ManifestEntry:
         return cls(
             slug=str(data.get("slug", "")).strip(),
             display_name=str(data.get("displayName", "") or data.get("slug", "")),
@@ -112,7 +112,7 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) ->
             resp = client.get(MANIFEST_URL, headers={"User-Agent": "hermes-agent-petdex"})
         resp.raise_for_status()
         payload = resp.json()
-    except Exception as exc:  # noqa: BLE001 - normalize to one error type
+    except Exception as exc:
         raise ManifestError(f"could not fetch petdex manifest: {exc}") from exc
 
     pets = payload.get("pets") if isinstance(payload, dict) else None

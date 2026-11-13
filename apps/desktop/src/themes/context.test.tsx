@@ -2,8 +2,11 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { readableInk } from './color'
 import { skinPref, ThemeProvider, useTheme } from './context'
-import { everforestTheme } from './presets'
+import { everforestTheme, midnightTheme } from './presets'
+import type { DesktopTheme } from './types'
+import { installUserTheme } from './user-themes'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -346,5 +349,124 @@ describe('ThemeProvider customCSS injection', () => {
     )
 
     expect(customStyleEl()?.textContent).toBe('.chat-input { font-size: 18px; }')
+  })
+})
+
+describe('ThemeProvider theme typography (#41766)', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
+
+  // The merged typography is DEFAULT ← nous ← theme, so a user theme that sets
+  // only the new knobs still inherits the font stacks.
+  const bigTypeTheme: DesktopTheme = {
+    ...midnightTheme,
+    name: 'bigtype',
+    label: 'Big Type',
+    description: 'Test theme with typography overrides',
+    typography: { baseSize: '1.125rem', lineHeight: '1.65', letterSpacing: '0.01em' }
+  }
+
+  it('paints baseSize/lineHeight/letterSpacing when the active theme provides them', () => {
+    installUserTheme(bigTypeTheme)
+
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
+
+    act(() => ctx!.setTheme('bigtype'))
+
+    expect(cssVar('--dt-base-size')).toBe('1.125rem')
+    expect(cssVar('--dt-line-height')).toBe('1.65')
+    expect(cssVar('--dt-letter-spacing')).toBe('0.01em')
+  })
+
+  it('drops the inline vars when switching to a theme without them, restoring the styles.css defaults', () => {
+    installUserTheme(bigTypeTheme)
+
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
+
+    act(() => ctx!.setTheme('bigtype'))
+    expect(cssVar('--dt-base-size')).toBe('1.125rem')
+
+    // Built-ins carry no size/leading/tracking opinion — the inline values must
+    // go away so :root's own declarations apply again.
+    act(() => ctx!.setTheme('mono'))
+
+    expect(cssVar('--dt-base-size')).toBe('')
+    expect(cssVar('--dt-line-height')).toBe('')
+    expect(cssVar('--dt-letter-spacing')).toBe('')
+  })
+})
+
+function ThemeProbe({ onReady }: { onReady: (ctx: ReturnType<typeof useTheme>) => void }) {
+  onReady(useTheme())
+
+  return null
+}
+
+describe('ThemeProvider boot-failure palette', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+  })
+
+  afterEach(cleanup)
+
+  it.each([true, false])('persists the resolved colours with explicit midground tokens: %s', explicit => {
+    const colors = {
+      ...midnightTheme.colors,
+      foreground: '#123456',
+      ring: '#eeeeee',
+      midground: explicit ? '#234567' : undefined,
+      midgroundForeground: explicit ? '#fedcba' : undefined
+    }
+
+    installUserTheme({ ...midnightTheme, name: 'boot-palette', colors, darkColors: colors })
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
+
+    act(() => ctx!.setTheme('boot-palette'))
+
+    const midground = colors.midground ?? colors.ring
+    const snapshot = JSON.parse(window.localStorage.getItem('hermes-boot-palette')!)
+    expect(snapshot).toEqual({
+      background: window.localStorage.getItem('hermes-boot-background'),
+      foreground: colors.foreground,
+      accent: midground,
+      accentForeground: colors.midgroundForeground ?? readableInk(midground)
+    })
+    expect(snapshot.accentForeground).toBe(cssVar('--dt-midground-foreground'))
+  })
+
+  it('stores no snapshot for a theme whose accent is a var() the notice could not resolve', () => {
+    window.localStorage.setItem('hermes-boot-palette', '{"stale":true}')
+    const colors = { ...midnightTheme.colors, midground: 'var(--theme-primary)', midgroundForeground: '#161616' }
+    installUserTheme({ ...midnightTheme, name: 'boot-palette-var', colors, darkColors: colors })
+    let ctx: ReturnType<typeof useTheme>
+    render(
+      <ThemeProvider>
+        <ThemeProbe onReady={value => (ctx = value)} />
+      </ThemeProvider>
+    )
+
+    act(() => ctx!.setTheme('boot-palette-var'))
+
+    expect(window.localStorage.getItem('hermes-boot-palette')).toBeNull()
+    expect(window.localStorage.getItem('hermes-boot-background')).not.toBeNull()
   })
 })

@@ -1,20 +1,17 @@
+import { useStore } from '@nanostores/react'
 import type { FC, ReactNode } from 'react'
 import { useMemo } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { type Contribution, useContributions } from '@/contrib'
-import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { ContribBoundary } from '@/contrib/react/boundary'
 import {
   type ParsedTranscriptDirective,
-  parseTranscriptDirective,
   segmentTranscriptDirectives,
   TRANSCRIPT_DIRECTIVE_AREA,
   type TranscriptDirectiveContribution,
   type TranscriptParagraphSegment
 } from '@/lib/transcript-directives'
-
-// B4 reworks the parser; until then the prototype's parser is an onboarding feature.
-const onboardingEnabled = isOnboardingEnabled()
 
 /**
  * The transcript's directive slot. Given text, renders the plugin component
@@ -52,22 +49,35 @@ const DirectiveEntry: FC<{
   streaming: boolean
 }> = ({ contribution, parsed, streaming }) => {
   const render = (contribution.data as TranscriptDirectiveContribution).render
+  // The surface this transcript renders in (primary pane or a tile) names the
+  // chat that owns the card, so its actions can address that chat's composer.
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || null
 
   // Stable component IDENTITY per (render, parsed) — a fresh type per parent
-  // render would remount the widget (card-sized jump). Streaming arrives as a
-  // real prop on that stable type, so the settle flip re-renders the same
-  // mount instead of being memo-skipped (ref-only reads were exactly that).
+  // render would remount the widget (card-sized jump). Streaming and the owning
+  // session arrive as real props on that stable type, so the settle flip
+  // re-renders the same mount instead of being memo-skipped (ref-only reads
+  // were exactly that).
   const Leaf = useMemo(
     () =>
-      function DirectiveLeafHost({ streaming: live }: { streaming: boolean }) {
-        return <>{render({ attrs: parsed.attrs, source: parsed.source, streaming: live })}</>
+      function DirectiveLeafHost({
+        sessionId: owner,
+        streaming: live
+      }: {
+        sessionId: null | string
+        streaming: boolean
+      }) {
+        return <>{render({ attrs: parsed.attrs, sessionId: owner, source: parsed.source, streaming: live })}</>
       },
     [render, parsed]
   )
 
   return (
     <ContribBoundary id={contribution.id} variant="chip">
-      <Leaf streaming={streaming} />
+      <Leaf sessionId={sessionId} streaming={streaming} />
     </ContribBoundary>
   )
 }
@@ -75,15 +85,7 @@ const DirectiveEntry: FC<{
 export const TranscriptDirectiveLeaf: FC<{ text: string; streaming?: boolean }> = ({ text, streaming }) => {
   const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
 
-  const segments = useMemo<TranscriptParagraphSegment[] | null>(() => {
-    if (onboardingEnabled) {
-      return segmentTranscriptDirectives(text)
-    }
-
-    const parsed = parseTranscriptDirective(text)
-
-    return parsed ? [{ kind: 'directive', directive: parsed }] : null
-  }, [text])
+  const segments = useMemo<TranscriptParagraphSegment[] | null>(() => segmentTranscriptDirectives(text), [text])
 
   const entries = useMemo(
     () =>
@@ -98,34 +100,6 @@ export const TranscriptDirectiveLeaf: FC<{ text: string; streaming?: boolean }> 
       }),
     [contributions, segments]
   )
-
-  const match = entries[0]?.match
-  const parsed = entries[0]?.parsed
-  // SAFETY: claimFor resolved this entry from the directive area by its registered name.
-  const render = (match?.data as TranscriptDirectiveContribution | undefined)?.render
-
-  // Stable component identity for ContribRender (which mounts this AS a
-  // component): a fresh closure per render would remount the widget on
-  // every parent render.
-  const renderLeaf = useMemo(
-    () =>
-      render && parsed
-        ? () => render({ attrs: parsed.attrs, source: parsed.source, streaming: streaming ?? false })
-        : null,
-    [render, parsed, streaming]
-  )
-
-  if (!onboardingEnabled) {
-    if (!match || !renderLeaf) {
-      return null
-    }
-
-    return (
-      <ContribBoundary id={match.id} variant="chip">
-        <ContribRender render={renderLeaf} />
-      </ContribBoundary>
-    )
-  }
 
   if (entries.length === 0) {
     return null
@@ -161,12 +135,6 @@ export function useResolvedParagraph(text: string | null): ResolvedParagraphSegm
   const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
 
   return useMemo(() => {
-    if (!onboardingEnabled) {
-      const parsed = text === null ? null : parseTranscriptDirective(text)
-
-      return parsed && claimFor(contributions, parsed.name) ? [{ kind: 'directive', source: parsed.source }] : null
-    }
-
     const segments = text === null ? null : segmentTranscriptDirectives(text)
 
     if (!segments) {

@@ -23,7 +23,7 @@ def probe(path: Path) -> dict[str, Any]:
             "json",
             str(path),
         ],
-        check=True,
+        stdin=subprocess.DEVNULL, check=True,
         capture_output=True,
         text=True,
     )

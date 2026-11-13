@@ -38,13 +38,13 @@ class _BothModalitiesProvider(VideoGenProvider):
     def is_available(self) -> bool:
         return True
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return [{"id": "family-a", "modalities": ["text", "image"]}]
 
     def default_model(self) -> Optional[str]:
         return "family-a"
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {
             "modalities": ["text", "image"],
             "aspect_ratios": ["16:9", "9:16"],
@@ -70,13 +70,13 @@ class _ImageOnlyProvider(VideoGenProvider):
     def is_available(self) -> bool:
         return True
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         return [{"id": "img-only-v1", "modalities": ["image"]}]
 
     def default_model(self) -> Optional[str]:
         return "img-only-v1"
 
-    def capabilities(self) -> Dict[str, Any]:
+    def capabilities(self) -> dict[str, Any]:
         return {"modalities": ["image"], "min_duration": 1, "max_duration": 10}
 
     def generate(self, prompt, **kwargs):

@@ -30,7 +30,7 @@ from tools.registry import registry, tool_error
 from hermes_time import get_timezone_name
 from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from tools.code_execution_rpc import (
-    _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop,
+    _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
 )
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 
@@ -53,14 +53,15 @@ MAX_STDERR_BYTES = 10_000    # 10 KB
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
 
 
-def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
+def _truncate_stdout_text(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
     """Cap stdout by bytes (40% head / 60% tail) with explicit truncation metadata: byte counts
     ride alongside the textual marker because a client layer can miss or re-truncate it. The
-    omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun)."""
+    omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun);
+    in a hosted scope it is spilled into *env*, the agent's own sandbox, never on this host."""
     stdout_bytes = stdout_text.encode("utf-8", errors="replace")
     total = len(stdout_bytes)
     captured = min(total, MAX_STDOUT_BYTES)
-    metadata: Dict[str, Any] = {"stdout_truncated": total > captured, "stdout_bytes_captured": captured,
+    metadata: dict[str, Any] = {"stdout_truncated": total > captured, "stdout_bytes_captured": captured,
                                 "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
     if total <= MAX_STDOUT_BYTES:
         return stdout_bytes.decode("utf-8", errors="replace"), metadata
@@ -71,7 +72,7 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
     metadata["warning"] = ("execute_code stdout was truncated; the script did run, but only "
                            "the captured head/tail output is included. Re-run only with "
                            "narrower output if the omitted data is required.")
-    spill_path = _spill_full_stdout(stdout_text)
+    spill_path = _spill_full_stdout(stdout_text, env)
     if spill_path:
         metadata["stdout_spill_path"] = spill_path
         metadata["warning"] = ("execute_code stdout was truncated (head/tail shown); the "
@@ -80,24 +81,29 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
     return text, metadata
 
 
-def _spill_full_stdout(stdout_text: str) -> Optional[str]:
+def _spill_full_stdout(stdout_text: str, env: Any = None) -> Optional[str]:
     """Write full stdout to cache/exec; return its path (None on failure — best-effort,
     the truncated inline output is still returned). Keyed by content digest so identical
-    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files)."""
+    reruns coalesce; the dir rides the cache/web remote bind-mount list (credential_files).
+    In a hosted scope the file goes into the agent's own sandbox (*env*) or nowhere: the
+    output is the tenant's and this host keeps none of it."""
     try:
         import hashlib
         from hermes_constants import get_hermes_dir
         from tools.spill_safety import write_text_exclusive
+        from tools.tool_result_storage import _persist_hosted
         if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
             stdout_text = (stdout_text[:MAX_SPILLED_STDOUT_BYTES]
                            + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]")
+        digest = hashlib.sha256(stdout_text.encode("utf-8", errors="replace")).hexdigest()[:12]
+        if (hosted_path := _persist_hosted(stdout_text, f"exec-stdout-{digest}", env)) is not None:
+            return hosted_path or None
         cache_dir = get_hermes_dir("cache/exec", "exec_spill")
         cache_dir.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256(stdout_text.encode("utf-8", errors="replace")).hexdigest()[:12]
         path = cache_dir / f"stdout-{digest}.txt"
         write_text_exclusive(path, stdout_text, private=False, overwrite=True)
         return str(path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Failed to spill execute_code stdout: %s", exc)
         return None
 
@@ -191,7 +197,7 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
     return None
 
 
-def generate_hermes_tools_module(enabled_tools: List[str],
+def generate_hermes_tools_module(enabled_tools: list[str],
                                  transport: str = "uds") -> str:
     """Source of the hermes_tools.py stub module for SANDBOX_ALLOWED_TOOLS ∩ *enabled_tools*.
     ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends)."""
@@ -405,16 +411,18 @@ def _call(tool_name, args):
 def _get_or_create_env(task_id: str):
     """``(env, env_type)`` — the environment the terminal/file tools share for *task_id*, created on
     first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
-    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
+    from tools.terminal_tool_backends import (_container_config_from_config, _create_environment,
+                                              _local_config_from_config, _ssh_config_from_config)
     from tools.terminal_tool import (
         _active_environments, _env_lock, _get_env_config, _last_activity,
         _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
     )
     effective_task_id = _resolve_container_task_id(task_id)
+    from tools.environments.sandbox_scope import admit_env
     def _cached():
         with _env_lock:
-            env = _active_environments.get(effective_task_id)
+            env = admit_env(_active_environments.get(effective_task_id))
             if env is not None:
                 _last_activity[effective_task_id] = time.time()
         return env
@@ -442,7 +450,7 @@ def _get_or_create_env(task_id: str):
             cwd=overrides.get("cwd") or config["cwd"], timeout=config["timeout"],
             ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
             container_config=container_config,
-            local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
+            local_config=_local_config_from_config(config) if env_type == "local" else None,
             task_id=effective_task_id, host_cwd=_resolve_task_host_cwd(config, task_id),
         )
         with _env_lock:
@@ -511,12 +519,12 @@ def _format_interrupted_output(stdout_text: str) -> str:
     return f"{stdout_text}\n{marker}" if stdout_text else marker
 
 
-def _clean_output(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
+def _clean_output(stdout_text: str, env: Any = None) -> tuple[str, dict[str, Any]]:
     """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
     output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
     from tools.ansi_strip import strip_ansi
     from agent.redact import redact_sensitive_text
-    stdout_text, metadata = _truncate_stdout_text(stdout_text)
+    stdout_text, metadata = _truncate_stdout_text(stdout_text, env)
     return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
 
 
@@ -544,12 +552,12 @@ def _remote_failure(exc: BaseException, exec_start: float, tool_calls_made: int)
 _REMOTE_EXIT_STATUS = {124: "timeout", 130: "interrupted"}
 
 
-def _remote_result(status: str, raw_stdout: str, exec_start: float, fields: Dict[str, Any],
-                   kernel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _remote_result(status: str, raw_stdout: str, exec_start: float, fields: dict[str, Any],
+                   kernel: Optional[dict[str, Any]] = None, *, env: Any = None) -> dict[str, Any]:
     """Common remote reply shape: status, cleaned output, *fields*, duration, optional kernel
     info, then truncation metadata (key order is part of the result contract)."""
-    stdout_text, stdout_metadata = _clean_output(raw_stdout)
-    result: Dict[str, Any] = {"status": status, "output": stdout_text, **fields,
+    stdout_text, stdout_metadata = _clean_output(raw_stdout, env)
+    result: dict[str, Any] = {"status": status, "output": stdout_text, **fields,
                               "duration_seconds": round(time.monotonic() - exec_start, 2)}
     if kernel is not None:
         result["kernel"] = kernel
@@ -557,13 +565,13 @@ def _remote_result(status: str, raw_stdout: str, exec_start: float, fields: Dict
     return result
 
 
-def _apply_timeout(result: Dict[str, Any], timeout_msg: str) -> None:
+def _apply_timeout(result: dict[str, Any], timeout_msg: str) -> None:
     result["error"] = timeout_msg
     result["output"] = _with_timeout_notice(result["output"], timeout_msg)
 
 
-def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
-                                 timeout: int, exec_start: float) -> str:
+def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
+                                 timeout: int, exec_start: float, env: Any = None) -> str:
     """Post-process a remote-kernel cell result into the tool's JSON reply. Timeout messaging
     mirrors the local kernel contract (kernel killed, state lost, next call fresh)."""
     stdout_text = kernel_result.get("stdout", "") or ""
@@ -575,7 +583,9 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
         stdout_text = stdout_text + "\n--- stderr ---\n" + stderr_text + traceback_text
     result = _remote_result(kernel_result.get("status", "error"), stdout_text, exec_start,
                             {"tool_calls_made": kernel_result.get("tool_calls_made", 0)},
-                            kernel=kernel_result.get("kernel", {"remote": True}))
+                            kernel=kernel_result.get("kernel", {"remote": True}), env=env)
+    if kernel_result.get("tool_errors"):
+        result["tool_errors"] = kernel_result["tool_errors"]
     if result["status"] == "timeout":
         _apply_timeout(result, f"Cell timed out after {timeout}s; the remote session kernel was "
                                "killed and its state was lost. The next call starts fresh.")
@@ -584,7 +594,7 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
     return json.dumps(result, ensure_ascii=False)
 
 
-def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
+def _sandbox_tools_for(enabled_tools: Optional[list[str]]) -> frozenset:
     """Enabled ∩ SANDBOX_ALLOWED_TOOLS, or every sandbox tool when the intersection is empty."""
     return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ())) or SANDBOX_ALLOWED_TOOLS
 
@@ -596,7 +606,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
     quoted_sandbox_dir = shlex.quote(sandbox_dir)
-    tool_call_counter, stop_event, rpc_thread = [0], threading.Event(), None
+    tool_call_counter, tool_call_log, stop_event, rpc_thread = [0], [], threading.Event(), None
     try:
         # Private dirs: the sandbox lives under a shared temp dir and carries the
         # RPC token (in req files) and tool results. Fail closed on setup
@@ -612,7 +622,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # See #30882.
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
-            args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
+            args=(env, f"{sandbox_dir}/rpc", effective_task_id, tool_call_log, tool_call_counter,
                   max_tool_calls, sandbox_tools, stop_event, rpc_token))
         rpc_thread.start()
         # The token travels in a sourced env file, never in argv. No umask on
@@ -638,7 +648,10 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,
-                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]})
+                            {"exit_code": exit_code, "tool_calls_made": tool_call_counter[0]}, env=env)
+    tool_errors = tool_errors_since(tool_call_log)
+    if tool_errors:
+        result["tool_errors"] = tool_errors
     if status == "timeout":
         _apply_timeout(result, f"Script timed out after {timeout}s and was killed.")
         logger.warning("execute_code (remote) timed out after %ss (limit %ss) with %d tool calls",
@@ -651,45 +664,48 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     return json.dumps(result, ensure_ascii=False)
 
 
-def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[List[str]],
+def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[list[str]],
                     reset: bool = False) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
+    from tools.terminal_tool import _resolve_container_task_id
+    from tools.terminal_tool_lifecycle import _call_in_flight
     _cfg = _load_config()
     timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
-    exec_start = time.monotonic()
-    try:
-        py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
-        if "OK" not in py_check.get("output", ""):
-            return _error_result(f"Python 3 is not available in the {env_type} terminal "
-                                 "environment. Install Python to use execute_code with remote backends.")
-        # Session-kernel path: one persistent kernel per owner on the
-        # run-to-completion transport. Spawn failure falls OPEN to the per-call
-        # path below so a degraded remote host never blocks execution.
+    with _call_in_flight(_resolve_container_task_id(effective_task_id)):
+        exec_start = time.monotonic()
         try:
-            # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
-            # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
-            # runner + file cell protocol).
-            from tools.code_kernel_remote import execute_in_remote_kernel
-            kernel_result = execute_in_remote_kernel(
-                code, env=env, env_type=env_type, task_env_id=effective_task_id,
-                sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
-                max_tool_calls=max_tool_calls, reset=bool(reset),
-                idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
-            )
-        except Exception:
-            logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
-            kernel_result = None
-        if kernel_result is not None:
-            return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start)
-        logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
-    except Exception as exc:
-        return _remote_failure(exc, exec_start, 0)
-    return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
-                                timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
+            py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
+            if "OK" not in py_check.get("output", ""):
+                return _error_result(f"Python 3 is not available in the {env_type} terminal "
+                                     "environment. Install Python to use execute_code with remote backends.")
+            # Session-kernel path: one persistent kernel per owner on the
+            # run-to-completion transport. Spawn failure falls OPEN to the per-call
+            # path below so a degraded remote host never blocks execution.
+            try:
+                # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
+                # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
+                # runner + file cell protocol).
+                from tools.code_kernel_remote import execute_in_remote_kernel
+                kernel_result = execute_in_remote_kernel(
+                    code, env=env, env_type=env_type, task_env_id=effective_task_id,
+                    sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
+                    max_tool_calls=max_tool_calls, reset=bool(reset),
+                    idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
+                )
+            except Exception:
+                logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
+                kernel_result = None
+            if kernel_result is not None:
+                return _finish_remote_kernel_result(kernel_result, timeout=timeout, exec_start=exec_start, env=env)
+            logger.info("remote session kernel unavailable on %s; using per-call path", env_type)
+        except Exception as exc:
+            return _remote_failure(exc, exec_start, 0)
+        return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
+                                    timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start)
 
 
 # ---- Main entry point ----
@@ -698,7 +714,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[L
 def execute_code(
     code: str,
     task_id: Optional[str] = None,
-    enabled_tools: Optional[List[str]] = None,
+    enabled_tools: Optional[list[str]] = None,
     reset: bool = False,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
@@ -774,22 +790,25 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
-    if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
+    from hermes_cli.observability.shared_metrics_loop import record_execution_backend
+    from tools.environments.sandbox_scope import hosted_scope
+    # A hosted agent's code runs only in its sandbox, never in a kernel on this host.
+    if env_type != "local" or hosted_scope() is not None:
+        return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
     from tools.code_kernel import execute_in_session_kernel
     _cfg = _load_config()
     _mode = _get_execution_mode()
-    return execute_in_session_kernel(
+    return record_execution_backend("code", "local", execute_in_session_kernel(
         code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
         child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
-    )
+    ))
 
 
 def _kill_process_group(proc, escalate: bool = False):
@@ -851,25 +870,24 @@ def _get_execution_mode() -> str:
 
 # Per-tool documentation lines for the execute_code description, in canonical display order.
 _TOOL_DOC_LINES = [
-    ("web_search", "  web_search(query: str, limit: int = 5) -> dict\n"
+    ("web_search", "  web_search(query: str, limit: int = 5)\n"
      "    Returns {\"data\": {\"web\": [{\"url\", \"title\", \"description\"}, ...]}}"),
-    ("web_extract", "  web_extract(urls: list[str], char_limit: int = None) -> dict\n"
+    ("web_extract", "  web_extract(urls: list[str], char_limit: int = None)\n"
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown.\n"
      "    No LLM summarization. Pages over char_limit (default 15000) are head+tail truncated; full text stored on disk (path in the content footer)."),
-    ("read_file", "  read_file(path: str, offset: int = 1, limit: int = 2000) -> dict\n"
+    ("read_file", "  read_file(path: str, offset: int = 1, limit: int = 2000)\n"
      "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
-    ("write_file", "  write_file(path: str, content: str) -> dict\n    Always overwrites the entire file."),
-    ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\") -> dict\n"
+    ("write_file", "  write_file(path: str, content: str)\n    Always overwrites the entire file; an existing file must be read_file'd first or the write is refused."),
+    ("search_files", "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, order=\"discovery\")\n"
      "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
-    ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
-     "    Replaces old_string with new_string in the file."),
-    ("terminal", "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
+    ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False)"),
+    ("terminal", "  terminal(command: str, timeout=None, workdir=None)\n"
      "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
 ]
 
 
-def build_execute_code_schema(enabled_sandbox_tools: set = None,
-                              mode: str = None) -> dict:
+def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
+                              mode: str | None = None) -> dict:
     """execute_code schema listing only *enabled_sandbox_tools* — a disabled tool (e.g. web off)
     must not appear or the model keeps trying it. ``mode`` (None → config) picks the cwd sentence."""
     if enabled_sandbox_tools is None:
@@ -877,9 +895,6 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     if mode is None:
         mode = _get_execution_mode()
     tool_lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools)
-    import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
-    import_examples = import_examples or sorted(enabled_sandbox_tools)[:2]
-    import_str = ", ".join(import_examples) + ", ..." if import_examples else "..."
     if mode == "strict":
         cwd_note = (
             "Scripts run in their own temp dir, not the session's CWD — pass "
@@ -907,7 +922,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "Calls run in a persistent session kernel: variables, imports, and "
         "loaded data survive across execute_code calls, so build on earlier "
         "work instead of re-loading it. A timed-out or interrupted call loses that state.\n\n"
-        f"Available via `from hermes_tools import ...`:\n\n"
+        "Available via `from hermes_tools import ...` (each returns a dict):\n\n"
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
         "50KB shows head/tail inline; the FULL text is auto-saved to a file whose path rides in the result.\n\n"
@@ -923,10 +938,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "parameters": {
             "type": "object",
             "properties": {
-                "code": {"type": "string", "description": (
-                    "Python code to execute. Import tools with "
-                    f"`from hermes_tools import {import_str}` "
-                    "and print your final result to stdout.")},
+                "code": {"type": "string",
+                         "description": "Python code to execute; print your final result to stdout."},
                 "reset": {"type": "boolean", "description": (
                     "Discard the kernel's persistent state and start fresh before running this code.")},
             },
@@ -959,31 +972,5 @@ registry.register(
     name="execute_code", toolset="code_execution", schema=EXECUTE_CODE_SCHEMA,
     handler=_execute_code_handler, check_fn=check_sandbox_requirements, emoji="🐍",
     max_result_size_chars=100_000,
+    compat_args=("command",), self_checked_args=("code",),  # the handler redirects shell mix-ups to terminal
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import platform  # noqa: F401,E402
-import socket  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-DEFAULT_KERNEL_MODE = "session"
-
-KERNEL_MODES = ("per-call", "session")  # legacy compat constant
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'thread_scoped_silence': ('agent.thread_scoped_output', 'thread_scoped_silence'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -49,7 +49,7 @@ def _render_cli() -> str:
     cli = SimpleNamespace(
         _session_db=db, session_id=SESSION_ID, session_start=datetime(2000, 1, 1), agent=_agent(),
         provider=PROVIDER, model=MODEL, _agent_running=True, reasoning_config=None, show_reasoning=None,
-        session_key="", _get_status_bar_snapshot=lambda: {},
+        session_key="", _get_status_bar_snapshot=dict,
         _console_print=lambda text, **_kw: rendered.append(text),
     )
     CLISessionMixin._show_session_status(cli)

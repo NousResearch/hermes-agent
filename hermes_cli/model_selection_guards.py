@@ -35,16 +35,17 @@ class SelectionContext:
 
 
 def selection_context_for_agent(agent: object) -> Optional[SelectionContext]:
-    """:class:`SelectionContext` from a live ``AIAgent``: the compressor's measured
-    ``last_prompt_tokens`` (what the provider billed on the latest turn), else the session prompt
-    counter. ``None`` when no live size is known — the guard then stays silent rather than guess."""
+    """:class:`SelectionContext` from a live ``AIAgent``.
+
+    Uses the compressor's measured ``last_prompt_tokens`` (what the provider billed
+    on the latest turn). ``session_prompt_tokens`` is a lifetime sum and is not live
+    occupancy, so it is not a fallback (#126343). ``None`` when no positive
+    measurement exists — the guard stays silent rather than guess."""
     if agent is None:
         return None
     try:
         cc = getattr(agent, "context_compressor", None)
         tokens = int(getattr(cc, "last_prompt_tokens", 0) or 0) if cc else 0
-        if tokens <= 0:
-            tokens = int(getattr(agent, "session_prompt_tokens", 0) or 0)
     except Exception:
         tokens = 0
     if tokens <= 0:
@@ -139,12 +140,12 @@ def selection_warnings(
     model_name: str, *, provider: Optional[str] = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None, model_info: Optional[ModelInfo] = None,
     include_kinds: Optional[Iterable[str]] = None,
-    selection_context: Optional[SelectionContext] = None) -> List[SelectionWarning]:
+    selection_context: Optional[SelectionContext] = None) -> list[SelectionWarning]:
     """Warnings from every registered guard (empty in the common case). ``include_kinds`` restricts
     which kinds are returned; ``selection_context`` carries live-session facts for switch-aware guards.
     Guard exceptions are swallowed — never break model selection."""
     wanted = set(include_kinds) if include_kinds is not None else None
-    results: List[SelectionWarning] = []
+    results: list[SelectionWarning] = []
     for guard in _GUARDS:
         try:
             warning = guard(model_name, provider, base_url, api_key, model_info, selection_context)
@@ -155,7 +156,7 @@ def selection_warnings(
     return results
 
 
-def combined_message(warnings: List[SelectionWarning]) -> str:
+def combined_message(warnings: list[SelectionWarning]) -> str:
     """One confirm-prompt body for several warnings (one prompt beats two sequential ones)."""
     return "\n\n".join(w.message for w in warnings)
 

@@ -67,6 +67,7 @@ def _run_probe(hermes_home: Path, code: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
 
 

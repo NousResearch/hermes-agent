@@ -1,5 +1,10 @@
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it, vi } from 'vitest'
 
+import { formatDesktopLogLine } from './desktop-log-line'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport, formatRendererConsoleLine } from './renderer-log'
 
 type ConsoleMessageEvent = {
@@ -47,6 +52,44 @@ describe('formatRendererConsoleLine', () => {
 })
 
 describe('attachRendererConsoleCapture', () => {
+  it('writes serialized wake diagnostics to desktop.log without admitting other warnings', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'wake-log-'))
+    const file = join(directory, 'desktop.log')
+    const capture = createWindowHarness()
+
+    const diagnostic = {
+      attempts: 3,
+      phase: 'hydration',
+      profile: 'tom',
+      runtimeBound: false,
+      selectionSettled: true,
+      storedSessionId: 'bot-chat-tom',
+      transcriptPainted: false
+    }
+
+    try {
+      attachRendererConsoleCapture(capture.win, 'session-window', line => {
+        appendFileSync(file, `${formatDesktopLogLine(line)}\n`)
+      })
+      capture.getHandler()?.({
+        level: 'warning',
+        message: `[bot-wake] hydration timed out ${JSON.stringify(diagnostic)}`,
+        sourceId: 'file:///app/index.js',
+        lineNumber: 42
+      })
+      capture.getHandler()?.({ level: 'warning', message: 'unrelated warning', sourceId: 'src', lineNumber: 1 })
+      capture.getHandler()?.({ level: 'info', message: '[bot-wake] quiet', sourceId: 'src', lineNumber: 1 })
+
+      const lines = readFileSync(file, 'utf8').trim().split('\n')
+
+      expect(lines).toHaveLength(1)
+      expect(lines[0]).toContain('[renderer console:session-window] [bot-wake] hydration timed out ')
+      expect(JSON.parse(lines[0]!.split('hydration timed out ')[1]!.split(' (file:')[0]!)).toEqual(diagnostic)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('registers a single-argument listener, logs errors, and skips the rest', () => {
     const log = vi.fn()
     const capture = createWindowHarness()

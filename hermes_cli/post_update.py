@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterable
 
@@ -37,7 +37,7 @@ def _backup_path(path: Path, stamp: str) -> Path:
 
 
 def _backup_existing(paths: Iterable[Path]) -> dict:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backups: dict = {}
     for path in paths:
         if not path.is_file():
@@ -63,6 +63,9 @@ def step_migrate_config() -> dict:
 
     Same shape as scripts/docker_config_migrate.py: back up config + .env,
     migrate, verify the version advanced, restore the backups on failure.
+    A pass that stopped at a failing step is partial progress, not a failure
+    to undo: the file keeps the steps before it (stamped at the last one) and
+    the result carries ``failed_step`` so boot retries it on the next start.
     No-op when the on-disk version is current (the 99% case).
     """
     from hermes_cli.config import (
@@ -75,31 +78,62 @@ def step_migrate_config() -> dict:
         SUPPORT_FLOOR_VERSION,
         support_floor_message,
     )
+    from hermes_cli.config_migrations_browser import agent_browser_env_pending
+    from hermes_cli.config_version_stamp import read_config_version_stamp, stamp_missing_config
 
-    current_ver, latest_ver = check_config_version()
+    stamp_missing_config()  # a missing config.yaml reads as current below
+    stamp, latest_ver = read_config_version_stamp()
+    current_ver = 0 if stamp is None else stamp
     if current_ver >= latest_ver:
         return {"ok": True, "skipped": "up-to-date"}
-    if current_ver < SUPPORT_FLOOR_VERSION:
+    if current_ver < SUPPORT_FLOOR_VERSION and not (stamp is None and agent_browser_env_pending()):
         # migrate_config() refuses sub-floor configs and leaves the file
-        # untouched; warn instead of failing the boot.
+        # untouched; warn instead of failing the boot. An unstamped config is
+        # left alone too, unless its .env still holds AGENT_BROWSER_* settings
+        # nothing reads any more: migrate_config() gives it the legacy-key
+        # steps (v52's move among them) and a stamp.
         logger.warning("config migration skipped: %s", support_floor_message())
         return {"ok": True, "skipped": "below-support-floor"}
 
     backups = _backup_existing((get_config_path(), get_env_path()))
     try:
-        migrate_config(interactive=False, quiet=True)
+        results = migrate_config(interactive=False, quiet=True) or {}
     except Exception:
         _restore_backups(backups)
         raise
     post_ver, _ = check_config_version()
-    if post_ver < latest_ver:
+    failed = results.get("failed_step")
+    if post_ver < latest_ver and failed is None:
         restored = _restore_backups(backups)
         raise RuntimeError(
             f"migration did not advance config version to {latest_ver} "
             f"(still {post_ver}); restored: "
             + (", ".join(str(p) for p in restored) if restored else "none")
         )
+    # `hermes update` prints what a quiet migration changed; boot has no terminal to print it to.
+    from hermes_cli.left_core_migration import defer_startup_notice
+    for notice in results.get("notices") or ():
+        defer_startup_notice(notice)
+    if failed is not None:
+        # A step raised: the file is stamped at the last step that succeeded, and those steps
+        # stay (restoring would undo them). Boot retries the rest on every start
+        # (boot_bootstrap); a retry that changed nothing leaves no backup behind.
+        _drop_unchanged_backups(backups)
+        defer_startup_notice(results["failed_warning"], log=False)
+        return {"ok": False, "failed_step": failed, "failed_warning": results["failed_warning"],
+                "migrated": f"{current_ver}->{post_ver}",
+                "error": f"config migration to v{failed} failed; kept v{current_ver}->v{post_ver}, "
+                         "retried on the next start"}
     return {"ok": True, "migrated": f"{current_ver}->{latest_ver}"}
+
+
+def _drop_unchanged_backups(backups: dict) -> None:
+    for original, backup in backups.items():
+        try:
+            if original.read_bytes() == backup.read_bytes():
+                backup.unlink()
+        except OSError:
+            logger.debug("could not compare %s with its backup", original, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +181,20 @@ def step_state_db_guard() -> dict:
         message,
     )
     return {"ok": False, "error": message}
+
+
+def step_drop_live_plugin_catalog() -> dict:
+    """Drop the active home's cached live plugin catalog after a code change.
+
+    Bundled/sealed app updates never run ``hermes update``'s maintenance tail,
+    so without this a pre-update snapshot out-votes the newer in-tree catalog
+    for the rest of its TTL (#119340). Per home, like the boot record.
+    """
+    from hermes_constants import get_hermes_home
+    from hermes_cli.plugin_catalog import invalidate_live_cache_for_home
+
+    invalidate_live_cache_for_home(get_hermes_home())
+    return {"ok": True}
 
 
 def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
@@ -212,7 +260,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     try:
         # Full checkout identity when git can answer; the birth-certificate
         # minimum below only when it cannot (or the tree is read-only).
-        identified = write_source_stamp(root)
+        identified = write_source_stamp(root, adopted=True)
     except OSError as exc:
         # A read-only tree (nix-like layouts without their own stamp)
         # must not crash the boot — it just stays unadopted.
@@ -224,7 +272,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
             "schemaVersion": 2,
             "updateMechanism": "self",
             "source": "adoption",
-            "adoptedAt": datetime.now(timezone.utc).isoformat(),
+            "adoptedAt": datetime.now(UTC).isoformat(),
         }
         try:
             fd, tmp_name = tempfile.mkstemp(
@@ -268,7 +316,7 @@ def step_provision_runtimes() -> dict:
             else:
                 pm.ensure(name, explicit=True)
             refreshed.append(name)
-        except Exception as exc:  # noqa: BLE001 — one tool must not stop the rest
+        except Exception as exc:
             logger.warning("provision_runtimes: %s failed: %s", name, exc)
             errors.append(f"{name}: {exc}")
     if errors:
@@ -285,6 +333,7 @@ HOME_STEPS: tuple = (
     ("migrate_config", step_migrate_config),
     ("sync_skills", step_sync_skills),
     ("state_db_guard", step_state_db_guard),
+    ("drop_live_plugin_catalog", step_drop_live_plugin_catalog),
     ("expose_cli", expose_cli),
 )
 

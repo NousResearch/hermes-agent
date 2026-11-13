@@ -292,7 +292,7 @@ class TestInPlaceAntiGrowthGuard:
                 },
             ]
             assert estimate_messages_tokens_rough(grown) > estimate_messages_tokens_rough(original)
-            compressor = getattr(agent, "context_compressor")
+            compressor = agent.context_compressor
             compressor.compress = (
                 lambda messages, current_tokens=None, focus_topic=None, force=False: grown
             )
@@ -301,7 +301,7 @@ class TestInPlaceAntiGrowthGuard:
                 agent, original, approx_tokens=100_000, system_message="sys"
             )
 
-            assert getattr(agent, "_last_compaction_in_place") is True
+            assert agent._last_compaction_in_place is True
             assert estimate_messages_tokens_rough(compressed) < estimate_messages_tokens_rough(original)
             tool_bodies = [m.get("content") for m in compressed if m.get("role") == "tool"]
             assert any(isinstance(body, str) and body.startswith("keep-me") for body in tool_bodies)

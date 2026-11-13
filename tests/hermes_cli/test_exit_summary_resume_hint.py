@@ -4,6 +4,9 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
+from hermes_cli.main_tui_launch import _print_tui_exit_summary
+
+import hermes_cli.main
 
 
 def _make_cli(session_id="20260524_000001_abc123"):
@@ -80,4 +83,34 @@ class TestExitSummaryResumeHint:
         out = capsys.readouterr().out
         # Resume hint still printed without -p.
         assert "hermes --resume 20260524_000001_abc123" in out
+        assert " -p " not in out
+
+
+def _tui_session_db(*_args, **_kwargs):
+    db = MagicMock()
+    db.get_session.return_value = {"message_count": 3}
+    db.get_session_title.return_value = "My TUI Session"
+    return db
+
+
+class TestTuiExitSummaryResumeHint:
+    """``_print_tui_exit_summary`` (hermes_cli/main_tui_launch.py) is a separate entry
+    point from the classic CLI summary above and must carry the same ``-p`` flag (#125078)."""
+
+    def test_tui_hints_include_profile_flag_for_named_profile(self, capsys):
+        with patch("hermes_state.SessionDB", _tui_session_db), patch(
+            "hermes_cli.profiles.get_active_profile_name", return_value="dev"
+        ):
+            _print_tui_exit_summary("20260524_000001_abc123")
+        out = capsys.readouterr().out
+        assert "hermes --tui --resume 20260524_000001_abc123 -p dev" in out
+        assert 'hermes --tui -c "My TUI Session" -p dev' in out
+
+    def test_tui_hints_no_profile_flag_on_default(self, capsys):
+        with patch("hermes_state.SessionDB", _tui_session_db), patch(
+            "hermes_cli.profiles.get_active_profile_name", return_value="default"
+        ):
+            _print_tui_exit_summary("20260524_000001_abc123")
+        out = capsys.readouterr().out
+        assert "hermes --tui --resume 20260524_000001_abc123" in out
         assert " -p " not in out

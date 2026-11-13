@@ -106,6 +106,17 @@ describe('lastErrorSummary', () => {
     expect(summary.endsWith('…')).toBe(true)
   })
 
+  it('caps astral error text without splitting a surrogate pair (review follow-up)', () => {
+    // last_error is raw Python exception text; astral characters reach the cap. slice()'s
+    // UTF-16 unit limit used to leave a lone high surrogate that rendered as U+FFFD.
+    // 250 emoji = 500 units > ERROR_SUMMARY_MAX; the old slice(0, 199) cut inside the
+    // pair at unit 198, emitting '\uD83D…'.
+    const summary = lastErrorSummary(`ValueError: ${'😀'.repeat(250)}`)
+
+    expect(summary.endsWith('😀…')).toBe(true)
+    expect(summary.slice(0, -1).endsWith('\uD83D')).toBe(false)
+  })
+
   it('returns an empty string for missing input', () => {
     expect(lastErrorSummary(null)).toBe('')
     expect(lastErrorSummary(undefined)).toBe('')

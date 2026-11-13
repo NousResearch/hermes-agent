@@ -69,7 +69,7 @@ def test_legacy_caller_without_flag_keeps_voice_bubble():
 
     asyncio.run(adapter.send_voice(chat_id="!room:example.org", audio_path="/tmp/tts.ogg"))
 
-    args, kwargs = spy.call_args
+    _args, kwargs = spy.call_args
     assert kwargs["is_voice"] is True
 
 

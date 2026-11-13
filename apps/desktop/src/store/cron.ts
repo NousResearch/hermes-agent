@@ -20,6 +20,13 @@ export interface CronJobsScopeToken {
 let cronJobsRequestGeneration = 0
 let cronJobsRequestScope = ''
 let cronJobsScopeGeneration = 0
+// The backend scope (connection + profile) the published list was fetched from; '' once a
+// connection switch wiped it. A cleared cache is not evidence about any backend's jobs.
+let cronJobsSnapshotScope = ''
+
+export function getCronJobsSnapshotScope(): string {
+  return cronJobsSnapshotScope
+}
 
 function activateCronJobsScope(scope: string): void {
   if (scope === cronJobsRequestScope) {
@@ -65,6 +72,7 @@ export function commitCronJobsRequest(request: CronJobsRequest, jobs: CronJob[])
   // Consume the token so neither a duplicate completion nor any older request
   // can publish after this authoritative snapshot.
   cronJobsRequestGeneration += 1
+  cronJobsSnapshotScope = request.scope
   $cronJobs.set(jobs)
 
   return true
@@ -72,6 +80,7 @@ export function commitCronJobsRequest(request: CronJobsRequest, jobs: CronJob[])
 
 export const setCronJobs = (jobs: CronJob[]) => {
   cronJobsRequestGeneration += 1
+  cronJobsSnapshotScope = ''
   $cronJobs.set(jobs)
 }
 

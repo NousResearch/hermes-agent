@@ -26,6 +26,15 @@ export function shouldConvertPasteToAttachment(
   return typeof text === 'string' && threshold > 0 && text.length > threshold
 }
 
+// `electron/composer-paste.ts` names every saved paste `pasted_content_<stamp>_<hex>.txt`;
+// staging into the session may append `-N`. Anything else is a real file.
+const PASTED_CONTENT_FILE_RE = /(?:^|[\\/])pasted_content_[\w-]+\.txt$/
+
+/** True for a large-paste file, whose chip reads "Pasted content" instead of its path. */
+export function isPastedContentPath(path: string): boolean {
+  return PASTED_CONTENT_FILE_RE.test(path)
+}
+
 /** Human-readable size of a paste's UTF-8 bytes, for the attachment chip. */
 export function pasteSizeLabel(text: string): string {
   const bytes = new TextEncoder().encode(text).length

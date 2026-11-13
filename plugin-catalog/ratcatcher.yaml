@@ -1,0 +1,28 @@
+name: ratcatcher
+repo: https://github.com/Truthgeng/ratcatcher
+sha: 04b5a548bb38791d559a451a56dda723ea1b9f94
+description: "Scam bouncer for Telegram groups: removes wallet drainers, fake airdrops, fake support and DM bait, doubling scams, look-alike phishing links and admin impersonators before members or Hermes read them, mutes then bans repeat offenders, and DMs admins a report with Release and Ban buttons. Hermes can check a pasted message, report catches, edit the blocklist and release false alarms. Disclosure — deletes group messages and mutes or bans members through your own Hermes bot, in enforce mode with ban-on-sight and AI review on by default for every group the bot is in unless protected_chats is set; removed messages never reach Hermes; sends borderline messages (only) from any group member to your current model via ctx.llm when ai_review is on; blocklist changes and releases by the agent ask for your approval through Hermes, and a blocklist hit removes the message and adds a strike but never bans on sight; stores catches, strikes and member join times in its own plugin data; no third-party network calls."
+maintainer: Truthgeng
+tier: community
+category: platform
+version: "0.4.0"
+requires_hermes: ">=0.23.0"
+image: https://raw.githubusercontent.com/Truthgeng/ratcatcher/04b5a548bb38791d559a451a56dda723ea1b9f94/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/Truthgeng/ratcatcher/04b5a548bb38791d559a451a56dda723ea1b9f94/assets/screenshots/1-scam-removed-and-reported.png
+  - https://raw.githubusercontent.com/Truthgeng/ratcatcher/04b5a548bb38791d559a451a56dda723ea1b9f94/assets/screenshots/2-ai-second-look.png
+  - https://raw.githubusercontent.com/Truthgeng/ratcatcher/04b5a548bb38791d559a451a56dda723ea1b9f94/assets/screenshots/3-rejoin-link-after-release.png
+  - https://raw.githubusercontent.com/Truthgeng/ratcatcher/04b5a548bb38791d559a451a56dda723ea1b9f94/assets/screenshots/4-hermes-answers.png
+docs_url: https://github.com/Truthgeng/ratcatcher
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - ratcatcher_check
+    - ratcatcher_report
+    - ratcatcher_blocklist
+    - ratcatcher_release
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

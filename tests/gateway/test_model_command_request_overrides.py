@@ -66,7 +66,7 @@ custom_providers:
     # resolve_persist_behavior() reads the profile config through get_hermes_home(); without this
     # the sandbox home looks like a fresh install and the --provider switch persists globally.
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(
         "hermes_cli.model_switch.switch_model",
         lambda **kw: ModelSwitchResult(

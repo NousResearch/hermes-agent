@@ -204,7 +204,7 @@ def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
 
 def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch, tmp_path):
     """A claimed attempt is consumed even when the job pipeline reports failure."""
-    import cron.executions as executions
+    from cron import executions
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
     prov, fake = chronos

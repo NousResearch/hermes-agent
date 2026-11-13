@@ -166,7 +166,7 @@ def test_room_agent_uses_target_policy_toolsets_and_turn_limit(monkeypatch):
         lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1"},
     )
     monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-test")
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
     monkeypatch.setattr(
         "gateway.run.GatewayRunner._load_reasoning_config",
         staticmethod(lambda model="": {"enabled": True, "effort": "high"}),

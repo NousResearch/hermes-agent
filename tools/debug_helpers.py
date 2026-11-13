@@ -25,7 +25,7 @@ class DebugSession:
         self.enabled = os.getenv(env_var, "false").lower() == "true"
         self.session_id = str(uuid.uuid4()) if self.enabled else ""
         self.log_dir = get_hermes_home() / "logs"
-        self._calls: list[Dict[str, Any]] = []
+        self._calls: list[dict[str, Any]] = []
         self._start_time = _now() if self.enabled else ""
         if self.enabled:
             self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -35,7 +35,7 @@ class DebugSession:
     def active(self) -> bool:
         return self.enabled
 
-    def log_call(self, call_name: str, call_data: Dict[str, Any]) -> None:
+    def log_call(self, call_name: str, call_data: dict[str, Any]) -> None:
         """Append a tool-call entry to the in-memory log."""
         if self.enabled:
             self._calls.append({"timestamp": _now(), "tool_name": call_name, **call_data})

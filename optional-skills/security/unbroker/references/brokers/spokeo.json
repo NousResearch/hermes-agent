@@ -11,7 +11,13 @@
     "url": "https://www.spokeo.com/search",
     "fetch": "browser",
     "match_signal": "profile",
-    "by": ["name", "phone", "email", "address"]
+    "by": ["name", "phone", "email", "address"],
+    "url_patterns": {
+      "phone": "https://www.spokeo.com/{areacode}-{prefix}-{line}"
+    },
+    "url_format_quirks": [
+      "Reverse-phone results page is static HTML readable by web_extract (verified live 2026-10-26); the phone vector resolves directly - no on-site search needed."
+    ]
   },
   "optout": {
     "tier": "T1",
@@ -21,7 +27,7 @@
     "requires": {
       "profile_url": true,
       "email_verification": true,
-      "captcha": false,
+      "captcha": true,
       "gov_id": false,
       "account": false,
       "phone_callback": false,
@@ -43,14 +49,16 @@
     ],
     "notes": "Form + privacy@spokeo.com verified live 2026-07-01. Their page: opting out does not remove data from original sources and listings may reappear as new public records arrive -- keep the reappearance re-scan scheduled.",
     "quirks": [
+      "OPT-OUT FORM NOW CAPTCHA-GATED (verified live 2026-10-26; previously captcha-free): a reCAPTCHA v2 checkbox must be checked for the form to submit ('Please complete the captcha to submit your opt out request'). Clears on a real residential browser; synthetic CDP clicks on a debug-profile Chrome did NOT toggle it - if it will not clear, fall back to the privacy@spokeo.com deletion email naming the listing URL(s).",
       "Profile URL formats the form accepts: listing URL like spokeo.com/{First}-{Last}/{City}/{ST}/p{id} or a purchase URL spokeo.com/purchase?q=... (examples shown on /optout).",
       "Multiple listings per person are NORMAL (one per name x location x record cluster); each unique URL must be opted out individually -- feed every found listing URL through the form.",
       "Processing is 24-48h ('depending on the nature of your request and the amount of data').",
-      "Paid accounts may retain data even when hidden from free search - verify actual removal, don't mark confirmed_removed off the free-search view alone."
+      "Paid accounts may retain data even when hidden from free search - verify actual removal, don't mark confirmed_removed off the free-search view alone.",
+      "CAPTCHA REALITY (2026-10-26): the form's reCAPTCHA v2 checkbox refused synthetic automation clicks - no token, no challenge, no error - so this is T2 without a captcha-clearing browser backend. One clean attempt, then queue the manual step; privacy@spokeo.com (deletion email naming the listing URLs) is the no-captcha lane."
     ],
     "est_processing_days": 2,
     "reappearance_risk": "medium"
   },
-  "last_verified": "2026-07-01",
+  "last_verified": "2026-10-26",
   "source": "BADBOOL"
 }

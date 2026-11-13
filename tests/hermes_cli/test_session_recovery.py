@@ -935,3 +935,42 @@ def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain
     assert result["range_queries"] < 200
     # Only the rows on the damaged leaf are lost; everything behind it is recovered.
     assert result["copied_rows"] >= 180 - 60
+
+
+def test_recover_carries_message_identity_columns(tmp_path):
+    """``hermes sessions recover`` copies the compatible columns of ``messages`` into a current-schema
+    database: the durable ids (``message_uid``, the merge witness, the tool-call uids) survive with the rows."""
+    source = tmp_path / "source.db"
+    db = SessionDB(db_path=source)
+    try:
+        db.create_session("s", "cli", model="m")
+        db.append_message(session_id="s", role="user", content="q")
+        db._conn.execute("UPDATE messages SET absorbed_message_uids = ? WHERE content = 'q'", (json.dumps(["b" * 32]),))
+        db._conn.commit()
+        db.append_message(
+            session_id="s", role="assistant", content="",
+            tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}])
+        db.append_message(session_id="s", role="tool", content="r", tool_call_id="call_1", tool_name="t")
+        expected = [dict(r) for r in db._conn.execute(
+            "SELECT role, message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid "
+            "FROM messages WHERE session_id = 's' ORDER BY id")]
+    finally:
+        db.close()
+    assert all(len(r["message_uid"]) == 32 for r in expected)
+
+    output = tmp_path / "recovered.db"
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["complete"] is True
+
+    recovered = SessionDB(db_path=output)
+    try:
+        got = [dict(r) for r in recovered._conn.execute(
+            "SELECT role, message_uid, absorbed_message_uids, tool_call_uids, tool_call_uid "
+            "FROM messages WHERE session_id = 's' ORDER BY id")]
+        assert got == expected
+        restored = recovered.get_messages_as_conversation("s")
+        assert [m["message_uid"] for m in restored] == [r["message_uid"] for r in expected]
+        assert restored[0]["_absorbed_message_uids"] == ["b" * 32]
+        assert restored[2]["_tool_call_uid"] == restored[1]["_tool_call_uids"]["call_1"]
+    finally:
+        recovered.close()

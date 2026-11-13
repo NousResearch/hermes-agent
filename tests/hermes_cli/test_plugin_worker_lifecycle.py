@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    plugin_world as plugin_world,
-    isolated_python as isolated_python,
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 
@@ -54,7 +54,7 @@ def test_declaration_consent_admission_and_resync(plugin_world, monkeypatch, cap
     import subprocess
     python = world.selected() / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     result = subprocess.run([str(python), "-I", "-c", "import plugin_proof_dep; assert plugin_proof_dep.__version__ == '2.0'"],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
 
 
@@ -111,7 +111,7 @@ def test_active_reinstall_does_not_overwrite_a_later_disable(plugin_world, monke
     second = version(origin, pin="2.0")
     watched = [world.home / "config.yaml", paths.runtime_facts_path()]
     acknowledged = {}
-    def disable_after_publication(*args):
+    def disable_after_publication(*args, **kwargs):
         world.command("disable", name="plugin-worker-proof")
         acknowledged.update({path: path.read_bytes() for path in watched})
     monkeypatch.setattr(plugins_cmd, "_display_after_install", disable_after_publication)

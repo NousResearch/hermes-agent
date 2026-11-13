@@ -50,11 +50,11 @@ _OBSERVABLE_METRIC_NAMES = (
     "hermes.gateway.background_delegations", "hermes.platform.up", "hermes.platform.degraded",
     "hermes.cron.scheduler.heartbeat_age_seconds", "hermes.cron.scheduler.last_success_age_seconds",
     "hermes.cron.scheduler.catch_up_occurrences", "hermes.cron.jobs.enabled", "hermes.cron.jobs.running",
-    "hermes.cron.jobs.overdue",
+    "hermes.cron.jobs.overdue", "hermes.cron.store.writable", "hermes.cron.store.skipped_runs",
 )
 
 
-def _diagnostic_log_attributes(event: Dict[str, Any]) -> Dict[str, Any]:
+def _diagnostic_log_attributes(event: dict[str, Any]) -> dict[str, Any]:
     # Same allowlist as the span mapping: profile/install_id/ts never egress as attributes.
     return _allowlisted_attrs(event, otlp_exporter._KEEP_BY_KIND["gateway_diagnostic"])
 
@@ -102,15 +102,15 @@ class GatewayHealthExportRuntime:
         self.streamer = self.log_streamer = self.metric_provider = self.thread = self.stop_event = None
 
 
-def _gateway_health_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def _gateway_health_config(config: dict[str, Any]) -> dict[str, Any]:
     return _monitoring_section(config, "gateway_health_export")
 
 
-def _enabled(config: Dict[str, Any]) -> bool:
+def _enabled(config: dict[str, Any]) -> bool:
     return bool(_gateway_health_config(config).get("enabled") and otlp_exporter.is_enabled(config))
 
 
-def _exporter_kwargs(config: Dict[str, Any], signal: str) -> Dict[str, Any]:
+def _exporter_kwargs(config: dict[str, Any], signal: str) -> dict[str, Any]:
     otlp = _otlp_config(config)
     return {"endpoint": _signal_endpoint(str(otlp.get("endpoint")), signal), "headers": _resolve_headers(otlp.get("headers_env")) or None}
 
@@ -128,7 +128,7 @@ def _supervision_mode() -> str:
     return next((mode for mode, detect in _SUPERVISION_DETECTORS if detect()), "manual")
 
 
-def _read_gateway_snapshot(config: Dict[str, Any]):
+def _read_gateway_snapshot(config: dict[str, Any]):
     try:
         from gateway.status import read_runtime_status
         runtime = read_runtime_status() or {}
@@ -170,7 +170,7 @@ def _read_background_delegations_count() -> int:
     return _count("background-delegations count failed", "tools.async_delegation", lambda m: m.active_count())
 
 
-def _read_runtime_snapshot(config: Dict[str, Any]):
+def _read_runtime_snapshot(config: dict[str, Any]):
     gateway_snapshot = _read_gateway_snapshot(config)
     # Background/subagent work is appended to the gateway snapshot so it rides the same base
     # resource attributes (service.instance.id etc.).
@@ -194,7 +194,7 @@ def _read_runtime_snapshot(config: Dict[str, Any]):
     return gateway_snapshot
 
 
-def _emit_snapshot_events(config: Dict[str, Any]) -> None:
+def _emit_snapshot_events(config: dict[str, Any]) -> None:
     if not _gateway_health_config(config).get("diagnostic_events_enabled", True):
         return
     try:
@@ -204,7 +204,7 @@ def _emit_snapshot_events(config: Dict[str, Any]) -> None:
         logger.debug("gateway health snapshot emit failed", exc_info=True)
 
 
-def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
+def _start_metric_provider(config: dict[str, Any], sdk: dict[str, Any]) -> Any:
     exporter = sdk["OTLPMetricExporter"](**_exporter_kwargs(config, "metrics"))
     interval_ms = max(5, int(_gateway_health_config(config).get("export_interval_seconds", 60))) * 1000
     reader = sdk["PeriodicExportingMetricReader"](exporter, export_interval_millis=interval_ms)
@@ -231,14 +231,14 @@ def _start_metric_provider(config: Dict[str, Any], sdk: Dict[str, Any]) -> Any:
 _SEVERITY_NAMES = {"critical": "FATAL", "fatal": "FATAL", "error": "ERROR", "info": "INFO", "information": "INFO", "debug": "DEBUG"}
 
 
-def _severity_number(sdk: Dict[str, Any], severity: Any) -> Any:
+def _severity_number(sdk: dict[str, Any], severity: Any) -> Any:
     return getattr(sdk["SeverityNumber"], _SEVERITY_NAMES.get(str(severity or "warning").lower(), "WARN"))
 
 
 class GatewayDiagnosticLogStreamer(EmitterStreamer):
     """Emitter subscriber that sends gateway diagnostic events as OTLP logs."""
 
-    def __init__(self, config: Dict[str, Any], sdk: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any], sdk: dict[str, Any]):
         resource = sdk["Resource"].create(_runtime_resource_attributes(config, telemetry_scope="gateway_diagnostics"))
         self._provider = sdk["LoggerProvider"](resource=resource)
         self._processor = sdk["BatchLogRecordProcessor"](sdk["OTLPLogExporter"](**_exporter_kwargs(config, "logs")))
@@ -247,7 +247,7 @@ class GatewayDiagnosticLogStreamer(EmitterStreamer):
         self._sdk = sdk
         self.exported = 0
 
-    def __call__(self, batch: list[Dict[str, Any]]) -> None:
+    def __call__(self, batch: list[dict[str, Any]]) -> None:
         sdk = self._sdk
         for ev in batch:
             if ev.get("event") != "gateway_diagnostic":
@@ -266,7 +266,7 @@ class GatewayDiagnosticLogStreamer(EmitterStreamer):
             self.exported += 1
 
 
-def _gateway_health_event(ev: Dict[str, Any]) -> bool:
+def _gateway_health_event(ev: dict[str, Any]) -> bool:
     return ev.get("event") in {"gateway_health", "cron_execution"}
 
 
@@ -276,7 +276,7 @@ def _fail(runtime: GatewayHealthExportRuntime, log: Callable[..., None], msg: st
     return GatewayHealthExportRuntime(enabled=False, reason=reason)
 
 
-def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRuntime:
+def start_gateway_health_export(config: dict[str, Any]) -> GatewayHealthExportRuntime:
     """Start P0 gateway health export if configured. Never raises."""
     if not _enabled(config):
         return GatewayHealthExportRuntime(enabled=False, reason="disabled")
@@ -284,7 +284,7 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
     metrics_on = gh.get("metrics_enabled", True)
     diagnostics_on = gh.get("diagnostic_events_enabled", True)
     runtime = GatewayHealthExportRuntime(enabled=True, reason="enabled")
-    sdk: Optional[Dict[str, Any]] = None
+    sdk: Optional[dict[str, Any]] = None
     if metrics_on or diagnostics_on:
         try:
             sdk = otlp_exporter._require_sdk(_METRICS_SDK, auto_install=True)
@@ -334,11 +334,3 @@ def start_gateway_health_export(config: Dict[str, Any]) -> GatewayHealthExportRu
 
 
 __all__ = ["GatewayHealthExportRuntime", "start_gateway_health_export"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -9,7 +9,7 @@ still re-arm to now — an immediate catch-up is always legal for intervals.
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from unittest import mock
 
@@ -55,19 +55,19 @@ class TestCronRearmRespectsScheduleLegality:
         Monday 9am (the next legal occurrence), NOT to Saturday-now."""
         job = J.create_job(prompt="weekday report", schedule="0 9 * * 1-5")
         # Saturday 2026-08-22 12:00 UTC; Friday's run errored at 9am.
-        now = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
         _wedge(
             job["id"],
             # parked well past Monday (the wedge shape: stale error + future park)
-            next_run_at=datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc),
-            last_run_at=datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc),
+            next_run_at=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
+            last_run_at=datetime(2026, 8, 21, 9, 0, tzinfo=UTC),
         )
         with mock.patch.object(J, "_hermes_now", lambda: now):
             due = J.get_due_jobs()
         assert due == [], "Saturday must not fire a weekday-only job"
         rearmed = J.get_job(job["id"])
         next_dt = datetime.fromisoformat(rearmed["next_run_at"])
-        assert next_dt == datetime(2026, 8, 24, 9, 0, tzinfo=timezone.utc), (
+        assert next_dt == datetime(2026, 8, 24, 9, 0, tzinfo=UTC), (
             f"expected re-arm to Monday 9am, got {rearmed['next_run_at']}"
         )
         # The recovery is still counted (the wedge WAS repaired).
@@ -77,8 +77,8 @@ class TestCronRearmRespectsScheduleLegality:
         """A wedged-looking job whose next_run_at already IS the next legal
         occurrence needs no repair — re-arm must be a no-op."""
         job = J.create_job(prompt="daily", schedule="30 14 * * *")
-        now = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
-        legal_next = datetime(2026, 8, 22, 14, 30, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
+        legal_next = datetime(2026, 8, 22, 14, 30, tzinfo=UTC)
         _wedge(
             job["id"],
             next_run_at=legal_next,
@@ -93,7 +93,7 @@ class TestCronRearmRespectsScheduleLegality:
         """Interval jobs (the 2026-08-14 incident class) keep the immediate
         catch-up: re-armed to now, due on this same scan."""
         job = J.create_job(prompt="probe", schedule="every 10m", no_agent=True, script="p.py")
-        now = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 8, 22, 12, 0, tzinfo=UTC)
         _wedge(
             job["id"],
             next_run_at=now + timedelta(minutes=5),

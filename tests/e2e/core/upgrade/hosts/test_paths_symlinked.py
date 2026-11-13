@@ -7,7 +7,7 @@ or every launch re-runs the source-update completion.
 
 One real install through HEAD's ``scripts/install.sh`` with ``~/.hermes`` a symlink to a directory
 on "another volume" (a path with a space and a non-ASCII char). Plain launches through it must be
-current (a precondition), and so must a launch from the per-task home (gated on #123798).
+current (a precondition), and so must a launch from the per-task home (#123798).
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ import shutil
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.hosts import _hosts as X
@@ -59,8 +58,8 @@ def _pending_markers(sb: I.Sandbox) -> list[str]:
 def test_per_task_home_sharing_the_tools_store_by_symlink_is_current(linked_home, provider):
     """An orchestrator's per-task HERMES_HOME whose ``tools``/``installs`` link back to the main home.
 
-    Precondition (not gated): the main home is itself a symlink, and plain launches through it are
-    current; only the per-task home's launch is the #123798 gap.
+    Precondition: the main home is itself a symlink, and plain launches through it are current; the
+    per-task home's launch must then be current too (#123798).
     """
     sb, first = linked_home["sb"], linked_home["install"]
     assert sb.hermes_home.is_symlink(), "harness: ~/.hermes is not a symlink"
@@ -79,9 +78,6 @@ def test_per_task_home_sharing_the_tools_store_by_symlink_is_current(linked_home
                         + I.describe(launches[reruns[0]]))
     assert not _pending_markers(sb), f"a plain launch left source-completion-pending markers: {_pending_markers(sb)}"
     task = X.turn(sb, provider, "turn in a per-task home", env=dict(sb.env, HERMES_HOME=str(alt)))
-    with known_failure(r"per-task HERMES_HOME .* re-ran the source-update completion",
-                       "gated on #123798: store_root() returns the unresolved $HERMES_HOME/tools, so the same "
-                       "store through a symlink is a different PM runtime identity"):
-        assert not X.reran_completion(task), (
-            "a per-task HERMES_HOME whose tools/installs symlink to the main home re-ran the source-update "
-            "completion on a current install:\n" + I.describe(task))
+    assert not X.reran_completion(task), (
+        "a per-task HERMES_HOME whose tools/installs symlink to the main home re-ran the source-update "
+        "completion on a current install:\n" + I.describe(task))

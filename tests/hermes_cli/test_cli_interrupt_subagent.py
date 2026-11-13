@@ -33,7 +33,6 @@ class TestCLISubagentInterrupt(unittest.TestCase):
 
         interrupt_detected = threading.Event()
         child_started = threading.Event()
-        child_api_call_count = 0
 
         # Create a real-enough parent agent
         parent = AIAgent.__new__(AIAgent)
@@ -63,7 +62,6 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         parent._execution_thread_id = None
 
         # We'll track what happens with _active_children
-        original_children = parent._active_children
 
         # Mock the child's run_conversation to simulate a slow operation
         # that checks _interrupt_requested like the real one does

@@ -12,12 +12,11 @@ import json, shlex, sys
 from gateway.session_context import scoped_current_session_id
 from tools.terminal_tool import terminal_tool
 from tools.process_registry import process_registry
-from hermes_cli.oneshot import _linger_for_background_completions
 with scoped_current_session_id("receipt-owner"):
     code = "import sys,time; time.sleep(.2); print('RECEIPT_STDOUT'); print('RECEIPT_STDERR',file=sys.stderr); sys.exit(7)"
     result = json.loads(terminal_tool(shlex.join([sys.executable, '-c', code]), background=True,
         notify_on_complete=True, task_id='receipt-task'))
-    _linger_for_background_completions()
+    process_registry.wait_for_pending_completions(None)
     session = process_registry.get(result['session_id'])
     session._reader_thread.join(timeout=10)
     print(json.dumps({'spawn': result, 'live': process_registry.read_log(session.id)}))
@@ -43,7 +42,7 @@ def run(code, *args, profile=None):
         child_env['HERMES_HOME'] = str(out / profile)
     result = subprocess.run([sys.executable, '-c', code, *args], cwd=repo,
                             env=child_env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, encoding='utf-8', timeout=45)
+                            capture_output=True, text=True, encoding='utf-8', timeout=45, check=False)
     if result.returncode:
         raise RuntimeError(result.stdout + result.stderr)
     return json.loads(result.stdout.splitlines()[-1])

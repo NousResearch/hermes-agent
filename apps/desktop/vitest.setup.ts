@@ -1,8 +1,10 @@
 import { configure } from '@testing-library/react'
+import { afterEach } from 'vitest'
 
+import { clearPlaybackSourceCache } from './src/lib/playback-source-cache'
 import { InertResizeObserver } from './src/test/jsdom'
 
-// Shared tooltips measure their arrow through Radix's useSize hook; Masonry measures lanes.
+// Shared tooltips measure their arrow through Radix's useSize hook.
 // Geometry assertions still belong in a real browser, not this inert observer. Assigned,
 // not `vi.stubGlobal`, so a test's `vi.unstubAllGlobals()` cannot strip it.
 globalThis.ResizeObserver ??= InertResizeObserver as unknown as typeof ResizeObserver
@@ -51,7 +53,7 @@ globalThis.IntersectionObserver = class {
   }
 } as typeof IntersectionObserver
 
-// Idle prefetches and feature queries (Masonry's `CSS.supports`) run on mount.
+// Idle prefetches and feature queries (`CSS.supports`) run on mount.
 // jsdom has neither API; idle work never fires and every feature reads as absent.
 globalThis.requestIdleCallback ??= () => 0
 globalThis.cancelIdleCallback ??= () => undefined
@@ -78,3 +80,7 @@ if ('Element' in globalThis) {
 // as the 15s testTimeout above it while still finishing below it, so a
 // genuinely hung await still surfaces as this assertion, not a test timeout.
 configure({ asyncUtilTimeout: 12_000 })
+
+// Resolved stream URLs outlive a mount on purpose; a test file reusing one path must not
+// inherit the previous case's source.
+afterEach(() => clearPlaybackSourceCache())

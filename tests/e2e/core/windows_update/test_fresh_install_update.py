@@ -13,7 +13,6 @@ import json
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.windows_update._machine import (
     NEXT_MARKER,
     REQUIRES_OPT_IN,
@@ -84,11 +83,8 @@ def test_first_agent_launch_runs_the_turn(journey: Journey) -> None:
 
 def test_update_moves_checkout_to_next(journey: Journey) -> None:
     m, run = journey.machine, journey["update"]
-    with known_failure(r"^hermes update exited 1: ✗ Update failed: \[WinError 2\]",
-                       "gated on #124634: on a machine without system Git, the pinned Git install.ps1 "
-                       "staged never reaches `hermes update`'s PATH"):
-        assert run.returncode == 0, fail_with(
-            m, f"hermes update exited {run.returncode}: {failure_line(run)}", run)
+    assert run.returncode == 0, fail_with(
+        m, f"hermes update exited {run.returncode}: {failure_line(run)}", run)
     head = m.installed_head()
     assert head == m.next, fail_with(
         m, f"after hermes update the checkout is at {head}, expected NEXT {m.next}", run)

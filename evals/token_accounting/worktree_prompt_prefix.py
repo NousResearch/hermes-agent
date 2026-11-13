@@ -84,6 +84,7 @@ if len(sys.argv) == 1:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 timeout=150,
+                check=False,
             )
         print(name, "exit", p.returncode, flush=True)
         if p.returncode:

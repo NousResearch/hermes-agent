@@ -136,11 +136,11 @@ class TestUpgradeFromPreSendDatabase:
                     """,
                     (
                         f"pkg-{i}",
-                        "2026-08-2%d" % i,
-                        "2026-08-2%d" % (i + 1),
+                        f'2026-08-2{i:d}',
+                        f'2026-08-2{i + 1:d}',
                         json.dumps({"package_id": f"pkg-{i}"}),
-                        "2026-08-2%dT00:00:00Z" % i,
-                        "2026-08-2%dT01:00:00Z" % i,
+                        f'2026-08-2{i:d}T00:00:00Z',
+                        f'2026-08-2{i:d}T01:00:00Z',
                     ),
                 )
             connection.commit()

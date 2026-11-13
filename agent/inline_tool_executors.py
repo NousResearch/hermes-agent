@@ -14,8 +14,13 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from agent.prompt_cache_scope import conversation_id
+from tools.arg_coercion import coerce_tool_args
+from tools.arg_validation import call_with_arg_checks
+from tools.registry import registry
 
-def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> Dict[str, str]:
+
+def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
     """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
     return {
         "task_id": effective_task_id or "",
@@ -23,6 +28,7 @@ def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) ->
         "tool_call_id": tool_call_id or "",
         "turn_id": getattr(agent, "_current_turn_id", "") or "",
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+        "conversation_id": conversation_id(agent),
     }
 
 
@@ -95,10 +101,10 @@ class InlineToolContext:
 InlineToolExecutor = Callable[[Any, dict, InlineToolContext], Any]
 
 # ``(kwarg, args_key)`` → ``args.get(key)``; ``(kwarg, args_key, default)`` → ``args.get(key, default)``.
-_ArgSpec = Tuple[Any, ...]
+_ArgSpec = tuple[Any, ...]
 
 
-def _call_tool(module: str, func: str, args: dict, arg_specs: Tuple[_ArgSpec, ...], **fixed: Any) -> Any:
+def _call_tool(module: str, func: str, args: dict, arg_specs: tuple[_ArgSpec, ...], **fixed: Any) -> Any:
     """Import ``module.func`` lazily and call it with args mapped per ``arg_specs`` plus ``fixed``."""
     fn = getattr(import_module(module), func)
     return fn(**{spec[0]: args.get(*spec[1:]) for spec in arg_specs}, **fixed)
@@ -127,7 +133,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _call_tool(
         "tools.session_search_tool", "session_search", args,
         (
-            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
+            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit"),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
             ("window", "window", 5), ("sort", "sort"), ("profile", "profile"),
             ("detail", "detail", "adaptive"), ("after", "after"), ("before", "before"),
@@ -141,7 +147,7 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
     result = _call_tool(
         "tools.memory_tool", "memory_tool", args,
         (
-            ("action", "action"), ("target", "target", "memory"), ("content", "content"),
+            ("action", "action"), ("target", "target"), ("content", "content"),
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
         store=agent._memory_store,
@@ -176,6 +182,42 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _handle_preview(args)
 
 
+def _preview_is_default_vault_target(agent, task_id: str) -> bool:
+    """An omitted ``browser_vault`` target means the in-app browser when this session can drive it (its
+    ``drive_preview``, eager or deferred behind ``tool_call``) and has no managed browser page of its own:
+    a Desktop agent that opened a page with browser_exec keeps filling that page."""
+    names = getattr(agent, "valid_tool_names", ()) or ()
+    preview = "drive_preview" in names
+    if not preview and "tool_call" in names:
+        from agent.tool_executor import _tool_search_scoped_names
+
+        preview = "drive_preview" in _tool_search_scoped_names(agent)
+    if not preview:
+        return False
+    from agent.browser_page_registry import backend_for_task
+    from tools.browser_session import session_for_task
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+    # A plugin backend (e.g. Camofox) holding the task's live page owns the fill: browser_vault's own
+    # backend selection already picks it, so an omitted target must NOT be forced to preview over it.
+    # Fall to preview only when nothing else owns the page.
+    return (not session_for_task(task_id) and SUPERVISOR_REGISTRY.get(task_id) is None
+            and backend_for_task(task_id) is None)
+
+
+def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The preview transport is the agent's GUI callback, which registry dispatch never forwards.
+    import tools.browser_vault_tool  # registers the real handler
+    from tools.registry import registry
+
+    task_id = ctx.effective_task_id or "default"
+    if "target" not in args and (args.get("action") in ("fill", "save_login", "enter_code")
+                                 and _preview_is_default_vault_target(agent, task_id)):
+        args = {**args, "target": "preview"}
+    return registry.dispatch("browser_vault", args, task_id=ctx.effective_task_id,
+                             preview_callback=getattr(agent, "drive_preview_callback", None))
+
+
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The GUI callback lives on the agent; registry dispatch never forwards it.
     from tools.connectors import manage_connections
@@ -183,8 +225,10 @@ def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
 
     result = manage_connections(
         args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
+        turn_id=getattr(agent, "_current_turn_id", None) or None,
         connection_callback=getattr(agent, "connection_callback", None),
         connectors_available=gateway_config.connectors_available,
+        card_surface=getattr(agent, "platform", None) == "desktop",
     )
     _scope_in_connected_mcp_servers(agent, result)
     return result
@@ -222,6 +266,20 @@ def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
     )
 
 
+def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
+    # The run record lives on the session row and the card callback on the agent. A card the user wrote
+    # past ends the turn as a new message does: setup_beat runs inline (never parallel), so its result is
+    # kept and the loop stops before the next model call.
+    from agent.interrupt_control import _REASON_NEW_MESSAGE
+    from tools.setup_beat_tool import setup_beat_tool
+
+    return setup_beat_tool(
+        args, db=getattr(agent, "_session_db", None), session_id=getattr(agent, "session_id", None) or "",
+        tool_call_id=ctx.tool_call_id or "", callback=getattr(agent, "setup_beat_callback", None),
+        end_turn=lambda: agent.interrupt(tool_reason=_REASON_NEW_MESSAGE),
+    )
+
+
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
     # Replay shim for conversations whose cached prompt still names setup_mcp.
     # Not in _LEGACY_TOOL_ALIASES: inline tools bypass handle_function_call.
@@ -232,7 +290,7 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
-INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
+_RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     "todo_list": _tool(
         "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
         store=lambda agent, ctx: agent._todo_store,
@@ -241,14 +299,14 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(
         "tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
+        ("expects_reply", "expects_reply", True), ("cancel", "cancel", ""),
+        ("constraints", "constraints", ""), ("expecting", "expecting", ""),
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
     ),
     "session_search": _session_search,
     "memory": _memory,
     "clarify": _tool(
-        "tools.clarify_tool", "clarify_tool",
-        ("question", "question", ""), ("choices", "choices"), ("multi_select", "multi_select", False),
-        ("questions", "questions"),
+        "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
     ),
     "read_terminal": _callback_tool(
@@ -256,6 +314,7 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("start_line", "start_line"), ("count", "count"),
     ),
     "desktop_preview": _desktop_preview,
+    "browser_vault": _browser_vault,
     "drive_preview": _callback_tool(
         "tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",
         ("action", "action", ""), ("ref", "ref"), ("selector", "selector"), ("text", "text"),
@@ -272,11 +331,32 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.tour_tool", "tour_tool", "tour_callback",
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
+        ("preset", "preset"),
     ),
+    "set_theme": _callback_tool(
+        "tools.set_theme_tool", "set_theme_tool", "theme_callback",
+        ("accent", "accent"), ("mode", "mode"), ("layout", "layout"), ("picker", "picker"),
+    ),
+    "setup_beat": _setup_beat,
     "manage_connections": _manage_connections,
     "manage_catalog": _manage_catalog,
     "setup_mcp": _setup_mcp_shim,
     "delegate_task": lambda agent, args, ctx: agent._dispatch_delegate_task(args),
+}
+
+
+def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
+    def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
+        from tools.hosted_tool_policy import hosted_tool_refusal
+        if refusal := hosted_tool_refusal(name):  # the table is an execution primitive: same allowlist
+            return json.dumps({"error": refusal}, ensure_ascii=False)
+        return call_with_arg_checks(
+            registry.get_entry(name), coerce_tool_args(name, args), lambda checked: executor(agent, checked, ctx))
+    return _exec
+
+
+INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
+    name: _coerced(name, executor) for name, executor in _RAW_INLINE_TOOL_EXECUTORS.items()
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three
@@ -295,7 +375,10 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
         return INLINE_TOOL_EXECUTORS[function_name]
     memory_manager = agent._memory_manager
     if memory_manager and memory_manager.has_tool(function_name):
-        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
+        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(
+            function_name, args,
+            caller_gsk=(getattr(agent, "_gateway_session_key", "") or ""),
+        )
     if function_name == "message_agent":
         return None
     return INLINE_TOOL_EXECUTORS.get(function_name)

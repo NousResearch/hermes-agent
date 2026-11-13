@@ -5,9 +5,9 @@ import sys
 import pytest
 
 from tests.hermes_cli.plugin_worker_support import (
-    plugin_world as plugin_world,
+    plugin_world as plugin_world,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
     worker_command,
-    isolated_python as isolated_python,
+    isolated_python as isolated_python,  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 )
 
 

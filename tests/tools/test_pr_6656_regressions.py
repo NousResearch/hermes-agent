@@ -81,7 +81,7 @@ class TestUninstallPathTraversal:
 
     def test_traversal_via_parent_segments_rejected(self, hub_setup):
         """install_path: "../do-not-delete" must NOT escape SKILLS_DIR."""
-        skills_dir, hub_dir, victim = hub_setup
+        _skills_dir, hub_dir, victim = hub_setup
         self._write_lock(hub_dir, {
             "evil": {
                 "install_path": "../do-not-delete",
@@ -90,7 +90,7 @@ class TestUninstallPathTraversal:
             },
         })
 
-        ok, msg = uninstall_skill("evil")
+        ok, _msg = uninstall_skill("evil")
 
         assert ok is False
         # The victim directory MUST still exist.
@@ -99,7 +99,7 @@ class TestUninstallPathTraversal:
 
     def test_absolute_path_rejected(self, hub_setup):
         """install_path that's an absolute path outside SKILLS_DIR must be refused."""
-        skills_dir, hub_dir, victim = hub_setup
+        _skills_dir, hub_dir, victim = hub_setup
         self._write_lock(hub_dir, {
             "evil": {
                 "install_path": str(victim),
@@ -108,7 +108,7 @@ class TestUninstallPathTraversal:
             },
         })
 
-        ok, msg = uninstall_skill("evil")
+        ok, _msg = uninstall_skill("evil")
 
         # SKILLS_DIR / "<absolute>" still results in an absolute path,
         # which when resolved is outside skills_dir. Must be refused.
@@ -132,7 +132,7 @@ class TestUninstallPathTraversal:
             },
         })
 
-        ok, msg = uninstall_skill("trap")
+        ok, _msg = uninstall_skill("trap")
 
         # realpath resolves the symlink → outside skills_dir → refused.
         assert ok is False
@@ -155,7 +155,7 @@ class TestUninstallPathTraversal:
             },
         })
 
-        ok, msg = uninstall_skill("my-skill")
+        ok, _msg = uninstall_skill("my-skill")
 
         assert ok is True
         assert not legit.exists()

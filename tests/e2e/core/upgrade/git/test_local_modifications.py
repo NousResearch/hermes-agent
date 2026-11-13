@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.git import _git_world as G
 
@@ -70,12 +69,9 @@ def test_conflicting_patch_is_recoverable_and_never_reported_complete(w):
     parked = any(USER_LINE.strip() in t for t in _stash_texts(w, "README.md"))
     assert in_tree or parked, f"the user's patch is neither in the tree nor in any stash:\n{w.diag(cp)}"
     if parked and not in_tree:
-        with known_failure(r"reported 'Update complete' .*while the user's patch is parked",
-                           "gated on #122557: a conflicting autostash is parked and the update still exits 0 "
-                           "with 'Update complete!'"):
-            assert not G.reported_success(cp), (
-                f"reported 'Update complete' (rc={cp.returncode}) while the user's patch is parked in a stash:\n"
-                f"{w.diag(cp)}")
+        assert not G.reported_success(cp), (
+            f"reported 'Update complete' (rc={cp.returncode}) while the user's patch is parked in a stash:\n"
+            f"{w.diag(cp)}")
 
 
 def test_untracked_file_colliding_with_a_new_upstream_file_is_not_lost(w):
@@ -90,12 +86,9 @@ def test_untracked_file_colliding_with_a_new_upstream_file_is_not_lost(w):
     assert w.head() == target, f"code update did not land:\n{w.diag(cp)}"
     in_tree = (w.checkout / rel).read_text(encoding="utf-8") == mine
     parked = any(t == mine.strip() for t in _stash_texts(w, rel))
-    with known_failure(r"untracked file .* is gone",
-                       "gated on #124641 (fix: #124697): an untracked file at a path upstream adds is reported 'kept as-is', "
-                       "replaced by upstream's copy, and its autostash is dropped"):
-        assert in_tree or parked, (
-            f"the user's untracked file {rel} is gone: the tree has upstream's copy and no stash keeps it:\n"
-            f"{w.diag(cp)}")
+    assert in_tree or parked, (
+        f"the user's untracked file {rel} is gone: the tree has upstream's copy and no stash keeps it:\n"
+        f"{w.diag(cp)}")
 
 
 def test_local_commit_on_main_is_kept_behind_a_named_ref(w):

@@ -23,460 +23,31 @@
  *    English where it is WRITTEN (`group-chat-parts.tsx`, `group-rounds.ts`);
  *    the places that RENDER the reader's own lines use `group.you` instead.
  *
- * Locales follow kanban: `en` / `ja` / `zh` / `zh-hant`. Arabic falls through
- * the resolution chain (active locale → this plugin's `en` → the key) the
- * same way a missing string in any locale does. Nouns match core: ボット /
+ * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant`; the group locale
+ * tables cover all nine registered locales. Missing legacy keys still
+ * resolve through this plugin's English bundle. Nouns match core: ボット /
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
  */
 
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
+import { GROUP_CHAT_LOCALES } from './group-chat-locales'
+import { GROUP_SURFACE_AR } from './group-surface-ar'
+import { GROUP_SURFACE_DE } from './group-surface-de'
+import { GROUP_SURFACE_ES } from './group-surface-es'
+import { GROUP_SURFACE_FR } from './group-surface-fr'
+import { GROUP_SURFACE_RU } from './group-surface-ru'
+import { bind, type Bound } from './i18n-bind'
+import { type BotsMessages } from './i18n-messages'
+import { ROSTER_CHROME } from './roster-chrome-locales'
 import { getPluginCtx } from './shared'
 
-type BotsMessages = {
-  /** Left rail: the bot + group-chat roster. */
-  editor: {
-    fullConfigHint: string
-    liveCapabilities: string
-    editSoul: string
-    remoteCapabilitiesHint: string
-    skillsEnabled: (enabled: number, total: number) => string
-    toolsetsEnabled: (enabled: number, total: number) => string
-    mcpServers: string
-    providerCustom: string
-    modelCustom: string
-    backToDropdowns: string
-    inheritLaunch: string
-    enterManually: string
-    gatewayDefault: string
-    modelNameExample: string
-    modelSwitchFailed: string
-    newDescription: string
-    name: string
-    title: string
-    description: string
-    createOn: string
-    general: string
-    capabilities: string
-    skills: string
-    tools: string
-    cloneFrom: string
-    freshProfile: string
-    inheritedModel: string
-    soul: string
-    shareKeys: string
-    shareKeysOn: (target: string) => string
-    shareKeysHint: string
-    needsModel: string
-    configureModel: string
-    createEmpty: string
-    nameTakenHint: string
-    nameFirstHint: string
-    newerDesktop: string
-    newerGateway: string
-    emptySkillsHint: string
-    defaultToolsHint: string
-    catalog: string
-    catalogInstalled: string
-    mcpHint: string
-    creating: string
-    createBot: string
-    auto: string
-    autoHint: string
-    unlock: string
-    lockFace: string
-    lockedHint: string
-    unlockedHint: string
-    noImageModel: string
-    checkingImage: string
-    chooseImage: string
-    editDescription: (name: string, profile: string) => string
-    nameTaken: (name: string) => string
-    nameTakenOn: (name: string, target: string) => string
-    currentConnection: (name: string) => string
-    remoteHint: (target: string) => string
-    cloneFromOn: (target: string) => string
-    catalogHint: (source: string) => string
-    sectionsFailed: (sections: string) => string
-    updated: (name: string) => string
-    created: (name: string) => string
-    createdOn: (name: string, target: string) => string
-  }
-  roster: {
-    search: string
-    searchPlaceholder: string
-    newBotOrGroup: string
-    groupChats: string
-    emptyTitle: string
-    emptyDesc: string
-    noMatchQuery: (query: string) => string
-    noMatchQueryOn: (query: string, gateway: string) => string
-    noMatchFiltersOn: (gateway: string) => string
-    noMatchFilters: string
-    clearFilters: string
-    allHidden: string
-    allHiddenDesc: string
-    showHidden: string
-    noHiddenMatch: string
-    hiddenFromRoster: string
-    pinned: string
-    needsAttention: string
-    needsInput: string
-    /** The kind filter's three options, in menu order. */
-    botsAndGroups: string
-    botsOnly: string
-    groupsOnly: string
-    /** The activity filter's four options, in menu order. */
-    anyActivity: string
-    activeNow: string
-    recentlyActive: string
-    older: string
-    /** How a row's owning gateway is doing — see `botSourceStatus`. */
-    gatewayRemoved: string
-    onDemand: string
-    ready: string
-    statusUnknown: string
-    unavailable: string
-    retryNow: string
-    rosterUnavailable: (reason: string) => string
-    waitingForGateway: string
-  }
-  /** User-made roster sections (folders the user files bots into). */
-  sections: {
-    newSection: string
-    newTitle: string
-    renameTitle: string
-    nameLabel: string
-    namePlaceholder: string
-    create: string
-    rename: string
-    moveUp: string
-    moveDown: string
-    unassigned: string
-    options: (name: string) => string
-    headingTip: string
-    emptyHint: string
-    moveTo: string
-    newSectionEllipsis: string
-    removeFromSection: string
-    deleted: (name: string, count: number) => string
-    undo: string
-  }
-  /** Creating, editing and removing a bot. */
-  bot: {
-    newTitle: string
-    editTitle: string
-    editMenu: string
-    helpPromptPlaceholder: string
-    descriptionHint: string
-    newChatWith: string
-    /** Re-opens the forever-chat on purpose. A plain row click only returns to
-     *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
-    openBotChat: string
-    /** Screen-reader label for the row spinner while a cold bot chat opens. */
-    openingChat: string
-    /** Row context menu: pin/hide toggles, their toasts, and the groups entry. */
-    pinToTop: string
-    unpin: string
-    pinnedToast: (name: string) => string
-    unpinnedToast: (name: string) => string
-    hide: string
-    unhide: string
-    hiddenToast: (name: string) => string
-    unhiddenToast: (name: string) => string
-    groupsMenu: (groups: string) => string
-    manageGroups: string
-    metadataLoadFailed: string
-    loadFailed: string
-    groupsLoadFailed: string
-    thisDevice: string
-    /** Roster badge tooltips per attention class; `attentionFallback` when the class is unknown. */
-    attentionFallback: string
-    attentionProviderAuth: string
-    attentionQuota: string
-    attentionMissingConfig: string
-    attentionBlocked: string
-    duplicate: string
-    duplicateFailed: string
-    deleteTitle: string
-    removeFromAllGroups: string
-    createFirstHint: string
-    createFailed: string
-    advanced: string
-    advancedHint: string
-    advancedFailed: string
-    openAnotherChatUnsupported: string
-    remoteConnectionsUnsupported: string
-    /** Bot-open failure toasts (canonical-chat.ts notifyBotOpenFailure). The
-     *  raw RPC/connection error travels in the toast `detail`, never here. */
-    openNeedsUpdateTitle: string
-    openNeedsUpdateMessage: (connectionLabel: string) => string
-    openUnreachableTitle: string
-    openUnreachableMessage: string
-    openChatFailedTitle: (botName: string) => string
-    openChatFailedMessage: string
-    openGateways: string
-    /** Stands under the bot's name in a chat it has not spoken in yet. */
-    chatEmpty: string
-    /** First line of a brand-new bot's forever-chat — see `kickoffText`. */
-    kickoff: string
-  }
-  /** Avatar picker: shapes, blobs, pets, uploads, generation. */
-  avatar: {
-    classicShapes: string
-    blobFromName: string
-    unlockFollowsName: string
-    randomize: string
-    /** The picker's four tabs, in order. */
-    tabBot: string
-    tabGenerate: string
-    upload: string
-    tabPet: string
-    removeImage: string
-    removeBackToShape: string
-    describePlaceholder: string
-    describeHint: string
-    matchTheName: string
-    pickPet: string
-    petLoadFailed: string
-    imageTooLarge: string
-    generationFailed: string
-    savedLocally: string
-    savedLocallyDescriptionFailed: string
-    generate: string
-    generating: string
-  }
-  /** Group chats: the room, its composer, threads and activity feed. */
-  group: {
-    newTitle: string
-    manageDesc: string
-    manageTitle: string
-    settingsTitle: string
-    settingsDesc: string
-    nameLabel: string
-    holdDetection: string
-    holdDetectionHint: string
-    compressHistory: string
-    compressHistoryHint: (member: string) => string
-    compressing: (member: string) => string
-    compressDone: (member: string, compressed: number, detail: string) => string
-    compressNothing: (member: string) => string
-    compressFailed: (member: string, error: string) => string
-    searchToAdd: string
-    searchToAddPlaceholder: string
-    removeFromSelection: string
-    disbandTitle: string
-    deleteTitle: string
-    deleteAction: string
-    composerPlaceholder: string
-    slashCommandsUnsupported: string
-    attachHint: string
-    newThread: string
-    reply: string
-    replyInThread: string
-    replyInThreadPlaceholder: string
-    openThread: string
-    collapseThread: string
-    collapseThreadLabel: string
-    activity: string
-    noActivityYet: string
-    showActivity: string
-    hideActivity: string
-    stop: string
-    stopHint: string
-    allHeldStatus: (count: number) => string
-    heldMembersStatus: (members: string) => string
-    holdReleaseHint: string
-    needsYourInput: string
-    noMembersToSend: (group: string) => string
-    pictureGenerationFailed: string
-    nameTaken: (name: string) => string
-    memberCount: (count: number) => string
-    /** The reader's own lines in a room: the transcript speaker and the roster preview. */
-    you: string
-    /** How many of a room's members are reachable right now. */
-    availableCount: (available: number, total: number) => string
-    settingsHint: (group: string) => string
-    settingsLabel: (group: string) => string
-    disbandHint: (group: string) => string
-    disbandLabel: (group: string) => string
-    disbandAction: string
-    disbanding: string
-    disbandDone: string
-    disbanded: (group: string) => string
-    /** Wraps the bolded group name, so the name can lead the sentence in
-     *  languages that put it there — see core's cron.deleteDesc* pair. */
-    disbandDescPrefix: string
-    disbandDescSuffix: (count: number) => string
-    stopped: (group: string) => string
-    removeAttachment: string
-    threadFallback: string
-    replyCount: (replies: number) => string
-    dropToThread: string
-    dropToRoom: string
-    waitingForAnswer: string
-    memberThinking: (name: string) => string
-    roomWorking: string
-    messageRoom: (group: string) => string
-    newThreadPlaceholder: (group: string) => string
-    everyoneMeta: string
-    commandApproval: string
-    answerFailed: (handle: string, error: string) => string
-    wantsToRunCommand: (handle: string) => string
-    asks: (handle: string) => string
-    answerTo: (member: string) => string
-  }
-  /** Skills hub + MCP setup surfaces embedded in the bot editor. */
-  tools: {
-    installHint: (name: string) => string
-    installed: (name: string) => string
-    installFailed: (name: string) => string
-    searchHint: string
-    resizeHint: string
-    addServerFailed: string
-    noTarget: string
-    setKeyFailed: (name: string) => string
-    configured: (name: string) => string
-    authenticated: (name: string) => string
-    testFailed: string
-    completeSignIn: string
-    needsSetup: (name: string) => string
-    setUpDone: string
-    saveTest: string
-    authorizing: string
-    working: string
-    setupFailed: string
-    signIn: string
-    setUp: string
-    skillsHub: string
-    filterSkills: string
-    searchHub: string
-    noMcpServers: string
-  }
-
-  /** Bot Screen: the bot's headless desktop on the gateway host, live in a pane. */
-  screen: {
-    title: string
-    menu: string
-    unsupportedTitle: string
-    unsupportedBody: string
-    notInstalledTitle: string
-    notInstalledBody: string
-    installHint: string
-    install: string
-    installing: string
-    installCancelled: string
-    installFailed: string
-    noPackageManager: string
-    portalTitle: string
-    portalOpen: string
-    heroStopped: string
-    heroNotInstalled: string
-    heroConnecting: string
-    heroStale: string
-    heroSuppressed: string
-    heroOpenLive: string
-    heroInstall: string
-    heroStart: string
-    portalWatching: string
-    portalYouControl: string
-    portalOtherControls: string
-    portalStopped: string
-    portalNotInstalled: string
-    portalUnsupported: string
-    portalUnavailable: string
-    unavailableTitle: string
-    autoOpenMenu: string
-    autoOpenOnToast: (name: string) => string
-    autoOpenOffToast: (name: string) => string
-    stoppedTitle: string
-    stoppedBody: string
-    start: string
-    attaching: string
-    streamLost: string
-    reconnect: string
-    takeOver: string
-    handBack: string
-    handBackForce: string
-    handBackForceHint: string
-    openNeedsUpdate: string
-    youControl: string
-    otherControls: string
-    agentControls: string
-    controlTaken: string
-  }
-
-  /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,
-   *  Daily/Hourly, the job verbs) resolves against core's `cron` section. */
-  cron: {
-    untitled: string
-    nameNul: string
-    instructionNul: string
-    minutesFromNow: string
-    hoursFromNow: string
-    daysFromNow: string
-    stopAfter: string
-    runsHint: string
-    detailDescription: string
-    status: string
-    active: string
-    paused: string
-    schedule: string
-    rawSchedule: string
-    repeat: string
-    nextRun: string
-    overdueSince: string
-    lastRun: string
-    lastResult: string
-    workdir: string
-    succeeded: string
-    failed: string
-    deliveryFailed: string
-    blockedConfig: string
-    legacyUnsafe: string
-    filterHint: string
-    needsRosterFirst: string
-    staleNotice: string
-    readFailure: string
-    createDesc: (bot: string) => string
-    instruction: string
-    whenToRun: string
-    dayOfMonth: string
-    sendResultsTo: string
-    runHistoryOnly: string
-    botChatTarget: (bot: string) => string
-    continuity: string
-    onceIn: (when: string) => string
-    everyNDays: (days: number) => string
-    everyNHours: (hours: number) => string
-    everyNMinutes: (minutes: number) => string
-    /** The frequency picker's eight options, in menu order. */
-    freqOnce: string
-    freqHourly: string
-    freqDaily: string
-    freqWeekdays: string
-    freqWeekly: string
-    freqMonthly: string
-    freqInterval: string
-    freqAdvanced: string
-    unitMinutes: string
-    unitHours: string
-    unitDays: string
-    /** One-line plain-language read-back of the picker's current state. */
-    runsOnce: (count: number, unit: string) => string
-    runsHourly: string
-    runsDaily: (time: string) => string
-    runsWeekdays: (time: string) => string
-    runsWeekly: (day: string, time: string) => string
-    runsMonthly: (day: string, time: string) => string
-    runsInterval: (count: number, unit: string) => string
-    runsRaw: string
-    timesTotal: (count: number) => string
-  }
-}
-
 const en: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.en,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.en,
   editor: {
     fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
     liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',
@@ -510,7 +81,7 @@ const en: BotsMessages = {
     shareKeys: 'Share keys & accounts with the main profile',
     shareKeysOn: target => `Share keys & accounts with the default profile on ${target}`,
     shareKeysHint:
-      'Subscriptions, OAuth logins, and API keys stay shared (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
+      'Subscriptions, OAuth logins, and API keys stay shared with the default profile (not copied), so token refreshes never invalidate each other. Uncheck for an isolated snapshot copy.',
     needsModel:
       'No model provider is ready for it yet, so it skipped its introduction. Pick a provider and model under Advanced.',
     configureModel: 'Configure model',
@@ -526,7 +97,7 @@ const en: BotsMessages = {
     mcpHint:
       'Configured servers copy from the main profile; catalog entries are the bundled MCP menu. Entries needing API keys route through setup first (credentials follow the shared keys setting).',
     creating: 'Creating…',
-    createBot: 'Create Bot',
+    createBot: 'Create bot',
     auto: 'Auto',
     autoHint: 'Auto — the name decides',
     unlock: 'Unlock',
@@ -551,6 +122,7 @@ const en: BotsMessages = {
     createdOn: (name, target) => `Bot "${name}" created on ${target}`
   },
   roster: {
+    ...ROSTER_CHROME['en'],
     search: 'Search bots and group chats',
     searchPlaceholder: 'Search bots and group chats…',
     newBotOrGroup: 'New bot or group chat',
@@ -618,7 +190,8 @@ const en: BotsMessages = {
     helpPromptPlaceholder: 'What should this bot help with?',
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
-    openBotChat: 'Open Bot Chat',
+    openBotChat: 'Open bot chat',
+    openBotChatInNewTab: 'Open bot chat in new tab',
     openingChat: 'Opening chat…',
     pinToTop: 'Pin to top',
     unpin: 'Unpin',
@@ -643,12 +216,12 @@ const en: BotsMessages = {
     duplicateFailed: 'Duplicate failed',
     deleteTitle: 'Delete bot and profile?',
     removeFromAllGroups: 'Remove from all groups',
-    createFirstHint: 'Open the Bots pane and hit “New Bot”.',
+    createFirstHint: 'Open the Bots pane and hit “New bot”.',
     createFailed: 'Could not create the profile yet',
     advanced: 'Advanced',
     advancedHint: 'Advanced — model, skills, toolsets, SOUL.md',
     advancedFailed: 'Advanced configuration failed',
-    openAnotherChatUnsupported: 'Update Hermes Desktop to open another Bot chat.',
+    openAnotherChatUnsupported: 'Update Hermes Desktop to open another bot chat.',
     remoteConnectionsUnsupported: 'Update Hermes Desktop to chat with bots on other connections.',
     openNeedsUpdateTitle: 'This bot lives on an older Hermes',
     openNeedsUpdateMessage: connectionLabel => `Update ${connectionLabel}, then try again.`,
@@ -684,29 +257,30 @@ const en: BotsMessages = {
     generating: 'Generating…'
   },
   group: {
+    ...GROUP_CHAT_LOCALES.en,
     newTitle: 'New group chat',
     manageDesc: 'A bot can join multiple group chats. Memberships sync to every machine.',
     manageTitle: 'Manage groups',
     settingsTitle: 'Group settings',
-    settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
+    settingsDesc: 'Rename the group or set a group chat picture. Members and history are kept.',
     nameLabel: 'Group name',
     holdDetection: 'Detect stop directives',
-    holdDetectionHint: 'Let room messages put addressed members on hold until they are mentioned again.',
+    holdDetectionHint: 'Let group chat messages put addressed members on hold until they are mentioned again.',
     compressHistory: 'Compress history',
     compressHistoryHint: (member: string) =>
-      `Compress ${member}'s hidden room history so the member stops failing with empty replies`,
-    compressing: (member: string) => `Compressing ${member}'s room history…`,
+      `Compress ${member}'s hidden group chat history so the member stops failing with empty replies`,
+    compressing: (member: string) => `Compressing ${member}'s group chat history…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `Compressed ${compressed} room session${compressed === 1 ? '' : 's'} for ${member}${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `Nothing to compress for ${member} — no room session yet`,
-    compressFailed: (member: string, error: string) => `Could not compress ${member}'s room history: ${error}`,
+      `Compressed ${compressed} group chat session${compressed === 1 ? '' : 's'} for ${member}${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `Nothing to compress for ${member} — no group chat session yet`,
+    compressFailed: (member: string, error: string) => `Could not compress ${member}'s group chat history: ${error}`,
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
     removeFromSelection: 'Remove from selection',
     disbandTitle: 'Disband group chat?',
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
-    composerPlaceholder: 'Say something — every bot in this group hears the room.',
+    composerPlaceholder: 'Say something — every bot in this group chat sees your message.',
     slashCommandsUnsupported:
       'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
     attachHint: 'Attach files — every responding bot sees them',
@@ -719,22 +293,19 @@ const en: BotsMessages = {
     collapseThreadLabel: 'Collapse this thread',
     activity: 'Activity',
     noActivityYet: 'No activity in this turn yet.',
-    showActivity: 'Show room activity',
-    hideActivity: 'Hide room activity',
+    showActivity: 'Show group chat activity',
+    hideActivity: 'Hide group chat activity',
     stop: 'Stop',
     stopHint: 'Stop this run — interrupts the member on turn and holds the rest',
-    allHeldStatus: count => `All ${count} bots are paused`,
     heldMembersStatus: members => `Paused: ${members}`,
     holdReleaseHint: 'Mention a paused bot or send @all resume to release them.',
     needsYourInput: 'A bot in this group chat needs your input',
     noMembersToSend: group =>
-      `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
+      `${group} has no members to send to — add a bot, or reopen the group chat if members are still loading.`,
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
-    memberCount: count => `${count} bots`,
     you: 'You',
-    availableCount: (available, total) => `${available} of ${total} available`,
-    settingsHint: group => `Group settings — rename ${group} or set a room picture`,
+    settingsHint: group => `Group settings — rename ${group} or set a group chat picture`,
     settingsLabel: group => `Group settings for ${group}`,
     disbandHint: group => `Disband the ${group} group chat`,
     disbandLabel: group => `Disband ${group}`,
@@ -742,9 +313,6 @@ const en: BotsMessages = {
     disbanding: 'Disbanding…',
     disbandDone: 'Disbanded',
     disbanded: group => `Disbanded “${group}”`,
-    disbandDescPrefix: 'This removes the ',
-    disbandDescSuffix: count =>
-      ` grouping from its ${count} bots and clears the shared room log. The bots themselves and their per-group sessions are kept.`,
     stopped: group => `Stopped ${group} — remaining turns are held until you resume`,
     removeAttachment: 'Remove attachment',
     threadFallback: 'Thread',
@@ -753,10 +321,10 @@ const en: BotsMessages = {
     dropToRoom: 'Drop to attach — every responding bot sees it',
     waitingForAnswer: 'Waiting for your answer…',
     memberThinking: name => `${name} is thinking…`,
-    roomWorking: 'The room is working…',
+    roomWorking: 'The group chat is working…',
     messageRoom: group => `Message ${group}`,
     newThreadPlaceholder: group => `New thread in ${group}… (@name to direct, @everyone for all)`,
-    everyoneMeta: 'Every bot in the room',
+    everyoneMeta: 'Every bot in the group chat',
     commandApproval: 'command approval',
     answerFailed: (handle, error) => `Could not send the answer to @${handle}: ${error}`,
     wantsToRunCommand: handle => `@${handle} wants to run a command:`,
@@ -819,12 +387,22 @@ const en: BotsMessages = {
     portalNotInstalled: 'Not installed on host',
     portalUnsupported: 'Not available on this host',
     portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
+    portalUnavailableManaged: 'Screen is not available on this managed Hermes release yet',
+    managedNotIncludedTitle: 'Screen isn’t included on this bot',
+    managedNotIncludedBody:
+      'Hermes Cloud includes Screen on bots with 8 GB of memory or more. It can’t be installed on a smaller bot.',
     unavailableTitle: 'Screen needs a newer Hermes',
     autoOpenMenu: 'Open Screen when the bot uses it',
     autoOpenOnToast: name => `${name}’s Screen opens when it starts using its desktop`,
     autoOpenOffToast: name => `${name}’s Screen stays closed until you open it`,
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
+    placementSandbox: backend => `Screen runs inside the ${backend} sandbox, with the terminal`,
+    imageSwitchTitle: 'New sandbox image available',
+    imageSwitchBody: (current, target) =>
+      `Your sandbox still runs ${current}, which has no desktop. Switching to ${target} recreates the container the next time the bot uses its terminal: files in /root and /workspace stay on this machine, packages installed inside the container are reinstalled on demand.`,
+    imageSwitchApprove: 'Switch image',
+    imageSwitchKeep: 'Keep current image',
     start: 'Start screen',
     attaching: 'Connecting to the screen\u2026',
     streamLost: 'Screen stream ended',
@@ -837,7 +415,8 @@ const en: BotsMessages = {
     youControl: 'You are in control',
     otherControls: 'Another viewer is in control',
     agentControls: 'Bot is in control',
-    controlTaken: 'Another viewer took control. Watching only.'
+    controlTaken: 'Another viewer took control. Watching only.',
+    needsHttps: 'Bot screens need a secure connection. Open the Webapp over HTTPS, or through an SSH tunnel to 127.0.0.1, to view this one.'
   },
   cron: {
     untitled: 'Untitled job',
@@ -906,6 +485,8 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.ja,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ja,
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
     liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',
@@ -940,7 +521,7 @@ const ja: BotsMessages = {
     shareKeys: 'メインプロファイルとキー・アカウントを共有',
     shareKeysOn: target => `${target} の default プロファイルとキー・アカウントを共有`,
     shareKeysHint:
-      'サブスクリプション、OAuth ログイン、API キーをコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
+      'サブスクリプション、OAuth ログイン、API キーを default プロファイルとコピーせず共有するため、トークン更新で互いに無効になりません。チェックを外すと独立したスナップショットをコピーします。',
     needsModel:
       'まだ使用できるモデルプロバイダーがないため、自己紹介をスキップしました。「詳細設定」でプロバイダーとモデルを選んでください。',
     configureModel: 'モデルを設定',
@@ -982,6 +563,7 @@ const ja: BotsMessages = {
     createdOn: (name, target) => `${target} にボット「${name}」を作成しました`
   },
   roster: {
+    ...ROSTER_CHROME['ja'],
     search: 'ボットとグループチャットを検索',
     searchPlaceholder: 'ボットとグループチャットを検索…',
     newBotOrGroup: '新しいボットまたはグループチャット',
@@ -1049,6 +631,7 @@ const ja: BotsMessages = {
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
     newChatWith: 'このボットと新しいチャット',
     openBotChat: 'ボットチャットを開く',
+    openBotChatInNewTab: 'ボットチャットを新しいタブで開く',
     openingChat: 'チャットを開いています…',
     pinToTop: '先頭にピン留め',
     unpin: 'ピン留めを解除',
@@ -1114,29 +697,30 @@ const ja: BotsMessages = {
     generating: '生成中…'
   },
   group: {
+    ...GROUP_CHAT_LOCALES.ja,
     newTitle: '新しいグループチャット',
     manageDesc: 'ボットは複数のグループチャットに参加できます。メンバーシップはすべてのマシンに同期されます。',
     manageTitle: 'グループを管理',
     settingsTitle: 'グループ設定',
-    settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
+    settingsDesc: 'グループ名の変更やグループチャットの画像の設定ができます。メンバーと履歴は保持されます。',
     nameLabel: 'グループ名',
     holdDetection: '停止指示を検出',
-    holdDetectionHint: 'ルームのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
+    holdDetectionHint: 'グループチャットのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
     compressHistory: '履歴を圧縮',
     compressHistoryHint: (member: string) =>
-      `${member} の非表示のルーム履歴を圧縮し、空の応答で失敗しなくなるようにします`,
-    compressing: (member: string) => `${member} のルーム履歴を圧縮中…`,
+      `${member} の非表示のグループチャット履歴を圧縮し、空の応答で失敗しなくなるようにします`,
+    compressing: (member: string) => `${member} のグループチャット履歴を圧縮中…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `${member} のルームセッション ${compressed} 件を圧縮しました${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} に圧縮する履歴はありません — ルームセッションがまだありません`,
-    compressFailed: (member: string, error: string) => `${member} のルーム履歴を圧縮できませんでした: ${error}`,
+      `${member} のグループチャットセッション ${compressed} 件を圧縮しました${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} に圧縮する履歴はありません — グループチャットセッションがまだありません`,
+    compressFailed: (member: string, error: string) => `${member} のグループチャット履歴を圧縮できませんでした: ${error}`,
     searchToAdd: '追加するボットを検索',
     searchToAddPlaceholder: '追加するボットを検索…',
     removeFromSelection: '選択から外す',
     disbandTitle: 'グループチャットを解散しますか？',
     deleteTitle: 'グループチャットを削除しますか？',
     deleteAction: '削除',
-    composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
+    composerPlaceholder: '何か書いてください — このグループチャットのすべてのボットがメッセージを受け取ります。',
     slashCommandsUnsupported:
       'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
@@ -1149,22 +733,19 @@ const ja: BotsMessages = {
     collapseThreadLabel: 'このスレッドを折りたたむ',
     activity: 'アクティビティ',
     noActivityYet: 'このターンのアクティビティはまだありません。',
-    showActivity: '部屋のアクティビティを表示',
-    hideActivity: '部屋のアクティビティを隠す',
+    showActivity: 'グループチャットのアクティビティを表示',
+    hideActivity: 'グループチャットのアクティビティを隠す',
     stop: '停止',
     stopHint: 'この実行を停止 — ターン中のメンバーを中断し、残りを保留します',
-    allHeldStatus: count => `すべてのボット（${count}体）が一時停止中`,
     heldMembersStatus: members => `一時停止中: ${members}`,
     holdReleaseHint: '一時停止中のボットにメンションするか、@all resume を送信して再開します。',
     needsYourInput: 'このグループチャットのボットが入力を待っています',
     noMembersToSend: group =>
-      `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
+      `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればグループチャットを開き直してください。`,
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
-    memberCount: count => `ボット${count}体`,
     you: 'あなた',
-    availableCount: (available, total) => `${total}体中${available}体が利用可能`,
-    settingsHint: group => `グループ設定 — ${group}の名前変更やルーム画像の設定`,
+    settingsHint: group => `グループ設定 — ${group}の名前変更やグループチャット画像の設定`,
     settingsLabel: group => `${group}のグループ設定`,
     disbandHint: group => `${group}グループチャットを解散`,
     disbandLabel: group => `${group}を解散`,
@@ -1172,9 +753,6 @@ const ja: BotsMessages = {
     disbanding: '解散中…',
     disbandDone: '解散しました',
     disbanded: group => `「${group}」を解散しました`,
-    disbandDescPrefix: '',
-    disbandDescSuffix: count =>
-      `のグループ分けをボット${count}体から解除し、共有ルームログを消去します。ボット自体と各グループのセッションは保持されます。`,
     stopped: group => `${group}を停止しました — 残りのターンは再開するまで保留されます`,
     removeAttachment: '添付を削除',
     threadFallback: 'スレッド',
@@ -1183,10 +761,10 @@ const ja: BotsMessages = {
     dropToRoom: 'ドロップして添付 — 応答するすべてのボットが見られます',
     waitingForAnswer: 'あなたの回答を待っています…',
     memberThinking: name => `${name}が考えています…`,
-    roomWorking: 'ルームが作業中です…',
+    roomWorking: 'グループチャットが作業中です…',
     messageRoom: group => `${group}にメッセージ`,
     newThreadPlaceholder: group => `${group}で新しいスレッド…（@名前で個別、@everyoneで全員）`,
-    everyoneMeta: 'ルーム内のすべてのボット',
+    everyoneMeta: 'グループチャット内のすべてのボット',
     commandApproval: 'コマンドの承認',
     answerFailed: (handle, error) => `@${handle}に回答を送信できませんでした: ${error}`,
     wantsToRunCommand: handle => `@${handle}がコマンドを実行しようとしています:`,
@@ -1252,12 +830,22 @@ const ja: BotsMessages = {
     portalNotInstalled: 'ホストに未インストール',
     portalUnsupported: 'このホストでは利用できません',
     portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
+    portalUnavailableManaged: 'この管理された Hermes リリースではまだ Screen を利用できません',
+    managedNotIncludedTitle: 'このボットには Screen が含まれていません',
+    managedNotIncludedBody:
+      'Hermes Cloud では、メモリが 8 GB 以上のボットに Screen が含まれます。これより小さいボットにはインストールできません。',
     unavailableTitle: 'Screen には新しい Hermes が必要です',
     autoOpenMenu: 'ボットが画面を使い始めたら Screen を開く',
     autoOpenOnToast: name => `${name} がデスクトップを使い始めると Screen が開きます`,
     autoOpenOffToast: name => `${name} の Screen は手動で開くまで閉じたままです`,
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
+    placementSandbox: backend => `画面は ${backend} サンドボックス内（ターミナルと同じ場所）で動作します`,
+    imageSwitchTitle: '新しいサンドボックスイメージがあります',
+    imageSwitchBody: (current, target) =>
+      `サンドボックスはまだ ${current} で動作しており、デスクトップがありません。${target} に切り替えると、ボットが次にターミナルを使うときにコンテナが再作成されます。/root と /workspace のファイルはこのマシンに残り、コンテナ内にインストールしたパッケージは必要に応じて再インストールされます。`,
+    imageSwitchApprove: 'イメージを切り替える',
+    imageSwitchKeep: '現在のイメージを使い続ける',
     start: '画面を起動',
     attaching: '画面に接続中…',
     streamLost: '画面ストリームが終了しました',
@@ -1270,7 +858,8 @@ const ja: BotsMessages = {
     youControl: 'あなたが操作中',
     otherControls: '別のビューアが操作中',
     agentControls: 'ボットが操作中',
-    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。'
+    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。',
+    needsHttps: 'ボットの画面には安全な接続が必要です。表示するには、Webapp を HTTPS か 127.0.0.1 への SSH トンネル経由で開いてください。'
   },
   cron: {
     untitled: '無題のジョブ',
@@ -1339,6 +928,8 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.zh,
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES.zh,
   editor: {
     fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1371,7 +962,7 @@ const zh: BotsMessages = {
     shareKeys: '与主配置档案共享密钥和账户',
     shareKeysOn: target => `与 ${target} 上的 default 配置档案共享密钥和账户`,
     shareKeysHint:
-      '订阅、OAuth 登录和 API 密钥保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
+      '订阅、OAuth 登录和 API 密钥与 default 配置档案保持共享而非复制，令牌刷新不会使另一方失效。取消勾选则创建隔离的快照副本。',
     needsModel: '它还没有可用的模型提供商，因此跳过了自我介绍。请在“高级”中选择提供商和模型。',
     configureModel: '配置模型',
     createEmpty: '创建空配置（跳过内置技能）',
@@ -1409,6 +1000,7 @@ const zh: BotsMessages = {
     createdOn: (name, target) => `已在 ${target} 上创建机器人“${name}”`
   },
   roster: {
+    ...ROSTER_CHROME['zh'],
     search: '搜索机器人和群聊',
     searchPlaceholder: '搜索机器人和群聊…',
     newBotOrGroup: '新建机器人或群聊',
@@ -1472,6 +1064,7 @@ const zh: BotsMessages = {
     descriptionHint: '留空则根据机器人的名称和描述生成。',
     newChatWith: '与此机器人开新聊天',
     openBotChat: '打开机器人聊天',
+    openBotChatInNewTab: '在新标签页中打开机器人聊天',
     openingChat: '正在打开聊天…',
     pinToTop: '置顶',
     unpin: '取消置顶',
@@ -1537,28 +1130,29 @@ const zh: BotsMessages = {
     generating: '生成中…'
   },
   group: {
+    ...GROUP_CHAT_LOCALES.zh,
     newTitle: '新建群聊',
     manageDesc: '一个机器人可以加入多个群聊。成员关系会同步到每台设备。',
     manageTitle: '管理群组',
     settingsTitle: '群组设置',
-    settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
+    settingsDesc: '重命名群组或设置群聊图片。成员和历史都会保留。',
     nameLabel: '群组名称',
     holdDetection: '检测停止指令',
-    holdDetectionHint: '允许房间消息将指定成员保持暂停，直到再次提及该成员。',
+    holdDetectionHint: '允许群聊中的停止指令暂停指定成员，直到再次提及该成员。',
     compressHistory: '压缩历史',
-    compressHistoryHint: (member: string) => `压缩 ${member} 隐藏的房间历史，避免该成员因空回复而失败`,
-    compressing: (member: string) => `正在压缩 ${member} 的房间历史…`,
+    compressHistoryHint: (member: string) => `压缩 ${member} 隐藏的群聊历史，避免该成员因空回复而失败`,
+    compressing: (member: string) => `正在压缩 ${member} 的群聊历史…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `已压缩 ${member} 的 ${compressed} 个房间会话${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} 没有可压缩的历史 — 还没有房间会话`,
-    compressFailed: (member: string, error: string) => `无法压缩 ${member} 的房间历史: ${error}`,
+      `已压缩 ${member} 的 ${compressed} 个群聊会话${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} 没有可压缩的历史 — 还没有群聊会话`,
+    compressFailed: (member: string, error: string) => `无法压缩 ${member} 的群聊历史: ${error}`,
     searchToAdd: '搜索要添加的机器人',
     searchToAddPlaceholder: '搜索要添加的机器人…',
     removeFromSelection: '从选择中移除',
     disbandTitle: '解散群聊？',
     deleteTitle: '删除群聊？',
     deleteAction: '删除',
-    composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
+    composerPlaceholder: '说点什么 — 这个群聊里的每个机器人都会看到你的消息。',
     slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     newThread: '新帖子',
@@ -1570,31 +1164,25 @@ const zh: BotsMessages = {
     collapseThreadLabel: '收起此帖子',
     activity: '活动',
     noActivityYet: '本回合还没有活动。',
-    showActivity: '显示房间活动',
-    hideActivity: '隐藏房间活动',
+    showActivity: '显示群聊活动',
+    hideActivity: '隐藏群聊活动',
     stop: '停止',
     stopHint: '停止本次运行 — 中断当前回合的成员，并暂停其余成员',
-    allHeldStatus: count => `全部 ${count} 个机器人已暂停`,
     heldMembersStatus: members => `已暂停：${members}`,
     holdReleaseHint: '提及已暂停的机器人，或发送 @all resume 以恢复它们。',
     needsYourInput: '此群聊中有机器人需要你输入',
     noMembersToSend: group => `${group} 没有可发送的成员——请添加机器人，如果成员仍在加载，请重新打开该群聊。`,
     pictureGenerationFailed: '群组图片生成失败',
-    nameTaken: name => `已存在名为“${name}”的群聊。`,
-    memberCount: count => `${count} 个机器人`,
+    nameTaken: name => `已存在名为“${name}”的群组。`,
     you: '你',
-    availableCount: (available, total) => `${total} 个中 ${available} 个可用`,
-    settingsHint: group => `群聊设置 — 重命名 ${group} 或设置房间图片`,
-    settingsLabel: group => `${group} 的群聊设置`,
+    settingsHint: group => `群组设置 — 重命名 ${group} 或设置群聊图片`,
+    settingsLabel: group => `${group} 的群组设置`,
     disbandHint: group => `解散 ${group} 群聊`,
     disbandLabel: group => `解散 ${group}`,
     disbandAction: '解散',
     disbanding: '正在解散…',
     disbandDone: '已解散',
     disbanded: group => `已解散“${group}”`,
-    disbandDescPrefix: '',
-    disbandDescSuffix: count =>
-      ` 的分组将从 ${count} 个机器人中移除，并清空共享房间日志。机器人本身及其各群聊会话都会保留。`,
     stopped: group => `已停止 ${group} — 其余轮次将保留到你恢复为止`,
     removeAttachment: '移除附件',
     threadFallback: '讨论串',
@@ -1603,10 +1191,10 @@ const zh: BotsMessages = {
     dropToRoom: '拖放以附加 — 每个回应的机器人都能看到',
     waitingForAnswer: '等待你的回答…',
     memberThinking: name => `${name} 正在思考…`,
-    roomWorking: '房间正在处理…',
+    roomWorking: '群聊正在处理…',
     messageRoom: group => `发消息给 ${group}`,
     newThreadPlaceholder: group => `在 ${group} 中开启新讨论串…（@名称指定，@everyone 全体）`,
-    everyoneMeta: '房间里的所有机器人',
+    everyoneMeta: '群聊里的所有机器人',
     commandApproval: '命令批准',
     answerFailed: (handle, error) => `无法将回答发送给 @${handle}：${error}`,
     wantsToRunCommand: handle => `@${handle} 想执行一个命令：`,
@@ -1669,12 +1257,21 @@ const zh: BotsMessages = {
     portalNotInstalled: '主机未安装',
     portalUnsupported: '此主机不可用',
     portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
+    portalUnavailableManaged: '此托管 Hermes 版本尚不支持屏幕',
+    managedNotIncludedTitle: '此机器人不包含屏幕',
+    managedNotIncludedBody: 'Hermes Cloud 为内存 8 GB 及以上的机器人提供屏幕，较小的机器人无法安装。',
     unavailableTitle: '屏幕需要更新版的 Hermes',
     autoOpenMenu: '机器人使用屏幕时自动打开',
     autoOpenOnToast: name => `${name} 开始使用桌面时会自动打开屏幕`,
     autoOpenOffToast: name => `${name} 的屏幕将保持关闭，直到你手动打开`,
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
+    placementSandbox: backend => `屏幕运行在 ${backend} 沙箱内，与终端同处`,
+    imageSwitchTitle: '有新的沙箱镜像',
+    imageSwitchBody: (current, target) =>
+      `沙箱仍在运行 ${current}，其中没有桌面。切换到 ${target} 后，机器人下次使用终端时会重建容器：/root 和 /workspace 中的文件保留在本机，容器内安装的软件包会按需重新安装。`,
+    imageSwitchApprove: '切换镜像',
+    imageSwitchKeep: '保留当前镜像',
     start: '启动屏幕',
     attaching: '正在连接屏幕…',
     streamLost: '屏幕流已结束',
@@ -1687,7 +1284,8 @@ const zh: BotsMessages = {
     youControl: '你正在控制',
     otherControls: '另一位查看者正在控制',
     agentControls: '机器人正在控制',
-    controlTaken: '另一位查看者已接管控制。仅可观看。'
+    controlTaken: '另一位查看者已接管控制。仅可观看。',
+    needsHttps: '机器人屏幕需要安全连接。请通过 HTTPS 或到 127.0.0.1 的 SSH 隧道打开 Webapp 后查看。'
   },
   cron: {
     untitled: '未命名任务',
@@ -1756,6 +1354,8 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
+  crossGateway: CROSS_GATEWAY_GROUP_LOCALES['zh-hant'],
   editor: {
     fullConfigHint: '完整設定需要更新閘道（更新 Hermes 後請重新啟動閘道）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',
@@ -1788,7 +1388,7 @@ const zhHant: BotsMessages = {
     shareKeys: '與主要設定檔共用金鑰和帳戶',
     shareKeysOn: target => `與 ${target} 上的 default 設定檔共用金鑰和帳戶`,
     shareKeysHint:
-      '訂閱、OAuth 登入和 API 金鑰保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
+      '訂閱、OAuth 登入和 API 金鑰與 default 設定檔保持共用而非複製，權杖更新不會使另一方失效。取消勾選則建立隔離的快照副本。',
     needsModel: '它還沒有可用的模型提供者，因此略過了自我介紹。請在「進階」中選擇提供者和模型。',
     configureModel: '設定模型',
     createEmpty: '建立空白設定（略過內建技能）',
@@ -1826,6 +1426,7 @@ const zhHant: BotsMessages = {
     createdOn: (name, target) => `已在 ${target} 上建立機器人「${name}」`
   },
   roster: {
+    ...ROSTER_CHROME['zh-hant'],
     search: '搜尋機器人和群組聊天',
     searchPlaceholder: '搜尋機器人和群組聊天…',
     newBotOrGroup: '新增機器人或群組聊天',
@@ -1889,6 +1490,7 @@ const zhHant: BotsMessages = {
     descriptionHint: '留空則依機器人的名稱和描述產生。',
     newChatWith: '與此機器人開新聊天',
     openBotChat: '開啟機器人聊天',
+    openBotChatInNewTab: '在新分頁中開啟機器人聊天',
     openingChat: '正在開啟聊天…',
     pinToTop: '釘選到頂端',
     unpin: '取消釘選',
@@ -1954,28 +1556,29 @@ const zhHant: BotsMessages = {
     generating: '生成中…'
   },
   group: {
+    ...GROUP_CHAT_LOCALES['zh-hant'],
     newTitle: '新增群組聊天',
     manageDesc: '一個機器人可以加入多個群組聊天。成員關係會同步到每台裝置。',
     manageTitle: '管理群組',
     settingsTitle: '群組設定',
-    settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
+    settingsDesc: '重新命名群組或設定群組聊天圖片。成員和歷史都會保留。',
     nameLabel: '群組名稱',
     holdDetection: '偵測停止指令',
-    holdDetectionHint: '允許房間訊息暫停指定成員，直到再次提及該成員。',
+    holdDetectionHint: '允許群組聊天訊息暫停指定成員，直到再次提及該成員。',
     compressHistory: '壓縮歷史',
-    compressHistoryHint: (member: string) => `壓縮 ${member} 隱藏的房間歷史，避免該成員因空回覆而失敗`,
-    compressing: (member: string) => `正在壓縮 ${member} 的房間歷史…`,
+    compressHistoryHint: (member: string) => `壓縮 ${member} 隱藏的群組聊天歷史，避免該成員因空回覆而失敗`,
+    compressing: (member: string) => `正在壓縮 ${member} 的群組聊天歷史…`,
     compressDone: (member: string, compressed: number, detail: string) =>
-      `已壓縮 ${member} 的 ${compressed} 個房間會話${detail ? ` — ${detail}` : ''}`,
-    compressNothing: (member: string) => `${member} 沒有可壓縮的歷史 — 還沒有房間會話`,
-    compressFailed: (member: string, error: string) => `無法壓縮 ${member} 的房間歷史: ${error}`,
+      `已壓縮 ${member} 的 ${compressed} 個群組聊天工作階段${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} 沒有可壓縮的歷史 — 還沒有群組聊天工作階段`,
+    compressFailed: (member: string, error: string) => `無法壓縮 ${member} 的群組聊天歷史: ${error}`,
     searchToAdd: '搜尋要加入的機器人',
     searchToAddPlaceholder: '搜尋要加入的機器人…',
     removeFromSelection: '從選取中移除',
     disbandTitle: '解散群組聊天？',
     deleteTitle: '刪除群組聊天？',
     deleteAction: '刪除',
-    composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
+    composerPlaceholder: '說點什麼 — 這個群組聊天裡的每個機器人都會看到你的訊息。',
     slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     newThread: '新討論串',
@@ -1987,21 +1590,18 @@ const zhHant: BotsMessages = {
     collapseThreadLabel: '收合此討論串',
     activity: '活動',
     noActivityYet: '本回合還沒有活動。',
-    showActivity: '顯示房間活動',
-    hideActivity: '隱藏房間活動',
+    showActivity: '顯示群組聊天活動',
+    hideActivity: '隱藏群組聊天活動',
     stop: '停止',
     stopHint: '停止本次執行 — 中斷目前回合的成員，並暫停其餘成員',
-    allHeldStatus: count => `全部 ${count} 個機器人已暫停`,
     heldMembersStatus: members => `已暫停：${members}`,
     holdReleaseHint: '提及已暫停的機器人，或傳送 @all resume 以恢復它們。',
     needsYourInput: '此群組聊天中有機器人需要您的輸入',
     noMembersToSend: group => `${group} 沒有可傳送的成員——請新增機器人，若成員仍在載入中，請重新開啟該群組聊天。`,
     pictureGenerationFailed: '群組圖片產生失敗',
-    nameTaken: name => `已存在名為「${name}」的群組聊天。`,
-    memberCount: count => `${count} 個機器人`,
+    nameTaken: name => `已存在名為「${name}」的群組。`,
     you: '您',
-    availableCount: (available, total) => `${total} 個中 ${available} 個可用`,
-    settingsHint: group => `群組設定 — 重新命名 ${group} 或設定房間圖片`,
+    settingsHint: group => `群組設定 — 重新命名 ${group} 或設定群組聊天圖片`,
     settingsLabel: group => `${group} 的群組設定`,
     disbandHint: group => `解散 ${group} 群組聊天`,
     disbandLabel: group => `解散 ${group}`,
@@ -2009,9 +1609,6 @@ const zhHant: BotsMessages = {
     disbanding: '正在解散…',
     disbandDone: '已解散',
     disbanded: group => `已解散「${group}」`,
-    disbandDescPrefix: '',
-    disbandDescSuffix: count =>
-      ` 的分組將從 ${count} 個機器人中移除，並清空共享房間日誌。機器人本身及其各群組工作階段都會保留。`,
     stopped: group => `已停止 ${group} — 其餘回合將保留到你恢復為止`,
     removeAttachment: '移除附件',
     threadFallback: '討論串',
@@ -2020,10 +1617,10 @@ const zhHant: BotsMessages = {
     dropToRoom: '拖放以附加 — 每個回應的機器人都能看到',
     waitingForAnswer: '等待你的回答…',
     memberThinking: name => `${name} 正在思考…`,
-    roomWorking: '房間正在處理…',
+    roomWorking: '群組聊天正在處理…',
     messageRoom: group => `傳訊息給 ${group}`,
     newThreadPlaceholder: group => `在 ${group} 中開啟新討論串…（@名稱指定，@everyone 全體）`,
-    everyoneMeta: '房間裡的所有機器人',
+    everyoneMeta: '群組聊天裡的所有機器人',
     commandApproval: '命令核准',
     answerFailed: (handle, error) => `無法將回答傳送給 @${handle}：${error}`,
     wantsToRunCommand: handle => `@${handle} 想執行一個命令：`,
@@ -2086,12 +1683,21 @@ const zhHant: BotsMessages = {
     portalNotInstalled: '主機未安裝',
     portalUnsupported: '此主機不可用',
     portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
+    portalUnavailableManaged: '此託管 Hermes 版本尚不支援螢幕',
+    managedNotIncludedTitle: '此機器人不包含螢幕',
+    managedNotIncludedBody: 'Hermes Cloud 為記憶體 8 GB 以上的機器人提供螢幕，較小的機器人無法安裝。',
     unavailableTitle: '螢幕需要較新版的 Hermes',
     autoOpenMenu: '機器人使用螢幕時自動開啟',
     autoOpenOnToast: name => `${name} 開始使用桌面時會自動開啟螢幕`,
     autoOpenOffToast: name => `${name} 的螢幕將保持關閉，直到你手動開啟`,
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
+    placementSandbox: backend => `畫面在 ${backend} 沙箱內執行，與終端同處`,
+    imageSwitchTitle: '有新的沙箱映像',
+    imageSwitchBody: (current, target) =>
+      `沙箱仍在執行 ${current}，其中沒有桌面。切換到 ${target} 後，機器人下次使用終端時會重建容器：/root 和 /workspace 中的檔案保留在本機，容器內安裝的套件會按需重新安裝。`,
+    imageSwitchApprove: '切換映像',
+    imageSwitchKeep: '保留目前映像',
     start: '啟動螢幕',
     attaching: '正在連線至螢幕…',
     streamLost: '螢幕串流已結束',
@@ -2104,7 +1710,8 @@ const zhHant: BotsMessages = {
     youControl: '你正在控制',
     otherControls: '另一位檢視者正在控制',
     agentControls: '機器人正在控制',
-    controlTaken: '另一位檢視者已接手控制。僅可觀看。'
+    controlTaken: '另一位檢視者已接手控制。僅可觀看。',
+    needsHttps: '機器人螢幕需要安全連線。請透過 HTTPS 或到 127.0.0.1 的 SSH 通道開啟 Webapp 後檢視。'
   },
   cron: {
     untitled: '未命名工作',
@@ -2173,32 +1780,16 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
-
-// Bind the message SHAPE to a plugin translator: string leaves resolve now,
-// function leaves forward their args through t(path, …).
-type Bound<T> = {
-  [K in keyof T]: T[K] extends (...args: infer A) => string
-    ? (...args: A) => string
-    : T[K] extends object
-      ? Bound<T[K]>
-      : string
-}
-
-function bind<T extends object>(t: PluginTranslate, template: T, prefix = ''): Bound<T> {
-  const out = {} as Record<string, unknown>
-
-  for (const [key, value] of Object.entries(template)) {
-    const path = prefix ? `${prefix}.${key}` : key
-    out[key] =
-      typeof value === 'function'
-        ? (...args: unknown[]) => t(path, ...args)
-        : value && typeof value === 'object'
-          ? bind(t, value as object, path)
-          : t(path)
-  }
-
-  return out as Bound<T>
+export const BOTS_LOCALES: PluginLocaleBundles = {
+  en,
+  ja,
+  zh,
+  'zh-hant': zhHant,
+  ar: { canonical: CANONICAL_GROUP_LOCALES.ar, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ar, ...GROUP_SURFACE_AR },
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.ru, ...GROUP_SURFACE_RU },
+  fr: { canonical: CANONICAL_GROUP_LOCALES.fr, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.fr, ...GROUP_SURFACE_FR },
+  de: { canonical: CANONICAL_GROUP_LOCALES.de, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.de, ...GROUP_SURFACE_DE },
+  es: { canonical: CANONICAL_GROUP_LOCALES.es, crossGateway: CROSS_GATEWAY_GROUP_LOCALES.es, ...GROUP_SURFACE_ES }
 }
 
 export type BotsText = Bound<BotsMessages>
@@ -2223,10 +1814,9 @@ let bound: { text: BotsText; translate: PluginTranslate } | null = null
 
 /** `useBots` for the module-level functions a hook can't reach — the schedule
  *  summarizers and label helpers that render inside components but aren't
- *  components. Non-reactive on its own; every caller is invoked during a
- *  render that a core `useI18n()` already subscribes to, so a locale switch
- *  still repaints. Cached on translator identity: `bind` walks the whole tree,
- *  and these run per row. */
+ *  components. Non-reactive on its own; rendering callers rely on their
+ *  component's locale subscription. Cache the shape on translator identity; its leaves resolve
+ *  on read so handlers and async callers also see the current language. */
 export function botsText(): BotsText {
   const translate = getPluginCtx()?.i18n?.t ?? english
 

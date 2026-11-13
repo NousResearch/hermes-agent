@@ -26,10 +26,13 @@ class TestBehaviourIsPreserved:
 
 
     def test_real_newlines_preserved(self):
-        """The block must contain REAL newlines (not escaped backslash-n
-        literals) so the safety-rule heading renders as a heading."""
-        assert chr(10) in SKILLS_GUIDANCE
-        assert (chr(92) + 'n') not in SKILLS_GUIDANCE
+        """The Skill Safety Rule (moved from SKILLS_GUIDANCE to the compaction
+        handoff) must contain REAL newlines (not escaped backslash-n literals)
+        so its heading renders as a heading."""
+        from agent.context_compressor_tail import SKILL_SAFETY_RULE
+
+        assert chr(10) in SKILL_SAFETY_RULE
+        assert (chr(92) + 'n') not in SKILL_SAFETY_RULE + SKILLS_GUIDANCE
 
 
 class TestGuidanceReachesTheSystemPrompt:
@@ -38,7 +41,7 @@ class TestGuidanceReachesTheSystemPrompt:
         # wiring behaviorally rather than trusting the constant in isolation.
         from types import SimpleNamespace
 
-        import agent.system_prompt as system_prompt
+        from agent import system_prompt
 
         agent = SimpleNamespace(valid_tool_names={"skill_manage"}, _kanban_worker_guidance="")
         assert SKILLS_GUIDANCE in (system_prompt._tool_guidance_block(agent) or "")

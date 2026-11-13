@@ -89,7 +89,7 @@ def test_live_reattach_reports_the_sessions_own_model_not_the_profile_default(li
     (cold) resume already reports the chat's own model; the warm reattach reported `_resolve_model()`, so
     the pick a user made in the composer appeared to change at random depending on whether the backend had
     dropped the session in between."""
-    sid, record = live_lazy_session
+    _sid, record = live_lazy_session
     monkeypatch.setattr(srv, "_resolve_model", lambda: "z-ai/glm-5.2")
     expected = ("claude-opus-5-5[1m]", "claude-subscription-directsdk-experimental")
     if shape == "override_only":

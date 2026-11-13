@@ -8,7 +8,7 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 
-import { type FastControl, ModelEditSubmenu } from './model-edit-submenu'
+import { type DaybreakControl, type FastControl, ModelEditSubmenu } from './model-edit-submenu'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -24,6 +24,7 @@ afterEach(() => {
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.
 function renderSubmenu(opts: {
+  daybreak?: DaybreakControl
   defaultEffort?: string
   effort?: string
   fastControl: FastControl
@@ -38,6 +39,7 @@ function renderSubmenu(opts: {
         <DropdownMenuSub open>
           <DropdownMenuSubTrigger>edit</DropdownMenuSubTrigger>
           <ModelEditSubmenu
+            daybreak={opts.daybreak}
             defaultEffort={opts.defaultEffort ?? 'medium'}
             effort={opts.effort ?? 'medium'}
             fastControl={opts.fastControl}
@@ -127,5 +129,27 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
+  })
+})
+
+describe('the Daybreak switch', () => {
+  it('appears only when the row is offered it, and reports the flip to its owner', () => {
+    const set = vi.fn()
+    renderSubmenu({
+      daybreak: { on: true, set },
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: false
+    })
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Daybreak' }))
+
+    expect(set).toHaveBeenCalledWith(false)
+  })
+
+  it('is absent without an offer', () => {
+    renderSubmenu({ fastControl: { kind: 'param', on: false }, onSetOptions: vi.fn(), reasoning: false })
+
+    expect(screen.queryByRole('switch', { name: 'Daybreak' })).toBeNull()
   })
 })

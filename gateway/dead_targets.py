@@ -50,7 +50,7 @@ class DeadTargetRegistry:
 
     def __init__(self, path: Optional[Path] = None) -> None:
         self._lock = threading.RLock()
-        self._dead: Dict[str, Dict[str, object]] = {}
+        self._dead: dict[str, dict[str, object]] = {}
         self._path = path if path is not None else get_hermes_home() / "gateway" / "dead_targets.json"
         try:
             if self._path.exists():

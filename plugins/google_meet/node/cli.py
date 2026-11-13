@@ -75,7 +75,7 @@ def _cmd_ping(args: argparse.Namespace, reg: NodeRegistry) -> int:
         return 1
     try:
         result = NodeClient(entry["url"], entry["token"]).ping()
-    except Exception as exc:  # noqa: BLE001 — surface any connection error
+    except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 1
     print(json.dumps({"ok": True, "node": args.name, **result}))
@@ -100,11 +100,3 @@ def node_command(args: argparse.Namespace) -> int:
         return 2
     # ``run`` never touches the registry; constructing it is side-effect free.
     return handler(args, NodeRegistry())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

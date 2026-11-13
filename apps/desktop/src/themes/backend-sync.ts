@@ -21,7 +21,7 @@ import { atom } from 'nanostores'
 
 import { readJson, writeJson } from '@/lib/storage'
 
-import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
+import { BUILTIN_THEMES, DEFAULT_SKIN_NAME, RETIRED_SKINS } from './presets'
 import { skinToDesktopTheme } from './skin'
 import { type DesktopTheme, isValidTheme } from './types'
 
@@ -41,12 +41,26 @@ export const localDisplaySkinProfile = localDisplaySkinName
   ? (localSkinPayload?.profile ?? '').trim() || 'default'
   : null
 
-const readCached = (): Record<string, DesktopTheme> =>
-  Object.fromEntries(
-    Object.entries(readJson<Record<string, unknown>>(BACKEND_THEMES_KEY) ?? {}).filter(
-      (entry): entry is [string, DesktopTheme] => !BUILTIN_THEMES[entry[0]] && isValidTheme(entry[1])
-    )
+// Built-in names keep their desktop palette and retired names resolve to the
+// default skin, so a cached theme under either is a shadow nothing should list.
+const cacheable = (name: string) => !BUILTIN_THEMES[name] && !RETIRED_SKINS.has(name)
+
+// Dropped entries are written back out, so a stale shadow (the reverted #130015
+// build cached the CLI `default` skin as a second "Classic Hermes") is gone from
+// disk on the first launch, not only hidden until the next registry change.
+const readCached = (): Record<string, DesktopTheme> => {
+  const stored = Object.entries(readJson<Record<string, unknown>>(BACKEND_THEMES_KEY) ?? {})
+
+  const kept = Object.fromEntries(
+    stored.filter((entry): entry is [string, DesktopTheme] => cacheable(entry[0]) && isValidTheme(entry[1]))
   )
+
+  if (Object.keys(kept).length !== stored.length) {
+    writeJson(BACKEND_THEMES_KEY, kept)
+  }
+
+  return kept
+}
 
 /** Skins pushed by the backend, keyed by name. Merged by `listAllThemes`. */
 export const $backendThemes = atom<Record<string, DesktopTheme>>(typeof window === 'undefined' ? {} : readCached())
@@ -91,14 +105,15 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     return
   }
 
-  // `default` is "no opinion" on the PALETTE — the desktop keeps its own default
-  // (nous), so we never register a converted theme under `default`. It is still a
+  // `default` (like every retired name) is "no opinion" on the PALETTE — the
+  // desktop keeps its own default (nous), so we never register a converted theme
+  // under `default`. It is still a
   // valid apply TARGET though: a runtime switch back to `default` must repaint the
   // desktop to its own default (setTheme normalizes `default` → nous). So we only
   // skip the registry step here and let it flow through the apply logic below.
   // Built-in names (mono/slate/…) already have a hand-tuned desktop palette — we
   // never shadow it, but the name is still a valid apply target.
-  if (name !== 'default' && !BUILTIN_THEMES[name]) {
+  if (cacheable(name)) {
     const theme = skinToDesktopTheme(skin as HermesSkin)
 
     if (!theme) {

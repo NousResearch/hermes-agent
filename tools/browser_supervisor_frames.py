@@ -37,7 +37,7 @@ class FrameInfo:
     cdp_session_id: Optional[str] = None
     name: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = {"frame_id": self.frame_id, "url": self.url, "origin": self.origin, "is_oopif": self.is_oopif}
         optional = (("session_id", self.cdp_session_id), ("parent_frame_id", self.parent_frame_id), ("name", self.name))
         d.update({k: v for k, v in optional if v})
@@ -53,7 +53,7 @@ class FrameTrackingMixin:
         await self._cdp("Runtime.enable", session_id=session_id, timeout=timeout)
         await self._cdp("Target.setAutoAttach", _AUTO_ATTACH_PARAMS, session_id=session_id, timeout=timeout)
 
-    def _on_frame_attached(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
+    def _on_frame_attached(self, params: dict[str, Any], session_id: Optional[str]) -> None:
         frame_id = params.get("frameId")
         if frame_id:
             self._set_frame(FrameInfo(frame_id=frame_id, url="", origin="", parent_frame_id=params.get("parentFrameId"),
@@ -63,7 +63,7 @@ class FrameTrackingMixin:
         with self._state_lock:
             self._frames[frame.frame_id] = frame
 
-    def _on_frame_navigated(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
+    def _on_frame_navigated(self, params: dict[str, Any], session_id: Optional[str]) -> None:
         frame = params.get("frame") or {}
         frame_id = frame.get("id")
         if not frame_id:
@@ -77,7 +77,7 @@ class FrameTrackingMixin:
                 cdp_session_id=old.cdp_session_id, name=str(frame.get("name") or old.name),
             )
 
-    def _on_frame_detached(self, params: Dict[str, Any], session_id: Optional[str]) -> None:
+    def _on_frame_detached(self, params: dict[str, Any], session_id: Optional[str]) -> None:
         """Drop a frame only when it's truly gone. ``reason="swap"`` = migrating processes
         (e.g. promoted to an OOPIF) — dropping would hide the iframe. Even with ``remove``
         the parent only knows the child left ITS process; a live child session means it's
@@ -90,7 +90,7 @@ class FrameTrackingMixin:
             if not (old and old.is_oopif and old.cdp_session_id):
                 self._frames.pop(frame_id, None)
 
-    async def _on_target_attached(self, params: Dict[str, Any], session_id: Optional[str] = None) -> None:
+    async def _on_target_attached(self, params: dict[str, Any], session_id: Optional[str] = None) -> None:
         info = params.get("targetInfo") or {}
         sid = params.get("sessionId")
         target_type = info.get("type")
@@ -118,7 +118,7 @@ class FrameTrackingMixin:
             logger.debug("child session %s setup failed: %s", sid[:16], e)
         await self._install_dialog_bridge(sid)
 
-    def _on_target_detached(self, params: Dict[str, Any], session_id: Optional[str] = None) -> None:
+    def _on_target_detached(self, params: dict[str, Any], session_id: Optional[str] = None) -> None:
         """Clear the session binding of frames on a detached child session. Frames are
         deliberately NOT dropped: Browserbase fires transient detaches during page transitions
         while the iframe is still visible; ``Page.frameDetached`` cleans up if it truly goes away."""
@@ -129,7 +129,7 @@ class FrameTrackingMixin:
             self._frames.update({fid: replace(f, cdp_session_id=None) for fid, f in self._frames.items()
                                  if f.cdp_session_id == sid})
 
-    def _build_frame_tree_locked(self) -> Dict[str, Any]:
+    def _build_frame_tree_locked(self) -> dict[str, Any]:
         """Capped frame_tree payload (must hold state lock). Top frame = one with
         no parent, preferring oopif=False; BFS from it, capped by
         FRAME_TREE_MAX_ENTRIES and FRAME_TREE_MAX_OOPIF_DEPTH for OOPIF branches."""
@@ -139,9 +139,9 @@ class FrameTrackingMixin:
         if top is None:
             return {"top": None, "children": [], "truncated": False}
 
-        children: List[Dict[str, Any]] = []
+        children: list[dict[str, Any]] = []
         truncated = False
-        queue: List[Tuple[FrameInfo, int]] = [(f, 1) for f in frames.values() if f.parent_frame_id == top.frame_id]
+        queue: list[tuple[FrameInfo, int]] = [(f, 1) for f in frames.values() if f.parent_frame_id == top.frame_id]
         visited = {top.frame_id}
         while queue and len(children) < FRAME_TREE_MAX_ENTRIES:
             frame, depth = queue.pop(0)
@@ -157,7 +157,7 @@ class FrameTrackingMixin:
         return {"top": top.to_dict(), "children": children, "truncated": truncated or bool(queue)}
 
     # CDP event → handler(self, params, session_id); merged into CDPSupervisor._EVENT_HANDLERS.
-    EVENT_HANDLERS: Dict[str, Callable[..., Any]] = {
+    EVENT_HANDLERS: dict[str, Callable[..., Any]] = {
         "Page.frameAttached": _on_frame_attached,
         "Page.frameNavigated": _on_frame_navigated,
         "Page.frameDetached": _on_frame_detached,

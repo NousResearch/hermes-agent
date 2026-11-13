@@ -140,6 +140,27 @@ describe('markRuntimeGone', () => {
 })
 
 describe('refreshBackgroundProcesses recovery', () => {
+  it('does not unbind a live session for canonical non-missing failures sharing code 4001', async () => {
+    $sessionTiles.set([tile(STORED, RUNTIME)])
+    $sessionStates.set({ [RUNTIME]: cachedState(STORED) })
+    $activeSessionId.set(RUNTIME)
+    const request = vi.fn()
+    $gateway.set({ request } as never)
+
+    for (const reason of ['invalid_params', 'permission_denied', 'stale_generation', 'profile_mismatch']) {
+      request.mockRejectedValueOnce(new JsonRpcGatewayError(reason, { code: 4001, data: { reason } }))
+      await refreshBackgroundProcesses(RUNTIME)
+      expect($sessionTiles.get()[0]?.runtimeId).toBe(RUNTIME)
+      expect($sessionResumeRequest.get()).toBeNull()
+      expect(isSessionGone(RUNTIME)).toBe(false)
+    }
+
+    request.mockRejectedValueOnce(new JsonRpcGatewayError('not_found', { code: 4001, data: { reason: 'not_found' } }))
+    await refreshBackgroundProcesses(RUNTIME)
+    expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
+    expect($sessionResumeRequest.get()?.sessionId).toBe(STORED)
+  })
+
   it('carries the gateway 4001 verdict to the view instead of only going quiet', async () => {
     $sessionTiles.set([tile(STORED, RUNTIME)])
     $sessionStates.set({ [RUNTIME]: cachedState(STORED) })

@@ -31,11 +31,11 @@ const UNKNOWN_JSON = JSON.stringify({ available: null, error: 'checker timed out
 describe('runAppInstallerChecker', () => {
   it('runs python on the script, hidden and with the default deadline', async () => {
     const { impl, calls } = stubExecFile(call => call.callback(null, '{"available": false}', ''))
-    const result = await runAppInstallerChecker('python.exe', 'check.py', { execFileImpl: impl })
+    const result = await runAppInstallerChecker('python.exe', 'check.module', { execFileImpl: impl })
 
     expect(result).toEqual({ code: 0, stdout: '{"available": false}' })
     expect(calls[0].file).toBe('python.exe')
-    expect(calls[0].args).toEqual(['check.py'])
+    expect(calls[0].args).toEqual(['-P', '-m', 'check.module'])
     expect(calls[0].options.windowsHide).toBe(true)
     expect(calls[0].options.timeout).toBe(APPINSTALLER_CHECK_TIMEOUT_MS)
   })
@@ -44,7 +44,7 @@ describe('runAppInstallerChecker', () => {
     const stdout = '{"available": null, "error": "winrt import failed"}'
     const { impl } = stubExecFile(call => call.callback(Object.assign(new Error('exited'), { code: 1 }), stdout, ''))
 
-    const result = await runAppInstallerChecker('python.exe', 'check.py', { execFileImpl: impl })
+    const result = await runAppInstallerChecker('python.exe', 'check.module', { execFileImpl: impl })
 
     expect(result).toEqual({ code: 1, stdout })
   })
@@ -54,7 +54,7 @@ describe('runAppInstallerChecker', () => {
       call.callback(Object.assign(new Error('killed'), { code: null, killed: true }), '', '')
     )
 
-    const result = await runAppInstallerChecker('python.exe', 'check.py', {
+    const result = await runAppInstallerChecker('python.exe', 'check.module', {
       execFileImpl: impl,
       timeoutMs: 50
     })
@@ -70,7 +70,7 @@ describe('runAppInstallerChecker', () => {
     const { impl, calls } = stubExecFile(() => undefined) // no callback, ever
     const started = Date.now()
 
-    const result = await runAppInstallerChecker('python.exe', 'check.py', {
+    const result = await runAppInstallerChecker('python.exe', 'check.module', {
       execFileImpl: impl,
       timeoutMs: 50
     })
@@ -92,7 +92,7 @@ describe('runAppInstallerChecker', () => {
 
       let settled = false
 
-      const pending = runAppInstallerChecker('python.exe', 'store.py', {
+      const pending = runAppInstallerChecker('python.exe', 'store.module', {
         execFileImpl: impl,
         timeoutMs: 50,
         waitForExit: true
@@ -114,7 +114,7 @@ describe('runAppInstallerChecker', () => {
   it('an interpreter that cannot spawn resolves unknown, never "no update"', async () => {
     const { impl } = stubExecFile(call => call.callback(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }), '', ''))
 
-    const result = await runAppInstallerChecker('missing-python.exe', 'check.py', { execFileImpl: impl })
+    const result = await runAppInstallerChecker('missing-python.exe', 'check.module', { execFileImpl: impl })
 
     expect(result.code).toBe(1)
     expect(JSON.parse(result.stdout)).toEqual({ available: null, error: 'ENOENT' })
@@ -127,7 +127,7 @@ describe('runAppInstallerChecker', () => {
 
     const { impl } = stubExecFile(call => call.callback(null, '{}', 'some warning'))
 
-    const result = await runAppInstallerChecker('python.exe', 'check.py', { execFileImpl: impl, onStderr })
+    const result = await runAppInstallerChecker('python.exe', 'check.module', { execFileImpl: impl, onStderr })
 
     expect(result).toEqual({ code: 0, stdout: '{}' })
     expect(onStderr).toHaveBeenCalledWith('some warning')
@@ -138,7 +138,7 @@ describe('runAppInstallerChecker', () => {
       throw new Error('bad arguments')
     }) as unknown as ExecFileImpl
 
-    const result = await runAppInstallerChecker('python.exe', 'check.py', { execFileImpl: impl, timeoutMs: 50 })
+    const result = await runAppInstallerChecker('python.exe', 'check.module', { execFileImpl: impl, timeoutMs: 50 })
 
     expect(result.code).toBe(1)
     expect(JSON.parse(result.stdout)).toEqual({ available: null, error: 'bad arguments' })
@@ -147,14 +147,14 @@ describe('runAppInstallerChecker', () => {
   it('forwards the requested Store mode and window handle without a shell', async () => {
     const { impl, calls } = stubExecFile(call => call.callback(null, '{"ok":true}', ''))
     const args = ['--mode', 'install', '--hwnd', '1311768467139281697']
-    await runAppInstallerChecker('packaged-python.exe', 'store.py', { execFileImpl: impl, args })
-    expect(calls[0].args).toEqual(['store.py', ...args])
+    await runAppInstallerChecker('packaged-python.exe', 'store.module', { execFileImpl: impl, args })
+    expect(calls[0].args).toEqual(['-P', '-m', 'store.module', ...args])
   })
 
   it('passes the caller env through (PYTHONPATH for the payload site-packages)', async () => {
     const { impl, calls } = stubExecFile(call => call.callback(null, '', ''))
 
-    await runAppInstallerChecker('python.exe', 'check.py', { execFileImpl: impl, env: { PYTHONPATH: 'C:\\sp' } })
+    await runAppInstallerChecker('python.exe', 'check.module', { execFileImpl: impl, env: { PYTHONPATH: 'C:\\sp' } })
 
     expect(calls[0].options.env).toEqual({ PYTHONPATH: 'C:\\sp' })
   })

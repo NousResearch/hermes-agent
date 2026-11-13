@@ -32,39 +32,3 @@ export function selectRunnableBinary(opts: RunnableBinaryOptions): string | null
 
   return existing.find(opts.binaryRuns) || existing[0] || null
 }
-
-/** Marker on the error runGit rejects with when the git binary itself could not be spawned. */
-export const GIT_UNUSABLE = 'git-unusable'
-
-const SPAWN_FAILURE_REASONS: Record<string, string> = {
-  ENOENT: 'not found',
-  EACCES: 'permission denied',
-  EBADARCH: 'Bad CPU type in executable'
-}
-
-/**
- * Turn a child-process 'error' (the binary never ran, as opposed to running
- * and exiting nonzero) into an actionable local-executable message.
- *
- * Without this the caller shows the update-server/network copy plus the raw
- * `spawn Unknown system error -86` — a network claim for a local Intel-only
- * git that macOS refuses to launch (EBADARCH is errno 86 on Darwin, surfaced by
- * Node as errno -86 with no `code`). The message names the binary that failed
- * so the user can replace it; nothing in this path is a network problem.
- *
- * Returns null for anything that is not a spawn-level failure so those keep
- * their existing wording.
- */
-export function describeGitSpawnFailure(error: any, binaryPath: string): string | null {
-  const code = error?.code || (error?.errno === -86 ? 'EBADARCH' : '')
-  const reason = SPAWN_FAILURE_REASONS[code]
-
-  if (!reason) {
-    return null
-  }
-
-  return (
-    `Git on this computer cannot run (${binaryPath}: ${reason}). ` +
-    'Install a Git build for this machine (on macOS: `xcode-select --install`) and check again.'
-  )
-}

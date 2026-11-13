@@ -75,6 +75,30 @@ describe('keybinds store persist vs late-registered contributed actions', () => 
     expect(reloaded.$comboIndex.get().get('mod+b')).toBeUndefined()
   })
 
+  it('indexes every action on a shared chord in order, tab slot ahead of profile switch', async () => {
+    const { $comboIndex, conflictsFor, setBinding } = await import('./keybinds')
+
+    const chord = (combo: string) => $comboIndex.get().get(combo) ?? []
+
+    // Off macOS `ctrl+2` (session.slot.2) folds onto the same canonical chord;
+    // the contract is the tab slot leads and the profile switch follows it.
+    expect(chord('mod+2').slice(0, 2)).toEqual(['view.tabSlot.2', 'profile.switch.2'])
+
+    // The layered pair is by design — neither side reports the other.
+    expect(conflictsFor('view.tabSlot.2', 'mod+2')).not.toContain('profile.switch.2')
+    expect(conflictsFor('profile.switch.2', 'mod+2')).not.toContain('view.tabSlot.2')
+
+    // Rebinding either one changes only that one.
+    setBinding('view.tabSlot.2', ['mod+alt+2'])
+    expect(chord('mod+2')[0]).toBe('profile.switch.2')
+    expect(chord('mod+alt+2').slice(0, 2)).toEqual(['view.tabSlot.2', 'profile.switch.11'])
+
+    // A non-passthrough action landing on someone else's chord still conflicts.
+    setBinding('session.new', ['mod+2'])
+    expect(conflictsFor('session.new', 'mod+2')).toContain('profile.switch.2')
+    expect(conflictsFor('profile.switch.2', 'mod+2')).toContain('session.new')
+  })
+
   it('treats Backspace and Delete during capture as a cleared binding', async () => {
     const keybinds = await import('./keybinds')
 

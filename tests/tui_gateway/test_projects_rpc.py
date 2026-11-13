@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def _call(method, params=None):
@@ -217,7 +217,7 @@ def test_remote_scan_failure_merges_instead_of_replacing_cache(tmp_path, monkeyp
     call regardless of success).
     """
     from hermes_cli import projects_db as pdb
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     def _git_repo(path):
         repo = path
@@ -270,7 +270,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
     root must contribute nothing, and the scan must merge — never wipe.
     """
     from hermes_cli import projects_db as pdb
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     def _git_repo(path):
         repo = path
@@ -308,7 +308,7 @@ def test_remote_scan_missing_root_does_not_wipe_cache(tmp_path):
 def test_remote_scan_full_authoritative_replaces_cache(tmp_path):
     """Only a fully-walked scan may replace the stale cache."""
     from hermes_cli import projects_db as pdb
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     def _git_repo(path):
         repo = path

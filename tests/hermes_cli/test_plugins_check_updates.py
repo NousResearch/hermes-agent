@@ -499,9 +499,7 @@ def feed_redirect_server(monkeypatch):
             visited.append(self.path)
             if self.path == "/start":
                 target = f"http://127.0.0.1:{self.server.server_port}/middle"
-            elif self.path == "/middle":
-                target = f"https://127.0.0.1:{self.server.server_port}/feed"
-            elif self.path == "/secure":
+            elif self.path == "/middle" or self.path == "/secure":
                 target = f"https://127.0.0.1:{self.server.server_port}/feed"
             else:
                 self.send_response(200)

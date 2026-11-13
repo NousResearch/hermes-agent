@@ -46,7 +46,7 @@ class TestIsPlainJsonData:
         assert not _is_plain_json_data({1: "a"})
 
     def test_rejects_generators(self):
-        assert not _is_plain_json_data((item for item in ()))
+        assert not _is_plain_json_data(item for item in ())
 
 
 class TestBypassSdkRequestTransform:

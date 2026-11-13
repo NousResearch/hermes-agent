@@ -18,11 +18,11 @@ if not hasattr(_mcp_auth_utils, "validate_authorization_response_iss"):
         allow_module_level=True,
     )
 
-from mcp.client.auth.oauth2 import OAuthClientProvider  # noqa: E402
-from mcp.client.auth.utils import validate_authorization_response_iss  # noqa: E402
-from mcp.shared.auth import AuthorizationCodeResult, OAuthMetadata  # noqa: E402
+from mcp.client.auth.oauth2 import OAuthClientProvider
+from mcp.client.auth.utils import validate_authorization_response_iss
+from mcp.shared.auth import AuthorizationCodeResult, OAuthMetadata
 
-from tools.mcp_oauth_provider import HermesProviderMixin  # noqa: E402
+from tools.mcp_oauth_provider import HermesProviderMixin
 
 
 class _Provider(HermesProviderMixin, OAuthClientProvider):

@@ -20,7 +20,7 @@ class NodeClient:
         self.token = token
         self.timeout = float(timeout)
 
-    def _rpc(self, type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _rpc(self, type: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Send one request, return its payload dict; RuntimeError on error envelope / id mismatch."""
         try:
             from websockets.sync.client import connect  # type: ignore
@@ -41,23 +41,23 @@ class NodeClient:
         return payload_out
 
     def start_bot(self, url: str, guest_name: str = "Hermes Agent", duration: Optional[str] = None,
-                  headed: bool = False, mode: str = "transcribe") -> Dict[str, Any]:
-        payload: Dict[str, Any] = {"url": url, "guest_name": guest_name, "headed": bool(headed), "mode": mode}
+                  headed: bool = False, mode: str = "transcribe") -> dict[str, Any]:
+        payload: dict[str, Any] = {"url": url, "guest_name": guest_name, "headed": bool(headed), "mode": mode}
         if duration is not None:
             payload["duration"] = duration
         return self._rpc("start_bot", payload)
 
-    def stop(self) -> Dict[str, Any]:
+    def stop(self) -> dict[str, Any]:
         return self._rpc("stop", {})
 
-    def status(self) -> Dict[str, Any]:
+    def status(self) -> dict[str, Any]:
         return self._rpc("status", {})
 
-    def transcript(self, last: Optional[int] = None) -> Dict[str, Any]:
+    def transcript(self, last: Optional[int] = None) -> dict[str, Any]:
         return self._rpc("transcript", {} if last is None else {"last": int(last)})
 
-    def say(self, text: str) -> Dict[str, Any]:
+    def say(self, text: str) -> dict[str, Any]:
         return self._rpc("say", {"text": str(text)})
 
-    def ping(self) -> Dict[str, Any]:
+    def ping(self) -> dict[str, Any]:
         return self._rpc("ping", {})

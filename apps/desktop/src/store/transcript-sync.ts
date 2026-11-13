@@ -1,8 +1,9 @@
 // Cross-window transcript freshness. Each desktop window owns its own gateway
 // transport for a session, so a turn that completes in window A never streams
 // into window B. This bus pings peers with the stored session id so a window
-// viewing that chat can re-pull history before the user sends into an
-// out-of-date context. Distinct from hermes:sessions (sidebar list).
+// viewing that chat re-pulls history and stays current. Sends never wait on it:
+// the backend folds other surfaces' rows into the model's context itself.
+// Distinct from hermes:sessions (sidebar list).
 
 export type TranscriptChangedPayload = {
   /** Stored session id shared across Desktop windows. */

@@ -205,10 +205,8 @@ class TestNonBedrockProvidersKeepVerbatimLabels:
         telegram_adapter.InlineKeyboardButton, telegram_adapter.InlineKeyboardMarkup = _Button, _Markup
         try:
             adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+            adapter._is_callback_user_authorized = lambda *a, **k: True  # dispatcher auth is not under test here
             adapter._bot, adapter._app = AsyncMock(), MagicMock()
-            # main's dispatcher now auth-gates every chat-id picker; auth is
-            # covered by test_group_model_picker_switch_follows_callback_allowlist.
-            adapter.set_authorization_check(lambda *a, **k: True)
             models = ["openai.gpt-6-astra", "openai.gpt-5.6-terra"]
             on_selected = AsyncMock(return_value="ok")
             adapter._model_picker_state["12345"] = {
@@ -222,6 +220,7 @@ class TestNonBedrockProvidersKeepVerbatimLabels:
             query.message = MagicMock()
             query.message.chat_id = 12345
             query.from_user = MagicMock()
+            query.message.message_id = 42
             query.edit_message_text = AsyncMock()
             await adapter._handle_callback_query(SimpleNamespace(callback_query=query), MagicMock())
 

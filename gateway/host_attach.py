@@ -45,6 +45,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from agent.deadline import poll_until
+
 logger = logging.getLogger(__name__)
 
 #: How long a caller waits for the owner's control socket after seeing its record (see module doc).
@@ -105,12 +107,29 @@ class HostGateway:
         return f"PID {self.pid} (launched by profile '{self.profile_label}'; serves: {served})"
 
 
-def _record_home(record) -> Path:
+def record_home(record) -> Path:
     """Home the owner was launched from. Records written before the field existed fall back to the
     default root — the home every pre-record multiplexer ran under."""
     from hermes_constants import get_default_hermes_root
 
     return Path(record.home) if getattr(record, "home", "") else Path(get_default_hermes_root())
+
+
+def launched_by_other_tenant(owner_home: Path | str, our_home: Path | str) -> bool:
+    """Was the owner launched from ANOTHER Hermes root (a second tenant on this host)?
+
+    The host record and lock are per OS user, and two tenants (separate ``HERMES_HOME`` roots)
+    each expose a profile named ``default``: tenant A's multiplexer "serving default" is a name
+    collision for tenant B, never coverage, so it is not this tenant's host gateway (#121352).
+    A legacy record with no ``home`` proves nothing and counts as ours.
+    """
+    if not str(owner_home or ""):
+        return False
+    from gateway.status import _same_hermes_home
+    from hermes_constants import get_default_hermes_root
+
+    return not _same_hermes_home(get_default_hermes_root(home=owner_home),
+                                 get_default_hermes_root(home=our_home))
 
 
 def _identify(home: Path) -> Optional[dict]:
@@ -125,10 +144,21 @@ def _identify(home: Path) -> Optional[dict]:
 
 def _served_from_identity(identity: dict) -> tuple[str, ...]:
     """Served set from a live ``identify``. A STANDALONE gateway publishes no ``served_profiles``;
-    it serves its own profile and nothing else, which is not the same as "unknown"."""
+    it serves its own profile and nothing else, which is not the same as "unknown".
+
+    The unified runtime publishes each served profile as ``{"profile_id", "home"}`` (what
+    ``hermes_cli.gateway_runtime`` matches homes against); older gateways published bare names.
+    Both spell the same roster, so a dict entry is reduced to its profile name here."""
     served = identity.get("served_profiles")
     if isinstance(served, list) and served:
-        return tuple(str(p) for p in served)
+        names = []
+        for entry in served:
+            if isinstance(entry, dict):
+                home = entry.get("home") or entry.get("profile_id")
+                names.append(profile_name_for_home(str(home)) if home else "default")
+            else:
+                names.append(str(entry))
+        return tuple(names)
     return (str(identity.get("profile") or "default"),)
 
 
@@ -172,17 +202,18 @@ def _probe_host_gateway(wait_for_channel: float) -> Optional[HostGateway]:
         return None
     # Liveness BEFORE the dial. A record we cannot prove live must not make us open a socket at an
     # address it chose; proving the PID first is also what keeps a stale record from naming a peer.
-    if not hr.liveness_is_proven(record):
+    # A free host lock falsifies a pid that merely looks alive: treating it as a silent-but-live
+    # gateway is the never-expiring transient refuse (#138343, #133744).
+    if not hr.record_names_live_owner(record):
         return None
-    home = _record_home(record)
-    deadline = time.monotonic() + max(0.0, wait_for_channel)
-    while True:
+    home = record_home(record)
+    def _matching_identity():
         identity = _identify(home)
-        if _identity_matches(identity, record, home):
-            return HostGateway(record.pid, home, _served_from_identity(identity))
-        if time.monotonic() >= deadline:
-            break
-        time.sleep(_CHANNEL_POLL_S)
+        return identity if _identity_matches(identity, record, home) else None
+
+    identity = poll_until(_matching_identity, max(0.0, wait_for_channel), _CHANNEL_POLL_S)
+    if identity is not None:
+        return HostGateway(record.pid, home, _served_from_identity(identity))
     # An owner exists and has not answered: the served set is UNKNOWN, never the record's word.
     return HostGateway(record.pid, home, (), served_known=False)
 
@@ -340,7 +371,7 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
     except Exception:
         logger.debug("host gateway probe failed; starting as before", exc_info=True)
         return HostAttachDecision(START, "")
-    if gateway is None or gateway.pid == os.getpid():
+    if gateway is None or gateway.pid == os.getpid() or launched_by_other_tenant(gateway.home, our_home):
         return standalone_attach_decision(our_home, None) or HostAttachDecision(START, "")
     if replace and (gateway.serves(profile) or not gateway.served_known):
         # An owner known not to serve us is another profile's gateway: replacing it is always refused

@@ -81,7 +81,7 @@ class EmptyAttempt:
         return (self.model, self.provider, self.finish_reason)
 
 
-def resolve_guard_settings(section: Any) -> Tuple[bool, Decimal]:
+def resolve_guard_settings(section: Any) -> tuple[bool, Decimal]:
     """Resolve ``agent.empty_response_guard`` into (enabled, threshold); malformed input → schema defaults."""
     if not isinstance(section, dict):
         return (DEFAULT_GUARD_ENABLED, DEFAULT_COST_THRESHOLD_USD)
@@ -99,7 +99,7 @@ def resolve_guard_settings(section: Any) -> Tuple[bool, Decimal]:
             candidate = Decimal(str(threshold_raw))
             if candidate > 0:
                 threshold = candidate
-        except Exception:  # noqa: BLE001 — malformed config must not break init
+        except Exception:
             logger.debug("empty-guard: invalid cost_threshold_usd %r, using default", threshold_raw)
     return (enabled, threshold)
 
@@ -115,7 +115,7 @@ def _cost_threshold_usd(agent: Any) -> Decimal:
     return value if isinstance(value, Decimal) and value > 0 else DEFAULT_COST_THRESHOLD_USD
 
 
-def _attempts(agent: Any) -> List[EmptyAttempt]:
+def _attempts(agent: Any) -> list[EmptyAttempt]:
     attempts = getattr(agent, _ATTEMPTS_ATTR, None)
     if attempts is None:
         attempts = []
@@ -132,7 +132,7 @@ def _normalized_usage(agent: Any, response: Any, what: str) -> Any:
         from agent.usage_pricing import normalize_usage
         return normalize_usage(raw_usage, provider=getattr(agent, "provider", None),
                                api_mode=getattr(agent, "api_mode", None))
-    except Exception:  # noqa: BLE001 — pricing must never break the loop
+    except Exception:
         logger.debug("empty-guard: %s failed", what, exc_info=True)
         return None
 
@@ -148,7 +148,7 @@ def _estimate_attempt_cost(agent: Any, response: Any) -> Optional[Decimal]:
             getattr(agent, "model", "") or "", canonical, provider=getattr(agent, "provider", None),
             base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", None),
         )
-    except Exception:  # noqa: BLE001 — pricing must never break the loop
+    except Exception:
         logger.debug("empty-guard: cost estimation failed", exc_info=True)
         return None
     return getattr(result, "amount_usd", None)
@@ -184,7 +184,7 @@ def record_empty_attempt(
     attempts = _attempts(agent)
     if getattr(agent, "_empty_content_retries", 0) == 0:
         attempts.clear()
-        setattr(agent, _STREAK_COST_ATTR, Decimal("0"))
+        setattr(agent, _STREAK_COST_ATTR, Decimal(0))
 
     usage_present, zero_output = _zero_output(agent, response)
     attempts.append(
@@ -200,7 +200,7 @@ def record_empty_attempt(
 
     cost = _estimate_attempt_cost(agent, response)
     if cost is not None and cost > 0:
-        prior = getattr(agent, _STREAK_COST_ATTR, Decimal("0")) or Decimal("0")
+        prior = getattr(agent, _STREAK_COST_ATTR, Decimal(0)) or Decimal(0)
         setattr(agent, _STREAK_COST_ATTR, prior + cost)
 
 

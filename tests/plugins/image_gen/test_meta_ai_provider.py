@@ -203,7 +203,7 @@ class TestGenerate:
 
         saved = Path(result["image"])
         assert saved.exists()
-        assert saved.parent == tmp_path / "cache" / "images"
+        assert saved.parent == tmp_path / "cache" / "generated" / "images"
         assert saved.read_bytes() == png_bytes
 
         call_kwargs = fake_client.images.generate.call_args.kwargs

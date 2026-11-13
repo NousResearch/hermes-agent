@@ -31,7 +31,7 @@ def test_empty_capture_carries_reason(monkeypatch):
     backend._last_app = None
     backend._last_target = None
     backend._snapshot_tokens = {}
-    monkeypatch.setattr(backend, "list_windows", lambda: [], raising=False)
+    monkeypatch.setattr(backend, "list_windows", list, raising=False)
     monkeypatch.setattr(cb, "_empty_discovery_reason",
                         lambda: "the desktop session is LOCKED (test)")
     cap = backend.capture(mode="ax")

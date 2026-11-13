@@ -127,7 +127,7 @@ def _start_freezeable_producer(tmp_path, block_s, errors, write_stall_s=1.5):
             await freeze_evt.wait()
             freeze_evt.clear()
             # Synchronous sleep: freezes the entire loop for block_s.
-            time.sleep(block_s)
+            time.sleep(block_s)  # noqa: ASYNC251 -- deliberately freezes the loop for block_s
 
     async def producer() -> None:
         loop = asyncio.get_running_loop()
@@ -806,7 +806,7 @@ class TestLoopTickTcpWitness:
             while not stop.is_set():
                 try:
                     conn, _ = srv.accept()
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 try:
                     conn.sendall(b"1")

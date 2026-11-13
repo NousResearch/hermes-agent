@@ -56,12 +56,12 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod  # noqa: E402
+import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
+from gateway.config import PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +269,53 @@ class TestSocketModeTeardown:
             "a client task retried against a closed session "
             f"{session.ws_connect_after_close} time(s)"
         )
+
+
+    @pytest.mark.asyncio
+    async def test_drain_stop_inbound_closes_socket_and_cannot_be_reconnected(self, adapter):
+        """The gateway drain's stop_inbound closes Socket Mode (Bolt acks before the listener runs,
+        so a post-withdrawal envelope would be lost) and nothing may reconnect it afterwards."""
+        handler = _FakeHandler()
+        task = _attach(adapter, handler)
+        adapter._socket_watchdog_interval_s = 0.01
+        adapter._ensure_socket_watchdog()
+        await asyncio.sleep(0)
+
+        await adapter.stop_inbound()
+        await adapter._restart_socket_mode("socket task stopped")
+
+        assert task.done() and handler.client.closed
+        assert adapter._handler is None and adapter._socket_mode_task is None
+        assert adapter._socket_watchdog_task is None
+
+    @pytest.mark.asyncio
+    async def test_drain_stop_inbound_waits_out_an_in_flight_reconnect(self, adapter):
+        """A reconnect already past its ``_running`` check (mid-close of the old socket) must not
+        leave its replacement socket live after the drain's stop_inbound returns."""
+        replacements = []
+        closing, release = asyncio.Event(), asyncio.Event()
+
+        class _SlowCloseHandler(_FakeHandler):
+            async def close_async(self):
+                closing.set()
+                await release.wait()
+                await super().close_async()
+
+        def _start():
+            handler = _FakeHandler()
+            replacements.append((handler, _attach(adapter, handler)))
+
+        adapter._start_socket_mode_handler = _start
+        _attach(adapter, _SlowCloseHandler())
+        restart = asyncio.create_task(adapter._restart_socket_mode("socket task exited"))
+        await asyncio.wait_for(closing.wait(), timeout=5)  # inside the old socket's close, lock held
+        stop = asyncio.create_task(adapter.stop_inbound())
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(restart, stop), timeout=5)
+
+        assert adapter._handler is None and adapter._socket_mode_task is None
+        assert all(task.done() and handler.client.closed for handler, task in replacements)
 
 
 class TestSocketModeRestart:

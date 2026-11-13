@@ -201,6 +201,7 @@ def test_regression_stale_log_not_surfaced_after_successful_reinstall(
     # Create spectrum-ts inside node_modules/ — the content check requires it.
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
+    monkeypatch.setattr(adapter_mod, "find_node_executable", lambda _name: "/pm/node")
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
     monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
 
@@ -223,6 +224,7 @@ def test_regression_debug_log_emitted_even_without_error_log(
     setup, not a failed install), check_requirements() must still emit a DEBUG
     line pointing to the sidecar path."""
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
+    monkeypatch.setattr(adapter_mod, "find_node_executable", lambda _name: "/pm/node")
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
     monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
     # NS-606: disable self-heal so the debug-log branch is reached.

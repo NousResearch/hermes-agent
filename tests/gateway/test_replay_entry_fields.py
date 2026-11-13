@@ -149,3 +149,35 @@ def test_gateway_history_keeps_sidecar_only_assistant_row():
     assert [m["role"] for m in agent_history] == ["user", "assistant", "user"]
     assert agent_history[1]["api_content"] == "The answer is 4."
     assert agent_history[1]["reasoning"] == "The answer is 4."
+
+
+def test_replay_rebuilds_the_same_conversation_so_every_role_keeps_its_identity():
+    """Gateway replay turns the stored transcript back into the SAME session's history for its next turn:
+    user, assistant, tool-calling and tool rows all keep ``message_uid`` and the merge witness."""
+    from gateway.run import _build_gateway_agent_history
+
+    call = {"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}
+    history = [
+        {"role": "user", "content": "a\n\nb", "message_uid": "1" * 32, "_absorbed_message_uids": ["b" * 32],
+         "timestamp": 1_700_000_000.0},
+        {"role": "assistant", "content": "", "tool_calls": [call], "message_uid": "2" * 32},
+        {"role": "tool", "content": "r", "tool_call_id": "call_1", "message_uid": "3" * 32},
+        {"role": "assistant", "content": "done", "message_uid": "4" * 32, "_absorbed_message_uids": ["c" * 32]},
+    ]
+    replayed, _ = _build_gateway_agent_history(history)
+    assert [(m["role"], m.get("message_uid"), m.get("_absorbed_message_uids")) for m in replayed] == [
+        (m["role"], m["message_uid"], m.get("_absorbed_message_uids")) for m in history]
+
+
+def test_a_plain_replay_row_does_not_carry_a_tool_call_uid_map_without_its_calls():
+    """Repair can prune an assistant's unanswered tool_calls and leave its ``_tool_call_uids`` behind: the
+    replayed plain row keeps its own uid but not a map naming calls it no longer carries."""
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {"role": "user", "content": "q", "message_uid": "1" * 32},
+        {"role": "assistant", "content": "done", "message_uid": "2" * 32, "_tool_call_uids": {"call_1": "5" * 32}},
+    ]
+    replayed, _ = _build_gateway_agent_history(history)
+    assert replayed[1]["message_uid"] == "2" * 32
+    assert "_tool_call_uids" not in replayed[1] and "_tool_call_uid" not in replayed[1]

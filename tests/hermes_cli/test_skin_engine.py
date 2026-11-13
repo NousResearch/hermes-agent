@@ -110,7 +110,7 @@ class TestUserSkins:
         skins = list_skins()
         names = [s["name"] for s in skins]
         assert "pirate" in names
-        pirate = [s for s in skins if s["name"] == "pirate"][0]
+        pirate = next(s for s in skins if s["name"] == "pirate")
         assert pirate["source"] == "user"
 
 
@@ -202,13 +202,6 @@ class TestCliBrandingHelpers:
             "completion-menu.completion.current",
             "completion-menu.meta.completion",
             "completion-menu.meta.completion.current",
-            "status-bar",
-            "status-bar-strong",
-            "status-bar-dim",
-            "status-bar-good",
-            "status-bar-warn",
-            "status-bar-bad",
-            "status-bar-critical",
             "voice-status",
             "voice-status-recording",
             "clarify-border",

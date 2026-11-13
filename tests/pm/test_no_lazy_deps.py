@@ -62,6 +62,7 @@ def _run_checker(root: Path) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
 
 

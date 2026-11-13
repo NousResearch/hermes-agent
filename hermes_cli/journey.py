@@ -167,7 +167,7 @@ def _frame_renderable(payload, *, cols, rows, reveal, color):
     axis_line.append(axis["end"], style=st("grey54"))
     parts.append(axis_line)
 
-    pct = int(round(reveal * 100))
+    pct = round(reveal * 100)
     foot = Text("  ")
     foot.append("◷ ", style=st("grey54"))
     foot.append(frame["date"] or "—", style=st(_TITLE_COLOR))
@@ -252,7 +252,7 @@ def _play(console, payload, *, cols, rows, color, fps: int) -> int:
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return lo if v < lo else hi if v > hi else v
+    return lo if v < lo else min(v, hi)
 
 
 # ── list / delete / edit ─────────────────────────────────────────────────────
@@ -378,13 +378,3 @@ if __name__ == "__main__":
     register_cli(_p)
     _a = _p.parse_args()
     sys.exit(_a.func(_a))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def cmd_journey(args: argparse.Namespace) -> int:
-    return _cmd_show(args)
-# ---- END PLUGIN-COMPAT ----

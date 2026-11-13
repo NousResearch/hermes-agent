@@ -1,4 +1,4 @@
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, QUESTION_CARD_TOOLS } from '@/lib/chat-messages'
 
 import type { ClientSessionState, PersistedDisplayTranscriptProvenance } from '../../../types'
 
@@ -87,7 +87,9 @@ export function transcriptRowContentKey(message: ChatMessage): string {
 function isAnswerableClarifyMessage(message: ChatMessage): boolean {
   return (
     message.pending === true &&
-    message.parts.some(part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined)
+    message.parts.some(
+      part => part.type === 'tool-call' && QUESTION_CARD_TOOLS.has(part.toolName) && part.result === undefined
+    )
   )
 }
 

@@ -1,7 +1,6 @@
 """Tests for session-scoped-by-default model switching.
 
 Covers:
-- ``parse_model_flags`` recognises ``--session`` (and keeps ``--global``).
 - ``resolve_persist_behavior`` applies the config-gated default and the
   ``--session`` / ``--global`` overrides.
 - The default (no flags) is session-only, which is the user-facing fix: a
@@ -11,28 +10,7 @@ Covers:
 
 from unittest.mock import patch
 
-from hermes_cli.model_switch import parse_model_flags, resolve_persist_behavior
-
-
-# ---------------------------------------------------------------------------
-# parse_model_flags
-# ---------------------------------------------------------------------------
-
-
-class TestParseModelFlagsSession:
-    def test_no_flags(self):
-        assert parse_model_flags("sonnet") == ("sonnet", "", False, False, False)
-
-
-    def test_unicode_dash_session_normalized(self):
-        # Telegram/iOS auto-converts -- to en/em dashes.
-        assert parse_model_flags("sonnet \u2013session") == (
-            "sonnet",
-            "",
-            False,
-            False,
-            True,
-        )
+from hermes_cli.model_switch import resolve_persist_behavior
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +29,29 @@ class TestResolvePersistBehavior:
         # No --provider → respects config default (True).
         with _config({"model": {"persist_switch_by_default": True}}):
             assert resolve_persist_behavior(False, False, explicit_provider="") is True
+
+    def test_provider_pick_honors_persist_switch_by_default(self):
+        # #123150: with twin providers sharing one base_url, an explicit provider pick
+        # selects a tenant/account on the same backend. Scoping it to the session by
+        # default silently serves the next chat with the other twin's key, so the
+        # user's persist opt-in must cover provider picks too.
+        cfg = {"model": {"default": "agnes-3.0-flash", "provider": "custom:family-snowflake",
+                         "persist_switch_by_default": True}}
+        with _config(cfg):
+            assert resolve_persist_behavior(False, False, explicit_provider="custom:family-xizhao") is True
+            # --session / --once remain the explicit opt-outs.
+            assert resolve_persist_behavior(False, True, explicit_provider="custom:family-xizhao") is False
+            assert resolve_persist_behavior(False, False, is_once=True,
+                                            explicit_provider="custom:family-xizhao") is False
+            # --global still persists.
+            assert resolve_persist_behavior(True, False, explicit_provider="custom:family-xizhao") is True
+
+    def test_provider_pick_stays_exploratory_without_the_flag(self):
+        # The exploratory default is unchanged unless the user opts in.
+        cfg = {"model": {"default": "agnes-3.0-flash", "provider": "custom:family-snowflake"}}
+        with _config(cfg):
+            assert resolve_persist_behavior(False, False, explicit_provider="custom:family-xizhao") is False
+            assert resolve_persist_behavior(False, False, explicit_provider="") is False
 
     def test_first_pick_persists_then_session_only(self):
         # #90235 / #86414: the ONE policy every surface (CLI, gateway, Desktop

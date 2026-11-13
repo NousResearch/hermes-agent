@@ -48,7 +48,7 @@ def test_cron_env_settings_resolve_from_the_served_profile(two_homes):
     from cron.jobs import _oneshot_run_claim_ttl_seconds
     from cron.scheduler_preflight import _preflight_check_provider_key
 
-    root, alpha = two_homes
+    _root, alpha = two_homes
     captured = {}
 
     def fake_resolve(**kw):
@@ -102,3 +102,30 @@ def test_child_env_for_served_profile_drops_launch_profile_settings(two_homes):
         reset_hermes_home_override(home_token)
     assert env["TERMINAL_ENV"] == "docker"
     assert env["HERMES_MODEL"] == "default-model"
+
+
+def test_interpolated_satellite_cron_timeout_matches_tick_and_job_scope(two_homes):
+    """#137080 sibling: unscoped cron tick must expand dotenv references like the scoped fire.
+
+    Otherwise the literal template is not a float, so the tick silently uses the
+    600-second watchdog instead of the satellite's configured timeout.
+    """
+    import cron.scheduler as sched
+    from cron.env_settings import cron_env_setting
+
+    _root, satellite = two_homes
+    (satellite / ".env").write_text(
+        "PROFILE_TIMEOUT_SECONDS=1800\n"
+        "HERMES_CRON_TIMEOUT=${PROFILE_TIMEOUT_SECONDS}\n",
+        encoding="utf-8",
+    )
+
+    assert cron_env_setting("HERMES_CRON_TIMEOUT") == "1800"
+    assert sched._cron_inactivity_seconds() == 1800.0
+
+    token = set_secret_scope(build_profile_secret_scope(satellite))
+    try:
+        assert cron_env_setting("HERMES_CRON_TIMEOUT") == "1800"
+        assert sched._cron_inactivity_seconds() == 1800.0
+    finally:
+        reset_secret_scope(token)

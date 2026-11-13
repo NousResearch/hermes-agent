@@ -30,11 +30,11 @@ pytest.importorskip(
     reason="MCP SDK required for OAuth support",
 )
 
-from tools.mcp_oauth import (  # noqa: E402 — after the SDK availability gate
+from tools.mcp_oauth import (
     build_oauth_auth,
     token_request_user_agent,
 )
-from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT  # noqa: E402
+from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
@@ -211,7 +211,7 @@ def device_authorization_server():
             self.end_headers()
             self.wfile.write(body)
 
-        def do_POST(self):  # noqa: N802
+        def do_POST(self):
             self.rfile.read(int(self.headers.get("Content-Length") or 0))
             seen.append((self.path, {k.lower(): v for k, v in self.headers.items()}))
             base = f"http://127.0.0.1:{self.server.server_port}"
@@ -269,7 +269,7 @@ def test_device_flow_token_poll_carries_a_user_agent_on_the_wire(
     provider.context.client_info = OAuthClientInformationFull.model_validate({
         "client_id": "fixture-client",
         "token_endpoint_auth_method": "none",
-        "redirect_uris": [f"http://127.0.0.1:33333/callback"],
+        "redirect_uris": ["http://127.0.0.1:33333/callback"],
     })
 
     httpx = sdk_httpx()

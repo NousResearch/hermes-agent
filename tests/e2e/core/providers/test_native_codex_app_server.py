@@ -125,7 +125,7 @@ def test_command_approval_round_trip_and_tool_rows(runs):
     rows = _rows(run)
     calls = [(row, call) for row in rows for call in tool_calls_of(row)]
     assert len(calls) == 1, f"expected one projected tool call, rows: {rows}"
-    call_row, call = calls[0]
+    _call_row, call = calls[0]
     assert json.loads(call["function"]["arguments"])["command"] == "echo CANARY-1", call
     results = [r for r in rows if r["role"] == "tool"]
     assert [r["tool_call_id"] for r in results] == [call["id"]], f"tool result not paired: {results}"

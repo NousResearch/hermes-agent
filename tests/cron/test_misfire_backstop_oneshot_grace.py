@@ -27,7 +27,6 @@ class _RecordingProvider:
 
     def claim_fire(self, job_id):
         self.claimed.append(job_id)
-        return None  # decline the claim so no thread is spawned
 
     def fire_claimed(self, *a, **k):  # pragma: no cover - never reached
         raise AssertionError("fire_claimed must not run when claim declined")
@@ -75,7 +74,7 @@ class TestMisfireBackstopOneShotGrace:
     def test_overdue_recurring_job_still_fires(self, monkeypatch):
         now = _hermes_now()
         overdue = _job("overdue-cron", "cron", now - timedelta(hours=2))
-        provider, fired = _run_backstop(monkeypatch, [overdue])
+        provider, _fired = _run_backstop(monkeypatch, [overdue])
         assert provider.claimed == ["overdue-cron"]
 
     def test_oneshot_within_oneshot_grace_but_past_misfire_grace(

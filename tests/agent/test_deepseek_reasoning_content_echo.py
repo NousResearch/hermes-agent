@@ -319,6 +319,7 @@ class TestReapplyReasoningEchoForProviderSwitch:
             model="gpt-5.5",
             base_url="https://chatgpt.com/backend-api/codex",
         )
+        agent.api_mode = "codex_responses"  # the Responses wire never reads reasoning_content
         msgs = self._codex_built_history()
         changed = reapply_reasoning_echo_for_provider(agent, msgs)
         # msgs[2] carried "summary from codex" — must be stripped for the

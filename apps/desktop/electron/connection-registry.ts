@@ -27,6 +27,9 @@
  * these into the IPC layer and owns file I/O + secret encryption.
  */
 
+// Relative, not `@hermes/shared`: esbuild bundles electron/ without tsconfig paths.
+import { HERMES_CLOUD_MANAGED, isHermesCloudUrl } from '../../shared/src/hermes-cloud'
+
 import {
   hostLabelFromBaseUrl,
   modeIsRemoteLike,
@@ -641,9 +644,54 @@ export interface RosterAgent {
 
 export interface RosterProfileMetadata {
   display_name?: string
+  description?: string
   title?: string
   ui_meta?: Record<string, unknown>
   has_avatar?: boolean
+}
+
+/** Project credential-free `/api/profiles` fields into the metadata carried by
+ * the cross-connection roster. Empty strings are meaningful: they clear stale
+ * renderer values from a prior enumeration. */
+export function profileMetadataFromApiProfiles(profiles: unknown[]): Record<string, RosterProfileMetadata> {
+  return Object.fromEntries(
+    profiles
+      .map(profile => {
+        const record = profile && typeof profile === 'object' ? (profile as Record<string, unknown>) : {}
+        const name = String(record.name || '').trim()
+
+        if (!name) {
+          return null
+        }
+
+        const metadata: RosterProfileMetadata = {}
+
+        if (typeof record.display_name === 'string' && record.display_name.trim()) {
+          metadata.display_name = record.display_name.trim()
+        }
+
+        // `/api/profiles` names the Bot Mode title `bot_title`. Carry it even
+        // when empty so a refreshed remote row can clear stale renderer state.
+        if (typeof record.bot_title === 'string') {
+          metadata.title = record.bot_title.trim()
+        }
+
+        if (typeof record.description === 'string') {
+          metadata.description = record.description.trim()
+        }
+
+        if (record.ui_meta && typeof record.ui_meta === 'object') {
+          metadata.ui_meta = record.ui_meta as Record<string, unknown>
+        }
+
+        if (typeof record.has_avatar === 'boolean') {
+          metadata.has_avatar = record.has_avatar
+        }
+
+        return [name, metadata] as const
+      })
+      .filter((entry): entry is readonly [string, RosterProfileMetadata] => Boolean(entry))
+  )
 }
 
 /**
@@ -849,18 +897,18 @@ function pickCanonicalConnection<T extends { connection: RegistryConnection; ord
 export interface UpdateEligibility {
   eligible: boolean
   /** Present when not eligible: 'cloud-managed' (platform updates it). */
-  reason?: 'cloud-managed'
+  reason?: typeof HERMES_CLOUD_MANAGED
 }
 
 /**
  * Whether "Update all instances" may drive this connection. Hermes Cloud
- * instances are platform-managed — we never run `hermes update` against them.
- * Local, remote, and ssh sources are all eligible (reachability and busy
- * checks happen at dispatch time, not here).
+ * instances are platform-managed — we never run `hermes update` against them,
+ * including one saved as a plain URL remote. Local, remote, and ssh sources
+ * are all eligible (reachability and busy checks happen at dispatch time).
  */
 export function updateEligibility(connection: RegistryConnection): UpdateEligibility {
-  if (connection.kind === 'cloud') {
-    return { eligible: false, reason: 'cloud-managed' }
+  if (connection.kind === 'cloud' || isHermesCloudUrl(connection.url)) {
+    return { eligible: false, reason: HERMES_CLOUD_MANAGED }
   }
 
   return { eligible: true }
@@ -1697,20 +1745,40 @@ export function reconcileRegistryDrift(
 
     const target = normalizedSshTarget(ssh)
 
-    const alreadyRegistered = registry.connections.some(
+    const registered = registry.connections.find(
       connection =>
         connection.kind === 'ssh' &&
         normalizedSshTarget(connection) === target &&
         (connection.port ?? 22) === (ssh.port ?? 22)
     )
 
-    if (alreadyRegistered) {
+    const { mode: _mode, ...sshFields } = ssh
+
+    if (registered) {
       // Route is known; if primary names another source, that is the user's
       // Connections-panel choice, not drift.
-      return unchanged
-    }
+      //
+      // Known by target is not enough, though: the router tags the live
+      // window by the FULL route identity (matchingConnectionId also compares
+      // keyPath, remoteHermesPath and remoteProfile). A v1 route carrying a
+      // keyPath the registered entry never had resolves to no connectionId,
+      // the renderer treats the untagged window as the unscoped local backend
+      // ("This device") and the roster force-spawns a phantom local child.
+      // Align the registered entry's identity fields with the route the app
+      // actually dials so both sides compare equal.
+      if (matchingConnectionId(registry, { ...ssh, kind: 'ssh' }, 'unique')) {
+        return unchanged
+      }
 
-    const { mode: _mode, ...sshFields } = ssh
+      const { host: _host, user: _user, port: _port, ...identityFields } = sshFields
+      const aligned: RegistryConnection = { ...registered }
+      delete aligned.keyPath
+      delete aligned.remoteHermesPath
+      delete aligned.remoteProfile
+      Object.assign(aligned, identityFields)
+
+      return { changed: true, registry: upsertConnection(registry, aligned) }
+    }
 
     let entry: RegistryConnection
 

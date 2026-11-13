@@ -2,7 +2,7 @@
 
 Each test seeds a hand-commented config.yaml, runs one production write path against it and
 asserts that every comment survives, top-level key order is unchanged, and the written value
-landed. A new writer that reaches for PyYAML instead of ``atomic_config_write`` fails here or in
+landed. A new writer that reaches for PyYAML instead of the config writer seam fails here or in
 ``scripts/check_config_yaml_writers.py`` (also exercised below).
 """
 
@@ -105,7 +105,7 @@ class TestEveryWriterPreservesComments:
         assert data["_config_version"] == latest
 
     def test_atomic_config_write_direct(self, home):
-        """Direct callers (auth provider reset, gateway slash commands, telegram, doctor)."""
+        """Non-deleting direct callers keep using the guarded writer."""
         from hermes_cli.config import atomic_config_write, read_user_config_raw
 
         raw = read_user_config_raw(home / "config.yaml")

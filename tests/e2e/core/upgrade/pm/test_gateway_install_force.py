@@ -4,17 +4,16 @@ The field report: after ``hermes gateway install --force`` the gateway crash-loo
 dependency environment is committed" and ``hermes pm repair`` / ``pm doctor`` / ``pm status`` all
 died on ``FileNotFoundError: <install>/environments/<env>/workspace/pm/uv.lock``.
 
-Verified premise on origin/main: ``--force`` is incidental. Every generation's ``workspace/``
-copy is materialised without ``pm/uv.lock`` (the copy drops every file named ``uv.lock``), so
-ANY ``hermes pm`` command run by the selected generation's own ``hermes`` (the one on PATH for
-every child a Hermes process spawns, and the one a unit pointing at the managed environment runs)
-dies before it starts. After a dependency-changing ``hermes update``:
+``--force`` was incidental: every generation's ``workspace/`` copy was materialised without
+``pm/uv.lock`` (the copy dropped every file named ``uv.lock``), so ANY ``hermes pm`` command run
+by the selected generation's own ``hermes`` (the one on PATH for every child a Hermes process
+spawns, and the one a unit pointing at the managed environment runs) died before it started.
+After a dependency-changing ``hermes update``:
 
 * ``hermes gateway install --force`` (service manager is a failing shim: the unit write is what
   is exercised) leaves the install bootable: ``hermes pm status`` / ``pm doctor`` run and
   ``hermes gateway run`` reaches running;
-* ``hermes pm status`` / ``pm doctor`` also run from the managed environment's ``hermes``
-  (gated on #124075).
+* ``hermes pm status`` / ``pm doctor`` also run from the managed environment's ``hermes``.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ import shutil
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.pm import _pm as P
@@ -83,6 +81,4 @@ def test_pm_commands_run_from_the_managed_environment(updated):
     sb = updated
     exe = str(P.selected_generation(sb) / "venv" / "bin" / "hermes")
     bad = _pm_failures(sb, exe)
-    with known_failure(r"`hermes pm \w+` rc=\d+: FileNotFoundError: .*/workspace/pm/uv\.lock",
-                       "gated on #124075: generation workspaces are materialised without pm/uv.lock"):
-        assert not bad, "hermes pm commands die from the managed environment's hermes:\n" + "\n".join(bad)
+    assert not bad, "hermes pm commands die from the managed environment's hermes:\n" + "\n".join(bad)

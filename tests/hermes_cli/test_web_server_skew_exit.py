@@ -74,7 +74,7 @@ def test_never_retires_while_an_update_is_in_flight():
 def test_default_probe_retires_once_the_checkout_moves_past_the_boot_revision(tmp_path, monkeypatch):
     """The real wiring: the watchdog reads the boot revision the serve lifespan records
     (``gateway.code_skew``) against a checkout whose HEAD then moves."""
-    import gateway.code_skew as code_skew
+    from gateway import code_skew
 
     repo = tmp_path / "repo"
     git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]

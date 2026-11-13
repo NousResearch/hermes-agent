@@ -146,7 +146,7 @@ Startup warnings now include a `→` remediation line telling you exactly which 
 
 ## Caching
 
-Successful, complete pulls are cached in-process and on disk under `<hermes_home>/cache/op_cache.json` (written atomically, mode `0600`), so back-to-back short-lived `hermes` invocations don't re-shell `op` for every reference. The cache:
+Successful, complete pulls are cached in-process and on disk at `<hermes_home>/op_cache.json` (written atomically, mode `0600`), so back-to-back short-lived `hermes` invocations don't re-shell `op` for every reference. The cache:
 
 - stores only resolved secret **values** — never the service-account token or any raw auth material (auth is fingerprinted into the cache key);
 - is invalidated when the token, account, `OP_SESSION_*` variables, or the set of references change;

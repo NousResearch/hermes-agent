@@ -16,8 +16,8 @@ from agent.prompt_cache_boundary import find_stable_prefix
 class PromptCachePlan:
     """Request-local message and tool sections with their cache markers."""
 
-    messages: List[Dict[str, Any]]
-    tools: List[Dict[str, Any]]
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]]
 
 
 def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: str | None) -> bool:
@@ -30,6 +30,21 @@ def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: s
     from agent.agent_runtime_helpers import _is_litellm_route
 
     return not _is_litellm_route((provider or "").strip().lower(), base_url or "")
+
+
+def is_one_shot_request(messages: list[dict[str, Any]] | None, tools: list[dict[str, Any]] | None) -> bool:
+    """True for a request no later call can read back from cache: no tools, no assistant/tool
+    turns, at most one user turn (compression summaries, titles, MoA synthesis). A marker there
+    only buys a cache write (1.25x input at 5m, 2x at 1h) that nothing ever reads. A caller that
+    already decorated the request (a MoA advisor's first iteration, whose prefix later
+    iterations replay) decided it will reuse it, so that decision wins over the shape."""
+    if tools:
+        return False
+    msgs = [m for m in messages or [] if isinstance(m, dict)]
+    if any("cache_control" in m or _has_part_marker(m.get("content")) for m in msgs):
+        return False
+    roles = [m.get("role") for m in msgs]
+    return roles.count("user") <= 1 and not any(r in ("assistant", "tool") for r in roles)
 
 
 def _text_part(text: str, cache_marker: dict | None = None) -> dict:
@@ -55,15 +70,33 @@ def _apply_cache_marker(msg: dict, cache_marker: dict, native_anthropic: bool = 
         if not (role in ("tool", "assistant") and not native_anthropic):
             msg["cache_control"] = cache_marker
     elif isinstance(content, str):
-        stable_prefix = find_stable_prefix(content) if role == "user" else None
-        if stable_prefix is not None and content[len(stable_prefix):].strip():
-            # Builder-declared boundary: the scaffold carries the breakpoint and the volatile
-            # tail rides unmarked. Request-local only — the stored message stays a string.
-            msg["content"] = [_text_part(stable_prefix, cache_marker), _text_part(content[len(stable_prefix):])]
-        else:
-            msg["content"] = [_text_part(content, cache_marker)]
+        # Builder-declared boundary: the scaffold carries the breakpoint and the volatile tail
+        # rides unmarked. Request-local only — the stored message stays a string.
+        msg["content"] = _scaffold_parts(msg, cache_marker) or [_text_part(content, cache_marker)]
     elif isinstance(content, list) and content and isinstance(content[-1], dict):
         content[-1]["cache_control"] = cache_marker
+
+
+def _scaffold_parts(msg: dict, cache_marker: dict | None = None) -> list | None:
+    """``[scaffold, tail]`` parts of a string user message with a registered scaffold, the
+    marker (if any) on the scaffold; ``find_stable_prefix`` keeps the tail non-blank."""
+    content = msg.get("content")
+    prefix = find_stable_prefix(content) if msg.get("role") == "user" and isinstance(content, str) else None
+    return None if prefix is None else [_text_part(prefix, cache_marker), _text_part(content[len(prefix):])]
+
+
+def _split_unmarked_scaffolds(messages: list[dict[str, Any]]) -> None:
+    """Send every registered scaffold message as [scaffold, tail] parts, marked or not (in place).
+
+    Provider caches key on content, and two text parts are different content from one string:
+    a skill message split while it held a breakpoint must keep the same parts after the rolling
+    marker window moves past it, or the next request re-writes the whole scaffold (#81867).
+    Each hit refreshes the scaffold's registry LRU slot, so a scaffold still in history stays
+    registered and the failover stripper can still recognise its split.
+    """
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and (parts := _scaffold_parts(msg)):
+            messages[i] = {**msg, "content": parts}
 
 
 def _can_carry_marker(msg: dict, native_anthropic: bool, tool_part_markers: bool = True) -> bool:
@@ -81,7 +114,7 @@ def _can_carry_marker(msg: dict, native_anthropic: bool, tool_part_markers: bool
     return isinstance(content[-1], dict) if isinstance(content, list) and content else isinstance(content, str) and content != ""
 
 
-def _build_marker(ttl: str) -> Dict[str, str]:
+def _build_marker(ttl: str) -> dict[str, str]:
     """Build a cache_control marker dict for the given TTL ('5m' or '1h')."""
     return {"type": "ephemeral", "ttl": "1h"} if ttl == "1h" else {"type": "ephemeral"}
 
@@ -145,6 +178,7 @@ def effective_cache_ttl(ttl: str | None, *, model: str = "", provider: str = "")
 def _apply_system_cache_markers(
     message: dict, cache_marker: dict, static_system_prefix: str | None, *,
     native_anthropic: bool, mark_suffix: bool = True, fallback_to_whole: bool = True,
+    session_system_prompt: str | None = None, mark_session_end: bool = True,
 ) -> int:
     """Mark the static system prefix (and optionally the full prompt); returns markers applied.
 
@@ -152,10 +186,24 @@ def _apply_system_cache_markers(
     is the tool-cache-plan layout (suffix budget spent on the tools array); ``fallback_to_whole=
     False`` marks nothing when the split is impossible. When the prompt IS the prefix the whole
     message is one block — never an empty text block (400).
+
+    ``session_system_prompt`` is the prompt built once per session, before the API-time
+    ephemeral addition (a subagent's per-task text, a personality). When the content carries
+    such a tail the request sends three parts. The end of the whole prompt is always marked, as
+    without a tail, so a request whose history changed still reads the tail. The end of the
+    session prompt takes a marker too when ``mark_session_end`` (the caller has a breakpoint to
+    spare), so sessions that differ only in the tail still read the skills index.
     """
     content = message.get("content")
     if isinstance(static_system_prefix, str) and static_system_prefix and isinstance(content, str) and content.startswith(static_system_prefix):
         suffix = content[len(static_system_prefix):]
+        if (mark_suffix and isinstance(session_system_prompt, str) and content.startswith(session_system_prompt)
+                and session_system_prompt[len(static_system_prefix):].strip() and content[len(session_system_prompt):].strip()):
+            message["content"] = [
+                _text_part(static_system_prefix, cache_marker),
+                _text_part(session_system_prompt[len(static_system_prefix):], cache_marker if mark_session_end else None),
+                _text_part(content[len(session_system_prompt):], cache_marker)]
+            return 3 if mark_session_end else 2
         if suffix.strip():
             message["content"] = [_text_part(static_system_prefix, cache_marker),
                                   _text_part(suffix, cache_marker if mark_suffix else None)]
@@ -170,12 +218,12 @@ def _has_part_marker(content: Any) -> bool:
     return isinstance(content, list) and any(isinstance(part, dict) and "cache_control" in part for part in content)
 
 
-def strip_anthropic_cache_control(api_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def strip_anthropic_cache_control(api_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Remove ``cache_control`` markers and undo decoration-produced list shapes (in place).
 
     Used before re-decorating after a mid-turn failover. Flattening to a string is restricted
     to the exact shapes :func:`apply_anthropic_cache_control` produces from string content
-    (single text part, two-part system split, two-part skill split) so the ``""``-join is
+    (single text part, two- or three-part system split, two-part skill split) so the ``""``-join is
     byte-exact. Marker removal is copy-on-write on part dicts: parts can alias caller-held
     lists and stripping must never rewrite the stored transcript.
     """
@@ -187,10 +235,11 @@ def strip_anthropic_cache_control(api_messages: List[Dict[str, Any]]) -> List[Di
         if not isinstance(content, list):
             continue
         role = msg.get("role")
-        # The skill split is the only decoration marking the FIRST part of a user message,
-        # so the shape alone identifies it even after the prefix registry evicted the entry.
-        skill_split_shape = (role == "user" and len(content) == 2 and all(isinstance(p, dict) for p in content)
-                             and "cache_control" in content[0] and "cache_control" not in content[1])
+        user_pair = role == "user" and len(content) == 2 and all(isinstance(p, dict) for p in content)
+        # The skill split is the only decoration marking the FIRST part of a user message, so the
+        # marked shape identifies it even after the prefix registry evicted the entry.
+        first_part_marked = user_pair and "cache_control" in content[0] and "cache_control" not in content[1]
+        first_system_marked = role == "system" and bool(content) and isinstance(content[0], dict) and "cache_control" in content[0]
         if _has_part_marker(content):
             content = msg["content"] = [
                 {k: v for k, v in part.items() if k != "cache_control"}
@@ -200,12 +249,36 @@ def strip_anthropic_cache_control(api_messages: List[Dict[str, Any]]) -> List[Di
             isinstance(part, dict) and part.get("type", "text") == "text"
             and isinstance(part.get("text"), str) and set(part.keys()) <= {"type", "text"} for part in content
         )
-        if plain_text_parts and (len(content) == 1 or (role == "system" and len(content) == 2) or skill_split_shape):
-            msg["content"] = "".join(part["text"] for part in content)
+        if not plain_text_parts:
+            continue
+        joined = "".join(part["text"] for part in content)
+        # An UNMARKED split (outside the marker window) only the registry tells from a genuine
+        # two-part user message.
+        skill_split = first_part_marked or (user_pair and find_stable_prefix(joined) == content[0]["text"])
+        # Two plain system parts are joined as on main. Three are joined only when they are the
+        # planner's own split (static / session rest / ephemeral tail), which always marks part 0:
+        # a context engine's own three-part system message keeps its boundaries.
+        planner_system_split = role == "system" and (len(content) == 2 or (len(content) == 3 and first_system_marked))
+        if len(content) == 1 or planner_system_split or skill_split:
+            msg["content"] = joined
     return api_messages
 
 
-def strip_anthropic_tool_cache_control(tools: List[Dict[str, Any]] | None) -> List[Dict[str, Any]]:
+def _strip_prior_decoration(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Re-canonicalise planner output before re-planning (in place on the list, copy-on-write per message).
+
+    Every list-content message is stripped, not just marked ones: an UNMARKED skill split (outside
+    the previous request's marker window) left as two parts would get the new breakpoint on its
+    volatile tail instead of the scaffold. A shallow copy suffices because the strip is
+    copy-on-write on content parts.
+    """
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and ("cache_control" in msg or isinstance(msg.get("content"), list)):
+            messages[i] = strip_anthropic_cache_control([dict(msg)])[0]
+    return messages
+
+
+def strip_anthropic_tool_cache_control(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Return copied tools without request-local Anthropic cache markers."""
     cleaned = copy.deepcopy(tools or [])
     for tool in cleaned:
@@ -214,13 +287,13 @@ def strip_anthropic_tool_cache_control(tools: List[Dict[str, Any]] | None) -> Li
     return cleaned
 
 
-def _count_cache_markers(messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> int:
+def _count_cache_markers(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int:
     """Count the wire-visible cache markers in a request-local plan."""
     parts = [p for m in messages if isinstance(m, dict) and isinstance(m.get("content"), list) for p in m["content"]]
     return sum(1 for item in [*messages, *parts, *tools] if isinstance(item, dict) and "cache_control" in item)
 
 
-def _completed_transaction_endpoint_indexes(messages: List[Dict[str, Any]], *, native_anthropic: bool) -> List[int]:
+def _completed_transaction_endpoint_indexes(messages: list[dict[str, Any]], *, native_anthropic: bool) -> list[int]:
     """Select legal ends of completed tool runs and ordinary turns."""
 
     def _tool_run_end(start: int) -> int:
@@ -229,7 +302,7 @@ def _completed_transaction_endpoint_indexes(messages: List[Dict[str, Any]], *, n
             end += 1
         return end
 
-    endpoints: List[int] = []
+    endpoints: list[int] = []
     index = 0
     while index < len(messages):
         message = messages[index]
@@ -258,26 +331,23 @@ def _completed_transaction_endpoint_indexes(messages: List[Dict[str, Any]], *, n
 
 
 def build_prompt_cache_plan(
-    api_messages: List[Dict[str, Any]], tools: List[Dict[str, Any]] | None, *,
+    api_messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, *,
     cache_ttl: str = "5m", native_anthropic: bool = False, static_system_prefix: str | None = None,
     direct_native_tool_cache: bool = False, tool_part_markers: bool = True,
+    session_system_prompt: str | None = None,
 ) -> PromptCachePlan:
     """Build copy-on-write cache sections for one resolved request destination
     (``tool_part_markers=False`` keeps markers off role:tool parts on LiteLLM-style routes)."""
-    messages = list(api_messages or [])
-    for i, msg in enumerate(messages):
-        if isinstance(msg, dict) and (
-            "cache_control" in msg or isinstance(msg.get("content"), list)
-        ):
-            messages[i] = strip_anthropic_cache_control([dict(msg)])[0]
     planned_tools = strip_anthropic_tool_cache_control(tools)
-
     if not direct_native_tool_cache or not planned_tools:
+        # apply_anthropic_cache_control re-canonicalises prior decoration itself.
         planned_messages = apply_anthropic_cache_control(
-            messages, cache_ttl=cache_ttl, native_anthropic=native_anthropic,
-            static_system_prefix=static_system_prefix, tool_part_markers=tool_part_markers)
+            list(api_messages or []), cache_ttl=cache_ttl, native_anthropic=native_anthropic,
+            static_system_prefix=static_system_prefix, tool_part_markers=tool_part_markers,
+            session_system_prompt=session_system_prompt)
         return PromptCachePlan(messages=planned_messages, tools=planned_tools)
 
+    messages = _strip_prior_decoration(list(api_messages or []))
     marker = _build_marker(cache_ttl)
     if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
         # Tool-cache layout: only the static prefix carries a system-side marker; the
@@ -289,47 +359,44 @@ def build_prompt_cache_plan(
     for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-2:]:
         messages[endpoint] = copy.deepcopy(messages[endpoint])
         _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
+    _split_unmarked_scaffolds(messages)
 
     return PromptCachePlan(messages=messages, tools=planned_tools)
 
 
 def apply_anthropic_cache_control(
-    api_messages: List[Dict[str, Any]], cache_ttl: str = "5m", native_anthropic: bool = False,
+    api_messages: list[dict[str, Any]], cache_ttl: str = "5m", native_anthropic: bool = False,
     static_system_prefix: str | None = None, tool_part_markers: bool = True,
-) -> List[Dict[str, Any]]:
+    session_system_prompt: str | None = None,
+) -> list[dict[str, Any]]:
     """Apply Anthropic cache-control markers to API messages.
 
     With a matching ``static_system_prefix`` the prefix and full system prompt each get a
     marker and the remaining two go to the latest cacheable non-system messages; otherwise
-    the legacy system-and-3 layout applies. Idempotent: pre-existing markers are stripped from
-    a per-message copy first. Returns a shallow list copy with deep copies of modified messages.
-
-    Idempotent: pre-existing ``cache_control`` markers are stripped from a per-message copy before new ones
-    are placed, so calling this twice (or handing it messages a prior call already marked) can never
-    accumulate past 4 markers. Only messages that already carry a marker pay the copy cost — a shallow
-    top-level copy suffices because :func:`strip_anthropic_cache_control` is copy-on-write on content parts
-    — and the rest of the copy-on-write contract is unchanged (#90971).
+    the legacy system-and-3 layout applies. Idempotent: prior decoration is stripped from a
+    per-message copy first, so a second call (or messages a prior call already planned) can never
+    accumulate past 4 markers (#90971). Returns a shallow list copy with deep copies of modified
+    messages.
     """
     if not api_messages:
         return api_messages
 
-    messages = list(api_messages)
+    messages = _strip_prior_decoration(list(api_messages))
     marker = _build_marker(cache_ttl)
-
-    for i, msg in enumerate(messages):
-        if isinstance(msg, dict) and ("cache_control" in msg or _has_part_marker(msg.get("content"))):
-            messages[i] = strip_anthropic_cache_control([dict(msg)])[0]
-
-    breakpoints_used = 0
-    if messages[0].get("role") == "system":
-        messages[0] = copy.deepcopy(messages[0])
-        breakpoints_used = _apply_system_cache_markers(messages[0], marker, static_system_prefix,
-                                                       native_anthropic=native_anthropic)
 
     non_sys = [i for i, m in enumerate(messages) if m.get("role") != "system"
                and _can_carry_marker(m, native_anthropic=native_anthropic, tool_part_markers=tool_part_markers)]
+    breakpoints_used = 0
+    if messages[0].get("role") == "system":
+        messages[0] = copy.deepcopy(messages[0])
+        # The session-prompt boundary takes the breakpoint a first call has spare (it has a single
+        # message to mark): that write is what lets a session with a different tail read the index.
+        breakpoints_used = _apply_system_cache_markers(
+            messages[0], marker, static_system_prefix, native_anthropic=native_anthropic,
+            session_system_prompt=session_system_prompt, mark_session_end=len(non_sys) < 2)
     for idx in non_sys[-(4 - breakpoints_used):]:
         messages[idx] = copy.deepcopy(messages[idx])
         _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic, tool_part_markers=tool_part_markers)
+    _split_unmarked_scaffolds(messages)
 
     return messages

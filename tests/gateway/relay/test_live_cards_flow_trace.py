@@ -70,7 +70,7 @@ def test_trace_multisegment_draft_flow():
         )
         return r3
 
-    r3 = loop.run_until_complete(turn())
+    loop.run_until_complete(turn())
     print("\n--- OP TIMELINE ---")
     for i, op in enumerate(t.ops):
         print(f"{i:2d} {op['op']:<16} final={op.get('final')} draft_id={op.get('draft_id')} "
@@ -117,7 +117,7 @@ def test_trace_parallel_turns_do_not_collide():
         rb = await adapter.send("C1", "B final.", metadata=md_b)
         return ra, rb
 
-    ra, rb = loop.run_until_complete(interleaved())
+    _ra, _rb = loop.run_until_complete(interleaved())
     drafts = [o for o in t.ops if o["op"] == "draft"]
     seals = [o for o in drafts if o.get("final")]
     cards = [o for o in t.ops if o["op"] == "task_card"]

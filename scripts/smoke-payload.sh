@@ -44,6 +44,19 @@ try {
     if (child.error) throw child.error
     if (child.status !== 0) throw new Error(`hermes ${args.join(' ')} failed: ${child.status ?? child.signal}`)
   }
+  // browser_exec's engine (browser-harness) runs on the store interpreter with only the
+  // payload's site dir on PYTHONPATH (tools/browser_use_cli.py); -S drops any site of its own.
+  // Telemetry off as at runtime: its detached sender would outlive the check and pin the
+  // payload dir on Windows (EPERM on the restore rename).
+  console.log('— browser-harness on the store interpreter (relocated) —')
+  const harness = spawnSync(resolve(moved, manifest.runtime.storePython),
+    ['-S', '-m', 'browser_harness.run', '--version'], {
+      cwd: home,
+      env: { ...env, ANONYMIZED_TELEMETRY: 'false', PYTHONPATH: resolve(moved, manifest.runtime.sitePackages) },
+      stdio: 'inherit', timeout: 120000,
+    })
+  if (harness.error) throw harness.error
+  if (harness.status !== 0) throw new Error(`browser-harness failed: ${harness.status ?? harness.signal}`)
   console.log('SMOKE OK')
 } finally {
   // Restore even after a command fails, so its artifact remains inspectable.

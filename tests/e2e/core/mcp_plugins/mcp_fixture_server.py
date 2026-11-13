@@ -36,8 +36,7 @@ def _log(msg: object) -> None:
         return
     items = msg if isinstance(msg, list) else [msg]
     with _LOG_LOCK, open(path, "a", encoding="utf-8") as fh:
-        for item in items:
-            fh.write(json.dumps({"pid": os.getpid(), "msg": item}) + "\n")
+        fh.writelines(json.dumps({"pid": os.getpid(), "msg": item}) + "\n" for item in items)
 
 
 def _log_raw_line(line: bytes) -> None:
@@ -221,7 +220,7 @@ def _serve_http(server) -> None:
             await asyncio.sleep(0.01)
         if port_file:
             tmp = port_file + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
+            with open(tmp, "w", encoding="utf-8") as fh:  # noqa: ASYNC230 -- small local write; a local open() is non-blocking in practice
                 fh.write(f"{port} {os.getpid()}")
             os.replace(tmp, port_file)
         await task

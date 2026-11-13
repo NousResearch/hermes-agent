@@ -8,19 +8,24 @@ from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
 from tools.connectors.gateway.merge import assemble_results, fill_remote_failure, partition_calls
 
 
-def dispatch_connector_call(name, arguments, tool_call_id):
+def dispatch_connector_call(name, arguments, tool_call_id, turn_id=None, task_id=None):
+    from tools.connectors.data_use import record_data_use
     from tools.connectors.gateway.bridge import run_remote
 
     partition = partition_calls([{"name": name, "arguments": arguments}])
-    entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None)
+    entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None, turn_id=turn_id,
+                         task_id=task_id)
     entry = entries[0]
-    return json.dumps({key: value for key, value in entry.items() if key in {"response", "error"}},
+    record_data_use(entry.get("data_use") or ())
+    return json.dumps({key: value for key, value in entry.items() if key in {"response", "error", "account"}},
                       ensure_ascii=False)
 
 
 def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                              middleware_trace, enabled_toolsets, disabled_toolsets):
-    from model_tools import handle_function_call
+    from dataclasses import replace
+
+    from model_tools import handle_function_call, suppress_post_tool_call_hook
     from tools.interrupt import is_interrupted
 
     if len(calls) > MAX_CALLS_PER_DISPATCH:
@@ -38,14 +43,17 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                 partition.remote[offset:], "Stopped by the user before this call was made.",
                 code="INTERRUPTED"))
             break
-        # Each entry must run its own policy and middleware.
-        payload = handle_function_call(
-            plan.name, plan.arguments, **asdict(ids), user_task=user_task,
-            enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
-            skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
-            skip_tool_execution_middleware=False,
-            enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        )
+        # Each entry is its own call: its own policy, middleware, hooks and call id (``<id>#<position>``),
+        # so observers never fold an entry into the wrapper or into a sibling entry.
+        entry_ids = replace(ids, tool_call_id=f"{ids.tool_call_id}#{plan.position}") if ids.tool_call_id else ids
+        with suppress_post_tool_call_hook(False):
+            payload = handle_function_call(
+                plan.name, plan.arguments, **asdict(entry_ids), user_task=user_task,
+                enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
+                skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
+                skip_tool_execution_middleware=False,
+                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            )
         try:
             value = json.loads(payload) if isinstance(payload, str) else payload
         except ValueError:
@@ -56,5 +64,7 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
             entry["error"] = error if isinstance(error, dict) else {"code": "TOOL_ERROR", "message": str(error)}
         else:
             entry["response"] = value.get("response", value) if isinstance(value, dict) else value
+        if isinstance(value, dict) and value.get("account"):
+            entry["account"] = value["account"]
         entries.append(entry)
     return json.dumps(assemble_results(len(calls), entries), ensure_ascii=False)

@@ -3,6 +3,7 @@
 import { spawn } from 'node:child_process'
 
 import { buildDesktopBackendEnv } from './backend-env'
+import { windowsShellCommand } from './windows-child-options'
 
 /** Default probe budget. 5s false-negativeed healthy Windows cold starts (#61764). */
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000
@@ -168,7 +169,7 @@ async function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }
   }
 
   try {
-    await execProbe(hermesCommand, ['--version'], {
+    await execProbe(windowsShellCommand(hermesCommand, Boolean(opts?.shell)), ['--version'], {
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
       shell: Boolean(opts?.shell),

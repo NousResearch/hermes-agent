@@ -143,7 +143,7 @@ class TestModalBulkUpload:
         src.write_bytes(_os.urandom(1024 * 1024 + 512 * 1024))
         files = [(str(src), "/root/.hermes/large.bin")]
 
-        exec_calls, _, stdin_mock = _wire_async_exec(env)
+        _exec_calls, _, stdin_mock = _wire_async_exec(env)
         env._modal_bulk_upload(files)
 
         # Should have multiple stdin write chunks

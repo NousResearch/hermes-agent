@@ -99,7 +99,7 @@ def is_tts_echo(transcript: str, spoken_text: str,
         return True
     if len(a) < MIN_FRAGMENT_LENGTH_FOR_ECHO or len(a) >= len(b):
         return False
-    return any(_similar(a, b[start : start + len(a)]) for start in range(0, len(b) - len(a) + 1))
+    return any(_similar(a, b[start : start + len(a)]) for start in range(len(b) - len(a) + 1))
 
 
 def voice_stop_hint() -> str:

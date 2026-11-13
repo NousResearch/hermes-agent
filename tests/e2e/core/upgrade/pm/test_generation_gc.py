@@ -12,8 +12,8 @@ then the user runs ``hermes update`` / ``hermes pm repair``. After each rebuild 
 unselected generations must be gone, the selected one kept and working (a real ``hermes -z`` turn
 through the loopback provider). Two updates: the first one's leftover is the generation the updater
 itself ran from (leased, legitimately kept); the second shows whether anything reclaims it.
-Restarts are covered in ``test_restart_generations.py``. Neither ``hermes update`` nor ``hermes pm repair`` runs the collector today (gated on #124668);
-the generation the rebuilding process itself ran from is leased by it and legitimately survives.
+Restarts are covered in ``test_restart_generations.py``. The generation the rebuilding process
+itself ran from is leased by it and legitimately survives.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ import time
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.pm import _pm as P
@@ -88,12 +87,10 @@ def _rebuild_collects(sb: I.Sandbox, provider: FakeLLMServer, what: str, rebuild
 
 def _assert_collected(sb: I.Sandbox, what: str, result) -> None:
     kept_old, left, selected, before_sel, cp = result
-    with known_failure(r"kept superseded generations built two days ago",
-                       "gated on #124668: hermes update / pm repair never run the generation collector"):
-        assert not kept_old, (
-            f"{what} kept superseded generations built two days ago: {kept_old} (all: {left}, selected "
-            f"{selected}, previous {before_sel}); every rebuild adds one and nothing reclaims them\n"
-            + P.diagnostics(sb, cp))
+    assert not kept_old, (
+        f"{what} kept superseded generations built two days ago: {kept_old} (all: {left}, selected "
+        f"{selected}, previous {before_sel}); every rebuild adds one and nothing reclaims them\n"
+        + P.diagnostics(sb, cp))
 
 
 def test_repeated_updates_collect_superseded_generations(home, provider):

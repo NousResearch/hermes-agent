@@ -76,6 +76,7 @@ def test_every_picker_keyboard_is_a_valid_ptb_keyboard(real_ptb):
     (``◀ Prev | n/N | Next ▶`` is three buttons on any middle page).
     """
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._is_callback_user_authorized = lambda *a, **k: True  # dispatcher auth is not under test here
 
     from plugins.platforms.telegram.model_picker_callbacks import parse_selection
     from plugins.platforms.telegram.model_picker_display import group_models_by_vendor
@@ -139,6 +140,7 @@ def test_a_middle_page_renders_prev_counter_and_next(real_ptb):
     row the rule forbids (#94990 review).
     """
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._is_callback_user_authorized = lambda *a, **k: True  # dispatcher auth is not under test here
     # 3 pages at 8 models/page: enough for page 1 to have a page on each side.
     models = [f"amazon.nova-variant-{i}-v1:0" for i in range(17)]
 
@@ -166,13 +168,14 @@ async def test_previous_adapter_keyboard_cannot_select_from_a_new_catalog(real_p
 
     async def tap(adapter, data):
         query = SimpleNamespace(
-            data=data, message=SimpleNamespace(chat_id=12345), from_user=None,
+            data=data, message=SimpleNamespace(chat_id=12345), from_user=SimpleNamespace(id=1),
             answer=AsyncMock(), edit_message_text=AsyncMock())
         await adapter._handle_callback_query(SimpleNamespace(callback_query=query), None)
         return query
 
     async def open_picker(model):
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+        adapter._is_callback_user_authorized = lambda *a, **k: True  # dispatcher auth is not under test here
         callback = AsyncMock(return_value="switched")
         adapter._model_picker_state["12345"] = {
             "providers": [{"slug": "openai", "name": "OpenAI", "models": [model]}],
@@ -214,6 +217,7 @@ async def test_provider_scope_and_other_ids_survive_real_router(real_ptb, monkey
     models += unknown
     callback = AsyncMock(return_value="switched")
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    adapter._is_callback_user_authorized = lambda *a, **k: True  # dispatcher auth is not under test here
     adapter._model_picker_state["12345"] = {
         "providers": [{"slug": slug, "name": slug, "models": models}],
         "current_model": models[0], "current_provider": slug,
@@ -222,7 +226,7 @@ async def test_provider_scope_and_other_ids_survive_real_router(real_ptb, monkey
 
     async def tap(data):
         query = SimpleNamespace(
-            data=data, message=SimpleNamespace(chat_id=12345), from_user=None,
+            data=data, message=SimpleNamespace(chat_id=12345), from_user=SimpleNamespace(id=1),
             answer=AsyncMock(), edit_message_text=AsyncMock())
         await adapter._handle_callback_query(SimpleNamespace(callback_query=query), None)
         return query

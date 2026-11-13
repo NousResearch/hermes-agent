@@ -22,3 +22,21 @@ router = APIRouter()
 async def hello():
     """Simple greeting endpoint to demonstrate plugin API routes."""
     return {"message": "Hello from the example plugin!", "plugin": "example", "version": "1.0.0"}
+
+
+@router.get("/whoami")
+async def whoami():
+    """Side-effect-free credential probe: read a secret and fold any failure into the
+    plugin "no data" contract (a plugin handler must never raise out to the client).
+
+    Tests use this to prove the *production* mount path (discovery → import →
+    ``_mount_plugin_api_routes`` → scoped handler) resolves the caller's profile
+    credentials under multi-profile hosting (#120310). It reads a made-up key, so it
+    never touches real credentials or the network.
+    """
+    from agent.secret_scope import get_secret
+
+    try:
+        return {"ok": True, "key": get_secret("EXAMPLE_PLUGIN_PROBE_KEY")}
+    except Exception as exc:  # plugin contract: never raise out of the handler
+        return {"ok": False, "error": type(exc).__name__}

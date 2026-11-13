@@ -39,6 +39,7 @@ def _run_check(*args, root=None):
         timeout=60,
         stdin=subprocess.DEVNULL,
         cwd=REPO_ROOT,
+        check=False,
     )
 
 

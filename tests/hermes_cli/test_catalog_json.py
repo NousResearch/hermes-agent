@@ -11,15 +11,20 @@ import io
 import json
 import urllib.request
 
+from types import SimpleNamespace
+
 import pytest
 
 import hermes_cli.local_runtime.catalog as cat
 
+# The never-refreshed state a freshly started backend has (nothing calls refresh at import).
+_NEVER_REFRESHED = cat._last_refresh_attempt
+
 
 @pytest.fixture(autouse=True)
 def _reset_refresh_state(monkeypatch):
-    """Each test starts outside the TTL window with the packaged catalog."""
-    monkeypatch.setattr(cat, "_last_refresh_attempt", 0.0)
+    """Each test starts never-refreshed with the packaged catalog."""
+    monkeypatch.setattr(cat, "_last_refresh_attempt", _NEVER_REFRESHED)
     packaged = cat._packaged_catalog()
     monkeypatch.setattr(cat, "CATALOG", packaged)
     yield
@@ -94,7 +99,7 @@ def test_refresh_failure_keeps_current_catalog(monkeypatch):
 
 def test_refresh_rejects_wrong_schema(monkeypatch):
     doc = _doc_from(lambda m: m)
-    doc["schema_version"] = 2
+    doc["schema_version"] = cat._SCHEMA_VERSION + 1
     _fetch_returns(monkeypatch, doc)
     ids_before = [e.id for e in cat.CATALOG]
     assert cat.refresh_catalog(force=True) is False
@@ -119,3 +124,26 @@ def test_min_engine_gate(monkeypatch):
     assert _engine_too_old("") is False, "no requirement, no gate"
     assert _engine_too_old("b10000") is False, "installed engine suffices"
     assert _engine_too_old("b10363") is True, "newer requirement gates"
+
+
+def test_first_refresh_is_due_shortly_after_boot(monkeypatch):
+    """time.monotonic() counts from boot: a backend started a minute after boot must still fetch
+    on first use instead of treating "never refreshed" as refreshed at boot."""
+    monkeypatch.setattr(cat, "time", SimpleNamespace(monotonic=lambda: 60.0))
+    started = []
+
+    class _Thread:
+        def __init__(self, target, **_kw):
+            self._target = target
+
+        def start(self):
+            started.append(self._target)
+
+    monkeypatch.setattr(cat, "threading", SimpleNamespace(Thread=_Thread))
+    cat.refresh_catalog_soon()
+    assert started == [cat.refresh_catalog]
+
+    _fetch_returns(monkeypatch, _doc_from(lambda m: m))
+    assert cat.refresh_catalog() is True
+    # The attempt is now stamped, so the TTL gate holds for the next six hours.
+    assert cat.refresh_catalog() is False

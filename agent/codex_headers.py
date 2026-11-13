@@ -31,7 +31,7 @@ def is_official_codex_base_url(base_url: str) -> bool:
         return False
 
 
-def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BASE_URL) -> Dict[str, str]:
+def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BASE_URL) -> dict[str, str]:
     """Identity and account headers for chatgpt.com/backend-api/codex.
 
     OpenAI requires third-party harnesses to identify themselves: the official
@@ -51,7 +51,7 @@ def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BAS
     return headers
 
 
-def codex_account_headers(access_token: str) -> Dict[str, str]:
+def codex_account_headers(access_token: str) -> dict[str, str]:
     """Workspace headers the Codex backend derives from the OAuth JWT.
 
     ``ChatGPT-Account-ID`` (canonical casing, from codex-rs ``auth.rs``) comes from
@@ -61,7 +61,7 @@ def codex_account_headers(access_token: str) -> Dict[str, str]:
     this region". A malformed token drops the headers rather than raising, so it
     surfaces as a 401 instead of a crash at client construction.
     """
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     if not isinstance(access_token, str) or not access_token.strip():
         return headers
     try:
@@ -81,7 +81,41 @@ def codex_account_headers(access_token: str) -> Dict[str, str]:
     return headers
 
 
-def apply_required_codex_headers(client_kwargs: Dict[str, Any], *, access_token: str, base_url: str) -> None:
+def codex_request_compression_hooks(base_url: str, *, async_mode: bool = False) -> dict[str, list] | None:
+    """httpx ``event_hooks`` that zstd-compress Responses request bodies for the official Codex backend.
+
+    Parity with the official Codex client (zstd on ``/responses`` with ChatGPT auth, default since
+    openai/codex#10102). Lossless transport encoding: tokens and prompt caching are unchanged. Uses the
+    stdlib codec (Python 3.14+); without it, or for any other endpoint/proxy, bodies stay raw JSON.
+    """
+    if not is_official_codex_base_url(base_url):
+        return None
+    try:
+        from compression import zstd
+        import httpx
+    except ImportError:
+        return None
+
+    def compress(request: httpx.Request) -> None:
+        if (request.method != "POST" or not request.url.path.endswith("/responses")
+                or "content-encoding" in request.headers):
+            return
+        body = zstd.compress(request.read())
+        request.stream = httpx.ByteStream(body)
+        request._content = body
+        request.headers["Content-Encoding"] = "zstd"
+        request.headers["Content-Length"] = str(len(body))
+
+    if not async_mode:
+        return {"request": [compress]}
+
+    async def compress_async(request: httpx.Request) -> None:
+        compress(request)
+
+    return {"request": [compress_async]}
+
+
+def apply_required_codex_headers(client_kwargs: dict[str, Any], *, access_token: str, base_url: str) -> None:
     """Keep required Codex identity after user/provider header overrides."""
     if not is_official_codex_base_url(base_url):
         return

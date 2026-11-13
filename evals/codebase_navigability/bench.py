@@ -57,8 +57,7 @@ def source_modules(tree: Path) -> dict[str, Path]:
             if f.endswith(".py"):
                 p = Path(dp) / f
                 m = os.path.relpath(p, tree)[:-3].replace(os.sep, ".")
-                if m.endswith(".__init__"):
-                    m = m[:-9]
+                m = m.removesuffix(".__init__")
                 mods[m] = p
     return mods
 

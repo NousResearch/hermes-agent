@@ -1,0 +1,18 @@
+name: vet402
+repo: https://github.com/kzmttkc/vet402-hermes
+sha: 04c7fdd1ac9d6ddabdb0fabd23a1a0557474b51e
+version: "0.2.0"
+subdir: vet402
+description: "Look a paid x402 or MPP URL up in vet402's public record of real purchases before the agent pays it. BLOCK stops the tool call. ALLOW, and a WARN that only says vet402 has not bought there yet, let it run. Any other WARN, a URL with no record for the paying HTTP method, and a vet402 outage ask for approval, and the call is refused when nobody can answer (yolo, approvals off, cron). vet402 only knows endpoints in public x402 and MPP discovery, so an unlisted URL asks. By default only mpp_fetch is checked, and a payment made inside Hermes HTTPX traffic is not seen. Disclosure — sends each guarded or model-queried URL (scheme, host, port and path; userinfo, query and fragment stripped) and its HTTP method to vet402.com in up to two HTTPS GETs; a missing record or a vet402 outage asks for approval and is refused when nobody can answer, unless VET402_UNKNOWN=allow lets it pay; while enabled, its skill adds one line to the skills index of every session."
+maintainer: kzmttkc
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/kzmttkc/vet402-hermes/blob/main/vet402/README.md
+capabilities:
+  provides_tools:
+  - vet402_check
+  provides_hooks:
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

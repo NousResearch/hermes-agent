@@ -383,7 +383,6 @@ async def test_history_lookup_saturation_fails_open_without_new_worker(monkeypat
             if calls == 2:
                 two_started.set()
         release.wait(timeout=10)
-        return None
 
     monkeypatch.setattr(adapter, "_history_media_paths_for_session", blocked_lookup)
     first = asyncio.create_task(adapter._bounded_history_media_paths_for_session("one"))

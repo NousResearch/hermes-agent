@@ -158,7 +158,7 @@ def test_sigkilled_worker_is_reclaimed_and_the_retry_completes_once(scenario: Sc
     assert runs[1]["worker_pid"] == sc.w2 and runs[1]["ended_at"], b.diag(sc.tid)
     task = b.task(sc.tid)
     assert task["status"] == "done" and task["worker_pid"] is None and task["claim_lock"] is None
-    assert [r for r in runs if r["outcome"] == "completed"][0]["summary"] == "ATTEMPT_THREE_DONE"
+    assert next(r for r in runs if r["outcome"] == "completed")["summary"] == "ATTEMPT_THREE_DONE"
     # Billing: every attempt paid only for its own turns, nothing ran after the card closed. Attempt 2
     # is exactly heartbeat + the hung call; attempt 3 opens with kanban_complete, then <= 1 closing turn.
     billed = sc.director.billed

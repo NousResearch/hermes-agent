@@ -96,6 +96,7 @@ def run_selftest(root: Path) -> str:
          "--install-root", str(root)],
         capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=60,
+        check=False,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout.strip().splitlines()[-1]
@@ -236,11 +237,11 @@ class TestHandoffSurvivesBrickAB:
         hermes = self._make_hermes(root)
         # BEFORE the heal: the entrypoint dies exactly like the field logs.
         before = subprocess.run([str(hermes)], capture_output=True,
-                                text=True, encoding="utf-8", errors="replace")
+                                text=True, encoding="utf-8", errors="replace", check=False)
         assert before.returncode == 1
         assert "No module named 'encodings'" in before.stderr
         # Heal (real posix.sh function), then the same entrypoint boots.
         assert "state=healed-aliases" in run_selftest(root)
         after = subprocess.run([str(hermes)], capture_output=True,
-                               text=True, encoding="utf-8", errors="replace")
+                               text=True, encoding="utf-8", errors="replace", check=False)
         assert after.returncode == 0

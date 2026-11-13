@@ -131,7 +131,6 @@ class _OAStream:
 def patched_create(self, *a, **kw):
     msgs = kw.get("messages") or []
     import re as _re
-    first = msgs[0] if msgs else {}
     sysm = next((m for m in msgs if m.get("role") == "system"), None)
     nonsys = [m for m in msgs if m.get("role") != "system"]
     f0 = nonsys[0] if nonsys else {}
@@ -166,6 +165,7 @@ if API_MODE == "chat_completions": Completions.create = patched_create
 import agent.prompt_caching as _pc
 _pc.effective_cache_ttl = lambda ttl, *, model="", provider="": ARGS.ttl  # the probe pins the TTL; user config must not leak in
 from run_agent import AIAgent
+import itertools
 def creds():
     if PROVIDER == "openrouter":
         key = ARGS.api_key or os.environ.get("OPENROUTER_API_KEY") or sys.exit("OPENROUTER_API_KEY or --api-key required")
@@ -215,7 +215,7 @@ for r in rows: byw[r["worker"]].append(r)
 for v in byw.values(): v.sort(key=lambda r: r["t_start"])
 cat = collections.Counter(); stuck_tok = 0; bad = []
 for w, cs in byw.items():
-    for p, c in zip(cs, cs[1:]):
+    for p, c in itertools.pairwise(cs):
         if c["system_sha"] != p["system_sha"]: cat["compaction"] += 1; continue
         if abs(c["cache_read"] - p["prompt_tokens"]) <= 0.01 * p["prompt_tokens"] + 50: cat["ideal"] += 1
         elif abs(c["cache_read"] - p["cache_read"]) <= 50: cat["stuck"] += 1; stuck_tok += p["prompt_tokens"] - p["cache_read"]; bad.append((w, p, c, "stuck"))

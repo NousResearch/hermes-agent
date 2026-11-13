@@ -197,8 +197,11 @@ def write_tenant_home(t: Tenant, extra_config: dict[str, Any] | None = None,
     for k, v in (extra_config or {}).items():
         cfg[k] = {**cfg.get(k, {}), **v} if isinstance(v, dict) and isinstance(cfg.get(k), dict) else v
     (t.home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    # Never the well-known 8642 (a developer's live gateway holds it and the sandbox gateway exits),
+    # unless the caller configures platforms itself: API_SERVER_PORT would override its port.
+    port = {} if "platforms" in (extra_config or {}) else {"API_SERVER_PORT": str(free_port())}
     env = {PROVIDER_KEY_ENV: t.provider_key, "API_SERVER_KEY": t.api_server_key, "TENANT_MARKER": t.env_marker,
-           **(extra_env or {})}
+           **port, **(extra_env or {})}
     (t.home / ".env").write_text("".join(f"{k}={v}\n" for k, v in env.items()), encoding="utf-8")
     (t.home / "memories").mkdir(exist_ok=True)
     (t.home / "memories" / "MEMORY.md").write_text(f"{t.memory}\n", encoding="utf-8")
@@ -211,6 +214,7 @@ def assert_profiles_root_under(root: Path, home: Path) -> None:
         [sys.executable, "-c", "from hermes_cli.profiles import _get_profiles_root as r; print(r())"],
         env=hermetic_env(home), cwd=str(home), capture_output=True, text=True, timeout=120,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
     assert probe.returncode == 0, probe.stderr[-2000:]
     got = Path(probe.stdout.strip().splitlines()[-1]).resolve()
@@ -340,7 +344,7 @@ def seed_due_cron_job(t: Tenant, home: Path) -> str:
     "run on next tick" action produces), so the multiplexed ticker's first tick fires it."""
     r = subprocess.run([sys.executable, "-c", _SEED_CRON, t.cron_prompt], cwd=str(home),
                        env=hermetic_env(home, {"HERMES_HOME": str(t.home)}), capture_output=True, text=True,
-                       timeout=120, stdin=subprocess.DEVNULL)
+                       timeout=120, stdin=subprocess.DEVNULL, check=False)
     assert r.returncode == 0, r.stderr[-2000:]
     return r.stdout.strip().splitlines()[-1]
 
@@ -385,7 +389,7 @@ class TuiBackend:
         import queue
         import threading
 
-        self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in close()
+        self._log = open(log_path, "a", encoding="utf-8")
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "tui_gateway.entry"], cwd=str(home), env=hermetic_env(home, extra_env),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self._log, text=True, bufsize=1,
@@ -475,7 +479,7 @@ class ServeBackend(TuiBackend):
         from websockets.sync.client import connect  # ``websockets`` is a core dependency
 
         self.token = secrets.token_urlsafe(24)
-        self._log = open(log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in close()
+        self._log = open(log_path, "a", encoding="utf-8")
         env = {"HERMES_DASHBOARD_SESSION_TOKEN": self.token, "HERMES_DESKTOP": "1", **(extra_env or {})}
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "hermes_cli.main", "serve", "--host", "127.0.0.1", "--port", "0"],

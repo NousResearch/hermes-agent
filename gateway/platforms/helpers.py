@@ -4,13 +4,17 @@ compilation, and fence-aware markdown chunking."""
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
+import os
 import re
+import secrets
 import threading
 import time
+import unicodedata
 from pathlib import Path
-from typing import Any, MutableMapping, Optional
+from typing import Any, Iterator, MutableMapping, Optional
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
@@ -66,22 +70,29 @@ class MessageDeduplicator:
         self._seen.update({k: v for k, v in other._seen.items() if v > cutoff and k not in self._seen})
 
 
-def inbound_dedup_caches(adapter: Any) -> dict[str, MessageDeduplicator]:
-    """The adapter's ``MessageDeduplicator`` attributes, by name (held by reference, so IDs the old
-    adapter admits after this call still reach its replacement)."""
-    return {name: v for name, v in vars(adapter).items() if isinstance(v, MessageDeduplicator)}
-
-
-def carry_inbound_dedup(caches: Optional[dict], adapter: Any) -> None:
-    """Seed a rebuilt adapter's dedup caches from the instance it replaces.
+def carry_inbound_dedup(predecessor: Any, adapter: Any) -> None:
+    """Seed a rebuilt adapter's dedup caches from the instance it replaces (call before connect).
 
     The runner's reconnect path builds a NEW adapter; without this a platform replaying a recent
     inbound ID after the reconnect (websocket resume, webhook retry, unacked poll batch) is
     admitted and answered a second time."""
-    for name, previous in (caches or {}).items():
+    if predecessor is None:
+        return
+    for name, previous in vars(predecessor).items():
         current = getattr(adapter, name, None)
-        if isinstance(current, MessageDeduplicator) and current is not previous:
+        if isinstance(previous, MessageDeduplicator) and isinstance(current, MessageDeduplicator) and current is not previous:
             current.absorb(previous)
+
+
+def hand_over_held_inbound(source: Any, target: Any) -> None:
+    """Move inbound ``source`` is holding to ``target`` (#132829, #133399).
+
+    The runner calls it at publish time (retired instance -> replacement) and after disposing a
+    failed reconnect candidate (candidate -> retained predecessor): a candidate that fails connect
+    can hold acked updates and salvage pending batches in disconnect(), which must not die with it."""
+    adopt = getattr(target, "adopt_held_inbound", None)
+    if source is not None and callable(adopt):
+        adopt(source)
 
 
 # Worker-thread handoff used by the off-loop persist paths.  A module attribute
@@ -102,6 +113,124 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
             await task
 
 
+def display_width(text: str) -> int:
+    """Terminal-style display columns: East-Asian wide/full-width characters count as two.
+    Chat clients clip button labels by rendered width, not by codepoints, so a 25-character
+    Korean label is as wide as 50 Latin ones."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None,
+                             max_chars: Optional[int] = None, len_fn=len) -> Optional[str]:
+    """``"1. <choice>\n2. <choice>"`` when any choice is wider than ``max_label_cols`` display
+    columns, else ``None``. Button-capable adapters put this in the message body and switch to
+    positional (``1``, ``2``, …) button labels: a clipped label with no tooltip is unanswerable
+    (#78115), and the body is the only place a long option renders in full. Over ``max_chars``
+    every line stays (a button whose line was cut is unanswerable): the long options lose their
+    middle (start and end kept, so options sharing a long opening still differ) before escaping,
+    so a cut never splits an escape. An option whose first difference from its nearest sibling
+    falls in that cut middle keeps a window around it too, so options sharing both a long
+    opening and a long ending still read differently."""
+    texts = [str(c).strip() for c in choices]
+    if all(display_width(t) <= max_label_cols for t in texts):
+        return None
+    esc = escape or (lambda s: s)
+
+    def _render(items) -> str:
+        return "\n".join(f"{i}. {esc(t)}" for i, t in enumerate(items, start=1))
+    out, each = _render(texts), max(map(len, texts))
+    prefix = [[len(os.path.commonprefix([a, b])) for b in texts] for a in texts]
+    while max_chars is not None and len_fn(out) > max_chars and each > 1:
+        each = min(each - 1, each * 4 // 5) or 1
+        out = _render(_distinct_shortenings(texts, each, prefix))
+    return out
+
+
+def _distinct_shortenings(texts: list, each: int, prefix: list) -> list:
+    """Every text shortened to about *each* characters, distinct options kept distinct where the
+    room allows: each first keeps a window around where it differs from its nearest sibling, and
+    options whose windows still read the same (repeated wording shifts them) are re-cut with one
+    shared window around the group's earliest difference until they part."""
+    out = [_shorten_choice(t, each, max((p for j, p in enumerate(prefix[i]) if j != i), default=0))
+           for i, t in enumerate(texts)]
+    for _ in texts:
+        groups: dict = {}
+        for i, line in enumerate(out):
+            groups.setdefault(line, []).append(i)
+        clashes = [g for g in groups.values() if len(g) > 1 and len({texts[i] for i in g}) > 1]
+        if not clashes:
+            break
+        for group in clashes:
+            shared = min(prefix[a][b] for a in group for b in group if texts[a] != texts[b])
+            for i in group:
+                out[i] = _shorten_choice(texts[i], each, shared)
+    return out
+
+
+def _shorten_choice(text: str, each: int, anchor: int) -> str:
+    """*text* in about *each* characters: start and end kept around a ``…``, or, when *anchor*
+    (where it first differs from its nearest sibling) would fall in the cut, start, a window
+    around *anchor* and end."""
+    if len(text) <= each:
+        return text
+    head, tail = (each + 1) // 2, each // 2
+    if anchor < head or anchor >= len(text) - tail:
+        return f"{text[:head].rstrip()}…{text[len(text) - tail:].lstrip()}"
+    head = tail = each // 4
+    width = each - head - tail
+    start = min(max(anchor - width // 2, head + 1), len(text) - tail - width - 1)
+    if start <= head:
+        return f"{text[:(each + 1) // 2].rstrip()}…{text[len(text) - each // 2:].lstrip()}"
+    return (f"{text[:head].rstrip()}…{text[start:start + width].strip()}…"
+            f"{text[len(text) - tail:].lstrip()}")
+
+
+def _clip_text(text: str, limit: int, len_fn=len) -> str:
+    """*text* within *limit* units of *len_fn*, a cut marked with ``…``."""
+    if len_fn(text) <= limit:
+        return text
+    cut = text[: max(0, limit - 1)]
+    while cut and len_fn(cut) > limit - 1:
+        cut = cut[:-1]
+    return cut + "…"
+
+
+def clarify_text_with_choices(head: str, choices, *, limit: int, max_label_cols: int, escape=None,
+                              len_fn=len) -> tuple[str, bool]:
+    """``(text, numbered)`` for a button clarify within *limit*: *head* alone when every option fits
+    its button, else *head* plus the numbered list (see :func:`numbered_clarify_choices`). The list
+    is reserved first (at least half of *limit*) and the head is cut to what is left, so every
+    positional button keeps its line however long the question is."""
+    if numbered_clarify_choices(choices, max_label_cols=max_label_cols) is None:
+        return _clip_text(head, limit, len_fn), False
+    room = max(limit - 2 - len_fn(head), limit // 2)
+    listed = numbered_clarify_choices(choices, max_label_cols=0, escape=escape, max_chars=room, len_fn=len_fn)
+    return f"{_clip_text(head, max(0, limit - 2 - len_fn(listed)), len_fn)}\n\n{listed}", True
+
+
+def prompt_id_counter() -> Iterator[int]:
+    """Ids for buttons a chat keeps after a restart (approval cards, confirmations, pickers).
+
+    Starts at a random point instead of 1: an old card still visible after a restart would
+    otherwise carry the same id as the first new card and answer it."""
+    return itertools.count(secrets.randbelow(10**12) + 1)
+
+def caption_is_command(caption: Optional[str]) -> bool:
+    """A file's caption that is a slash command (``/goal summarize this``). Adapters skip inlining
+    such a file's text: prepended, it hides the command; appended, it becomes the command's
+    arguments. The agent still gets the cached path with a note to read it. Parsed by
+    :meth:`MessageEvent.get_command`, so attachment-ref prefixes and paths follow the one rule."""
+    return MessageEvent(text=caption or "").get_command() is not None
+
+
+def inline_document_text(caption: str, injection: Optional[str], inlined: list) -> tuple[str, list]:
+    """Prepend a document's inlined text to its caption: ``(text, inlined flags)``. Under a command
+    caption the text is left out and the flags cleared, so the agent is told to read the file."""
+    if not injection or caption_is_command(caption):
+        return caption, [False] * len(inlined)
+    return (f"{injection}\n\n{caption}" if caption else injection), inlined
+
+
 def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
     """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A
     re-put moves the key to the newest position so live entries outlast stale ones."""
@@ -109,6 +238,25 @@ def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int)
     store[key] = value
     while len(store) > cap:
         del store[next(iter(store))]
+
+
+def typing_metadata_for_turn(adapter: Any, chat_id: Any, anchor: Any, metadata: Optional[dict]) -> Any:
+    """A turn's typing/status metadata, fixed when the turn starts and reused for every refresh and
+    clear. ``anchor`` is the turn's own message id: an adapter whose status thread depends on the turn
+    (``status_metadata_for_turn``: a top-level Slack DM's status sits on its triggering message) takes
+    it from here, not from per-chat state that a later inbound in the chat overwrites. Looked up on
+    the class, so a test double's auto-attributes never stand in for the hook."""
+    hook = getattr(type(adapter), "status_metadata_for_turn", None)
+    if anchor is None or not callable(hook):
+        return metadata
+    return hook(adapter, str(chat_id), str(anchor), metadata)
+
+
+def typing_pause_key(chat_id: Any, metadata: Optional[dict]) -> tuple:
+    """``_typing_paused`` entry that pauses ONE turn's keep-alive: the chat plus the thread its
+    typing metadata (``typing_metadata_for_turn``) targets. A bare ``chat_id`` entry still pauses
+    every loop in the chat (approval waits); this one leaves a concurrent topic's typing alone."""
+    return chat_id, (metadata or {}).get("thread_id")
 
 
 # Inline markdown-stripping rules, applied in order: bold, italic, bold/italic
@@ -128,7 +276,7 @@ _HTTP_TARGET_RE = re.compile(r"https?://", re.IGNORECASE)
 _NEWLINE_SQUEEZE_RE = re.compile(r"\n{3,}")
 
 
-def _keep_link_target(match: "re.Match[str]") -> str:
+def _keep_link_target(match: re.Match[str]) -> str:
     r"""``[label](https://url)`` -> ``label\nurl``.
 
     The bare URL is the only thing a platform with its own data detection
@@ -242,6 +390,26 @@ class ThreadParticipationTracker:
             self._threads.clear()
 
 
+async def send_chunks(chunks: list, send_one) -> Any:
+    """Send ``chunks`` in order through ``send_one(chunk) -> SendResult``, stopping at the first failure.
+
+    A failure after earlier chunks landed carries the ``partial_overflow`` contract that
+    ``BasePlatformAdapter._is_partial_delivery`` reads, so no caller (send retry, plain-text
+    fallback, cron standalone fallback) re-sends the head the recipient already has.
+    """
+    from gateway.platforms.base import SendResult
+    result = SendResult(success=False, error="nothing to send")
+    for delivered, chunk in enumerate(chunks):
+        result = await send_one(chunk)
+        if not result.success:
+            if delivered:
+                raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+                raw.update(partial_overflow=True, delivered_chunks=delivered, total_chunks=len(chunks))
+                result.raw_response = raw
+            break
+    return result
+
+
 def redact_phone(phone: str) -> str:
     """Redact a phone number for logging, preserving country code and last 4."""
     if not phone:
@@ -318,8 +486,8 @@ def convert_table_to_bullets(text: str) -> str:
 
 
 def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None = None,
-                             display_label: str | None = None, defaults: 'list[str] | None' = None,
-                             logger_: 'logging.Logger | None' = None) -> 'list[re.Pattern]':
+                             display_label: str | None = None, defaults: list[str] | None = None,
+                             logger_: logging.Logger | None = None) -> list[re.Pattern]:
     """Compile regex wake-word/mention patterns from config or env values.
 
     * **Config-style** (dingtalk, telegram): pass ``platform_label``. ``raw`` must be a
@@ -372,7 +540,8 @@ def compile_mention_patterns(raw, *, log_prefix: str, platform_label: str | None
 
 # ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
 # Shared core for gateway/stream_consumer.py (``prefer_paragraphs=False, balance_fences=True``),
-# yuanbao (``prefer_paragraphs=True, balance_fences=False``) and weixin (``greedy_pack_blocks``).
+# paragraph mode (``prefer_paragraphs=True, balance_fences=False``, derived from the Yuanbao adapter,
+# now a plugin) and weixin (``greedy_pack_blocks``).
 
 
 def text_has_unclosed_fence(text: str) -> bool:
@@ -432,11 +601,11 @@ def split_at_paragraph_boundary(text, max_chars, len_fn=None):
     return text[:cut], text[cut:]
 
 
-def split_markdown_atoms(text: str) -> "list[str]":
+def split_markdown_atoms(text: str) -> list[str]:
     """Split markdown into indivisible atoms: fenced code blocks, tables
     (consecutive ``|...|`` lines) and paragraphs. Blank lines belong to no atom."""
-    atoms: "list[str]" = []
-    current_lines: "list[str]" = []
+    atoms: list[str] = []
+    current_lines: list[str] = []
     in_fence = False
 
     def _flush_current() -> None:
@@ -478,10 +647,10 @@ def infer_block_separator(prev_chunk: str, next_chunk: str) -> str:
     return '\n\n'
 
 
-def merge_streaming_fences(chunks: "list[str]") -> "list[str]":
+def merge_streaming_fences(chunks: list[str]) -> list[str]:
     """Rejoin chunks truncated mid-fence: while chunk *i* has an unclosed fence
     and a successor exists, merge the successor in via :func:`infer_block_separator`."""
-    result: "list[str]" = []
+    result: list[str] = []
     i = 0
     while i < len(chunks):
         current = chunks[i]
@@ -493,12 +662,12 @@ def merge_streaming_fences(chunks: "list[str]") -> "list[str]":
     return result
 
 
-def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
+def balance_fences_across_chunks(chunks: list[str]) -> list[str]:
     """Close orphaned ``` fences at each chunk boundary and reopen (with the
     original language tag) on the next, so every chunk is fence-balanced alone."""
     if len(chunks) <= 1:
         return chunks
-    out: "list[str]" = []
+    out: list[str] = []
     carry_lang = None
     for chunk in chunks:
         body = f"```{carry_lang}\n{chunk}" if carry_lang is not None else chunk
@@ -508,7 +677,69 @@ def balance_fences_across_chunks(chunks: "list[str]") -> "list[str]":
     return out
 
 
-def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> "tuple[bool, str]":
+def _table_header_above(lines: list[str], i: int) -> int:
+    """Index of the header row of the pipe table containing ``lines[i]``, else -1. Same rules as
+    :func:`convert_table_to_bullets`: a header with a ``|`` over a separator row, then rows with a
+    ``|`` (outer pipes optional)."""
+    while i >= 1 and is_table_row(lines[i]):
+        if TABLE_SEPARATOR_RE.match(lines[i]) and is_table_row(lines[i - 1]):
+            return i - 1
+        i -= 1
+    return -1
+
+
+def _split_inside_table(head: str, tail: str) -> bool:
+    return (is_table_row(head.rstrip('\n').rsplit('\n', 1)[-1])
+            and is_table_row(tail.lstrip().split('\n', 1)[0]))
+
+
+def table_row_start(text: str, split_at: int) -> int:
+    """The newline before the table row a mid-line *split_at* falls in, so a row that fits a fresh
+    chunk is never cut inside a cell; *split_at* unchanged when the line is not a table row (or is
+    the first line, which only an oversized row reaches)."""
+    newline = text.rfind('\n', 0, split_at)
+    if newline < 1 or text[split_at:split_at + 1] in ('\n', ''):
+        return split_at
+    line_end = text.find('\n', split_at)
+    lines = text[:line_end if line_end >= 0 else len(text)].split('\n')
+    return newline if _table_header_above(lines, len(lines) - 1) >= 0 else split_at
+
+
+def table_rollback_point(text: str, split_at: int, fits) -> int:
+    """When ``text[:split_at]`` ends inside a pipe table that *fits* whole in a fresh chunk,
+    return the offset of its header line so the table moves intact; else *split_at*."""
+    if not _split_inside_table(text[:split_at], text[split_at:]):
+        return split_at
+    head_lines = text[:split_at].split('\n')
+    lines = head_lines + [text[split_at:].lstrip().split('\n', 1)[0]]  # sees a separator just past the cut
+    header = _table_header_above(lines, len(lines) - 1)
+    if header <= 0:
+        return split_at
+    start = len('\n'.join(lines[:header])) + 1
+    if header >= len(head_lines) - 2:  # header (+ separator) with no rows never ends a chunk
+        return start
+    end = start
+    for line in text[start:].split('\n'):
+        if not is_table_row(line):
+            break
+        end += len(line) + 1
+    return start if fits(text[start:end].rstrip('\n')) else split_at
+
+
+def table_header_to_repeat(chunk: str, rest: str, max_units: int, len_fn=len):
+    """Header + separator lines to prepend to *rest* when *chunk* ended mid-table, else None
+    (also None when the header alone exceeds *max_units*, so a huge header can't stall)."""
+    if not _split_inside_table(chunk, rest):
+        return None
+    lines = chunk.rstrip('\n').split('\n')
+    header = _table_header_above(lines, len(lines) - 1)
+    if header < 0:
+        return None
+    block = f"{lines[header]}\n{lines[header + 1]}"
+    return block if len_fn(block) <= max_units else None
+
+
+def fence_state_after(text: str, in_code: bool = False, lang: str = "") -> tuple[bool, str]:
     """Walk ``text`` line by line toggling on ``` lines; return the final (in_code, lang)."""
     for line in text.split("\n"):
         stripped = line.strip()
@@ -522,7 +753,7 @@ def greedy_pack_blocks(blocks, max_length, len_fn=None, sep="\n\n", overflow=Non
     """Greedily pack *blocks* (joined with *sep*) into chunks of at most *max_length*; an
     oversized block goes through *overflow(block)* (-> list of chunks) if given, else as-is."""
     _len = len_fn or len
-    packed: "list[str]" = []
+    packed: list[str] = []
     current = ""
     for block in blocks:
         candidate = block if not current else f"{current}{sep}{block}"
@@ -569,9 +800,9 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     if _len(text) <= max_chars:
         return [text]
     # Phase 2: greedy merge; oversized fence/table atoms stay indivisible.
-    chunks: "list[str]" = []
-    indivisible_set: "set[int]" = set()
-    current_parts: "list[str]" = []
+    chunks: list[str] = []
+    indivisible_set: set[int] = set()
+    current_parts: list[str] = []
     current_len = 0
     for atom in split_markdown_atoms(text):
         atom_len = _len(atom)
@@ -589,7 +820,7 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     if current_parts:
         chunks.append('\n\n'.join(current_parts))
     # Phase 3: split still-oversized divisible chunks at paragraph boundaries.
-    result: "list[str]" = []
+    result: list[str] = []
     for idx, chunk in enumerate(chunks):
         if _len(chunk) <= max_chars or idx in indivisible_set or text_has_unclosed_fence(chunk):
             result.append(chunk)
@@ -604,7 +835,7 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
         if remaining:
             result.append(remaining)
     # Phase 4: merge small chunks with neighbours.
-    merged: "list[str]" = result[:1]
+    merged: list[str] = result[:1]
     for chunk in result[1:]:
         combined = merged[-1] + '\n\n' + chunk
         if _len(combined) <= max_chars:
@@ -620,7 +851,7 @@ def _chunk_newline_preferred(text, limit, len_fn):
         return [text]
     # Reserve headroom for fence markers a balancing pass may add.
     split_limit = max(limit - 16, limit // 2, 1) if "```" in text else limit
-    chunks: "list[str]" = []
+    chunks: list[str] = []
     remaining = text
     while len_fn(remaining) > split_limit:
         budget = _cp_budget(remaining, split_limit, len_fn)
@@ -660,96 +891,53 @@ def is_discord_channel_obfuscated(channel) -> bool:
     return getattr(channel, "name", None) == DISCORD_OBFUSCATED_CHANNEL_NAME
 
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import TYPE_CHECKING  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
+def platform_http_client(**kwargs: Any) -> Any:
+    """``httpx.AsyncClient`` for a platform adapter: connect-time SSRF validation
+    (``tools.url_safety.create_ssrf_safe_async_client``), every redirect hop re-checked
+    (``gateway.platforms.base.ssrf_redirect_guard``, run before any caller ``response`` hooks) and the
+    shared keepalive pool limits (``platform_httpx_limits()``; pass ``limits=None`` for httpx's
+    defaults). Defaults ``timeout=30.0`` and ``follow_redirects=True``; other kwargs go to httpx."""
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+    from gateway.platforms.base import ssrf_redirect_guard
+    from tools.url_safety import create_ssrf_safe_async_client
+    hooks = dict(kwargs.pop("event_hooks", None) or {})
+    hooks["response"] = [ssrf_redirect_guard, *hooks.get("response", ())]
+    kwargs.setdefault("timeout", 30.0)
+    kwargs.setdefault("follow_redirects", True)
+    if "limits" not in kwargs:
+        kwargs["limits"] = platform_httpx_limits()
+    elif kwargs["limits"] is None:
+        del kwargs["limits"]
+    return create_ssrf_safe_async_client(event_hooks=hooks, **kwargs)
 
-class TextBatchAggregator:
-    """Aggregates rapid-fire text events into single messages.
 
-    Replaces the ``_enqueue_text_event`` / ``_flush_text_batch`` pattern
-    previously duplicated in telegram, discord, matrix, wecom, and feishu.
+# The slowest uplink a media upload's budgets still cover, and the wall-clock ceiling they grow to.
+MIN_MEDIA_UPLOAD_RATE = 128 * 1024  # B/s
+MEDIA_UPLOAD_DEADLINE_MAX = 3600.0
 
-    Usage::
 
-        self._text_batcher = TextBatchAggregator(
-            handler=self._message_handler,
-            batch_delay=0.6,
-            split_threshold=1900,
-        )
+def _on_disk_size(value: Any) -> int:
+    if isinstance(value, (str, os.PathLike)):
+        try:
+            return os.stat(value).st_size
+        except (OSError, ValueError):
+            return 0  # a URL or platform file id
+    try:  # an open file handle
+        return os.fstat(value.fileno()).st_size
+    except (AttributeError, OSError, ValueError):
+        return 0
 
-        # In message dispatch:
-        if msg_type == MessageType.TEXT and self._text_batcher.is_enabled():
-            self._text_batcher.enqueue(event, session_key)
-            return
-    """
 
-    def __init__(
-        self,
-        handler,
-        *,
-        batch_delay: float = 0.6,
-        split_delay: float = 2.0,
-        split_threshold: int = 4000,
-    ):
-        self._handler = handler
-        self._batch_delay = batch_delay
-        self._split_delay = split_delay
-        self._split_threshold = split_threshold
-        self._pending: Dict[str, MessageEvent] = {}
-        self._pending_tasks: Dict[str, asyncio.Task] = {}
+def media_upload_seconds(sources: Any) -> float:
+    """Seconds the on-disk payloads in ``sources`` (paths, open files; URLs and ids count 0) take
+    at ``MIN_MEDIA_UPLOAD_RATE``."""
+    return sum(_on_disk_size(source) for source in sources) / MIN_MEDIA_UPLOAD_RATE
 
-    def is_enabled(self) -> bool:
-        """Return True if batching is active (delay > 0)."""
-        return self._batch_delay > 0
 
-    def enqueue(self, event: MessageEvent, key: str) -> None:
-        """Add *event* to the pending batch for *key*."""
-        chunk_len = len(event.text or "")
-        existing = self._pending.get(key)
-        if not existing:
-            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending[key] = event
-        else:
-            existing.text = f"{existing.text}\n{event.text}"
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-
-        # Cancel prior flush timer, start a new one
-        prior = self._pending_tasks.get(key)
-        if prior and not prior.done():
-            prior.cancel()
-        self._pending_tasks[key] = asyncio.create_task(self._flush(key))
-
-    async def _flush(self, key: str) -> None:
-        """Wait then dispatch the batched event for *key*."""
-        current_task = self._pending_tasks.get(key)
-        pending = self._pending.get(key)
-        last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-
-        # Use longer delay when the last chunk looks like a split message
-        delay = self._split_delay if last_len >= self._split_threshold else self._batch_delay
-        await asyncio.sleep(delay)
-
-        event = self._pending.pop(key, None)
-        if event:
-            try:
-                await self._handler(event)
-            except Exception:
-                logger.exception("[TextBatchAggregator] Error dispatching batched event for %s", key)
-
-        if self._pending_tasks.get(key) is current_task:
-            self._pending_tasks.pop(key, None)
-
-    def cancel_all(self) -> None:
-        """Cancel all pending flush tasks."""
-        for task in self._pending_tasks.values():
-            if not task.done():
-                task.cancel()
-        self._pending_tasks.clear()
-        self._pending.clear()
-# ---- END PLUGIN-COMPAT ----
+def scaled_upload_deadline(deadline: float, upload_seconds: float) -> float:
+    """A media send's wall-clock cap widened by 1.5x its upload time (at most
+    ``MEDIA_UPLOAD_DEADLINE_MAX``, never below ``deadline``): a platform answers an upload only once
+    the file has arrived, so a fixed cap reports a slow-but-delivered file as failed (#133093)."""
+    if upload_seconds <= 0:
+        return deadline
+    return max(deadline, min(MEDIA_UPLOAD_DEADLINE_MAX, deadline + 1.5 * upload_seconds))

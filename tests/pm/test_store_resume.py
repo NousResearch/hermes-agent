@@ -8,10 +8,10 @@ import pytest
 
 from pm.store import Store
 
-import pm.paths as paths
+from pm import paths
 
 from tests.pm._range_server import RangeHandler as _Handler, url as _url
-from tests.pm._range_server import dl_server as dl_server
+from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 

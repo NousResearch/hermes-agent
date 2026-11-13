@@ -6,15 +6,29 @@
 
 import type { ErrorCardCopy, Translations } from '@/i18n/types'
 
-import { errorCardKey, type ErrorSurface, isFreeTierSurface } from './error-surface'
+import {
+  errorCardKey,
+  type ErrorSurface,
+  formatResetClock,
+  isFreeTierSurface,
+  scheduledRetryDelayMs
+} from './error-surface'
 
 export interface ErrorCardText {
   title: string
   body: string
 }
 
-const render = (value: ErrorCardCopy['title'], provider: string) =>
-  typeof value === 'function' ? value(provider) : value
+const render = (value: ErrorCardCopy['title'], provider: string, model = '') =>
+  typeof value === 'function' ? value(provider, model) : value
+
+/** Model name for copy: the descriptor's model without its vendor prefix
+ *  ("anthropic/claude-sonnet-5" → "claude-sonnet-5"). */
+export function errorModelName(surface?: ErrorSurface | null): string {
+  const model = surface?.model?.trim() || ''
+
+  return model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model
+}
 
 /** The failing provider's display name for copy — the descriptor's label,
  *  else its id, else the generic "the AI service". */
@@ -27,6 +41,7 @@ export function errorCardText(
   surface: ErrorSurface | null | undefined
 ): ErrorCardText {
   const provider = errorProviderName(thread, surface)
+  const model = errorModelName(surface)
 
   // A credential rejection is worded by HOW the provider is credentialed
   // (key vs sign-in), which the code alone (`auth`) cannot tell.
@@ -37,7 +52,21 @@ export function errorCardText(
   if (surface?.layer === 'auth' && surface.authKind === 'api_key') {
     const copy = thread.errorAuthKinds.api_key
 
-    return { body: render(copy.body, provider), title: render(copy.title, provider) }
+    return { body: render(copy.body, provider, model), title: render(copy.title, provider, model) }
+  }
+
+  // A rate limit whose reset moment is known names it instead of "wait a moment".
+  if (
+    (surface?.code === 'rate_limit' || surface?.code === 'upstream_rate_limit') &&
+    surface.resetsAt !== undefined &&
+    scheduledRetryDelayMs(surface.resetsAt) !== null
+  ) {
+    const copy = thread.errorCodes[surface.code]
+
+    return {
+      body: thread.errorRateLimitResetBody(provider, formatResetClock(surface.resetsAt)),
+      title: render(copy.title, provider, model)
+    }
   }
 
   const key = errorCardKey(surface)
@@ -45,13 +74,19 @@ export function errorCardText(
   if ('code' in key) {
     const copy = thread.errorCodes[key.code]
 
-    // A free-tier refusal arrives with the backend's own sentence (the wait, the
-    // model, the way forward); the table body is only the fallback for an older backend.
+    // Free-tier and usage-window refusals arrive with the backend's own sentence (the
+    // wait, the model, the way forward); the table body is only the fallback for an older backend.
+    const ownSentence = isFreeTierSurface(surface) || surface?.code === 'usage_window'
+
+    const body = surface?.retryable === false && copy.bodyNoRetry ? copy.bodyNoRetry : copy.body
+
     return {
-      body: (isFreeTierSurface(surface) && surface?.message) || render(copy.body, provider),
-      title: render(copy.title, provider)
+      body: (ownSentence && surface?.message) || render(body, provider, model),
+      title: render(copy.title, provider, model)
     }
   }
 
-  return { body: thread.errorLayerBodies[key.layer], title: thread.errorLayers[key.layer] }
+  // Pre-turn gateway refusals carry the server's own actionable sentence; it
+  // is the body, not a generic gloss with the useful text buried in a toast.
+  return { body: surface?.message || thread.errorLayerBodies[key.layer], title: thread.errorLayers[key.layer] }
 }

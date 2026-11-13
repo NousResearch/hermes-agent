@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import plugins.platforms.photon.sidecar_paths as sidecar_paths
+from plugins.platforms.photon import sidecar_paths
 
 
 def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:

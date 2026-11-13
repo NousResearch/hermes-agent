@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { describeCrashReason, installCrashForensics, isExpectedTransition, markExpectedTransition } from './crash-forensics'
+import {
+  describeCrashReason,
+  installCrashForensics,
+  isExpectedTransition,
+  markExpectedTransition
+} from './crash-forensics'
 
 const harness = () => {
   const listeners = new Map<string, (value: unknown) => void>()
@@ -68,7 +73,8 @@ describe('installCrashForensics', () => {
     // The exact shape an intentional quit leaves behind: the AbortController
     // reason from local-backend-lifecycle rejecting an in-flight start.
     const sentinel = markExpectedTransition(new Error('Hermes Desktop is quitting.'))
-    sentinel.stack = 'Error: Hermes Desktop is quitting.\n    at Object.run [as shutdown] (file:///app.asar/dist/electron-main.mjs:1374:40)'
+    sentinel.stack =
+      'Error: Hermes Desktop is quitting.\n    at Object.run [as shutdown] (file:///app.asar/dist/electron-main.mjs:1374:40)'
 
     listeners.get('unhandledRejection')?.(sentinel)
 

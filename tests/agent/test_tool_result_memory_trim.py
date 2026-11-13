@@ -9,7 +9,7 @@ it, because the string is still referenced by the publish frames there; the trim
 
 from unittest.mock import MagicMock
 
-from tests.agent.test_start_order_gate import (  # noqa: F401 — autouse fixture rides along
+from tests.agent.test_start_order_gate import (
     _FakeAssistantMsg,
     _FakeToolCall,
     _isolate_hermes,

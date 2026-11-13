@@ -14,7 +14,7 @@ from ruamel.yaml import YAML
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 
-EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 JOB_REFERENCE = re.compile(r"\bneeds\.([A-Za-z0-9_-]+)")
 
 
@@ -66,8 +66,6 @@ def test_no_workflow_runs_from_a_tag_push():
         # This nightly canary also gates releases with dedicated spend-capped keys.
         if filename == "live-providers.yml" and push == {"tags": ["v*"]}:
             continue
-        if not isinstance(push, dict) or not ({"branches", "branches-ignore"} & set(push)):
-            violations.append(filename)
-        elif {"tags", "tags-ignore"} & set(push):
+        if not isinstance(push, dict) or not ({"branches", "branches-ignore"} & set(push)) or {"tags", "tags-ignore"} & set(push):
             violations.append(filename)
     assert not violations, "tag-triggered workflows: " + ", ".join(violations)

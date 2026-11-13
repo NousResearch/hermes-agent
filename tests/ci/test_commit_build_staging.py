@@ -16,7 +16,7 @@ from tests.ci.desktop_release_roles import (
     commit_summary, native_builds, needs_of, selection_gates, stage_step, termux_builder, universal_assembler,
 )
 from tests.ci.test_desktop_release_tag_admission import _BASH, _child_env, _workflow
-from tests.scripts.test_release_r2 import r2_server  # noqa: F401
+from tests.scripts.test_release_r2 import r2_server
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +59,7 @@ def shell_step(tmp_path, r2_server, job, name, env, *, script=None):
     environment = _child_env(**env)
     environment['PATH'] = str(helper) + os.pathsep + environment['PATH']
     return subprocess.run([_BASH, '-e', '-o', 'pipefail', str(script_file)], cwd=tmp_path,
-                          env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60)
+                          env=environment, capture_output=True, text=True, encoding='utf-8', timeout=60, check=False)
 
 
 @pytest.mark.parametrize("has_download", [True, False])
@@ -70,7 +70,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
     summary = tmp_path / 'summary.md'
     jobs = _workflow()['jobs']
     summary_job = commit_summary(jobs)
-    bundle_env = {'HERMES_HOME': None, 'HERMES_SKIP_INTRO': '',
+    bundle_env = {'HERMES_HOME': None, 'HERMES_DESKTOP_USER_DATA_DIR': '',
                   'HERMES_SHARED_AUTH_DIR': '<script>\n"café" & value</script>'}
     env = dict(HERMES_BUILD_COMMIT=sha, HERMES_PAYLOAD_TAG='', RELEASE_COMMIT=sha,
                GITHUB_REPOSITORY='fixture-owner/fixture-repo',
@@ -97,7 +97,7 @@ def test_failed_commit_summary_publishes_downloads_or_run_links(tmp_path, r2_ser
         page = response.read().decode()
     assert f'href="https://github.com/fixture-owner/fixture-repo/commit/{sha}"' in page
     assert 'Bundle environment' in page and 'HERMES_HOME' in page and 'Unset' in page
-    assert '<code>HERMES_SKIP_INTRO</code></td><td><code>&quot;&quot;</code>' in page
+    assert '<code>HERMES_DESKTOP_USER_DATA_DIR</code></td><td><code>&quot;&quot;</code>' in page
     assert html.escape(json.dumps(bundle_env['HERMES_SHARED_AUTH_DIR'], ensure_ascii=False)) in page
     assert '<script>' not in page and 'must-not-appear' not in page and 'CI_SECRET' not in page
     links = re.findall(r'\]\((https?://[^)]+)\)', text)
@@ -143,9 +143,6 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
         (legs[('darwin-arm64', 'commit')], 'darwin-arm64', [
             'HermesBundled-0.33.0-mac-arm64.dmg', 'HermesBundled-0.33.0-mac-arm64.zip',
             'HermesBundled-0.33.0-mac-arm64.zip.blockmap']),
-        (legs[('darwin-x64', 'commit')], 'darwin-x64', [
-            'HermesBundled-0.33.0-mac-x64.dmg', 'HermesBundled-0.33.0-mac-x64.zip',
-            'HermesBundled-0.33.0-mac-x64.zip.blockmap']),
         (universal_assembler(jobs), 'windows-universal', ['HermesBundled-0.33.0.0-win.msixbundle']),
     ]
     artifact_keys = set()
@@ -214,11 +211,11 @@ def test_commit_staging_and_summary_bind_every_produced_file_without_channels(tm
     r2_server.store[receipt_key] = original
 
     # The actual summary command remains useful after an admitted matrix failure.
-    r2_server.store.pop(f'releases/commit/{sha}/handoff-darwin-x64.json')
+    r2_server.store.pop(f'releases/commit/{sha}/handoff-darwin-arm64.json')
     summary.unlink()
     summary_env['RELEASE_NEEDS'] = json.dumps({'validate': {'result': 'success'},
-                                             gates['darwin-x64']: {'result': 'failure'}})
+                                             gates['darwin-arm64']: {'result': 'failure'}})
     incomplete = shell_step(tmp_path, r2_server, summary_job,
                             'Render the full expected-binary matrix', summary_env)
     assert incomplete.returncode == 0, incomplete.stdout + incomplete.stderr
-    assert f"failed: {gates['darwin-x64']}" in summary.read_text(encoding='utf-8-sig')
+    assert f"failed: {gates['darwin-arm64']}" in summary.read_text(encoding='utf-8-sig')

@@ -26,7 +26,7 @@ _DISCORD_DIR = os.path.join(
 if _DISCORD_DIR not in sys.path:
     sys.path.insert(0, _DISCORD_DIR)
 
-import voice_mixer as vm  # noqa: E402
+import voice_mixer as vm
 
 
 # =====================================================================

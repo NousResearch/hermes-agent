@@ -133,7 +133,7 @@ async def test_reload_mcp_formats_scoped_connection_keys_before_refreshing_cache
         {launch_key: launch_scope, worker_key: worker_scope},
     )
     monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", lambda **_kwargs: None)
-    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", lambda: [])
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", list)
 
     event = MessageEvent(
         text="/reload-mcp", message_id="m1",

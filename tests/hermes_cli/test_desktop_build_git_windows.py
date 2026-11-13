@@ -27,10 +27,10 @@ def test_packaged_desktop_build_restores_pm_git_for_stamp_and_pack(
     def run(command: list[str], *, env: dict[str, str], **_kwargs: object) -> None:
         calls.append((command, env))
 
-    monkeypatch.setattr(pm, "ensure", lambda *names, base_env: SimpleNamespace(env=installed_git(*names, base_env=base_env)))
+    monkeypatch.setattr(pm, "ensure", lambda *names, base_env, **_: SimpleNamespace(env=installed_git(*names, base_env=base_env)))
     monkeypatch.setattr(main_desktop.subprocess, "run", run)
     monkeypatch.setattr(main_desktop, "_promote_staged_desktop_app", lambda *_args: desktop / "Hermes.exe")
-    main_desktop.build_prepared_desktop(desktop, source_mode=False, npm="C:\\node\\npm.cmd", env=original)
+    main_desktop.build_prepared_desktop(desktop, source_mode=False, pnpm="C:\\pm\\pnpm.exe", env=original)
 
     assert [command[2] for command, _ in calls] == ["build", "builder"]
     assert all(env["PATH"].startswith("C:\\pm-pinned-git\\cmd;") for _, env in calls)

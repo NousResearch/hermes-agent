@@ -1,5 +1,14 @@
 // A profile rename keeps its sessions: every localStorage family keyed by the old profile name must move
 // to the new one, or the restored tabs dial a backend that no longer exists and 404 forever (#111868).
+
+// Loaded once at collection, outside every test's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. Without this the first
+// test pays the cold transform of the whole graph and times out on a loaded runner.
+import '@/lib/storage'
+import '@/store/session'
+import '@/store/session-states'
+import '@/store/transcript-tail-cache'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 describe('migrateTilesForProfile', () => {
@@ -71,5 +80,25 @@ describe('migrateTilesForProfile', () => {
     expect(sessionStore.getSessionOwnerHints('s-1')).toEqual([
       { connectionId: 'local', profile: 'hutnik-projectmanager', targetProfile: 'hutnik-projectmanager' }
     ])
+  })
+
+  it('leaves owner hints of a same-named profile on another connection alone', async () => {
+    const storage = await import('@/lib/storage')
+    const remote = { connectionId: 'remote-1', profile: 'webdesign_bhp', targetProfile: 'webdesign_bhp' }
+    storage.writeJson('hermes.desktop.sessionOwnerHints.v1', [
+      ['s-1', { connectionId: 'local', profile: 'webdesign_bhp', targetProfile: 'webdesign_bhp' }],
+      ['s-9', remote]
+    ])
+
+    const sessionStore = await import('@/store/session')
+    const { migrateTilesForProfile } = await import('@/store/session-states')
+    migrateTilesForProfile('webdesign_bhp', 'hutnik-projectmanager')
+
+    expect(sessionStore.getSessionOwnerHints('s-1')).toEqual([
+      { connectionId: 'local', profile: 'hutnik-projectmanager', targetProfile: 'hutnik-projectmanager' }
+    ])
+    // The rename ran on the local backend; the remote profile still has its old name.
+    expect(sessionStore.getSessionOwnerHints('s-9')).toEqual([remote])
+    expect(storage.readJson<unknown[]>('hermes.desktop.sessionOwnerHints.v1')).toContainEqual(['s-9', remote])
   })
 })

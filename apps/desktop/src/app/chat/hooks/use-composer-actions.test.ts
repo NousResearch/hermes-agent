@@ -13,6 +13,7 @@ import {
   HERMES_PATHS_MIME,
   partitionDroppedFiles,
   resolveImageAttachmentPreview,
+  stageDroppedFilePath,
   useComposerActions
 } from './use-composer-actions'
 
@@ -79,6 +80,57 @@ describe('partitionDroppedFiles', () => {
 
   it('returns empty groups for an empty drop', () => {
     expect(partitionDroppedFiles([])).toEqual({ inAppRefs: [], osDrops: [] })
+  })
+
+  it('routes a local non-image OS drop to inline refs; keeps images, remote, and cross-filesystem drops staged', () => {
+    // #52427: when the gateway shares this machine's filesystem, an OS drop's
+    // original path resolves on the backend as-is, so it stays an inline
+    // @file: ref — no staged copy, no lost path semantics. Only drops the
+    // backend cannot resolve keep the upload pipeline.
+    const finderPdf = osDrop('/Users/mahmoud/Downloads/DEVIS_signed.pdf')
+    const screenshot = osDrop('/var/folders/shot.png')
+    const pathless = { file: new File(['x'], 'notes.txt'), path: '' }
+
+    const local = partitionDroppedFiles([finderPdf, screenshot, pathless], {
+      backendCwd: '/Users/mahmoud/projects/app',
+      remote: false,
+      terminalBackend: 'local'
+    })
+
+    expect(local.inAppRefs).toEqual([finderPdf])
+    expect(local.osDrops).toEqual([screenshot, pathless])
+
+    // Remote gateway: this machine's paths never resolve there.
+    const remote = partitionDroppedFiles([finderPdf], {
+      backendCwd: '/home/gateway/app',
+      remote: true,
+      terminalBackend: 'local'
+    })
+
+    expect(remote).toEqual({ inAppRefs: [], osDrops: [finderPdf] })
+
+    // Local connection but a container backend: the host path would dangle
+    // inside the sandbox (#76577).
+    const docker = partitionDroppedFiles([finderPdf], {
+      backendCwd: '/workspace',
+      remote: false,
+      terminalBackend: 'docker'
+    })
+
+    expect(docker.osDrops).toEqual([finderPdf])
+
+    // Local connection, POSIX backend cwd, Windows host path (#15317).
+    const wsl = partitionDroppedFiles([osDrop('C:\\Users\\al\\Downloads\\report.txt')], {
+      backendCwd: '/home/gateway/app',
+      remote: false,
+      terminalBackend: 'local'
+    })
+
+    expect(wsl.osDrops).toHaveLength(1)
+  })
+
+  it('stages every OS drop when no staging context is given', () => {
+    expect(partitionDroppedFiles([osDrop('/abs/a.pdf')]).osDrops).toHaveLength(1)
   })
 })
 
@@ -215,6 +267,18 @@ describe('extractDroppedFiles', () => {
     expect(result).toHaveLength(1)
     expect(result[0]?.file).toBeInstanceOf(File)
     expect(result[0]?.url).toBeUndefined()
+  })
+
+  // The browser Webapp has no host path for a dropped folder: report it, never drop it silently.
+  it('keeps a path-less dropped folder on the attach pipeline, where it is reported', async () => {
+    const transfer = stubTransfer([{ path: 'my-repo', isDirectory: true }])
+    stubBridge(transfer)
+
+    const result = extractDroppedFiles(transfer)
+
+    expect(result).toEqual([{ file: expect.any(File), isDirectory: true, path: '' }])
+    expect(partitionDroppedFiles(result).osDrops).toHaveLength(1)
+    await expect(stageDroppedFilePath(result[0]!)).rejects.toThrow("Folders can't be attached by dropping them")
   })
 
   it('does not duplicate a folder that appears in both items and files', () => {

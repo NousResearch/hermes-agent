@@ -17,8 +17,8 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from plugins.platforms.telegram import adapter as tg_adapter  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram import adapter as tg_adapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 async def _hang_forever(**kwargs):
@@ -37,7 +37,7 @@ def _bare_adapter():
     a._fatal_error_retryable = True
     a._polling_network_error_count = 0
     a._polling_conflict_count = 0
-    a._polling_conflict_recovery_generation = None
+    a._polling_conflict_quiet_since = None
     a._polling_error_callback_ref = None
     a._background_tasks = set()
     a._send_path_degraded = False

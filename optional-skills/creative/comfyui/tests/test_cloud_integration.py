@@ -85,7 +85,7 @@ class TestCloudCheckDepsLive:
 class TestHealthCheckLive:
     def test_health_check_passes(self, cloud_key, capsys):
         from health_check import main as health_main
-        rc = health_main(["--host", "https://cloud.comfy.org", "--api-key", cloud_key])
+        health_main(["--host", "https://cloud.comfy.org", "--api-key", cloud_key])
         captured = capsys.readouterr()
         # Should produce JSON
         import json

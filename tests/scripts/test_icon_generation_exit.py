@@ -1,6 +1,7 @@
 """Icon generation reports per-target failures without hiding later targets."""
 import importlib.util
 import io
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -91,13 +92,17 @@ def test_write_status_includes_every_target(tmp_path, monkeypatch, capsys, failu
 @pytest.mark.parametrize("platform", ["", "mac-"])
 @pytest.mark.parametrize("appearance,girl", [("light", "black"), ("dark", "white")])
 @pytest.mark.parametrize("colors", [None, ("#f5cc32", "#443808"), ("#e34850", "#4a1117")])
-def test_icon_portrait_overlays_border_inside_outer_silhouette(monkeypatch, platform, appearance, girl, colors):
+def test_icon_portrait_sits_on_the_plain_tile_inside_the_outer_silhouette(monkeypatch, platform, appearance, girl, colors):
+    """The tile keeps the background's own geometry and fill with no stroke
+    (the ring is disabled), the portrait is clipped to that outline and its
+    lowest nodes are dragged past the bottom edge so the clip crops her."""
     monkeypatch.setitem(sys.modules, "resvg_py", ModuleType("resvg_py"))
     source = Path(__file__).resolve().parents[2]
     spec = importlib.util.spec_from_file_location("icon_geometry_under_test", source / "scripts/generate_icons.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    assert module.BORDER_ENABLED is False
     art = SimpleNamespace(
         backgrounds=source / "assets/backgrounds", colors=colors, commit="0123456",
         bboxes={girl: (0, 0, 100, 90)}, paths={girl: '<path d="M 0 0 L 100 0 L 100 90 L 0 90 z"/>'},
@@ -108,26 +113,21 @@ def test_icon_portrait_overlays_border_inside_outer_silhouette(monkeypatch, plat
     result = ET.fromstring(module.compose_svg(art, girl, name))
     tile = result.find("svg:rect", ns)
     assert original is not None and tile is not None
-    x, y, width, height, radius = (float(original.attrib[key]) for key in ("x", "y", "width", "height", "rx"))
-    thickness = width * module.BORDER_FRACTION
-    assert float(tile.attrib["stroke-width"]) == pytest.approx(thickness)
-    assert tile.get("stroke") == ("#000000" if appearance == "light" else "#ffffff")
-    assert float(tile.attrib["x"]) - thickness / 2 == pytest.approx(x)
-    assert float(tile.attrib["y"]) - thickness / 2 == pytest.approx(y)
-    assert float(tile.attrib["width"]) + thickness == pytest.approx(width)
-    assert float(tile.attrib["height"]) + thickness == pytest.approx(height)
-    assert float(tile.attrib["rx"]) + thickness / 2 == pytest.approx(radius)
+    geometry = tuple(float(original.attrib[key]) for key in ("x", "y", "width", "height", "rx"))
+    assert tuple(float(tile.attrib[key]) for key in ("x", "y", "width", "height", "rx")) == geometry
+    assert tile.get("stroke") is None and tile.get("stroke-width") is None
     expected_fill = (colors or ("#ffffff", module.DARK_HEX))[appearance == "dark"]
     assert tile.get("fill") == expected_fill
     clip = result.find("svg:defs/svg:clipPath/svg:rect", ns)
     assert clip is not None
-    assert tuple(float(clip.attrib[key]) for key in ("x", "y", "width", "height", "rx")) == (
-        x, y, width, height, radius,
-    )
+    assert tuple(float(clip.attrib[key]) for key in ("x", "y", "width", "height", "rx")) == geometry
     group = result[-1]
     portrait = group[-1]
-    assert len(group) == 1, "extend the existing contour, not a duplicate strip"
-    assert portrait is not None and group is not None
+    portraits = [child for child in group if child.tag == f"{{{ns['svg']}}}svg"]
+    assert portraits == [portrait], "extend the existing contour, not a duplicate strip"
+    # The commit badge rides inside the same clip, so its anti-aliased edge can
+    # never add alpha outside the plate (visible at targetsize-16..30).
+    assert [child.tag for child in group[:-1]] == [f"{{{ns['svg']}}}g"]
     assert portrait.get("preserveAspectRatio") == "xMidYMax meet"
     assert tuple(float(portrait.attrib[key]) for key in ("x", "y", "width", "height")) == module.GIRL_BOXES[name]
     clip_path = result.find("svg:defs/svg:clipPath", ns)
@@ -135,6 +135,14 @@ def test_icon_portrait_overlays_border_inside_outer_silhouette(monkeypatch, plat
     assert group.get("clip-path") == f"url(#{clip_path.attrib['id']})"
     assert portrait.get("overflow") == "visible"
     assert len(result.findall(".//svg:path", ns)) == 2  # one badge and one portrait
+    # The dragged bottom node lands below the tile: the clip, not a gap, ends her.
+    _x, y, width, height, _ = geometry
+    _, by, bw, bh = art.bboxes[girl]
+    box_y, box_h = module.GIRL_BOXES[name][1], module.GIRL_BOXES[name][3]
+    scale = min(module.GIRL_BOXES[name][2] / bw, box_h / bh)
+    lowest_raw_y = max(float(v) for v in re.findall(r"[-+]?\d*\.?\d+", portrait[0].attrib["d"])[1::2])
+    lowest_tile_y = box_y + box_h - bh * scale + (lowest_raw_y - by) * scale  # xMidYMax: bottom-aligned
+    assert lowest_tile_y == pytest.approx(y + height + width * module.EDGE_OVERSHOOT)
 
 
 def test_bottom_node_drag_preserves_upper_geometry_and_path_transform(monkeypatch):

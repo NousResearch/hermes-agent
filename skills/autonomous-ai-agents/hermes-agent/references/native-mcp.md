@@ -211,7 +211,10 @@ Common causes:
 
 ### "MCP server 'X' requires HTTP transport but mcp.client.streamable_http is not available"
 
-If the MCP dependencies are damaged, rebuild the recorded environment through PM:
+The parenthesized cause, when present, is the import's own error. A transient failure (two
+threads importing the SDK at once, or a dependency mid-swap during an update) is retried on the
+next connect attempt, so it recovers without a restart. If the error persists, the MCP
+dependencies are damaged; rebuild the recorded environment through PM:
 
 ```bash
 hermes pm repair
@@ -326,10 +329,11 @@ mcp_servers:
       max_rpm: 10             # max requests per minute
       allowed_models: []      # model whitelist (empty = all)
       max_tool_rounds: 5      # tool loop limit (0 = disable)
+      expose_client_tools: false # advertise extended sampling.tools capability
       log_level: "info"       # audit verbosity
 ```
 
-Servers can also include `tools` in sampling requests for multi-turn tool-augmented workflows. The `max_tool_rounds` config prevents infinite tool loops. Per-server audit metrics (requests, errors, tokens, tool use count) are tracked via `get_mcp_status()`.
+Servers can also include `tools` in sampling requests for multi-turn tool-augmented workflows. The `max_tool_rounds` config prevents infinite tool loops. Hermes does not advertise the extended `sampling.tools` client capability unless `expose_client_tools: true` is set, because some strict MCP servers reject unknown sampling sub-capabilities during initialization. Most servers only need normal sampling; enable `expose_client_tools` only for servers that explicitly support sampling tool callbacks. Per-server audit metrics (requests, errors, tokens, tool use count) are tracked via `get_mcp_status()`.
 
 Disable sampling for untrusted servers with `sampling: { enabled: false }`.
 

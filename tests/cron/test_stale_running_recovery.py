@@ -9,6 +9,7 @@ timeout is unlimited or not a finite positive number.
 
 from __future__ import annotations
 
+import sqlite3
 import time
 import uuid
 from datetime import timedelta
@@ -56,6 +57,25 @@ def test_live_owner_stale_claim_gets_recovered(monkeypatch):
     assert recover_interrupted_executions() == 1
     assert _status(eid) == "unknown"
 
+    # A claim older than the bound whose owner stamped progress recently is a long healthy
+    # run, not a wedge: the bound measures silence since ``progress_at``, not run length.
+    busy = _seed_running("job-busy", age_seconds=bound + 60, pid=66666)
+    with _transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET progress_at=? WHERE id=?",
+            ((_hermes_now() - timedelta(seconds=120)).isoformat(), busy),
+        )
+    assert recover_interrupted_executions() == 0
+    assert _status(busy) == "running"
+    # Once the stamps stop for longer than the bound, the same row is reclaimed.
+    with _transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET progress_at=? WHERE id=?",
+            ((_hermes_now() - timedelta(seconds=bound + 1)).isoformat(), busy),
+        )
+    assert recover_interrupted_executions() == 1
+    assert _status(busy) == "unknown"
+
     # A larger inactivity timeout widens the bound: the same age is no longer stale.
     monkeypatch.setenv("HERMES_CRON_TIMEOUT", "3600")
     assert executions_mod._live_owner_stale_after_seconds() == pytest.approx(10800.0)
@@ -81,3 +101,26 @@ def test_live_owner_recent_claim_not_recovered(monkeypatch, timeout):
     else:
         assert executions_mod._live_owner_stale_after_seconds() is None
         assert recovered == 0 and _status(ancient) == "running"
+
+
+def test_progress_stamped_during_the_sweep_keeps_the_run(monkeypatch):
+    """A worker that stamps progress after the sweep read its silent row is not reclaimed: the
+    reclaim UPDATE must not act on the stale snapshot (race audit threads-4: the live run would be
+    filed ``unknown`` and its job could fire a second time)."""
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "600")
+    bound = executions_mod._live_owner_stale_after_seconds()
+    eid = _seed_running("job-resumed", age_seconds=bound + 3600)
+
+    def owner_resumes(pid, started_at):
+        # The external worker process (touch_execution_progress there) commits a fresh stamp
+        # while this sweep is probing its liveness.
+        worker = sqlite3.connect(executions_mod.EXECUTIONS_FILE)
+        with worker:
+            worker.execute("UPDATE executions SET progress_at=? WHERE id=?", (_hermes_now().isoformat(), eid))
+        worker.close()
+        return True
+
+    monkeypatch.setattr(executions_mod, "_owner_is_live", owner_resumes)
+
+    assert recover_interrupted_executions() == 0
+    assert _status(eid) == "running"

@@ -264,7 +264,7 @@ export function PanelRowMenu({ items, label = 'Actions' }: { items: PanelMenuIte
     <ActionsMenu ariaLabel={label} contentClassName="w-40" items={renderPanelMenuItems(items)}>
       <Button
         aria-label={label}
-        className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 focus-visible:ring-0 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
+        className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) opacity-0 transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
         size="icon"
         variant="ghost"
       >
@@ -404,16 +404,19 @@ export function PanelAction({
   disabled,
   icon,
   onClick,
-  primary
+  primary,
+  spinning
 }: {
   children: ReactNode
   disabled?: boolean
   icon: string
   onClick: () => void
   primary?: boolean
+  spinning?: boolean
 }) {
   return (
     <Button
+      aria-busy={spinning || undefined}
       className={cn(
         'gap-1.5',
         !primary && 'text-muted-foreground hover:bg-(--ui-row-hover-background) hover:text-foreground'
@@ -423,7 +426,7 @@ export function PanelAction({
       size="sm"
       variant={primary ? 'default' : 'ghost'}
     >
-      <Codicon name={icon} size="0.875rem" />
+      <Codicon name={icon} size="0.875rem" spinning={spinning} />
       {children}
     </Button>
   )

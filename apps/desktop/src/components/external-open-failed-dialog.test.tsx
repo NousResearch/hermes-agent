@@ -25,9 +25,9 @@ function installBridge() {
   return { onExternalOpenFailed, writeClipboard }
 }
 
-function fail(listener: unknown, url: string, message?: string) {
+function fail(listener: unknown, url: string, message?: string, code?: 'missing-file') {
   act(() => {
-    ;(listener as (payload: { url: string; message?: string }) => void)({ url, message })
+    ;(listener as (payload: { url: string; message?: string; code?: 'missing-file' }) => void)({ url, message, code })
   })
 }
 
@@ -61,6 +61,17 @@ describe('ExternalOpenFailedDialog', () => {
     await waitFor((): void => {
       expect(screen.queryByText('https://example.com/dead')).toBeNull()
     })
+  })
+
+  it('shows file-not-found copy for a missing-file failure', () => {
+    const { onExternalOpenFailed }: ReturnType<typeof installBridge> = installBridge()
+    render(<ExternalOpenFailedDialog />)
+
+    const listener: (payload: { url: string; message?: string; code?: string }) => void =
+      onExternalOpenFailed.mock.calls[0][0]
+
+    fail(listener, 'file:///tmp/gone.html', undefined, 'missing-file')
+    expect(screen.getByText('File not found')).toBeTruthy()
   })
 
   it('renders nothing in a HUD window', () => {

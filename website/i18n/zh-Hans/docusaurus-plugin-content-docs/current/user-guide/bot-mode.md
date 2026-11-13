@@ -220,11 +220,13 @@ hermes peer stop spark run_abc123
 
 完整的多连接指南请参阅[将 Desktop 连接到多个 Hermes 实例](./multi-connection-desktop)。
 
-## Warm Bot Backends（同时运行多少个 Bot）
+## 本地 Bot 与 gateway（同时运行多少个 Bot）
 
-每个本地 Bot 都运行在自己的后端进程中，Desktop 最多同时保留 **设置 → Advanced → Warm Bot Backends** 个后端存活（默认 3 个，每个约 60 MB）。空闲的后端会在该设置旁边的空闲超时（默认 10 分钟）后被回收；`desktop.log` 中紧跟空闲回收消息之后出现的 `Hermes backend for profile "<name>" exited (1)` 一行就是这次清理，而不是崩溃。当所有槽位都被占用时，你打开的 Bot 会最多等待 30 秒以获得一个槽位，然后以 *timed out waiting for a free local slot* 失败。
+Desktop 不会为每个 Bot 运行一个后端。每台主机只有一个 gateway 进程，负责所有本地 profile 的会话：当你打开一个本地 Bot 时，Desktop 会为该 profile 运行 `hermes gateway ensure --json`，它会附加到正在运行的 gateway；如果还没有进程服务该 profile，就启动它。随后 Desktop 通过 WebSocket（`/api/ws`）使用一次性 ticket 连接它。Desktop 端没有后端池，没有“同时保持多少个 Bot 预热”的设置，也没有空闲回收——打开另一个 Bot 从不需要等待槽位，读取另一个 Bot 的历史也只是向同一个 gateway 发一个请求。
 
-读取另一个 Bot 的聊天历史以及后台的记录刷新**不会**占用槽位——只有交互式打开或正在运行的轮次才会。如果你在驾驭一支庞大的队伍（成员众多的群聊，或跨多个 profile 的 Kanban 派发），请把 Warm Bot Backends 调高到你预期同时活跃的 Bot 数量，并为机器配备相应的内存。把它设得比你实际使用的 profile 数量还高，只会增加启动开销。
+gateway 的生命周期与 Desktop 窗口无关。关闭窗口或退出 Desktop 只会丢弃连接，绝不会停止 gateway，因此你的消息平台 bot、Routines 和进行中的轮次都会继续运行，Desktop 下次打开时会重新附加。要停止它，请显式运行 `hermes gateway stop`。如果 gateway 在 Desktop 运行期间重启（更新、崩溃，或 `hermes gateway stop` 之后再次打开），Desktop 会重新运行一次 `gateway ensure` 并重新连接。标记为 `gateway.standalone: true` 的 profile 会保留自己的 gateway；Desktop 以同样方式附加到它。
+
+**设置 → Connections** 中的远程 gateway、SSH 主机和 Hermes Cloud 实例是独立的主机，拥有各自的进程；它们的 Bot 运行在那台机器上（参见上文*跨机器的 Bot*），而不是本机的 gateway 上。
 
 ## 关闭它
 

@@ -8,6 +8,7 @@
 
 import {
   Button,
+  catalogProviderMatches,
   GlyphSpinner,
   Input,
   Select,
@@ -63,6 +64,7 @@ function boundedModelOptionsFetch<T>(fetch: Promise<T>, settleMs = MODEL_OPTIONS
 /** One provider row of the gateway's `model.options` inventory. Entries in
  *  `models` are bare slugs on current gateways and objects on older ones. */
 interface ModelProviderOption {
+  aliases?: null | string[]
   models?: Array<string | { id?: string; name?: string }>
   name?: string
   slug: string
@@ -128,7 +130,10 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
   const NONE = '__default__'
   const CUSTOM = '__custom__'
   const providers = (data?.providers || []).filter(p => p && p.slug)
-  const isKnown = !value.provider || value.provider === NONE || providers.some(p => p.slug === value.provider)
+
+  const isKnown =
+    !value.provider || value.provider === NONE || providers.some(p => catalogProviderMatches(p, value.provider))
+
   // The manual-entry latch is the USER's choice only. Seeding it from
   // `isKnown` froze whatever the catalog state was at first paint: on the
   // first open the async read had not resolved yet, so a configured provider
@@ -221,7 +226,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
     )
   }
 
-  const activeProvider = providers.find(p => p.slug === value.provider) || null
+  const activeProvider = providers.find(p => catalogProviderMatches(p, value.provider)) || null
 
   const models = activeProvider
     ? (activeProvider.models || []).map(m => (typeof m === 'string' ? m : m.id || m.name || ''))
@@ -250,7 +255,7 @@ export function ModelPicker({ bot = null, value, onChange, placeholderModel }: M
               })
             }
           }}
-          value={value.provider || NONE}
+          value={activeProvider?.slug || value.provider || NONE}
         >
           <SelectTrigger className="h-8 rounded-md">
             <SelectValue />

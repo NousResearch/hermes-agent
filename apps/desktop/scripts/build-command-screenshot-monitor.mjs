@@ -2,7 +2,7 @@
 // Build-time only: the shipped app never needs clang or Xcode tools.
 import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdirSync, renameSync, rmSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
 
@@ -19,8 +19,12 @@ export function buildCommandScreenshotMonitor({
 } = {}) {
   if (platform !== 'darwin') return null
   const output = resolve(distDir, 'native/command-screenshot-monitor')
-  const staging = `${output}.${process.pid}.tmp`
-  mkdirSync(dirname(output), { recursive: true })
+  // ld64 signs the Mach-O ad hoc with its output FILE NAME as the identifier, so a pid-suffixed
+  // staging name made every build's bytes differ and the native-deps input never compared
+  // equal. Stage under the final name inside a private directory instead.
+  const stagingDir = `${output}.${process.pid}.tmp`
+  const staging = join(stagingDir, basename(output))
+  mkdirSync(stagingDir, { recursive: true })
   const sdk = sysroot === undefined ? macosSysroot() : sysroot
   try {
     execFileSync('xcrun', [
@@ -36,7 +40,7 @@ export function buildCommandScreenshotMonitor({
     console.log(`built ${output} (arm64 + x86_64)`)
     return output
   } finally {
-    rmSync(staging, { force: true })
+    rmSync(stagingDir, { recursive: true, force: true })
   }
 }
 

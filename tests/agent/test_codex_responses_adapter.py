@@ -724,6 +724,44 @@ def test_chat_messages_to_responses_input_drops_foreign_id_for_codex_backend():
     assert xai_message["id"] == _FOREIGN_ITEM_ID
 
 
+@pytest.mark.parametrize("persisted_flag", [True, False], ids=["tagged", "content_only"])
+def test_responses_replays_merged_assistant_summary(persisted_flag):
+    from agent.context_compressor import (
+        COMPRESSED_SUMMARY_METADATA_KEY, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
+        _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
+    )
+    from agent.transports.codex import ResponsesApiTransport
+
+    def cached_reply(text, item_id):
+        return {
+            "role": "assistant", "content": text,
+            "codex_message_items": [{
+                "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer",
+                "id": item_id, "content": [{"type": "output_text", "text": text}],
+            }],
+        }
+
+    ordinary = cached_reply("first answer", "msg_first")
+    carrier = cached_reply("old reply", "msg_old")
+    merged = (
+        f"{_MERGED_PRIOR_CONTEXT_HEADER}\nold reply\n\n{_MERGED_SUMMARY_DELIMITER}\n\n"
+        f"{SUMMARY_PREFIX}\nKeep the middle code LOTUS-17.\n\n{_SUMMARY_END_MARKER}"
+    )
+    carrier["content"] = merged
+    if persisted_flag:
+        carrier[COMPRESSED_SUMMARY_METADATA_KEY] = True
+
+    history = [{"role": "user", "content": "First question"}, ordinary,
+               {"role": "user", "content": "Second question"}, carrier,
+               {"role": "user", "content": "What was the code?"}]
+    wire = ResponsesApiTransport().convert_messages(history, base_url="http://127.0.0.1:8787/v1")
+    replies = [item for item in wire if item.get("role") == "assistant"]
+    assert len(replies) == 2
+    assert replies[0] == ordinary["codex_message_items"][0]
+    assert replies[1]["content"] == merged
+    assert "id" not in replies[1]
+
+
 def test_message_id_is_dropped_when_its_turn_replays_reasoning_without_id():
     """#97427/#97442: a ``msg_*`` id bound to a stripped ``rs_*`` id is an orphan the API rejects with 400;
     the message survives as content/status/phase. A reasoning-free turn keeps its id (prefix-cache affinity)."""

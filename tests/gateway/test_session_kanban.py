@@ -73,6 +73,7 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
         return
     assert receipt['task_status'] == 'done' and receipt['source'] == 'kanban'
     assert receipt['tools'] and receipt['task_context'] and receipt['skill_context'] and receipt['hook_effect']
+    assert receipt['workspace_tools']  # the worker process sits in HERMES_HOME; its tools still work in the workspace
     assert receipt['admissions'] == 1 and receipt['retry_same_session']
     assert receipt['goal_continuation'] and receipt['stable_prefix']
     print(json.dumps(receipt))

@@ -38,6 +38,19 @@ $ hermes config set display.language pl
 
 ## Using a pack
 
+### Brazilian Portuguese in Desktop
+
+Hermes Desktop includes **Português (Brasil)** (`pt-br`). Open **Settings → Appearance → Language**
+and select **Português (Brasil)**. The interface updates immediately; the selection is saved as
+`display.language: pt-br` for the active profile and restored on the next launch. Other configuration
+values are preserved. Select **English** in the same menu to switch back.
+
+Desktop also recognizes existing `pt` settings and `pt-BR` / `pt_BR` tags as Brazilian Portuguese.
+When no language has been saved, a Brazilian Portuguese operating-system locale selects it automatically.
+This changes interface text, not model responses, user messages, command names, or tool output.
+
+### Installing another language pack
+
 ```bash
 hermes plugins install https://github.com/teknium1/hermes-lang-pl   # or a catalog name
 hermes config set display.language pl

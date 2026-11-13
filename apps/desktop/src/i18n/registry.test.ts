@@ -160,8 +160,9 @@ describe('languages + registry', () => {
     const options = languageOptions()
     const ids = options.map(option => option.id)
 
-    expect(ids.slice(0, 9)).toEqual(Object.keys(TRANSLATIONS))
-    expect(ids.slice(9)).toEqual(['he', 'pl'])
+    const bundledIds = Object.keys(TRANSLATIONS)
+    expect(ids.slice(0, bundledIds.length)).toEqual(bundledIds)
+    expect(ids.slice(bundledIds.length)).toEqual(['he', 'pl'])
     expect(options.find(option => option.id === 'pl')).toMatchObject({
       endonym: 'Polski',
       englishName: 'Polish',

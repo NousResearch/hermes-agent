@@ -1397,9 +1397,22 @@ class CLITuiMixin:
         commands always take the local-dispatch path (never steer/interrupt text to the model).
         """
         from cli import _apply_backslash_line_continuation, _is_backslash_line_continuation
+        from hermes_cli.cli_vim_enter import NEWLINE, PENDING, SUBMIT, cancel_pending_enter, vim_enter_action
         if self._tui_enter_overlay(event):
             return
         buf = event.app.current_buffer
+        # display.vim_mode: INSERT Enter is a literal newline, NORMAL Enter submits now (no
+        # backslash continuation, no burst hold: Esc already ended any typed or pasted run).
+        vim_action = vim_enter_action(event.app, arg_present=getattr(event, "arg_present", False))
+        if vim_action == NEWLINE:
+            buf.insert_text("\n")
+            return
+        if vim_action == PENDING:
+            cancel_pending_enter(event.app)
+            return
+        if vim_action == SUBMIT:
+            self._tui_submit_buffer(event, buf)
+            return
         raw_text = buf.text
         # Explicit `\` + Enter continuation runs first so its backslash is consumed identically
         # whether the Enter was typed or arrived inside a paste.

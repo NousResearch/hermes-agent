@@ -59,7 +59,7 @@ import {
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope } from '@/store/project-scope'
-import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
+import { moveSessionToProject, projectProfile, resolveNewSessionCwd } from '@/store/projects'
 import { clearAllPrompts } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
@@ -2557,7 +2557,11 @@ export function useSessionActions({
       profile?: null | string,
       branchCount?: number,
       ownerRoute?: SessionOwnerRoute,
-      idempotencyKey?: string
+      idempotencyKey?: string,
+      // Called once the child is published and the view switched to it: `storedId` is the child's
+      // stored session id, `runtimeId` its live runtime. Lets a caller place the NEW chat (branch
+      // into a project) without guessing ids from the renderer's optimistic state.
+      onCreated?: (created: { runtimeId: string; storedId: string }) => Promise<void> | void
     ): Promise<boolean> => {
       creatingSessionRef.current = true
 
@@ -2776,6 +2780,15 @@ export function useSessionActions({
         branchCreateFlightsRef.current.delete(createKey)
         broadcastSessionsChanged()
 
+        if (onCreated) {
+          try {
+            await onCreated({ runtimeId: branched.session_id, storedId: routedSessionId })
+          } catch (err) {
+            // The branch exists and stays usable; only the follow-up (a move into a project) failed.
+            notifyError(err, copy.branchFailed)
+          }
+        }
+
         return true
       } catch (err) {
         // Navigate throw or earlier failure after arming pending — never leave
@@ -2949,7 +2962,7 @@ export function useSessionActions({
   // transcript directly (no resume/active-session dependency), so it works on
   // right-click and nests under its parent.
   const branchStoredSession = useCallback(
-    async (storedSessionId: string, sessionProfile?: string | null): Promise<boolean> => {
+    async (storedSessionId: string, sessionProfile?: string | null, projectId?: string | null): Promise<boolean> => {
       clearNotifications()
 
       // Right-clicking a session outside the paginated sidebar window is a cache
@@ -2967,6 +2980,15 @@ export function useSessionActions({
       // for an untagged row, which keeps the ambient/profile-only path.
       const ownerRoute = sessionOwnerRouteFromRow(stored)
 
+      // Branch INTO a project: the child is created first, then re-homed through the backend's own
+      // workspace move (which rewrites the policy cwd + git identity and re-anchors its agent). A
+      // move cannot precede the create, and must not silently fail the branch the user just asked for.
+      const intoProject = projectId
+        ? async ({ storedId }: { storedId: string }) => {
+            await moveSessionToProject(storedId, projectId, profile)
+          }
+        : undefined
+
       try {
         if (ownerRoute) {
           await ensureGatewayAgent(ownerRoute.connectionId, ownerRoute.profile)
@@ -2983,7 +3005,9 @@ export function useSessionActions({
           stored?.cwd?.trim(),
           profile,
           undefined,
-          ownerRoute
+          ownerRoute,
+          undefined,
+          intoProject
         )
       } catch (err) {
         notifyError(err, copy.branchFailed)

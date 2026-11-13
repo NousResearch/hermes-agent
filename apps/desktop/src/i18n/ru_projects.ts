@@ -29,6 +29,7 @@ export const ruProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuSetActive: 'Сделать активным',
   menuDelete: 'Удалить',
   moveToProject: 'Переместить в проект',
+  branchInto: name => `Ветка в ${name}`,
   movedTo: name => `Перемещено в ${name}`,
   moveFailed: 'Не удалось переместить сеанс',
   moveNoFolder: 'У этого проекта нет папки для перемещения',

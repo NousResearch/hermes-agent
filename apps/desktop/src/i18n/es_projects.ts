@@ -30,6 +30,7 @@ export const esProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuSetActive: 'Establecer activo',
   menuDelete: 'Borrar',
   moveToProject: 'Mover a proyecto',
+  branchInto: name => `Ramificar en ${name}`,
   movedTo: name => `Movido a ${name}`,
   moveFailed: 'No se pudo mover la sesión',
   moveNoFolder: 'Ese proyecto no tiene carpeta a la que mover',

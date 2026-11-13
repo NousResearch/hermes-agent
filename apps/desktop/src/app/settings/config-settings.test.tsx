@@ -154,17 +154,23 @@ describe('ConfigSettings autosave', () => {
     }
   })
 
-  it('the Settings "Read Responses Aloud" switch also turns Desktop read-aloud on and off', async () => {
+  it("Settings → Voice shows and drives Desktop read-aloud, apart from the profile's voice.auto_tts", async () => {
     await setAutoSpeakReplies(true)
-    getHermesConfigRecord.mockResolvedValue({ voice: { auto_tts: true } })
+    getHermesConfigRecord.mockResolvedValue({ voice: { auto_tts: false } })
     getHermesConfigSchema.mockResolvedValue({ fields: { 'voice.auto_tts': { type: 'boolean' } } })
 
     renderConfigSettings('voice')
 
-    ;(await screen.findByRole('switch')).click()
+    const desktop = await screen.findByRole('switch', { name: 'Read replies aloud in this app' })
+    // Desktop is reading aloud even though this profile's messaging setting is off: show that.
+    expect(desktop.getAttribute('aria-checked')).toBe('true')
+
+    desktop.click()
     await vi.waitFor(() => expect($autoSpeakReplies.get()).toBe(false))
 
-    ;(await screen.findByRole('switch')).click()
-    await vi.waitFor(() => expect($autoSpeakReplies.get()).toBe(true))
+    // The profile setting (possibly another profile's) never moves the Desktop switch.
+    ;(await screen.findByRole('switch', { name: 'Read Responses Aloud' })).click()
+    await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
+    expect($autoSpeakReplies.get()).toBe(false)
   })
 })

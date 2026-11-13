@@ -5,7 +5,7 @@ description: "Local privacy and safety layer for Hermes. Detected personal data 
 maintainer: Angerosteles
 tier: community
 category: tools
-requires_hermes: ">=0.23.0"
+requires_hermes: ">=0.23.0,<0.24.0"
 platforms: [linux, macos]
 docs_url: https://github.com/Angerosteles/local-scout#readme
 version: "1.7.5"

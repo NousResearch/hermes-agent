@@ -2660,6 +2660,8 @@ def _relay_sync_completion(
     from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
+    # Controller-v2 telemetry (G5): attempt start time for the aux latency stamp.
+    _t0 = time.monotonic()
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
     # must stream through _create_with_progress or the compression watchdog sees silence (#98466).
     # Recovery rungs / credential retries keep the task's ``no_progress_timeout`` window; the
@@ -2674,18 +2676,30 @@ def _relay_sync_completion(
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
     if route is None:
-        return _run_protected_sync_provider_call(callback, kwargs)
+        response = _run_protected_sync_provider_call(callback, kwargs)
+        try:
+            response._aux_latency_s = round(time.monotonic() - _t0, 1)
+        except Exception:
+            pass
+        return response
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import run_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
     try:
-        return run_with_aux_hooks(
-            lambda: relay_llm.execute_current(
+        def _stamped() -> Any:
+            r = relay_llm.execute_current(
                 kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
                 name=provider_name, model_name=model_name, metadata=relay_chat_metadata(metadata),
                 defer_logical_completion=True,
-            ),
+            )
+            try:
+                r._aux_latency_s = round(time.monotonic() - _t0, 1)
+            except Exception:
+                pass
+            return r
+        return run_with_aux_hooks(
+            _stamped,
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
             provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
         )
@@ -2704,22 +2718,36 @@ async def _relay_async_completion(
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
+    # Controller-v2 telemetry (G5): attempt start time for the aux latency stamp.
+    _t0 = time.monotonic()
     judged: list[_ClassifiedAttempt] = []
     callback = _provider_callback_async(
         create or (lambda request: _acreate_with_progress(client, request, provider=provider or "")), judged)
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return await callback(kwargs)
+        _resp = await callback(kwargs)
+        try:
+            _resp._aux_latency_s = round(time.monotonic() - _t0, 1)
+        except Exception:
+            pass
+        return _resp
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import arun_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
     try:
-        return await arun_with_aux_hooks(
-            lambda: relay_llm.execute_current_async(
+        async def _astamped() -> Any:
+            r = await relay_llm.execute_current_async(
                 kwargs, callback, name=provider_name, model_name=model_name,
                 metadata=relay_chat_metadata(metadata), defer_logical_completion=True,
-            ),
+            )
+            try:
+                r._aux_latency_s = round(time.monotonic() - _t0, 1)
+            except Exception:
+                pass
+            return r
+        return await arun_with_aux_hooks(
+            _astamped,
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
             provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
         )
@@ -2728,6 +2756,26 @@ async def _relay_async_completion(
             raise judged[-1]
         _note_relay_auxiliary_error(exc)
         raise
+
+
+_T0_UNSPECIFIED = object()
+
+
+def _stamp_latency(resp: Any, _t0: Any = _T0_UNSPECIFIED) -> Any:
+    """Controller-v2 (G5): stamp `_aux_latency_s` on a response if not already set.
+
+    `_t0` comes from the enclosing relay's `_t0` closure variable when omitted
+    (nested-function access; callers pass nothing). Best-effort.
+    """
+    if resp is None:
+        return resp
+    try:
+        if getattr(resp, "_aux_latency_s", None) is None:
+            t0 = time.monotonic() if _t0 is _T0_UNSPECIFIED else _t0
+            resp._aux_latency_s = round(time.monotonic() - t0, 1)
+    except Exception:
+        pass
+    return resp
 
 
 def _relay_sync_stream(
@@ -2739,18 +2787,20 @@ def _relay_sync_stream(
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
     create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))
+    # controller-v2 (G5): attempt start for the latency stamp
+    _t0 = time.monotonic()
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
-        return create(kwargs)
+        return _stamp_latency(create(kwargs), _t0)
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import run_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
     return run_with_aux_hooks(
-        lambda: relay_llm.stream_current(
+        lambda: _stamp_latency(relay_llm.stream_current(
             kwargs, create, name=provider_name, model_name=model_name, finalizer=dict,
             metadata=relay_chat_metadata(metadata), completed_response_predicate=lambda value: hasattr(value, "choices"),
-        ),
+        ), _t0),
         aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
         provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""), streaming=True,
     )
@@ -7098,6 +7148,12 @@ class _ChatStreamAccumulator:
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
+        # OpenRouter stamps the serving upstream on stream chunks (same field the
+        # main loop reads at chat_completion_helpers.py:3158) — capture it so the
+        # aggregated response carries .provider for aux telemetry (controller v2, G5).
+        chunk_provider = getattr(chunk, "provider", None)
+        if isinstance(chunk_provider, str) and chunk_provider:
+            self.resp_provider = chunk_provider
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage
@@ -7150,8 +7206,10 @@ class _ChatStreamAccumulator:
             reasoning_details=self.reasoning_details or None,
         )
         choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason or "stop")
-        return SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
+        resp = SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
                                choices=[choice], usage=self.usage)
+        resp.provider = getattr(self, "resp_provider", None) or ""
+        return resp
 
 
 async def _aggregate_chat_stream_async(

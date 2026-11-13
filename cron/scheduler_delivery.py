@@ -1064,6 +1064,7 @@ class _TargetDelivery:
     # is not — so the queue gate keys on this flag, not on widening a string set.
     live_retryable: Optional[bool] = None
     standalone_in_flight: bool = False  # the standalone send may have delivered (timeout, lost answer, partial)
+    standalone_never_left: bool = False  # the standalone request never left the host (DNS/connect): network down
 
     @property
     def is_relay(self) -> bool:
@@ -1513,9 +1514,10 @@ def _deliver_standalone(
         logger.error("Job '%s': %s", job["id"], err)
         # A sender's failure dict may follow a delivered (or partly delivered) payload: only the
         # contract's NONE (``gateway.platforms._shared.delivery_state``) makes a replay safe.
-        from gateway.platforms._shared import NONE, PARTIAL, delivery_state
+        from gateway.platforms._shared import NONE, PARTIAL, delivery_state, standalone_never_left
         state = delivery_state(result)
         t.standalone_in_flight = t.standalone_in_flight or state != NONE
+        t.standalone_never_left = not t.standalone_in_flight and standalone_never_left(result)
         partial = state == PARTIAL
     if err is not None:
         target_errors.append(err)

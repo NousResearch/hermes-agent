@@ -54,7 +54,10 @@ FLOOD_MARKER = ("♻️ Recovered reply — the messaging platform's rate limit 
 # used to strand the reply in ``failed`` until the next restart), but only after a backoff that grows
 # with the attempts already spent, so a platform-side outage is not hammered by the redelivery timer.
 # A whole-chat death (blocked bot, deleted group, deactivated user) is never retried: the target is gone.
-_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded"})
+# ``NETWORK_UNREACHABLE``: a cron payload whose live adapter was down and whose standalone request never
+# left the host (DNS/connect failure). The adapter's reconnect is the signal that the network is back.
+NETWORK_UNREACHABLE = "network_unreachable"
+_RUNTIME_RETRYABLE_ERRORS = frozenset({"send_path_degraded", NETWORK_UNREACHABLE})
 # One tier per in-process retry; the last budgeted attempt is left to the boot sweep (retry_not_before).
 _RETRY_BACKOFF_SECONDS = (30.0, 120.0)
 assert len(_RETRY_BACKOFF_SECONDS) == MAX_ATTEMPTS - 1

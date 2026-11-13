@@ -81,6 +81,21 @@ class TestBuildToolPreview:
         assert result is not None
         assert text in result
 
+    @pytest.mark.parametrize("code", [
+        "fill_input('input[type=password]', 'Hunter2Correct!')",
+        "js(\"document.querySelector('#pwd').value='Hunter2Correct!'\")",
+        "cdp('Input.insertText', text='Hunter2Correct!')",
+    ])
+    def test_browser_exec_typed_password_never_reaches_display(self, code):
+        """#72298: an ordinary password typed by a browser_exec snippet matches no secret shape,
+        yet every display surface (preview, verbose args, cute row) must mask it; the selector stays."""
+        args = {"code": code}
+        shown = (build_tool_preview("browser_exec", args, max_len=0),
+                 str(redact_tool_args_for_display("browser_exec", args)),
+                 get_cute_tool_message("browser_exec", args, 0.1))
+        assert all("Hunter2Correct!" not in s and "***" in s for s in shown)
+        assert args["code"] == code
+
     def test_browser_type_display_args_redact_api_key(self):
         secret = "ghp_ABCDEFGHIJ1234567890"
         safe_args = redact_tool_args_for_display(

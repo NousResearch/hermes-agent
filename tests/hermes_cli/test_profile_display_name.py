@@ -88,6 +88,8 @@ class TestMetaAndValidation:
         from hermes_cli.web_server_profiles import _fallback_profile_dicts
         expected = {"hermes-bots": {"title": "Builder", "sectionId": "jm", "sectionName": "JM",
                                     "created": "2026-11-12"}}
+        import hermes_cli.web_routers.profiles as router  # the normal path, not the fallback
+        monkeypatch.setattr(router, "_fallback_profile_dicts", lambda _mod: pytest.fail("fallback served"))
         assert _get_api_profiles(profile_env, monkeypatch)[0]["ui_meta"] == expected
         assert _fallback_profile_dicts(profiles)[0]["ui_meta"] == expected
         # Each caller gets its own copy of the cached value.

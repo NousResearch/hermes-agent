@@ -46,3 +46,39 @@ def test_healthy_or_absent_ipv6_never_warns(monkeypatch):
     # force_ipv4 already set, or no AAAA record: nothing to probe, nothing to say.
     assert _run(monkeypatch, reachable, config={"force_ipv4": True}).lines == []
     assert _run(monkeypatch, reachable, addrinfo=[]).lines == []
+
+
+def test_proxy_routed_host_skips_direct_ipv6_probe(monkeypatch):
+    from urllib import request
+
+    monkeypatch.setattr(request, "getproxies", lambda: {"https": "http://127.0.0.1:8080"})
+    monkeypatch.setattr(request, "proxy_bypass", lambda _host: False)
+    called = False
+
+    def timed_out(_sockaddr, _timeout):
+        nonlocal called
+        called = True
+        raise TimeoutError("direct route timed out")
+
+    result = _run(monkeypatch, timed_out)
+    (glyph, _label, detail), = result.lines
+    assert "✓" in glyph
+    assert "proxy configured" in detail
+    assert result.issues == []
+    assert called is False
+
+
+def test_no_proxy_host_still_gets_direct_ipv6_diagnosis(monkeypatch):
+    from urllib import request
+
+    monkeypatch.setattr(request, "getproxies", lambda: {"https": "http://127.0.0.1:8080"})
+    monkeypatch.setattr(request, "proxy_bypass", lambda host: host == "openrouter.ai")
+
+    def timed_out(_sockaddr, _timeout):
+        raise TimeoutError("direct route timed out")
+
+    result = _run(monkeypatch, timed_out)
+    (glyph, _label, detail), = result.lines
+    assert "⚠" in glyph
+    assert "network.force_ipv4" in detail
+    assert result.issues and "network.force_ipv4" in result.issues[0]

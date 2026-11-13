@@ -346,6 +346,18 @@ def _tcp_connect(sockaddr, timeout: float) -> None:
 _IPV6_PROBE_TIMEOUT = 2.0
 
 
+def _ipv6_probe_uses_proxy(host: str) -> bool:
+    """Whether HTTP(S) requests to *host* use an environment or system HTTPS proxy.
+
+    The raw socket probe must not infer a dead direct route when HTTPX would use a
+    proxy, but NO_PROXY can deliberately restore a direct connection for this host.
+    """
+    from urllib.request import getproxies, proxy_bypass
+
+    proxies = getproxies()
+    return bool(proxies.get("https") or proxies.get("all")) and not proxy_bypass(host)
+
+
 def _probe_ipv6_path() -> ProbeResult:
     """Dead-IPv6-route detector (#114265): an advertised AAAA path that only times out makes every
     serial connect burn its full timeout before IPv4 answers. Name the remedy instead of stalling."""
@@ -353,6 +365,8 @@ def _probe_ipv6_path() -> ProbeResult:
     if _load_network_config().get("force_ipv4"):
         return _skip(name)  # IPv6 is never dialled
     host = urlsplit(OPENROUTER_MODELS_URL).hostname
+    if _ipv6_probe_uses_proxy(host):
+        return _row(name, "ok", "(HTTPS proxy configured; direct IPv6 route is not measured)")
     try:
         infos = socket.getaddrinfo(host, 443, socket.AF_INET6, socket.SOCK_STREAM)
     except OSError:

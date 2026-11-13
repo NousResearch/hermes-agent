@@ -7,6 +7,9 @@ import { pickPlaceholder } from '../composer-utils'
 
 interface UseComposerPlaceholderOptions {
   disabled: boolean
+  /** A better resting line than the i18n pool: the user's own recent ask, from
+   *  {@link promptSuggestions}. Null/empty keeps the generic pool. */
+  preferred?: null | string
   reconnecting: boolean
   sessionId: null | string | undefined
 }
@@ -18,13 +21,18 @@ interface UseComposerPlaceholderOptions {
  * keeps its starter so the text doesn't flip mid-stream. While the transport is
  * down, it swaps to a reconnecting / starting message instead.
  */
-export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
+export function useComposerPlaceholder({
+  disabled,
+  preferred,
+  reconnecting,
+  sessionId
+}: UseComposerPlaceholderOptions): string {
   const { t } = useI18n()
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
-  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
+  const [restingPlaceholder, setRestingPlaceholder] = useState(
+    () => preferred || pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
   )
 
   const prevSessionIdRef = useRef(sessionId)
@@ -45,8 +53,19 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
     }
 
     resetBrowseState(prev)
-    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+    setRestingPlaceholder(
+      preferred || pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
+    )
+  }, [followUpPlaceholders, newSessionPlaceholders, preferred, sessionId])
+
+  // The personal line is only known once the session list has loaded, which is
+  // after the first render. Adopt it when it lands; never clear it back to the
+  // generic pool (that would flip the text under someone mid-read).
+  useEffect(() => {
+    if (preferred) {
+      setRestingPlaceholder(preferred)
+    }
+  }, [preferred])
 
   // When the transport is disabled it's because the gateway isn't open.
   // Distinguish a cold start ("Starting Hermes...") from a dropped connection

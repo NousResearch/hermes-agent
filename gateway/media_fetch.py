@@ -123,8 +123,8 @@ def fetch_remote_media(path: str, session_key: str = "") -> Optional[str]:
         session_id = resolve(session_key) if resolve else None
         with scoped_session_key(session_key), scoped_current_session_id(session_id):
             env = _active_remote_env()
-    if env is None:
-        env = _active_remote_env()      # no key supplied, or the session has no sandbox of its own
+    if env is None and not session_key:
+        env = _active_remote_env()      # only sessionless callers may use the ambient sandbox
     if env is None:
         return None
     from gateway.platforms.base import DOCUMENT_CACHE_DIR, _normalize_media_tag_path, validate_media_delivery_path

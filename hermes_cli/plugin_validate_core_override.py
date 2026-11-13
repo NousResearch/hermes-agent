@@ -125,6 +125,11 @@ def _call_name(node: ast.Call) -> str:
     return _dotted(node.func)
 
 
+# Constructors whose result is a plain container, never the plugin's own helper object (unless
+# the module rebinds the name: ``from .factory import make_recorder as set``).
+_CONTAINER_CTORS = frozenset({"set", "dict", "list"})
+_CONTAINER_DISPLAYS = (ast.Dict, ast.List, ast.Set, ast.DictComp, ast.ListComp, ast.SetComp)
+
 # Methods that change a list / dict / set in place.
 _MUTATORS = frozenset({
     "append", "extend", "insert", "remove", "pop", "clear", "update", "setdefault", "add", "discard", "popitem"})
@@ -168,10 +173,30 @@ class _Analysis:
         self.param_mutators: dict[str, set[int]] = {}  # helpers mutating a parameter's private state
         self.aliases: dict[str, str] = {}  # ``from .compat import server as gateway_server``
         self.constants: dict[str, str] = {}  # module-level ``NAME = "module.path"``
+        self.rebound_ctors: set[str] = set()  # container constructors the current module rebinds
+        self.containers: set[str] = set()  # names the current scope binds only to a container
 
     def _func_key(self, call: ast.Call) -> str:
         name = _call_name(call).split(".")[-1]
         return self.aliases.get(name, name)
+
+    def is_container(self, node: ast.AST) -> bool:
+        """A set / dict / list display or constructor: its ``add`` is never the plugin's helper."""
+        if isinstance(node, _CONTAINER_DISPLAYS):
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            return node.func.id in _CONTAINER_CTORS and node.func.id not in self.rebound_ctors
+        return False
+
+    def helper_indices(self, table: dict[str, set[int]], call: ast.Call) -> set[int]:
+        """Argument positions a call hands to a patching / mutating helper, matched by name. A
+        method called on a container (``seen.add(x)`` after ``seen = set()`` in the same scope)
+        is the container's own, not a same-named plugin helper."""
+        func = call.func
+        if isinstance(func, ast.Attribute) and (
+                self.is_container(func.value) or isinstance(func.value, ast.Name) and func.value.id in self.containers):
+            return set()
+        return table.get(self._func_key(call), set())
 
     # -- what counts as a core value -------------------------------------------------------------
     def _core_module_name(self, name: object) -> bool:
@@ -226,7 +251,7 @@ class _Analysis:
                 return [f"{_render(func)}(...)"]
             name = _call_name(node)
             return [f"{name}({_dotted(node.args[i]) or '<core>'}, ...)"
-                    for i in sorted(self.param_mutators.get(self._func_key(node), ()))
+                    for i in sorted(self.helper_indices(self.param_mutators, node))
                     if i < len(node.args) and self.is_core(node.args[i], derived, calls=True)]
         targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else \
             [node.target] if isinstance(node, (ast.AugAssign, ast.AnnAssign)) else []
@@ -235,9 +260,8 @@ class _Analysis:
                 if isinstance(t, ast.Subscript) and self._private_core_state(t, derived)]
 
     # -- per-scope taint --------------------------------------------------------------------------
-    def scope_taint(self, body: list[ast.stmt], inherited: set[str], calls: bool = False) -> set[str]:
+    def scope_taint(self, nodes: list[ast.AST], inherited: set[str], calls: bool = False) -> set[str]:
         tainted = set(inherited)
-        nodes = [n for stmt in body for n in _walk_scope(stmt)]
         for _ in range(4):
             before = len(tainted)
             for node in nodes:
@@ -254,6 +278,8 @@ class _Analysis:
                 elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
                     if self.is_core(node.iter, tainted, calls):
                         tainted.update(_bound_names([node.target]))
+                elif isinstance(node, ast.NamedExpr) and self.is_core(node.value, tainted, calls):
+                    tainted.add(node.target.id)
             if len(tainted) == before:
                 break
         return tainted
@@ -289,22 +315,36 @@ class _Analysis:
                     and self._core_module_name(node.args[0].value):
                 hits.append(f"patch({node.args[0].value!r})")
             else:
-                for index in self.param_patchers.get(self._func_key(node), ()):
+                for index in sorted(self.helper_indices(self.param_patchers, node)):
                     if index < len(node.args) and self.is_core(node.args[index], tainted):
                         hits.append(f"{name}({_dotted(node.args[index]) or '<core>'}, ...)")
         return hits + [h for h in self.private_mutations(node, tainted if derived is None else derived)
                        if h not in hits]
 
 
-def _walk_scope(stmt: ast.AST):
-    """Nodes of one scope: does not descend into nested function or class bodies."""
+def _def_time_parts(func: ast.AST) -> list[ast.AST]:
+    """What a ``def`` statement evaluates in the enclosing scope: decorators, defaults, annotations."""
+    args = func.args
+    parts = [*func.decorator_list, *args.defaults, *(d for d in args.kw_defaults if d is not None)]
+    params = [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]
+    parts += [a.annotation for a in params if a is not None and a.annotation is not None]
+    return parts + ([func.returns] if func.returns is not None else [])
+
+
+def _walk_scope(stmt: ast.AST, class_bodies: bool = True):
+    """Nodes of one scope. A nested ``def`` contributes only what runs where it is defined
+    (decorators, defaults, annotations): its body is its own scope. A class body runs in place,
+    but its names are class attributes (``class_bodies=False`` stops at the class statement)."""
     stack = [stmt]
     while stack:
         node = stack.pop()
         yield node
-        for child in ast.iter_child_nodes(node):
-            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-                stack.append(child)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack.extend(_def_time_parts(node))
+        elif isinstance(node, ast.ClassDef) and not class_bodies:
+            stack.extend([*node.decorator_list, *node.bases, *node.keywords])
+        else:
+            stack.extend(c for c in ast.iter_child_nodes(node) if not isinstance(c, ast.Lambda))
 
 
 def _bound_names(targets: Iterable[ast.AST]) -> set[str]:
@@ -317,39 +357,149 @@ def _bound_names(targets: Iterable[ast.AST]) -> set[str]:
     return names
 
 
-def _functions(tree: ast.AST):
-    """``(func, is_method)`` for every function in the module, nested ones included."""
-    def visit(node, in_class):
+def _local_bindings(nodes: list[ast.AST]) -> set[str]:
+    """Every name a scope binds (any binding form): a local shadows the enclosing scope's name.
+    A comprehension's target is the comprehension's own, so it shadows nothing here."""
+    comp_targets = {id(n) for node in nodes if isinstance(node, ast.comprehension)
+                    for n in ast.walk(node.target)}
+    names = {n.id for n in nodes if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))
+             and id(n) not in comp_targets}
+    for node in nodes:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler)) and node.name:
+            names.add(node.name)
+    return names
+
+
+class _Scope:
+    """One function scope: its own nodes, the names it binds, and what it declares
+    ``global`` / ``nonlocal`` (bindings that land in the module or the enclosing function)."""
+
+    def __init__(self, func: ast.AST, is_method: bool, parent: ast.AST | None):
+        self.func, self.is_method, self.parent = func, is_method, parent
+        self.nodes = [n for stmt in func.body for n in _walk_scope(stmt)]
+        args = func.args
+        self.params = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs] + \
+            [a.arg for a in (args.vararg, args.kwarg) if a is not None]
+        self.globals = {n for node in self.nodes if isinstance(node, ast.Global) for n in node.names}
+        self.nonlocals = {n for node in self.nodes if isinstance(node, ast.Nonlocal) for n in node.names}
+        own = [n for stmt in func.body for n in _walk_scope(stmt, class_bodies=False)]
+        self.locals = (_local_bindings(own) | set(self.params)) - self.globals - self.nonlocals
+        self.children: list[_Scope] = []
+
+
+def _scopes(tree: ast.AST) -> list[_Scope]:
+    """Every function in the module, nested ones included, parents first."""
+    found: list[_Scope] = []
+
+    def visit(node, in_class, parent):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 static = any(_dotted(d) == "staticmethod" for d in child.decorator_list)
-                yield child, in_class and not static
-                yield from visit(child, False)
+                found.append(_Scope(child, in_class and not static, parent))
+                visit(child, False, child)
             elif isinstance(child, ast.ClassDef):
-                yield from visit(child, True)
+                visit(child, True, parent)
             else:
-                yield from visit(child, in_class)
-    yield from visit(tree, False)
+                visit(child, in_class, parent)
+    visit(tree, False, None)
+    by_func = {scope.func: scope for scope in found}
+    for scope in found:
+        if scope.parent is not None:
+            by_func[scope.parent].children.append(scope)
+    return found
 
 
-def _summarise_helpers(analysis: _Analysis, trees: list) -> None:
+class _Module:
+    """One parsed plugin file: its module-scope nodes and function scopes, built once per run."""
+
+    def __init__(self, rel: Path, tree: ast.AST):
+        self.rel, self.tree = rel, tree
+        self.nodes = [n for stmt in tree.body for n in _walk_scope(stmt)]
+        self.scopes = _scopes(tree)
+        self.declares = any(s.globals or s.nonlocals for s in self.scopes)
+        bound = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load)}
+        bound |= {a.arg for n in ast.walk(tree) if isinstance(n, ast.arguments)
+                  for a in (*n.posonlyargs, *n.args, *n.kwonlyargs, n.vararg, n.kwarg) if a is not None}
+        bound |= {(a.asname or a.name).split(".")[0] for n in ast.walk(tree)
+                  if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
+        bound |= {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+        self.rebound_ctors = _CONTAINER_CTORS & bound
+
+    def taints(self, analysis: _Analysis, calls: bool = False) -> tuple[set[str], dict]:
+        """Module taint and each function's taint. A closure inherits its enclosing function's
+        taint minus the names it binds itself; a core value bound to a ``global`` name taints
+        the module and one bound to a ``nonlocal`` name taints the enclosing function."""
+        to_module: set[str] = set()
+        to_func: dict = {}
+        for _ in range(4):
+            module = analysis.scope_taint(self.nodes, to_module, calls)
+            taints: dict = {}
+            for scope in self.scopes:
+                outer = taints[scope.parent] if scope.parent is not None else module
+                inherited = (outer - scope.locals) | (module & scope.globals) | to_func.get(scope.func, set())
+                taints[scope.func] = analysis.scope_taint(scope.nodes, inherited, calls)
+            if not self.declares:
+                return module, taints
+            new_module = to_module | {n for s in self.scopes for n in taints[s.func] & s.globals}
+            new_func = {k: set(v) for k, v in to_func.items()}
+            for scope in self.scopes:
+                if scope.parent is not None and taints[scope.func] & scope.nonlocals:
+                    new_func.setdefault(scope.parent, set()).update(taints[scope.func] & scope.nonlocals)
+            if new_module == to_module and new_func == to_func:
+                break
+            to_module, to_func = new_module, new_func
+        return module, taints
+
+
+def _containers(analysis: _Analysis, nodes: list[ast.AST], shadowed: set[str]) -> set[str]:
+    """Names a scope binds only by plain assignment of a set / dict / list."""
+    plain: dict[str, bool] = {}
+    targets: set[int] = set()
+    for node in nodes:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            for t in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                if isinstance(t, ast.Name):
+                    targets.add(id(t))
+                    plain[t.id] = plain.get(t.id, True) and analysis.is_container(node.value)
+    other = _local_bindings([n for n in nodes if id(n) not in targets]) | shadowed
+    return {name for name, ok in plain.items() if ok and name not in other}
+
+
+def _closure_nodes(scope: _Scope, name: str) -> list[ast.AST]:
+    """A scope's nodes plus those of nested functions that see ``name`` (do not rebind it)."""
+    nodes = list(scope.nodes)
+    for child in scope.children:
+        if name not in child.locals:
+            nodes += _closure_nodes(child, name)
+    return nodes
+
+
+def _enter_scope(analysis: _Analysis, module: _Module, nodes: list[ast.AST], shadowed: set[str]) -> None:
+    analysis.rebound_ctors = module.rebound_ctors
+    analysis.containers = _containers(analysis, nodes, shadowed)
+
+
+def _summarise_helpers(analysis: _Analysis, modules: list[_Module]) -> None:
     """Fixpoint over the whole plugin: which helpers return core values, rebind a parameter, or
     mutate a parameter's private state."""
     for _ in range(4):
         before = (len(analysis.core_returners), sum(len(v) for v in analysis.param_patchers.values()),
                   sum(len(v) for v in analysis.param_mutators.values()))
-        for _rel, tree in trees:
-            module_taint = analysis.scope_taint(tree.body, set())
-            for func, is_method in _functions(tree):
-                taint = analysis.scope_taint(func.body, module_taint)
-                if any(isinstance(n, ast.Return) and n.value is not None and analysis.is_core(n.value, taint)
-                       for stmt in func.body for n in _walk_scope(stmt)):
+        for module in modules:
+            _module_taint, taints = module.taints(analysis)
+            for scope in module.scopes:
+                func = scope.func
+                _enter_scope(analysis, module, scope.nodes, set(scope.params) | scope.globals | scope.nonlocals)
+                if any(isinstance(n, ast.Return) and n.value is not None and analysis.is_core(n.value, taints[func])
+                       for n in scope.nodes):
                     analysis.core_returners.add(func.name)
                 params = [a.arg for a in func.args.posonlyargs + func.args.args]
                 # A method is called as ``obj.bind(module, ...)``: its call-site args start after ``self``.
-                offset = 1 if is_method else 0
-                nodes = [n for stmt in func.body for n in _walk_scope(stmt)]
+                offset = 1 if scope.is_method else 0
                 for index, param in enumerate(params[offset:]):
+                    nodes = _closure_nodes(scope, param) if scope.children else scope.nodes
                     if any(analysis.rebinds(n, {param}, set()) for n in nodes):
                         analysis.param_patchers.setdefault(func.name, set()).add(index)
                     if any(analysis.private_mutations(n, {param}) for n in nodes):
@@ -371,31 +521,31 @@ def core_override_findings(plugin_dir: Path) -> list[str]:
             continue
     local = _local_names(plugin_dir)
     runtime = _runtime_files(plugin_dir, parsed, local)
-    trees = [(rel, tree) for rel, tree in parsed.items() if rel in runtime]
+    modules = [_Module(rel, tree) for rel, tree in parsed.items() if rel in runtime]
     analysis = _Analysis(_hermes_top_level(), local)
-    for _rel, tree in trees:
-        for node in ast.walk(tree):
+    for module in modules:
+        for node in ast.walk(module.tree):
             if isinstance(node, ast.ImportFrom) and (node.level or (node.module or "").split(".")[0] in local):
                 analysis.aliases.update({a.asname: a.name for a in node.names if a.asname})
-        for node in tree.body:
+        for node in module.tree.body:
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) \
                     and isinstance(node.value.value, str):
                 analysis.constants.update({n: node.value.value for n in _bound_names(node.targets)})
 
-    _summarise_helpers(analysis, trees)
+    _summarise_helpers(analysis, modules)
 
     findings: list[str] = []
-    for rel, tree in trees:
-        module_taint = analysis.scope_taint(tree.body, set())
-        module_derived = analysis.scope_taint(tree.body, set(), calls=True)
-        scopes = [(tree.body, module_taint, module_derived)]
-        scopes += [(f.body, analysis.scope_taint(f.body, module_taint),
-                    analysis.scope_taint(f.body, module_derived, calls=True)) for f, _ in _functions(tree)]
-        for body, taint, derived in scopes:
-            for stmt in body:
-                for node in _walk_scope(stmt):
-                    for target in analysis.rebinds(node, taint, derived):
-                        findings.append((rel.as_posix(), getattr(node, "lineno", 0), target))
+    for module in modules:
+        module_taint, taints = module.taints(analysis)
+        module_derived, derived = module.taints(analysis, calls=True)
+        scopes = [(module.nodes, {n for s in module.scopes for n in s.globals}, module_taint, module_derived)]
+        scopes += [(s.nodes, set(s.params) | s.globals | s.nonlocals, taints[s.func], derived[s.func])
+                   for s in module.scopes]
+        for nodes, shadowed, taint, derived_taint in scopes:
+            _enter_scope(analysis, module, nodes, shadowed)
+            for node in nodes:
+                for target in analysis.rebinds(node, taint, derived_taint):
+                    findings.append((module.rel.as_posix(), getattr(node, "lineno", 0), target))
     return [f"{target} ({rel}:{line})" for rel, line, target in sorted(set(findings))]
 
 

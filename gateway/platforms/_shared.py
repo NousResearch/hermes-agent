@@ -346,14 +346,17 @@ def refresh_live_gate_extra(adapter: Any, keys: Iterable[str]) -> bool:
     with _LIVE_GATE_LOCK:
         if version == adapter._live_gate_version:
             return False
+        from gateway import config_loader
         from gateway.config import PlatformConfig, load_gateway_config
-        from gateway.config_loader import read_yaml_layers
         from hermes_constants import get_hermes_home
-        try:
-            read_yaml_layers(get_hermes_home())
-        except Exception:  # any parse/overlay failure: the loader itself would fall back to env only
-            logger.warning("[%s] config.yaml changed but cannot be read; keeping the current allowlists",
-                           getattr(adapter, "name", "?"), exc_info=True)
+        home = get_hermes_home()
+        try:  # the whole YAML stage: load_gateway_config() swallows any failure and returns env only
+            config_loader.load_yaml_layer(home, config_loader.load_legacy_gateway_json(home))
+        except Exception:
+            if getattr(adapter, "_live_gate_failed_version", None) != version:  # once per edit, not per event
+                adapter._live_gate_failed_version = version
+                logger.warning("[%s] config.yaml changed but cannot be loaded; keeping the current allowlists",
+                               getattr(adapter, "name", "?"), exc_info=True)
             return False
         current = load_gateway_config().platforms.get(adapter.platform) or PlatformConfig()
         extra = adapter.config.extra

@@ -7,6 +7,7 @@ and judge the next event: the edited list must decide, an operator's env value m
 """
 
 import itertools
+import logging
 import os
 import time
 from types import SimpleNamespace
@@ -132,11 +133,36 @@ def test_multiplexed_profiles_refresh_only_their_own_lists(tmp_path):
     assert os.environ.get("DISCORD_ALLOWED_ROLES") is None
 
 
-def test_unreadable_edit_keeps_the_last_good_lists(_home):
+def test_unreadable_edit_keeps_the_last_good_lists(_home, caplog):
     _write(_home, {"allowed_roles": ["2"]})
     adapter, guild, member = _connected_discord()
     (_home / "config.yaml").write_text("discord: [unclosed\n", encoding="utf-8")
-    assert _allowed(adapter, guild, member) is True
+    caplog.set_level(logging.WARNING, logger="gateway.platforms._shared")
+    assert [_allowed(adapter, guild, member) for _ in range(3)] == [True, True, True]
+    assert len([r for r in caplog.records if "keeping the current allowlists" in r.getMessage()]) == 1
+
+
+def test_an_edit_that_parses_but_fails_to_load_keeps_the_last_good_lists(tmp_path):
+    """load_gateway_config() returns the env-only config when a later YAML stage raises; a secondary
+    profile's YAML-only allow_from must not fall back to the channel grant in its own .env."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.run import _profile_runtime_scope
+
+    home = tmp_path / "b"
+    home.mkdir()
+    (home / ".env").write_text("DISCORD_ALLOWED_CHANNELS=555\n", encoding="utf-8")
+    _write(home, {"allow_from": [str(USER_ID)]})
+    token = set_multiplex_context(True)
+    try:
+        with _profile_runtime_scope(home):
+            adapter, guild, _member = _connected_discord(roles=())
+        stranger = SimpleNamespace(id=9999, roles=[], guild=guild)
+        (home / "config.yaml").write_text(
+            f"discord:\n  allow_from: ['{USER_ID}']\nplatforms:\n  discord:\n    extra: [1]\n", encoding="utf-8")
+        with _profile_runtime_scope(home):
+            assert adapter._is_allowed_user("9999", stranger, guild=guild, is_dm=False, channel_ids={"555"}) is False
+    finally:
+        reset_multiplex_context(token)
 
 
 def test_transient_read_failure_retries_the_same_allowlist_edit(_home, monkeypatch):

@@ -43,18 +43,24 @@ const MUTATING_COMMANDS = [
   'yolo'
 ] as const
 
+// Mirror localGatewayBootstrap: the launcher supplies the interpreter that owns
+// the install; guessing from other virtual environments can select a stale one.
+const resolvePython = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform) =>
+  env.HERMES_PYTHON?.trim() || (platform === 'win32' ? 'python' : 'python3')
+
 const loadCommandRegistryNames = (): CommandRegistryLoad => {
   const here = dirname(fileURLToPath(import.meta.url))
+  const repoRoot = resolve(here, '../../..')
 
   try {
     const names = JSON.parse(
       execFileSync(
-        process.env.PYTHON ?? 'python3',
+        resolvePython(process.env, process.platform),
         [
           '-c',
           'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
         ],
-        { cwd: resolve(here, '../../..'), encoding: 'utf8' }
+        { cwd: repoRoot, encoding: 'utf8' }
       )
     ) as string[]
 

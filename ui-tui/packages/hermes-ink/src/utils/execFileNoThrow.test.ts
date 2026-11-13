@@ -86,7 +86,6 @@ describe.skipIf(onWindows)('execFileNoThrow with daemon-style children', () => {
     expect(result.code).toBe(124)
     expect(Date.now() - start).toBeLessThan(2000)
   })
-
   it("settles immediately on 'exit' when resolveOnExit is true, regardless of daemon stdio", async () => {
     const pidFile = join(scriptDir, 'sleeper-exit.pid')
     const start = Date.now()

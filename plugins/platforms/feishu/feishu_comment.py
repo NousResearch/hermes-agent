@@ -450,6 +450,9 @@ def _resolve_model_and_runtime() -> tuple[str, dict]:
     from gateway.run import _load_gateway_config, _resolve_gateway_model, _resolve_runtime_agent_kwargs
     model = _resolve_gateway_model(_load_gateway_config())
     runtime_kwargs = _resolve_runtime_agent_kwargs()
+    runtime_kwargs.pop("_fallback_notice", None)
+    # A ``model.default`` alias's backing model, or a fallback entry's (#154786): never the bare name.
+    model = runtime_kwargs.pop("model", None) or model
     try:
         if not model and runtime_kwargs.get("provider"):  # fall back to the provider's default model
             from hermes_cli.models import get_default_model_for_provider

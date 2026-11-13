@@ -1749,6 +1749,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
     from hermes_cli.auth import AuthError
+    from hermes_cli.default_model_alias import alias_runtime_request
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
@@ -1762,6 +1763,8 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         }
         if job.get("base_url"):
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
+        elif not requested and (aliased := alias_runtime_request(model, jc.cfg)):
+            model, runtime_kwargs = aliased  # ``model.default: myalias``: its own endpoint+key (#154786)
         return resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during

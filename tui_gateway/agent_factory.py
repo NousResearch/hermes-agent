@@ -536,6 +536,14 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
         raise
 
 
+def _default_alias_request(model_override) -> tuple[str, dict] | None:
+    """``(model, resolve kwargs)`` when the name this agent starts on (an explicit string override, else
+    ``_resolve_model()``) is a configured alias: model, endpoint and key from the alias entry together."""
+    from hermes_cli.default_model_alias import alias_runtime_request
+    name = model_override if isinstance(model_override, str) and model_override else _resolve_model()
+    return alias_runtime_request(name, _load_cfg())
+
+
 def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str, dict]:
     """(model, runtime) for a new agent; a per-session override (/model switch or a resumed row's persisted
     runtime) wins over global config/env. Older rows stored the resolved provider "custom" (no named entry
@@ -570,6 +578,9 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         if provider_override:
             requested_provider = provider_override
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
+        if not provider_override and not os.environ.get("HERMES_TUI_PROVIDER", "").strip() and (
+                aliased := _default_alias_request(model_override)):
+            model, resolve_kwargs = aliased  # a ``model.default`` / ``-m`` alias: its own endpoint+key (#154786)
         overrides = {}
     resolution = _resolve_runtime_with_fallback(resolve_kwargs)
     if resolution.used_fallback:

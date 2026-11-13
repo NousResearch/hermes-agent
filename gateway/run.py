@@ -2263,8 +2263,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only.
     An ``AuthError`` from the primary walks the configured fallback chain through the shared
     ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own)."""
-    from hermes_cli.runtime_provider import (
-        resolve_runtime_with_fallback, format_runtime_provider_error, _get_model_config)
+    from hermes_cli.runtime_provider import format_runtime_provider_error, _get_model_config
 
     # Capture primary provider/model from config before the try block so we
     # can include it in the fallback notice if the primary fails (#74349).
@@ -2272,32 +2271,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
     _primary_model = (_model_cfg.get("default") or "").strip()
     _primary_provider = (_model_cfg.get("provider") or "").strip()
 
-    # Messaging sessions have no CLI startup stage: expand a configured default alias
-    # before selecting its runtime, so its model, endpoint and credential travel together.
-    config = _load_gateway_config()
-    model_section = config.get("model") if isinstance(config.get("model"), dict) else {}
-    default_name = str(model_section.get("default") or "").strip()
-    entries = (config.get("model_aliases"), model_section.get("aliases"))
-    is_alias = bool(default_name) and any(
-        isinstance(group, dict) and any(str(key).strip().lower() == default_name.lower() for key in group)
-        for group in entries)
-    startup_route = None
-    if is_alias:
-        from hermes_cli.model_switch import resolve_startup_model_route
-        startup_route = resolve_startup_model_route(
-            default_name, current_provider=_primary_provider, alias_config=config)
-
+    from hermes_cli.default_model_alias import resolve_default_runtime  # a model.default alias (#154786)
     try:
-        if startup_route is None:
-            runtime, fallback_entry = resolve_runtime_with_fallback(config)
-        else:
-            from hermes_cli.runtime_provider import frozen_runtime_config
-            with frozen_runtime_config(config):
-                runtime, fallback_entry = resolve_runtime_with_fallback(
-                    config, requested=startup_route.provider or None,
-                    target_model=startup_route.model,
-                    explicit_base_url=startup_route.base_url or None,
-                    explicit_api_key=startup_route.api_key or None)
+        runtime, fallback_entry, alias_model = resolve_default_runtime(_load_gateway_config())
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
@@ -2316,8 +2292,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         {k: v for k, v in capabilities.items() if isinstance(k, str) and isinstance(v, bool)}
         if isinstance(capabilities, dict) else {})
 
-    return {**_runtime_agent_kwargs(runtime), "capabilities": capabilities,
-            **({"model": startup_route.model} if startup_route else {})}
+    return {**_runtime_agent_kwargs(runtime), "capabilities": capabilities, **({"model": alias_model} if alias_model else {})}
 
 
 def _runtime_agent_kwargs(runtime: dict) -> dict:
@@ -2385,7 +2360,7 @@ def _resolve_gateway_model_context(
             custom_providers = data.get("custom_providers")
 
     def _read_runtime() -> None:
-        nonlocal provider, base_url, api_key
+        nonlocal provider, base_url, api_key, resolved_model
         if route and (route.get("base_url") or route.get("_runtime_resolved")):
             # A session route with its own endpoint (a /model switch), or provider-specific runtime
             # already resolved by the caller, replaces the default runtime read. A persisted route
@@ -2395,9 +2370,8 @@ def _resolve_gateway_model_context(
             api_key = route.get("api_key")
             return
         runtime = _resolve_runtime_agent_kwargs()
-        provider = runtime.get("provider") or provider
-        base_url = runtime.get("base_url") or base_url
-        api_key = runtime.get("api_key")
+        provider, base_url, api_key = runtime.get("provider") or provider, runtime.get("base_url") or base_url, runtime.get("api_key")
+        resolved_model = model or runtime.get("model") or resolved_model  # a model.default alias's backing id
 
     def _pin_still_applies() -> bool:
         # Drop a configured context_length pin when the effective route no longer matches (or on error).

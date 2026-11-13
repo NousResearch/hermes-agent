@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from gateway import run
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 
@@ -52,3 +54,46 @@ def test_platform_default_alias_uses_its_model_endpoint_and_key(monkeypatch):
         "explicit_base_url": "http://127.0.0.1:9999/v1",
         "explicit_api_key": "sk-alias-host",
     }]
+
+
+_ALIAS_CONFIG = {
+    "model": {"default": "myalias", "provider": "openrouter"},
+    "model_aliases": {"myalias": {"model": "some-vendor/some-model-id", "provider": "custom",
+                                  "base_url": "http://127.0.0.1:9999/v1", "key_env": "DEMO_API_KEY"}},
+}
+
+
+def _cron_route():
+    from cron.scheduler import _CronJobConfig, _resolve_job_runtime
+    jc = _CronJobConfig(cfg=_ALIAS_CONFIG, model="myalias", model_cfg=_ALIAS_CONFIG["model"], cron_default_provider="")
+    runtime, model = _resolve_job_runtime({}, "job", jc)
+    return model, runtime
+
+
+def _tui_route():
+    from tui_gateway import server
+    return server._resolve_agent_model_runtime(None, None)
+
+
+def _feishu_route():
+    from plugins.platforms.feishu.feishu_comment import _resolve_model_and_runtime
+    return _resolve_model_and_runtime()
+
+
+@pytest.mark.parametrize("surface", [_cron_route, _tui_route, _feishu_route], ids=["cron", "tui", "feishu"])
+def test_every_config_default_surface_expands_the_alias(monkeypatch, surface):
+    """Cron, the TUI agent factory and Feishu comments run the config default too: same whole route."""
+    from hermes_cli import runtime_provider as rp
+    from tui_gateway import server
+    for name in ("HERMES_MODEL", "HERMES_INFERENCE_MODEL", "HERMES_TUI_PROVIDER", "HERMES_INFERENCE_PROVIDER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DEMO_API_KEY", "sk-alias-host")
+    monkeypatch.setattr(run, "_load_gateway_config", lambda: _ALIAS_CONFIG)
+    monkeypatch.setattr(server, "_load_cfg", lambda: _ALIAS_CONFIG)
+    monkeypatch.setattr(rp, "load_config", lambda: _ALIAS_CONFIG)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: _ALIAS_CONFIG["model"])
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: _ALIAS_CONFIG)
+
+    model, runtime = surface()
+    assert (model, runtime["base_url"], runtime["api_key"]) == (
+        "some-vendor/some-model-id", "http://127.0.0.1:9999/v1", "sk-alias-host")

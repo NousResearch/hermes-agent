@@ -283,6 +283,13 @@ class GatewayAgentCacheMixin:
             )
         else:
             model = _resolve_gateway_model()
+        if not policy_model and model == _resolve_gateway_model():
+            # A ``model.default`` alias builds the agent on its backing id (#154786): compare against
+            # that, or every turn reads as fallback drift and evicts the cached agent.
+            with suppress(Exception):
+                from gateway.run import _load_gateway_config
+                from hermes_cli.default_model_alias import expand_alias_model
+                model = expand_alias_model(model, _load_gateway_config())
         # Vendor prefix stripped on native providers, else the cached agent is evicted every turn,
         # destroying prompt caching.
         with suppress(Exception):

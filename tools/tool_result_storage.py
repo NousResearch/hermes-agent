@@ -37,6 +37,15 @@ _TOOL_METADATA_TAG = "<tool-result-metadata>"
 _TOOL_METADATA_CLOSING_TAG = "</tool-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
+# Tools whose payload is executable policy, not data: a byte-prefix preview of one can drop a
+# binding clause while still reading like a complete answer, so their spill notice has to say the
+# rules are incomplete instead of the generic "this result was too large" text (#151283).
+RULE_BEARING_TOOLS: frozenset[str] = frozenset({"skill_view"})
+_SKILL_HEADING_RE = re.compile(r"^##\s+(\S.*?)\s*$")
+_SKILL_FIELD_RE = re.compile(r"^[\"']?(name|description)[\"']?\s*:\s*(.+?)\s*,?$")
+_SKILL_IDENTITY_SCAN_LINES = 40
+_MAX_IDENTITY_DESCRIPTION_CHARS = 120
+_MAX_OUTLINE_SECTIONS = 20
 
 _spillover_prune_lock = threading.Lock()
 _spillover_pruned_homes: set = set()  # profile home keys already swept this process
@@ -390,9 +399,77 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     return False
 
 
+def _skill_identity(text: str) -> str:
+    """``name — description`` for a skill payload, from its metadata block or YAML frontmatter."""
+    fields: dict[str, str] = {}
+    for line in text.splitlines()[:_SKILL_IDENTITY_SCAN_LINES]:
+        match = _SKILL_FIELD_RE.match(line.strip())
+        if match and match.group(1) not in fields:
+            fields[match.group(1)] = match.group(2).strip().strip("\"'")
+    name = fields.get("name", "")
+    if not name:
+        return ""
+    description = fields.get("description", "")
+    if len(description) > _MAX_IDENTITY_DESCRIPTION_CHARS:
+        description = description[:_MAX_IDENTITY_DESCRIPTION_CHARS - 1].rstrip() + "…"
+    return f"{name} — {description}" if description else name
+
+
+def _section_spans(lines: list[str], headings: list[tuple[int, str]], limit: int):
+    """``(title, first_line, last_line, chars)`` for the first *limit* ``##`` sections."""
+    for position, (start, title) in enumerate(headings[:limit]):
+        end = (headings[position + 1][0] if position + 1 < len(headings) else len(lines)) - 1
+        yield title, start, end, sum(len(lines[index]) + 1 for index in range(start, end + 1))
+
+
+def _rule_bearing_outline(text: str, *, max_sections: int = _MAX_OUTLINE_SECTIONS) -> str:
+    """Outline of a rule-bearing payload: its identity plus every ``##`` section with a line range.
+
+    Pointers are LINE ranges, not character offsets: ``read_file`` paginates with ``offset``/
+    ``limit`` counted in lines, so a character offset could not fetch the section it names.
+    """
+    lines = text.splitlines()
+    headings = [(index, match.group(1)) for index, line in enumerate(lines)
+                if (match := _SKILL_HEADING_RE.match(line))]
+    rows = [f"  - ## {title} — lines {start + 1}–{end + 1} ({chars:,} chars)"
+            for title, start, end, chars in _section_spans(lines, headings, max_sections)]
+    if not rows:
+        return ""
+    if len(headings) > max_sections:
+        rows.append(f"  … {len(headings) - max_sections} more sections")
+    identity = _skill_identity(text)
+    return "\n".join(([f"Skill: {identity}"] if identity else []) + rows)
+
+
+def _build_rule_bearing_message(preview: str, has_more: bool, original_size: int,
+                                file_path: str, outline: str) -> str:
+    """Spill notice for a tool whose payload is policy: the rules are incomplete, and it says so."""
+    sections = f"Sections (page with read_file offset/limit):\n{outline}\n" if outline else ""
+    return (
+        f"{PERSISTED_OUTPUT_TAG}\n"
+        f"⚠️ SKILL RULES INCOMPLETE — showing {len(preview):,} of {original_size:,} characters.\n"
+        "Do NOT act on write operations from this preview: the binding rules live in the saved file.\n"
+        f"Full output saved to: {file_path}\n"
+        + sections
+        + "Recovery: page the saved file with read_file (offset/limit) and read the section you need "
+          "before acting — do not infer rules from the preview. The archive is kept while this "
+          "session's transcript references it.\n\n"
+        f"Preview (first {len(preview)} chars):\n"
+        + preview + ("\n..." if has_more else "")
+        + f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
+    )
+
+
 def _build_persisted_message(preview: str, has_more: bool, original_size: int,
-                             file_path: str) -> str:
-    """Build the <persisted-output> replacement block."""
+                             file_path: str, *, tool_name: str | None = None,
+                             outline: str | None = None) -> str:
+    """Build the <persisted-output> replacement block.
+
+    ``tool_name``/``outline`` let a rule-bearing tool (``RULE_BEARING_TOOLS``) get a notice stating
+    its rules are incomplete; every other tool keeps the generic size notice byte-for-byte.
+    """
+    if tool_name in RULE_BEARING_TOOLS:
+        return _build_rule_bearing_message(preview, has_more, original_size, file_path, outline or "")
     size_kb = original_size / 1024
     size_str = f"{size_kb / 1024:.1f} MB" if size_kb >= 1024 else f"{size_kb:.1f} KB"
     return (
@@ -436,11 +513,15 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     persisted_content = _pageable_text(content)
     filename = _safe_result_filename(tool_use_id)
     preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
+    # Rule-bearing payloads get a structural outline built from the UNWRAPPED text, so the notice can
+    # name the sections the preview dropped instead of leaving the model to page blindly (#151283).
+    outline = _rule_bearing_outline(persisted_content) if tool_name in RULE_BEARING_TOOLS else None
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
                     tool_name, tool_use_id, len(persisted_content), path, host_suffix)
-        return _build_persisted_message(preview, has_more, len(persisted_content), path)
+        return _build_persisted_message(preview, has_more, len(persisted_content), path,
+                                        tool_name=tool_name, outline=outline)
 
     if (hosted_path := _persist_hosted(persisted_content, tool_use_id, env)) is not None:
         return _persisted(hosted_path) if hosted_path else _inline_truncated(preview, tool_name, content)

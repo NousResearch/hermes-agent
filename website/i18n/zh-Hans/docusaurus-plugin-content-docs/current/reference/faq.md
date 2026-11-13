@@ -63,7 +63,9 @@ aarch64 设备可使用预发布的 Termux APT 软件包。请参阅 [Termux 指
 
 ### 我的数据会被发送到哪里？
 
-API 调用**仅发送至您配置的 LLM 提供商**（例如 OpenRouter、您本地的 Ollama 实例）。Hermes Agent 不收集遥测数据、使用数据或分析数据。您的对话、记忆和技能均存储在本地 `~/.hermes/` 目录中。
+您的对话会发送至您配置的 LLM 提供商（例如 OpenRouter、您本地的 Ollama 实例），以及您所使用工具的后端。对话、记忆和技能均存储在本地 `~/.hermes/` 目录中。
+
+使用统计**默认关闭**。如果您选择开启（`telemetry.shared_metrics.enabled` 和 `send`，或运行 `hermes setup telemetry`），Hermes 每天向 Nous Research 发送一次汇总计数；绝不包含提示词、回复、文件或路径。另有一些请求无需开启即会发生，例如每日更新检查（设置 `updates.check: false` 可关闭）以及 models.dev 模型目录下载。文档中的“Privacy and Data”页面列出了每一项数据外发途径、其默认值以及关闭方式。
 
 ### 可以离线使用 / 使用本地模型吗？
 

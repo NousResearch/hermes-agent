@@ -30,6 +30,7 @@ export const frProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuSetActive: 'Définir comme actif',
   menuDelete: 'Supprimer',
   moveToProject: 'Déplacer vers un projet',
+  branchInto: name => `Créer une branche dans ${name}`,
   movedTo: name => `Déplacée vers ${name}`,
   moveFailed: 'Impossible de déplacer la session',
   moveNoFolder: "Ce projet n'a aucun dossier vers lequel effectuer le déplacement",

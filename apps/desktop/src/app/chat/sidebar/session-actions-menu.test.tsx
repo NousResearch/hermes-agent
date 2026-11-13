@@ -43,6 +43,7 @@ vi.mock('@/i18n', () => ({
           moveNoProjects: 'No other projects',
           movedTo: (name: string) => `Moved to ${name}`,
           moveToProject: 'Move to project',
+          branchInto: (name: string) => `Branch into ${name}`,
           noColor: 'No color'
         },
         row: {
@@ -395,5 +396,44 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to project' }))
 
     await waitFor(() => expect(refreshProjectTree).toHaveBeenCalledTimes(1))
+  })
+
+  // Branching is the way a finished run's transcript becomes a usable chat, and the follow-up is
+  // usually "put it with this work". The Branch submenu must therefore offer the projects, and the
+  // project entry must branch through the SAME verb while naming the target project.
+  it('offers a branch into each project, and passes the project to the caller', async () => {
+    const { $projectTree, projectRootCwd } = await import('@/store/projects')
+    vi.mocked(projectRootCwd).mockImplementation((node: unknown) => (node as { path?: string }).path || '')
+    ;($projectTree as unknown as { set: (value: unknown) => void }).set([
+      { id: 'p1', label: 'NetSign', path: '/work/netsign', repos: [], isNoProject: false },
+      { id: 'home', label: 'Home', path: '', repos: [], isNoProject: true }
+    ])
+
+    const onBranch = vi.fn()
+    const onBranchIntoProject = vi.fn()
+
+    render(
+      <SessionActionsMenu onBranch={onBranch} onBranchIntoProject={onBranchIntoProject} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    await screen.findByRole('menu')
+    fireEvent.click(screen.getByRole('menuitem', { name: /Branch from here/i }))
+
+    // The project entry is rendered per project (never for the path-less Home bucket).
+    const projectItem = await screen.findByRole('menuitem', { name: /Branch into NetSign/i })
+    fireEvent.click(projectItem)
+
+    expect(onBranchIntoProject).toHaveBeenCalledWith('p1')
+    // The plain entry is a separate action and must not report a project.
+    expect(onBranch).not.toHaveBeenCalled()
   })
 })

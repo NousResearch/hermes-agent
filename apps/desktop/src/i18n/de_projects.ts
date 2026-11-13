@@ -30,6 +30,7 @@ export const deProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   menuSetActive: 'Als aktiv festlegen',
   menuDelete: 'Löschen',
   moveToProject: 'In Projekt verschieben',
+  branchInto: name => `In ${name} verzweigen`,
   movedTo: name => `In ${name} verschoben`,
   moveFailed: 'Session konnte nicht verschoben werden',
   moveNoFolder: 'Dieses Projekt hat keinen Ordner, in den verschoben werden kann',

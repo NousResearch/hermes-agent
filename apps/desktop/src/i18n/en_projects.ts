@@ -30,6 +30,7 @@ export const enProjects: Translations['sidebar']['projects'] = {
   menuSetActive: 'Set active',
   menuDelete: 'Delete',
   moveToProject: 'Move to project',
+  branchInto: name => `Branch into ${name}`,
   movedTo: name => `Moved to ${name}`,
   moveFailed: 'Could not move session',
   moveNoFolder: 'That project has no folder to move into',

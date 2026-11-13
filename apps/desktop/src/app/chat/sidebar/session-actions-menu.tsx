@@ -166,7 +166,10 @@ interface SessionActions {
   onPin?: () => void
   /** Toggle the persisted read-state watermark for this row. */
   onToggleUnread?: () => void
+  /** Plain branch (no project). Omitted where the surface cannot branch. */
   onBranch?: () => void
+  /** Branch and put the NEW child into this project. Omitted where there is no project list. */
+  onBranchIntoProject?: (projectId: string) => void
   onArchive?: () => void
   onDelete?: () => void
   /** Close this surface (a tile tab) — omitted where nothing closes (sidebar
@@ -216,6 +219,68 @@ function SessionColorSwatches({ sessionId }: { sessionId: string }) {
 // project's root — the fix for a chat created in the wrong folder. The current
 // owner and folderless projects (the Home bucket) are excluded: there is
 // nothing to move into.
+/**
+ * The Branch submenu: a plain branch, then one entry per project to branch the chat INTO.
+ *
+ * Branching is the only way to keep a finished run's transcript while turning it into a normal
+ * chat, and the follow-up question is usually "and put it with this work" — so the project list
+ * rides here instead of forcing branch-then-Move. Picking a project branches exactly like the
+ * plain item, then re-homes the NEW child (never the parent) through the backend's workspace move.
+ */
+function BranchItems({
+  kit,
+  onBranch,
+  onBranchIntoProject,
+  profile
+}: {
+  kit: MenuKit
+  onBranch?: (projectId?: string | null) => void
+  onBranchIntoProject?: (projectId: string) => void
+  profile?: string
+}) {
+  const { t } = useI18n()
+  const p = t.sidebar.projects
+  const r = t.sidebar.row
+  const tree = useStore($projectTree)
+  // Same warm-up contract as MoveToProjectItems: the flat view only warms the tree on a timer, so
+  // an early open would claim there are no projects.
+  useEffect(() => {
+    void refreshProjectTree()
+  }, [])
+
+  const projects = onBranchIntoProject
+    ? tree.filter(node => !node.isNoProject && projectRootCwd(node))
+    : []
+
+  return (
+    <>
+      <kit.Item
+        onSelect={() => {
+          triggerHaptic('selection')
+          onBranch?.()
+        }}
+      >
+        <Codicon name="repo-forked" size="0.875rem" />
+        <span>{r.branchFrom}</span>
+      </kit.Item>
+      {onBranchIntoProject && <kit.Separator />}
+      {onBranchIntoProject && projects.length === 0 && <kit.Item disabled>{p.moveNoProjects}</kit.Item>}
+      {projects.map(node => (
+        <kit.Item
+          key={node.id}
+          onSelect={() => {
+            triggerHaptic('selection')
+            onBranchIntoProject?.(node.id)
+          }}
+        >
+          <Codicon name="folder" size="0.875rem" />
+          <span>{p.branchInto(node.label)}</span>
+        </kit.Item>
+      ))}
+    </>
+  )
+}
+
 function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; sessionId: string; profile?: string }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
@@ -268,6 +333,7 @@ function useSessionActions({
   onPin,
   onToggleUnread,
   onBranch,
+  onBranchIntoProject,
   onArchive,
   onDelete,
   onClose,
@@ -421,18 +487,6 @@ function useSessionActions({
   // WORK — derive/extract from the session.
   const workItems: ActionItemSpec[] = [
     spec({
-      disabled: !onBranch,
-      // Fork glyph to match the inline message action's GitFork icon
-      // (assistant-message.tsx). NB: this codicon font has no `git-fork`
-      // glyph (only `git-fork-private`); `repo-forked` is the fork icon.
-      icon: 'repo-forked',
-      label: r.branchFrom,
-      onSelect: () => {
-        triggerHaptic('selection')
-        onBranch?.()
-      }
-    }),
-    spec({
       disabled: !sessionId,
       icon: 'cloud-download',
       label: r.export,
@@ -576,6 +630,18 @@ function useSessionActions({
       />
       <kit.Separator />
       {workItems.map(item => renderActionItem(kit, item))}
+      <kit.Sub>
+        <kit.SubTrigger disabled={!onBranch}>
+          {/* Fork glyph to match the inline message action's GitFork icon
+              (assistant-message.tsx). NB: this codicon font has no `git-fork`
+              glyph (only `git-fork-private`); `repo-forked` is the fork icon. */}
+          <Codicon name="repo-forked" size="0.875rem" />
+          <span>{r.branchFrom}</span>
+        </kit.SubTrigger>
+        <kit.SubContent>
+          <BranchItems kit={kit} onBranch={onBranch} onBranchIntoProject={onBranchIntoProject} profile={profile} />
+        </kit.SubContent>
+      </kit.Sub>
       <kit.Sub>
         <kit.SubTrigger disabled={!sessionId}>
           <Codicon name="folder" size="0.875rem" />

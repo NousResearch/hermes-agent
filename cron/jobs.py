@@ -1806,6 +1806,20 @@ def _next_run_or_reject_past_oneshot(
     return next_run_at
 
 
+def _profile_store_label(home: Optional[Path] = None) -> str:
+    """Human label for a refusal message: the profile name whose store this is, else ``default``."""
+    home = Path(home) if home is not None else get_hermes_home()
+    return home.name if home.parent.name == "profiles" else "default"
+
+
+_NO_MAIN_MODEL_ERROR = (
+    "Cannot pin this job: no main model is resolvable for the '{label}' cron store "
+    "(this profile's config.yaml has no model.default and the host config has none either), so a "
+    "pinned job would be created DEAD. Set a default with `hermes model <name>` (or a `model:` "
+    "block in config.yaml) and retry, or create the job unpinned."
+)
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1890,6 +1904,11 @@ def create_job(
     name = name or label_source[:50].strip()
     if pinned and not f["model"]:
         f["provider"], f["model"] = _main_model_pin()
+        if not f["model"]:
+            # A pinned job with no model is created DEAD (it errors at every fire). Refuse at the
+            # door instead of persisting an inert job silently (card t_92b4a684).
+            raise ValueError(
+                _NO_MAIN_MODEL_ERROR.format(label=_profile_store_label(get_hermes_home())))
     next_run_at = _next_run_or_reject_past_oneshot(
         parsed_schedule, name, schedule, "", f["timezone"])
 
@@ -2030,6 +2049,10 @@ def _apply_pin_update(job: dict[str, Any], updates: dict[str, Any]) -> None:
     if pinned:
         if not _normalize_job_optional_text(job.get("model")):
             updates["provider"], updates["model"] = _main_model_pin()
+            if not updates["model"]:
+                # Same dead-pin guard as create_job (card t_92b4a684).
+                raise ValueError(
+                    _NO_MAIN_MODEL_ERROR.format(label=_profile_store_label(get_hermes_home())))
     else:
         updates["provider"], updates["model"] = None, None
 

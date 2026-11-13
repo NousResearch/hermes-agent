@@ -2253,3 +2253,28 @@ def test_configured_key_env_resolving_empty_is_logged(monkeypatch, caplog):
         assert rp.resolve_runtime_provider(requested="custom:local")["api_key"] == "no-key-required"
     hits = [r for r in caplog.records if "UNSET_LLM_KEY" in r.getMessage()]
     assert len(hits) == 1 and "scw" in hits[0].getMessage()
+
+
+# --- model_config_override: a caller that knows the route hands the resolver its model block
+
+def test_model_config_override_replaces_the_home_block_for_one_call(monkeypatch):
+    """Cron passes the HOST block it inherited; the active home block is untouched outside it."""
+    monkeypatch.setattr(rp, "load_config", lambda: {"model": {"default": "profile-model", "provider": "deepseek"}})
+    assert rp._get_model_config()["default"] == "profile-model"
+    with rp.model_config_override({"default": "host-model", "provider": "custom",
+                                   "base_url": "http://127.0.0.1:9/v1"}):
+        cfg = rp._get_model_config()
+        assert cfg["default"] == "host-model"
+        assert cfg["base_url"] == "http://127.0.0.1:9/v1"
+    assert rp._get_model_config()["default"] == "profile-model"
+
+
+def test_resolve_runtime_provider_honours_model_cfg_override(monkeypatch):
+    """A bare custom route whose base_url lives only in the inherited block is not credentialless."""
+    monkeypatch.setattr(rp, "load_config", lambda: {"model": {}})
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    runtime = rp.resolve_runtime_provider(
+        requested="custom", target_model="fixture-model",
+        model_cfg_override={"default": "fixture-model", "provider": "custom",
+                            "base_url": "http://127.0.0.1:9/v1"})
+    assert runtime["base_url"] == "http://127.0.0.1:9/v1"

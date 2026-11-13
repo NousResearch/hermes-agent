@@ -108,6 +108,10 @@ class _FakeSessionDB:
 
 
 def test_desktop_session_search_merges_id_matches_before_content_matches(monkeypatch):
+    from hermes_state import SessionDB
+
+    # Search projection is mocked, but an owner must initialize the store.
+    SessionDB().close()
     _FakeSessionDB.opened_read_only = None
     _FakeSessionDB.requested_fields = None
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
@@ -193,8 +197,14 @@ def test_desktop_session_search_attaches_profile_to_rich_results(monkeypatch):
                 "archived": False,
             }
 
-    monkeypatch.setattr("hermes_state.SessionDB", _RichFakeSessionDB)
-    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
+    # Browsing never initializes a store: serve the fake as the profile's existing store,
+    # as the requested-profile test above does.
+    monkeypatch.setattr(_rt_sessions, "_cron_profile_home", lambda profile: (profile, None))
+    monkeypatch.setattr(
+        _rt_sessions,
+        "_open_session_db_for_profile",
+        lambda profile, *, read_only: _RichFakeSessionDB(read_only=read_only),
+    )
     response = asyncio.run(_rt_sessions.search_sessions(q="20260603", limit=1, profile="personal"))
     assert response["results"][0]["profile"] == "personal"
     assert response["results"][0]["title"] == "Custom Title"
@@ -252,6 +262,10 @@ class _DeepLineageSessionDB(_FakeSessionDB):
 
 
 def test_deep_lineage_search_resolves_tip_from_matched_id(monkeypatch):
+    from hermes_state import SessionDB
+
+    # Search projection is mocked, but an owner must initialize the store.
+    SessionDB().close()
     monkeypatch.setattr("hermes_state.SessionDB", _DeepLineageSessionDB)
 
     response = asyncio.run(_rt_sessions.search_sessions(q="content", limit=2))

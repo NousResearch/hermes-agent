@@ -80,7 +80,7 @@ def _make_http_task(monkeypatch, transport_exc):
     monkeypatch.setattr("tools.mcp_tool._MCP_NEW_HTTP", True, raising=False)
     monkeypatch.setattr(
         "tools.mcp_tool.streamable_http_client",
-        lambda url, http_client=None: _RaisingTransportCM(transport_exc),
+        lambda url, http_client=None, **_sdk_kwargs: _RaisingTransportCM(transport_exc),
         raising=False,
     )
     monkeypatch.setattr(

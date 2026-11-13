@@ -1,0 +1,17 @@
+name: aws-manager
+title: AWS Manager
+description: "Deploy, monitor, and verify AWS resources in Hermes Desktop, including EC2, Lambda, S3, DynamoDB, and API Gateway. Disclosure — uses the AWS access key you enter in plugin settings to create, change and delete real AWS resources (EC2, Lambda, S3, RDS, DynamoDB, API Gateway, VPC, Route 53, ECR/ECS, EventBridge, SQS, CloudFront) in your account from the dashboard; these can incur AWS charges. Every change is reviewed and applied by you in the UI, never by the agent."
+repo: https://github.com/ParichayMago/hermes-aws-manager
+sha: 60fda4efae71bebcd6bd1f474ad275565365c0f4
+maintainer: ParichayMago
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+version: "0.6.0"
+screenshots:
+  - https://raw.githubusercontent.com/ParichayMago/hermes-aws-manager/60fda4efae71bebcd6bd1f474ad275565365c0f4/docs/dashboard.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

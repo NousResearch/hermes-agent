@@ -19,6 +19,15 @@ def _sse(*chunk_bodies: bytes) -> bytes:
     return b"".join(_CHUNK_PREFIX + body + b"}\n\n" for body in chunk_bodies) + b"data: [DONE]\n\n"
 
 
+def _running_on(loop) -> bool:
+    import asyncio
+
+    try:
+        return asyncio.get_running_loop() is loop
+    except RuntimeError:
+        return False
+
+
 def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finalize_before):
     """Stream ``response_body`` through Relay; Relay's finalizer is forced to complete before
     the consumer thread processes the first chunk matching ``finalize_before(chunk)``.
@@ -60,8 +69,13 @@ def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finali
 
     def run_synchronized_relay_finalizer(managed_stream, attempt):
         relay_finalizer_started.set()
-        assert allow_relay_finalizer.wait(30), "consumer did not release Relay's finalizer"
         try:
+            # When the provider stream is exhausted before the consumer pulls its first chunk, Relay
+            # runs the finalizer inline on the stream's own loop, i.e. on the consumer thread inside
+            # ``__next__``: the consumer cannot release it from there, and the forced ordering
+            # (finalizer before the chosen chunk) already holds. Waiting would self-deadlock.
+            if not _running_on(managed_stream._loop):
+                assert allow_relay_finalizer.wait(30), "consumer did not release Relay's finalizer"
             return run_relay_finalizer(managed_stream, attempt)
         finally:
             relay_finalizer_finished.set()

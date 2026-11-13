@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OkResult, OpenModel, ProfileParams, SessionLiveInfo
+from .common import OkResult, OpenModel, PlanUsage, ProfileParams, SessionLiveInfo
 from .registry import method
 
 # ── config.get ────────────────────────────────────────────────────────────────────────────────
@@ -64,12 +64,6 @@ method("config.get", params=ConfigGetParams, result=ConfigGetResult,
 
 
 # ── config.set ────────────────────────────────────────────────────────────────────────────────
-
-
-class ConfigSetScope(WireEnum):
-    session = "session"
-    global_ = "global"
-    once = "once"
 
 
 class ConfigSetParams(ProfileParams):
@@ -147,6 +141,8 @@ class SetupRuntimeCheckResult(Result):
     model: str | None = None
     source: str | None = None
     error: str | None = None
+    #: ``local_runtime_unavailable``: the selected model is the managed local server and it is down.
+    error_code: str | None = None
     free_tier_route: bool | None = None
     profile: str | None = None
 
@@ -213,6 +209,8 @@ class FreeTierStatusResult(Result):
     # Seconds until the sign-in offer after a finished task is due (0 = due now); absent when none is
     # pending (no finished task since the last offer, or not on the free tier).
     nudge_due_in: int | None = None
+    # The same for the connector offer: a guest with no trial that has connected an app.
+    connector_nudge_due_in: int | None = None
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
@@ -254,11 +252,15 @@ method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeRes
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
 
 
+class FreeTierClaimNudgeParams(ProfileParams):
+    kind: Literal["trial", "connector"] = "trial"
+
+
 class FreeTierClaimNudgeResult(Result):
     claimed: bool
 
 
-method("free_tier.claim_nudge", params=ProfileParams, result=FreeTierClaimNudgeResult,
+method("free_tier.claim_nudge", params=FreeTierClaimNudgeParams, result=FreeTierClaimNudgeResult,
        doc="Claim the due sign-in offer; true for exactly one caller each time an offer comes due.")
 
 
@@ -473,6 +475,8 @@ class ModelCapabilities(Result):
 
     fast: bool
     ultrafast: bool = False
+    # This account's Codex catalog lists ``daybreak_blue`` for the model (``agent/codex_service_tiers.py``).
+    daybreak: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
 
@@ -558,6 +562,9 @@ class ModelOptionProvider(OpenModel):
     free_tier_pending: bool | None = None
     free_tier_row: bool | None = None
     unavailable_models: list[str] | None = None
+    plan_usage: PlanUsage | None = None
+    # Usage-window plans only: the gateway's per-plan word per model (free / low / medium / top_tier).
+    usage_levels: dict[str, str] | None = None
     limit: ProviderLimit | None = None
     usage: ProviderUsage | None = None
 
@@ -595,6 +602,37 @@ class ImageGenerateResult(Result):
 
 method("image.generate", params=ImageGenerateParams, result=ImageGenerateResult,
        doc="Generate an image through the tool's provider dispatcher and hand the renderer a data URL.")
+
+
+# ── image.render ──────────────────────────────────────────────────────────────────────────────
+
+
+class ImageRenderParams(Params):
+    path: str
+    cols: int  # cell budget; the image keeps its aspect inside it and never upscales
+    rows: int
+    graphics: bool = False  # the client owns a real terminal and can take escapes
+    # The client's own ``auto`` pick from its terminal's env (ui-tui lib/terminalGraphics.ts); the
+    # gateway's env names no client's terminal.
+    terminal: Literal["kitty", "unicode"] = "unicode"
+
+
+class ImageRenderResult(Result):
+    """``mode`` follows ``display.inline_images``. ``kitty``: write ``transmit`` once, then paint
+    ``placeholder`` rows in ``color``. ``unicode``: paint ``cells`` (``[tr,tg,tb,ta, br,bg,bb,ba]``)
+    as half-blocks. ``off``: inline images are disabled or the file is not a readable image."""
+
+    mode: Literal["kitty", "unicode", "off"]
+    cols: int | None = None
+    rows: int | None = None
+    color: str | None = None
+    transmit: str | None = None
+    placeholder: list[str] | None = None
+    cells: list[list[list[int]]] | None = None
+
+
+method("image.render", params=ImageRenderParams, result=ImageRenderResult,
+       doc="Lay out a local image for an inline terminal preview (kitty placeholders or half-blocks).")
 
 
 # ── session.control ───────────────────────────────────────────────────────────────────────────

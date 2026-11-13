@@ -1,10 +1,23 @@
-import { type BrowserWindow, ipcMain, type Rectangle, screen } from 'electron'
+import { type BrowserWindow, ipcMain, type IpcMainEvent, type Rectangle, screen } from 'electron'
 
 import type { WindowSizeMode } from './window-size-types'
 import { windowSize } from './window-state'
 
+type SizeRequestListener = (event: Pick<IpcMainEvent, 'sender'>, mode: WindowSizeMode) => void
+
+/** The Electron surface window sizing uses: the size IPC and the display under a window. */
+export interface WindowSizingHost {
+  onSizeRequest: (listener: SizeRequestListener) => void
+  workAreaOf: (bounds: Rectangle) => Rectangle
+}
+
+const electronHost: WindowSizingHost = {
+  onSizeRequest: listener => ipcMain.on('hermes:window:size', listener),
+  workAreaOf: bounds => screen.getDisplayMatching(bounds).workArea
+}
+
 interface WindowSizingOptions {
-  enabled: boolean
+  host?: WindowSizingHost
   mainWindow: () => BrowserWindow | null
 }
 
@@ -47,20 +60,41 @@ function sizedBounds(mode: WindowSizeMode, bounds: Rectangle, workArea: Rectangl
   return width === bounds.width && height === bounds.height ? null : centeredBounds(workArea, width, height)
 }
 
-export function registerWindowSizing({ enabled, mainWindow }: WindowSizingOptions): void {
-  ipcMain.on('hermes:window:size', (event, mode: WindowSizeMode) => {
+// The bounds each window had when onboarding sized it. Normal puts them back, so an intro replayed
+// from Settings leaves an existing user's window where it was.
+const beforeOnboarding = new WeakMap<BrowserWindow, Rectangle>()
+
+export function registerWindowSizing({ host = electronHost, mainWindow }: WindowSizingOptions): void {
+  host.onSizeRequest((event, mode) => {
     const win = mainWindow()
 
-    if (!enabled || !win || win.isDestroyed() || event.sender !== win.webContents) {
+    if (!win || win.isDestroyed() || event.sender !== win.webContents) {
       return
     }
 
-    if ((mode !== 'normal' && mode !== 'onboarding') || win.isMaximized() || win.isFullScreen()) {
+    if (mode !== 'normal' && mode !== 'onboarding') {
+      return
+    }
+
+    const before = beforeOnboarding.get(win)
+    beforeOnboarding.delete(win)
+
+    if (win.isMaximized() || win.isFullScreen()) {
       return
     }
 
     const bounds = win.getBounds()
-    const next = sizedBounds(mode, bounds, screen.getDisplayMatching(bounds).workArea)
+
+    if (mode === 'onboarding') {
+      beforeOnboarding.set(win, bounds)
+    } else if (before) {
+      // The user's own placement, not one this module chose: window-state.json saves it.
+      win.setBounds(before, true)
+
+      return
+    }
+
+    const next = sizedBounds(mode, bounds, host.workAreaOf(bounds))
 
     if (next) {
       markAppSized(win, next)

@@ -1,0 +1,38 @@
+name: ship-reel
+title: Ship Reel
+repo: https://github.com/AshThunder/ship-reel
+sha: 658a568f1547562a819dad41bff4804bf6d53339
+version: "0.2.1"
+description: "Turns a URL and a one-line brief into a finished product demo reel. The agent plans a shot list and dry-runs it against the live page, records it in headless Chromium, edits it with auto-zoom, a drawn cursor, captions, title and end cards, optional local voice-over and a music bed into 16:9 and 9:16 MP4s, verifies the result (duration, resolution, black or frozen frames, loudness, captions) and fixes what fails, then drafts the post text. It never posts. Disclosure — opens the user-supplied URL and the pages in its shot list in headless Chromium behind a local filtering proxy; runs ffmpeg/ffprobe and local render worker processes; writes only to its plugin data directory (or SHIP_REEL_HOME); with the optional kokoro-onnx extra installed, downloads the Kokoro TTS model (~120 MB) once from its official GitHub release, SHA-256 pinned. Public hosts only: loopback, private, link-local/metadata, CGNAT and reserved addresses are refused for every URL and browser request unless the user sets allow_private_hosts or SHIPREEL_ALLOW_PRIVATE_HOSTS=1. Sign-in, payment, send, submit and delete clicks trigger a Hermes approval prompt via a pre_tool_call hook; typing into password fields is refused. No telemetry, no API keys."
+maintainer: AshThunder
+category: tools
+tier: community
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/AshThunder/ship-reel/blob/658a568f1547562a819dad41bff4804bf6d53339/README.md
+screenshots:
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/658a568f1547562a819dad41bff4804bf6d53339/docs/img/nous-title-card.png
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/658a568f1547562a819dad41bff4804bf6d53339/docs/img/nous-hermes-menu.png
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/658a568f1547562a819dad41bff4804bf6d53339/docs/img/lockwatch-explorer.png
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/658a568f1547562a819dad41bff4804bf6d53339/docs/img/nous-vertical.png
+  - https://raw.githubusercontent.com/AshThunder/ship-reel/658a568f1547562a819dad41bff4804bf6d53339/docs/img/meta-demo-record.png
+readme: true
+capabilities:
+  provides_tools:
+    - plan_reel
+    - record_reel
+    - edit_reel
+    - verify_reel
+    - fix_reel
+    - list_reels
+    - reel_status
+    - draft_post
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Requires ffmpeg and ffprobe on PATH, and Chromium for Playwright (python -m playwright install chromium).
+  - Voice-over is optional and needs pip install "kokoro-onnx>=0.4,<1"; without it reels render with captions and music only.
+  - Records public pages only; flows behind a sign-in are out of scope for this version.
+  - Some sites' own search boxes do not work in a headless browser.
+  - Hosts are refused on machines whose DNS goes through a fake-IP proxy (all names resolve into 198.18.0.0/15); use the allow_private_hosts setting there.

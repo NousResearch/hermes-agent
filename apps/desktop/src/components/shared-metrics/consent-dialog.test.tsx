@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 import { $desktopOnboarding } from '@/store/onboarding'
+import { markOnboardingDecided } from '@/store/onboarding-presence'
 import {
   $sharedMetricsConsent,
   $sharedMetricsDetailsOpen,
@@ -11,6 +12,9 @@ import {
 } from '@/store/shared-metrics'
 
 import { SharedMetricsConsentDialog } from './consent-dialog'
+
+// Onboarding's due check answered "not due": first-run surfaces are free to show.
+markOnboardingDecided()
 
 const copy = en.sharedMetrics
 
@@ -79,15 +83,17 @@ describe('SharedMetricsConsentDialog', () => {
     expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true)
 
     $sharedMetricsDetailsOpen.set(true)
-    const keepLocal = await screen.findByRole('button', { name: copy.local })
+    const noThanks = await screen.findByRole('button', { name: copy.off })
+    expect(screen.getByRole('button', { name: copy.share })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /computer|local/i })).toBeNull()
     // Nothing is preselected: no choice holds focus when the details open.
-    expect(keepLocal.ownerDocument.activeElement).not.toBe(keepLocal)
-    fireEvent.click(keepLocal)
+    expect(noThanks.ownerDocument.activeElement).not.toBe(noThanks)
+    fireEvent.click(noThanks)
 
     await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(false))
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(calls.find(c => c.method === 'shared_metrics.set')?.params).toEqual({
-      enabled: true,
+      enabled: false,
       send: false,
       first_run: true,
       profile: 'havoc'

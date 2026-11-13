@@ -1,0 +1,21 @@
+name: screenrig
+title: screenRIG
+repo: https://github.com/screenrig/plugin
+sha: 37de9fcb22bd1e7e13f881643ac2328b325cb75b
+subdir: plugins/screenrig-agents
+maintainer: screenrig
+tier: community
+category: tools
+requires_hermes: ">=0.22.5"
+version: "26.11.231"
+docs_url: https://screenrig.ai/docs/start/hermes
+readme: true
+platforms: []
+description: "Free, agent-driven digital signage. Your agent pairs Players, uploads images and video, builds pages from docs, sheets and calendars, publishes playlists to TVs and kiosks, and checks each screen with a screenshot. Disclosure — portable Agent Plugin with two bundled skills, a bundled Node.js CLI (readable JavaScript, no binaries; Node.js 22.23.4+, 24.22.1+ or 26.12.1+) that the skill runs through the terminal tool, and one remote MCP server (screenrig-views, https://api.screenrig.ai/mcp, OAuth). The CLI calls api.screenrig.ai, uploads files and fetches URLs the user names, can launch a local headless Chrome/Chromium for card previews, and keeps its own screenRIG sign-in in its config directory; it never reads Hermes's or other tools' credentials. Web-dashboard connections upload the password, authenticator (TOTP) key and cookies the user supplies to screenRIG, which stores them to sign in to that dashboard. Enrollment and sign-in report the install source (\"hermes/catalog\"). Under Hermes the bootstrap makes no update check and never replaces its own files. Write operations change what physical screens show and can spend screenRIG account credit on advertising."
+known_issues:
+  - "The optional screenrig-views MCP server needs a native OAuth entry: hermes mcp add screenrig-views --url https://api.screenrig.ai/mcp --auth oauth, then hermes mcp login screenrig-views. The skill's CLI workflow does not need it."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

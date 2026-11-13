@@ -10,6 +10,8 @@ def build_whatsapp_parser(subparsers, *, cmd_whatsapp: Callable) -> None:
     whatsapp_parser = subparsers.add_parser(
         "whatsapp", help="Set up WhatsApp integration",
         description="Configure WhatsApp and pair via QR code")
+    whatsapp_parser.add_argument("--passkey-browser", metavar="EXECUTABLE",
+                                 help="Local Chrome/Edge executable for interactive passkey verification")
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
 
 

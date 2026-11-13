@@ -81,16 +81,27 @@ async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
     class FakeAdapter:
         def __init__(self) -> None:
             self.scheduler = None
+            self._background_tasks = set()
 
         def set_notification_scheduler(self, scheduler) -> None:
             self.scheduler = scheduler
 
     class FakePipeline:
+        """Accept persists the job; processing (Graph fetch, transcript, summary) blocks until released."""
+
         def __init__(self) -> None:
             self.notifications = []
+            self.release = asyncio.Event()
 
-        async def run_notification(self, notification):
-            self.notifications.append(notification)
+        def create_job_from_notification(self, notification):
+            return SimpleNamespace(job_id=f"job-{notification['id']}", status="received")
+
+        async def run_job(self, job_id):
+            await self.release.wait()
+            self.notifications.append({"id": job_id.removeprefix("job-")})
+
+        async def run_notification(self, notification):  # TeamsMeetingPipeline: accept, then run inline
+            return await self.run_job(self.create_job_from_notification(notification).job_id)
 
     adapter = FakeAdapter()
     pipeline = FakePipeline()
@@ -110,7 +121,11 @@ async def test_bind_gateway_runtime_attaches_scheduler(monkeypatch, tmp_path):
     assert callable(adapter.scheduler)
 
     notification = {"id": "notif-1"}
-    await adapter.scheduler(notification, object())
+    # The webhook's 202 waits only for the durable accept, never for the processing pipeline.
+    await asyncio.wait_for(adapter.scheduler(notification, object()), timeout=1)
+    assert pipeline.notifications == []
+    pipeline.release.set()
+    await asyncio.gather(*adapter._background_tasks)
     assert pipeline.notifications == [notification]
 
 

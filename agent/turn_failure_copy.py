@@ -13,13 +13,30 @@ import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
+from agent.stream_max_lifetime import StreamLifetimeExceeded
 from hermes_constants import display_hermes_home
 
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
     "context_overflow", "truncated", "invalid_response", "empty_response", "loop_error",
-    "interpreter_shutdown", "session_busy",
+    "interpreter_shutdown", "session_busy", "gateway_connection", "host_error",
 })
+
+
+def launch_credentials_copy(error: Any) -> str:
+    """The refusal for a session whose own launch/route API key changed or is gone (``RuntimeStoreError``
+    or an RPC refusal carrying ``field``/``detail``). A session never sends a different key than it
+    started with, so /retry repeats the refusal: the copy names /new on every surface."""
+    from agent.i18n import t
+
+    data = getattr(error, "data", None)
+    data = data if isinstance(data, dict) else {}
+    field = getattr(error, "field", None) or data.get("field")
+    detail = getattr(error, "detail", None) or data.get("detail")
+    named = f" ({field}: {detail or 'unavailable'})" if field else ""
+    text = t("gateway.errors.launch_credentials_unavailable", detail=named)
+    # The raw code + field stay greppable for bug reports and log matching (untranslated, last line).
+    return f"{text}\n\nDetails: launch_credentials_unavailable{named}" if field else text
 
 
 def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[str, Any]:
@@ -43,16 +60,41 @@ PARTIAL_FAILED_TURN_NOTICE = (
     "This turn did not complete. Some actions may already have run; verify their effects "
     "before resending."
 )
+# A turn no person sent (a cron run, a process completion, a webhook delivery) lost across a gateway
+# restart, or fenced inside the running owner (a lost managed worker): it settles interrupted and is
+# never re-run, so nobody is asked to resend it (#134889 GW-10). Neutral: not every path restarted.
+AUTOMATION_INTERRUPTED_NOTICE = (
+    "An automated delivery was interrupted and was not run again. Some "
+    "actions may already have run; verify their effects."
+)
+# Durable tail roles a failed turn leaves open: its accepted ``user`` row, or the ``tool`` row of a
+# call that ran before the failure. An ``assistant`` tail is already closed (a reply or a boundary).
+OPEN_TURN_TAIL_ROLES = frozenset({"user", "tool"})
 # ``messages.display_kind`` of that row: display-only (stripped before every provider request),
 # so renderers show a Hermes notice and room pollers never read it as the model's reply.
 FAILED_TURN_DISPLAY_KIND = "failed_turn"
+
+
+# ---- safety-refused turn, retained for display only -------------------------------------------
+# A content-policy refusal is deterministic for the unchanged conversation (the filter judges the
+# whole thread), so the whole refused turn leaves the MODEL's context — otherwise every later
+# message re-trips the filter and the chat locks (the "stuck session" report). But the user keeps
+# SEEING their message: the user row is retained in the DISPLAY projection (never the model read)
+# and tagged with this display_kind, while the raw tool rounds + refusal detail collapse into
+# CONTENT_REFUSED_NOTICE. Rendered cross-surface (Desktop, CLI/TUI, ACP) as a greyed block.
+CONTENT_REFUSED_DISPLAY_KIND = "content_refused"
+CONTENT_REFUSED_NOTICE = (
+    "This message was refused by the model's safety filter — try a different query."
+)
+# messages.display_metadata key carrying the stored notice, so every surface renders one copy.
+CONTENT_REFUSED_METADATA_KEY = "content_refused"
 
 
 def untyped_failed_turn_display_kind(role: Any, content: Any) -> Optional[str]:
     """``FAILED_TURN_DISPLAY_KIND`` for a boundary row persisted before the closers typed it
     (exact notice text, so a real reply quoting it stays a reply); read-side only."""
     if role == "assistant" and isinstance(content, str) and content.strip() in (
-        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE,
+        FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE, AUTOMATION_INTERRUPTED_NOTICE,
     ):
         return FAILED_TURN_DISPLAY_KIND
     return None
@@ -209,6 +251,12 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "didn't answer and retrying won't help. Check the account with the provider, or switch "
         "models with /model."
     ),
+    FailoverReason.data_policy_denied.value: (
+        "This conversation holds a result from a connected app that may only go to a model that "
+        "does not train on your data, and '{model}' on {label} can't promise that. Switch models "
+        "with /model, run /compress to summarize the result away, or start fresh with /new. If you "
+        "are on the free tier, no free model can take this content: upgrade, or use /compress or /new."
+    ),
     FailoverReason.upstream_blocked.value: (
         "A firewall/CDN in front of {label} blocked the request before it reached the model, so "
         "your key is probably fine. Set a custom User-Agent via the provider's extra_headers, check "
@@ -228,8 +276,10 @@ _AUTH_COPY: dict[str, str] = {
 }
 
 CONTENT_POLICY_NEXT_STEPS = (
-    "Try rewording your message or removing sensitive attachments, or switch to another "
-    "model with /model."
+    "That message has been left out of this conversation, so you're not stuck — just ask "
+    "something else and you can keep going. Rewording it, removing any sensitive attachments, "
+    "or switching models with /model can also help. If a later message is refused too, start a "
+    "new chat with /new (in a Bot Chat, Archive it from its tab menu)."
 )
 
 # ---- one reason → "what happened" gloss, shared by cron, subagent and chat notices ------------
@@ -253,6 +303,9 @@ FAILURE_CAUSE_GLOSS: dict[str, str] = {
     FailoverReason.content_policy_blocked.value: "the AI model service's safety filter rejected the request",
     FailoverReason.provider_policy_blocked.value: (
         "the AI model service refused the request because of a policy on the account"
+    ),
+    FailoverReason.data_policy_denied.value: (
+        "{possessive} context holds a connected-app result that needs a model that does not train on data"
     ),
     "context_overflow": "{possessive} request grew too large for the model",
     "payload_too_large": "{possessive} request grew too large for the model",
@@ -360,9 +413,16 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None,
+                   error: Any = None) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
-    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
+    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401).
+    A stream cut by ``agent.stream_max_lifetime`` names the setting: the provider was responding,
+    so neither waiting nor a backup provider helps."""
+    if isinstance(error, StreamLifetimeExceeded):
+        return (f"The response was still streaming when agent.stream_max_lifetime ({error.cap:g}s) cut it, "
+                f"on all {attempts} attempts. Raise agent.stream_max_lifetime, or set it to 0 to turn the "
+                "cap off, if this model legitimately streams this long.")
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
         reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
@@ -402,7 +462,16 @@ def oauth_relogin_command(provider: Any) -> str:
     slug = str(provider or "").strip().lower()
     if slug == "nous":
         return f"hermes {profile_cli_selector()}portal"
+    if _login_owned_by_external_cli(slug):
+        # `auth add` refuses a plugin with no auth_handler; the model flow runs the vendor CLI's login.
+        return f"hermes {profile_cli_selector()}model"
     return f"hermes {profile_cli_selector()}auth add {slug} --type oauth"
+
+
+def _login_owned_by_external_cli(slug: str) -> bool:
+    from hermes_cli.auth_plugin_providers import plugin_auth_handler, plugin_profile
+
+    return getattr(plugin_profile(slug), "auth_type", "") == "external_process" and plugin_auth_handler(slug) is None
 
 
 def relogin_command_hint(provider: Any) -> str:
@@ -417,7 +486,7 @@ def relogin_command_hint(provider: Any) -> str:
         return f"hermes {profile_cli_selector()}auth add <provider>"
     from agent.error_surface import auth_kind
 
-    if auth_kind(slug) == "oauth":
+    if _login_owned_by_external_cli(slug) or auth_kind(slug) == "oauth":
         return oauth_relogin_command(slug)
     return f"hermes {profile_cli_selector()}auth add {slug}"
 

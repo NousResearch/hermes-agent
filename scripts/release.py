@@ -67,17 +67,16 @@ def list_remotes() -> list[str]:
 def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
     """Dispatch the release pipeline after its draft exists.
 
-    Stable workflows run on the tag so all reusable checks see the same
-    commit. Their gate owns artifact publication and channel promotion.
-    Canary builds keep default-branch workflow/cache scope and tagged inputs.
-    Explicit dispatch also works for tags created by GITHUB_TOKEN.
+    Both channels run the default-branch workflow with the tag as an input, so
+    caches share one scope and scripts come from main. A stable run resolves its
+    claim tag to the commit under test. Its gate owns artifact publication and
+    channel promotion. Explicit dispatch also works for tags created by GITHUB_TOKEN.
     """
     canary = _CANARY_TAG_RE.fullmatch(tag) is not None
     if not canary and not STABLE_TAG_RE.fullmatch(tag):
         raise ValueError("Expected an exact stable or canary release tag")
     workflow = "desktop-bundled-release.yml" if canary else "stable-release.yml"
-    cmd = ["gh", "workflow", "run", workflow, "--ref", "main" if canary else tag,
-           "-f", f"tag={tag}"]
+    cmd = ["gh", "workflow", "run", workflow, "--ref", "main", "-f", f"tag={tag}"]
     if canary:
         cmd += ["-f", "upload_release=true"]
     if gh_repo:
@@ -88,7 +87,7 @@ def dispatch_desktop_build(tag: str, gh_repo: str | None) -> bool:
         print(f"    Start it manually: {' '.join(cmd)}")
         return False
 
-    dispatch_ref = (_default_branch(gh_repo) or "main") if canary else tag
+    dispatch_ref = _default_branch(gh_repo) or "main"
     cmd[cmd.index("--ref") + 1] = dispatch_ref
 
     result = subprocess.run(
@@ -420,6 +419,22 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     return "\n".join(lines)
 
 
+# The builds-table job later splices its downloads into the draft, under the same GitHub limit.
+BUILDS_TABLE_ROOM = 10_000
+
+
+def _canary_notes(commits, tag: str, version: str, *, since: str | None, no_changelog: bool) -> str:
+    """The draft body: the changelog, or only its link when the list would not fit GitHub's limit."""
+    from scripts.releases.entrypoint import GITHUB_BODY_LIMIT
+
+    notes = generate_changelog(commits, tag, version, prev_tag=since, no_changelog=no_changelog)
+    if len(notes) <= GITHUB_BODY_LIMIT - BUILDS_TABLE_ROOM:
+        return notes
+    print(f"⚠ The changelog is {len(notes):,} characters, over GitHub's {GITHUB_BODY_LIMIT:,} once the builds "
+          "table is added. The draft links the full changelog instead of listing it.")
+    return generate_changelog(commits, tag, version, prev_tag=since, no_changelog=True)
+
+
 def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path | None = None) -> None:
     """Converge a tag-pushed canary through draft, dispatch, and protected head."""
     ref = f"refs/tags/{tag}"
@@ -446,9 +461,13 @@ def _resume_canary(tag: str, remote: str, repository: str, *, notes_file: Path |
             "--verify-tag", "--draft", "--prerelease",
             "--title", f"Hermes Agent canary {tag}",
         ]
-        create.extend(["--notes-file", str(notes_file)] if notes_file else ["--generate-notes"])
+        # GitHub's generated notes cover every pull request since the last published release, unbounded.
+        notes = None if notes_file else generate_changelog(
+            [], tag, tag[1:], repo_url=f"https://github.com/{repository}", no_changelog=True
+        )
+        create.extend(["--notes-file", str(notes_file) if notes_file else "-"])
         created = subprocess.run(
-            create, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+            create, input=notes, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
             check=False,
         )
         if created.returncode != 0:
@@ -531,9 +550,7 @@ def cmd_canary(args) -> None:
 
     version = tag_name.lstrip("v")
     print(f"Canary: {tag_name} ({len(commits)} commits since {since})")
-    changelog = generate_changelog(
-        commits, tag_name, version, prev_tag=since, first_release=False, no_changelog=args.no_changelog
-    )
+    changelog = _canary_notes(commits, tag_name, version, since=since, no_changelog=args.no_changelog)
 
     if not args.publish:
         print(changelog)
@@ -648,25 +665,23 @@ def main():
     release_cmd = subcommands.add_parser(
         "release", help="Claim a version, cut a draft, and dispatch the gate")
     release_cmd.add_argument("--commit", required=True, metavar="SHA",
-                             help="The main commit to release")
+                             help="The commit to release; it must be on main or a release/* branch")
     release_cmd.add_argument("--bump", choices=["major", "minor", "patch"], default="patch")
     release_cmd.add_argument("--autopublish", action="store_true",
                              help="Publish on green instead of leaving a draft")
-    release_cmd.add_argument("--skip-bundles", action="store_true",
-                             help="Release only the tag and the Docker image: no desktop, Termux or "
-                                  "PM bundle builds, smokes, feeds or Store check. The desktop update "
-                                  "channel stays on the previous bundle release.")
-    release_cmd.add_argument("--skip-tests", action="store_true",
-                             help="Emergency release: skip CI, Nix, PM bundle, install/update E2E, "
-                                  "Termux, Windows, native smoke and upgrade acceptance jobs. "
-                                  "Artifacts still build and publish.")
-    release_cmd.add_argument("--include-macos-intel", action="store_true",
-                             help="Also build, test and publish the macOS Intel (darwin-x64) desktop "
-                                  "bundle. Off by default: Intel macOS is not supported on main and "
-                                  "its runner adds over an hour to the release.")
-    release_cmd.add_argument("--include-termux", action="store_true",
-                             help="Also build, test and publish the Termux (Android aarch64) APT "
-                                  "package. Off by default.")
+    from scripts.releases import lanes as lane_set
+
+    release_cmd.add_argument("--only", action="append", metavar="LANES",
+                             help="Start from exactly these lanes instead of the default set "
+                                  "(comma-separated, repeatable).")
+    release_cmd.add_argument("--with", dest="with_lanes", action="append", metavar="LANES",
+                             help="Also build or test these lanes (comma-separated, repeatable).")
+    release_cmd.add_argument("--without", dest="without_lanes", action="append", metavar="LANES",
+                             help="Do not build or test these lanes (comma-separated, repeatable).")
+    release_cmd.epilog = ("Lanes (default on unless noted): "
+                          + "; ".join(f"{lane.name}{'' if lane.default else ' (off)'} = {lane.doc}"
+                                      for lane in lane_set.LANES))
+    release_cmd.formatter_class = argparse.RawDescriptionHelpFormatter
     # SUPPRESS keeps a --no-changelog given before the subcommand from being
     # reset by this parser's default.
     release_cmd.add_argument("--no-changelog", action="store_true", default=argparse.SUPPRESS,

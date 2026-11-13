@@ -2,7 +2,8 @@
 
 Two helpers make that visible without changing the numeric value used: a label for every
 surface that renders the context window, and a one-time startup warning when the pin
-disagrees with what the provider is known to advertise for the model.
+disagrees with what the provider is known to advertise for the model. The same label marks a
+window the resolver only defaulted to (``fallback``), so it is not read as a detected limit.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _warned_pins: set = set()
+_MARKER_SUFFIX = {"pinned": " (pinned)", "fallback": " (fallback)"}
 
 
 def is_context_pinned(context_length, config_context_length) -> bool:
@@ -27,6 +29,55 @@ def is_context_pinned(context_length, config_context_length) -> bool:
 def context_pin_suffix(context_length, config_context_length) -> str:
     """`` (pinned)`` when the shown value comes from ``model.context_length``, else ``""``."""
     return " (pinned)" if is_context_pinned(context_length, config_context_length) else ""
+
+
+def is_fallback_context_length(context_length, *, model: str, provider: str = "", base_url: str = "") -> bool:
+    """True when ``context_length`` is a default the resolver fell back to for ``model`` on this route (Bedrock's
+    static 128K, or the generic 256K), not a known or detected limit. The resolver records that itself
+    (agent.context_default_record), so this agrees with every source it consults; ``provider`` is accepted for
+    call-site symmetry. Fail-open: False on any error."""
+    if type(context_length) is not int or context_length <= 0 or not isinstance(model, str) or not model:
+        return False
+    try:
+        from agent.context_default_record import was_context_defaulted
+        return was_context_defaulted(context_length, model, base_url)
+    except Exception:
+        logger.debug("context fallback check failed for %s", model, exc_info=True)
+        return False
+
+
+def context_window_marker(context_length, config_context_length, *, model: str, provider: str = "",
+                          base_url: str = "") -> str:
+    """``"pinned"`` (the ``model.context_length`` pin), ``"fallback"`` (a default, not a known limit) or ``""``."""
+    if is_context_pinned(context_length, config_context_length):
+        return "pinned"
+    fallback = is_fallback_context_length(context_length, model=model, provider=provider, base_url=base_url)
+    return "fallback" if fallback else ""
+
+
+def context_window_suffix(context_length, config_context_length, **route) -> str:
+    """`` (pinned)`` / `` (fallback)`` / ``""`` for a rendered window; ``route`` is model, provider, base_url."""
+    return _MARKER_SUFFIX.get(context_window_marker(context_length, config_context_length, **route), "")
+
+
+def agent_context_marker(agent) -> str:
+    """:func:`context_window_marker` for an agent's live compressor window."""
+    compressor = getattr(agent, "context_compressor", None)
+    pin = getattr(compressor, "_config_context_length", getattr(agent, "_config_context_length", None))
+    # The compressor's route is what resolved the window; the agent's is the fallback for doubles without one.
+    route = {name: getattr(compressor, name, None) or getattr(agent, name, "") or "" for name in ("model", "provider", "base_url")}
+    window = getattr(compressor, "context_length", None)  # first: reading it resolves the window
+    own = getattr(compressor, "_context_default", None)  # (model, base_url, defaulted window | None) from that lookup
+    if isinstance(own, tuple) and len(own) == 3 and own[:2] == (getattr(compressor, "model", None), getattr(compressor, "base_url", None)):
+        if is_context_pinned(window, pin):
+            return "pinned"
+        return "fallback" if type(own[2]) is int and own[2] == window else ""
+    return context_window_marker(window, pin, **route)
+
+
+def agent_context_suffix(agent) -> str:
+    """`` (pinned)`` / `` (fallback)`` / ``""`` for an agent's live compressor window."""
+    return _MARKER_SUFFIX.get(agent_context_marker(agent), "")
 
 
 def advertised_context_length(model: str, base_url: str = "") -> Optional[int]:

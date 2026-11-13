@@ -60,7 +60,8 @@ def _run_script_job(home: WinHome, script: str, env_extra: dict[str, str] | None
     assert created.returncode == 0 and match, created.tail()
     job_id = match.group(1)
     ran = hermes(home, "cron", "run", job_id, cwd=home.profile, env_extra=env_extra)
-    assert ran.returncode == 0 and "Ran now:" in ran.stdout, f"job did not run synchronously:\n{ran.tail()}"
+    # A synchronous failure exits 1 by contract ("Ran now: failed."); the caller judges it.
+    assert ran.returncode in (0, 1) and "Ran now:" in ran.stdout, f"job did not run synchronously:\n{ran.tail()}"
     jobs = json.loads((home.hermes_home / "cron" / "jobs.json").read_text(encoding="utf-8"))["jobs"]
     job = next(j for j in jobs if j["id"] == job_id)
     outputs = sorted((home.hermes_home / "cron" / "output" / job_id).glob("*.md"))

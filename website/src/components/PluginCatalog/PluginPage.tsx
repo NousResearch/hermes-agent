@@ -8,6 +8,7 @@ import {
   authorPagePath,
   categoryOf,
   desktopInstallLink,
+  docsHref,
   formatDate,
   formatStars,
   pinUrl,
@@ -72,6 +73,7 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
   const { prose, disclosures } = splitDisclosure(plugin.description || "");
   const repo = repoUrl(plugin);
   const pinned = pinUrl(plugin);
+  const docs = docsHref(plugin);
   const readmeFileUrl = data.readmeSourceUrl
     ? data.readmeSourceUrl
         .replace(/^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([0-9a-f]{40})\//, "https://github.com/$1/$2/blob/$3/")
@@ -155,11 +157,6 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
               )}
             </p>
             {prose && <p className={styles.lede}>{prose}</p>}
-            {disclosures.map((text) => (
-              <aside key={text} className={styles.disclosure} role="note">
-                <strong>Disclosure</strong> — {text}
-              </aside>
-            ))}
 
             <div className={styles.actions}>
               <a
@@ -179,8 +176,8 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
               <a className={styles.link} href={pinned} target="_blank" rel="noopener noreferrer" title={plugin.sha}>
                 Reviewed source @ {plugin.shaShort} ↗
               </a>
-              {plugin.docsUrl && (
-                <a className={styles.link} href={plugin.docsUrl} target="_blank" rel="noopener noreferrer">Documentation ↗</a>
+              {docs && (
+                <a className={styles.link} href={docs} target="_blank" rel="noopener noreferrer">Documentation ↗</a>
               )}
             </div>
           </div>
@@ -275,6 +272,17 @@ export default function PluginPage({ data }: { data: PluginPageData }) {
               </p>
             </aside>
           </div>
+
+          {disclosures.length > 0 && (
+            <section className={styles.section} aria-labelledby="disclosure">
+              <h2 id="disclosure" className={styles.sectionTitle}>Disclosure</h2>
+              {disclosures.map((text) => (
+                <aside key={text} className={styles.disclosure} role="note">
+                  {text}
+                </aside>
+              ))}
+            </section>
+          )}
 
           {author && moreByAuthor.length > 0 && (
             <section className={styles.section} aria-labelledby="more-by">

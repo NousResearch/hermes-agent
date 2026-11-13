@@ -32,7 +32,8 @@ class ApiServerMemorySessions:
     """Session-keyed ``MemoryManager`` registry with exclusive check-out/check-in."""
 
     def __init__(self, *, max_size: Optional[int] = None, idle_ttl_secs: Optional[float] = None) -> None:
-        self._entries: OrderedDict[tuple[str, str], tuple[Any, Optional[Path], float]] = OrderedDict()
+        # (manager, owning home, last check-in on the monotonic clock, the same on the wall clock)
+        self._entries: OrderedDict[tuple[str, str], tuple[Any, Optional[Path], float, float]] = OrderedDict()
         self._lock = threading.Lock()
         self._max_size = max_size
         self._idle_ttl_secs = idle_ttl_secs
@@ -63,13 +64,22 @@ class ApiServerMemorySessions:
     # -- check-out / check-in ----------------------------------------------------------------
 
     def checkout(self, session_id: Optional[str]) -> Optional[Any]:
-        """The manager a previous request on ``session_id`` checked in, or None (build a new one)."""
+        """The manager a previous request on ``session_id`` checked in, or None (build a new one).
+        One checked in before the retry horizon is shut down instead: a housekeeping sweep's fence
+        on an id ages out at that horizon, so the id may now name a new session, which must not
+        get its previous session's recall."""
         if not session_id:
             return None
         home_key, _home = self._owner_home()
         with self._lock:
             entry = self._entries.pop((home_key, session_id), None)
-        return entry[0] if entry else None
+        if entry is None:
+            return None
+        from hermes_state_mutation_retirement import RETRY_HORIZON_S
+        if time.time() - entry[3] > RETRY_HORIZON_S:
+            self._shutdown_async(entry[0], entry[1])
+            return None
+        return entry[0]
 
     def checkin(self, agent: Any) -> None:
         """Park ``agent``'s manager under the session the turn ended on (``agent.session_id`` carries a
@@ -86,8 +96,8 @@ class ApiServerMemorySessions:
             displaced = self._entries.pop((home_key, session_id), None)
             if displaced is not None and displaced[0] is not manager:
                 doomed.append((displaced[0], displaced[1]))
-            self._entries[(home_key, session_id)] = (manager, home, now)
-            for key, (mgr, owner, last_used) in list(self._entries.items()):
+            self._entries[(home_key, session_id)] = (manager, home, now, time.time())
+            for key, (mgr, owner, last_used, _wall) in list(self._entries.items()):
                 if mgr is manager:
                     continue
                 if now - last_used > idle_ttl or len(self._entries) > max_size:
@@ -101,7 +111,7 @@ class ApiServerMemorySessions:
         with self._lock:
             entries = list(self._entries.values())
             self._entries.clear()
-        for mgr, owner, _ in entries:
+        for mgr, owner, *_ in entries:
             self._shutdown(mgr, owner)
 
     # -- teardown -------------------------------------------------------------------------------

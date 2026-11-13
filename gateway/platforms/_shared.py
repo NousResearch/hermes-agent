@@ -167,12 +167,104 @@ def yaml_env_setter() -> Callable[[str, Any], None]:
     return set_env
 
 
-def send_error(message: Any) -> dict:
+def send_error(message: Any, *, nothing_sent: bool = False) -> dict:
     """Standalone-sender failure envelope with vendor exception text redacted (the same helper
     ``send_message`` uses), so a token or signed URL in an httpx/aiohttp error never reaches the
-    model transcript."""
+    model transcript.
+
+    ``nothing_sent=True`` adds ``"retryable": True``: the sender PROVES nothing reached the chat
+    (no credential, or the connection failed before the request left). Only that marker lets cron
+    queue the payload for a post-reconnect replay; any other failure may already be on screen, so
+    a replay would post it twice."""
     from tools.send_message_senders import _error
-    return _error(str(message))
+    return {**_error(str(message)), **({"retryable": True} if nothing_sent else {})}
+
+
+# Transport errors raised before a request is written: the connection (or a pool slot) was never
+# obtained. Matched by class name so this module stays free of httpx/aiohttp imports. A read or
+# write timeout, a reset, or any server answer is NOT here: the request may have been delivered.
+_NEVER_LEFT_ERRORS = frozenset({
+    "ConnectError", "ConnectTimeout", "PoolTimeout",  # httpx
+    "ClientConnectorError", "ClientConnectorDNSError", "ClientProxyConnectionError",  # aiohttp
+    "ConnectionTimeoutError", "ConnectionRefusedError"})
+
+
+def request_never_left(exc: BaseException) -> bool:
+    """True when ``exc`` (or a cause it wraps) proves the request was never sent."""
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        cur = stack.pop()
+        if id(cur) in seen:
+            continue
+        seen.add(id(cur))
+        if any(cls.__name__ in _NEVER_LEFT_ERRORS for cls in type(cur).__mro__):
+            return True
+        stack.extend(x for x in (cur.__cause__, cur.__context__) if x is not None)
+    return False
+
+
+# What a standalone send put in the chat, as ``delivery_state`` reads it off a result dict. Only
+# NONE licenses a whole-payload replay; PARTIAL carries the ids that landed in
+# ``delivered_message_ids``; UNCERTAIN is a request that may have landed without a receipt.
+DELIVERED, PARTIAL, UNCERTAIN, NONE = "delivered", "partial", "uncertain", "none"
+
+
+class DeliveryOutcome:
+    """The delivery record of ONE logical standalone send, across every attempt, endpoint and
+    chunk. A sender marks each receipt (``landed``) and each attempt that may have reached the chat
+    without one (``ambiguous``, e.g. a 5xx it then retried); ``failure`` reads the whole history, so
+    a final connect error can never erase an earlier possibly delivered attempt."""
+
+    def __init__(self) -> None:
+        self.message_ids: list[str] = []
+        self.has_landed = False
+        self.is_ambiguous = False
+
+    def landed(self, message_id: Any = None) -> None:
+        self.has_landed = True
+        if message_id is not None:
+            self.message_ids.append(str(message_id))
+
+    def ambiguous(self) -> None:
+        self.is_ambiguous = True
+
+    def split_fields(self) -> dict:
+        """Success-envelope fields of a send split into several messages: every landed id."""
+        return {"delivered_message_ids": list(self.message_ids)} if len(self.message_ids) > 1 else {}
+
+    def failure(self, error: dict, *, never_sent: bool = False) -> dict:
+        """``error`` stamped with this send's state. ``never_sent`` = the FINAL failure proves its own
+        request never left or was refused; it means NONE only when nothing earlier landed or may have.
+        An ``error`` already stamped by an inner sender keeps what IT saw landing or maybe landing."""
+        inner = error.get("delivery")
+        ids = list(dict.fromkeys([*self.message_ids, *delivered_message_ids(error)]))
+        if self.has_landed or ids or inner == PARTIAL:
+            state = PARTIAL
+        else:
+            state = UNCERTAIN if self.is_ambiguous or inner == UNCERTAIN or not (never_sent or inner == NONE) else NONE
+        out = {k: v for k, v in error.items() if k not in ("retryable", "delivered_message_ids")}
+        out["delivery"] = state
+        if ids:
+            out["delivered_message_ids"] = ids
+        return {**out, "retryable": True} if state == NONE else out
+
+
+def delivery_state(result: Any) -> str:
+    """DELIVERED / PARTIAL / UNCERTAIN / NONE for a standalone sender's result dict. Senders that
+    predate ``DeliveryOutcome`` are read by their envelope: success, an explicit ``retryable``
+    (``send_error(nothing_sent=True)``: nothing sent), else a failure that may have landed."""
+    if not isinstance(result, dict) or not result.get("error"):
+        return DELIVERED
+    if result.get("delivery") in (PARTIAL, UNCERTAIN, NONE):
+        return result["delivery"]
+    return NONE if result.get("retryable") is True else UNCERTAIN
+
+
+def delivered_message_ids(result: Any) -> list[str]:
+    """Ids a standalone send put in the chat (every landed chunk), ``[]`` when none are known."""
+    ids = result.get("delivered_message_ids") if isinstance(result, dict) else None
+    return [str(i) for i in ids or () if i is not None]
 
 
 # kind -> (applies-when predicate over (cfg, key), env encoder). "lower"/"json" bridge whenever the key
@@ -240,6 +332,16 @@ def env_is_connected(*names: str) -> Callable[[Any], bool]:
         return all((gateway_mod.get_env_value(name) or "").strip() for name in names)
 
     return is_connected
+
+
+def config_connected_extra(*keys: str) -> Callable[[Any], bool]:
+    """``PlatformEntry.config_connected_fn``: connected when the merged PlatformConfig carries a
+    token/api_key or every ``extra`` key (no env fallback; that is ``is_connected``'s job)."""
+
+    def config_connected(config: Any) -> bool:
+        return bool(config.token or config.api_key) or all(config.extra.get(k) for k in keys)
+
+    return config_connected
 
 
 def coerce_port(value: Any, default: int) -> int:

@@ -1,0 +1,26 @@
+name: hermes-bim-studio
+repo: https://github.com/stupidburgers/hermes-bim-studio
+sha: "356c5f51e6ea6c21ff137a8b724344a4a32ea8a5"
+subdir: plugin
+description: "Inspect local IFC files: report wall/slab BaseQuantities and door/window counts, optionally price only these four categories using caller-supplied rates, and generate an interactive offline 3D viewer. Disclosure — reads any local IFC file path the model or user supplies (parsed in-process by the ifcopenshell native library) and writes its .xlsx/.html reports only under HERMES_HOME/plugin-data/hermes-bim-studio/; the generated files embed the IFC path, its SHA-256, quantities, element IDs and model geometry. No network calls."
+maintainer: stupidburgers
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+version: "0.1.1"
+title: "Hermes BIM Studio"
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/stupidburgers/hermes-bim-studio/356c5f51e6ea6c21ff137a8b724344a4a32ea8a5/docs/screenshots/viewer-wall-selection.png
+platforms: [windows, macos, linux]
+known_issues:
+  - "macOS is untested; CI covers Ubuntu and Windows (Python 3.11/3.12)."
+  - "Generated artifacts are confined to <HERMES_HOME>/plugin-data/hermes-bim-studio/."
+capabilities:
+  provides_tools:
+    - bim_inspect
+    - bim_takeoff
+    - bim_render_view
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

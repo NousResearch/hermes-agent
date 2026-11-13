@@ -1,0 +1,19 @@
+name: taskreel
+repo: https://github.com/SuryaXyz-art/taskreel
+sha: "d1af6f13adbb6095005304edfeec8f88d7362fb7"
+description: "Teach Hermes a local task once, then replay it with no model call. Checkpoints stop the replay on the first failed step. Disclosure — taskreel stores the exact, unredacted arguments of every tool call (file contents, shell commands) in its own plugin database and replays saved routines with no model call; replayed steps still hit each tool's own approval but bypass other plugins' pre_tool_call hooks and tool middleware."
+maintainer: SuryaXyz-art
+tier: community
+category: automation
+version: "1.0.3"
+requires_hermes: ">=0.20.5"
+readme: true
+capabilities:
+  provides_tools:
+    - save_routine
+    - run_routine
+    - list_routines
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

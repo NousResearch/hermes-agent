@@ -8,8 +8,7 @@ New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by st
 `gateway/run.py` is the facade; phases live in `run_*.py` (startup, adapters, inbound, turn, busy,
 goals, notifications, shutdown, ...), sessions in `session*.py`, slash handlers in
 `slash_commands_*.py` mixins, authorization in `authz_mixin.py`, adapters in `platforms/<name>.py`
-over `platforms/base.py`. `builtin_hooks/` is the extension point for always-registered gateway
-hooks (none shipped). The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
+over `platforms/base.py`. The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
 `DEFAULT_CONFIG` — a key the CLI sees but the gateway doesn't means you're on the wrong loader
 (`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
 
@@ -65,6 +64,10 @@ MagicMock adapters in older tests auto-create truthy attributes.
 without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
 § Background process notifications.
 
+Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
+FIFO as human input (private launch policy, `internal_notification` display kind); observers never
+own or consume those turns, and an interrupted started turn stays unknown and pauses its followers.
+
 ## `/login` (off-turn, paired DM only)
 
 `GatewayLoginCommandsMixin` refuses outside a real paired DM (ntfy, raft and a2a report `dm` for
@@ -95,8 +98,14 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   (`run_adapters.py::_canonicalize` — the per-profile / default message, busy and platform-event
   handlers, the adapter auth-check callback, `run_inbound.py::_hm_admit_event`). No key derivation
   before it; an unresolved identity under multiplexing (route to an unserved profile) is dropped
-  with one WARNING at the first seam it reaches, never keyed into `agent:main`. `_transport_owner`,
-  `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
+  with one WARNING at the first seam it reaches, never keyed into `agent:main`
+  (`parked_route_refusal.drop_rejected_route`; a route to a *parked* profile also tells the sender
+  in-channel to resend, since a direct bot's update is already confirmed and never redelivered; a
+  relay frame is ACKed and refused alike (`ParkedProfileRefusal`: a withheld one stalls the
+  ack-gated drain); a
+  dispatch its transport has not acknowledged yet, e.g. Google Chat HTTP events, runs in
+  `retryable_ingress()` and answers `ParkedRouteRefused` (503) instead, releasing its dedup claim).
+  `_transport_owner`, `_authorization_home_for_source`, `_resolve_profile_home_for_source`, `_session_key_profile` and
   `_resolve_profile_for_key` read the identity when present and fall back to their old chain only
   for sources nothing resolved (restored rows, hand-built sources). Never derive a second answer
   next to the identity; extend the object. `transport_profile` ≠ `runtime_profile` is normal
@@ -153,7 +162,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   fallback-after-miss leak); import the shared one. `tests/gateway/test_shared_platform_boilerplate.py`
   asserts every plugin's `_env_enablement` reads only through it.
 - **Scope is bound per profile activity, not per turn.** `run.py::_profile_runtime_scope(home)`
-  wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
+  (one `Scope`: `agent/runtime_scope.py`, HX016) wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
   that touches a session's home, secrets or terminal scope with no turn on the stack: release and
   eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
   eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
@@ -161,8 +170,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
   routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
-  from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
-  wrote a secondary profile's memories into the default profile's store, silently.
+  from `os.environ`, which holds the launch profile. Why: eviction under the launch scope wrote a
+  secondary profile's memories into the default profile's store.
 - **`api_server` rebuilds the agent per request but not the memory provider.** The adapter bypasses
   `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
   `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between
@@ -178,10 +187,12 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
   activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
   `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
-- **Hooks and observers register per served profile.** `builtin_hooks/`, `agent/shell_hooks.py::
-  register_from_config` and lifecycle observers are prepared under each profile's scope at startup
+- **Hooks and observers register per served profile.** `agent/shell_hooks.py::register_from_config`
+  and lifecycle observers are prepared under each profile's scope at startup
   and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call
-  time (a module constant freezes to the first importer).
+  time (a module constant freezes to the first importer). Shell hooks are also re-synced (added AND
+  unregistered) on every local session create/resume via `session_policy.refresh_profile_hooks` ->
+  `shell_hooks.sync_from_config`, the only caller that removes.
 - **Adapter YAML never reaches `os.environ` under multiplex.** `platforms/_shared.py::
   apply_yaml_bridge` seeds `PlatformConfig.extra` and skips the environ write under a secondary
   profile's scope; gate/allowlist reads go through `platform_gate_env`. A `if not os.getenv(X):

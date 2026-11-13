@@ -1,0 +1,11 @@
+{
+  "_comment": [
+    "Plugin-docs code blocks that still import a Hermes name outside hermes_cli/data/plugin_api.json, because",
+    "no public equivalent exists yet (each needs a seam). test_plugin_docs_public_imports.py fails on any",
+    "unlisted import not named here and on any entry here that the docs no longer show, so this list only",
+    "shrinks: when a seam lands, rewrite the block onto it and delete the entry."
+  ],
+  "sites": [
+    "website/docs/developer-guide/terminal-environment-plugin.md tools.environments.local.LocalEnvironment"
+  ]
+}

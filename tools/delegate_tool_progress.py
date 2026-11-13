@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import enum
 import os
+import posixpath
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
@@ -38,7 +39,8 @@ def _safe_progress(cb: Any, event_type: Any, *args: Any, **kwargs: Any) -> None:
 def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     """Reduce an error payload (traceback / JSON wall) to one clean line: the exception message (last line of a
     traceback) or the first non-empty line, hard-capped in length."""
-    lines = [ln.strip() for ln in str(error or "").strip().splitlines() if ln.strip()]
+    from tools.delegation_redaction import redact_child_text
+    lines = [ln.strip() for ln in redact_child_text(str(error or ""), force=False).strip().splitlines() if ln.strip()]
     if not lines:
         return ""
     line = lines[-1] if lines[0].startswith("Traceback") else lines[0]
@@ -119,8 +121,9 @@ _LEGACY_EVENT_MAP: dict[str, DelegateEvent] = {
 # Event → _ChildProgressRelay method name. Lifecycle strings are emitted by the orchestrator itself (not
 # DelegateEvent). Any other DelegateEvent (TASK_TOOL_STARTED and the reserved TASK_* values) takes the tool-started
 # path; None means "recognised but ignored".
-_LIFECYCLE_EVENTS = frozenset({"subagent.start", "subagent.complete", "subagent.text"})
+_LIFECYCLE_EVENTS = frozenset({"subagent.spawn_requested", "subagent.start", "subagent.complete", "subagent.text"})
 _EVENT_HANDLERS: dict[Any, Optional[str]] = {
+    "subagent.spawn_requested": "_on_spawn_requested",
     "subagent.start": "_on_start",
     "subagent.complete": "_on_complete",
     "subagent.text": "_on_text",
@@ -176,18 +179,15 @@ _NESTED_CHILDREN_NOTE = (
 )
 
 def _build_child_system_prompt(
-    goal: str, context: Optional[str] = None, *, workspace_path: Optional[str] = None, role: str = "leaf",
-    max_spawn_depth: int = 2, child_depth: int = 1,
+    *, workspace_path: Optional[str] = None, role: str = "leaf", max_spawn_depth: int = 2, child_depth: int = 1,
 ) -> str:
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
     can't confabulate nesting."""
-    # The goal is the child's first user turn (see ``_ChildRun.await_child``).
-    # Keeping it out of the system prompt avoids sending OAuth Anthropic the
-    # same task in both roles, while preserving the normal user-turn contract.
+    # The goal and its context are the child's first user turn (``child_task_message``). Nothing
+    # per-task belongs here: sibling children then send one identical system prompt, which is what
+    # lets them read each other's prompt cache (tools included, on providers that order them after it).
     parts = ["You are a focused subagent working on a specific delegated task."]
-    if context and context.strip():
-        parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -216,18 +216,58 @@ def _build_child_system_prompt(
         )
     return "\n".join(parts)
 
+def child_task_message(goal: str, context: Optional[str]) -> str:
+    """The child's first user turn: the parent's context, then the goal.
+
+    Context first, so siblings given one brief send the same leading bytes, and registered as the
+    message's stable prefix, which gives it a cache breakpoint of its own on marker routes. Every
+    brief is registered: a parent often sends one brief in separate calls, which a per-call
+    "shared" test cannot see. Scaffolds in use are refreshed on every request, so a wide fan-out
+    evicts only idle ones (one re-write when that session resumes).
+    """
+    if not (context and context.strip()):
+        return goal
+    from agent.prompt_cache_boundary import register_stable_prefix
+
+    prefix = f"CONTEXT:\n{context}\n\nTASK:\n"
+    register_stable_prefix(prefix)
+    return prefix + goal
+
+
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     """Best-effort local workspace hint for child prompts: only a concrete
-    absolute directory is ever injected (never a fake container path)."""
+    absolute directory is ever injected (never a fake container path).
+
+    On SSH a candidate must name the target, not this host. Skip a relative or
+    ``~`` cwd (expanding it against this host's HOME or process cwd can land on
+    a same-named local directory), read the session cwd raw instead of the
+    subdirectory tracker's copy (resolved on this host, and the host process
+    cwd when unset), and skip a directory the SSH cwd rewrite changes (the
+    official image's ``/opt/data`` and its subprocess home exist only where
+    Hermes runs).
+    """
     from agent.runtime_cwd import scope_terminal_cwd
+    from tools.terminal_scope import terminal_env
+    from tools.terminal_tool_config import coerce_ssh_remote_cwd
+
+    env_type = terminal_env("TERMINAL_ENV", "local")
+    on_ssh = env_type.strip().lower() == "ssh"
+    session_dir = (
+        getattr(parent_agent, "session_cwd", None) if on_ssh
+        else getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None)
+    )
     candidates = [
-        scope_terminal_cwd(), getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
-        getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
+        scope_terminal_cwd(), session_dir, getattr(parent_agent, "terminal_cwd", None), getattr(parent_agent, "cwd", None),
     ]
     for candidate in filter(None, candidates):
         with _quiet(None):
-            text = os.path.abspath(os.path.expanduser(str(candidate)))
-            if os.path.isabs(text) and os.path.isdir(text):
+            raw = str(candidate)
+            if on_ssh and not posixpath.isabs(raw):
+                continue
+            text = os.path.abspath(os.path.expanduser(raw))
+            if coerce_ssh_remote_cwd(text, env_type) != text:
+                continue
+            if os.path.isdir(text):
                 return text
     return None
 
@@ -345,6 +385,9 @@ class _ChildProgressRelay:
             self.batch.clear()
 
     # ── Lifecycle events emitted by the orchestrator itself ──
+    def _on_spawn_requested(self, tool_name, preview, args, kwargs):
+        self._relay("subagent.spawn_requested", preview=preview or self.goal_label or "", **kwargs)
+
     def _on_start(self, tool_name, preview, args, kwargs):
         if self.goal_label:
             self._tree_line(f"🔀 {_short(self.goal_label, 55)}")

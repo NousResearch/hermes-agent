@@ -26,7 +26,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     monkeypatch.setenv("HERMES_PAYLOAD_TAG", "v9.9.9")
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("BUILD_NUMBER", "123")
-    defaults = {"HERMES_GUEST_ONBOARDING": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
+    defaults = {"HERMES_PREVIEW_FULL_CONNECTORS": "1", "HERMES_DATA_DIR_SUFFIX": "magic-test", "HERMES_HOME": None}
     monkeypatch.setenv("HERMES_BUNDLE_ENV_JSON", json.dumps(defaults))
     request = BuildRequest.create(repo, tag=None, commit=sha, variant=variant,
                                   work=tmp_path / "work", cache=tmp_path / "cache", bundle_env=defaults)
@@ -38,7 +38,7 @@ def test_desktop_build_reaches_the_managed_payload_with_commit_ref(tmp_path, mon
     lock = Lockfile(repo / "pm/lock.json")
     store = request.cache / "tools"
     binaries = {}
-    for name in ("python", "node", "npm"):
+    for name in ("python", "node", "pnpm"):
         package = get_package(name)
         version = lock.version(name)
         assert version is not None

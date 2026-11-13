@@ -148,6 +148,51 @@ def test_the_merge_gate_never_shows_as_a_job_in_the_comment():
     assert (completed, pending) == ({}, [])
 
 
+GUARDS = "Repository guards / Repository guards"
+
+
+def test_the_comment_names_each_red_step_of_a_failed_job():
+    """repo-guards.yml and lint.yml run several checks as steps of one job: the comment names the
+    red check, and a step its own review status covers is not repeated as a job failure."""
+    url = "https://github.com/o/r/actions/runs/1/job/2"
+    jobs = [{"name": GUARDS, "status": "completed", "conclusion": "failure", "html_url": url, "steps": [
+        {"name": "Reject case-colliding filenames", "conclusion": "failure"},
+        {"name": "Judge files added or modified against the base branch tip", "conclusion": "success"},
+        {"name": "Fail on critical supply-chain findings", "conclusion": "skipped"},
+        {"name": "Fail on unbounded deps (supply-chain policy)", "conclusion": "failure"}]}]
+    completed, _, job_urls = classify_jobs(jobs)
+    assert completed == {GUARDS: "failure"}, "the poller's job counts and transitions keep the job"
+    by_check, check_urls = _mod.split_failed_steps(jobs, completed, job_urls)
+    assert by_check == {f"{GUARDS} / Reject case-colliding filenames": "failure",
+                        f"{GUARDS} / Fail on unbounded deps (supply-chain policy)": "failure"}
+    items = _mod._import_assembler().collect_failed_jobs(
+        _mod.json.dumps(by_check), "RUN", exclude_sources={"supply chain"}, job_urls=check_urls)
+    assert [(item.title, item.job_url) for item in items] == [
+        (f"{GUARDS} / Reject case-colliding filenames", url)]
+
+
+def test_a_job_keeps_its_entry_without_a_red_step_or_a_failure():
+    """A timeout fails the job with no failed step; a green job keeps its entry whatever an
+    advisory step reported."""
+    timed_out = {"name": "Python lints / Python lints", "status": "completed", "conclusion": "timed_out",
+                 "steps": [{"name": "Run footgun checker", "conclusion": "success"}]}
+    green = dict(timed_out, name=GUARDS, conclusion="success",
+                 steps=[{"name": "Run ruff + ty on HEAD", "conclusion": "failure"}])
+    completed, _, job_urls = classify_jobs([timed_out, green])
+    assert _mod.split_failed_steps([timed_out, green], completed, job_urls)[0] == {
+        "Python lints / Python lints": "failure", GUARDS: "success"}
+
+
+def test_the_posted_comment_names_the_red_step(monkeypatch, capsys):
+    jobs = [{"name": GUARDS, "status": "completed", "conclusion": "failure",
+             "steps": [{"name": "Reject case-colliding filenames", "conclusion": "failure"}]}]
+    monkeypatch.setattr(_mod, "collect_run_jobs", lambda *args, **kwargs: (jobs, True))
+    monkeypatch.setattr(_mod, "fetch_all_review_statuses", lambda *args: [])
+    monkeypatch.setattr(_mod.time, "sleep", lambda seconds: None)
+    assert _mod.run("token", "o/r", "1", "7", "RUN", dry_run=True) == 0
+    assert f"Job **{GUARDS} / Reject case-colliding filenames** failed." in capsys.readouterr().out
+
+
 # ─── runs_all_completed ───────────────────────────────────────────────
 
 

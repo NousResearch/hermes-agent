@@ -7,20 +7,33 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
+import { useStore } from '@nanostores/react'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import {
+  Children,
+  type ComponentProps,
+  isValidElement,
+  memo,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState
+} from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useContributions } from '@/contrib'
 import { useMediaImage } from '@/hooks/use-media-image'
+import { useMediaPlaybackSrc } from '@/hooks/use-media-playback-src'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -33,12 +46,13 @@ import {
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  resolveMediaPlaybackSrc,
   validImageDimensions
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
+import { TOOL_MEDIA_RENDERER_AREA } from '@/lib/tool-media-renderers'
+import { remarkTranscriptDirectives } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 import { useForcedTextDirection } from '@/store/text-direction'
 
@@ -46,6 +60,7 @@ import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
+import { ToolMediaSlot } from './tool-media-slot'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
@@ -97,7 +112,7 @@ function useCodePlugin(): CodePlugin | null {
   return plugin
 }
 
-const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkSoftBreaks]
+const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkTranscriptDirectives, remarkSoftBreaks]
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
@@ -111,12 +126,18 @@ function preprocessWithTailRepair(text: string): string {
 }
 
 function useOpenMediaFile(path: string) {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || ''
   const [openFailed, setOpenFailed] = useState(false)
 
   const open = () => {
     if (window.hermesDesktop && isRemoteGateway()) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+      void downloadGatewayMediaFile(path, sessionId ? { sessionId } : undefined).catch(() =>
+        setOpenFailed(true)
+      )
     } else {
       openExternalLink(mediaExternalUrl(path))
     }
@@ -159,59 +180,22 @@ function MediaAttachment({ path }: { path: string }) {
 }
 
 function MediaPlaybackAttachment({ path }: { path: string }) {
-  const [src, setSrc] = useState('')
-  const [failed, setFailed] = useState(false)
+  const { failed, kind, onError, onLoadedMetadata, src } = useMediaPlaybackSrc(path)
   const { open, openFailed } = useOpenMediaFile(path)
-  const kind = mediaKind(path)
   const name = mediaName(path)
-
-  useEffect(() => {
-    let cancelled = false
-    let objectUrl = ''
-
-    setFailed(false)
-    setSrc('')
-
-    if (kind === 'file') {
-      setFailed(true)
-
-      return () => {
-        cancelled = true
-      }
-    }
-
-    void resolveMediaPlaybackSrc(path)
-      .then(value => {
-        if (value.startsWith('blob:')) {
-          objectUrl = value
-        }
-
-        if (!cancelled) {
-          setSrc(value)
-        } else if (objectUrl) {
-          URL.revokeObjectURL(objectUrl)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFailed(true)
-        }
-      })
-
-    return () => {
-      cancelled = true
-
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl)
-      }
-    }
-  }, [kind, path])
 
   if (kind === 'audio' && src) {
     return (
       <span className="my-3 block max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <audio className="block w-full" controls onError={() => setFailed(true)} preload="metadata" src={src} />
+        <audio
+          className="block w-full"
+          controls
+          onError={onError}
+          onLoadedMetadata={onLoadedMetadata}
+          preload="metadata"
+          src={src}
+        />
         {failed && <OpenMediaButton kind="audio" path={path} />}
       </span>
     )
@@ -224,7 +208,8 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
         <TranscriptVideo
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
-          onError={() => setFailed(true)}
+          onError={onError}
+          onLoadedMetadata={onLoadedMetadata}
           src={src}
         />
         {failed && <OpenMediaButton kind="video" path={path} />}
@@ -277,6 +262,47 @@ function flattenChildrenToText(node: unknown): string {
   return ''
 }
 
+function isPrivateIPv4([a, b]: number[]): boolean {
+  // 0/8, 10/8, 127/8, 169.254/16, 172.16/12, 192.168/16.
+  return a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+}
+
+/** Loopback, unspecified, link-local and RFC 1918 hosts, read from the PARSED hostname, so decimal,
+ *  octal, hex, dotted-unicode and percent-encoded spellings are already folded to one form. A bracketed
+ *  IPv6 host never gets here: the renderer's URL hardening already shows such a link as blocked. */
+function isPrivateNetworkHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '')
+
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    return true
+  }
+
+  const octets = host.split('.')
+
+  return octets.length === 4 && octets.every(octet => /^\d{1,3}$/.test(octet)) && isPrivateIPv4(octets.map(Number))
+}
+
+/** In foreign history only an explicit web URL to a public host navigates, and only on a click: no
+ *  preview card, title fetch, session reference or foreground file resolution, no credential-bearing
+ *  URL, and nothing on this machine or its network. The anchor carries only the sanitized address. */
+function PreviewOnlyMarkdownLink({ children, className, href }: ComponentProps<'a'>) {
+  let target: URL | null = null
+
+  try {
+    target = href && /^https?:\/\//i.test(href.trim()) ? new URL(href.trim()) : null
+  } catch {
+    target = null
+  }
+
+  if (!target || !['http:', 'https:'].includes(target.protocol) || target.username || target.password ||
+    isPrivateNetworkHost(target.hostname)) {
+    return <span>{children}</span>
+  }
+
+  return <ExternalLink className={cn('wrap-anywhere', className)} href={target.href}>{children}</ExternalLink>
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
@@ -285,21 +311,22 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // download: route it to the preview rail (which renders .md with a
     // rendered/source toggle) instead of the download-link fallback that
     // `mediaKind() === 'file'` would produce. (#84951)
-    if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment target={mediaPath} />
-    }
-
+    //
     // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
     // MediaAttachment's kind==='file' branch is a degraded dead-end (bare
     // "Open <name>" anchor). Route through the preview pipeline instead —
     // the same file card + "Open preview" the bare-path markdown-link
     // branch below produces — so MEDIA: uniformly delivers the richest
     // rendering for every file type.
-    if (mediaKind(mediaPath) === 'file') {
-      return <PreviewAttachment target={mediaPath} />
-    }
+    const builtIn =
+      isMarkdownDocumentPath(mediaPath) || mediaKind(mediaPath) === 'file' ? (
+        <PreviewAttachment target={mediaPath} />
+      ) : (
+        <MediaAttachment path={mediaPath} />
+      )
 
-    return <MediaAttachment path={mediaPath} />
+    // The plugin that owns the tool which produced this file may draw it instead.
+    return <ToolMediaSlot path={mediaPath}>{builtIn}</ToolMediaSlot>
   }
 
   const previewTarget = previewTargetFromMarkdownHref(href)
@@ -329,10 +356,14 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     const fileHref = href && !href.startsWith('#') && isFileMediaPath(href) ? href : null
 
     if (fileHref) {
-      return mediaKind(fileHref) === 'file' ? (
-        <PreviewAttachment target={fileHref} />
-      ) : (
-        <MediaAttachment path={fileHref} />
+      return (
+        <ToolMediaSlot path={fileHref}>
+          {mediaKind(fileHref) === 'file' ? (
+            <PreviewAttachment target={fileHref} />
+          ) : (
+            <MediaAttachment path={fileHref} />
+          )}
+        </ToolMediaSlot>
       )
     }
 
@@ -574,6 +605,9 @@ function MarkdownParagraph({
 }: ComponentProps<'p'> & { scratchpad?: boolean; streaming?: boolean }) {
   const plain = paragraphPlainText(children)
   const resolved = useResolvedParagraph(scratchpad ? null : plain)
+  // A plugin's tool media renderer draws block content (a card, a viewer), which
+  // a <p> cannot hold; a paragraph delivering a MEDIA: file becomes a <div> then.
+  const blockMedia = useContributions(TOOL_MEDIA_RENDERER_AREA).length > 0 && holdsMediaLink(children)
 
   // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which must
   // out-specify Tailwind Typography's `prose` margins — so no `my-*` here.
@@ -597,11 +631,36 @@ function MarkdownParagraph({
     )
   }
 
+  if (blockMedia) {
+    return (
+      <div className={paragraphClass} data-tool-media-paragraph="" {...(props as ComponentProps<'div'>)}>
+        {children}
+      </div>
+    )
+  }
+
   return (
     <p className={paragraphClass} {...props}>
       {children}
     </p>
   )
+}
+
+// Every link `MarkdownLink` may hand to a `ToolMediaSlot` (a `MEDIA:` href or a
+// bare file path), at any depth (`**[model](/out/a.glb)**`).
+function holdsMediaLink(children: ReactNode): boolean {
+  return Children.toArray(children).some(child => {
+    if (!isValidElement<{ children?: ReactNode; href?: unknown }>(child)) {
+      return false
+    }
+
+    const href = typeof child.props.href === 'string' ? child.props.href : ''
+
+    return (
+      (href !== '' && (mediaPathFromMarkdownHref(href) !== null || (!href.startsWith('#') && isFileMediaPath(href)))) ||
+      holdsMediaLink(child.props.children)
+    )
+  })
 }
 
 function MarkdownTextSurface({
@@ -656,7 +715,7 @@ function MarkdownTextSurface({
               {decorateText ? decorateText(children) : children}
             </MarkdownParagraph>
           ),
-        a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
+        a: previewOnly ? PreviewOnlyMarkdownLink : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
         // (HTML's algorithm skips descendants that carry their own dir),
         // mirroring the CSS isolate that already keeps it out of the
@@ -738,6 +797,11 @@ function MarkdownTextSurface({
             return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
           }
 
+          // Foreign text never draws: a ```svg or ```mermaid fence shows its source.
+          if (previewOnly) {
+            return <SyntaxHighlighter {...props} defer={isStreaming} />
+          }
+
           return (
             <RichCodeBlock
               code={props.code}
@@ -813,17 +877,23 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
  * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
  * against the ACTIVE gateway, so a message written on another machine (a
  * Connections Bot in a cross-machine room) must not have its path read here —
- * that is a broken image at best and a same-path local file at worst. */
+ * that is a broken image at best and a same-path local file at worst. Such
+ * history also passes `previewOnly`: Markdown images, file links, live
+ * directive cards and rich fences (```svg, ```mermaid, ```listing, shown as
+ * their source) stay inert, and only an explicit web link to a public host
+ * opens, on a click. */
 export function MessageTextContent({
   decorateText,
   media = true,
+  previewOnly = false,
   text
-}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+}: Pick<MarkdownTextSurfaceProps, 'decorateText' | 'previewOnly'> & { media?: boolean; text: string }) {
   return (
     <MarkdownTextContent
       decorateText={decorateText}
       disableArtifacts
       isRunning={false}
+      previewOnly={previewOnly}
       text={media ? renderMediaTags(text) : text}
     />
   )

@@ -130,7 +130,8 @@ class FeishuChoiceCardsMixin:
         answer = str(choices[int(token)])
         if not clarify_gateway.resolve_gateway_clarify(clarify_id, answer):
             return self._card_response(self._settled_clarify_card(state, t("gateway.clarify.expired"), "grey"))
-        logger.info("Feishu clarify button resolved (id=%s, choice=%r, user=%s)", clarify_id, answer, user_name)
+        logger.info("Feishu clarify button resolved (id=%s, choice_index=%s, user=%s)", clarify_id, token, user_id or open_id)
+        logger.debug("Feishu clarify choice text (id=%s): %.100r", clarify_id, answer)
         return self._card_response(self._settled_clarify_card(state, f"**{user_name}:** {answer}", "green"))
 
     async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:

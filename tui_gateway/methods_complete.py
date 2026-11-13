@@ -57,16 +57,17 @@ def _profile_mention_items(prefix: str) -> list[dict]:
     is also offered as 'hermes' when no real profile claims that name."""
     out: list[dict] = []
     try:
+        from hermes_cli.isolated_scope import isolated_launch_profile, scope_to_launch_profile
         from hermes_cli.profiles import list_profiles
         seen: set[str] = set()
         # Per keystroke: only name/description are read, so never walk skill trees in-request (#114041).
-        for p in list_profiles(lazy_skill_count=True):
+        for p in scope_to_launch_profile(list_profiles(lazy_skill_count=True), lambda info: info.name):
             if not (name := (p.name or "").strip()):
                 continue
             seen.add(name.lower())
             if name.lower().startswith(prefix.lower()):
                 out.append(_item(f"@{name}", (getattr(p, "description", "") or "").strip() or "agent profile"))
-        if "hermes".startswith(prefix.lower()) and "hermes" not in seen:
+        if "hermes".startswith(prefix.lower()) and "hermes" not in seen and isolated_launch_profile() is None:
             out.append(_item("@hermes", "agent profile (primary)"))
     except Exception:
         return []

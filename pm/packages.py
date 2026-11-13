@@ -387,21 +387,27 @@ def _copy_seed_link(src: str | os.PathLike, dst: str | os.PathLike) -> None:
         staging.unlink(missing_ok=True)
 
 
-def _seed_tree(src: Path, dst: Path) -> None:
-    """Merge one payload bucket, preserving uv's link entries.
+def _seed_entry(src: Path, dst: Path, root: Path) -> None:
+    """Merge one payload cache entry, preserving uv's link entries.
 
     ``is_symlink()`` must be tested before ``is_dir()``: ``is_dir()`` follows
-    links, and following them is exactly the bug this walker replaced.
+    links, and following them is exactly the bug this walker replaced. A link
+    out of the cache is an unpacked-wheel file the bundle ships once, in its
+    venv; recreated verbatim it would dangle, so its bytes are copied.
     """
+    if src.is_symlink() and Path(os.path.realpath(src)).is_relative_to(root):
+        _copy_seed_link(src, dst)
+    elif src.is_symlink() or not src.is_dir():
+        _copy_seed_file(src, dst)
+    else:
+        _seed_tree(src, dst, root)
+
+
+def _seed_tree(src: Path, dst: Path, root: Path) -> None:
+    """Merge one payload directory of the cache rooted at ``root``."""
     dst.mkdir(parents=True, exist_ok=True)
     for child in src.iterdir():
-        target = dst / child.name
-        if child.is_symlink():
-            _copy_seed_link(child, target)
-        elif child.is_dir():
-            _seed_tree(child, target)
-        else:
-            _copy_seed_file(child, target)
+        _seed_entry(child, dst / child.name, root)
 
 
 def uv_cache_path() -> Path:
@@ -454,20 +460,15 @@ def uv_cache_dir() -> Path:
             if payload_cache.is_dir():
                 seeded = long_root(machine_cache)
                 seeded.mkdir(parents=True, exist_ok=True)
+                root = Path(os.path.realpath(payload_cache))
                 # archive-v0 first: a wheel link published before its bucket points at nothing,
                 # for another profile's uv and, if the seed dies there, until the retry.
                 for entry in sorted(payload_cache.iterdir(), key=lambda entry: entry.name != "archive-v0"):
                     if entry.name == ".seeded":
                         continue
-                    dest = seeded / entry.name
                     # Merge into whatever an earlier failed or killed seed left: skipping
                     # an existing directory would record that partial copy as complete.
-                    if entry.is_symlink():
-                        _copy_seed_link(entry, dest)
-                    elif entry.is_dir():
-                        _seed_tree(entry, dest)
-                    else:
-                        _copy_seed_file(entry, dest)
+                    _seed_entry(entry, seeded / entry.name, root)
         except OSError as exc:
             LOG.warning("uv cache seed incomplete, retrying on the next install: %s", exc)
         else:
@@ -535,7 +536,7 @@ class Venv(StatePackage):
         from pm.environment import managed_environment  # noqa: TID251
         from pm.lock import Facts
         from pm.native_build import source_build_environment
-        from pm.workspace import build_member_dirs, lock_and_sync
+        from pm.workspace import CORE_LOCK_RECORD, build_member_dirs, core_lock_upgrades, lock_and_sync
 
         project = self.project_root()
         generation = install_state_dir(project) / "environments" / uuid.uuid4().hex
@@ -568,10 +569,15 @@ class Venv(StatePackage):
                 replay = recorded.parent
             seed = (Path(prior["resolved_lock"]) if members and prior.get("resolved_lock")
                     else project / "uv.lock")
+            upgrade = (core_lock_upgrades(project / "uv.lock", seed, python=environment.python)
+                       if seed != project / "uv.lock" else [])
             lock_and_sync(members, extras, root=generation / "workspace",
                           seed_lock=seed, frozen=repair or not members, replay=replay,
-                          source=project, environment=environment)
+                          source=project, environment=environment, upgrade=upgrade)
             resolved_lock = generation / "workspace" / "uv.lock"
+            if replay is None:
+                # What core's lock held for this build: the next one moves only the pins core moves.
+                shutil.copyfile(project / "uv.lock", resolved_lock.with_name(CORE_LOCK_RECORD))
             environment.check(resolved_lock)
             if repair:
                 from pm.environments import venv_command

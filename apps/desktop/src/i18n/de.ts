@@ -3234,6 +3234,14 @@ export const deOverrides = {
     fieldSkillsPlaceholder: 'durch Kommas getrennte Skill-Namen (optional)',
     fieldDeliver: 'Zustellen an',
     fieldDeliverOnly: 'Nur die Payload zustellen',
+    fieldSignature: 'Signatur',
+    fieldSignatureHint: 'Das einzige Signaturschema, das diese Route akzeptiert. GitHub-, GitLab- und Linear-Zustellungen brauchen ihre eigene Festlegung.',
+    signatureOptions: {
+      generic: 'Generisch (mit Zeitstempel)',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: 'Prompt',
     fieldPromptPlaceholder: 'Anweisungen für den Agenten, wenn dieser Webhook ausgelöst wird (optional)',
     nameRequired: 'Name erforderlich',

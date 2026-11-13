@@ -165,7 +165,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     body = await resp.text()
                     if is_post:
                         self._last_post_error = body or ""
-                    logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])
+                    logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])  # health: allow HX017 -- server error body, not a message
                     return {}
                 return await resp.json()
         except aiohttp.ClientError as exc:
@@ -233,7 +233,7 @@ class MattermostAdapter(BasePlatformAdapter):
                                       timeout=aiohttp.ClientTimeout(total=60)) as resp:
             if resp.status >= 400:
                 body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                logger.error("MM file upload → %s: %s", resp.status, body[:200])  # health: allow HX017 -- server error body, not a message
                 return None
             infos = (await resp.json()).get("file_infos", [])
             return infos[0]["id"] if infos else None

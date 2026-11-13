@@ -162,6 +162,9 @@ def check_<platform>_requirements() -> bool:
   attribute; the runner's reconnect copies its live IDs into the rebuilt adapter, a hand-rolled cache starts empty
 - Filter sync/echo messages if the platform has them
 - Redact sensitive identifiers (phone numbers, tokens) in all log output
+- Never log message bodies, subjects, display names/usernames, e-mail addresses or phone numbers at
+  INFO or above: log `len(text)`, a platform id, `hash_for_log(chat_id)` or `redact_phone(...)`, and
+  put the verbatim value on `logger.debug` (HX017 flags the common names; see `gateway/AGENTS.md`)
 - Implement reconnection with exponential backoff + jitter for streaming connections
 - Set `MAX_MESSAGE_LENGTH` if the platform has message size limits
 

@@ -407,7 +407,7 @@ class TestWebhookEndpoints:
         cfg.setdefault("platforms", {})["webhook"] = {"enabled": True, "extra": {"host": "0.0.0.0", "port": 8644}}
         save_config(cfg)
         assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 200
-        assert "signature" not in _load_subscriptions()["gh"]  # dashboard routes stay unpinned by default
+        assert _load_subscriptions()["gh"]["signature"] == "generic"  # new dashboard routes are pinned
         _mutate_subscriptions(lambda subs: subs["gh"].update(signature=pin))
 
         assert self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"}).status_code == 200

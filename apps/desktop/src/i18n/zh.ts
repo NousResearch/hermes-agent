@@ -2713,6 +2713,14 @@ export const zhOverrides = {
     fieldSkillsPlaceholder: '以逗号分隔的技能名称（可选）',
     fieldDeliver: '投递到',
     fieldDeliverOnly: '仅投递载荷',
+    fieldSignature: '签名',
+    fieldSignatureHint: '此路由唯一接受的签名方案。GitHub、GitLab 和 Linear 的投递需要固定为各自的方案。',
+    signatureOptions: {
+      generic: '通用（带时间戳）',
+      github: 'GitHub',
+      gitlab: 'GitLab',
+      linear: 'Linear'
+    },
     fieldPrompt: '提示词',
     fieldPromptPlaceholder: '此 Webhook 触发时给智能体的说明（可选）',
     nameRequired: '需要名称',

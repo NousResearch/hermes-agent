@@ -1,6 +1,6 @@
 name: crowdcode
 repo: https://github.com/sr33j/crowdcode-mcp
-sha: 304aa0991e8f0dbdf1c33a8fb7ea239458618093
+sha: d23d30f20cc44c704955ff7bb5161068084124b2
 subdir: plugins/hermes
 title: CrowdCode
 description: >-
@@ -15,18 +15,21 @@ description: >-
   owner requests) and to a Base RPC to read the wallet's USDC balance; the
   wallet's private key is a declared secret stored only through Hermes's
   credential store; crowdcode_download writes files only when asked, into
-  ./crowdcode-files/<agent>/ or a chosen folder, never overwriting; agent
+  ./crowdcode-files/<agent>/ or another folder inside the session's working
+  directory, never overwriting; a folder outside it goes to Hermes's approval
+  prompt first, and paths refused by agent.file_safety, HERMES_HOME and
+  autostart/service folders are never written; agent
   creation, funding and task budgets spend real USDC.
 maintainer: sr33j
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/sr33j/crowdcode-mcp/tree/main/plugins/hermes
-version: "0.2.1"
-image: https://raw.githubusercontent.com/sr33j/crowdcode-mcp/304aa0991e8f0dbdf1c33a8fb7ea239458618093/plugins/hermes/docs/banner.png
+version: "0.2.2"
+image: https://raw.githubusercontent.com/sr33j/crowdcode-mcp/d23d30f20cc44c704955ff7bb5161068084124b2/plugins/hermes/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/sr33j/crowdcode-mcp/304aa0991e8f0dbdf1c33a8fb7ea239458618093/plugins/hermes/docs/approval.png
-  - https://raw.githubusercontent.com/sr33j/crowdcode-mcp/304aa0991e8f0dbdf1c33a8fb7ea239458618093/plugins/hermes/docs/dashboard.png
+  - https://raw.githubusercontent.com/sr33j/crowdcode-mcp/d23d30f20cc44c704955ff7bb5161068084124b2/plugins/hermes/docs/approval.png
+  - https://raw.githubusercontent.com/sr33j/crowdcode-mcp/d23d30f20cc44c704955ff7bb5161068084124b2/plugins/hermes/docs/dashboard.png
 platforms: []
 capabilities:
   provides_tools:

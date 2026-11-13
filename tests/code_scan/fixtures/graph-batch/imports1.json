@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0.0",
+  "source_scan": {
+    "project_root": "/tmp/test-project",
+    "total_files": 5
+  },
+  "generated_at": "2026-05-30T12:00:00Z",
+  "files": {
+    "src/main.py": {
+      "imports": ["os", "sys", "json", "configparser"],
+      "warnings": []
+    },
+    "src/utils.py": {
+      "imports": ["os", "datetime", "typing"],
+      "warnings": []
+    },
+    "src/models.py": {
+      "imports": ["dataclasses", "typing"],
+      "warnings": []
+    },
+    "tests/test_main.py": {
+      "imports": ["unittest", "os", "src.main"],
+      "warnings": []
+    },
+    "tests/test_utils.py": {
+      "imports": ["unittest", "src.utils"],
+      "warnings": []
+    }
+  },
+  "totals": {
+    "files_with_imports": 5,
+    "files_without_imports": 0,
+    "unique_modules": 8,
+    "total_warnings": 0
+  }
+}

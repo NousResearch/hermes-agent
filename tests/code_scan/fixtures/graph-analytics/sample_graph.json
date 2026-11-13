@@ -1,0 +1,142 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-05-30T12:00:00Z",
+  "source_files": [
+    "/tmp/test-project/scan.json",
+    "/tmp/test-project/imports.json"
+  ],
+  "nodes": [
+    {
+      "node_id": "file:src/main.py",
+      "node_type": "file",
+      "filePath": "src/main.py",
+      "label": "main.py",
+      "language": "python",
+      "functions": ["main", "parse_config"],
+      "classes": ["ConfigParser"]
+    },
+    {
+      "node_id": "file:src/utils.py",
+      "node_type": "file",
+      "filePath": "src/utils.py",
+      "label": "utils.py",
+      "language": "python",
+      "functions": ["helper_func", "format_output"]
+    },
+    {
+      "node_id": "file:src/models.py",
+      "node_type": "file",
+      "filePath": "src/models.py",
+      "label": "models.py",
+      "language": "python",
+      "functions": ["build_model"],
+      "classes": ["DataModel", "ConfigModel"]
+    },
+    {
+      "node_id": "file:tests/test_main.py",
+      "node_type": "file",
+      "filePath": "tests/test_main.py",
+      "label": "test_main.py",
+      "language": "python",
+      "functions": ["test_main", "test_parse_config"]
+    },
+    {
+      "node_id": "file:tests/test_utils.py",
+      "node_type": "file",
+      "filePath": "tests/test_utils.py",
+      "label": "test_utils.py",
+      "language": "python",
+      "functions": ["test_helper"]
+    },
+    {
+      "node_id": "module:os",
+      "node_type": "module",
+      "filePath": null,
+      "label": "os"
+    },
+    {
+      "node_id": "module:sys",
+      "node_type": "module",
+      "filePath": null,
+      "label": "sys"
+    },
+    {
+      "node_id": "module:json",
+      "node_type": "module",
+      "filePath": null,
+      "label": "json"
+    },
+    {
+      "node_id": "module:configparser",
+      "node_type": "module",
+      "filePath": null,
+      "label": "configparser"
+    },
+    {
+      "node_id": "module:datetime",
+      "node_type": "module",
+      "filePath": null,
+      "label": "datetime"
+    },
+    {
+      "node_id": "module:typing",
+      "node_type": "module",
+      "filePath": null,
+      "label": "typing"
+    },
+    {
+      "node_id": "module:dataclasses",
+      "node_type": "module",
+      "filePath": null,
+      "label": "dataclasses"
+    },
+    {
+      "node_id": "module:unittest",
+      "node_type": "module",
+      "filePath": null,
+      "label": "unittest"
+    },
+    {
+      "node_id": "module:src.main",
+      "node_type": "module",
+      "filePath": null,
+      "label": "src.main"
+    },
+    {
+      "node_id": "module:src.utils",
+      "node_type": "module",
+      "filePath": null,
+      "label": "src.utils"
+    },
+    {
+      "node_id": "file:README.md",
+      "node_type": "file",
+      "filePath": "README.md",
+      "label": "README.md",
+      "language": "markdown"
+    }
+  ],
+  "edges": [
+    {"source": "file:src/main.py", "target": "module:os", "edge_type": "imports", "meta": {}},
+    {"source": "file:src/main.py", "target": "module:sys", "edge_type": "imports", "meta": {}},
+    {"source": "file:src/main.py", "target": "module:json", "edge_type": "imports", "meta": {}},
+    {"source": "file:src/main.py", "target": "module:configparser", "edge_type": "imports", "meta": {}},
+    {"source": "file:src/utils.py", "target": "module:os", "edge_type": "imports", "meta": {}},
+    {"source": "file:src/utils.py", "target": "module:datetime", "edge_type": "imports", "meta": {}},
+    {"source": "file:src/utils.py", "target": "module:typing", "edge_type": "imports", "meta": {}},
+    {"source": "file:src/models.py", "target": "module:dataclasses", "edge_type": "imports", "meta": {}},
+    {"source": "file:src/models.py", "target": "module:typing", "edge_type": "imports", "meta": {}},
+    {"source": "file:tests/test_main.py", "target": "module:unittest", "edge_type": "imports", "meta": {}},
+    {"source": "file:tests/test_main.py", "target": "module:os", "edge_type": "imports", "meta": {}},
+    {"source": "file:tests/test_main.py", "target": "module:src.main", "edge_type": "imports", "meta": {}},
+    {"source": "file:tests/test_utils.py", "target": "module:unittest", "edge_type": "imports", "meta": {}},
+    {"source": "file:tests/test_utils.py", "target": "module:src.utils", "edge_type": "imports", "meta": {}}
+  ],
+  "summary": {
+    "total_nodes": 16,
+    "total_edges": 14,
+    "deduplicated_nodes": 0,
+    "deduplicated_edges": 0,
+    "orphan_nodes": 2
+  }
+}

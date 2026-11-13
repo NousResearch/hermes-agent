@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-05-30T12:00:00Z",
+  "source_files": [],
+  "nodes": [
+    {
+      "node_id": "file:a.py",
+      "node_type": "file",
+      "filePath": "a.py",
+      "label": "a.py",
+      "language": "python"
+    },
+    {
+      "node_id": "file:b.py",
+      "node_type": "file",
+      "filePath": "b.py",
+      "label": "b.py",
+      "language": "python"
+    },
+    {
+      "node_id": "file:c.py",
+      "node_type": "file",
+      "filePath": "c.py",
+      "label": "c.py",
+      "language": "python"
+    },
+    {
+      "node_id": "module:a",
+      "node_type": "module",
+      "filePath": null,
+      "label": "a"
+    },
+    {
+      "node_id": "module:b",
+      "node_type": "module",
+      "filePath": null,
+      "label": "b"
+    },
+    {
+      "node_id": "module:c",
+      "node_type": "module",
+      "filePath": null,
+      "label": "c"
+    }
+  ],
+  "edges": [
+    {"source": "file:a.py", "target": "module:b", "edge_type": "imports", "meta": {}},
+    {"source": "file:b.py", "target": "module:a", "edge_type": "imports", "meta": {}},
+    {"source": "file:b.py", "target": "module:c", "edge_type": "imports", "meta": {}},
+    {"source": "file:c.py", "target": "module:a", "edge_type": "imports", "meta": {}}
+  ],
+  "summary": {
+    "total_nodes": 6,
+    "total_edges": 4,
+    "deduplicated_nodes": 0,
+    "deduplicated_edges": 0,
+    "orphan_nodes": 0
+  }
+}

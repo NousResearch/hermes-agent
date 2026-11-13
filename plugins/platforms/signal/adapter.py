@@ -458,9 +458,10 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to_author = self._extract_quote_author(quote_data)
         attachments_data = data_message.get("attachments", [])
         media_urls, media_types = [], []
-        # The fetch makes signal-cli store a sender-chosen file: only the gateway's explicit True permits
-        # it (dm_allow_from misses pairing and global allowlists). The text still dispatches so the runner
-        # applies denial/pairing.
+        # The fetch copies a sender-chosen file into Hermes' cache (AAC is remuxed through ffmpeg): only the
+        # gateway's explicit True permits it (dm_allow_from misses pairing and global allowlists). signal-cli
+        # has already stored it unless its daemon runs with --ignore-attachments. The text still dispatches so
+        # the runner applies denial/pairing.
         if attachments_data and not getattr(self, "ignore_attachments", False):
             chat_type = "group" if is_group else "dm"
             if self._is_sender_authorized(sender, chat_type, chat_id) is True:

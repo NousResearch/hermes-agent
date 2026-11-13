@@ -173,7 +173,6 @@ def test_embedded_spawn_resolves_shim_and_accepts_current_team(monkeypatch):
         "/Applications/CuaDriver.app",
         "--args",
         "serve",
-        "--embedded",
         "--socket",
         "/tmp/private.sock",
     ]

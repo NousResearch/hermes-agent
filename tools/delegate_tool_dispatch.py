@@ -123,6 +123,12 @@ def _record_finished_child(batch: _Batch, entry: Any, honor_parent_interrupt: bo
     if not honor_parent_interrupt and batch.unit_id and isinstance(entry, dict):
         record_unit_child(batch.unit_id, entry)
 
+
+def _waiting_on_resume(entry: dict[str, Any]) -> bool:
+    from tools.delegate_tool_auto_resume import waiting_on_resume
+    return waiting_on_resume(entry)
+
+
 def _release_unstarted_child(batch: _Batch, child: Any) -> None:
     """Teardown for a child whose run never started (``_run_single_child``'s finally never runs for it)."""
     from tools.delegate_tool_resumable import release_unstarted
@@ -193,7 +199,7 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
                 _record_finished_child(batch, entry, honor_parent_interrupt)
                 _report_child_done(parent_agent, spinner_ref, entry, _tag, task_labels, n_tasks, n_here - len(results))
                 if (not honor_parent_interrupt and batch.unit_id and entry.get("status") in SUBAGENT_FAILURE_STATUSES
-                        and len(results) < n_here and not isinstance(entry.get("auto_resume"), dict)):
+                        and len(results) < n_here and not _waiting_on_resume(entry)):
                     # Detached unit, a sibling is still running: tell the parent NOW, not when the last one finishes.
                     # Non-durable and separate from the unit's final result (which is still delivered once). A child
                     # promised an automatic resume is not failed: it reports once, later (delegate_tool_auto_resume).

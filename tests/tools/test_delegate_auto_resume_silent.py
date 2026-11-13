@@ -469,3 +469,67 @@ def test_a_stop_racing_the_refused_continues_hand_back_is_never_lost(tmp_path):
     with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
         tick(_scheduler(parent, dispatched), capacity=3)
     assert dispatched == [] and _events(unit) == []
+
+
+# ── an automatic attempt that never started is not an outcome; a cancel the tick did not see still wins ──────────
+def _cancel_after_confirm(parent, sid):
+    import tools.delegate_tool_auto_resume as ar
+    real = ar.confirm_start
+
+    def confirm_then_stop(path, subagent_id):
+        out = real(path, subagent_id)
+        _stop(parent, sid)
+        return out
+    return patch.object(ar, "confirm_start", side_effect=confirm_then_stop)
+
+
+def _first_run_record_busy(_parent, _sid):
+    import tools.delegate_tool_resumable as dr
+    from tests.tools.test_delegate_auto_resume_parent_wins import _busy_run_record
+    return patch.object(dr, "_write", _busy_run_record(dr))
+
+
+@pytest.mark.parametrize("unstarted", [_cancel_after_confirm, _first_run_record_busy])
+def test_an_automatic_attempt_that_never_started_reports_nothing(tmp_path, unstarted):
+    from tools.delegate_tool_auto_resume import tick
+    from tests.tools.test_delegate_auto_resume import _settled
+    _enable()
+    parent, dispatched = _parent(), []
+    sid, _unit = _silent_stop(tmp_path, parent)
+    with unstarted(parent, sid), patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+        tick(_scheduler(parent, dispatched), capacity=3)
+        _settled(dispatched[0])
+    assert _events(dispatched[0]) == [] and _ledger(parent, dispatched[0])[1] == "delivered"
+    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+        tick(_scheduler(parent, dispatched), capacity=3)
+        later = [_settled(d) for d in dispatched[1:]]
+    if unstarted is _cancel_after_confirm:  # cancelled: nothing, ever
+        assert later == [] and _db_rows(parent)[sid][0] == "stopped"
+    else:  # still owed: the next attempt is its one report
+        assert len(later) == 1 and later[0]["results"][0]["status"] == "completed", later
+
+
+def test_a_cancel_after_the_tick_read_an_expired_child_still_wins(tmp_path):
+    import tools.delegate_tool_auto_resume as ar
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    _expire(parent, sid)
+    real = ar._give_up
+
+    def stop_then_give_up(record, reason):
+        _stop(parent, sid)
+        return real(record, reason)
+    with patch.object(ar, "_give_up", side_effect=stop_then_give_up):
+        ar.tick(lambda *a: None, capacity=3)
+    assert _events(unit) == [] and _ledger(parent, f"{unit}:auto:{sid}") is None
+
+
+def test_an_expired_record_without_auto_resume_fields_is_still_deleted():
+    from pathlib import Path
+    from tools.delegate_tool_resumable import _apply_limits, _write
+    parent = _parent()
+    _sql(parent, "INSERT INTO resumable_subagents (subagent_id,state,pinned,record_json,created_at,updated_at,"
+                 "expires_at) VALUES ('legacy','expired',0,'{}',1,1,1)")
+    _write(Path(parent._session_db.db_path), _apply_limits)
+    assert _sql(parent, "SELECT subagent_id FROM resumable_subagents WHERE subagent_id='legacy'") == []

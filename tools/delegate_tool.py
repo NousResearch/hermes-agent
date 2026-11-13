@@ -438,8 +438,10 @@ def _run_single_child(
         run.seed_workspace()
         if isinstance(cancelled := getattr(child, "_delegate_auto_cancelled", None), str):  # the parent's stop won
             run.worktree_info = None  # still the parent's to keep or release; finalizing it here could prune it
-            return run.settle(run.finish_failed(_fabricated_entry(task_index, "interrupted", cancelled, child),
-                                                run.close_steering(), preview=cancelled, summary=cancelled))
+            # Never ran: not a terminal outcome. A cancel reports nothing; a failed start stays owed (next attempt or
+            # its give-up is the one report). ``unstarted_auto`` keeps the completion silent, ledger included.
+            entry = {**_fabricated_entry(task_index, "interrupted", cancelled, child), "unstarted_auto": True}
+            return run.settle(run.finish_failed(entry, run.close_steering(), preview=cancelled, summary=cancelled))
         result, failure_entry, _child_close_deferred = run.await_child()
         if failure_entry is not None:
             return run.settle(failure_entry)

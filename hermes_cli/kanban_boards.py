@@ -152,7 +152,11 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
     normed, rc = _board_slug_arg(args, "set-default-workdir", must_exist=True)
     if rc:
         return rc
-    new_val = kb.write_board_metadata(normed, default_workdir=args.path).get("default_workdir")
+    # ``None`` means "unchanged" to write_board_metadata, so an omitted path has
+    # to be sent as "" for the documented "omit to clear" to actually clear.
+    new_val = kb.write_board_metadata(
+        normed, default_workdir=("" if args.path is None else args.path)
+    ).get("default_workdir")
     if new_val:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:

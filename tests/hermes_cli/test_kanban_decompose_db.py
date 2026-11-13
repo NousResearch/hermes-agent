@@ -90,5 +90,95 @@ def test_decompose_records_audit_comment_and_event(kanban_home):
     assert any(ev.kind == "decomposed" for ev in events)
 
 
+def test_decomposed_children_are_reported_on_the_root(kanban_home):
+    """The root must be able to name the cards it was split into.
+
+    The dependency edges run child -> root (that is what holds the root in
+    ``todo`` until the graph finishes), so ``child_ids`` is empty on the root
+    and ``parent_ids`` lists the subtasks. The lineage is in the ``decomposed``
+    event; this pins that ``decomposed_children`` reads it back with titles and
+    live statuses, in fan-out order, and that the two views stay distinct.
+    """
+    with kbc.connect() as conn:
+        tid = _create_triage(conn, title="project view")
+        child_ids = decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orch",
+            children=[
+                {"title": "spec it", "assignee": "researcher", "parents": []},
+                {"title": "build it", "assignee": "engineer", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+        assert child_ids is not None
+
+        # The dependency view is inverted by design...
+        assert kb.child_ids(conn, tid) == []
+        assert sorted(kb.parent_ids(conn, tid)) == sorted(child_ids)
+
+        # ...and the lineage view answers the question a reader actually asks.
+        subtasks = kb.decomposed_children(conn, tid)
+        assert [s["id"] for s in subtasks] == child_ids
+        assert [s["title"] for s in subtasks] == ["spec it", "build it"]
+        assert [s["status"] for s in subtasks] == ["ready", "todo"]
+
+        # A child is not itself a root, and an ordinary card has no subtasks.
+        assert kb.decomposed_children(conn, child_ids[0]) == []
+        plain = kb.create_task(conn, title="standalone")
+        assert kb.decomposed_children(conn, plain) == []
+
+        # Status is read live, not frozen into the event.
+        kb.complete_task(conn, child_ids[0], result="done")
+        subtasks = kb.decomposed_children(conn, tid)
+        assert subtasks[0]["status"] == "done"
+
+
+def test_graph_completion_leaves_one_rollup_comment_on_the_root(kanban_home):
+    """The parent card must carry what its subtasks did, once.
+
+    A reader of the parent has no way to see a subtask's handoff otherwise:
+    ``child_ids`` is empty by design, and the summary only ever lived in the
+    root worker's prompt. The roll-up is written at the moment the graph
+    completes, and exactly once — two completions cannot stack it.
+    """
+    with kbc.connect() as conn:
+        tid = _create_triage(conn, title="project view")
+        child_ids = decompose_triage_task(
+            conn,
+            tid,
+            root_assignee="orch",
+            children=[
+                {"title": "spec it", "assignee": "researcher", "parents": []},
+                {"title": "build it", "assignee": "engineer", "parents": [0]},
+            ],
+            author="decomposer",
+        )
+        assert child_ids is not None
+
+        # First completion: the graph is not finished, so no roll-up yet.
+        kb.complete_task(conn, child_ids[0], result="spec frozen in docs/x.md")
+        assert not [c for c in kb.list_comments(conn, tid) if "decompose-rollup" in c.body]
+
+        # Second completion finishes the graph.
+        kb.complete_task(conn, child_ids[1], result="endpoint + UI shipped")
+        rollups = [c for c in kb.list_comments(conn, tid) if "decompose-rollup" in c.body]
+        assert len(rollups) == 1
+        body = rollups[0].body
+        assert "2/2 subtasks are done" in body
+        for cid in child_ids:
+            assert cid in body
+        assert "spec frozen in docs/x.md" in body
+        assert "endpoint + UI shipped" in body
+        assert any(ev.kind == "decompose_rollup" for ev in kb.list_events(conn, tid))
+
+        # Idempotent: the same graph re-notified (a reopen-and-recomplete, or two
+        # racing completions) must not stack a second roll-up.
+        assert kb.complete_task(conn, child_ids[1], result="again", force=True) is False
+        kb._record_decompose_rollup(conn, child_ids[1])
+        rollups = [c for c in kb.list_comments(conn, tid) if "decompose-rollup" in c.body]
+        assert len(rollups) == 1
+
+
 
 

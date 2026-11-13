@@ -398,6 +398,7 @@ def get_task(
         _attach_diagnostics(task_d, _compute_task_diagnostics(conn, task_ids=[task_id]).get(task_id) or [])
         return {
             "task": task_d,
+            "subtasks": kanban_db.decomposed_children(conn, task_id),
             "comments": [asdict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [asdict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],

@@ -166,6 +166,52 @@ def decompose_triage_task(
     return child_ids
 
 
+def _worktree_repo_anchor(path: Optional[str]) -> Optional[str]:
+    """The root's REPO ROOT when its ``workspace_path`` is one, else ``None``.
+
+    A card filed by an outside consumer carries the repository its project
+    lives in (``--workspace worktree:/path/to/the/repo``), so a decomposed
+    child can anchor on the root row instead of on a board-wide
+    ``default_workdir`` — which is the only anchor a multi-repo board cannot
+    express, since one board serves several projects.
+
+    Returning the repo root is safe because ``_resolve_worktree_workspace``
+    materializes ``<repo>/.worktrees/<task-id>`` for a repo-root path: every
+    sibling gets its own checkout, so concurrent children never share a branch.
+
+    ``None`` for every other shape — no path, a path outside any repo, or a
+    path that is already a per-task checkout (``<repo>/.worktrees/<id>``),
+    whose inheritance is precisely the shared-checkout bug. Those children are
+    left unanchored and dispatch falls back to the board's ``default_workdir``,
+    failing loudly when it is unset rather than guessing a repository.
+    """
+    if not path:
+        return None
+    from pathlib import Path
+
+    from hermes_cli.kanban_db_workspace import (
+        _git_toplevel, _is_linked_worktree_checkout, _path_key,
+    )
+
+    try:
+        candidate = Path(path).expanduser()
+        if not candidate.is_dir():
+            return None
+        # A linked worktree answers ``--show-toplevel`` with ITSELF, so it looks
+        # exactly like a repo root to the check below. It is not one: inheriting
+        # it would put every sibling in that one checkout.
+        if _is_linked_worktree_checkout(candidate):
+            return None
+        repo_root = _git_toplevel(candidate)
+        if repo_root is None:
+            return None
+        if _path_key(repo_root) != _path_key(candidate.resolve(strict=False)):
+            return None
+        return str(repo_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def _insert_decomposed_child(
     conn: sqlite3.Connection, root_id: str, root_row: sqlite3.Row, child: dict,
     author: Optional[str], now: int,
@@ -175,10 +221,14 @@ def _insert_decomposed_child(
 
     Workspace: per-child override wins, else inherit the root's kind. Path
     inherits only when kinds match (a 'dir' child must not point at the
-    root's worktree) and NEVER for worktrees — siblings dispatch concurrently
-    and one shared checkout would put them all on the first sibling's branch
-    with no lock; leaving it unset makes dispatch materialize a fresh
-    ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
+    root's worktree). For worktrees the inherited path is the root's REPO ROOT
+    when that is what the root carries — a card filed by an outside consumer
+    (``tix agent`` and friends) names the repository it belongs to, so the
+    anchor a child needs is already on the root row, and ``resolve_workspace``
+    turns that anchor into ``<repo>/.worktrees/<child-id>``, one per sibling.
+    A root whose path is already a per-task checkout is NOT inherited: siblings
+    would then share one checkout and race on one branch. Those children keep
+    ``workspace_path`` unset and dispatch falls back to the board anchor.
     """
     from hermes_cli.kanban_db import (
         _new_task_id, _canonical_assignee, _append_event,
@@ -189,7 +239,7 @@ def _insert_decomposed_child(
     if child.get("workspace_path"):
         child_ws_path = child.get("workspace_path")
     elif child_ws_kind == "worktree":
-        child_ws_path = None
+        child_ws_path = _worktree_repo_anchor(root_row["workspace_path"])
     elif child_ws_kind == root_ws_kind:
         child_ws_path = root_row["workspace_path"]
     else:

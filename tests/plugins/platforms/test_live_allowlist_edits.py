@@ -217,6 +217,22 @@ def test_a_command_in_a_newly_allowed_telegram_chat_is_processed(_home):
     _write(_home, telegram_cfg={"allowed_chats": ["-100", "-200"], "require_mention": False})
     assert adapter._should_process_message(_group_message("/status", chat_id=-200), is_command=True) is True
 
+
+def test_telegram_topic_and_bot_gates_follow_an_edit(_home):
+    """allowed_topics and allow_bots are read from extra too; an edit must reach them without a reconnect."""
+    from gateway.platforms._shared import mark_live_gate_baseline
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from plugins.platforms.telegram.telegram_live_gates import refresh_telegram_gates
+
+    _write(_home, telegram_cfg={"allowed_topics": ["5"], "allow_bots": "all"})
+    adapter = TelegramAdapter(load_gateway_config().platforms[Platform.TELEGRAM])
+    mark_live_gate_baseline(adapter)
+    _write(_home, telegram_cfg={"allowed_topics": ["5", "6"], "allow_bots": "none"})
+    refresh_telegram_gates(adapter)
+    assert adapter._telegram_allowed_topics() == {"5", "6"}
+    assert adapter.config.extra.get("allow_bots") == "none"
+
+
 def test_unchanged_config_costs_no_reload(_home, monkeypatch):
     import gateway.config as gateway_config
 

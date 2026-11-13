@@ -13,7 +13,8 @@ from typing import Any, Optional
 from gateway.platforms._shared import platform_gate_env, refresh_live_gate_extra
 
 # The ``extra`` keys an intake verdict reads (the adapter prefilter and the gateway authz union).
-_LIVE_GATE_EXTRA_KEYS = ("allow_from", "group_allow_from", "allowed_chats", "group_allowed_chats")
+_LIVE_GATE_EXTRA_KEYS = ("allow_from", "group_allow_from", "allowed_chats", "group_allowed_chats", "allowed_topics",
+                         "allow_bots")
 
 
 def refresh_telegram_gates(adapter: Any) -> None:

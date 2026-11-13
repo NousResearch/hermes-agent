@@ -53,20 +53,25 @@ _PROLOGUE_TEMPLATE = (
     "    { __hermes_sudo_i=0\n"
     '  while \\builtin test "$__hermes_sudo_i" -lt "$__hermes_sudo_n"; do\n'
     "    __hermes_sudo_i=$((__hermes_sudo_i + 1))\n"
+    # Each external command of this background group runs in its own subshell: Apple's bash 3.2
+    # replaces a background ``{ ...; } &`` group with the first ``command <program>`` it meets
+    # (no fork), so nothing after it would run.
     '    { if \\builtin test "$__hermes_sudo_i" -lt "$__hermes_sudo_n"; then\n'
-    '        \\command mkfifo "$__hermes_sudo_dir/q" && \\command mv -f "$__hermes_sudo_dir/q" "$__hermes_sudo_dir/p"\n'
-    '      else \\command rm -f "$__hermes_sudo_dir/p"; fi >/dev/null 2>&1\n'
+    '        ( \\command mkfifo "$__hermes_sudo_dir/q" ) && ( \\command mv -f "$__hermes_sudo_dir/q" "$__hermes_sudo_dir/p" )\n'
+    '      else ( \\command rm -f "$__hermes_sudo_dir/p" ); fi >/dev/null 2>&1\n'
     "      \\builtin printf '%s\\n' \"$__hermes_sudo_pw\"; } > \"$__hermes_sudo_dir/p\" || \\builtin break\n"
     "  done; } 8<&- &\n"
     "    __hermes_sudo_w=$!\n"
     "    \\builtin unset __hermes_sudo_pw\n"
     # A timed-out read while the command's shell ($$) still runs, as after a yield to the
     # background, keeps serving; EOF on fd 19 or a gone shell ends the wait. A timeout is status
-    # > 128 on bash 4+, and status 1 after the full wait on bash 3.2 (EOF returns 1 at once).
+    # > 128 on bash 4+, and status 1 after the full wait on bash 3.2 (EOF returns 1 at once;
+    # SECONDS counts whole seconds, hence the one-second margin).
     "    __hermes_sudo_t=@TIMEOUT@\n"
+    "    __hermes_sudo_e=$((__hermes_sudo_t > 1 ? __hermes_sudo_t - 1 : 1))\n"
     '    while SECONDS=0; \\builtin read -r -t "$__hermes_sudo_t" __hermes_sudo_x <&8; __hermes_sudo_r=$?\n'
     '      { \\builtin test "$__hermes_sudo_r" -gt 128 || { \\builtin test "$__hermes_sudo_r" -ne 0 &&\n'
-    '        \\builtin test "$SECONDS" -ge "$__hermes_sudo_t"; }; } && \\builtin kill -0 $$ 2>/dev/null\n'
+    '        \\builtin test "$SECONDS" -ge "$__hermes_sudo_e"; }; } && \\builtin kill -0 $$ 2>/dev/null\n'
     "    do \\builtin :; done\n"
     '\\builtin kill "$__hermes_sudo_w" 2>/dev/null\n'
     '\\exec 7<>"$__hermes_sudo_dir/p" 2>/dev/null\n'

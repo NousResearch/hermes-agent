@@ -577,6 +577,20 @@ def test_live_sudo_after_watchdog_timeout_is_served_while_the_command_runs(tmp_p
 
 
 @_needs_posix_shell
+def test_live_every_counted_sudo_that_asks_is_served(tmp_path):
+    """Three sudos that each ask (the ticket is dropped between them): the FIFO swap between servings works."""
+    sudo = _write_fake_sudo(tmp_path / "bin")
+    drop = f"rm -f {sudo.parent / 'ticket'}"
+    command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(
+        f"{sudo} id -u; {drop}; {sudo} id -u; {drop}; {sudo} id -u", askpass=True)
+    assert count == 3
+    proc = _bash(askpass.build_prologue(count, "20") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == [str(os.getuid())] * 3
+    wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
+
+
+@_needs_posix_shell
 def test_live_orphan_holding_fd_19_does_not_keep_the_writer_past_the_timeout(tmp_path):
     sudo = _write_fake_sudo(tmp_path / "bin")
     command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(

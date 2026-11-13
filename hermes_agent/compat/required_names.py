@@ -11,7 +11,7 @@ their canaries. Kinds:
 - ``by-path``: a release runs or loads the file by path.
 - ``exists``: a release checks that the file exists.
 - ``copy``: a release runs the file without the application on the path (``python -I -S``, or the
-  file copied out alone); the old path holds a byte copy of the moved file.
+  file copied out alone), or fetches it from main by URL; the old path holds a byte copy of the moved file.
 - ``hand``: the old path holds hand-written code that must run before ``hermes_agent`` is
   importable. The generator does not write it; ``--check`` fails while it is missing or is a shim.
 

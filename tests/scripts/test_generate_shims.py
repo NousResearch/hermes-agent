@@ -5,6 +5,7 @@ Each test builds a small git repo with the generator, the compat package and one
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -95,6 +96,17 @@ def test_old_name_launch_repairs_a_torn_update_before_importing_hermes_agent(rep
     assert "bootstrap ran" not in plain.stderr and "SyntaxError" in plain.stderr
 
 
+def test_old_name_launch_from_a_cwd_with_another_hermes_agent_runs_this_trees_module(repo, tmp_path):
+    # `python -m` puts the cwd first on sys.path, so a project there that has its own hermes_agent/ (but no
+    # old-name package) must not capture the forward: the launch still runs the shim's own tree.
+    cwd = tmp_path / "project"
+    _write(cwd, {"hermes_agent/__init__.py": ""})
+    env = {**os.environ, "PYTHONPATH": str(repo)}
+    result = subprocess.run([sys.executable, "-m", "oldpkg.tool", "a"], cwd=cwd, env=env,
+                            capture_output=True, text=True, timeout=60, check=False)
+    assert (result.returncode, result.stdout.strip()) == (0, "argv ['a']"), result.stderr
+
+
 def test_old_name_launch_on_a_healthy_tree_does_not_run_the_bootstrap(repo):
     # Light -m targets (an old updater's abort recovery, uninstall) never imported the bootstrap, so a
     # bootstrap that fails (dependencies that do not activate) must not stop them.
@@ -107,6 +119,17 @@ def test_loaded_by_path_carries_the_moved_names(repo):
     probe = ("import runpy, sys; ns = runpy.run_path('oldpkg/tool.py'); "
              "print(ns['VALUE'], callable(ns['main']), '<run_path>' in sys.modules)")
     assert _run(repo, "-c", probe).stdout.strip() == "42 True False"
+
+
+def test_copy_row_for_a_data_file_copies_that_file(repo):
+    # Released apps fetch hermes_cli/local_runtime/catalog.json from main by URL, so the old path must
+    # keep the moved data file's bytes, not its sibling module's.
+    _write(repo, {"hermes_agent/oldpkg/data.json": '{"schema_version": 3}\n'})
+    names = repo / "hermes_agent/compat/required_names.py"
+    names.write_text(names.read_text().replace('"oldtop": "hand"}', '"oldtop": "hand", "oldpkg/data.json": "copy"}'))
+    assert _generate(repo).returncode == 0
+    assert (repo / "oldpkg/data.json").read_bytes() == (repo / "hermes_agent/oldpkg/data.json").read_bytes()
+    assert _generate(repo, "--check").returncode == 0
 
 
 def test_check_fails_on_drift_and_strays_but_not_on_ignored_output(repo):

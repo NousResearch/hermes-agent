@@ -61,7 +61,7 @@ TEMPLATE = '''try:  {header}
     from pathlib import Path
 
     def _forward():
-        if __name__ == "__main__" or importlib.util.find_spec("hermes_agent") is None:
+        if __name__ == "__main__" or sys.argv[:1] == ["-m"] or importlib.util.find_spec("hermes_agent") is None:
             sys.path.insert(0, str(Path(__file__).resolve().parents[{depth}]))
         from hermes_agent.compat import install
 
@@ -103,7 +103,9 @@ def generated() -> dict[str, bytes]:
         if new is None or kind == "hand":
             continue
         target = ROOT.joinpath(*new.split("."))
-        if (target / "__init__.py").is_file():
+        if kind == "copy" and Path(name).suffix != ".py":  # a data file a release reads at its old path
+            path, source = Path(name), target.with_suffix(Path(name).suffix)
+        elif (target / "__init__.py").is_file():
             path, source = Path(*old.split("."), "__init__.py"), target / "__init__.py"
         elif target.with_suffix(".py").is_file():
             path, source = Path(*old.split(".")).with_suffix(".py"), target.with_suffix(".py")

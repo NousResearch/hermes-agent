@@ -48,3 +48,22 @@ def test_speaker_keeps_caller_profile(profile_b, monkeypatch):
     server._speak_text_with_barge("the reply")
     assert done.wait(10)
     assert seen["home"] == profile_b
+
+
+def test_voice_tts_rpc_speaks_as_the_requested_profile(tmp_path, monkeypatch):
+    """The registered ``voice.tts`` handler binds ``params.profile`` and both thread hops keep it;
+    without a profile it stays on the launch home."""
+    from tui_gateway import server
+    launch, worker = tmp_path / "launch", tmp_path / "profiles" / "b"
+    launch.mkdir()
+    worker.mkdir(parents=True)
+    monkeypatch.setattr(server, "_hermes_home", launch)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(server, "_profile_home", lambda name: worker if name == "b" else None)
+    monkeypatch.setattr(server, "_arm_barge_listener_if_enabled", lambda: None)
+    for params, expected in (({"text": "hi", "profile": "b"}, worker), ({"text": "hi"}, launch)):
+        seen, done = _speaker(monkeypatch)
+        resp = server._methods["voice.tts"]("rid", params)
+        assert resp["result"]["status"] == "speaking"
+        assert done.wait(10)
+        assert seen["home"] == expected

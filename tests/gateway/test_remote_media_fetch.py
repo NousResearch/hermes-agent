@@ -166,6 +166,26 @@ def test_supplied_session_key_outranks_the_context_less_default_sandbox(monkeypa
     assert unrelated.fetched == []
 
 
+def test_missing_session_sandbox_does_not_fetch_default_sandbox(monkeypatch, registered_sandbox):
+    """Post-turn media for a named SSH session must not borrow a CLI/cron sandbox."""
+    from tools import terminal_tool
+
+    # The named session never registered an environment; only an unrelated one exists.
+    unrelated = _FakeRemoteEnv(b"from an unrelated sandbox")
+    monkeypatch.setitem(terminal_tool._active_environments, "default", unrelated)
+
+    delivered = BasePlatformAdapter.filter_media_delivery_paths(
+        [("/home/agent/out/report.txt", False)], session_key=SESSION_KEY)
+
+    assert delivered == []
+    assert unrelated.fetched == []
+
+    # A sessionless delivery must retain its existing default-sandbox behavior.
+    sessionless = BasePlatformAdapter.filter_media_delivery_paths(
+        [("/home/agent/out/report.txt", False)])
+    assert [Path(p).read_bytes() for p, _ in sessionless] == [b"from an unrelated sandbox"]
+
+
 class _DeliveryAdapter(BasePlatformAdapter):
     """Concrete adapter whose session store maps the turn's key to its session id."""
 

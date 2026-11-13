@@ -150,16 +150,31 @@ class TestDynamicParamGating(unittest.TestCase):
         reference cap, and the schema offers Krea 3's controls and none of Krea 2's."""
         from plugins.image_gen.krea import KreaImageGenProvider
 
-        # The tool and the plugin read the same stored selection, no env override needed.
-        home = Path(os.environ["HERMES_HOME"])
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "config.yaml").write_text("image_gen:\n  provider: nous\n  model: krea-3\n")
-        props = _build_dynamic_image_schema()["parameters"]["properties"]
-        cap = KreaImageGenProvider().capabilities()["max_reference_images"]
-        self.assertIs(props["image_url"], ig._IMAGE_URL_PARAM)
-        self.assertEqual(props["reference_image_urls"]["maxItems"], cap)
-        self.assertLessEqual({"thinking", "resolution"}, set(props))
-        self.assertNotIn("creativity", props)
+        # Own the sandbox even under unittest, which does not load pytest's conftest.
+        # Never truncate the caller's HERMES_HOME/config.yaml.
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory(prefix="hermes-image-schema-") as tmp_home, \
+             patch.dict(os.environ, {"HERMES_HOME": tmp_home}):
+            home = Path(tmp_home)
+            (home / "config.yaml").write_text("image_gen:\n  provider: nous\n  model: krea-3\n")
+            props = _build_dynamic_image_schema()["parameters"]["properties"]
+            cap = KreaImageGenProvider().capabilities()["max_reference_images"]
+            self.assertIs(props["image_url"], ig._IMAGE_URL_PARAM)
+            self.assertEqual(props["reference_image_urls"]["maxItems"], cap)
+            self.assertLessEqual({"thinking", "resolution"}, set(props))
+            self.assertNotIn("creativity", props)
+
+    def test_krea_3_schema_check_preserves_callers_config(self):
+        """The schema test must not overwrite the caller's home under unittest."""
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory(prefix="hermes-image-caller-") as caller_home, \
+             patch.dict(os.environ, {"HERMES_HOME": caller_home}):
+            config_path = Path(caller_home) / "config.yaml"
+            original = "model:\n  default: caller-model\n  provider: caller-provider\n"
+            config_path.write_text(original)
+            self.test_krea_3_advertises_edit_wording_and_its_own_controls()
+            self.assertEqual(config_path.read_text(), original)
 
     def test_static_schema_carries_no_capability_args(self):
         """The registration-time placeholder must stay minimal — dynamic

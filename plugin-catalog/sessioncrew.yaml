@@ -10,6 +10,7 @@ category: desktop
 requires_hermes: ">=0.23.0"
 platforms: [linux, macos]
 docs_url: https://github.com/harukaxxxx/hermes-session-crew/blob/305067ec466ca45ac598e3ba2a4b3948b428a4b0/README.md
+image: https://raw.githubusercontent.com/harukaxxxx/hermes-session-crew/305067ec466ca45ac598e3ba2a4b3948b428a4b0/assets/sessioncrew-hero.png
 screenshots:
   - https://raw.githubusercontent.com/harukaxxxx/hermes-session-crew/305067ec466ca45ac598e3ba2a4b3948b428a4b0/assets/sessioncrew-webapp.png
 readme: true

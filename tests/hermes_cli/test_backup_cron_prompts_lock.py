@@ -15,7 +15,7 @@ def test_concurrent_cron_edits_survive_recovery(tmp_path, monkeypatch):
     """Recovery must publish under the cron writer lock from a fresh read: cron edits
     committed after recovery first read jobs.json (create, remove, schedule edit, a
     legitimate prompt edit) all survive; only the still-degraded prompt is restored."""
-    import cron.jobs as cron_jobs
+    import hermes_agent.cron.jobs as cron_jobs
     from hermes_cli.backup import create_quick_snapshot
     import hermes_cli.backup_cron_prompts as bcp
     hermes_home = tmp_path / ".hermes"

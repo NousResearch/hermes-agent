@@ -1,9 +1,9 @@
 """Cron's standalone delivery lane: the out-of-process send for a target the live adapter did not
 deliver, and the delivery-ledger hand-off for a payload both lanes failed (#125363, #127187).
 
-Split out of ``cron.scheduler_delivery``, which imports these names and remains the seam: its
+Split out of ``hermes_agent.cron.scheduler_delivery``, which imports these names and remains the seam: its
 ``_deliver_standalone`` reads them as module globals, and this module reads the facade's
-``_get_standalone_send_timeout`` late-bound, so patching ``cron.scheduler_delivery`` still works.
+``_get_standalone_send_timeout`` late-bound, so patching ``hermes_agent.cron.scheduler_delivery`` still works.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from cron.scheduler_delivery import _TargetDelivery
+    from hermes_agent.cron.scheduler_delivery import _TargetDelivery
 
-logger = logging.getLogger("cron.scheduler")
+logger = logging.getLogger("hermes_agent.cron.scheduler")
 
 # Live-lane rejections an adapter returns BEFORE sending anything (no client while it rebuilds): the
 # only ones whose ``retryable`` proves the chat has nothing yet. ``SendResult.retryable`` alone means
@@ -162,6 +162,6 @@ def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: lis
 
 
 # Late-bound (see module docstring): the facade imports this module, so these load after it.
-from cron import scheduler as _sched
-from cron import scheduler_delivery as _delivery
-from cron import scheduler_script as _script
+from hermes_agent.cron import scheduler as _sched
+from hermes_agent.cron import scheduler_delivery as _delivery
+from hermes_agent.cron import scheduler_script as _script

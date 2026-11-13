@@ -73,9 +73,9 @@ def register_automation_blueprint(
 ) -> Optional[PluginRegistration]:
     """Add an Automation Blueprint to this profile's catalog as ``'<plugin_name>:<key>'``
     (``/blueprint``, the dashboard/Desktop gallery). Fields mirror
-    :class:`cron.blueprint_catalog.AutomationBlueprint`; ``slots`` are ``BlueprintSlot`` field
+    :class:`hermes_agent.cron.blueprint_catalog.AutomationBlueprint`; ``slots`` are ``BlueprintSlot`` field
     mappings. Malformed input or a duplicate key logs a warning and returns ``None``."""
-    from cron.blueprint_plugins import build_plugin_blueprint
+    from hermes_agent.cron.blueprint_plugins import build_plugin_blueprint
     try:
         blueprint = build_plugin_blueprint(
             self.manifest.name, key, title=title, description=description,

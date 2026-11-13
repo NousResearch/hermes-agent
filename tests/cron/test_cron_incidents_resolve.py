@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from cron import incidents
-import cron.scheduler as sched
+from hermes_agent.cron import incidents
+import hermes_agent.cron.scheduler as sched
 
 
 def _point_db(monkeypatch, tmp_path):

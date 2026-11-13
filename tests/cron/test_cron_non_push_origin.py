@@ -32,7 +32,7 @@ def test_non_push_session_stamps_no_origin_and_gets_creation_notice():
 
 
 def test_stamped_api_server_origin_falls_back_to_home_channel(monkeypatch):
-    from cron import scheduler_delivery as sd
+    from hermes_agent.cron import scheduler_delivery as sd
 
     monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
     job = {"id": "old", "deliver": "origin", "origin": {"platform": "api_server", "chat_id": "desk-1"}}

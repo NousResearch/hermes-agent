@@ -7,9 +7,9 @@ the window reopens — every fire is a usage probe plus a delivered failure aler
 run's alert says the job is held; ``mark_job_run`` then parks ``next_run_at`` at the recovery
 boundary (or the first legal occurrence after it, when several fall inside the window) and
 stamps ``quota_hold_until`` so the stale-error re-arm
-(``cron.jobs._job_is_stale_error_recurring``) does not pull the job back early.
+(``hermes_agent.cron.jobs._job_is_stale_error_recurring``) does not pull the job back early.
 
-Complement to ``cron/unreachable_retry.py``: this one moves ``next_run_at`` out of a known
+Complement to ``hermes_agent/cron/unreachable_retry.py``: this one moves ``next_run_at`` out of a known
 closed provider window. Any run that reaches the model clears the marker.
 """
 
@@ -20,10 +20,10 @@ import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from cron import extra_fire
+from hermes_agent.cron import extra_fire
 from hermes_time import now as _hermes_now, safe_strftime
 
-logger = logging.getLogger("cron.scheduler")
+logger = logging.getLogger("hermes_agent.cron.scheduler")
 
 # Persisted while a hold is active: ISO instant the job was parked at.
 STATE_KEY = "quota_hold_until"
@@ -59,7 +59,7 @@ def hold_seconds_from_failure(exc: BaseException) -> Optional[float]:
 
 def hold_active(job: dict[str, Any], now: Optional[datetime] = None) -> bool:
     """True while the job is parked inside a provider window (an expired marker is inert)."""
-    from cron.jobs import _instant_after, _parse_aware  # late: jobs imports this module's helpers
+    from hermes_agent.cron.jobs import _instant_after, _parse_aware  # late: jobs imports this module's helpers
 
     until = _parse_aware(job.get(STATE_KEY)) if job.get(STATE_KEY) else None
     return until is not None and _instant_after(until, now or _hermes_now())
@@ -85,7 +85,7 @@ def is_recovery_fire(job: dict[str, Any], next_run: str) -> bool:
 
 
 def _window_end(hold_seconds: float) -> datetime:
-    from cron.jobs import _seconds_after
+    from hermes_agent.cron.jobs import _seconds_after
 
     return _seconds_after(_hermes_now(), float(hold_seconds) + HOLD_SLACK_SECONDS)
 
@@ -99,10 +99,10 @@ def _recovery_worthwhile(
     it waits for the natural schedule instead of re-parking at every hold boundary (the
     probe-per-window cost the hold exists to prevent). Sparse: the natural occurrence must be at
     least half a cadence period past the boundary — the same half-period rule as
-    ``cron.jobs._compute_grace_seconds`` — otherwise the recovery fire is a near-duplicate of the
+    ``hermes_agent.cron.jobs._compute_grace_seconds`` — otherwise the recovery fire is a near-duplicate of the
     natural one (hourly job, hold ending at :58, would fire :58 AND :00).
     """
-    from cron.jobs import _elapsed_seconds, _schedule_cadence_seconds
+    from hermes_agent.cron.jobs import _elapsed_seconds, _schedule_cadence_seconds
 
     if job.get(STATE_KEY):
         return False
@@ -117,7 +117,7 @@ def plan_hold(
     ``next_run_at`` for a failed run. A scheduled sparse cron may retry its consumed fire at the
     recovery boundary; manual runs keep the natural schedule. Otherwise coalesce fires through
     the closed window. Returns True when parked."""
-    from cron.jobs import _instant_before, _parse_aware, compute_next_run
+    from hermes_agent.cron.jobs import _instant_before, _parse_aware, compute_next_run
 
     schedule = job.get("schedule") or {}
     kind = schedule.get("kind")

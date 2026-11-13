@@ -13,11 +13,11 @@ import logging
 import threading
 from typing import Any, Dict
 
-from cron.scheduler_provider import CronScheduler
+from hermes_agent.cron.scheduler_provider import CronScheduler
 
 from ._nas_client import NasCronClientError
 
-logger = logging.getLogger("cron.chronos")
+logger = logging.getLogger("hermes_agent.cron.chronos")
 
 
 def _cfg(*keys: str, default: Any = "") -> Any:
@@ -132,7 +132,7 @@ class ChronosCronScheduler(CronScheduler):
         if self._stop_event is None:
             return  # start() never ran (e.g. a CLI `hermes cron add`); nothing to tick here
         from agent.memory_provider import spawn_context_thread
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
         spawn_context_thread(
             InProcessCronScheduler().start, name="cron-scheduler-chronos-fallback",
             args=(self._stop_event,), kwargs=self._ticker_kwargs).start()
@@ -172,7 +172,7 @@ class ChronosCronScheduler(CronScheduler):
 
     def reconcile(self) -> None:
         """Converge NAS one-shots toward jobs.json: arm missing/changed, cancel orphans."""
-        from cron.jobs import get_job, load_jobs
+        from hermes_agent.cron.jobs import get_job, load_jobs
         desired: dict[str, str] = {
             j["id"]: j["next_run_at"] for j in load_jobs()
             if j.get("enabled") and j.get("next_run_at") and j.get("state") != "paused"}
@@ -194,7 +194,7 @@ class ChronosCronScheduler(CronScheduler):
     ) -> bool:
         ran = super().fire_claimed(claimed_job, adapters=adapters, loop=loop, cancel_event=cancel_event)
         if ran:
-            from cron.jobs import get_job
+            from hermes_agent.cron.jobs import get_job
             job_id = claimed_job["id"]
             job = get_job(job_id)
             if job and job.get("enabled") and job.get("next_run_at"):

@@ -194,7 +194,7 @@ def test_declarations_validate_translate_and_survive_a_native_trust_override(tmp
 
 
 def test_a_chat_keeps_its_total_across_a_rotation_and_each_cron_run_has_its_own(session, caplog):
-    from cron.scheduler import _CronRunScope
+    from hermes_agent.cron.scheduler import _CronRunScope
     from gateway.session_context import clear_session_vars, set_session_vars
     config = dict(COSTED, tool_costs={**COSTED["tool_costs"], "mcp_srv_typo": 3})
     _register(config)

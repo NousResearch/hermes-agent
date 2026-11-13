@@ -556,7 +556,7 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         import json
 
         from agent import prompt_builder as pb, skill_utils
-        from cron.scheduler_prompt import _load_cron_skill_parts
+        from hermes_agent.cron.scheduler_prompt import _load_cron_skill_parts
         from tools.skills_tool import skill_view, skills_list
         local, ext = tmp_path / "local", tmp_path / "ext"
         _make_skill(local, "dup-demo", category="a", body="BODY A")

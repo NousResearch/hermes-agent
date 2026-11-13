@@ -34,7 +34,7 @@ def _clean_state():
     the fresh-spawn path keeps upstream's dispatch-and-return test winning
     its patch-visibility race: ``Thread.start()`` blocks the dispatching
     thread until the worker has bootstrapped, so the worker performs
-    ``_run_claimed_job``'s lazy ``from cron.scheduler import run_one_job``
+    ``_run_claimed_job``'s lazy ``from hermes_agent.cron.scheduler import run_one_job``
     while the test's patches are still active. On the idle-reuse path
     ``submit`` returns with the GIL still held, the patch block unwinds
     first, and the worker binds the REAL ``run_one_job`` — which then runs
@@ -92,7 +92,7 @@ def _dispatch_diag(res) -> str:
     dict plus the scheduler running set, so a broken assert names the return
     path that was actually taken instead of a bare KeyError."""
     try:
-        from cron.scheduler import get_running_job_ids
+        from hermes_agent.cron.scheduler import get_running_job_ids
 
         running = sorted(get_running_job_ids())
     except Exception as e:  # pragma: no cover - diagnostic only
@@ -153,7 +153,7 @@ class TestRunnerSummaryWiring:
                     "tools.cronjob_tools.claim_job_for_fire",
                     return_value=job,  # claimed snapshot (return_job=True API)
                 ),
-                patch("cron.scheduler.run_one_job", return_value=True),
+                patch("hermes_agent.cron.scheduler.run_one_job", return_value=True),
                 patch(
                     "tools.cronjob_tools.get_job",
                     return_value={
@@ -191,7 +191,7 @@ class TestRunnerSummaryWiring:
                     "tools.cronjob_tools.claim_job_for_fire",
                     return_value=job,  # claimed snapshot (return_job=True API)
                 ),
-                patch("cron.scheduler.run_one_job", return_value=True),
+                patch("hermes_agent.cron.scheduler.run_one_job", return_value=True),
                 patch(
                     "tools.cronjob_tools.get_job",
                     return_value={"last_status": "ok", "last_error": None},

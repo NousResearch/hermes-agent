@@ -221,9 +221,9 @@ class TestCronjobRequirements:
 class TestUnifiedCronjobTool:
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
 
     def test_create_and_list(self):
         created = json.loads(
@@ -261,7 +261,7 @@ class TestUnifiedCronjobTool:
         assert created["next_run_at"]
 
         # The stored schedule is a cron expression.
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         stored = get_job(created["job_id"])
         assert stored["schedule"]["kind"] == "cron"
         assert stored["schedule"]["expr"] == "0 9 * * 1"
@@ -277,11 +277,11 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         assert updated["job"]["schedule"] == "every day at 9am"
 
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         assert get_job(job_id)["schedule"]["expr"] == "0 9 * * *"
 
     def test_list_handles_partial_legacy_job_records(self):
-        from cron.jobs import save_jobs
+        from hermes_agent.cron.jobs import save_jobs
 
         save_jobs([
             {
@@ -330,7 +330,7 @@ class TestUnifiedCronjobTool:
         """Write a job with an unsafe named-provider + off-host base_url pair
         DIRECTLY to the store, bypassing the create-time tool guard (mirrors a
         job persisted before the guard existed)."""
-        from cron.jobs import save_jobs
+        from hermes_agent.cron.jobs import save_jobs
         save_jobs([
             {
                 "id": "legacyunsafe1",
@@ -359,7 +359,7 @@ class TestUnifiedCronjobTool:
         assert "not allowed" in json.dumps(result)
 
         # The rejected update must not have mutated the stored job at all.
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         stored = get_job(job_id)
         assert stored["name"] == "legacy"
         assert stored["base_url"] == "https://evil.example/v1"
@@ -388,7 +388,7 @@ class TestUnifiedCronjobTool:
         string ``"['telegram']"`` as a platform, failing with
         "no delivery target resolved".
         """
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
 
         created = json.loads(
             cronjob(
@@ -405,7 +405,7 @@ class TestUnifiedCronjobTool:
 
     def test_update_normalizes_list_form_deliver(self):
         """update with deliver=['telegram'] stores the canonical string."""
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
 
         created = json.loads(
             cronjob(action="create", prompt="x", schedule="every 1h")
@@ -445,7 +445,7 @@ class TestAgentCannotSetModelPin:
     def test_handler_update_leaves_user_pin_untouched(self):
         """An update through the agent handler must not clear or change a
         user-set pin (grandfathered agent-era pins included)."""
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         from tools.registry import registry
 
         created = json.loads(
@@ -485,12 +485,12 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
 
     def test_create_persists_attach_to_session(self):
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         from tools.registry import registry
 
         created = json.loads(
@@ -517,7 +517,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
         assert listed.get("attach_to_session") is True
 
     def test_update_persists_attach_to_session(self):
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         from tools.registry import registry
 
         created = json.loads(
@@ -570,7 +570,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
         assert listed.get("attach_to_session") is False
 
     def test_omitted_create_leaves_field_absent(self):
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         from tools.registry import registry
 
         created = json.loads(
@@ -601,9 +601,9 @@ class TestLocalDeliveryNotice:
 
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
         # Default: no session origin (the TUI/CLI condition).
         for var in (
             "HERMES_SESSION_PLATFORM",
@@ -809,12 +809,12 @@ class TestScheduleKnobToolSurface:
 
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
 
     def _stored(self):
-        from cron.jobs import load_jobs
+        from hermes_agent.cron.jobs import load_jobs
         return load_jobs()[0]
 
     def test_create_stores_timezone_and_grace(self):

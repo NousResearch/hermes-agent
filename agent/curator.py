@@ -184,7 +184,7 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 def _cron_referenced_skills() -> set[str]:
     """Skill names referenced by any cron job (incl. paused/disabled). Best-effort: a cron import error or corrupt jobs store yields an empty set, never a crash."""
     try:
-        from cron.jobs import referenced_skill_names as _refs
+        from hermes_agent.cron.jobs import referenced_skill_names as _refs
         return _refs()
     except Exception as e:
         logger.debug("Curator could not read cron skill references: %s", e, exc_info=True)
@@ -681,7 +681,7 @@ def _rewrite_cron_refs(consolidated: list[dict[str, Any]], pruned: list[dict[str
         consolidated_map = {e["name"]: e["into"] for e in consolidated if isinstance(e, dict) and e.get("name") and e.get("into")}
         pruned_names = [e["name"] for e in pruned if isinstance(e, dict) and e.get("name")]
         if consolidated_map or pruned_names:
-            from cron.jobs import rewrite_skill_refs
+            from hermes_agent.cron.jobs import rewrite_skill_refs
             return rewrite_skill_refs(consolidated=consolidated_map, pruned=pruned_names)
         return {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
     except Exception as e:

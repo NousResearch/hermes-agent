@@ -38,7 +38,7 @@ for selector in (f"-p {profile}", f"--profile {profile}", f"--profile={profile}"
 
 def test_nonmatching_flag_runs_finish():
     script = r'''
-from cron import lifecycle_guard as guard
+from hermes_agent.cron import lifecycle_guard as guard
 
 for command in (
     "rclone lsf $HOME/.hermes --recursive --files-only " + "--exclude " * 58,

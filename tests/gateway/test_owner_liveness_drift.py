@@ -1,6 +1,6 @@
 """Sibling owner-liveness checks tolerate a drifted start-time fingerprint (#117505).
 
-``cron.executions`` is not the only reconciler that compares a recorded owner fingerprint with
+``hermes_agent.cron.executions`` is not the only reconciler that compares a recorded owner fingerprint with
 a fresh ``get_process_start_time`` reading: the delivery ledger, API-server durable runs and the
 async-delegation ledger did the same exact-equality test and reconciled a live owner to
 dead/unknown under the same ~1 s same-host drift. All of them now share

@@ -21,7 +21,7 @@ from typing import Any, Callable, Iterator, Optional
 
 from agent.deadline import poll_until
 from agent.redact import redact_sensitive_text
-from cron.executions import _owner_is_live, _process_start_time
+from hermes_agent.cron.executions import _owner_is_live, _process_start_time
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -138,7 +138,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # ``hermes_cli.sqlite_util`` / ``hermes_agent.cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
     from hermes_cli.sqlite_util import open_db
 
@@ -318,7 +318,7 @@ def recover_abandoned() -> int:
                 # Read the job id now: pruning below redacts a terminal row's job_json.
                 fenced.append((json.loads(row["job_json"] or "{}").get("id"), row["execution_id"]))
         _prune_terminal_unlocked(conn)
-    from cron.delivery_outcome import settle_quietly
+    from hermes_agent.cron.delivery_outcome import settle_quietly
 
     for job_id, execution_id in fenced:
         settle_quietly(job_id, execution_id)
@@ -346,7 +346,7 @@ def drain(
                 error = f"{type(exc).__name__}: {exc}"
             if _finish(row["execution_id"], error=error,
                        suppressed=bool(row["job"].get("_notification_all_targets_suppressed"))):
-                from cron.delivery_outcome import settle_quietly
+                from hermes_agent.cron.delivery_outcome import settle_quietly
 
                 settle_quietly(row["job"].get("id"), row["execution_id"])
         finally:

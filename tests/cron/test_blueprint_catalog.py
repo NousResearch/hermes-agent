@@ -1,6 +1,6 @@
 """Tests for Automation Blueprints — the parameterized automation blueprint system.
 
-Covers the core catalog/slot schema/renderers/fill (cron/blueprint_catalog.py),
+Covers the core catalog/slot schema/renderers/fill (hermes_agent/cron/blueprint_catalog.py),
 the shared /blueprint command handler (hermes_cli/blueprint_cmd.py), and
 the docs generator. Uses an isolated HERMES_HOME for anything that touches the
 cron job store.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from cron.blueprint_catalog import (
+from hermes_agent.cron.blueprint_catalog import (
     CATALOG,
     BlueprintFillError,
     BlueprintSlot,
@@ -123,7 +123,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     import hermes_constants
     importlib.reload(hermes_constants)
-    from cron import jobs
+    from hermes_agent.cron import jobs
     importlib.reload(jobs)
     return jobs
 

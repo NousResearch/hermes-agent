@@ -26,16 +26,16 @@ def hermes_env(tmp_path, monkeypatch):
 
     import importlib
     import hermes_constants
-    import cron.jobs
+    import hermes_agent.cron.jobs
 
     importlib.reload(hermes_constants)
-    importlib.reload(cron.jobs)
+    importlib.reload(hermes_agent.cron.jobs)
     return home
 
 
 def test_stale_empty_save_preserves_concurrent_no_agent_create(hermes_env):
     """Gateway-style stale writer with [] must not wipe a concurrent create."""
-    from cron.jobs import create_job, load_jobs, save_jobs
+    from hermes_agent.cron.jobs import create_job, load_jobs, save_jobs
 
     job = create_job(
         prompt=None,
@@ -60,7 +60,7 @@ def test_stale_empty_save_preserves_concurrent_no_agent_create(hermes_env):
 
 def test_remove_other_job_preserves_concurrent_create(hermes_env):
     """``cron remove`` of job A must not drop job B created mid-flight."""
-    from cron.jobs import create_job, load_jobs, save_jobs
+    from hermes_agent.cron.jobs import create_job, load_jobs, save_jobs
 
     agent = create_job(
         prompt="hello",
@@ -90,7 +90,7 @@ def test_remove_other_job_preserves_concurrent_create(hermes_env):
 
 
 def test_intentional_remove_still_deletes(hermes_env):
-    from cron.jobs import create_job, get_job, remove_job
+    from hermes_agent.cron.jobs import create_job, get_job, remove_job
 
     job = create_job(
         prompt=None,
@@ -106,7 +106,7 @@ def test_intentional_remove_still_deletes(hermes_env):
 
 
 def test_replace_flag_allows_wholesale_rewrite(hermes_env):
-    from cron.jobs import create_job, load_jobs, save_jobs
+    from hermes_agent.cron.jobs import create_job, load_jobs, save_jobs
 
     create_job(
         prompt=None,
@@ -126,8 +126,8 @@ def test_replace_flag_allows_wholesale_rewrite(hermes_env):
 def test_sibling_write_inside_section_is_merged(hermes_env):
     """A write that lands on disk after the section's load changes the stamp,
     so the save must re-merge instead of trusting its stale snapshot."""
-    from cron import jobs
-    from cron.jobs import create_job
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron.jobs import create_job
 
     job = create_job(
         prompt=None,
@@ -153,7 +153,7 @@ def test_sibling_write_inside_section_is_merged(hermes_env):
 def test_merge_does_not_mutate_caller_list(hermes_env):
     """The shrink-merge returns a new list; the caller's payload object must
     not grow as a side effect of save_jobs()."""
-    from cron.jobs import create_job, save_jobs
+    from hermes_agent.cron.jobs import create_job, save_jobs
 
     create_job(
         prompt=None,
@@ -173,8 +173,8 @@ def test_save_over_corrupt_store_fails_closed(hermes_env):
     """A merging save over an unreadable jobs.json must refuse (the jobs in it
     are unknown, so overwriting would drop them) and leave the bytes intact;
     ``replace=True`` stays available as the explicit recovery rewrite."""
-    from cron import jobs
-    from cron.jobs import load_jobs, save_jobs
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron.jobs import load_jobs, save_jobs
 
     jobs.ensure_dirs()
     jobs_file = jobs._current_cron_store().jobs_file
@@ -193,8 +193,8 @@ def test_nested_create_survives_outer_stale_save(hermes_env):
     an outer caller's later save with a pre-create payload must re-merge and
     keep the nested create (stamp refresh here would deterministically
     clobber it)."""
-    from cron import jobs
-    from cron.jobs import create_job, load_jobs, save_jobs
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron.jobs import create_job, load_jobs, save_jobs
 
     seed = {"id": "aaaaaaaaaaaa", "name": "a"}
     save_jobs([seed], replace=True)
@@ -215,7 +215,7 @@ def test_symlinked_store_saves_by_rename_not_in_place_copy(hermes_env, tmp_path,
     """jobs.json symlinked into another dir (treated as another filesystem) must still be
     published by an atomic rename — never the EXDEV in-place copy fallback, which tears the
     store on a crash mid-copy."""
-    from cron.jobs import load_jobs, save_jobs
+    from hermes_agent.cron.jobs import load_jobs, save_jobs
 
     real_dir = tmp_path / "elsewhere"
     real_dir.mkdir()

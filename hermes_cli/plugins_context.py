@@ -216,8 +216,8 @@ class PluginContext(PluginCapabilityCtxMixin):
             return "default"
 
     def current_cron_execution(self) -> Any:
-        """The cron run executing now (``cron.execution_identity.CronExecution``), else ``None``."""
-        from cron.execution_identity import current_cron_execution
+        """The cron run executing now (``hermes_agent.cron.execution_identity.CronExecution``), else ``None``."""
+        from hermes_agent.cron.execution_identity import current_cron_execution
         return current_cron_execution()
 
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:

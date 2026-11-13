@@ -78,7 +78,7 @@ async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter,
         await release_body.wait()
         return await original_json(request)
 
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", BlockingProvider)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", BlockingProvider)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -119,7 +119,7 @@ async def test_admission_failure_is_retryable_and_never_dispatches(adapter, monk
             raise OSError("ledger unavailable")
 
     provider = FailingProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -150,7 +150,7 @@ async def test_accepted_response_waits_for_durable_admission(adapter, monkeypatc
             return super().claim_fire(job_id)
 
     provider = BlockingAdmissionProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -188,7 +188,7 @@ async def test_accepted_response_waits_for_durable_admission(adapter, monkeypatc
 async def test_missing_job_id_400(adapter, monkeypatch):
     """Valid token but no job_id → 400, no fire."""
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -208,7 +208,7 @@ async def test_fire_does_not_require_api_server_key(adapter, monkeypatch):
     """The fire endpoint must NOT gate on API_SERVER_KEY — auth is the NAS-JWT.
     A request with NO API key header but a valid fire token still succeeds."""
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
@@ -244,7 +244,7 @@ async def test_sync_verifier_runs_off_the_event_loop(adapter, monkeypatch):
         return {"purpose": "cron_fire"}
 
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: blocking_verifier,
@@ -269,7 +269,7 @@ async def test_crashing_verifier_fails_closed_401(adapter, monkeypatch):
     trigger remote job execution, so it fails closed.
     """
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
 
     def exploding_verifier(**kw):
         raise RuntimeError("JWKS endpoint unreachable")
@@ -296,7 +296,7 @@ async def test_async_verifier_is_awaited(adapter, monkeypatch):
     rather than dispatched to a thread — a valid async verify still fires.
     """
     spy = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
 
     async def async_verifier(**kw):
         return {"purpose": "cron_fire", "aud": "agent:x"}
@@ -346,7 +346,7 @@ async def test_fire_passes_live_adapters_to_provider(adapter, monkeypatch):
     )
 
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler",
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler",
         lambda: _AdapterSpyProvider(),
     )
     monkeypatch.setattr(
@@ -384,7 +384,7 @@ async def test_estop_refuses_fire_before_admission_and_lifts_on_resume(adapter, 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     estop._logged_components.clear()
     provider = _SpyProvider()
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     monkeypatch.setattr(
         "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),

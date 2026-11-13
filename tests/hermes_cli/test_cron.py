@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cron.jobs import create_job, get_job, list_jobs, load_jobs, pause_job, save_jobs
+from hermes_agent.cron.jobs import create_job, get_job, list_jobs, load_jobs, pause_job, save_jobs
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
 from hermes_cli.subcommands.cron import build_cron_parser
@@ -16,9 +16,9 @@ from hermes_cli.subcommands.cron import build_cron_parser
 
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
 
@@ -392,7 +392,7 @@ def test_cron_tick_invokes_scheduler_tick_verbose_and_headless(monkeypatch):
     """The CLI tick runs outside any gateway: it must declare itself headless so agent jobs are
     refused, never spawned for."""
     calls = []
-    monkeypatch.setattr("cron.scheduler.tick",
+    monkeypatch.setattr("hermes_agent.cron.scheduler.tick",
                         lambda verbose=False, headless=False: calls.append((verbose, headless)))
 
     cron_cli.cron_tick()

@@ -9,7 +9,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-import cron.scheduler as sched
+import hermes_agent.cron.scheduler as sched
 from gateway.run import GatewayRunner
 from gateway.session_state import SessionState
 from hermes_cli.update_cmd_drain_report import describe_active_work_unit, drain_progress_reporter

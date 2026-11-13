@@ -843,7 +843,7 @@ def _cron_bound_to_tree(worktree_path: str, chats: set) -> bool:
     the local chat of a session there. Reads ``jobs.json`` directly (``load_jobs`` may repair-write);
     an unreadable store fails SAFE."""
     try:
-        from cron.jobs import _current_cron_store, _parse_jobs_file, is_job_runnable, is_terminal_job
+        from hermes_agent.cron.jobs import _current_cron_store, _parse_jobs_file, is_job_runnable, is_terminal_job
         jobs_file = _current_cron_store().jobs_file
         if not jobs_file.exists():
             return False

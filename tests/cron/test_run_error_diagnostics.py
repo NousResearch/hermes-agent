@@ -1,7 +1,7 @@
 """Failure detail belongs in the local audit, not the delivery summary."""
 from types import SimpleNamespace
 
-from cron import jobs, scheduler
+from hermes_agent.cron import jobs, scheduler
 from gateway import session_cron
 
 

@@ -1,6 +1,6 @@
 """Misfire-backstop grace gate for one-shot cron jobs (#93526).
 
-``fire_overdue_jobs`` in ``cron/scheduler_provider.py`` is the hosted-provider
+``fire_overdue_jobs`` in ``hermes_agent/cron/scheduler_provider.py`` is the hosted-provider
 misfire catch-up: any runnable job whose ``next_run_at`` is older than
 ``cron.misfire_grace_minutes`` gets fired locally. Before the fix it applied
 no one-shot grace check, so a stored past-due one-shot bypassed
@@ -15,8 +15,8 @@ Pins:
 
 from datetime import timedelta
 
-from cron.jobs import ONESHOT_GRACE_SECONDS, _hermes_now
-from cron.scheduler_provider import fire_overdue_jobs
+from hermes_agent.cron.jobs import ONESHOT_GRACE_SECONDS, _hermes_now
+from hermes_agent.cron.scheduler_provider import fire_overdue_jobs
 
 
 class _RecordingProvider:
@@ -54,10 +54,10 @@ def _job(jid, kind, run_at_dt):
 
 def _run_backstop(monkeypatch, jobs):
     provider = _RecordingProvider()
-    monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
-    monkeypatch.setattr("cron.jobs.is_job_runnable", lambda j: True)
+    monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", lambda: jobs)
+    monkeypatch.setattr("hermes_agent.cron.jobs.is_job_runnable", lambda j: True)
     monkeypatch.setattr(
-        "cron.scheduler_provider._misfire_grace_minutes", lambda: 5.0
+        "hermes_agent.cron.scheduler_provider._misfire_grace_minutes", lambda: 5.0
     )
     fired = fire_overdue_jobs(provider)
     return provider, fired
@@ -86,10 +86,10 @@ class TestMisfireBackstopOneShotGrace:
         now = _hermes_now()
         recent = _job("recent-once", "once", now - timedelta(seconds=60))
         provider = _RecordingProvider()
-        monkeypatch.setattr("cron.jobs.load_jobs", lambda: [recent])
-        monkeypatch.setattr("cron.jobs.is_job_runnable", lambda j: True)
+        monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", lambda: [recent])
+        monkeypatch.setattr("hermes_agent.cron.jobs.is_job_runnable", lambda j: True)
         monkeypatch.setattr(
-            "cron.scheduler_provider._misfire_grace_minutes", lambda: 0.5
+            "hermes_agent.cron.scheduler_provider._misfire_grace_minutes", lambda: 0.5
         )
         fire_overdue_jobs(provider)
         assert provider.claimed == ["recent-once"]

@@ -1,7 +1,7 @@
 """Automation Blueprints — one slot-schema definition per automation that every surface renders
 natively: dashboard form (``blueprint_form_schema``), pre-filled ``/blueprint`` slash command
 (``blueprint_slash_command``), agent seed prompt, docs deep-link. ``fill_blueprint`` validates
-values into ``cron.jobs.create_job`` kwargs — there is no second job engine. Users never type raw
+values into ``hermes_agent.cron.jobs.create_job`` kwargs — there is no second job engine. Users never type raw
 cron: ``schedule_template`` fixes the recurrence; only human parts (time, weekdays) are slots.
 """
 
@@ -557,7 +557,7 @@ def list_blueprints() -> list[AutomationBlueprint]:
     """The catalog every surface lists: built-ins, then the active profile's plugin blueprints.
     Resolved per call — plugins load per profile, so one process serving several profiles must not
     cache this."""
-    from cron.blueprint_plugins import plugin_blueprints
+    from hermes_agent.cron.blueprint_plugins import plugin_blueprints
 
     return [*CATALOG, *plugin_blueprints()]
 
@@ -566,7 +566,7 @@ def get_blueprint(key: str) -> Optional[AutomationBlueprint]:
     """Look up a built-in or (``<plugin>:<key>``) one of the active profile's plugin blueprints."""
     blueprint = _CATALOG_BY_KEY.get(key)
     if blueprint is None and ":" in (key or ""):
-        from cron.blueprint_plugins import plugin_blueprints
+        from hermes_agent.cron.blueprint_plugins import plugin_blueprints
 
         blueprint = next((b for b in plugin_blueprints() if b.key == key), None)
     return blueprint
@@ -745,7 +745,7 @@ def fill_blueprint(
     blueprint: AutomationBlueprint, values: dict[str, Any], *,
     origin: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Validate ``values`` and return ``cron.jobs.create_job`` kwargs.
+    """Validate ``values`` and return ``hermes_agent.cron.jobs.create_job`` kwargs.
 
     Missing required slots raise BlueprintFillError naming the slot (forms show field errors, the
     agent knows what to ask). Unknown slot names are rejected (a typo'd ``tiem=07:15`` must not

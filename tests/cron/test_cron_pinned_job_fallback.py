@@ -1,6 +1,6 @@
 """A cron job with its own provider/model/base_url pin never walks the global fallback chain (#100437).
 
-Two vectors, one rule (``cron.scheduler._job_fallback_chain``, shared with delegate_task's pinned
+Two vectors, one rule (``hermes_agent.cron.scheduler._job_fallback_chain``, shared with delegate_task's pinned
 children via ``hermes_cli.fallback_config.scoped_fallback_chain``):
 
 - credential resolution: an AuthError / DNS blip on the pinned primary must not resolve a
@@ -20,8 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cron import scheduler
-from cron.scheduler import _CronJobConfig, _resolve_job_runtime
+from hermes_agent.cron import scheduler
+from hermes_agent.cron.scheduler import _CronJobConfig, _resolve_job_runtime
 from hermes_cli.auth import AuthError
 
 
@@ -93,9 +93,9 @@ def _run(tmp_path, job, *, primary_error=None):
             raise primary_error
         return _runtime(kwargs.get("requested") or "openai-codex")
 
-    with patch("cron.scheduler._hermes_home", tmp_path), \
-         patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
-         patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+    with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+         patch("hermes_agent.cron.scheduler._get_hermes_home", return_value=tmp_path), \
+         patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \

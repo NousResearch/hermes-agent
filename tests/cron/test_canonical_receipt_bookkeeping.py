@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from cron import jobs, executions, scheduler_authority
+from hermes_agent.cron import jobs, executions, scheduler_authority
 from hermes_cli import gateway_client
 
 
@@ -122,7 +122,7 @@ def test_recovered_receipt_books_the_same_failure_verdicts_as_the_firer(tmp_path
     """A blank answer and an agent-declared [CRON_FAILURE] fail the run on the ordinary tail;
     receipt recovery must not book the same result green (ok / delivery_queued -> ok)."""
     with jobs.use_cron_store(tmp_path / 'cron'):
-        monkeypatch.setattr('cron.delivery_queue.DELIVERY_DB', tmp_path / 'deliveries.db')
+        monkeypatch.setattr('hermes_agent.cron.delivery_queue.DELIVERY_DB', tmp_path / 'deliveries.db')
         job = jobs.create_job(prompt='report', schedule='every 1h', deliver='telegram:1')
         execution = executions.create_execution(job['id'], source='test')
         executions.mark_execution_running(execution['id'])

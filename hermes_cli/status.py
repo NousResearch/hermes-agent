@@ -256,7 +256,7 @@ def _cron_summary() -> str:
     if not jobs_file.exists():
         return "0"
     try:
-        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors may leave a UTF-8 BOM
+        # utf-8-sig: same dialect as hermes_agent/cron/jobs.load_jobs — Windows editors may leave a UTF-8 BOM
         # that plain utf-8 json.load rejects.
         jobs = _load_json(jobs_file, "utf-8-sig").get("jobs", [])
         return f"{sum(1 for j in jobs if j.get('enabled', True))} active, {len(jobs)} total"

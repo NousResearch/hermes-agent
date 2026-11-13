@@ -121,7 +121,7 @@ def test_backend_initial_profile_is_not_its_write_scope(layout, profile):
 
 @pytest.mark.parametrize("terminal", [False, True])
 def test_detached_cron_attempt_must_finish_before_data_removal(layout, monkeypatch, terminal):
-    from cron import executions
+    from hermes_agent.cron import executions
 
     _, _, data = layout
     monkeypatch.setattr(executions, "_emit_execution_state", lambda *args, **kwargs: None)

@@ -28,7 +28,7 @@ _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 # mask the gateway watchdog forever — pre-#76502 the parent was at least reaped at ~1800s.
 _CRON_RUN_HEARTBEAT_CEILING = 6 * 3600.0
 
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,
     get_job,
@@ -71,7 +71,7 @@ def _dumps(payload: dict[str, Any]) -> str:
 def _notify_provider_jobs_changed_safe() -> None:
     """Tell the active scheduler provider the job set changed; best-effort, never raises."""
     try:
-        from cron.scheduler import _notify_provider_jobs_changed
+        from hermes_agent.cron.scheduler import _notify_provider_jobs_changed
         _notify_provider_jobs_changed()
     except Exception:
         pass
@@ -91,7 +91,7 @@ def _relay_fronted_delivery_platforms(job: dict[str, Any]) -> set:
     if not fronted:
         return set()
     try:
-        from cron.scheduler import _resolve_delivery_targets
+        from hermes_agent.cron.scheduler import _resolve_delivery_targets
         targets = _resolve_delivery_targets(job) or []
     except Exception:
         return set()
@@ -158,8 +158,8 @@ def _primary_routed_delivery_platforms(job: dict[str, Any]) -> set:
     """Delivery-platform names this satellite profile reaches only through the primary gateway's
     ``profile_routes``: routed here, with no credential of its own to send standalone."""
     try:
-        from cron.scheduler import _resolve_delivery_targets
-        from cron.scheduler_preflight import _delivery_platform_routed_from_primary_gateway
+        from hermes_agent.cron.scheduler import _resolve_delivery_targets
+        from hermes_agent.cron.scheduler_preflight import _delivery_platform_routed_from_primary_gateway
         routed = {t["platform"] for t in _resolve_delivery_targets(job) or []
                   if t.get("platform") and _delivery_platform_routed_from_primary_gateway(t["platform"])}
         if not routed:
@@ -329,7 +329,7 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
     running_future = Future()
     running_future.set_running_or_notify_cancel()
     try:
-        from cron.scheduler import release_running_job, run_one_job, try_register_running_job
+        from hermes_agent.cron.scheduler import release_running_job, run_one_job, try_register_running_job
 
         # In-flight dedupe: the fire claim's TTL is routinely outlived by real jobs, so
         # register in the scheduler's shared running set (same guard the ticker uses;
@@ -367,7 +367,7 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
             # A credentialless shared-bot satellite borrows the primary's bot for ROUTED targets
             # only — the same grant the ticker's ``tick_adapters_for`` makes, never the full map.
             if getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
-                from cron.scheduler_preflight import (
+                from hermes_agent.cron.scheduler_preflight import (
                     SharedRouteAdapters, _primary_profile_routes_for_current_home)
 
                 adapters = SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
@@ -384,7 +384,7 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
         execution = None
         execution_id = job.get("execution_id")
         if execution_id:
-            from cron.executions import get_execution
+            from hermes_agent.cron.executions import get_execution
 
             execution = get_execution(str(execution_id))
         last_status = refreshed.get("last_status")
@@ -449,7 +449,7 @@ def _latest_job_output_excerpt(job_id: str, max_chars: int = 2000) -> Optional[s
     """Excerpt of the job's most recent saved output file for the background completion
     block (parent sees what the job produced). Never raises."""
     try:
-        from cron.jobs import get_cron_output_dir
+        from hermes_agent.cron.jobs import get_cron_output_dir
 
         out_dir = get_cron_output_dir() / job_id
         files = sorted(out_dir.glob("*.md"))
@@ -476,7 +476,7 @@ def _reap_stale_executions(job_name: str) -> None:
         # the exiting process before writing a terminal status (issue #86721). Safe and cheap: provably-dead
         # owners (PID gone, or PID reused by a different process per its start time) are reaped, as is a
         # live owner whose claim is older than the derived stale bound (the process itself is not killed).
-        from cron.executions import recover_interrupted_executions
+        from hermes_agent.cron.executions import recover_interrupted_executions
         _reclaimed = recover_interrupted_executions()
         if _reclaimed:
             logger.warning(
@@ -595,7 +595,7 @@ def _try_dispatch_background_run(
     # (authoritative check: try_register_running_job). Home-scoped: one process ticks every
     # profile, so the bare-id union would report another profile's same-named job as running.
     try:
-        from cron.scheduler import is_job_running
+        from hermes_agent.cron.scheduler import is_job_running
         if is_job_running(job_id):
             return {"claimed": False, "success": False, "error": _ALREADY_RUNNING_ERROR}
     except Exception:
@@ -632,7 +632,7 @@ def _try_dispatch_background_run(
 
     started_at = time.time()
     # Scheduler's own normalizer (falsy -> "local", list -> comma string) on the claimed snapshot.
-    from cron.scheduler import _normalize_deliver_value
+    from hermes_agent.cron.scheduler import _normalize_deliver_value
     deliver = _normalize_deliver_value(claimed_job.get("deliver", "local"))
 
     def _runner() -> dict[str, Any]:
@@ -714,7 +714,7 @@ def _action_create(a: dict[str, Any]) -> str:
     if a["continuity"] is not None:
         context_from = _apply_continuity(context_from, a["continuity"])
 
-    from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
+    from hermes_agent.cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration
     try:
         job = create_job_with_scheduler_registration(
             prompt=prompt or "", schedule=a["schedule"], name=a["name"], repeat=a["repeat"],
@@ -962,7 +962,7 @@ def _update_run_fields(job: dict[str, Any], a: dict[str, Any], updates: dict[str
         updates["no_agent"] = target_no_agent
     if a["repeat"] is not None:
         # Shared chokepoint coerces string forms ('forever'/'once'/'3') and 0/negative.
-        from cron.jobs import normalize_repeat_value
+        from hermes_agent.cron.jobs import normalize_repeat_value
         repeat_state = dict(job.get("repeat") or {})
         repeat_state["times"] = normalize_repeat_value(a["repeat"])
         updates["repeat"] = repeat_state
@@ -1012,7 +1012,7 @@ _JOBLESS_ACTIONS = {"create": _action_create, "list": _action_list}
 
 def _action_cancel(job: dict[str, Any], a: dict[str, Any]) -> str:
     """Stop the job's LIVE run. Per-run, not per-schedule: the job keeps its next fire."""
-    from cron.cancellation import cancel_run
+    from hermes_agent.cron.cancellation import cancel_run
 
     # The schedule is untouched, so no provider notification — nothing about future fires moved.
     return _dumps({"job": _format_job(job), **cancel_run(job["id"], reason=a.get("reason"))})

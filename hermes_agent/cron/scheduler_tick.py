@@ -5,10 +5,10 @@ import contextlib
 import logging
 import time
 
-from cron import store_health
-from cron.constants import is_recurring
+from hermes_agent.cron import store_health
+from hermes_agent.cron.constants import is_recurring
 
-logger = logging.getLogger("cron.scheduler")
+logger = logging.getLogger("hermes_agent.cron.scheduler")
 
 # Log the yield at most once per episode (reset when the skew changes) to avoid per-interval spam.
 _YIELD_LOG_INTERVAL_SECONDS = 3600.0
@@ -75,14 +75,14 @@ def _advance_or_drop_recurring(_sched, due_jobs: list) -> list:
 def _pre_dispatch_housekeeping(_sched, headless: bool) -> None:
     """Admission reconcile, legacy upgrade drain and dead-owner reap, run under the tick lock
     before due jobs are read."""
-    from cron.scheduler_authority import reconcile_pending
+    from hermes_agent.cron.scheduler_authority import reconcile_pending
     if headless:
         reconcile_pending(allow_connect=False)
     else:
         reconcile_pending()
     # Upgrade drain for the retired CLI lane's records: never let it stop due jobs below.
     try:
-        from cron.bot_chat_legacy import drain_legacy_pending
+        from hermes_agent.cron.bot_chat_legacy import drain_legacy_pending
         drain_legacy_pending()
     except Exception as _legacy_exc:
         _sched.logger.warning("Legacy Bot Chat pending drain failed: %s", _legacy_exc, exc_info=True)
@@ -97,7 +97,7 @@ def _tick_admitted(
     next allowed tick. ``headless``: the tick runs outside any gateway (system crontab, ``hermes
     cron tick``) and must refuse agent jobs rather than spawn one. Returns the number of jobs
     executed (0 if another tick holds the lock)."""
-    from cron import scheduler as _sched
+    from hermes_agent.cron import scheduler as _sched
 
     # Stale-code yield gate — BEFORE the lock race. A process whose checkout was updated under it
     # serves mixed sys.modules (jobs die on ImportErrors); if a fresher gateway holds the runtime
@@ -132,7 +132,7 @@ def _tick_admitted(
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
         if headless:
-            from cron.scheduler_gateway_gate import refuse_agent_jobs_without_gateway
+            from hermes_agent.cron.scheduler_gateway_gate import refuse_agent_jobs_without_gateway
             due_jobs = refuse_agent_jobs_without_gateway(due_jobs)
 
         if not due_jobs:

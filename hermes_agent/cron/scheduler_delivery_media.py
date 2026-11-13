@@ -17,8 +17,8 @@ def _send_media_via_adapter(
     _process_message_background). ``force_document`` (``[[as_document]]``) sends images as
     documents, unrecompressed, as the gateway does. Returns per-file error strings so a dropped
     attachment surfaces in run status, not just the gateway log."""
-    from cron.scheduler_delivery import _note_target_error
-    from cron import scheduler_script as _script
+    from hermes_agent.cron.scheduler_delivery import _note_target_error
+    from hermes_agent.cron import scheduler_script as _script
     from gateway.platforms.base import (
         BasePlatformAdapter, should_send_media_as_audio, validate_media_delivery_path)
     from agent.async_utils import safe_schedule_threadsafe

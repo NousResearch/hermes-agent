@@ -72,7 +72,7 @@ def _make_staging_dir(root: Path, name: str = "src", *, manifest: DistributionMa
     (staged / "skills" / "demo" / "SKILL.md").write_text(
         "---\nname: demo\ndescription: test\n---\n# Demo skill\n"
     )
-    from cron.jobs import create_job, use_cron_store
+    from hermes_agent.cron.jobs import create_job, use_cron_store
     with use_cron_store(staged):
         create_job("daily task", "0 9 * * *", name="daily")
 
@@ -369,7 +369,7 @@ class TestInstall:
 
     def test_install_pauses_shipped_cron_jobs_and_skips_runtime_state(self, profile_env):
         """Distribution cron definitions are inert until the installer explicitly resumes them."""
-        from cron.jobs import get_due_jobs, is_job_runnable, list_jobs, update_job, use_cron_store
+        from hermes_agent.cron.jobs import get_due_jobs, is_job_runnable, list_jobs, update_job, use_cron_store
 
         staged = _make_staging_dir(profile_env, "cron_src")
         with use_cron_store(staged):
@@ -525,7 +525,7 @@ class TestUpdate:
 
     def test_update_merges_cron_jobs_without_losing_local_state(self, profile_env):
         """Updating one shipped definition cannot replace the profile's whole cron store."""
-        from cron.jobs import create_job, list_jobs, pause_job, resume_job, update_job, use_cron_store
+        from hermes_agent.cron.jobs import create_job, list_jobs, pause_job, resume_job, update_job, use_cron_store
 
         staged = _make_staging_dir(profile_env, "cron_update")
         with use_cron_store(staged):

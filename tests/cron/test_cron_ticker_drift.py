@@ -3,13 +3,13 @@
 Both ticker loops (single-profile and multiplex) must schedule tick k at
 ``start + k * interval`` regardless of how long each tick took, and a tick that
 overruns the interval must re-baseline rather than fire a burst of zero-length waits.
-Behaviour contract per ``cron/AGENTS.md``: loose bounds on a virtual clock, no sleeping.
+Behaviour contract per ``hermes_agent/cron/AGENTS.md``: loose bounds on a virtual clock, no sleeping.
 """
 from unittest.mock import patch
 
 import pytest
 
-import cron.scheduler_provider as sp
+import hermes_agent.cron.scheduler_provider as sp
 
 INTERVAL = 60.0
 
@@ -50,9 +50,9 @@ def _drive(loop, tmp_path, monkeypatch, *, tick_cost, cycles):
     (tmp_path / "cron").mkdir(exist_ok=True)
     profile_homes = None if loop == "single" else [("p1", tmp_path)]
     with patch.object(provider, "recover_interrupted", return_value=0), \
-         patch("cron.scheduler.tick", side_effect=fake_tick), \
-         patch("cron.jobs.record_ticker_heartbeat"), \
-         patch("cron.jobs.clear_ticker_error"):
+         patch("hermes_agent.cron.scheduler.tick", side_effect=fake_tick), \
+         patch("hermes_agent.cron.jobs.record_ticker_heartbeat"), \
+         patch("hermes_agent.cron.jobs.clear_ticker_error"):
         provider.start(stop, interval=INTERVAL, profile_homes=profile_homes)
     return stop.waits, _FakeTime.now - 100.0
 

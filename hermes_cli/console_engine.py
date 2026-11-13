@@ -142,7 +142,7 @@ def _format_sessions(sessions: Sequence[dict]) -> str:
 
 
 def _format_job(job: dict, action: str) -> str:
-    from cron.jobs import effective_job_state
+    from hermes_agent.cron.jobs import effective_job_state
     job_id = job.get("id") or job.get("job_id") or "?"
     return f"{action} job: {job.get('name') or '(unnamed)'} ({job_id}) [{effective_job_state(job)}]"
 
@@ -753,7 +753,7 @@ def _cron_job_action(args: list[str], usage: str, action: str, run) -> str:
     """Shared body for single-job cron commands: ``run(job_ref) -> job | None``."""
     if len(args) != 1:
         raise ConsoleCommandError(f"Usage: {usage}")
-    from cron.jobs import AmbiguousJobReference
+    from hermes_agent.cron.jobs import AmbiguousJobReference
     try:
         job = run(args[0])
     except AmbiguousJobReference as exc:
@@ -764,7 +764,7 @@ def _cron_job_action(args: list[str], usage: str, action: str, run) -> str:
 
 
 def _cron_pause(_engine: HermesConsoleEngine, args: list[str]) -> str:
-    from cron.jobs import pause_job
+    from hermes_agent.cron.jobs import pause_job
     return _cron_job_action(
         args, "cron pause <job>", "Paused",
         lambda ref: pause_job(ref, reason="paused from hermes console"))
@@ -774,7 +774,7 @@ def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = _parse("cron resume", args, "job", "--at", (("--run-now",), dict(action="store_true")))
     if ns.at and ns.run_now:
         raise ConsoleCommandError("Use exactly one of --at or --run-now.")
-    from cron.jobs import AmbiguousJobReference, _hermes_now, rearm_oneshot, resume_job
+    from hermes_agent.cron.jobs import AmbiguousJobReference, _hermes_now, rearm_oneshot, resume_job
     try:
         job = (
             rearm_oneshot(ns.job, _hermes_now().isoformat() if ns.run_now else ns.at)
@@ -787,7 +787,7 @@ def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 
 def _cron_run(_engine: HermesConsoleEngine, args: list[str]) -> str:
-    from cron.jobs import trigger_job
+    from hermes_agent.cron.jobs import trigger_job
     return _cron_job_action(args, "cron run <job>", "Triggered", trigger_job)
 
 

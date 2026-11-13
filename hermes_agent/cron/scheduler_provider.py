@@ -1,7 +1,7 @@
 """CronScheduler provider interface (Axis B — the trigger). EXPERIMENTAL: shape MAY change until a
 second provider validates it; growth MUST be additive (optional method with a default), never a
 changed start() signature or new abstractmethod. Providers decide only *when* a job fires —
-execution + delivery stay in cron.scheduler.run_job / _deliver_result; never reimplement them.
+execution + delivery stay in hermes_agent.cron.scheduler.run_job / _deliver_result; never reimplement them.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def _note_tick_failure(exc: BaseException, consecutive_failures: int) -> int:
     nofile limit) so the NEXT tick can succeed, and bump the counter so ``_backoff_wait_seconds`` backs off
     exponentially while the process has no chance of making progress.
     """
-    from cron.scheduler import _is_fd_exhaustion, _reclaim_fds_best_effort
+    from hermes_agent.cron.scheduler import _is_fd_exhaustion, _reclaim_fds_best_effort
 
     if _is_fd_exhaustion(exc):
         _reclaim_fds_best_effort()
@@ -105,7 +105,7 @@ def routed_profile_fire(home=None) -> bool:
     process-global multiplex flag, so every isolation keyed on ``is_multiplex_active()`` was inert
     for those fires: a sibling profile's ``.env`` landed in the shared ``os.environ`` with
     ``override=True`` and a scope miss read the launch profile's credentials (#107692).
-    ``cron.scheduler._install_fire_secret_scope`` turns this into multiplex semantics for exactly
+    ``hermes_agent.cron.scheduler._install_fire_secret_scope`` turns this into multiplex semantics for exactly
     the span the profile's secret scope covers, and the restart-safe handoff marks the worker
     payload with it. The launch identity is ``get_routing_process_hermes_home()`` (gateway/AGENTS.md
     "One launch-home identity")."""
@@ -118,7 +118,7 @@ def routed_profile_fire(home=None) -> bool:
 @contextlib.contextmanager
 def _profile_cron_scope(home):
     """Scope the calling thread to one profile's home + cron store for the block."""
-    from cron.jobs import use_cron_store
+    from hermes_agent.cron.jobs import use_cron_store
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
     # Record per-profile heartbeat after each tick cycle. Distinguish a COMPLETED cycle (``_tick_error``
@@ -171,7 +171,7 @@ class CronScheduler(ABC):
 
     def recover_interrupted(self) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
-        from cron.executions import recover_interrupted_executions
+        from hermes_agent.cron.executions import recover_interrupted_executions
 
         return recover_interrupted_executions()
 
@@ -200,8 +200,8 @@ class CronScheduler(ABC):
     def claim_fire(self, job_id: str, *, force: bool = False, manual: bool = False) -> dict | None:
         """Durably claim one fire + create its audit attempt. Transports call this synchronously
         before acknowledging, then pass the exact snapshot to ``fire_claimed`` off-thread."""
-        from cron.executions import create_execution, finish_execution, set_execution_occurrence
-        from cron.jobs import claim_job_for_fire
+        from hermes_agent.cron.executions import create_execution, finish_execution, set_execution_occurrence
+        from hermes_agent.cron.jobs import claim_job_for_fire
 
         execution = create_execution(job_id, source=self.name)
         claim_kwargs = {"return_job": True}
@@ -231,7 +231,7 @@ class CronScheduler(ABC):
     ) -> bool:
         """Run an exact ``claim_fire`` snapshot; ``cancel_event`` lets the transport stop it
         cooperatively (e.g. dashboard lifespan drain)."""
-        from cron.scheduler import run_one_job
+        from hermes_agent.cron.scheduler import run_one_job
 
         run_one_job(claimed_job, adapters=adapters, loop=loop, cancel_event=cancel_event)
         return True
@@ -317,7 +317,7 @@ def fire_overdue_jobs(
     if grace_minutes <= 0:
         return 0
 
-    from cron.jobs import (
+    from hermes_agent.cron.jobs import (
         ONESHOT_GRACE_SECONDS, _elapsed_seconds, _ensure_aware, _hermes_now,
         is_job_runnable, load_jobs,
     )
@@ -440,12 +440,12 @@ class InProcessCronScheduler(CronScheduler):
         profile_homes=None, profile_adapters=None, default_profile=None, profile_gate=None,
         profile_bot_platforms=None,
     ):
-        from cron.scheduler import CronTickYielded
-        from cron.scheduler import tick as cron_tick
-        from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
-        from cron.scheduler_ownership import register_ticked_homes
+        from hermes_agent.cron.scheduler import CronTickYielded
+        from hermes_agent.cron.scheduler import tick as cron_tick
+        from hermes_agent.cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
+        from hermes_agent.cron.scheduler_ownership import register_ticked_homes
         from hermes_constants import get_process_hermes_home
-        from cron.dispatch_hold import note_dispatching, note_held
+        from hermes_agent.cron.dispatch_hold import note_dispatching, note_held
 
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
 
@@ -544,14 +544,14 @@ class InProcessCronScheduler(CronScheduler):
         """Tick every profile's store, each scoped via ``_profile_cron_scope``. ``profile_gate(name,
         home)``, when given, is consulted every cycle; a rejected profile is neither ticked nor
         heartbeated."""
-        from cron.scheduler import tick as cron_tick
-        from cron.scheduler import CronTickYielded, _is_fd_exhaustion
-        from cron.scheduler_preflight import (
+        from hermes_agent.cron.scheduler import tick as cron_tick
+        from hermes_agent.cron.scheduler import CronTickYielded, _is_fd_exhaustion
+        from hermes_agent.cron.scheduler_preflight import (
             SharedRouteAdapters, _primary_profile_routes_for_current_home, has_credential_platform,
         )
-        from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
-        from cron.scheduler_ownership import register_ticked_homes
-        from cron.dispatch_hold import note_dispatching, note_held_profiles
+        from hermes_agent.cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
+        from hermes_agent.cron.scheduler_ownership import register_ticked_homes
+        from hermes_agent.cron.dispatch_hold import note_dispatching, note_held_profiles
 
         initial_homes = _existing_profile_homes(profile_homes)
         register_ticked_homes([_profile_entry(entry)[1] for entry in initial_homes])

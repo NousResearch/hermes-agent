@@ -7,8 +7,8 @@ does with its verdict, not the verdict itself.
 
 import re
 
-from cron import scheduler
-from cron.scheduler import _compose_run_delivery, _summarize_cron_failure_for_delivery
+from hermes_agent.cron import scheduler
+from hermes_agent.cron.scheduler import _compose_run_delivery, _summarize_cron_failure_for_delivery
 
 JOB = {"name": "Morning brief", "id": "ab12cd34"}
 _HTTP_LEAD = re.compile(r"failed: (HTTP|Error code:|provider )")
@@ -58,7 +58,7 @@ def test_rate_and_usage_limit_phrases_still_yield_a_provider_notice(monkeypatch)
 def test_cron_cause_gloss_is_the_shared_table():
     """Cron, subagent and chat notices read one reason->cause table (agent/turn_failure_copy.py)."""
     from agent.turn_failure_copy import FAILURE_CAUSE_GLOSS
-    from cron.scheduler_failure_copy import provider_failure_notice
+    from hermes_agent.cron.scheduler_failure_copy import provider_failure_notice
 
     for reason in FAILURE_CAUSE_GLOSS:
         notice = provider_failure_notice("Morning brief", "ab12cd34", reason, backup_provider_phrase="x.")

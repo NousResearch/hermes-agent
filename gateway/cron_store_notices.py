@@ -1,4 +1,4 @@
-"""Home-channel notices for cron store degraded-state transitions (see ``cron/store_health.py``).
+"""Home-channel notices for cron store degraded-state transitions (see ``hermes_agent/cron/store_health.py``).
 
 The cron tick runs on a worker thread inside the gateway. When a profile's cron store becomes
 unwritable it reports ONE transition, and again when it recovers. Each one is posted to that
@@ -26,7 +26,7 @@ def install_cron_store_notices(runner, loop: asyncio.AbstractEventLoop) -> None:
     """Route store transitions from the ticker thread onto the gateway loop. Installed once the
     adapters are connected, so a store that degraded during boot is announced then. The last
     notice a home channel sees always matches the store's real state."""
-    from cron.store_health import degraded_record, degraded_records, set_transition_listener
+    from hermes_agent.cron.store_health import degraded_record, degraded_records, set_transition_listener
 
     # Loop-only state (mutated in loop callbacks, never on the ticker thread).
     announced: set[str] = set()  # stores whose current outage got an "unwritable" notice
@@ -91,7 +91,7 @@ async def send_cron_store_notice(runner, event: str, record) -> None:
     """Post one ``unwritable``/``recovered`` notice to the home channels of the store's profile."""
     from gateway.run import _async_profile_runtime_scope
     from gateway.warning_notifications import present_notification
-    from cron.store_health import store_key
+    from hermes_agent.cron.store_health import store_key
     from hermes_constants import get_routing_process_hermes_home
 
     fields = record.notice_fields()

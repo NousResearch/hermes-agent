@@ -6,7 +6,7 @@ import threading
 
 
 def test_passed_gate_tick_and_queued_job_remain_busy_until_real_worker_exit(tmp_path, monkeypatch):
-    from cron import jobs, scheduler
+    from hermes_agent.cron import jobs, scheduler
     from hermes_cli import backend_retirement
 
     fence = backend_retirement.RetirementFence()

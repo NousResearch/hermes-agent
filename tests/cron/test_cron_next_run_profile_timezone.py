@@ -57,10 +57,10 @@ def test_foreign_process_tick_persists_owning_profile_offset(
         reset_hermes_home_override,
         set_hermes_home_override,
     )
-    from cron.jobs import create_job, load_jobs, use_cron_store
+    from hermes_agent.cron.jobs import create_job, load_jobs, use_cron_store
 
     # Exactly the scoping the multiplex ticker applies per profile
-    # (cron/scheduler_provider.py::_tick_profiles).
+    # (hermes_agent/cron/scheduler_provider.py::_tick_profiles).
     token = set_hermes_home_override(str(profile_a))
     try:
         with use_cron_store(profile_a):

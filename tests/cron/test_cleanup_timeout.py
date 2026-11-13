@@ -13,8 +13,8 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import _teardown_cron_agent, run_job
-from cron.scheduler_detached_worker import defer_teardown_to_running_worker
+from hermes_agent.cron.scheduler import _teardown_cron_agent, run_job
+from hermes_agent.cron.scheduler_detached_worker import defer_teardown_to_running_worker
 
 
 _RUNTIME = {
@@ -70,14 +70,14 @@ def test_run_job_bounds_sessiondb_finalization(tmp_path):
 
     try:
         with _owner_execution(fake_db, job), \
-             patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
-             patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
+             patch("hermes_agent.cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02):
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
@@ -116,8 +116,8 @@ def test_detached_worker_teardown_waits_for_future():
     fake_db = MagicMock()
     agent = MagicMock()
 
-    with patch("cron.scheduler._finalize_cron_session") as finalize, \
-         patch("cron.scheduler._teardown_cron_agent") as teardown_agent:
+    with patch("hermes_agent.cron.scheduler._finalize_cron_session") as finalize, \
+         patch("hermes_agent.cron.scheduler._teardown_cron_agent") as teardown_agent:
         assert defer_teardown_to_running_worker(
             future, fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker") is True
         finalize.assert_not_called()
@@ -134,7 +134,7 @@ def test_detached_worker_teardown_waits_for_future():
 
 def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
     """A second scheduler tick can fire the same job after cleanup times out."""
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     release = threading.Event()
     fake_db = HangingSessionDB(release)
@@ -148,7 +148,7 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
         "next_run_at": "2020-01-01T00:00:00",
         "deliver": "local",
     }
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     def admitted(fired, **kwargs):
         with _owner_execution(fake_db, fired, kwargs.get("execution_id")):
@@ -160,16 +160,16 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
 
     try:
         with jobs.use_cron_store(tmp_path), \
-             patch("cron.scheduler_authority.run_canonical_job", side_effect=admitted), \
-             patch("cron.scheduler_authority.reconcile_pending"), \
-             patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch("hermes_agent.cron.scheduler_authority.run_canonical_job", side_effect=admitted), \
+             patch("hermes_agent.cron.scheduler_authority.reconcile_pending"), \
+             patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
              patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
              patch("run_agent.AIAgent") as mock_agent_cls, \
-             patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
+             patch("hermes_agent.cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
              patch.object(sched, "get_due_jobs", return_value=[job]), \
              patch.object(sched, "claim_job_for_fire", return_value=True), \
              patch.object(sched, "save_job_output", return_value="/tmp/out"), \

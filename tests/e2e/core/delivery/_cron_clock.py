@@ -4,14 +4,14 @@ What is virtual and what stays real:
 
 * ``VirtualClock`` is ONE epoch value in a file shared by every process of a scenario. It is
   installed at the single wall-clock seam — ``hermes_time.datetime`` (every ``_hermes_now``
-  binding in cron/jobs.py, scheduler.py, executions.py, occurrences via jobs, ... resolves
+  binding in hermes_agent/cron/jobs.py, scheduler.py, executions.py, occurrences via jobs, ... resolves
   ``hermes_time.now()`` -> ``datetime.now(tz)`` at call time) — plus the ``time.time()`` reads of
-  cron.jobs / cron.scheduler / cron.executions (in-flight ages, ledger handoff grace, ticker
+  hermes_agent.cron.jobs / hermes_agent.cron.scheduler / hermes_agent.cron.executions (in-flight ages, ledger handoff grace, ticker
   heartbeat marker). ``time.monotonic`` stays real on purpose: it only paces REAL waits (lock
   deadlines, heartbeat thread cadence, reap/GC throttles).
 * The fire-claim heartbeat cadence is time-scaled (60 s -> ``HEARTBEAT_REAL_SECONDS``) so a
   run that spans many virtual minutes still refreshes its lease the way a real one would.
-* Fakes: the agent (``cron.scheduler.run_job``, the one function that would build an AIAgent)
+* Fakes: the agent (``hermes_agent.cron.scheduler.run_job``, the one function that would build an AIAgent)
   and the platform wire (``tools.send_message_tool._send_to_platform``). Both append JSONL
   records. Everything between — the real ``InProcessCronScheduler.start`` ticker loop,
   ``tick()``, due scan, pending slots, fire claims, heartbeat, executions ledger, the durable
@@ -19,7 +19,7 @@ What is virtual and what stays real:
   production code.
 * An agent run books its send into the durable queue (ledger ``delivery_outcome='queued'``) and
   the gateway's housekeeping thread drains it (``gateway/run.py::
-  _drain_restart_safe_cron_deliveries`` -> ``cron.scheduler.drain_delivery_queue``). The soak has
+  _drain_restart_safe_cron_deliveries`` -> ``hermes_agent.cron.scheduler.drain_delivery_queue``). The soak has
   no gateway process, so the driver performs that drain (``drain_deliveries``) once the ticker is
   quiescent; ``delivery_status`` reads the queue's terminal verdict for a queued execution.
 
@@ -173,7 +173,7 @@ class _TimeProxy:
 
 
 class FakeAgent:
-    """Replaces ``cron.scheduler.run_job``; returns the real 4-tuple contract."""
+    """Replaces ``hermes_agent.cron.scheduler.run_job``; returns the real 4-tuple contract."""
 
     def __init__(self, clock: VirtualClock, control: Control):
         self.clock = clock
@@ -241,9 +241,9 @@ class FakeSink:
 
 def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     """Install the virtual clock + fakes. ``setattr_fn`` is ``monkeypatch.setattr`` in pytest."""
-    from cron import executions
-    from cron import jobs
-    from cron import scheduler
+    from hermes_agent.cron import executions
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron import scheduler
     import hermes_time
     from tools import send_message_tool
 
@@ -335,7 +335,7 @@ class SchedulerHost:
 
     def start(self) -> None:
         """Boot the loop (startup recovery + the boot tick run immediately)."""
-        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
         gate = self.gate = _StepGate()
 
@@ -497,7 +497,7 @@ _CLAIM_ROUND: list[Optional[int]] = [None]  # one round in flight per process at
 def replica_scheduler():
     """A minimal external ``CronScheduler``: the base class's real ``fire_due`` (store CAS claim,
     audit attempt, shared ``run_one_job``) is the whole firing path; nothing ticks."""
-    from cron.scheduler_provider import CronScheduler
+    from hermes_agent.cron.scheduler_provider import CronScheduler
 
     class ReplicaScheduler(CronScheduler):
         @property
@@ -511,10 +511,10 @@ def replica_scheduler():
 
 
 def install_claim_barrier(control: Control, setattr_fn=setattr, parties: int = 2) -> None:
-    """Wrap ``cron.jobs.claim_job_for_fire`` (``claim_fire`` imports it at call time): each call
+    """Wrap ``hermes_agent.cron.jobs.claim_job_for_fire`` (``claim_fire`` imports it at call time): each call
     waits until ``parties`` replicas have entered the claim for the current round, then runs the
     REAL claim and logs who won. It only delays, never changes a decision."""
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     real = jobs.claim_job_for_fire
 
@@ -613,7 +613,7 @@ def drain_deliveries() -> int:
     """The live gateway's housekeeping drain of the durable delivery queue. No live adapters
     exist in the soak, so every send takes the standalone wire (``FakeSink``). Returns how many
     queued sends were performed."""
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     total = 0
     while True:
@@ -678,7 +678,7 @@ def _child_main(control_root: str) -> None:
     control = Control(Path(control_root))
     clock = VirtualClock(control.clock_file)
     install(clock, control)
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     InProcessCronScheduler().start(_FileGate(control), interval=60)
 

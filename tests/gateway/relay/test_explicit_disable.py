@@ -105,7 +105,7 @@ def test_predicate_agrees_with_loader_and_keeps_native_adapters(profile, monkeyp
     # Without the veto GATEWAY_RELAY_URL disables every directly-connected platform.
     assert config.platforms[Platform.SLACK].enabled is True
 
-    from cron.scheduler_delivery import _resolve_target_transport
+    from hermes_agent.cron.scheduler_delivery import _resolve_target_transport
 
     resolved, error = _resolve_target_transport(
         {"id": "job"}, Platform.SLACK, "slack", {"chat_id": "channel"}, {}, config,

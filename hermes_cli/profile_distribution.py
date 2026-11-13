@@ -427,8 +427,8 @@ def _merge_cron_store(src: Path, home: Path) -> None:
 
     Nothing is written when a shipped job cannot be scheduled (unparseable schedule, past
     one-shot for a job the installer resumed); the error names the job."""
-    from cron import jobs as cron_jobs
-    from cron.job_definition import import_job_definitions
+    from hermes_agent.cron import jobs as cron_jobs
+    from hermes_agent.cron.job_definition import import_job_definitions
 
     dest = home.joinpath(*_CRON_STORE_REL)
     try:

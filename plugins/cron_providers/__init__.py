@@ -74,7 +74,7 @@ def load_cron_scheduler(name: str) -> Optional[CronScheduler]:
 
 def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:
     """Import a provider module and extract its CronScheduler (register(ctx) or subclass)."""
-    from cron.scheduler_provider import CronScheduler
+    from hermes_agent.cron.scheduler_provider import CronScheduler
     name = provider_dir.name
     is_bundled = _CRON_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _CRON_PLUGINS_DIR
     module_name = f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"

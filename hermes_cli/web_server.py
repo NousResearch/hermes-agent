@@ -109,7 +109,7 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
     ticker dies with its backend and that profile's jobs silently stop firing until the user next opens it
     ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
     """
-    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
     from hermes_constants import get_hermes_home, profile_name_for_home
 
     provider = resolve_cron_scheduler()

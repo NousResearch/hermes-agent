@@ -21,8 +21,8 @@ def scheduled_instant(value):
 
 def completed_occurrence(job, instant):
     """Unknown/failed/pruned attempts cannot prove completion: keep them eligible."""
-    from cron.constants import FIRE_CLAIM_SKEW_SECONDS
-    from cron.executions import _transaction
+    from hermes_agent.cron.constants import FIRE_CLAIM_SKEW_SECONDS
+    from hermes_agent.cron.executions import _transaction
 
     instant = scheduled_instant(instant)
     if instant is None:
@@ -70,7 +70,7 @@ def completed_occurrence(job, instant):
 
 def pending_slot_stamp(next_run, now):
     """Store value for a recurring occurrence about to be handed to the dispatcher."""
-    from cron.jobs import _machine_id
+    from hermes_agent.cron.jobs import _machine_id
 
     return {"scheduled_at": next_run, "at": now.isoformat(), "by": _machine_id()}
 
@@ -83,8 +83,8 @@ def unclaimed_pending_slot(job, now):
     THIS process on a job not running here is orphaned (dispatch refused). A stamp by another
     process is honoured while that owner may still be alive within the fire-claim lease — a
     second live gateway on the same store is mid-dispatch, not dead."""
-    from cron.constants import FIRE_CLAIM_TTL_SECONDS
-    from cron.jobs import _claim_is_live, _job_running_in_this_process, _machine_id
+    from hermes_agent.cron.constants import FIRE_CLAIM_TTL_SECONDS
+    from hermes_agent.cron.jobs import _claim_is_live, _job_running_in_this_process, _machine_id
 
     pending = job.get("pending_slot")
     if not isinstance(pending, dict):
@@ -105,7 +105,7 @@ def unclaimed_pending_slot(job, now):
 
 def get_catch_up_occurrence_count() -> int:
     """Return the profile-local stale-schedule catch-up count."""
-    from cron.jobs import _current_cron_store
+    from hermes_agent.cron.jobs import _current_cron_store
 
     path = _current_cron_store().cron_dir / "catch_up_occurrences"
     try:
@@ -116,6 +116,6 @@ def get_catch_up_occurrence_count() -> int:
 
 def record_catch_up_occurrence() -> None:
     """Increment the profile-local stale-schedule catch-up counter, best effort."""
-    from cron.jobs import _write_marker
+    from hermes_agent.cron.jobs import _write_marker
 
     _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")

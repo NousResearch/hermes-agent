@@ -40,7 +40,7 @@ def register_ticked_homes(homes) -> None:
     live until process exit, so serving (or churning) many profiles leaks one ThreadPoolExecutor
     and its worker threads per home ever ticked.
     """
-    from cron.store_health import forget_stores, store_key
+    from hermes_agent.cron.store_health import forget_stores, store_key
 
     resolved, stores = {}, {}
     for home in homes:
@@ -57,8 +57,8 @@ def register_ticked_homes(homes) -> None:
         _ticked_stores.clear()
         _ticked_stores.update(stores)
     if departed:
-        # Late import: cron.scheduler imports this module.
-        from cron.scheduler import discard_parallel_pools
+        # Late import: hermes_agent.cron.scheduler imports this module.
+        from hermes_agent.cron.scheduler import discard_parallel_pools
         discard_parallel_pools(departed)
         forget_stores(departed_stores)
 

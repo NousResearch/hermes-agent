@@ -3,7 +3,7 @@ voice bubble vs plain audio from ``is_voice``, matching the gateway dispatch."""
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from cron.scheduler_delivery import _send_media_via_adapter
+from hermes_agent.cron.scheduler_delivery import _send_media_via_adapter
 
 
 class TestSendMediaVoiceFlag:

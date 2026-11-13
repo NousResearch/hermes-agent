@@ -29,7 +29,7 @@ def restore_target(job: dict[str, Any]) -> Optional[str]:
 
 
 def _future_slot(value: Any, now: datetime) -> Optional[str]:
-    from cron.jobs import _parse_aware
+    from hermes_agent.cron.jobs import _parse_aware
 
     parsed = _parse_aware(value) if isinstance(value, str) else None
     return value if parsed is not None and parsed > now else None
@@ -84,7 +84,7 @@ def settle(job: dict[str, Any], now: str) -> None:
     the run was in flight: a one-shot fires at once; a recurring job DROPS it and takes its next
     natural occurrence, as on a scheduled run (the tick's pre-run advance has usually moved it
     already, and keeping it due would make every tick during the run log a lost-claim fire)."""
-    from cron.jobs import compute_next_run
+    from hermes_agent.cron.jobs import compute_next_run
 
     if queued(job) or _future_slot(job.get("next_run_at"), datetime.fromisoformat(now)):
         return

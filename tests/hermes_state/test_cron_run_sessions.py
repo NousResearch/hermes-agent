@@ -9,7 +9,7 @@ import sqlite3
 
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 from gateway import session_cron
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError

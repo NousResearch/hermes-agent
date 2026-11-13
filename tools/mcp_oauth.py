@@ -28,7 +28,7 @@ import webbrowser
 from functools import partialmethod
 
 # Cross-process advisory file locking for the refresh fence. Mirrors
-# cron/jobs.py: fcntl is Unix-only, msvcrt is the Windows fallback.
+# hermes_agent/cron/jobs.py: fcntl is Unix-only, msvcrt is the Windows fallback.
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-Unix
@@ -70,7 +70,7 @@ class RefreshFenceTimeout(RuntimeError):
 
 
 # POSIX flock: EWOULDBLOCK/EAGAIN, EACCES on some NFS; msvcrt.locking: EACCES/EDEADLK.
-# Same set as cron.scheduler._is_lock_contention_errno (not imported: that module is heavy).
+# Same set as hermes_agent.cron.scheduler._is_lock_contention_errno (not imported: that module is heavy).
 _FENCE_CONTENTION_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EDEADLK})
 
 

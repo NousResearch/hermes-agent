@@ -916,7 +916,7 @@ Cron execution has its own session. Eligible continuable deliveries may mirror o
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
 briefs are labelled user turns appended at a turn boundary, preserving role alternation
-(`cron/AGENTS.md`).
+(`hermes_agent/cron/AGENTS.md`).
 
 ## `/login` (off-turn, paired DM only)
 
@@ -960,7 +960,7 @@ With `gateway.multiplex_profiles: true` one process serves the default profile p
 | Agent release / eviction (TTL, LRU, memory pressure) | `gateway/run_agent_cache.py::_run_release_in_profile_scope` |
 | Shutdown | `gateway/run_shutdown.py::_finalize_session` |
 | Post-turn media delivery | `gateway/platforms/base.py::_media_delivery_scope` |
-| Cron tick | `cron/scheduler_provider.py::_profile_cron_scope(home)` (one ticker, profiles in sequence) |
+| Cron tick | `hermes_agent/cron/scheduler_provider.py::_profile_cron_scope(home)` (one ticker, profiles in sequence) |
 | Child processes (`hermes -p X` workers, relay turns, browser drivers) | `tools/environments/local.py::served_profile_child_env` |
 | Background threads | `agent/memory_provider.py::spawn_context_thread` |
 

@@ -34,7 +34,7 @@ _hold_since: dict[str, float] = {}
 
 def note_held(now: Optional[float] = None) -> None:
     """Record that this tick skipped dispatch for the active cron store (a drain is holding it)."""
-    from cron.jobs import _current_cron_store
+    from hermes_agent.cron.jobs import _current_cron_store
     from utils import atomic_json_write
 
     cron_dir = _current_cron_store().cron_dir
@@ -52,14 +52,14 @@ def note_held(now: Optional[float] = None) -> None:
 
 def note_dispatching() -> None:
     """The ticker dispatches the active cron store again: this process's hold on it has ended."""
-    from cron.jobs import _current_cron_store
+    from hermes_agent.cron.jobs import _current_cron_store
 
     _hold_since.pop(str(_current_cron_store().cron_dir), None)
 
 
 def note_held_profiles(profiles) -> None:
     """``note_held`` for each ``(name, home)`` a multiplex ticker serves, inside its cron scope."""
-    from cron.scheduler_provider import _profile_cron_scope
+    from hermes_agent.cron.scheduler_provider import _profile_cron_scope
 
     for _name, home in profiles:
         with _profile_cron_scope(home):

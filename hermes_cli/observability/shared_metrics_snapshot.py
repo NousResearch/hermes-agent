@@ -41,7 +41,7 @@ def _plugin_count(config: dict[str, Any]) -> int:
 
 def _cron_job_count() -> int:
     try:
-        # utf-8-sig: same dialect as cron/jobs.load_jobs (Windows editors may leave a BOM).
+        # utf-8-sig: same dialect as hermes_agent/cron/jobs.load_jobs (Windows editors may leave a BOM).
         with open(get_hermes_home() / "cron" / "jobs.json", encoding="utf-8-sig") as handle:
             jobs = json.load(handle).get("jobs", [])
     except (OSError, ValueError, AttributeError):

@@ -29,7 +29,7 @@ def cron_env(tmp_path, monkeypatch):
     module-level constant so `skill_view()` finds the skills we plant.
 
     Note: `test_cron_no_agent.py` (and potentially others) do
-    ``importlib.reload(cron.scheduler)`` in their fixtures. A plain
+    ``importlib.reload(hermes_agent.cron.scheduler)`` in their fixtures. A plain
     top-level import of ``CronPromptInjectionBlocked`` would become stale
     after that reload and defeat ``pytest.raises(...)`` checks. Each test
     re-imports via this fixture's return value instead.
@@ -58,7 +58,7 @@ def cron_env(tmp_path, monkeypatch):
     # Return both the home dir and the scheduler module so tests use the
     # CURRENT module object (post any reload that happened in fixtures of
     # previously-executed tests in the same worker).
-    import cron.scheduler as _scheduler
+    import hermes_agent.cron.scheduler as _scheduler
     return hermes_home, _scheduler
 
 
@@ -93,7 +93,7 @@ def _plant_bundle(hermes_home: Path, name: str, skills: list[str], instruction: 
 
 class TestScanAssembledCronPrompt:
     def test_clean_prompt_passes_through(self, cron_env):
-        from cron import scheduler_prompt
+        from hermes_agent.cron import scheduler_prompt
         _, _scheduler = cron_env
         result = scheduler_prompt._scan_assembled_cron_prompt(
             "fetch the weather and summarize it",
@@ -102,7 +102,7 @@ class TestScanAssembledCronPrompt:
         assert result == "fetch the weather and summarize it"
 
     def test_injection_pattern_raises(self, cron_env):
-        from cron import scheduler_prompt
+        from hermes_agent.cron import scheduler_prompt
         _, scheduler = cron_env
         with pytest.raises(scheduler.CronPromptInjectionBlocked) as exc_info:
             scheduler_prompt._scan_assembled_cron_prompt(
@@ -112,7 +112,7 @@ class TestScanAssembledCronPrompt:
         assert "prompt_injection" in str(exc_info.value)
 
     def test_env_exfil_pattern_raises(self, cron_env):
-        from cron import scheduler_prompt
+        from hermes_agent.cron import scheduler_prompt
         _, scheduler = cron_env
         with pytest.raises(scheduler.CronPromptInjectionBlocked):
             scheduler_prompt._scan_assembled_cron_prompt(
@@ -121,7 +121,7 @@ class TestScanAssembledCronPrompt:
             )
 
     def test_invisible_unicode_raises(self, cron_env):
-        from cron import scheduler_prompt
+        from hermes_agent.cron import scheduler_prompt
         _, scheduler = cron_env
         with pytest.raises(scheduler.CronPromptInjectionBlocked) as exc_info:
             scheduler_prompt._scan_assembled_cron_prompt(

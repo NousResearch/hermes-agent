@@ -1,1 +1,1 @@
-"""Scripts shipped with the cron subsystem (runnable via ``python3 -m cron.scripts.<name>``)."""
+"""Scripts shipped with the cron subsystem (runnable via ``python3 -m hermes_agent.cron.scripts.<name>``)."""

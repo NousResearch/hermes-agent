@@ -65,7 +65,7 @@ def test_qqbot_platform_hint_comes_from_its_platform_entry():
 
 def test_qqbot_is_a_builtin_deliver_target():
     """Webhook and cron treat qqbot as a shipped platform before any plugin load."""
-    from cron.scheduler_delivery import (
+    from hermes_agent.cron.scheduler_delivery import (
         _is_known_delivery_platform,
         _resolve_home_env_var,
         _home_env_lookup,
@@ -80,7 +80,7 @@ def test_qqbot_is_a_builtin_deliver_target():
 def test_qq_prefixed_home_env_still_resolves_for_cron(monkeypatch):
     monkeypatch.delenv("QQBOT_HOME_CHANNEL", raising=False)
     monkeypatch.setenv("QQ_HOME_CHANNEL", "renamed-chat")
-    from cron.scheduler_delivery import _home_env_lookup
+    from hermes_agent.cron.scheduler_delivery import _home_env_lookup
 
     assert _home_env_lookup("QQBOT_HOME_CHANNEL") == "renamed-chat"
 
@@ -88,7 +88,7 @@ def test_qq_prefixed_home_env_still_resolves_for_cron(monkeypatch):
 def test_cron_deliver_qqbot_without_a_live_gateway():
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
-    from cron.scheduler_delivery import _is_known_delivery_platform, _resolve_home_env_var
+    from hermes_agent.cron.scheduler_delivery import _is_known_delivery_platform, _resolve_home_env_var
 
     assert _is_known_delivery_platform("qqbot") is True
     assert _resolve_home_env_var("qqbot") == "QQBOT_HOME_CHANNEL"

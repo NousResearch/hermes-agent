@@ -16,7 +16,7 @@ def _main_model_pin() -> tuple[Optional[str], Optional[str]]:
     ``ValueError`` when the config backend cannot serve the profile (``ConfigBackendUnavailable``):
     answering "nothing configured" would silently drop the lock the caller asked for, so the
     create/update is refused like any other invalid input, and the caller's process lives on."""
-    from cron.jobs import _normalize_job_optional_text  # late: the facade imports this module
+    from hermes_agent.cron.jobs import _normalize_job_optional_text  # late: the facade imports this module
     from hermes_cli.config_backend import ConfigBackendUnavailable, config_exists
     from hermes_cli.config_effective import load_user_config_effective
     cfg_path = get_hermes_home() / "config.yaml"

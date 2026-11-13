@@ -2,7 +2,7 @@
 from contextlib import asynccontextmanager
 import json
 
-from cron import executions, jobs, scheduler, scheduler_authority
+from hermes_agent.cron import executions, jobs, scheduler, scheduler_authority
 from hermes_cli import gateway_client
 
 

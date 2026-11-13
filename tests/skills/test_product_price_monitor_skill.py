@@ -2,7 +2,7 @@
 
 
 def test_price_watch_blueprint_schedule_resolves():
-    from cron.blueprint_catalog import CATALOG
+    from hermes_agent.cron.blueprint_catalog import CATALOG
 
     bp = next(b for b in CATALOG if b.key == "price-watch")
     interval_slot = next(s for s in bp.slots if s.name == "interval_h")

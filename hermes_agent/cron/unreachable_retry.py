@@ -5,7 +5,7 @@ Inspired by Claude Cowork (desktop changelog v1.46388.1, 2026-09-04): "automatic
 for example right after the computer wakes behind a VPN."
 
 The class is deliberately narrow: the run must have FAILED with a transient network /
-DNS error (``cron.scheduler_preflight._is_transient_provider_resolve_error``) AND the
+DNS error (``hermes_agent.cron.scheduler_preflight._is_transient_provider_resolve_error``) AND the
 agent must have completed zero API calls. Nothing was executed and nothing was spent, so
 re-running cannot double a side effect — unlike a generic failure retry (see PR #16512),
 which has to answer for one-shot dispatch accounting and mid-run side effects. Recurring
@@ -23,10 +23,10 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from cron.constants import is_recurring
+from hermes_agent.cron.constants import is_recurring
 from hermes_time import now as _hermes_now
 
-logger = logging.getLogger("cron.scheduler")
+logger = logging.getLogger("hermes_agent.cron.scheduler")
 
 # Cowork's ladder: re-run after 5, 15, then 30 minutes; then give up until the
 # schedule's own next occurrence.
@@ -60,7 +60,7 @@ def is_model_unreachable_failure(exc: BaseException, agent: Any = None) -> bool:
     never completed a model call — the run consumed nothing and executed nothing."""
     if int(getattr(agent, "session_api_calls", 0) or 0) > 0:
         return False
-    from cron.scheduler_preflight import _is_transient_provider_resolve_error
+    from hermes_agent.cron.scheduler_preflight import _is_transient_provider_resolve_error
 
     return _is_transient_provider_resolve_error(exc)
 
@@ -80,7 +80,7 @@ def _ladder_instant(job: dict[str, Any], natural_next: Optional[datetime],
     if attempt >= len(RETRY_DELAYS_SECONDS) or not _ladder_applies(job):
         return None
     # late: jobs imports this module's helpers
-    from cron.jobs import _instant_at_or_before, _seconds_after
+    from hermes_agent.cron.jobs import _instant_at_or_before, _seconds_after
 
     retry_dt = _seconds_after(now, RETRY_DELAYS_SECONDS[attempt])
     if natural_next is not None and _instant_at_or_before(natural_next, retry_dt):
@@ -96,7 +96,7 @@ def will_retry(job: dict[str, Any]) -> bool:
     counted = 0 if is_retry_run(job) else 1  # a ladder re-run does not count (``ladder_rung``)
     if times is not None and times > 0 and int(repeat.get("completed") or 0) + counted >= times:
         return False  # _advance_after_run completes the job; plan_retry never runs
-    from cron.jobs import _parse_aware, compute_next_run
+    from hermes_agent.cron.jobs import _parse_aware, compute_next_run
 
     now = _hermes_now()
     natural_next = _parse_aware(compute_next_run(
@@ -117,7 +117,7 @@ def is_retry_fire(job: dict[str, Any], next_run: str) -> bool:
     """True for the exact ladder instant parked by ``plan_retry`` (off the cron lattice).
 
     The expression fingerprint keeps a direct ``jobs.json`` schedule edit from inheriting the
-    exception, as in ``cron.quota_hold.is_recovery_fire``.
+    exception, as in ``hermes_agent.cron.quota_hold.is_recovery_fire``.
     """
     state = job.get(STATE_KEY) or {}
     return state.get("at") == next_run and state.get("expr") == (job.get("schedule") or {}).get("expr")
@@ -127,7 +127,7 @@ def is_retry_run(job: dict[str, Any]) -> bool:
     """True when this dispatch snapshot fired the ladder instant parked by ``plan_retry``: a
     re-run of an occurrence that already counted toward ``repeat``, so it must not count again.
     Manual runs carry no ``_scheduled_instant`` and always count."""
-    from cron.occurrences import scheduled_instant
+    from hermes_agent.cron.occurrences import scheduled_instant
 
     instant = job.get("_scheduled_instant")
     return instant is not None and scheduled_instant((job.get(STATE_KEY) or {}).get("at")) == instant
@@ -139,7 +139,7 @@ def plan_retry(job: dict[str, Any]) -> bool:
     the ladder instant when that is sooner than the natural occurrence; exhausted or
     inapplicable cycles clear state and leave the schedule untouched. Returns True when
     a retry was scheduled."""
-    from cron.jobs import _parse_aware  # late: jobs imports this module's helpers
+    from hermes_agent.cron.jobs import _parse_aware  # late: jobs imports this module's helpers
 
     retry_dt = _ladder_instant(job, _parse_aware(job.get("next_run_at")), _hermes_now())
     attempt = int((job.get(STATE_KEY) or {}).get("attempt") or 0)

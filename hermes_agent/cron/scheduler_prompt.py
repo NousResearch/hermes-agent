@@ -1,7 +1,7 @@
 """Cron job prompt assembly: context_from injection, skill loading, the assembled-prompt
 injection scan, and the credential-exfil / config-block guards.
 
-Split out of ``cron.scheduler``. Import names from this module directly (``cron.scheduler`` only
+Split out of ``hermes_agent.cron.scheduler``. Import names from this module directly (``hermes_agent.cron.scheduler`` only
 imports the few it calls itself). Origin-resident helpers and sibling split modules are reached
 late-bound (``_sched`` / module refs at the bottom) so monkeypatching the defining module works.
 """
@@ -15,7 +15,7 @@ from hermes_time import now as _hermes_now
 from typing import Optional
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("cron.scheduler")
+logger = logging.getLogger("hermes_agent.cron.scheduler")
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -63,7 +63,7 @@ _UPSTREAM_CONTEXT_INTRO = (
     "your analysis."
 )
 
-# Run-document length frames. The writer (``cron.scheduler.run_job``) stamps
+# Run-document length frames. The writer (``hermes_agent.cron.scheduler.run_job``) stamps
 # these labels; the reader below parses them. Defined here (not in scheduler.py)
 # because this module binds ``_sched`` only at import tail, so module-level
 # patterns cannot be built from scheduler attributes without an import cycle.
@@ -141,7 +141,7 @@ def _inject_context_from(job: dict, prompt: str) -> tuple[str, bool]:
     context_from = job.get("context_from")
     if not context_from:
         return prompt, False
-    from cron.jobs import get_cron_output_dir
+    from hermes_agent.cron.jobs import get_cron_output_dir
     output_dir = get_cron_output_dir()
     if isinstance(context_from, str):
         context_from = [context_from]
@@ -348,7 +348,7 @@ def _build_job_prompt(
     has_injected_data = has_injected_data or _ctx_injected
 
     # Durable per-job notepad; empty renders as "" so unused → byte-identical prompt.
-    from cron import notepad as cron_notepad
+    from hermes_agent.cron import notepad as cron_notepad
     notepad_section = cron_notepad.render_notepad_section(str(job.get("id") or ""))
     if notepad_section:
         prompt = f"{notepad_section}{prompt}"
@@ -445,7 +445,7 @@ def _block_and_pause_job(
     job_id: str, job_name: str, reason: str) -> tuple[bool, str, str, Optional[str]]:
     """Fail a run closed and pause the job: an unrunnable job left enabled re-fires every tick
     forever; ``paused_at``/``paused_reason`` give an auditable record."""
-    from cron.jobs import pause_job
+    from hermes_agent.cron.jobs import pause_job
     logger.error("Job '%s': %s", job_id, reason)
     try:
         pause_job(job_id, f"Auto-paused by scheduler: {reason}")
@@ -466,6 +466,6 @@ def _block_and_pause_job(
 
 # Late-bound origin namespace (see module docstring). Imported LAST so this module is fully
 # populated before ``scheduler`` re-exports from it.
-from cron import scheduler as _sched
-from cron import scheduler_delivery as _delivery
-from cron import scheduler_script as _script
+from hermes_agent.cron import scheduler as _sched
+from hermes_agent.cron import scheduler_delivery as _delivery
+from hermes_agent.cron import scheduler_script as _script

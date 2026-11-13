@@ -36,8 +36,8 @@ def _status_block(pids):
 @pytest.mark.parametrize("had_success_before_update", [False, True])
 def test_cron_status_reports_stale_code_yield_as_unhealthy(cron_home, had_success_before_update):
     """Fresh heartbeat + persisted CronTickYielded == outage, whatever the success marker says."""
-    from cron.jobs import _current_cron_store, ensure_dirs, record_ticker_error, record_ticker_heartbeat
-    from cron.scheduler import CronTickYielded
+    from hermes_agent.cron.jobs import _current_cron_store, ensure_dirs, record_ticker_error, record_ticker_heartbeat
+    from hermes_agent.cron.scheduler import CronTickYielded
 
     ensure_dirs()
     if had_success_before_update:
@@ -54,7 +54,7 @@ def test_cron_status_reports_stale_code_yield_as_unhealthy(cron_home, had_succes
 
 def test_cron_status_still_green_after_a_clean_tick(cron_home):
     """Control: a ticker whose last cycle succeeded reads healthy."""
-    from cron.jobs import clear_ticker_error, ensure_dirs, record_ticker_heartbeat
+    from hermes_agent.cron.jobs import clear_ticker_error, ensure_dirs, record_ticker_heartbeat
 
     ensure_dirs()
     record_ticker_heartbeat(success=True)

@@ -6,8 +6,8 @@ into a live one (profile distributions) import this rather than duplicating the 
 """
 from typing import Any, Dict
 
-from cron.jobs import _apply_schedule_update, _jobs_lock, is_job_runnable, load_jobs, parse_schedule, save_jobs
-from cron.quota_hold import clear_state as _clear_quota_hold
+from hermes_agent.cron.jobs import _apply_schedule_update, _jobs_lock, is_job_runnable, load_jobs, parse_schedule, save_jobs
+from hermes_agent.cron.quota_hold import clear_state as _clear_quota_hold
 from hermes_time import now as _hermes_now
 
 JOB_DEFINITION_FIELDS = frozenset({

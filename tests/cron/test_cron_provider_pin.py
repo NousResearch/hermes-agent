@@ -112,9 +112,9 @@ def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cr
             "api_mode": "chat_completions",
         }
 
-    with patch("cron.scheduler._hermes_home", tmp_path), \
-         patch("cron.scheduler._get_hermes_home", return_value=tmp_path), \
-         patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+    with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+         patch("hermes_agent.cron.scheduler._get_hermes_home", return_value=tmp_path), \
+         patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
@@ -170,10 +170,10 @@ class TestPinnedLocksTheMainModel:
 
     @staticmethod
     def _store(monkeypatch, tmp_path, main_model="main-model", main_provider="openrouter"):
-        from cron import jobs
+        from hermes_agent.cron import jobs
         (tmp_path / "config.yaml").write_text(f"model:\n  default: {main_model}\n")
         monkeypatch.setattr(jobs, "get_hermes_home", lambda: tmp_path, raising=True)
-        from cron import jobs_model_pin  # the pin reads the main model's config where it lives
+        from hermes_agent.cron import jobs_model_pin  # the pin reads the main model's config where it lives
         monkeypatch.setattr(jobs_model_pin, "get_hermes_home", lambda: tmp_path, raising=True)
         state = {"jobs": []}
         monkeypatch.setattr(jobs, "load_jobs", lambda: list(state["jobs"]), raising=True)

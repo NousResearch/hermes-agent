@@ -759,7 +759,7 @@ def execute_code(
             "(process-identity probe wedged); the code was not run. Retry the call."
         )
     if _probe.value:
-        from cron.lifecycle_guard import (
+        from hermes_agent.cron.lifecycle_guard import (
             HOST_INTERPRETER_KILL_REJECTION,
             contains_gateway_lifecycle_command,
             contains_host_interpreter_kill,

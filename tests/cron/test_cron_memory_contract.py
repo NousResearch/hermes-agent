@@ -34,7 +34,7 @@ the flip history. Do not "fix" a failure here by inverting an assertion
 without that citation.
 
 Tests drive the REAL owner bridge (``gateway.session_cron.execute``, the path
-``cron.scheduler.run_job`` hands a fire to) and capture the actual kwargs the
+``hermes_agent.cron.scheduler.run_job`` hands a fire to) and capture the actual kwargs the
 scheduler passes to AIAgent (patched at ``run_agent.AIAgent``, matching
 tests/cron/test_scheduler.py's pattern). The ON direction (default
 skip_memory=False, memory not denylisted, per-job memory toolset kept) is
@@ -55,7 +55,7 @@ def _run_job_patches(tmp_path):
 
     Mirrors tests/cron/test_scheduler.py::_run_job_patches — every patch is
     entered via one ExitStack so none can be silently dropped.
-    ``cron.scheduler._hermes_home`` is pointed at ``tmp_path`` so run_job's
+    ``hermes_agent.cron.scheduler._hermes_home`` is pointed at ``tmp_path`` so run_job's
     config load reads ``tmp_path/config.yaml`` (write one to exercise config
     toggles).
     """
@@ -65,8 +65,8 @@ def _run_job_patches(tmp_path):
     mock_agent = MagicMock()
     mock_agent.run_conversation.return_value = {"final_response": "ok"}
     base = [
-        patch("cron.scheduler._hermes_home", tmp_path),
-        patch("cron.scheduler_delivery._resolve_origin", return_value=None),
+        patch("hermes_agent.cron.scheduler._hermes_home", tmp_path),
+        patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
         patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db),

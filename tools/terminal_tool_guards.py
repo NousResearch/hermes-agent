@@ -584,7 +584,7 @@ def gateway_lifecycle_block(
     # scan below would read the scripts it names on this host.
     if hosted_scope() is not None or not _is_supervised_gateway_process():
         return None
-    from cron.lifecycle_guard import (
+    from hermes_agent.cron.lifecycle_guard import (
         _MAX_REFERENCED_SCRIPT_BYTES,
         HOST_INTERPRETER_KILL_REJECTION,
         contains_host_interpreter_kill,

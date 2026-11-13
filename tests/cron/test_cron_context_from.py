@@ -17,7 +17,7 @@ def cron_env(tmp_path, monkeypatch):
     (hermes_home / "cron" / "output").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
@@ -30,7 +30,7 @@ class TestJobContextFromField:
     """Test that context_from is stored and retrieved correctly."""
 
     def test_create_job_with_context_from_string(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
 
         job_a = create_job(prompt="Find news", schedule="every 1h")
         job_b = create_job(
@@ -50,8 +50,8 @@ class TestBuildJobPromptContextFrom:
     """Test that _build_job_prompt() injects context from referenced jobs."""
 
     def test_injects_latest_output(self, cron_env):
-        from cron.jobs import create_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job_a = create_job(prompt="Find news", schedule="every 1h")
 
@@ -73,8 +73,8 @@ class TestBuildJobPromptContextFrom:
         assert f"Output from job '{job_a['id']}'" in prompt
 
     def test_uses_most_recent_output(self, cron_env):
-        from cron.jobs import create_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
         import time
 
         job_a = create_job(prompt="Find news", schedule="every 1h")
@@ -95,8 +95,8 @@ class TestBuildJobPromptContextFrom:
         assert "Old output" not in prompt
 
     def test_graceful_when_no_output_yet(self, cron_env):
-        from cron.jobs import create_job
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job_a = create_job(prompt="Find news", schedule="every 1h")
         job_b = create_job(
@@ -111,8 +111,8 @@ class TestBuildJobPromptContextFrom:
         assert "Summarize" in prompt
 
     def test_injects_multiple_context_jobs(self, cron_env):
-        from cron.jobs import create_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job_a = create_job(prompt="Find news", schedule="every 1h")
         job_b = create_job(prompt="Find weather", schedule="every 1h")
@@ -133,8 +133,8 @@ class TestBuildJobPromptContextFrom:
 
     def test_context_injected_before_prompt(self, cron_env):
         """Context should appear before the job's own prompt."""
-        from cron.jobs import create_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job_a = create_job(prompt="Find data", schedule="every 1h")
         out_dir = OUTPUT_DIR / job_a["id"]
@@ -153,8 +153,8 @@ class TestBuildJobPromptContextFrom:
 
     def test_output_truncated_at_8k_chars(self, cron_env):
         """Output longer than the 8000-char budget is clipped head+tail (#117290)."""
-        from cron.jobs import create_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job_a = create_job(prompt="Find data", schedule="every 1h")
         out_dir = OUTPUT_DIR / job_a["id"]
@@ -174,8 +174,8 @@ class TestBuildJobPromptContextFrom:
 
     def test_invalid_job_id_skipped(self, cron_env):
         """context_from with path traversal job_id should be skipped."""
-        from cron.jobs import create_job
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(prompt="Process", schedule="every 2h")
         # Manually inject invalid context_from (simulating tampered jobs.json)
@@ -194,7 +194,7 @@ class TestUpdateContextFrom:
     """
 
     def test_update_adds_context_from_to_existing_job(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
         from tools.cronjob_tools import cronjob
         import json
 
@@ -222,8 +222,8 @@ class TestSelfContext:
     """
 
     def test_self_injects_own_previous_output(self, cron_env):
-        from cron.jobs import create_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(
             prompt="Scan for news", schedule="every 1h", context_from="self"
@@ -241,8 +241,8 @@ class TestSelfContext:
         assert f"Output from job '{job['id']}'" not in prompt
 
     def test_self_case_insensitive(self, cron_env):
-        from cron.jobs import create_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(
             prompt="Scan", schedule="every 1h", context_from="SELF"
@@ -254,8 +254,8 @@ class TestSelfContext:
         assert "prev" in prompt
 
     def test_self_silent_skip_on_first_run(self, cron_env):
-        from cron.jobs import create_job
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(
             prompt="Scan for news", schedule="every 1h", context_from="self"
@@ -267,8 +267,8 @@ class TestSelfContext:
 
     def test_own_id_treated_as_self(self, cron_env):
         """Passing the job's literal id gets the continuity framing too."""
-        from cron.jobs import create_job, update_job, get_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job, update_job, get_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(prompt="Scan", schedule="every 1h")
         update_job(job["id"], {"context_from": [job["id"]]})
@@ -295,7 +295,7 @@ class TestContinuityFlag:
 
     def test_create_continuity_false_is_noop(self, cron_env):
         from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job
+        from hermes_agent.cron.jobs import get_job
         import json
 
         result = json.loads(cronjob(
@@ -308,7 +308,7 @@ class TestContinuityFlag:
         assert get_job(result["job_id"]).get("context_from") is None
 
     def test_create_continuity_combines_with_context_from(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
         from tools.cronjob_tools import cronjob
         import json
 
@@ -326,7 +326,7 @@ class TestContinuityFlag:
         assert "self" in stored
 
     def test_update_continuity_true_adds_self(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
         from tools.cronjob_tools import cronjob
         import json
 
@@ -340,7 +340,7 @@ class TestContinuityFlag:
         assert get_job(job["id"])["context_from"] == ["self"]
 
     def test_update_continuity_false_removes_self_preserves_others(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
         from tools.cronjob_tools import cronjob
         import json
 
@@ -359,7 +359,7 @@ class TestContinuityFlag:
         assert get_job(job["id"])["context_from"] == [upstream["id"]]
 
     def test_update_continuity_true_idempotent(self, cron_env):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
         from tools.cronjob_tools import cronjob
         import json
 
@@ -375,8 +375,8 @@ class TestContinuityFlag:
     def test_continuity_job_gets_previous_output(self, cron_env):
         """End-to-end: a continuity-created job injects its own prior output."""
         from tools.cronjob_tools import cronjob
-        from cron.jobs import get_job, OUTPUT_DIR
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import get_job, OUTPUT_DIR
+        from hermes_agent.cron.scheduler import _build_job_prompt
         import json
 
         result = json.loads(cronjob(

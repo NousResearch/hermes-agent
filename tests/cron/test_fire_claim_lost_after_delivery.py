@@ -23,7 +23,7 @@ def temp_home(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clean_running_state():
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     sched._running_job_ids.clear()
     sched._running_fire_owners.clear()
@@ -61,10 +61,10 @@ class _SampledHeartbeat:
 
 def _claimed_job():
     """A real recurring job record holding a live fire claim (as a firing tick has)."""
-    from cron.jobs import claim_job_for_fire, create_job, get_job
+    from hermes_agent.cron.jobs import claim_job_for_fire, create_job, get_job
 
     # A real (non-local) lane: on this branch agent-job delivery rides the durable queue
-    # (``cron.delivery_queue.enqueue``), which is the seam every probe below observes.
+    # (``hermes_agent.cron.delivery_queue.enqueue``), which is the seam every probe below observes.
     job = create_job(prompt="x", schedule="every 5m", name="105861", deliver="telegram")
     assert claim_job_for_fire(job["id"]) is True
     job = get_job(job["id"])
@@ -79,7 +79,7 @@ def _drive(monkeypatch, *, run_result, samples_before_miss):
     before the delivery side effect, and once after it (the post-delivery check that the incidents
     tripped on). ``samples_before_miss=2`` therefore makes the third, post-delivery sample miss.
     """
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     job = _claimed_job()
     hb = _SampledHeartbeat(sched.heartbeat_fire_claim, samples_before_miss=samples_before_miss)
@@ -116,7 +116,7 @@ def test_delivered_run_keeps_its_terminal_status_when_claim_sample_misses_after_
     """Delivery completed, then the claim sample missed → the on-disk record is the delivered
     run's real outcome (ok, or the real error — never ``_OWNERSHIP_LOST_INTERRUPTED``), and the
     loss latch stays on the raw source: the caller's idle transport event is left unset."""
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
 
     sched, job, hb, delivered = _drive(monkeypatch, run_result=run_result, samples_before_miss=2)
     cancel = threading.Event()
@@ -140,13 +140,13 @@ def test_delivered_run_keeps_its_terminal_status_when_claim_sample_misses_after_
 
 def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypatch):
     """An explicit transport cancel during delivery is not a sampled miss → still interrupted."""
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
 
     sched, job, hb, delivered = _drive(
         monkeypatch, run_result=(True, "output text", "the report", None),
         samples_before_miss=99)
     cancel = threading.Event()
-    from cron import delivery_queue
+    from hermes_agent.cron import delivery_queue
     enqueue = delivery_queue.enqueue
 
     def deliver_then_cancel(execution_id, job, content, **kwargs):
@@ -154,7 +154,7 @@ def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypat
         cancel.set()
         return outcome
 
-    monkeypatch.setattr("cron.delivery_queue.enqueue", deliver_then_cancel)
+    monkeypatch.setattr("hermes_agent.cron.delivery_queue.enqueue", deliver_then_cancel)
 
     assert sched.run_one_job(job, cancel_event=cancel) is True
     assert sched.drain_delivery_queue({}, None) == 1
@@ -186,7 +186,7 @@ class _HeartbeatThreadMisses:
             self._left -= 1
             self.missed += 1
             if self._steal:
-                from cron.jobs import _with_job, save_jobs
+                from hermes_agent.cron.jobs import _with_job, save_jobs
 
                 def re_own(jobs, _i, job):
                     job["fire_claim"] = {**job["fire_claim"], "by": "replacement:deadbeef"}
@@ -200,7 +200,7 @@ class _HeartbeatThreadMisses:
 def _drive_heartbeat_thread(monkeypatch, *, misses, steal=False):
     """run_one_job with the REAL fire-claim heartbeat thread sampling every 10 ms; ``run_job``
     finishes after the heartbeat has processed its confirmation, not merely sampled it."""
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     job = _claimed_job()
     hb = _HeartbeatThreadMisses(sched.heartbeat_fire_claim, misses, steal=steal)
@@ -237,8 +237,8 @@ def test_heartbeat_miss_mid_run_keeps_completed_run(temp_home, monkeypatch, miss
     """#113357: the heartbeat thread's miss is a sample, not the verdict. One miss is re-sampled
     and never cancels the run; two consecutive misses latch, but a claim the store still validates
     at completion records the completed run — not ``_OWNERSHIP_LOST_INTERRUPTED``."""
-    from cron.executions import get_execution
-    from cron.jobs import get_job
+    from hermes_agent.cron.executions import get_execution
+    from hermes_agent.cron.jobs import get_job
 
     sched, job, hb, delivered, run_cancel = _drive_heartbeat_thread(monkeypatch, misses=misses)
 
@@ -257,8 +257,8 @@ def test_heartbeat_miss_mid_run_keeps_completed_run(temp_home, monkeypatch, miss
 def test_confirmed_claim_loss_mid_run_still_yields(temp_home, monkeypatch):
     """A genuinely re-owned claim (two misses, stored ``by`` rewritten) still fences the run out:
     nothing delivered, no terminal write over the new owner, ledger records the discard."""
-    from cron.executions import get_execution
-    from cron.jobs import get_job
+    from hermes_agent.cron.executions import get_execution
+    from hermes_agent.cron.jobs import get_job
 
     sched, job, _hb, delivered, run_cancel = _drive_heartbeat_thread(
         monkeypatch, misses=2, steal=True)

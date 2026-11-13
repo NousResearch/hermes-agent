@@ -222,7 +222,7 @@ class TestClaudeCodeOAuthTokenLeakage:
 class TestCronSchedulerUnscopedCall:
     """Cron scheduler in multiplex mode: resolve_anthropic_token() must fail closed.
 
-    The cron scheduler (cron/scheduler.py) loads a credential_pool for the job's
+    The cron scheduler (hermes_agent/cron/scheduler.py) loads a credential_pool for the job's
     provider, but does NOT call set_secret_scope() before running Anthropic calls.
     In multiplex mode, this means resolve_anthropic_token() runs with:
       - _MULTIPLEX_ACTIVE = True

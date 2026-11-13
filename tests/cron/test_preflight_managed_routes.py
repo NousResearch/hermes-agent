@@ -9,7 +9,7 @@ the raw user file alone, false-blocking every routed job and failing delivery cl
 import hermes_yaml as yaml
 import pytest
 
-from cron.scheduler_preflight import (
+from hermes_agent.cron.scheduler_preflight import (
     SharedRouteAdapters,
     _delivery_platform_routed_from_primary_gateway,
     _primary_profile_routes_for_current_home,

@@ -1,8 +1,8 @@
 """Silent audit records must not replace useful continuity output (#104541)."""
 import os
 
-from cron import jobs
-from cron.scheduler_prompt import _inject_context_from
+from hermes_agent.cron import jobs
+from hermes_agent.cron.scheduler_prompt import _inject_context_from
 
 
 def test_silent_audits_preserve_latest_payload(tmp_path):

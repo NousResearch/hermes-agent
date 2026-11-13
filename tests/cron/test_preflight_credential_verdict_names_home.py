@@ -7,8 +7,8 @@ import re
 
 import pytest
 
-from cron.scheduler_preflight import _preflight_check_provider_key
-from cron.scheduler_provider import _profile_cron_scope
+from hermes_agent.cron.scheduler_preflight import _preflight_check_provider_key
+from hermes_agent.cron.scheduler_provider import _profile_cron_scope
 
 JOB = {"id": "7a6ae427c1d8", "name": "radar", "provider": "openai-codex", "model": "gpt-5.6-sol"}
 

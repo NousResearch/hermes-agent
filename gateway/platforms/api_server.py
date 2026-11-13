@@ -893,11 +893,11 @@ def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: st
 
 _CRON_AVAILABLE = False
 try:
-    from cron.jobs import (
+    from hermes_agent.cron.jobs import (
         list_jobs as _cron_list, get_job as _cron_get, update_job as _cron_update,
         remove_job as _cron_remove, pause_job as _cron_pause, resume_job as _cron_resume,
         trigger_job as _cron_trigger)
-    from cron.scheduler import (
+    from hermes_agent.cron.scheduler import (
         CronSchedulerRegistrationError as _CronSchedulerRegistrationError,
         create_job_with_scheduler_registration as _cron_create)
     _CRON_AVAILABLE = True
@@ -912,7 +912,7 @@ except ImportError:
 def _notify_cron_provider_jobs_changed() -> None:
     """Best-effort notify of the active cron provider after a REST mutation (built-in: no-op)."""
     with suppress(Exception):
-        from cron.scheduler import _notify_provider_jobs_changed
+        from hermes_agent.cron.scheduler import _notify_provider_jobs_changed
         _notify_provider_jobs_changed()
 
 
@@ -3503,7 +3503,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         status=503,
                         headers={"Retry-After": str(60)},
                     )
-            from cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
+            from hermes_agent.cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
             provider = resolve_cron_scheduler()
             loop = asyncio.get_running_loop()
             from gateway.platforms.api_server_fire_startup import live_adapters_once_started

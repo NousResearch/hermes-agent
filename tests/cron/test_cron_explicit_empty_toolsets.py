@@ -24,31 +24,31 @@ def hermes_env(tmp_path, monkeypatch):
 
     import hermes_constants
     importlib.reload(hermes_constants)
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
+    import hermes_agent.cron.jobs
+    importlib.reload(hermes_agent.cron.jobs)
+    import hermes_agent.cron.scheduler
+    importlib.reload(hermes_agent.cron.scheduler)
     return home
 
 
 def test_create_persists_explicit_empty_allowlist_and_survives_reload(hermes_env):
     import importlib
 
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     job = create_job(prompt="daily digest", schedule="every 1h", enabled_toolsets=[])
     assert job["enabled_toolsets"] == []
 
     # A fresh process (module reload) must read the restriction back from jobs.json as [],
     # not null — null would read as 'no restriction' and widen the job.
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    reloaded = cron.jobs.get_job(job["id"])
+    import hermes_agent.cron.jobs
+    importlib.reload(hermes_agent.cron.jobs)
+    reloaded = hermes_agent.cron.jobs.get_job(job["id"])
     assert reloaded is not None and reloaded["enabled_toolsets"] == []
 
 
 def test_update_path_preserves_explicit_empty_allowlist(hermes_env):
-    from cron.jobs import create_job, update_job
+    from hermes_agent.cron.jobs import create_job, update_job
 
     job = create_job(prompt="daily digest", schedule="every 1h")
     assert job["enabled_toolsets"] is None  # absent = no per-job restriction
@@ -58,7 +58,7 @@ def test_update_path_preserves_explicit_empty_allowlist(hermes_env):
 
 
 def test_scheduler_resolves_explicit_empty_as_zero_toolsets(hermes_env):
-    from cron.scheduler import _resolve_cron_enabled_toolsets
+    from hermes_agent.cron.scheduler import _resolve_cron_enabled_toolsets
 
     # [] = zero toolsets, fail closed — not a fall-through to the platform default.
     assert _resolve_cron_enabled_toolsets({"enabled_toolsets": []}, {}) == []
@@ -70,7 +70,7 @@ def test_cronjob_tool_roundtrip_preserves_explicit_empty(hermes_env):
     """The reporter's exact path: cronjob create with enabled_toolsets=[] from a session."""
     import json
 
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
     from tools.cronjob_tools import cronjob
 
     result = json.loads(cronjob(

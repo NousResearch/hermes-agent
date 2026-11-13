@@ -244,7 +244,7 @@ class TestAttendedGcPushedTier:
 
 class TestCronWorktreeMaintenance:
     def test_throttle_dispatches_once_per_interval(self, monkeypatch):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         calls = []
         monkeypatch.setattr(sched, "_last_worktree_maintenance_at", None)
@@ -259,14 +259,14 @@ class TestCronWorktreeMaintenance:
         assert len(calls) == 1
 
     def test_repo_discovery_requires_worktrees_dir(self, monkeypatch, tmp_path):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         # A job workdir inside a git repo WITHOUT .worktrees/ is filtered out.
         repo = tmp_path / "jobrepo"
         repo.mkdir()
         _run(["git", "init"], repo)
         monkeypatch.setattr(
-            "cron.jobs.load_jobs",
+            "hermes_agent.cron.jobs.load_jobs",
             lambda: [{"workdir": str(repo)}],
         )
         repos = sched._worktree_maintenance_repos()
@@ -278,7 +278,7 @@ class TestCronWorktreeMaintenance:
         assert repo in [Path(p) for p in repos]
 
     def test_maintenance_prunes_via_real_pruner(self, repo_with_bare_origin, monkeypatch):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-cronreap", "hermes/hermes-cronreap", push=True)

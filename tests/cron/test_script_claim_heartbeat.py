@@ -16,7 +16,7 @@ import pytest
 def test_script_termination_reaps_descendants(tmp_path, monkeypatch, trigger, topology):
     import os
     import psutil
-    from cron import scheduler, scheduler_script
+    from hermes_agent.cron import scheduler, scheduler_script
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(scheduler_script, "_get_script_timeout", lambda: 3 if trigger == "timeout" else 60)
@@ -76,8 +76,8 @@ def test_script_termination_reaps_descendants(tmp_path, monkeypatch, trigger, to
 
 
 def test_no_agent_forwards_cancel_event_to_script_runner(monkeypatch):
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     cancel = threading.Event()
     observed = []
@@ -124,9 +124,9 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
     the same job ID, proving the thread inherited the active profile's
     ContextVar instead of falling back to another profile's default paths.
     """
-    from cron import jobs
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     profile_home = tmp_path / "profile"
     default_cron = tmp_path / "default" / "cron"
@@ -214,9 +214,9 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
 
 def test_script_heartbeat_uses_captured_claim_owner(tmp_path, monkeypatch):
     """A stale script runner cannot refresh a replacement owner's claim."""
-    from cron import jobs
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     profile_home = tmp_path / "profile"
     profile_home.mkdir()
@@ -269,9 +269,9 @@ def test_script_heartbeat_uses_captured_claim_owner(tmp_path, monkeypatch):
 
 def test_run_one_job_refreshes_fire_claim_in_profile_store(tmp_path, monkeypatch):
     """The shared execute/save/deliver body keeps its durable fire claim alive."""
-    from cron import jobs
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     profile_home = tmp_path / "profile"
     profile_home.mkdir()
@@ -308,8 +308,8 @@ def test_run_one_job_refreshes_fire_claim_in_profile_store(tmp_path, monkeypatch
 
 def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     """A runner that loses its durable owner must not deliver its stale result."""
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     lost_seen = threading.Event()
     heartbeat_calls = 0
@@ -371,8 +371,8 @@ def _run_claimed_job_with_mid_run_action(
     """Fire a claimed job through run_one_job with a stubbed agent run that performs ``mid_run``
     on its own record, keeps working past one fire-claim heartbeat tick, then completes (or
     raises ``crash``)."""
-    from cron import jobs
-    from cron import scheduler
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron import scheduler
 
     def _run_job(job, **_kwargs):
         mid_run(jobs, job)
@@ -384,7 +384,7 @@ def _run_claimed_job_with_mid_run_action(
     # A completed agent run hands its notice to the durable delivery queue; a gateway drain that
     # wins the race against the run's bookkeeping sends it through ``_deliver_result``. A crash
     # alerts inline through the same stubbed door.
-    from cron import delivery_queue
+    from hermes_agent.cron import delivery_queue
     monkeypatch.setattr(delivery_queue, "DELIVERY_DB", tmp_path / "cron" / "deliveries.db")
     real_enqueue = delivery_queue.enqueue
 
@@ -403,7 +403,7 @@ def _run_claimed_job_with_mid_run_action(
     monkeypatch.setattr(scheduler, "finish_execution", finished)
     if stub_output:
         monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
-    monkeypatch.setattr("cron.delivery_queue.enqueue", delivered)
+    monkeypatch.setattr("hermes_agent.cron.delivery_queue.enqueue", delivered)
 
     with jobs.use_cron_store(tmp_path):
         job = jobs.create_job(
@@ -422,7 +422,7 @@ def _run_claimed_job_with_mid_run_action(
 def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, monkeypatch):
     """A run that removes its own job (cronjob remove on its own id) and keeps working past a
     heartbeat tick must still deliver its final response and complete its ledger row (#111039)."""
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     delivered, finished = _run_claimed_job_with_mid_run_action(
         tmp_path, monkeypatch,
@@ -440,7 +440,7 @@ def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, 
 def test_self_removed_job_leaves_no_output_directory(tmp_path, monkeypatch):
     """remove_job() deletes <cron>/output/<job_id>/; the finishing run must not re-create it
     (an orphan directory per self-removing job), so 'only the job record is gone' stays true."""
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     delivered, _finished = _run_claimed_job_with_mid_run_action(
         tmp_path, monkeypatch,
@@ -456,7 +456,7 @@ def test_self_removed_job_leaves_no_output_directory(tmp_path, monkeypatch):
 def test_self_removed_job_crash_skips_mark_job_run(tmp_path, monkeypatch):
     """A run that crashes after removing its own record has no record to mark: the crash path
     must skip mark_job_run like the completion path does, not probe a missing record."""
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     marked = MagicMock(return_value=True)
     monkeypatch.setattr(scheduler, "mark_job_run", marked)
@@ -493,8 +493,8 @@ def test_self_removal_followed_by_replacement_record_stays_fail_closed(tmp_path,
 
 def test_initially_lost_fire_claim_finishes_execution_without_running(monkeypatch):
     """A stale claimed snapshot rejected before body entry must close its ledger row."""
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     run_body = MagicMock(return_value=True)
     finish = MagicMock()
@@ -519,8 +519,8 @@ def test_initially_lost_fire_claim_finishes_execution_without_running(monkeypatc
 
 def test_initially_lost_claim_does_not_run_when_ledger_write_fails(monkeypatch):
     """A ledger I/O error cannot turn a confirmed ownership loss into execution."""
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     run_body = MagicMock(return_value=True)
     job = {
@@ -542,8 +542,8 @@ def test_initially_lost_claim_does_not_run_when_ledger_write_fails(monkeypatch):
 
 def test_initial_heartbeat_exception_does_not_start_execution(monkeypatch):
     """Unconfirmed initial ownership must fail closed before any side effect."""
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     run_body = MagicMock(return_value=True)
     finish = MagicMock()
@@ -572,8 +572,8 @@ def test_initial_heartbeat_exception_does_not_start_execution(monkeypatch):
 
 def test_heartbeat_thread_start_failure_does_not_start_execution(monkeypatch):
     """A claimed job cannot run when no renewal monitor protects its lease."""
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     run_body = MagicMock(return_value=True)
     finish = MagicMock()
@@ -607,8 +607,8 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
     The contract is elapsed-time based (grace since the last confirmed renewal), not a renewal
     count: on a slow host the first wake can land after the grace, so cancellation after a single
     failed renewal is correct (#111471). Assert the contract, never a minimum attempt count."""
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     last_confirmed_at = []
     cancellation_after = []
@@ -651,8 +651,8 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
 
 def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     """A replacement owner cannot leave the stale ledger recorded as success."""
-    from cron import scheduler
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron import scheduler_script as sched_script
 
     @contextlib.contextmanager
     def owned_fence(*_args, **_kwargs):

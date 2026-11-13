@@ -81,7 +81,7 @@ def _serves(store: Path, room_id: str) -> bool:
 
 def deliver_to_room(job: dict, content: str, address: str, *, for_failure: bool = False) -> Optional[str]:
     """Post one cron output into a hosted room. None on success, else an error string."""
-    from cron.scheduler_delivery import _redact_cron_payload
+    from hermes_agent.cron.scheduler_delivery import _redact_cron_payload
     from gateway.hosted_room_context import post_scheduled_message
     from gateway.hosted_rooms import AuthorityConflictError
 

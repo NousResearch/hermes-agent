@@ -38,7 +38,7 @@ def defer_teardown_to_running_worker(
     and tear the agent down on completion; False when the caller must do it now."""
     if future is None or future.done():
         return False
-    from cron.scheduler import _finalize_cron_session, _teardown_cron_agent
+    from hermes_agent.cron.scheduler import _finalize_cron_session, _teardown_cron_agent
 
     def _finish(_future) -> None:
         try:

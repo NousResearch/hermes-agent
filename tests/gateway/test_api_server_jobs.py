@@ -157,7 +157,7 @@ class TestCreateJob:
     @pytest.mark.asyncio
     async def test_create_job_reports_saved_but_unregistered(self, adapter):
         """A failed external registration is a structured partial failure."""
-        from cron.scheduler import CronSchedulerRegistrationError
+        from hermes_agent.cron.scheduler import CronSchedulerRegistrationError
 
         app = _create_app(adapter)
         failure = CronSchedulerRegistrationError(

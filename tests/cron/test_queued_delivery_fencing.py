@@ -1,6 +1,6 @@
 """The canonical delivery queue row is the cron run's send: it obeys the same fire-claim fence,
 receipt and settlement rules as a direct send."""
-from cron import delivery_queue, executions, jobs, scheduler
+from hermes_agent.cron import delivery_queue, executions, jobs, scheduler
 
 
 def test_claim_stolen_after_the_ownership_sample_queues_no_ghost_send(tmp_path, monkeypatch):

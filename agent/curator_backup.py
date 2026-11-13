@@ -82,7 +82,7 @@ def _backup_cron_jobs_into(dest: Path) -> dict[str, Any]:
     if not src.exists():
         return {**info, "reason": "no cron/jobs.json present"}
     try:
-        # utf-8-sig, same dialect as cron/jobs.load_jobs: a Windows-editor BOM would otherwise break json.loads
+        # utf-8-sig, same dialect as hermes_agent/cron/jobs.load_jobs: a Windows-editor BOM would otherwise break json.loads
         # AND be written into the backup.
         raw = src.read_text(encoding="utf-8-sig")
     except OSError as e:
@@ -264,7 +264,7 @@ def _resolve_backup(backup_id: Optional[str]) -> Optional[Path]:
 def _restore_cron_skill_links(snapshot_dir: Path) -> dict[str, Any]:
     """Reconcile backed-up cron skill links into the live ``cron/jobs.json``. Only ``skills``/``skill`` are restored,
     and only on jobs that still exist live (by ``id``) — everything else is live state. Backup-only jobs are skipped
-    and reported; live-only jobs untouched. Never raises; writes through ``cron.jobs`` under the scheduler's lock so
+    and reported; live-only jobs untouched. Never raises; writes through ``hermes_agent.cron.jobs`` under the scheduler's lock so
     we don't race tick()."""
     report: dict[str, Any] = {"attempted": False, "restored": [], "skipped_missing": [], "unchanged": 0, "error": None}
     backup_file = snapshot_dir / CRON_JOBS_FILENAME
@@ -285,7 +285,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> dict[str, Any]:
     if not backup_by_id:
         return {**report, "attempted": True}  # we tried but there was nothing to do
     try:
-        from cron.jobs import load_jobs, save_jobs, _jobs_lock
+        from hermes_agent.cron.jobs import load_jobs, save_jobs, _jobs_lock
     except ImportError as e:
         return {**report, "error": f"cron module unavailable: {e}"}
 

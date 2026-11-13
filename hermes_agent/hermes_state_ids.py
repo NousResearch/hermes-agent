@@ -20,8 +20,8 @@ SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
 # sentinels, so anchor each on what its mint site fixes.
 SESSION_ID_RECOGNIZERS = (
     SESSION_ID_PATTERN,
-    # cron/scheduler.py: f"cron_{job_id}_{now:%Y%m%d_%H%M%S}". job_id is uuid4().hex[:12] for jobs
-    # minted by cron/jobs.py, but user/legacy job ids ("job-1") are real and still in live stores.
+    # hermes_agent/cron/scheduler.py: f"cron_{job_id}_{now:%Y%m%d_%H%M%S}". job_id is uuid4().hex[:12] for jobs
+    # minted by hermes_agent/cron/jobs.py, but user/legacy job ids ("job-1") are real and still in live stores.
     re.compile(r"^cron_[A-Za-z0-9][A-Za-z0-9._-]*_\d{8}_\d{6}$"),
     # /bg: CLI + gateway mint f"bg_{now:%H%M%S}_{hex6}" (time only, no date); the TUI/Desktop
     # (hermes_agent/tui_gateway/methods_prompt.py _side_agent_args) mints f"bg_{uuid4().hex[:6]}".

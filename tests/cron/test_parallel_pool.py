@@ -1,4 +1,4 @@
-"""Tests for the persistent parallel pool and running-job guard in cron/scheduler.py.
+"""Tests for the persistent parallel pool and running-job guard in hermes_agent/cron/scheduler.py.
 
 These verify the fix for the tick-blocking issue where as_completed(timeout=600)
 prevented the ticker thread from firing, causing all other jobs to be fast-forwarded.
@@ -13,7 +13,7 @@ class TestRunningJobGuard:
 
     def test_running_set_prevents_double_dispatch(self, tmp_path, monkeypatch):
         """A job already in _running_job_ids is skipped on the next tick."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         # Reset state.
         sched._parallel_pools.clear()
@@ -50,7 +50,7 @@ class TestRunningJobGuard:
 
     def test_fire_claim_is_acquired_only_when_executor_worker_starts(self, monkeypatch):
         """Queue wait must not consume the durable claim TTL."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._running_job_ids.clear()
         job = {
@@ -99,7 +99,7 @@ class TestRunningJobGuard:
 
     def test_create_execution_failure_does_not_wedge_running_set(self, tmp_path, monkeypatch):
         """create_execution failures clear the running lock and still allow next jobs."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._parallel_pools.clear()
         sched._parallel_pool_max_workers.clear()
@@ -166,7 +166,7 @@ class TestSyncMode:
 
     def test_sync_true_blocks_and_returns_correct_count(self, tmp_path, monkeypatch):
         """sync=True waits for jobs and returns actual results."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._parallel_pools.clear()
         sched._parallel_pool_max_workers.clear()
@@ -193,7 +193,7 @@ class TestSyncMode:
 
     def test_sync_false_returns_immediately(self, tmp_path, monkeypatch):
         """sync=False returns before parallel jobs finish (optimistic count)."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         sched._parallel_pools.clear()
         sched._parallel_pool_max_workers.clear()

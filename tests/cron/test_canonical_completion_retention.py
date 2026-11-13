@@ -1,6 +1,6 @@
 """A recurring canonical cron job's completion tombstones stay bounded: an id is retired once its
 admission journal is gone (nothing can replay it), never while recovery could still replay it."""
-from cron import jobs, scheduler_authority
+from hermes_agent.cron import jobs, scheduler_authority
 
 
 def _fire(job_id, eid, *, retire_journal=True):

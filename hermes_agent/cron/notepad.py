@@ -1,5 +1,5 @@
 """Per-job durable KV notepad (cursors, watermarks) carried across cron wake-ups; profile-local
-SQLite next to the executions ledger (same connection/pragma pattern as ``cron/executions.py``).
+SQLite next to the executions ledger (same connection/pragma pattern as ``hermes_agent/cron/executions.py``).
 
 Caps are a documented contract: ``MAX_VALUE_BYTES`` (16 KB per value, UTF-8) and
 ``MAX_JOB_TOTAL_BYTES`` (64 KB per job, key+value). Oversized writes raise ``ValueError`` and leave
@@ -21,7 +21,7 @@ from hermes_time import now as _hermes_now
 # Optional test override. Production resolves the path at transaction time so multiplexed profile
 # ticks (set_hermes_home_override) cannot leak one profile's notepad rows into the import-time home
 # — and remove_job's clear_notepad cannot wipe the wrong profile's DB.
-# Same pattern as cron/executions.py. See #86519.
+# Same pattern as hermes_agent/cron/executions.py. See #86519.
 NOTEPAD_FILE: Optional[Path] = None
 MAX_VALUE_BYTES = 16 * 1024
 MAX_KEY_CHARS = 128
@@ -35,9 +35,9 @@ def _current_notepad_file() -> Path:
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # ``hermes_cli.sqlite_util`` / ``hermes_agent.cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
-    from cron.jobs import _ensure_cron_dir
+    from hermes_agent.cron.jobs import _ensure_cron_dir
     from hermes_cli.sqlite_util import open_db
 
     path = _current_notepad_file()
@@ -135,7 +135,7 @@ def list_notes(job_id: str) -> list[dict[str, Any]]:
 
 
 def clear_notepad(job_id: str) -> int:
-    """Delete every key for one job (called from ``cron.jobs.remove_job``). Returns row count;
+    """Delete every key for one job (called from ``hermes_agent.cron.jobs.remove_job``). Returns row count;
     no-ops without creating the DB when no notepad file exists yet."""
     if not _current_notepad_file().exists():
         return 0

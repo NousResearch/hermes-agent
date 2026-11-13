@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Optional
 
-# The ``cron.wrap_response`` header (cron/scheduler_delivery.py); unwrapped deliveries carry no marker.
+# The ``cron.wrap_response`` header (hermes_agent/cron/scheduler_delivery.py); unwrapped deliveries carry no marker.
 CRON_DELIVERY_PREFIX = "Cronjob Response: "
 # rich_sent_store tag on every message a wrapped delivery was split into: only the first chunk
 # carries the header, so a reply to a later chunk is recognised by its message id.

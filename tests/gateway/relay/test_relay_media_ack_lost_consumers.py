@@ -58,8 +58,8 @@ def test_send_message_tool_reports_an_unconfirmed_attachment(ack_lost_relay, tmp
 
 
 def test_cron_marks_an_unconfirmed_attachment_unverified(ack_lost_relay, tmp_path):
-    from cron.jobs import create_job, get_job, mark_job_run
-    from cron.scheduler import _deliver_result
+    from hermes_agent.cron.jobs import create_job, get_job, mark_job_run
+    from hermes_agent.cron.scheduler import _deliver_result
 
     connector, adapter, loop = ack_lost_relay
     pdf = tmp_path / "q3-report.pdf"
@@ -67,8 +67,8 @@ def test_cron_marks_an_unconfirmed_attachment_unverified(ack_lost_relay, tmp_pat
     job = create_job("Post the Q3 report", "every 1d", name="Q3 report", deliver="origin",
                      origin={"platform": "slack", "chat_id": CHAT})
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("hermes_agent.cron.scheduler_delivery._maybe_mirror_cron_delivery", lambda *a, **k: None):
         error = _deliver_result(job, f"Q3 numbers are in.\n\nMEDIA:{pdf}",
                                 adapters={Platform.RELAY: adapter}, loop=loop)
     mark_job_run(job["id"], True, delivery_error=error)

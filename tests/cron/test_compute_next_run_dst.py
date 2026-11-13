@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 pytest.importorskip("croniter")
 
 import hermes_time
-from cron.jobs import compute_next_run
+from hermes_agent.cron.jobs import compute_next_run
 
 TORONTO = ZoneInfo("America/Toronto")
 MORNING = {"kind": "cron", "expr": "0 9 * * *"}

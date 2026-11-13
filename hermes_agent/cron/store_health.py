@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-logger = logging.getLogger("cron.jobs")
+logger = logging.getLogger("hermes_agent.cron.jobs")
 
 PROBE_INTERVAL_SECONDS = 60.0
 # Store-write failures that degrade the store (the tick keeps running) instead of failing the tick.
@@ -91,7 +91,7 @@ def _notify(event: str, record: StoreDegraded) -> None:
 
 
 def _active_cron_dir() -> Path:
-    from cron.jobs import _current_cron_store
+    from hermes_agent.cron.jobs import _current_cron_store
     return _current_cron_store().cron_dir
 
 
@@ -228,7 +228,7 @@ def recheck_idle() -> None:
     record.last_probe = now
     error = probe_store(cron_dir)
     if error is None:
-        from cron.jobs import _jobs_lock, load_jobs, save_jobs
+        from hermes_agent.cron.jobs import _jobs_lock, load_jobs, save_jobs
         try:
             with _jobs_lock():
                 save_jobs(load_jobs())

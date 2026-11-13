@@ -42,12 +42,12 @@ def hermes_env(tmp_path, monkeypatch, cron_owner):
     import importlib
     import hermes_constants
     importlib.reload(hermes_constants)
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.monitor
-    importlib.reload(cron.monitor)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
+    import hermes_agent.cron.jobs
+    importlib.reload(hermes_agent.cron.jobs)
+    import hermes_agent.cron.monitor
+    importlib.reload(hermes_agent.cron.monitor)
+    import hermes_agent.cron.scheduler
+    importlib.reload(hermes_agent.cron.scheduler)
 
     return home
 
@@ -64,8 +64,8 @@ def _install_agent_stubs(monkeypatch, observed: dict):
     ``observed["prompts"]`` collects the prompt each agent run received;
     ``observed["agent_runs"]`` counts real agent invocations.
     """
-    import cron.scheduler as sched
-    from cron import scheduler_delivery as sched_delivery
+    import hermes_agent.cron.scheduler as sched
+    from hermes_agent.cron import scheduler_delivery as sched_delivery
 
     observed.setdefault("prompts", [])
     observed.setdefault("agent_runs", 0)
@@ -116,7 +116,7 @@ def _install_agent_stubs(monkeypatch, observed: dict):
 
 
 def test_create_job_monitor_script_and_url_mutually_exclusive(hermes_env):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     with pytest.raises(ValueError, match="monitor_script and monitor_url"):
         create_job(
@@ -128,7 +128,7 @@ def test_create_job_monitor_script_and_url_mutually_exclusive(hermes_env):
 
 
 def test_create_job_monitor_rejected_with_no_agent(hermes_env):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     _write_script(hermes_env, "w.sh", "echo hi\n")
     with pytest.raises(ValueError, match="no_agent"):
@@ -146,7 +146,7 @@ def test_update_job_rejects_no_agent_on_monitor_job(hermes_env):
     update door too — the scheduler's no_agent short-circuit runs before
     the monitor gate, so flipping no_agent=True on a monitor job would
     silently disable the monitor (post-merge audit of #81138)."""
-    from cron.jobs import create_job, update_job
+    from hermes_agent.cron.jobs import create_job, update_job
 
     _write_script(hermes_env, "mon.sh", "echo stable\n")
     _write_script(hermes_env, "w.sh", "echo hi\n")
@@ -161,7 +161,7 @@ def test_update_job_rejects_no_agent_on_monitor_job(hermes_env):
 
 
 def test_update_job_rejects_adding_monitor_to_no_agent_job(hermes_env):
-    from cron.jobs import create_job, update_job
+    from hermes_agent.cron.jobs import create_job, update_job
 
     _write_script(hermes_env, "w.sh", "echo hi\n")
     _write_script(hermes_env, "mon.sh", "echo stable\n")
@@ -177,7 +177,7 @@ def test_update_job_rejects_adding_monitor_to_no_agent_job(hermes_env):
 
 
 def test_update_job_rejects_second_monitor_source(hermes_env):
-    from cron.jobs import create_job, update_job
+    from hermes_agent.cron.jobs import create_job, update_job
 
     _write_script(hermes_env, "mon.sh", "echo stable\n")
     job = create_job(
@@ -193,7 +193,7 @@ def test_update_job_rejects_second_monitor_source(hermes_env):
 def test_update_job_allows_clearing_monitor_then_no_agent(hermes_env):
     """Clearing the monitor and flipping no_agent in ONE update is valid —
     the invariant is checked on the merged record, not per-field."""
-    from cron.jobs import create_job, get_job, update_job
+    from hermes_agent.cron.jobs import create_job, get_job, update_job
 
     _write_script(hermes_env, "mon.sh", "echo stable\n")
     _write_script(hermes_env, "w.sh", "echo hi\n")
@@ -212,12 +212,12 @@ def test_update_job_allows_clearing_monitor_then_no_agent(hermes_env):
 
 
 # ---------------------------------------------------------------------------
-# cron.monitor: hashing + diff unit behavior
+# hermes_agent.cron.monitor: hashing + diff unit behavior
 # ---------------------------------------------------------------------------
 
 
 def test_hash_is_exact_bytes(hermes_env):
-    from cron.monitor import hash_monitor_output
+    from hermes_agent.cron.monitor import hash_monitor_output
 
     assert hash_monitor_output("a\nb") == hash_monitor_output("a\nb")
     # Exact-bytes contract: even whitespace-only differences are changes.
@@ -225,7 +225,7 @@ def test_hash_is_exact_bytes(hermes_env):
 
 
 def test_unified_diff_is_capped(hermes_env):
-    from cron.monitor import MAX_DIFF_CHARS, build_monitor_diff
+    from hermes_agent.cron.monitor import MAX_DIFF_CHARS, build_monitor_diff
 
     old = "\n".join(f"line {i}" for i in range(5000))
     new = "\n".join(f"LINE {i}" for i in range(5000))
@@ -240,7 +240,7 @@ def test_unified_diff_is_capped(hermes_env):
 
 
 def _make_monitor_job(hermes_env, script_body: str):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     _write_script(hermes_env, "mon.sh", script_body)
     return create_job(
@@ -252,7 +252,7 @@ def _make_monitor_job(hermes_env, script_body: str):
 
 
 def test_first_run_always_runs_agent(hermes_env, monkeypatch):
-    from cron.scheduler import run_job
+    from hermes_agent.cron.scheduler import run_job
 
     job = _make_monitor_job(hermes_env, "echo 'state A'\n")
     observed: dict = {}
@@ -268,7 +268,7 @@ def test_first_run_always_runs_agent(hermes_env, monkeypatch):
 
 def test_bidi_monitor_output_is_sanitized_before_agent(hermes_env, monkeypatch):
     """Runtime monitor data with a WhatsApp-style bidi marker must not block the job (#111523)."""
-    from cron.scheduler import run_job
+    from hermes_agent.cron.scheduler import run_job
 
     job = _make_monitor_job(hermes_env, "printf 'Alice\\342\\200\\252 Work\\n'\n")
     observed: dict = {}
@@ -287,8 +287,8 @@ def test_monitor_script_uses_configured_interpreter(hermes_env, monkeypatch):
     """A monitor script uses the same job-level interpreter as `script`."""
     import stat
 
-    from cron.jobs import create_job
-    from cron.scheduler import run_job
+    from hermes_agent.cron.jobs import create_job
+    from hermes_agent.cron.scheduler import run_job
 
     wrapper = hermes_env / "venv" / "bin" / "python3"
     wrapper.parent.mkdir(parents=True)
@@ -324,8 +324,8 @@ def test_monitor_script_uses_configured_interpreter(hermes_env, monkeypatch):
 
 
 def test_unchanged_output_suppresses_agent_run(hermes_env, monkeypatch):
-    from cron.jobs import get_job
-    from cron.scheduler import SILENT_MARKER, run_job
+    from hermes_agent.cron.jobs import get_job
+    from hermes_agent.cron.scheduler import SILENT_MARKER, run_job
 
     job = _make_monitor_job(hermes_env, "echo 'state A'\n")
     observed: dict = {}
@@ -345,8 +345,8 @@ def test_unchanged_output_suppresses_agent_run(hermes_env, monkeypatch):
 
 
 def test_changed_output_injects_diff(hermes_env, monkeypatch):
-    from cron.jobs import get_job
-    from cron.scheduler import run_job
+    from hermes_agent.cron.jobs import get_job
+    from hermes_agent.cron.scheduler import run_job
 
     job = _make_monitor_job(hermes_env, "echo 'state A'\n")
     observed: dict = {}
@@ -370,7 +370,7 @@ def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     """Suppression state must survive a scheduler restart (module reload)."""
     import importlib
 
-    from cron.scheduler import run_job
+    from hermes_agent.cron.scheduler import run_job
 
     job = _make_monitor_job(hermes_env, "echo 'state A'\n")
     observed: dict = {}
@@ -380,25 +380,25 @@ def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     assert observed["agent_runs"] == 1
 
     # Simulate restart: reload the cron modules, dropping in-memory state.
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.monitor
-    importlib.reload(cron.monitor)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
+    import hermes_agent.cron.jobs
+    importlib.reload(hermes_agent.cron.jobs)
+    import hermes_agent.cron.monitor
+    importlib.reload(hermes_agent.cron.monitor)
+    import hermes_agent.cron.scheduler
+    importlib.reload(hermes_agent.cron.scheduler)
     _install_agent_stubs(monkeypatch, observed)
 
-    job = cron.jobs.get_job(job["id"])
+    job = hermes_agent.cron.jobs.get_job(job["id"])
     assert job["monitor_state"]["last_output_hash"]
-    success, _doc, final, _error = cron.scheduler.run_job(job)
+    success, _doc, final, _error = hermes_agent.cron.scheduler.run_job(job)
     assert success is True
-    assert final == cron.scheduler.SILENT_MARKER
+    assert final == hermes_agent.cron.scheduler.SILENT_MARKER
     assert observed["agent_runs"] == 1  # still suppressed after restart
 
 
 def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
-    from cron.jobs import get_job
-    from cron.scheduler import run_job
+    from hermes_agent.cron.jobs import get_job
+    from hermes_agent.cron.scheduler import run_job
 
     job = _make_monitor_job(hermes_env, "echo 'state A'\n")
     observed: dict = {}
@@ -424,7 +424,7 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
 
 
 def test_cronjob_tool_create_with_monitor_script(hermes_env):
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
     from tools.cronjob_tools import cronjob
 
     _write_script(hermes_env, "mon.sh", "echo hi\n")
@@ -458,7 +458,7 @@ def test_cronjob_tool_rejects_monitor_script_path_escape(hermes_env):
 
 
 def test_cronjob_tool_update_clears_monitor_script(hermes_env):
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
     from tools.cronjob_tools import cronjob
 
     _write_script(hermes_env, "mon.sh", "echo hi\n")

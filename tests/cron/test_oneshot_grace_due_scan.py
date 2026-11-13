@@ -19,7 +19,7 @@ These tests pin the due-scan grace gate:
 import pytest
 from datetime import datetime, timedelta, timezone, UTC
 
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     get_due_jobs,
     load_jobs,
     save_jobs,
@@ -32,10 +32,10 @@ FIXED_NOW = datetime(2026, 6, 22, 12, 0, 0, tzinfo=UTC)
 @pytest.fixture()
 def cron_store(tmp_path, monkeypatch):
     """Redirect cron storage to a temp dir and pin the clock."""
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: FIXED_NOW)
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: FIXED_NOW)
     return tmp_path
 
 

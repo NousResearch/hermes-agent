@@ -254,7 +254,7 @@ def _cmd_subscribe(args):
     cron_job = (getattr(args, "cron_job", "") or "").strip()
     if cron_job:
         # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
-        from cron.jobs import AmbiguousJobReference
+        from hermes_agent.cron.jobs import AmbiguousJobReference
         try:
             job = _resolve_route_cron_job(profile, cron_job)
         except AmbiguousJobReference as e:
@@ -300,7 +300,7 @@ def _cmd_subscribe(args):
 
 def _resolve_route_cron_job(profile: str, reference: str):
     """Match runtime routing without changing the caller's subscription/config home."""
-    from cron.jobs import resolve_job_ref, use_cron_store
+    from hermes_agent.cron.jobs import resolve_job_ref, use_cron_store
     from hermes_cli.profiles import get_profile_dir
 
     # Bare/default routes execute in the ambient home, including standalone installs.

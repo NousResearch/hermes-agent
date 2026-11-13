@@ -8,7 +8,7 @@ re-dispatch until the TTL expired (default 30 min) — a precisely-timed
 one-shot reminder arrived up to 30 minutes late with no error surfaced.
 
 The fix (salvaged from PR #87591 by @RelaxJonh) adds
-``cron.jobs.clear_run_claim`` and calls it on all three ``_submit_with_guard``
+``hermes_agent.cron.jobs.clear_run_claim`` and calls it on all three ``_submit_with_guard``
 early-exit paths, wrapped best-effort so a failing store can never crash the
 tick these paths exist to protect.
 """
@@ -22,8 +22,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-import cron.jobs as jobs_mod
-from cron.jobs import clear_run_claim
+import hermes_agent.cron.jobs as jobs_mod
+from hermes_agent.cron.jobs import clear_run_claim
 
 @pytest.fixture
 def cron_store(tmp_path, monkeypatch):
@@ -76,12 +76,12 @@ class TestDispatchFailurePathsClearClaim:
     next healthy tick re-dispatches instead of waiting out the 30-min TTL."""
 
     def _tick_one(self, job):
-        from cron import scheduler as sched
+        from hermes_agent.cron import scheduler as sched
         with patch.object(sched, "get_due_jobs", return_value=[dict(job)]):
             return sched.tick(verbose=False, sync=True)
 
     def test_interpreter_shutdown_path_clears_claim(self, cron_store):
-        from cron import scheduler as sched
+        from hermes_agent.cron import scheduler as sched
         job = _make_oneshot(claimed=True)
         with patch.object(sched, "_interpreter_shutting_down", return_value=True):
             self._tick_one(job)
@@ -91,7 +91,7 @@ class TestDispatchFailurePathsClearClaim:
         )
 
     def test_execution_creation_failure_clears_claim(self, cron_store):
-        from cron import scheduler as sched
+        from hermes_agent.cron import scheduler as sched
         job = _make_oneshot(claimed=True)
         with patch.object(sched, "create_execution", side_effect=RuntimeError("db gone")):
             self._tick_one(job)
@@ -100,7 +100,7 @@ class TestDispatchFailurePathsClearClaim:
         assert job["id"] not in sched.get_running_job_ids()
 
     def test_submit_failure_clears_claim(self, cron_store):
-        from cron import scheduler as sched
+        from hermes_agent.cron import scheduler as sched
         job = _make_oneshot(claimed=True)
 
         class _ExplodingPool:
@@ -118,7 +118,7 @@ class TestDispatchFailurePathsClearClaim:
         """A raising clear_run_claim (corrupt store, teardown I/O error) must
         not crash the tick — these early-exit paths exist to skip cleanly; the
         claim then simply expires at the TTL."""
-        from cron import scheduler as sched
+        from hermes_agent.cron import scheduler as sched
         job = _make_oneshot(claimed=True)
         with patch.object(sched, "_interpreter_shutting_down", return_value=True), \
              patch.object(sched, "clear_run_claim", side_effect=OSError(24, "Too many open files")):

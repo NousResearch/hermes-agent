@@ -147,6 +147,8 @@ const isTableDivider = (row: string) => {
   return cells.length > 1 && cells.every(c => TABLE_DIVIDER_CELL_RE.test(c))
 }
 
+const sanitizeTerminalText = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+
 const autolinkUrl = (raw: string) =>
   raw.startsWith('mailto:') || raw.startsWith('http') || !raw.includes('@') ? raw : `mailto:${raw}`
 
@@ -167,12 +169,12 @@ const authoredLabel = (label: string | undefined): string | undefined => label?.
 // speak OSC 8 make it clickable, and the in-process click dispatcher covers
 // the ones that don't.
 const renderLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
-  const target = normalizeExternalUrl(rawUrl)
+  const target = sanitizeTerminalText(normalizeExternalUrl(rawUrl))
 
   return (
     <Link key={k} url={target}>
       <Text color={t.color.accent} underline>
-        {authoredLabel(label) ?? urlAsText(target)}
+        {sanitizeTerminalText(authoredLabel(label) ?? urlAsText(target))}
       </Text>
     </Link>
   )

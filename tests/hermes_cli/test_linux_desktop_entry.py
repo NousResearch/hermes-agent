@@ -685,17 +685,23 @@ def test_known_wrapper_candidates_cover_installer_layouts(
         assert "/usr/local/bin/hermes" not in candidates
 
 
-def test_installed_entry_carries_the_window_app_id(tmp_path, xdg_home, monkeypatch):
-    """The window's app_id is what GNOME matches the entry against — not the old "Hermes"."""
+def test_installed_entry_carries_the_window_identity(tmp_path, xdg_home, monkeypatch):
+    """StartupWMClass must be the id the running window reports, or GNOME shows a second entry.
+
+    A packaged window reports APP_ID (electron-builder's baked desktopName) and matches the entry
+    through its ``<app_id>.desktop`` file name; a from-source run reports ``app.setName``'s
+    displayName and matches ONLY through StartupWMClass — with APP_ID written there it matched
+    neither rung and docked under the placeholder icon (#127856). The file name keeps the packaged
+    rung."""
     _stub_install(tmp_path, monkeypatch)
     root = _make_project(tmp_path)
 
     entry = lde.install_desktop_entry(root)
 
     assert entry is not None
-    assert entry.name == f"{lde.APP_ID}.desktop"
+    assert entry.name == f"{lde.APP_ID}.desktop"  # the packaged identity rung
     values = _parse(entry.read_text(encoding="utf-8"))
-    assert values["StartupWMClass"] == lde.APP_ID
+    assert values["StartupWMClass"] == lde.DESKTOP_DISPLAY_NAME  # the source-run window rung
     assert values["Name"] == "Hermes"  # the menu label is not part of the identity
 
 
@@ -724,8 +730,9 @@ def test_install_keeps_the_legacy_entry_as_a_hidden_alias(tmp_path, xdg_home, mo
     assert legacy.is_file(), "an existing pin resolves through this file — it must survive"
     alias = _parse(legacy.read_text(encoding="utf-8"))
     assert alias["NoDisplay"] == "true"  # no second Hermes in the app grid
-    assert alias["StartupWMClass"] == lde.APP_ID  # still groups with the window
+    # Still groups with the window: the alias carries the SAME window identity as the app-id entry.
     entry_values = _parse(entry.read_text(encoding="utf-8"))
+    assert alias["StartupWMClass"] == entry_values["StartupWMClass"]
     assert alias["Exec"] == entry_values["Exec"]  # launches the same command
     assert alias["Icon"] == entry_values["Icon"]
 

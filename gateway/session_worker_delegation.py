@@ -207,11 +207,13 @@ async def worker_delegation_request(connection, ref, params):
     from gateway.session_worker import _SCOPE, _claim, _verify
     if set(params) != _SCOPE | {'epoch', 'sequence', 'operation', 'payload'}:
         raise RuntimeStoreError('invalid_params')
-    claim = _claim(connection, ref, params)
+    claim = await asyncio.to_thread(_claim, connection, ref, params)
     authority = connection.authority
     if 'worker:adopt' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
-    _verify(connection, ref, params, claim)
+    await asyncio.to_thread(_verify, connection, ref, params, claim)
+    from gateway.session_authorities import require_serving
+    require_serving(authority)
 
     def persist_and_publish():
         result = persist_worker_delegation(authority.db,

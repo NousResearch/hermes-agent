@@ -98,6 +98,32 @@ def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_d
     assert str(cron_store / "cron") in warnings[0] and str(cron_store / "other-profile") in warnings[1]
 
 
+@pytest.mark.parametrize(
+    "error_number, scope",
+    [(errno.ENFILE, "the system"), (errno.EMFILE, "the process that hit EMFILE")],
+    ids=["system", "process"],
+)
+def test_fd_exhaustion_notice_and_report_recommend_descriptor_recovery(
+    cron_store, monkeypatch, caplog, error_number, scope,
+):
+    cron_dir = cron_store / "cron"
+    cron_dir.mkdir()
+    error = OSError(error_number, "Too many open files")
+    with caplog.at_level(logging.WARNING, logger="cron.jobs"):
+        store_health.note_unwritable(error, "due-scan repairs not persisted", "scan", cron_dir=cron_dir)
+    monkeypatch.setattr(
+        store_health, "probe_store", lambda _path: error,
+    )
+
+    report = store_health.probe_report(cron_dir)
+
+    assert "file descriptor" in caplog.text.lower()
+    assert "free disk" not in caplog.text.lower()
+    assert report is not None
+    assert report["error"].startswith(f"{errno.errorcode[error_number]}:")
+    assert scope.lower() in report["fix"].lower()
+
+
 @pytest.mark.parametrize("with_once,junk", [(True, False), (False, False), (False, True)],
                          ids=["one-shot-due", "recurring-only", "load-repair"])
 def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, monkeypatch, caplog, with_once, junk):

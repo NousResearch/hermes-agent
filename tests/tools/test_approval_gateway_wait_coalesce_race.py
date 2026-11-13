@@ -7,6 +7,8 @@ where the leader's prompt goes away without an answer and where two identical re
 
 import threading
 
+import pytest
+
 from tools import approval as mod
 from tools import approval_gateway_wait as wait_mod
 
@@ -251,3 +253,60 @@ def test_follower_still_inherits_a_denial(monkeypatch):
     assert decision["resolved"] is True
     assert decision["choice"] == "deny"
     assert decision["coalesced"] is True
+
+
+@pytest.mark.parametrize("grant", ("session", "always"))
+def test_broad_grant_to_leader_requires_new_prompt_for_distinct_follower(monkeypatch, grant):
+    """A matching rendered command cannot make consent to one MCP operation cover another.
+
+    These calls have different descriptions (different operations), but share the
+    rendered command and pattern keys used by gateway coalescing. The leader's
+    persisted grant must not answer the follower's independent approval request.
+    """
+    from tests.waiting import wait_until
+
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    notified: list[str] = []
+    following = threading.Event()
+    results: dict[str, dict] = {}
+    real_follow = wait_mod._await_coalesced_leader
+
+    def follow(session_key, leader, payload):
+        following.set()
+        return real_follow(session_key, leader, payload)
+
+    monkeypatch.setattr(wait_mod, "_await_coalesced_leader", follow)
+
+    def notify(data):
+        notified.append(data["request_id"])
+
+    def request(label):
+        data = dict(APPROVAL, description=f"Different MCP operation: {label}")
+        results[label] = wait_mod._await_gateway_decision(SESSION_KEY, notify, data)
+
+    leader = threading.Thread(target=request, args=("leader",), daemon=True)
+    follower = threading.Thread(target=request, args=("follower",), daemon=True)
+    leader.start()
+    wait_until(lambda: len(notified) == 1, what="the first approval prompt")
+    follower.start()
+    assert following.wait(10), "follower never entered coalesced approval"
+
+    assert mod.resolve_gateway_approval(SESSION_KEY, grant) == 1
+    try:
+        # Both outcomes terminate the wait: a real fresh prompt or the buggy
+        # early return that inherits the leader's broad grant without consent.
+        wait_until(lambda: len(notified) == 2 or not follower.is_alive(),
+                   what="the follower's prompt or premature resolution")
+        prompted_again = len(notified) == 2
+    finally:
+        mod.resolve_gateway_approval(SESSION_KEY, "deny", resolve_all=True)
+        leader.join(10)
+        follower.join(10)
+
+    assert not leader.is_alive() and not follower.is_alive()
+    assert prompted_again, f"follower inherited {grant!r} without a fresh prompt"
+    assert len(set(notified)) == 2
+    assert results["leader"]["choice"] == grant
+    assert results["follower"]["choice"] == "deny"
+    assert "coalesced" not in results["follower"]

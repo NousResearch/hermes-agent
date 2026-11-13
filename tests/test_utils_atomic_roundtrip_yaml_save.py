@@ -267,6 +267,27 @@ class TestAtomicRoundtripYamlSave:
 
         assert config_path.read_text(encoding="utf-8") == original
 
+    def test_section_emptied_under_comments_stays_loadable(self, config_path):
+        """Regression for #154436: a section whose only key is dropped (e.g. stripped as
+        managed) while comments sit inside it must not leave an orphan root-level ``{}``."""
+        config_path.write_text(
+            "skills:\n"
+            "  # Nudge the agent to create skills\n"
+            "  creation_nudge_interval: 10\n"
+            "\n"
+            "  # Set to 0 to disable\n"
+            "agent:\n"
+            "  max_turns: 5\n",
+            encoding="utf-8",
+        )
+
+        from utils import atomic_roundtrip_yaml_save
+
+        state = {"skills": {}, "agent": {"max_turns": 5}}
+        atomic_roundtrip_yaml_save(config_path, state)
+
+        assert yaml.safe_load(config_path.read_text(encoding="utf-8")) == state
+
     def test_restores_owner(self, config_path, monkeypatch):
         """Mirrors atomic_roundtrip_yaml_update_restores_owner — the write path
         must preserve the config file's original owner across the temp-file +

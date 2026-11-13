@@ -254,3 +254,20 @@ def test_desktop_move_never_resolves_a_pooled_key_recorded_for_the_old_origin(_i
     save_config(cfg)
     bare = resolve_runtime_provider()
     assert bare["base_url"] == new and bare.get("api_key") != pooled
+
+
+def test_dashboard_aux_slot_moved_to_a_new_origin_without_a_key_drops_the_old_key(monkeypatch):
+    """Desktop Settings → Auxiliary: a slot re-pointed at another host with a blank key keeps no
+    key entered for its previous host; a same-origin path change keeps it."""
+    from hermes_cli.web_server_config import _apply_aux_assignment_sync
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda _cfg: None)
+    old_key = "sk-aux-old-host-fixture"
+
+    def _assign(new_url):
+        cfg = {"auxiliary": {"vision": {"provider": "custom", "model": "m",
+                                        "base_url": "https://llm.old.example/v1", "api_key": old_key}}}
+        _apply_aux_assignment_sync(cfg, "custom", "m", "vision", new_url, "")
+        return cfg["auxiliary"]["vision"].get("api_key")
+
+    assert _assign("https://llm.old.example/v2") == old_key
+    assert _assign("https://llm.new.example/v1") is None

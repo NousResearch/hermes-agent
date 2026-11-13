@@ -52,7 +52,7 @@ before the signer's own 600-second bound. Real-account timing is unverified.
 Run from this directory:
 
 ```sh
-npm ci --ignore-scripts --no-audit --no-fund
+pnpm install --frozen-lockfile --ignore-scripts
 node --test *.test.mjs
 ```
 

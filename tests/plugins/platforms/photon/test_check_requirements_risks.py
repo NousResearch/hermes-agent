@@ -5,10 +5,10 @@ Fixed in this file (tests PASS with fix, FAIL without):
     condition so gateway logs pinpoint the exact failure reason.
 
 Remaining risks documented here (still open — separate issues):
-  Risk 2 – node_modules dir exists but EMPTY (partial/aborted npm install)
+  Risk 2 – node_modules dir exists but EMPTY (partial/aborted pnpm install)
             → check_requirements() returns True (false positive)
   Risk 3 – _install_sidecar() subprocess.run calls carry no capture_output /
-            stdout / stderr — npm error output is unrecoverable after the run
+            stdout / stderr — pnpm error output is unrecoverable after the run
 """
 from __future__ import annotations
 
@@ -75,14 +75,14 @@ def test_risk2_fix_empty_node_modules_no_longer_passes_guard(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """npm may create node_modules/ before aborting (network timeout, ENOSPC,
+    """pnpm may create node_modules/ before aborting (network timeout, ENOSPC,
     EACCES).  Previously an empty directory passed the only filesystem guard in
     check_requirements() — returning True with a broken sidecar installation.
     Fixed: check_requirements() now verifies node_modules/spectrum-ts exists,
     so a partial/empty node_modules/ correctly returns False."""
     monkeypatch.setattr(adapter_mod, "HTTPX_AVAILABLE", True)
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
-    monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", tmp_path / ".photon-npm-error.log")
+    monkeypatch.setattr(sidecar_paths, "_PNPM_ERROR_LOG", tmp_path / ".photon-pnpm-error.log")
     # NS-606: disable the connect-time self-heal branch so the guard itself
     # (empty node_modules must not read as installed) is what's under test.
     monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
@@ -93,7 +93,7 @@ def test_risk2_fix_empty_node_modules_no_longer_passes_guard(
 
 
 # ---------------------------------------------------------------------------
-# Risk 3 fix — npm stderr is captured, persisted, and surfaced by check_requirements
+# Risk 3 fix — pnpm stderr is captured, persisted, and surfaced by check_requirements
 # ---------------------------------------------------------------------------
 
 

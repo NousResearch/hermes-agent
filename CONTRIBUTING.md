@@ -176,7 +176,7 @@ script or tool in this repository, so the commands below also work without
 | `just test-all` | the full Python suite |
 | `just js-install`, `just check-js`, `just test-js` | `pnpm install --frozen-lockfile`, `pnpm -r check`, `pnpm -r test` (after building `@hermes/ink`) |
 | `just desktop`, `just tui` | the desktop and TUI dev servers |
-| `just docs-install`, `just docs-build` | the website's `npm ci` and `build:fast` |
+| `just docs-install`, `just docs-build` | the website's `pnpm install` and `build:fast` |
 | `just docs-generate`, `just docs-check` | regenerate the skill docs pages; then every docs check CI runs (committed pages match, links, diagrams) |
 | `just lock` | `scripts/relock.sh`: refreshes `uv.lock` after a `pyproject.toml` change, then re-syncs |
 | `just check-repo-guards`, `just check-uv-lock` | the repo-guards history, contributor and supply-chain steps, and the `uv.lock` check, through `scripts/ci/local_step.sh` against the merge base with `origin/main` |
@@ -237,12 +237,12 @@ filtered `pnpm install` included: the root `preinstall` script requires the
 root `engines.pnpm` range. pnpm 12 skips the root `preinstall` under
 `--ignore-scripts`, `--lockfile-only` (which writes `pnpm-lock.yaml`) and `pnpm fetch`,
 so another pnpm 12 is not refused there; CI installs every changed lockfile with the
-pinned pnpm under `--frozen-lockfile`. The website is a separate npm project
+pinned pnpm under `--frozen-lockfile`. The website is a separate pnpm project
 (`just docs-install`, `just docs-build`):
 
 ```bash
-npm ci --prefix website
-npm run build:fast --prefix website
+pnpm install --dir website --frozen-lockfile
+pnpm --dir website run build:fast
 ```
 
 In the repository root and the JS workspace folders, npm refuses every command that

@@ -71,7 +71,7 @@ def _install_plugin_python_deps(
 ) -> tuple[bool, Optional[str]]:
     """Consent gate for plugin python deps (settled 2026-09-02; C13 rework).
 
-    Node sidecar: y/n prompt → ``npm ci`` into the plugin's OWN
+    Node sidecar: y/n prompt → ``pnpm install`` into the plugin's OWN
     node_modules (separate question, failure never blocks enable).
     Python deps: NO resolution here — the resolve runs inside the ONE
     admission transaction when the enable commits
@@ -95,7 +95,7 @@ def _install_plugin_python_deps(
     if not has_python and not has_package_json:
         return True, None  # no declared deps at all
 
-    # Node sidecar (package.json): the npm ci executor — separate consent
+    # Node sidecar (package.json): the pnpm install executor — separate consent
     # question, same try-then-enable posture. Failure never blocks the
     # python path below.
     node_reason = None

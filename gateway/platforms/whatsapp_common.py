@@ -290,7 +290,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
 
 def resolve_whatsapp_bridge_dir() -> Path:
     """Bridge directory for CLI and adapter. A read-only install tree (e.g. Docker
-    /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
+    /opt/hermes) is mirrored to HERMES_HOME so the bridge's package-manager install works."""
     import shutil
     from hermes_constants import get_hermes_home
     install_bridge = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
@@ -317,3 +317,22 @@ def resolve_whatsapp_bridge_dir() -> Path:
         return hermes_home_bridge
     except Exception:
         return install_bridge
+
+
+def bridge_manifest_hash(bridge_dir: Path) -> str:
+    """First 16 hex chars of SHA-256 over the files ``pnpm install --frozen-lockfile`` pins.
+
+    Both ``package.json`` (the dependency spec) and ``pnpm-lock.yaml`` (the resolved pins) are
+    covered, so a change to either reads as "dependencies not current" and triggers a reinstall.
+    ``""`` when either file is unreadable — a missing lockfile is never a current install.
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    for name in ("package.json", "pnpm-lock.yaml"):
+        try:
+            digest.update(name.encode("utf-8"))
+            digest.update((Path(bridge_dir) / name).read_bytes())
+        except OSError:
+            return ""
+    return digest.hexdigest()[:16]

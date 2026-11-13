@@ -152,16 +152,16 @@ def test_update_rebuilds_an_accepted_node_sidecar_when_its_manifest_moves(instal
     state["sha"] = _commit(repo, "bump node deps")
     rebuilt: list = []
 
-    def fake_npm(plugin_dir, *, explicit=False):
+    def fake_pnpm(plugin_dir, *, explicit=False):
         rebuilt.append(plugin_dir)
         (plugin_dir / "node_modules").mkdir(exist_ok=True)
         (plugin_dir / "node_modules" / "fresh").write_text("v2", encoding="utf-8")
 
-    monkeypatch.setattr(workspace, "install_node_sidecar", fake_npm)
+    monkeypatch.setattr(workspace, "install_node_sidecar", fake_pnpm)
     result = plugins_cmd.dashboard_update_user_plugin("transactional")
 
     assert result["ok"] is True, result
-    assert len(rebuilt) == 1 and rebuilt[0] != target, "npm must run in the staged copy, not the live tree"
+    assert len(rebuilt) == 1 and rebuilt[0] != target, "pnpm must run in the staged copy, not the live tree"
     assert (target / "node_modules" / "fresh").is_file()
     assert _head(target) == state["sha"]
 

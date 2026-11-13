@@ -673,7 +673,7 @@ def install_node_sidecar(
     *,
     explicit: bool = False,
 ) -> Optional[str]:
-    """Install plugin-local dependencies using PM's paired npm/Node context.
+    """Install plugin-local dependencies using PM's paired pnpm/Node context.
 
     Explicit user consent permits acquisition even when on-demand installs
     are disabled. Returns None on success, otherwise a diagnostic.
@@ -689,17 +689,17 @@ def install_node_sidecar(
     if not explicit and not lazy_installs_allowed():
         return "lazy installs are disabled — run `hermes plugins install` and approve Node dependencies"
 
-    # a lockfile means reproducible `npm ci`; plain `npm install` otherwise
-    install_cmd = ["ci"] if (plugin_dir / "package-lock.json").is_file() else ["install"]
+    # a lockfile means reproducible `pnpm install --frozen-lockfile`; plain `pnpm install` otherwise
+    install_cmd = ["install", "--frozen-lockfile"] if (plugin_dir / "pnpm-lock.yaml").is_file() else ["install"]
     try:
-        runner = pm.ensure("npm", explicit=explicit)
-        # Resolve inside the composed context, including npm.cmd on Windows;
+        runner = pm.ensure("pnpm", explicit=explicit)
+        # Resolve inside the composed context, including pnpm.cmd on Windows;
         # CreateProcess does not search a child's replacement PATH itself.
-        npm = shutil.which("npm", path=runner.env.get("PATH", ""))
-        if npm is None:
-            return "npm is missing from the prepared PM environment"
+        pnpm = shutil.which("pnpm", path=runner.env.get("PATH", ""))
+        if pnpm is None:
+            return "pnpm is missing from the prepared PM environment"
         proc = runner.run(
-            [npm, *install_cmd, "--no-audit", "--no-fund"],
+            [pnpm, *install_cmd],
             cwd=str(plugin_dir),
             capture_output=True,
             text=True,
@@ -708,10 +708,10 @@ def install_node_sidecar(
             timeout=900,
         )
     except Exception as exc:
-        return f"npm {install_cmd[0]} failed to run: {exc}"
+        return f"pnpm {install_cmd[0]} failed to run: {exc}"
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip()[-300:]
-        return f"npm {install_cmd[0]} exited {proc.returncode}: {tail}"
+        return f"pnpm {install_cmd[0]} exited {proc.returncode}: {tail}"
     return None
 
 

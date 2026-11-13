@@ -14,14 +14,5 @@
   },
   "dependencies": {
     "spectrum-ts": "12.10.1"
-  },
-  "overrides": {
-    "undici": "7.30.1",
-    "protobufjs": "8.8.0",
-    "@opentelemetry/otlp-transformer": "0.223.0",
-    "@opentelemetry/otlp-exporter-base": "0.223.0",
-    "@opentelemetry/exporter-trace-otlp-http": "0.223.0",
-    "@opentelemetry/exporter-logs-otlp-http": "0.223.0",
-    "@opentelemetry/core": "2.12.0"
   }
 }

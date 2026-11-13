@@ -74,8 +74,8 @@ jobs:
         with:
           toolchain: all
           extras: '[]'
-          node-package-manager: npm
-          node-cache-dependency-path: website/package-lock.json
+          node-package-manager: pnpm
+          node-cache-dependency-path: website/pnpm-lock.yaml
 
       - name: Install ruamel.yaml for skill extraction
         uses: ./.github/actions/retry
@@ -180,8 +180,7 @@ jobs:
           command: just docs-install
 
       - name: Build Docusaurus
-        run: npm run build
-        working-directory: website
+        run: pnpm run build --dir website
         env:
           # prebuild renders icons on a Hermes runtime interpreter; the ci-tools
           # step above re-exports HERMES_PYTHON to a tools-only environment.

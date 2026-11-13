@@ -64,7 +64,7 @@ hermes gateway start
    a user with that number already exists).
 5. **Print the assigned iMessage line** — the number you text to reach your
    agent.
-6. **Install the sidecar deps** (`npm ci` — installs the committed lockfile
+6. **Install the sidecar deps** (`pnpm install --frozen-lockfile` — installs the committed lockfile
    verbatim, so every setup runs the exact `spectrum-ts` version this plugin
    was written against).
 
@@ -185,18 +185,18 @@ All env vars are documented in `plugin.yaml`. The most important:
 ## Upgrading spectrum-ts
 
 `spectrum-ts` is pinned to an **exact version** in `sidecar/package.json`
-(no `^` range) and installed with `npm ci`, because the SDK ships breaking
+(no `^` range) and installed with `pnpm install --frozen-lockfile`, because the SDK ships breaking
 majors (v2 removed `defineFusorPlatform`; v3 reworked space construction; v5
 split it into `@spectrum-ts/*` packages, with `spectrum-ts` as the umbrella
 that re-exports them; v8 made `richlink` primarily outbound, so many inbound
-links now arrive as plain `text`). A floating range or `npm install spectrum-ts@latest`
+links now arrive as plain `text`). A floating range or `pnpm add spectrum-ts@latest`
 would let a breaking release take down fresh setups silently. Upgrades are
 deliberate:
 
 1. Read the [SDK release notes](https://github.com/photon-hq/spectrum-ts/releases)
    for every version between the current pin and the target.
-2. Bump the exact pin in `sidecar/package.json`, then run `npm install`
-   inside `sidecar/` to regenerate `package-lock.json`. Commit both.
+2. Bump the exact pin in `sidecar/package.json`, then run `pnpm install`
+   inside `sidecar/` to regenerate `pnpm-lock.yaml`. Commit both.
 3. Migrate `sidecar/index.mjs` against the new typings. `spectrum-ts` re-exports
    `@spectrum-ts/core` (the framework: `Spectrum`, content builders,
    `Space`/`Message`) and `@spectrum-ts/imessage` (the provider), so the source
@@ -205,7 +205,7 @@ deliberate:
 4. Re-validate `sidecar/patch-spectrum-mixed-attachments.mjs`. It rewrites the
    compiled iMessage inbound mappers in `@spectrum-ts/imessage/dist/index.js`
    so a bubble with both text and attachments keeps its typed text; the anchors
-   are tied to that build's output. `npm install` runs it via `postinstall` and
+   are tied to that build's output. `pnpm install` runs it via `postinstall` and
    fails loudly if the anchors no longer match — update them to the new output
    (`test_spectrum_patch.py` covers the patch).
 5. Run `pytest tests/plugins/platforms/photon/`.

@@ -18,6 +18,18 @@ try:
 except ImportError:  # the adapter does not start without discord.py
     discord = None
 
+
+def _dc():
+    """Resolve the discord module at call time: the module-level import above can fail during the
+    plugin-load dependency probe (before the runtime venv is on sys.path) and leave a sticky
+    ``None`` that turns into ``AttributeError: 'NoneType' object has no attribute 'Thread'`` in a
+    live handler. Re-import lazily instead of trusting the probe result."""
+    global discord
+    if discord is None:
+        import discord as _discord_mod
+        discord = _discord_mod
+    return discord
+
 _MAX_RECORDS = 2000
 
 
@@ -105,7 +117,7 @@ class DiscordThreadTitlesMixin:
 
     def _guild_channel_labels(self, channel: Any) -> tuple[str, str | None]:
         """``(chat_name, chat_topic)`` for a guild channel or thread, as a message posted there gets them."""
-        if isinstance(channel, discord.Thread):
+        if isinstance(channel, _dc().Thread):
             return self._format_thread_chat_name(channel), self._get_effective_topic(channel, is_thread=True)
         name, guild = getattr(channel, "name", str(channel.id)), getattr(channel, "guild", None)
         return (f"{guild.name} / #{name}" if guild else name), self._get_effective_topic(channel)

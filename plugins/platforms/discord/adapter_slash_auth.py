@@ -9,6 +9,23 @@ except ImportError:  # the adapter does not start without discord.py
     discord = None
 
 
+def _dc():
+    """Resolve the discord module at call time.
+
+    ``discord`` can end up ``None`` here even though discord.py is installed: this module is
+    imported during the plugin-load probe, before the runtime venv is on ``sys.path``, so the
+    module-level import fails and the ``None`` sticks. Using that ``None`` later raises
+    ``AttributeError: 'NoneType' object has no attribute 'DMChannel'`` inside a slash handler,
+    which discord.py swallows — the interaction is never acknowledged and the client shows
+    "This interaction failed / 应用程序未响应". Re-import lazily instead.
+    """
+    global discord
+    if discord is None:
+        import discord as _discord_mod
+        discord = _discord_mod
+    return discord
+
+
 class DiscordSlashAuthMixin:
     _get_parent_channel_id: Callable[[Any], Optional[str]]
     _discord_channel_keys_from_channel: Callable[..., set]
@@ -27,8 +44,9 @@ class DiscordSlashAuthMixin:
         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
         """
+        dc = _dc()
         chan_obj = getattr(interaction, "channel", None)
-        in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
+        in_dm = isinstance(chan_obj, dc.DMChannel) if chan_obj is not None else False
         channel_ids: set = set()
         channel_keys: set = set()
         # Channel scope mirrors on_message; DMs use on_message's DM lockdown path instead.
@@ -37,7 +55,7 @@ class DiscordSlashAuthMixin:
             if chan_id_raw is not None:
                 channel_ids.add(str(chan_id_raw))
                 # Threads: also test the parent channel, as on_message does.
-                if isinstance(chan_obj, discord.Thread):
+                if isinstance(chan_obj, dc.Thread):
                     parent_id = self._get_parent_channel_id(chan_obj)
                     if parent_id:
                         channel_ids.add(str(parent_id))
@@ -45,7 +63,7 @@ class DiscordSlashAuthMixin:
             channel_keys = self._discord_channel_keys_from_channel(
                 chan_obj,
                 self._get_parent_channel_id(chan_obj)
-                if isinstance(chan_obj, discord.Thread)
+                if isinstance(chan_obj, dc.Thread)
                 else None,
             )
             allowed = self._get_allowed_channels()

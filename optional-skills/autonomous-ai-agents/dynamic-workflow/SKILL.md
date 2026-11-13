@@ -1,7 +1,7 @@
 ---
 name: dynamic-workflow
 description: Plan-in-code fan-outs, adversarial verification, waves.
-version: 2.0.0
+version: 2.1.0
 author: Teknium + Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -17,6 +17,7 @@ when_to_use:
   - Codebase-wide sweeps, 100+ file migrations, multi-round refactor campaigns, multi-angle research
 when_not_to_use:
   - Small bounded task (under ~10 units) - do it inline or call the tool directly
+  - One-shot (`-q` / `-z`) sessions - children are joined in the same call and capped in total per session (`delegation.oneshot_max_children`, default 2), so no real fan-out is available
   - Tight serial dependency (B needs A's output) - orchestration overhead is wasted
   - Work that must outlive this process (days, restarts) - use `cronjob` or the kanban swarm instead
 ---
@@ -40,8 +41,11 @@ for serial chains. For a refactor or fix campaign on hermes-agent itself, load
 
 - `delegate_task` available and `delegation.max_concurrent_children` sized for
   the wave (default 10; the runtime rejects a `tasks=[]` larger than that with a
-  clear error rather than queueing). `delegation.max_spawn_depth >= 2` only if
-  children must fan out themselves.
+  clear error rather than queueing). Children can fan out themselves only with
+  `delegation.max_spawn_depth >= 2` AND `delegation.orchestrator_enabled: true`.
+- Not a finite one-shot run (`-q` / `-z`): there, children are capped in total
+  per session by `delegation.oneshot_max_children` (default 2); beyond that
+  `delegate_task` refuses and the work must be done inline.
 <!-- no-tmp: ok — explains why a literal /tmp is wrong -->
 - A writable run directory resolved from the terminal environment's temp dir (`$TMPDIR`, else the platform temp dir). Never a literal `/tmp`:
   Termux has no such directory and native Windows breaks on it. Use `<tmp>/wf_<name>_<uuid>/`, unique per
@@ -66,13 +70,26 @@ step in Layer B, synthesize on the parent.
 
 ### Background-first: results re-enter as messages
 
-A top-level `delegate_task` returns immediately with one handle per task; each
-child's result re-enters the conversation as a new message when it finishes. You
-cannot read `out_*.csv` on the line after the call. Finish whatever does not
-depend on the children, give a one-line status, and END YOUR TURN; act on each
-result message as it lands. An ordinary follow-up user message does not cancel
-children; `/stop`, `/new` and process exit do. Only a delegation issued by an
-orchestrator subagent (depth > 0) is synchronous.
+A top-level `delegate_task` returns immediately with one handle per task. By
+default the whole call is ONE async unit: a single consolidated result message
+arrives when every task in the call has finished. Only with
+`delegation.independent_completions: true` (default false) do per-task (or
+per-group) messages land as each finishes. You cannot read `out_*.csv` on the
+line after the call. Finish whatever does not depend on the children, give a
+one-line status, and END YOUR TURN; act on the result message(s) as they land.
+An ordinary follow-up user message does not cancel children; `/stop`, `/new`
+and process exit do.
+
+Exceptions, where the call joins the children and returns results in the same
+tool call:
+
+- Finite one-shot sessions (`-q` / `-z`), which have no later-result consumer.
+- Gateway sessions, per `delegation.gateway_mode` (default `auto`): `inline`
+  joins in the turn, `background`/`async` always detaches, `auto` joins on a
+  human chat whose interim assistant messages are off and stays background
+  elsewhere.
+- A delegation issued by an orchestrator subagent (depth > 0) is always
+  synchronous.
 
 ## Quick Reference
 
@@ -95,7 +112,8 @@ orchestrator subagent (depth > 0) is synchronous.
    `max_concurrent_children`, issue bounded waves yourself.
 4. Layer B: one `delegate_task(tasks=[...])`; each task reads its slice, writes
    `<run>/out_<i>.csv`, prints a status word, stops.
-5. End the turn. As result messages arrive, read the files, verify, merge; the
+5. End the turn. When the result message(s) arrive (one consolidated message by
+   default), read the files, verify, merge; the
    cross-cutting synthesis stays on the parent.
 
 ### Adversarial convergence (finding-quality work)

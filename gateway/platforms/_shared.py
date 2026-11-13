@@ -435,10 +435,14 @@ def mark_live_gate_baseline(adapter: Any) -> None:
 def _owner_scope(home: str):
     """Bind the owning profile's scope when the ambient one is another home's: a routed command
     (``/voice join`` served by another profile's runtime) starts adapter tasks in that runtime's
-    scope, and its home's lists and .env must never become this adapter's gate."""
-    from hermes_constants import get_hermes_home
+    scope, and its home's lists and .env must never become this adapter's gate. A secret scope
+    stamped with another home counts as foreign even with no home override: its mapping, not the
+    owner's, is what the gate would read."""
+    from agent.secret_scope import current_secret_scope_home
+    from hermes_constants import get_hermes_home, hermes_home_key
 
-    if str(get_hermes_home()) == home:
+    stamped = current_secret_scope_home()
+    if str(get_hermes_home()) == home and (stamped is None or hermes_home_key(stamped) == hermes_home_key(home)):
         yield
         return
     from pathlib import Path

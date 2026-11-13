@@ -288,3 +288,22 @@ def test_following_snapshots_the_env_under_the_load_lock(monkeypatch):
     _shared.follow_bridged_env({})
 
     assert seen and all(seen), seen
+
+
+def test_a_host_discord_reload_under_a_foreign_stamped_scope_reads_the_hosts_own_lists(_home, tmp_path, multiplexed):
+    """A body holding another profile's secret scope (stamped, no home override) sees the host's edit
+    first: the host bot's gate must come from the host's own lists, never the secondary's mapping."""
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+    secondary = tmp_path / "b"
+    secondary.mkdir()
+    _write(_home, {"allow_from": ["777"]})
+    adapter, guild, member = _connected_discord(roles=())
+    _freeze()
+    _write(_home, {"allow_from": ["778"]})
+    token = set_secret_scope({"DISCORD_ALLOWED_USERS": str(member.id)}, profile_home=str(secondary))
+    try:
+        verdict = _allowed(adapter, guild, member)
+    finally:
+        reset_secret_scope(token)
+    assert verdict is False

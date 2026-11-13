@@ -4,7 +4,7 @@
 # Exact-SHA pin, no self-updating code. The trainer runs only when the user starts it.
 name: tironian
 repo: https://github.com/angelraph/tironian
-sha: "9b590cc094f4b65cd70e979f632e1783424526a8"
+sha: "e25e3397feba32d66d9ca85d23704d413310403e"
 subdir: plugin
 title: Tironian
 description: >-
@@ -19,14 +19,16 @@ description: >-
   client from PyPI; training starts only on an explicit user action and then uploads that family's masked
   examples to a private Volume in the user's own Modal account (deleted after the run), or runs on the
   user's own GPU; the optional judge (off by default) sends held-out examples, and in shadow mode differing
-  answers within a daily budget, to the model assigned to the "Tironian judge" auxiliary slot. No telemetry.
+  answers within a daily budget, to the model assigned to the "Tironian judge" auxiliary slot;
+  `hermes tironian verify`, run by the user, downloads only the proof and model URLs the user gives it,
+  into plugin-data/tironian/verify. No telemetry.
 maintainer: angelraph
 tier: community
 category: models
 requires_hermes: ">=0.22.3"
-version: "0.1.0"
+version: "0.2.0"
 docs_url: https://tironian.vercel.app/docs
-image: https://raw.githubusercontent.com/angelraph/tironian/9b590cc094f4b65cd70e979f632e1783424526a8/web/assets/og.png
+image: https://raw.githubusercontent.com/angelraph/tironian/e25e3397feba32d66d9ca85d23704d413310403e/web/assets/og.png
 platforms: []
 capabilities:
   provides_tools: []

@@ -1,27 +1,7 @@
-# Catalog entry for the Hermes plugin catalog (NousResearch/hermes-agent).
-# Target path in that repository: plugin-catalog/pstack-hermes.yaml
-#
-# BEFORE OPENING THE PR: replace `sha` with the 40-character commit SHA of the
-# v0.16.1 release commit on `master` (i.e. after this branch merges and the
-# signed tag is cut â€” CONTRIBUTING: tag the source commit, then dispatch
-# release.yml from master). The loader rejects anything that is not a full
-# lowercase 40-hex commit, so a stale or placeholder value fails CI rather than
-# shipping.
-#
-# Naming: the catalog key `pstack` is already held by another listing
-# (Cloeille/pstack, v0.3.1), so this package lists as `pstack-hermes`. The
-# manifest `name` inside plugin.json stays `pstack`; the installer records the
-# catalog name separately and resolves lookups by either.
-#
-# Rule 16 risk (one listing per plugin lineage): this is an independent
-# standalone package, not a fork of the listed entry â€” portable skills-only
-# (plugin.json, 49 skills, no Python, no hooks) versus that entry's Python
-# plugin (plugin.yaml + __init__.py). State that in the PR body.
-
 name: pstack-hermes
 repo: https://github.com/iap/pstack-hermes
 sha: 08db89f384c8fbf63ece78e6ec8d116dfd7b0aec
-description: "The pstack agent method for Hermes: poteto-mode orchestrator with 23 playbooks, 23 engineering principles and 49 skills. Disclosure â€” skills only, no tools, hooks or network calls of their own; when the user asks, setup-pstack writes a pstack-models.json model panel beside the active profile's config.yaml (outside the plugin tree), the autopilot/shipping/babysit playbooks push branches, squash-merge pull requests and arm recurring `hermes cron` jobs to watch them, and reflect files backlog items into your team's issue tracker without asking per item."
+description: "The pstack agent method for Hermes: poteto-mode orchestrator with 23 playbooks, 23 engineering principles and 49 skills. Disclosure — skills only, no tools, hooks or network calls of their own; when the user asks, setup-pstack writes a pstack-models.json model panel beside the active profile's config.yaml (outside the plugin tree), the autopilot/shipping/babysit playbooks push branches, squash-merge pull requests and arm recurring `hermes cron` jobs to watch them, and reflect files backlog items into your team's issue tracker without asking per item."
 maintainer: iap
 tier: community
 category: tools
@@ -33,8 +13,4 @@ capabilities:
   provides_hooks: []
   provides_middleware: []
   requires_env: []
-# Floor = the only Hermes version this package's loader gate actually proves
-# (HERMES_PIN in .github/workflows/validate-gold.yml). It is enforced by the
-# catalog from 0.23.1 onward; an unparseable/unknown running version never
-# blocks. Bump it in the same PR as HERMES_PIN.
 requires_hermes: ">=0.22.6"

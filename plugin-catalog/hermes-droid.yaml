@@ -2,7 +2,7 @@ name: hermes-droid
 repo: https://github.com/dalroot/hermes-droid
 sha: 9824733ec4840e00b4ee2577735ed1e207d0b0c8
 subdir: plugin
-description: "Turn physical Android devices into automated hardware testbeds and QA companion nodes for Hermes Agent — wireless MQTT APK deployments, Logcat crash diagnostics, and screen captures."
+description: "Turn physical Android devices into automated hardware testbeds and QA companion nodes for Hermes Agent — wireless MQTT APK deployments, Logcat crash diagnostics, and screen captures. Disclosure — gives the agent control of a paired Android phone: it can run device shell commands, send SMS, place calls, reply to notifications, install APKs and toggle radios (each behind a Hermes approval prompt and refused in cron runs), and without a prompt it can read SMS, contacts, notifications, recent photos, location, take camera/screen captures and pull device logs. Commands travel over the MQTT broker you configure (loopback by default; TLS and credentials required for remote brokers), and the companion app trusts any client that can publish to its command topic on that broker."
 maintainer: dalroot
 tier: community
 category: platform

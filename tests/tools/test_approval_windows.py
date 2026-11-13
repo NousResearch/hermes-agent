@@ -189,7 +189,10 @@ class TestPowerShellPositionalScriptAndAbbreviatedSwitches:
         r"Stop-Process -Name idleproc",
         r"Stop-Service -Name spooler",
         r"wmic shadowcopy list brief",
-        "wmic shadowcopy list && rm x -- delete",
+        # `wmic shadowcopy list && rm x -- delete` moved to
+        # test_approval_relative_delete.py: that rm genuinely removes two paths (x and
+        # `delete`, after `--`), so it is gated by the effect-based rm rule now (#151542).
+        # This list stays about WMIC/PowerShell lookalikes.
         "cmd /c echo wmic shadowcopy delete",
         "cat access.log | grep -i remove-item",
         # A hyphenated word is not the alias.

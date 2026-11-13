@@ -413,6 +413,12 @@ _PS_EXE_AT_COMMAND_POSITION = (
     r"\s*(?:[^\s;&|\"'(){}\x60]*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?=\s)"
 )
 
+from tools.approval_detection_rm import (
+    RM_DOTDOT_KEY, RM_GLOB_KEY, RM_MULTI_KEY, RM_PATTERN_ROWS,
+    _RM_EFFECT_KEYS, _RmEffectMatcher, _rm_effects,
+)
+
+
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),
@@ -693,12 +699,17 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'pip(?:3)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),
     (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
 ]
+# The effect-based rm rows are LAST: they must never be the reported key for a command that also
+# runs something else. Their matching lives in approval_detection_rm.
+DANGEROUS_PATTERNS += RM_PATTERN_ROWS
 
 
 _PIPE_REMOTE_TO_SHELL_DESCRIPTION = "pipe remote content to shell"
 _CUSTOM_MATCHERS = {
     _PIPE_REMOTE_TO_SHELL_DESCRIPTION: _PipeRemoteToShellMatcher,
     _WMIC_SHADOW_DELETE_DESCRIPTION: _WmicShadowDeleteMatcher,
+    # One matcher instance per effect-based rm rule, bound to its own key.
+    **{key: (lambda k=key: _RmEffectMatcher(k)) for key in _RM_EFFECT_KEYS},
 }
 DANGEROUS_PATTERNS_COMPILED = [
     (_CUSTOM_MATCHERS[d]() if d in _CUSTOM_MATCHERS else re.compile(p, _RE_FLAGS), d)
@@ -709,6 +720,10 @@ DANGEROUS_PATTERNS_COMPILED = [
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
+    # The effect-based rm rules are NOT here: _RmEffectMatcher reads quoting itself, because
+    # masking is only correct where quoting changes the shell's behaviour. It does for a glob
+    # (`rm "*.log"` is a literal) but not for `..` or a second operand, where `rm '../secret'`
+    # and `rm "a" "b"` delete exactly as their unquoted spellings do.
 })
 # A quoted `| ri -r` is prose (`Write-Host "run gci | ri -r"`), unless an unquoted launcher runs the
 # quoted text as a script: `ssh host "gci | ri -r"`, `cmd /c "..."`, `iex "..."`, `echo "..." | pwsh -`.
@@ -1898,12 +1913,27 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
                 owner_ranges = _upload_flag_owner_ranges(command_lower) if matches else ([], [])
                 if any(_upload_flag_owned_by_curl_or_wget(owner_ranges, match.start()) for match in matches):
                     yield description
+            elif description in _RM_EFFECT_KEYS:
+                # Deferred to the end of this function. These rules describe what the DELETE
+                # removes, so they must not become the first key when the command also does
+                # something else that needs its own consent. The loop is variants OUTER and
+                # patterns INNER, and this branch reads the RAW command, so matching here fired on
+                # the first variant and pre-empted findings produced later -- `python -c ...; rm a b`
+                # reported "delete of multiple paths" instead of "script execution via -e/-c flag",
+                # and with a stored approval for the rm key the interpreter ran unprompted.
+                continue
             elif pattern_re.search(command_lower):
                 yield description
+    # Effect-based rm keys are a FALLBACK: only reached when no other rule fired for this command.
+    rm_effect_keys: list[str] = []
+    if only is None or any(key in only for key in _RM_EFFECT_KEYS):
+        effects = _rm_effects(command)
+        rm_effect_keys = [key for key in _RM_EFFECT_KEYS if key in effects]
     if only is not None:
         # The variation-selector check is a content rule too, so the content-only scan keeps it.
         if _INVISIBLE_UNICODE_DESCRIPTION in only and _HIDDEN_VARIATION_SELECTOR_RE.search(command):
             yield _INVISIBLE_UNICODE_DESCRIPTION
+        yield from rm_effect_keys
         return
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
@@ -1912,6 +1942,7 @@ def _iter_dangerous_descriptions(command: str, only: frozenset[str] | None = Non
         yield _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION
     if _HIDDEN_VARIATION_SELECTOR_RE.search(command):
         yield _INVISIBLE_UNICODE_DESCRIPTION
+    yield from rm_effect_keys
 
 
 def detect_dangerous_command(command: str) -> tuple:
@@ -1920,6 +1951,43 @@ def detect_dangerous_command(command: str) -> tuple:
     if description is None:
         return (False, None, None)
     return (True, description, description)
+
+
+# Rules whose finding must be consented to INDEPENDENTLY of the first match: the content rules
+# above, plus the effect-based rm rules. A chained command (`git reset --hard; rm a.txt b.txt`)
+# reports one key, and consent is stored per key, so a session grant for the first rule would
+# otherwise wave the trailing delete through unasked. Overlapping VERB rules stay single-key: they
+# describe the same action twice, while these describe a second action.
+_INDEPENDENT_CONSENT_KEYS = _CONTENT_RULE_DESCRIPTIONS | frozenset(_RM_EFFECT_KEYS)
+
+# The table rows that ARE a deletion, derived from the table rather than listed again: every rule
+# whose pattern anchors on the `rm` command word. When one of these is the reported first match,
+# consent for the rm invocation is already being asked for, and the effect keys describe the very
+# same act — adding `delete of multiple paths` on top of a granted `recursive delete` only makes
+# `rm -rf build dist` demand a fresh grant on a host whose existing approval already covers it.
+_RM_VERB_KEYS = frozenset(
+    description for pattern, description in DANGEROUS_PATTERNS if pattern.startswith("\\brm")
+)
+
+
+def detect_independent_consent_keys(command: str, pattern_key: str | None = None) -> list[str]:
+    """Pattern keys of every rule in ``_INDEPENDENT_CONSENT_KEYS`` the command matches, wherever
+    they fall in detection order, EXCLUDING the key already reported. The approval gates require
+    consent for each on top of the first match, so a granted pipe-to-shell cannot wave through a
+    credential upload, and a granted `git reset --hard` cannot wave through the delete chained
+    after it.
+
+    The effect-based rm keys are dropped when the first match is itself an rm rule: that prompt is
+    already about this deletion, and two keys for one act would force existing `recursive delete`
+    grants (cron deny mode included) to be renewed for `rm -rf a b`."""
+    if pattern_key is None:
+        is_dangerous, pattern_key, _ = detect_dangerous_command(command)
+        if not is_dangerous:
+            return []
+    keys = list(dict.fromkeys(_iter_dangerous_descriptions(command, only=_INDEPENDENT_CONSENT_KEYS)))
+    if pattern_key in _RM_VERB_KEYS:
+        keys = [key for key in keys if key not in _RM_EFFECT_KEYS]
+    return [key for key in keys if key != pattern_key]
 
 
 def detect_content_rule_keys(command: str) -> list[str]:

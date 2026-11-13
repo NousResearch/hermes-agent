@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -7,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
@@ -89,6 +91,16 @@ export function ComposerControls({
   const { t } = useI18n()
   const c = t.composer
   const hudMode = useStore($hudMode)
+  // A phone keyboard can keep the typed word inside an open IME composition,
+  // which the composer store never sees — so `canSubmit` reads empty at the
+  // instant of the tap and a disabled primary button (pointer-events: none)
+  // dropped the whole press: Send looked dead on the phone while Enter sent.
+  // Touch keeps the button tappable; submitDraft() reads the live editor DOM
+  // and no-ops on a genuinely empty tap.
+  const touch = useStore($touchPointer)
+  // A touch press submits on pointerdown (see the button below); the synthetic
+  // click that follows must not submit the same message a second time.
+  const touchSubmitAt = useRef(0)
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -187,9 +199,40 @@ export function ComposerControls({
           <Button
             aria-label={showStop ? c.stop : sendLabel}
             className={PRIMARY_ICON_BTN}
-            disabled={disabled || !canSubmit}
-            onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
+            disabled={disabled || (!canSubmit && !touch)}
+            onClick={event => {
+
+              // A touch press already submitted on pointerdown; the synthetic
+              // click that follows must not send the same message twice.
+              if (touch && Date.now() - touchSubmitAt.current < 700) {
+                event.preventDefault()
+
+                return
+              }
+
+              recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')
+            }}
             onMouseDown={keepEditorFocus}
+            onPointerDown={event => {
+
+              // A phone keyboard made this button read dead: the press blurs the
+              // editor, the keyboard closes and the reflow moves the button out
+              // from under the finger, so Chromium never dispatches the click —
+              // sends only worked once the keyboard was already down (the
+              // "press twice" report). Submit from the press itself, before the
+              // blur lands, and keep the keyboard where it is.
+              if (!touch) {
+                return
+              }
+
+              if (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen') {
+                return
+              }
+
+              event.preventDefault()
+              touchSubmitAt.current = Date.now()
+              event.currentTarget.form?.requestSubmit()
+            }}
             type="submit"
           >
             {showStop ? (

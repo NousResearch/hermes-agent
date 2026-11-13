@@ -440,6 +440,7 @@ class _MarkRuns:
             self.runs[ch] = [a for a, _ in found]
             self.closes_only[ch] = [_closes_only(a, b) for a, b in found]
         self.size = len(text)
+        self.text = text
         self._tail_closers: dict[tuple[int, str], int] = {}  # (line, mark) -> URL tails already closing
 
     def closers(self, start: int, end: int) -> str:
@@ -450,7 +451,11 @@ class _MarkRuns:
         j = bisect.bisect_left(self.newlines, end)
         line_end = self.newlines[j] if j < len(self.newlines) else self.size
         out = ''
+        tail = self.text[start:end]
+        tail = tail[len(tail.rstrip(_URL_PATH_MARKS + '.,;:!?)')):]  # marks this URL could release
         for ch, runs in self.runs.items():
+            if ch not in tail:  # ``https://a.example/x``: no mark of its own to release, nothing closes
+                continue
             before = bisect.bisect_left(runs, start) - bisect.bisect_left(runs, line_start)
             if not (before + self._tail_closers.get((i, ch), 0)) % 2:
                 continue

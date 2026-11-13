@@ -152,10 +152,18 @@ def run_with_load_deadline(plugin_key: str, ctx: PluginContext, fn: Callable[[],
 
 
 def _evict_modules(module_name: str) -> None:
-    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
+    """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``.
+
+    ``sys.modules`` is process-global and other threads import into it while plugin loading runs
+    (startup warms lazily-imported subsystems on the main thread while discovery loads plugins on a
+    background/worker thread). Iterating the LIVE mapping raises ``RuntimeError: dictionary changed
+    size during iteration`` — that killed the plugin load and left its whole registry slice empty
+    (web search/extract backends, browser and image_gen providers among them). Snapshot first:
+    ``dict.copy()`` is a C-level copy that never re-enters the mapping, so the scan cannot race.
+    """
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
-        del sys.modules[name]
+    for name in [n for n in sys.modules.copy() if n == module_name or n.startswith(prefix)]:
+        sys.modules.pop(name, None)
 
 
 def _serialized_replacement(method):

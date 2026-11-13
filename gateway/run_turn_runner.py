@@ -1054,6 +1054,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             logger.warning("Native image attachment failed, falling back to text: %s", exc)
         return ctx.message
 
+    def _resume_approval_typing(self) -> None:
+        """Resume this live turn's surface before an answered approval wakes its worker."""
+        ctx = self._ctx
+        still_current = getattr(ctx, "_run_still_current", None)
+        if callable(still_current) and not still_current():
+            return
+        ctx._status_adapter.resume_typing_for_chat(ctx._status_chat_id)
+
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
                                         persist_user_message_override, persist_user_timestamp_override):
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
@@ -1065,7 +1073,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
         from gateway.run_turn_runner_approval_transport import approval_transport
-        register_gateway_notify(session_key, approval_transport(self))
+        register_gateway_notify(session_key, approval_transport(self),
+                                wait_group=(ctx._status_adapter, ctx._status_chat_id),
+                                before_wake=self._resume_approval_typing)
         try:
             run_message = self._native_image_run_message()
             api_message = _wrap_current_message_with_observed_context(run_message, observed_group_context)

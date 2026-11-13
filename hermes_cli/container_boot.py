@@ -258,8 +258,10 @@ def _foreground_gateway_profile(argv: Sequence[str], hermes_home: Path) -> str |
     profile, consumed, index = scan_profile_flag(args)
     if index is not None:  # stripped before argparse, as main._apply_profile_override does
         args = args[:index] + args[index + consumed:]
-    # Bare `gateway` also runs, but argparse only accepts `--no-supervise` on `gateway run`.
-    flag_opt_out = command_argv(args)[:2] == ["gateway", "run"] and "--no-supervise" in args
+    # Bare `gateway` also runs, but argparse only accepts `--no-supervise` on `gateway run`
+    # (gateway-level `--accept-hooks` may sit before `run`).
+    action = [t for t in command_argv(args)[1:] if not t.startswith("-")][:1]
+    flag_opt_out = action == ["run"] and "--no-supervise" in args
     if not flag_opt_out and os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() not in ("1", "true", "yes"):
         return None
     if profile is not None:

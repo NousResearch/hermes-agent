@@ -37,6 +37,9 @@ ACCEPT = [
     # a profile literally NAMED "gateway"
     "hermes -p gateway gateway run",
     "python -m hermes_cli.main --profile gateway gateway run",
+    # gateway-level flags before the action (`hermes gateway --accept-hooks run` parses)
+    "hermes gateway --accept-hooks run --no-supervise",
+    "hermes gateway --accept-hooks",
     # quoted Windows paths with spaces (shlex-aware tokenization)
     r'"C:\Program Files\Hermes\hermes-gateway.exe"',
     r'"C:\Program Files\Hermes\gateway\run.py" run',
@@ -48,6 +51,8 @@ REJECT = [
     "python -m hermes_cli.main gateway status",           # other subcommand
     "python -m hermes_cli.main gateway restart",
     "python -m hermes_cli.main gateway stop",
+    "hermes gateway --accept-hooks status",
+    "hermes gateway --help",                               # prints help, runs nothing
     "python -m hermes_cli.main --profile x dashboard",    # non-gateway subcommand
     "some random python -m mygateway thing",
     "",

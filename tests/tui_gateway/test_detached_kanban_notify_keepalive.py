@@ -103,14 +103,26 @@ def test_cap_and_ttl_reapers_spare_session_awaiting_card(server, detached):
     assert not server._session_is_reapable(sid, session)
 
 
-def test_session_released_once_card_settles(server, detached):
+def test_session_retained_until_unclaimed_event_claimed(server, detached):
     sid, session, popped = detached
     tid = _subscribed_task()
     _complete(tid)
 
+    # An unclaimed completed event must keep the session alive and re-arm the reap.
     server._schedule_ws_orphan_reap(sid)
     _Timer.created[-1].callback()
 
+    assert server._sessions.get(sid) is session and not popped
+    assert server._pending_ws_reaps[sid] is _Timer.created[-1]
+
+    # Once the event is claimed, the settled card no longer pins the session.
+    conn = kbc.connect()
+    try:
+        kbn.claim_unseen_events_for_sub(conn, task_id=tid, platform="tui", chat_id=SESSION_KEY)
+    finally:
+        conn.close()
+
+    _Timer.created[-1].callback()
     assert server._sessions.get(sid) is None and popped == [session]
 
 
@@ -119,3 +131,16 @@ def test_another_sessions_card_does_not_pin(server, detached):
     _subscribed_task(chat_id="some-other-session")
 
     assert server._session_is_reapable(sid, session)
+
+
+def test_stale_unclaimed_event_does_not_pin_past_ttl(server, detached, monkeypatch):
+    sid, session, popped = detached
+    tid = _subscribed_task()
+    _complete(tid)
+
+    # When the event age exceeds the keepalive TTL, it must not pin the session forever.
+    monkeypatch.setattr(server, "_KANBAN_UNCLAIMED_EVENT_TTL_S", -1.0)
+    server._schedule_ws_orphan_reap(sid)
+    _Timer.created[-1].callback()
+
+    assert server._sessions.get(sid) is None and popped == [session]

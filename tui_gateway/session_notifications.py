@@ -370,14 +370,17 @@ def _session_owns_pending_process_notification(session: dict) -> bool:
 # Statuses whose card will still produce an event for its subscribers without a human acting first. ``blocked`` and
 # ``triage`` wait on a person, who reopens the chat anyway; ``scheduled`` can sleep for days.
 _KANBAN_AWAITED_STATUSES = ("todo", "ready", "running", "review")
+# Keepalive ceiling for unclaimed completion events: bounds how long an unpolled or stuck notice can protect a session.
+_KANBAN_UNCLAIMED_EVENT_TTL_S = 60.0
 
 
 def _session_awaits_kanban_notification(session: dict) -> bool:
     """True while a Kanban card this session subscribed to (``kanban_create`` auto-subscribes ``platform="tui"``) is
-    still moving, or its claimed notice is buffered for the next turn. The notice reaches the model only through THIS
-    session's poller (``_collect_kanban_notifications``), so reaping the session drops the agent's "I'll report back"
-    until the user happens to reopen the chat. Bounded by the card: it releases once the card settles. Fail-open to
-    False: an unreadable board must not make a session unreapable."""
+    still moving, its completion event has not yet been claimed by the poller, or its claimed notice is buffered for
+    the next turn. The notice reaches the model only through THIS session's poller (``_collect_kanban_notifications``),
+    so reaping the session drops the agent's "I'll report back" until the user happens to reopen the chat. Bounded by
+    the card: in-flight cards release once settled, and unclaimed completion events expire after a TTL so an orphaned
+    event cannot pin a session forever. Fail-open to False: an unreadable board must not make a session unreapable."""
     if session.get("_kanban_pending"):
         return True
     if not (session_key := str(session.get("session_key") or "")):
@@ -390,9 +393,15 @@ def _session_awaits_kanban_notification(session: dict) -> bool:
             unique = {}
             for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
                 unique.setdefault(resolved, slug)
-            return any(_kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key,
-                                              task_statuses=_KANBAN_AWAITED_STATUSES)
-                       for slug in unique.values())
+            for slug in unique.values():
+                if _kbn.count_notify_subs(board=slug, platform="tui", chat_id=session_key,
+                                          task_statuses=_KANBAN_AWAITED_STATUSES) > 0:
+                    return True
+                if _kbn.count_unclaimed_notify_events(board=slug, platform="tui", chat_id=session_key,
+                                                     kinds=_KANBAN_NOTIFY_KINDS,
+                                                     max_age_seconds=_KANBAN_UNCLAIMED_EVENT_TTL_S) > 0:
+                    return True
+            return False
     except Exception:
         logger.debug("kanban keep-alive check failed for %s", session_key, exc_info=True)
         return False

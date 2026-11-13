@@ -15,6 +15,7 @@ import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { isRtlLocale } from '@/i18n/languages'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
 import { formatModifierToken } from '@/lib/keybinds/combo'
@@ -46,6 +47,7 @@ import {
   titlebarToolClusterClass
 } from './titlebar'
 import { TitlebarIcon } from './titlebar-icon'
+import { physicalSidebarControls } from './titlebar-sidebar-placement'
 
 export interface TitlebarTool extends Tiered {
   id: string
@@ -184,7 +186,7 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
 }
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const modHeld = useModifierHeld()
@@ -211,22 +213,41 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // from the live tree (see toggleLeftSide / toggleRightSide) — the browser
   // column, the sessions column, whatever is physically left / right. Never an
   // active highlight — plain show/hide affordances.
-  const { left: leftEdge, right: rightEdge } = useSidebarEdges()
+  //
+  // The tree's edges are LOGICAL (children[0] / at(-1)), and in RTL the row
+  // renders mirrored, so its first column sits on the physical right. The
+  // buttons are fixed to physical sides, so swap once here: each button folds
+  // the column on its own side, carries that column's shortcut hint, and its
+  // icon/label keep naming its physical side.
+  const rtl = isRtlLocale(locale)
+
+  const {
+    left: leftEdge,
+    right: rightEdge,
+    leftActionId,
+    rightActionId,
+    leftTour,
+    rightTour
+  } = physicalSidebarControls(useSidebarEdges(), rtl)
+
+  // Sessions live on the tree's first column unless flipped.
+  const sessionsOnLeft = panesFlipped === rtl
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
-    actionId: 'view.toggleSidebar',
-    badge: panesFlipped ? undefined : unreadBadge,
+    actionId: leftActionId,
+    badge: sessionsOnLeft ? unreadBadge : undefined,
     icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
     expanded: leftEdge.expanded,
-    label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
+    label: `${leftLabel}${sessionsOnLeft ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
       leftEdge.toggle()
-    }
+    },
+    tour: leftTour
   }
 
   const flipTool: TitlebarTool = {
@@ -243,17 +264,18 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const rightSidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS['right-sidebar'],
-    actionId: 'view.toggleRightSidebar',
-    badge: panesFlipped ? unreadBadge : undefined,
+    actionId: rightActionId,
+    badge: sessionsOnLeft ? undefined : unreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
     expanded: rightEdge.expanded,
-    label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
+    label: `${rightLabel}${sessionsOnLeft ? '' : unreadHint}`,
     onSelect: () => {
       triggerHaptic('tap')
       rightEdge.toggle()
     },
-    tour: 'right-pane-toggle'
+    // The tour points at the file-browser toggle (⌘J), whichever side it's on.
+    tour: rightTour
   }
 
   // Static system tools — always pinned to the screen's right edge so the

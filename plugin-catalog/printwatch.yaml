@@ -1,12 +1,12 @@
 name: printwatch
 repo: https://github.com/clawsyndicate/printwatch
-sha: b5aec0301dfca8536e325da8f495339a003ecd07
+sha: 04412872cec9adc3fe8208a231da8e523498fa8f
 title: PrintWatch
 description: "Control 3D printers over the local network from your agent: fleet status (temps, progress, layers), file listing, print start/pause/resume/cancel, file upload with automatic dialect packaging (printer_upload), and camera snapshots delivered into chat. Dual protocol — Anycubic Kobra printers over their built-in stock LAN Mode (clean-room reverse-engineered handshake + MQTT; no cloud, no rooting, nothing flashed) and Klipper/Moonraker over HTTP, and Bambu Lab printers over their local MQTT/FTPS interface (user's LAN access code; X1/P1/A1 family). Includes a headless slice-to-print pipeline: any raw .gcode is repackaged into the exact Anycubic .gcode.3mf dialect the stock firmware requires (header blocks, M75, uppercase-MD5 sidecar, X-ACNext slice info) and started remotely. Disclosure — makes outbound connections only to the printer hosts the user configures (PRINTWATCH_PRINTERS / PRINTWATCH_MOONRAKER_URL via agent.secret_scope, hostnames only); printer_snapshot shells out to ffmpeg; Anycubic MQTT uses TLS with the printer's self-signed certificate accepted (CERT_NONE) on the local network; no telemetry, no external services, no credentials persisted (printer session tokens are per-session, in-memory, never logged)."
 maintainer: clawsyndicate
 tier: community
 category: tools
-version: "0.4.1"
+version: "0.4.2"
 platforms: []
 known_issues:
   - printer_snapshot requires ffmpeg on PATH.

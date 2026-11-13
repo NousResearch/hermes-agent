@@ -47,8 +47,8 @@ from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
     normalize_finish_reason as _normalize_finish_reason, sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
-from agent.reasoning_summaries import (
-    append_streamed_reasoning_detail, separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
+from agent.reasoning_summaries import (append_streamed_reasoning_detail, redact_reasoning_fields,
+    separate_glued_reasoning_blocks, streamed_reasoning_detail_text)
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -1663,8 +1663,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         msg["reasoning_content"] = reasoning_text
 
     if getattr(assistant_message, "reasoning_details", None):
-        # Preserve reasoning_details exactly (opaque signature /
-        # encrypted_content fields) for cross-turn reasoning continuity.
+        # Signed/opaque entries are replayed byte-exact; only unsigned text is redacted below.
         preserved = []
         for d in assistant_message.reasoning_details:
             if isinstance(d, dict):
@@ -1675,6 +1674,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 preserved.append(_model_dump_safe(d))
         if preserved:
             msg["reasoning_details"] = preserved
+    redact_reasoning_fields(msg)  # storage boundary, as for content (#43666)
 
     # Provider-native carriers replayed verbatim on later turns:
     # anthropic_content_blocks keeps interleaved thinking + tool_use order

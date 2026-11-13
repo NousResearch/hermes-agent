@@ -8,12 +8,12 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { $chatTextScale, setChatTextScale } from '@/store/chat-text-scale'
-import { $tipsEnabled, setTipsEnabled } from '@/store/tips'
+import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import { $toursEnabled, setToursEnabled } from '@/store/tours'
 import { getBaseColors, useTheme } from '@/themes/context'
 
 import { appearanceOverviewCopy } from './appearance-overview-copy'
-import { ListRow, SettingsContent, ToggleRow } from './primitives'
+import { ListRow, RowFootnoteAction, SettingsContent, ToggleRow } from './primitives'
 import { SettingsCard, SettingsDisclosure } from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { forHost, useSettingsPagesCopy } from './settings-pages-copy'
@@ -34,6 +34,7 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
   const chatTextScale = useStore($chatTextScale)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
+  const spentTips = useStore($spentTipCount)
   const groupName = useId()
   const advancedRef = useRef<HTMLDetailsElement>(null)
   const pendingSetting = useSettingDeepLink('config:appearance')
@@ -129,15 +130,27 @@ export function AppearanceOverview({ advanced }: AppearanceOverviewProps) {
               id={settingElementId(ids.language)}
               title={t.language.label}
             />
-            <ToggleRow
-              checked={tipsEnabled || toursEnabled}
-              description={copy.tipsDescription}
-              label={copy.tips}
-              onChange={enabled => {
-                setTipsEnabled(enabled)
-                setToursEnabled(enabled)
-              }}
-            />
+            {/* The one tips switch (Advanced repeats neither half): it answers both settings'
+                deep links and keeps the spent-tip reset. */}
+            <div id={settingElementId(ids.tours)}>
+              <ToggleRow
+                below={
+                  spentTips > 0 && (
+                    <RowFootnoteAction onClick={resetTips}>
+                      {t.settings.appearance.tipsReset(spentTips)}
+                    </RowFootnoteAction>
+                  )
+                }
+                checked={tipsEnabled || toursEnabled}
+                description={copy.tipsDescription}
+                id={settingElementId(ids.tips)}
+                label={copy.tips}
+                onChange={enabled => {
+                  setTipsEnabled(enabled)
+                  setToursEnabled(enabled)
+                }}
+              />
+            </div>
           </SettingsCard>
         </section>
 

@@ -148,6 +148,7 @@ export function AgentOverviewActions({ owner, profile, onDeleted }: AgentOvervie
           open
           profiles={duplicate.profiles}
           scope={duplicate.owner}
+          title={c.duplicate}
         />
       )}
     </>

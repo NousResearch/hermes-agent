@@ -31,15 +31,22 @@ export function usePortalConversation(paneId: string) {
   return portal && isSessionStripPane(paneId) && (paneId !== 'workspace' || !page)
 }
 
-/** Replace chat-only strips; a mixed tool/page group still needs its tab picker. Installed into
+/** The band's title pill stands in for a zone's strip only while that zone holds the lone main chat:
+ *  one tab needs no switcher, and the pill already carries its title and "+". Once a second tab
+ *  opens, the zone's own strip (in the band, as Figma's header pills) lists them all. */
+export function bandPillReplacesStrip(shown: readonly string[]): boolean {
+  return shown.length === 1 && shown[0] === 'workspace'
+}
+
+/** Every zone keeps the shared strip resolver (so the Tab Strip setting and the stranded-tab rule
+ *  hold in the redesign too), except the lone main chat whose tab is the band pill. Installed into
  *  every zone by the contrib controller (provideZoneHeader). */
 export const usePortalZoneHeader: ZoneHeaderHook = (node, options) => {
   const portal = usePortalConversation(options.active)
 
   return {
     stripVisible:
-      tabStripVisibleForZone({ ...options, mode: node.tabStrip }) &&
-      !(portal && options.shown.every(isSessionStripPane)),
+      tabStripVisibleForZone({ ...options, mode: node.tabStrip }) && !(portal && bandPillReplacesStrip(options.shown)),
     conversationHeader: portal && !node.minimized ? <PortalConversationHeader paneId={options.active} /> : null
   }
 }

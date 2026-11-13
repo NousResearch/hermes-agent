@@ -174,6 +174,27 @@ describe('SessionActionsMenu', () => {
     expect(document.activeElement).not.toBe(trigger)
   })
 
+  it('names the rename field by its dialog in the redesign, and leaves classic as it was', async () => {
+    const openRename = async () => {
+      const trigger = screen.getByRole('button', { name: 'Session actions' })
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+      fireEvent.click(await screen.findByRole('menuitem', { name: /rename/i }))
+
+      return within(await screen.findByRole('dialog')).getByRole('textbox')
+    }
+
+    const { unmount } = renderMenu()
+    // Its placeholder ("Untitled chat") is not a name for a field holding the title.
+    expect((await openRename()).getAttribute('aria-label')).toBe('Rename session')
+    unmount()
+
+    $shellChoice.set(false)
+    renderMenu()
+    expect((await openRename()).hasAttribute('aria-label')).toBe(false)
+  })
+
   it('passes profile to renameSession when submitting from RenameSessionDialog', async () => {
     const { renameSession } = await import('@/hermes')
     vi.mocked(renameSession).mockResolvedValue({ ok: true, title: 'Prep Butler' })

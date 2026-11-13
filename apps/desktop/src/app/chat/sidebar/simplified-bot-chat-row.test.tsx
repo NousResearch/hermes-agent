@@ -45,7 +45,9 @@ it('only opens on click and preserves the exact gateway and target profile', () 
       connectionKind: 'ssh',
       targetProfile: 'actual-alpha',
       sourceScoped: true
-    })
+    }),
+    // A failed open's toast names the agent as this row does.
+    { label: 'Alpha' }
   )
 })
 

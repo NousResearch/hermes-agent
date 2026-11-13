@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -145,7 +145,7 @@ describe('the Routines page', () => {
     expect(within(panel).queryByText(new RegExp(copy.groups.finished))).toBeNull()
     // The banner names the problem in plain words, with the first sentence of the error and Retry.
     expect(screen.getByText(copy.banner.failedStreak('Flight price monitor', 3))).toBeTruthy()
-    expect(screen.getByText(/The request timed out\./)).toBeTruthy()
+    expect(screen.getByText(/^The request timed out\. ·/)).toBeTruthy()
     expect(screen.getByRole('button', { name: copy.actions.retry })).toBeTruthy()
   })
 
@@ -186,6 +186,41 @@ describe('the Routines page', () => {
       routine: 'job-flights',
       tab: 'agent:schedules'
     })
+  })
+
+  it('lists a refused run under Runs as soon as the routine records it, in one plain sentence', async () => {
+    const raw =
+      "GatewayUnavailableError: Gateway inaccessible: profile_parked (profile(s) 'ops' still run their own gateway; fold them with `hermes gateway migrate --multiplex`)"
+
+    const quiet = { ...brief, id: 'job-watch', name: 'Competitor news watch', profile: 'ops' } as CronJob
+    setCronJobs([brief, quiet, paused])
+    api.getCronJobs.mockResolvedValue([brief, quiet, paused])
+    selectRoutine({ id: quiet.id, profile: 'ops' })
+    renderPage()
+    await screen.findByText(copy.noRuns)
+
+    // Run now: the scheduler refuses the attempt up front and writes its output, with no cron.changed.
+    api.getCronJobRuns.mockResolvedValue([
+      { id: 'cron_output:job-watch:1', source: 'cron_output', started_at: 1_700_000_000, title: `FAILED · ${raw}` }
+    ])
+    act(() =>
+      setCronJobs([
+        brief,
+        { ...quiet, last_error: raw, latest_execution: { error: raw, id: 'attempt-1', status: 'failed' } },
+        paused
+      ])
+    )
+
+    const plain = copy.banner.agentNotRunning('ops')
+    // The run is listed with its status, and the banner says what happened in words.
+    await waitFor(() => expect(screen.queryByText(copy.noRuns)).toBeNull())
+    expect(screen.getByText(plain)).toBeTruthy()
+    expect(screen.getByText(new RegExp(`^${plain} ·`))).toBeTruthy()
+    // The backend's own text stays behind Details, never in the banner's sentence.
+    const details = screen.getByText(copy.banner.details).closest('details')!
+    expect(details.open).toBe(false)
+    expect(within(details).getByText(raw)).toBeTruthy()
+    expect(screen.getAllByText(/migrate --multiplex/)).toHaveLength(1)
   })
 
   it('renames a routine as a rail quick action, in its own agent', async () => {

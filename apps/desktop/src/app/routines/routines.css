@@ -694,3 +694,27 @@ button.routines-banner-title:focus-visible {
     padding-inline-end: calc(var(--portal-touch-target) + 0.5rem);
   }
 }
+
+/* The backend's own text, behind the plain sentence: one click away, never the first thing read. */
+.routines-banner-raw {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+.routines-banner-raw > summary {
+  inline-size: fit-content;
+  cursor: pointer;
+}
+
+.routines-banner-raw > summary:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+.routines-banner-raw > p {
+  margin-top: 0.25rem;
+  font-family: var(--portal-font-mono);
+  overflow-wrap: anywhere;
+  user-select: text;
+}

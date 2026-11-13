@@ -10,6 +10,10 @@
 :root.dark [data-catalog-editorial-art] { --catalog-art-shade: 72%; }
 [data-catalog-editorial-art]::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background: linear-gradient(to bottom, transparent 8%, color-mix(in srgb, var(--ui-chat-bubble-background) var(--catalog-art-shade), transparent) 42%, var(--ui-chat-bubble-background) 92%); }
 [data-catalog-card][data-catalog-editorial-art] .catalog-card-copy { flex: none; background: none; }
+/* Redesign: the art under the title and summary can be near-white (a light photo), and the scrim
+   above faded in only from 8%, leaving white ink on white. Hold the shade from the top edge so every
+   line of copy sits on at least the theme's shade of the card surface. */
+:root[data-shell='portal'] [data-catalog-editorial-art]::before { background: linear-gradient(to bottom, color-mix(in srgb, var(--ui-chat-bubble-background) var(--catalog-art-shade), transparent) 0%, color-mix(in srgb, var(--ui-chat-bubble-background) var(--catalog-art-shade), transparent) 42%, var(--ui-chat-bubble-background) 92%); }
 [data-catalog-card][data-catalog-editorial-art][data-catalog-variant=showcase] .catalog-card-topline { margin-bottom: 72px; }
 [data-catalog-variant=compact] .catalog-card-footer { padding-bottom: 20px; }
 [data-catalog-results] { container-type: inline-size; }
@@ -140,4 +144,12 @@
    to each neighbour, so a tap lands on the dot under the finger, never its neighbour. */
 @media (hover: none), (pointer: coarse) {
   html[data-hermes-desktop-host='browser'][data-shell='portal'] .catalog-featured-dots > .catalog-featured-dot::after { inset-inline: calc(var(--catalog-dot-gap) / -2); }
+}
+
+/* Redesign, compact (breakpoints.ts: max-width 639.98px): the category chips were squeezed to one
+   chip between the Category/Source switch and Filters. They take their own full-width row instead,
+   scrolling sideways with the edge fade (portal-pages.css) as the cue that more follow. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] .catalog-filter-row { flex-wrap: wrap; row-gap: 10px; }
+  :root[data-shell='portal'] .catalog-filter-row > .catalog-filter-chips { order: 1; flex-basis: 100%; }
 }

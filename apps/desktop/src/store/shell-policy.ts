@@ -26,3 +26,7 @@ export const $botsInAgentsPage = gate(portal => portal)
 
 /** Navigation (IA) metrics measure the redesigned information architecture only. */
 export const $recordsIaMetrics = gate(portal => portal)
+
+/** A send the gateway refuses is rolled back whole: its bubble leaves the thread, the composer holds
+ *  its words, and one toast says why. Classic keeps the bubble with an in-thread error card. */
+export const $failedSendRollsBack = gate(portal => portal)

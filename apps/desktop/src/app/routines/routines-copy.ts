@@ -33,6 +33,10 @@ export interface RoutinesCopy {
     overdue: (name: string) => string
     overdueHint: string
     retryAt: (when: string) => string
+    /** A run refused because the routine's agent has no gateway running here. */
+    agentNotRunning: (agent: string) => string
+    /** Discloses the backend's full error text under the plain sentence. */
+    details: string
   }
   actions: {
     runNow: string
@@ -104,6 +108,8 @@ export interface RoutinesCopy {
   customPlaceholder: string
   customHint: string
   customHintDeveloper: string
+  /** A ready-made routine's time field: the example is the field's own default, in the locale's clock. */
+  localTimeHint: (example: string) => string
   everyRunKept: string
   nothingSelected: string
   agentChat: (agent: string) => string
@@ -169,7 +175,9 @@ const en: RoutinesCopy = {
     delivery: name => `${name} ran, but its results were not delivered`,
     overdue: name => `${name} has not run since it was due`,
     overdueHint: 'Hermes may not be running on this machine.',
-    retryAt: when => `It will try again ${when}.`
+    retryAt: when => `It will try again ${when}.`,
+    agentNotRunning: agent => `${agent} isn’t running on this machine right now.`,
+    details: 'Details'
   },
   actions: {
     runNow: 'Run now',
@@ -226,7 +234,8 @@ const en: RoutinesCopy = {
   name: 'Name',
   namePlaceholder: 'Morning brief',
   instruction: 'Instruction',
-  instructionPlaceholder: 'What should the agent do each time? For example: summarize my unread email and list anything urgent.',
+  instructionPlaceholder:
+    'What should the agent do each time? For example: summarize my unread email and list anything urgent.',
   frequencies: {
     once: 'Once',
     hourly: 'Every hour',
@@ -241,6 +250,7 @@ const en: RoutinesCopy = {
   customPlaceholder: 'every 2 hours',
   customHint: 'Say it in plain words, like “every 2 hours” or “every monday 9am”.',
   customHintDeveloper: 'Plain words like “every 2 hours”, or a cron expression like “0 9 * * 1-5”.',
+  localTimeHint: example => `Your local time, e.g. ${example}`,
   everyRunKept: 'Every run is also kept in Runs',
   nothingSelected: 'Nothing selected? Results are still saved in Runs.',
   agentChat: agent => `Chat with ${agent}`,
@@ -304,7 +314,9 @@ const fr: RoutinesCopy = {
     delivery: name => `${name} s’est exécutée, mais ses résultats n’ont pas été envoyés`,
     overdue: name => `${name} ne s’est pas exécutée à l’heure prévue`,
     overdueHint: 'Hermes n’est peut-être pas lancé sur cette machine.',
-    retryAt: when => `Nouvel essai ${when}.`
+    retryAt: when => `Nouvel essai ${when}.`,
+    agentNotRunning: agent => `${agent} n’est pas en cours d’exécution sur cet ordinateur pour le moment.`,
+    details: 'Détails'
   },
   actions: {
     runNow: 'Exécuter maintenant',
@@ -377,6 +389,7 @@ const fr: RoutinesCopy = {
   customPlaceholder: 'toutes les 2 heures',
   customHint: 'Dites-le simplement, par exemple « every 2 hours » ou « every monday 9am ».',
   customHintDeveloper: 'Des mots simples comme « every 2 hours », ou une expression cron comme « 0 9 * * 1-5 ».',
+  localTimeHint: example => `Votre heure locale, par ex. ${example}`,
   everyRunKept: 'Chaque exécution est aussi conservée',
   nothingSelected: 'Rien de sélectionné ? Les résultats restent enregistrés dans les exécutions.',
   agentChat: agent => `Discussion avec ${agent}`,
@@ -440,7 +453,9 @@ const de: RoutinesCopy = {
     delivery: name => `${name} ist gelaufen, aber die Ergebnisse wurden nicht zugestellt`,
     overdue: name => `${name} ist seit dem fälligen Termin nicht gelaufen`,
     overdueHint: 'Hermes läuft auf diesem Rechner möglicherweise nicht.',
-    retryAt: when => `Nächster Versuch ${when}.`
+    retryAt: when => `Nächster Versuch ${when}.`,
+    agentNotRunning: agent => `${agent} läuft gerade nicht auf diesem Computer.`,
+    details: 'Details'
   },
   actions: {
     runNow: 'Jetzt ausführen',
@@ -513,6 +528,7 @@ const de: RoutinesCopy = {
   customPlaceholder: 'every 2 hours',
   customHint: 'Beschreibe es in einfachen Worten, etwa „every 2 hours“ oder „every monday 9am“.',
   customHintDeveloper: 'Einfache Worte wie „every 2 hours“ oder ein Cron-Ausdruck wie „0 9 * * 1-5“.',
+  localTimeHint: example => `Deine Ortszeit, z. B. ${example}`,
   everyRunKept: 'Jeder Lauf wird auch gespeichert',
   nothingSelected: 'Nichts ausgewählt? Die Ergebnisse bleiben in den Läufen gespeichert.',
   agentChat: agent => `Chat mit ${agent}`,
@@ -544,8 +560,7 @@ const de: RoutinesCopy = {
   chipTooltip: (count, agent) => `${count} ${plural(count, 'Routine', 'Routinen')} für ${agent}`,
   chipFailing: name => `${name} fehlgeschlagen · öffnet Routinen`,
   chipOpens: 'Öffnet Routinen',
-  railAttention: count =>
-    `${count} ${plural(count, 'Routine braucht', 'Routinen brauchen')} Aufmerksamkeit`
+  railAttention: count => `${count} ${plural(count, 'Routine braucht', 'Routinen brauchen')} Aufmerksamkeit`
 }
 
 const es: RoutinesCopy = {
@@ -577,7 +592,9 @@ const es: RoutinesCopy = {
     delivery: name => `${name} se ejecutó, pero sus resultados no se entregaron`,
     overdue: name => `${name} no se ha ejecutado desde la hora prevista`,
     overdueHint: 'Puede que Hermes no esté en marcha en esta máquina.',
-    retryAt: when => `Volverá a intentarlo ${when}.`
+    retryAt: when => `Volverá a intentarlo ${when}.`,
+    agentNotRunning: agent => `${agent} no se está ejecutando en este equipo ahora mismo.`,
+    details: 'Detalles'
   },
   actions: {
     runNow: 'Ejecutar ahora',
@@ -650,6 +667,7 @@ const es: RoutinesCopy = {
   customPlaceholder: 'every 2 hours',
   customHint: 'Dilo con palabras sencillas, como «every 2 hours» o «every monday 9am».',
   customHintDeveloper: 'Palabras sencillas como «every 2 hours» o una expresión cron como «0 9 * * 1-5».',
+  localTimeHint: example => `Tu hora local, p. ej. ${example}`,
   everyRunKept: 'Cada ejecución también se guarda',
   nothingSelected: '¿Nada seleccionado? Los resultados se siguen guardando en Ejecuciones.',
   agentChat: agent => `Chat con ${agent}`,
@@ -690,7 +708,13 @@ const ja: RoutinesCopy = {
   filterLabel: '表示',
   filters: { all: 'すべて', attention: '要確認', scheduled: 'スケジュール済み', paused: '一時停止中' },
   search: 'ルーティンを検索',
-  columns: { routine: 'ルーティン', agent: 'エージェント', when: '実行タイミング', lastRun: '前回の実行', status: '状態' },
+  columns: {
+    routine: 'ルーティン',
+    agent: 'エージェント',
+    when: '実行タイミング',
+    lastRun: '前回の実行',
+    status: '状態'
+  },
   status: {
     failed: '失敗',
     delivery: '未配信',
@@ -712,7 +736,9 @@ const ja: RoutinesCopy = {
     delivery: name => `${name} は実行されましたが、結果を配信できませんでした`,
     overdue: name => `${name} が予定時刻を過ぎても実行されていません`,
     overdueHint: 'このマシンで Hermes が動いていない可能性があります。',
-    retryAt: when => `次は ${when} に再試行します。`
+    retryAt: when => `次は ${when} に再試行します。`,
+    agentNotRunning: agent => `${agent} は現在このコンピューターで実行されていません。`,
+    details: '詳細'
   },
   actions: {
     runNow: '今すぐ実行',
@@ -784,6 +810,7 @@ const ja: RoutinesCopy = {
   customPlaceholder: 'every 2 hours',
   customHint: '「every 2 hours」「every monday 9am」のように、ふつうの言葉で書いてください。',
   customHintDeveloper: '「every 2 hours」のような言葉か、「0 9 * * 1-5」のような cron 式で指定します。',
+  localTimeHint: example => `現地時刻（例: ${example}）`,
   everyRunKept: '各実行は履歴にも保存されます',
   nothingSelected: '何も選ばなくても、結果は実行履歴に保存されます。',
   agentChat: agent => `${agent} とのチャット`,
@@ -846,7 +873,9 @@ const zh: RoutinesCopy = {
     delivery: name => `${name} 已运行，但结果未能送达`,
     overdue: name => `${name} 到点后一直没有运行`,
     overdueHint: '这台机器上的 Hermes 可能没有在运行。',
-    retryAt: when => `将于${when}重试。`
+    retryAt: when => `将于${when}重试。`,
+    agentNotRunning: agent => `${agent} 目前未在这台电脑上运行。`,
+    details: '详细信息'
   },
   actions: {
     runNow: '立即运行',
@@ -918,6 +947,7 @@ const zh: RoutinesCopy = {
   customPlaceholder: 'every 2 hours',
   customHint: '用简单的话描述，例如 “every 2 hours” 或 “every monday 9am”。',
   customHintDeveloper: '简单的话，如 “every 2 hours”，或 cron 表达式，如 “0 9 * * 1-5”。',
+  localTimeHint: example => `本地时间，例如 ${example}`,
   everyRunKept: '每次运行也都会保存在运行记录中',
   nothingSelected: '什么都没选？结果仍会保存在运行记录中。',
   agentChat: agent => `与 ${agent} 的对话`,
@@ -980,7 +1010,9 @@ const zhHant: RoutinesCopy = {
     delivery: name => `${name} 已執行，但結果未能送達`,
     overdue: name => `${name} 過了預定時間仍未執行`,
     overdueHint: '這台機器上的 Hermes 可能沒有在執行。',
-    retryAt: when => `將於${when}重試。`
+    retryAt: when => `將於${when}重試。`,
+    agentNotRunning: agent => `${agent} 目前未在這台電腦上執行。`,
+    details: '詳細資訊'
   },
   actions: {
     runNow: '立即執行',
@@ -1052,6 +1084,7 @@ const zhHant: RoutinesCopy = {
   customPlaceholder: 'every 2 hours',
   customHint: '用簡單的話描述，例如「every 2 hours」或「every monday 9am」。',
   customHintDeveloper: '簡單的話，如「every 2 hours」，或 cron 表示式，如「0 9 * * 1-5」。',
+  localTimeHint: example => `當地時間，例如 ${example}`,
   everyRunKept: '每次執行也都會保存在執行紀錄中',
   nothingSelected: '什麼都沒選？結果仍會保存在執行紀錄中。',
   agentChat: agent => `與 ${agent} 的對話`,
@@ -1099,7 +1132,12 @@ const RU_PLURAL = (count: number, one: string, few: string, many: string) => {
 
 const ru: RoutinesCopy = {
   allRoutines: 'Все регулярные задачи',
-  groups: { attention: 'Требуют внимания', scheduled: 'По расписанию', paused: 'Приостановлены', finished: 'Завершены' },
+  groups: {
+    attention: 'Требуют внимания',
+    scheduled: 'По расписанию',
+    paused: 'Приостановлены',
+    finished: 'Завершены'
+  },
   filterLabel: 'Показать',
   filters: { all: 'Все', attention: 'Требуют внимания', scheduled: 'По расписанию', paused: 'Приостановлены' },
   search: 'Поиск регулярных задач',
@@ -1126,7 +1164,9 @@ const ru: RoutinesCopy = {
     delivery: name => `${name}: запуск прошёл, но результаты не доставлены`,
     overdue: name => `${name}: задача не запустилась в назначенное время`,
     overdueHint: 'Возможно, Hermes не запущен на этом компьютере.',
-    retryAt: when => `Следующая попытка — ${when}.`
+    retryAt: when => `Следующая попытка — ${when}.`,
+    agentNotRunning: agent => `${agent} сейчас не запущен на этом компьютере.`,
+    details: 'Подробнее'
   },
   actions: {
     runNow: 'Запустить сейчас',
@@ -1199,6 +1239,7 @@ const ru: RoutinesCopy = {
   customPlaceholder: 'every 2 hours',
   customHint: 'Опишите простыми словами, например «every 2 hours» или «every monday 9am».',
   customHintDeveloper: 'Простые слова, например «every 2 hours», или cron-выражение, например «0 9 * * 1-5».',
+  localTimeHint: example => `Ваше местное время, например ${example}`,
   everyRunKept: 'Каждый запуск сохраняется в истории',
   nothingSelected: 'Ничего не выбрано? Результаты всё равно сохранятся в истории запусков.',
   agentChat: agent => `Чат с ${agent}`,
@@ -1227,7 +1268,8 @@ const ru: RoutinesCopy = {
   editCardTitle: 'Изменить, что она делает, когда запускается и куда отправляет результаты',
   editCardHint: 'Регулярные задачи меняются в настройках их агента.',
   askInChatPrompt: 'Настрой регулярную задачу, которая ',
-  chipTooltip: (count, agent) => `${agent}: ${count} ${RU_PLURAL(count, 'регулярная задача', 'регулярные задачи', 'регулярных задач')}`,
+  chipTooltip: (count, agent) =>
+    `${agent}: ${count} ${RU_PLURAL(count, 'регулярная задача', 'регулярные задачи', 'регулярных задач')}`,
   chipFailing: name => `${name}: ошибка · открывает регулярные задачи`,
   chipOpens: 'Открывает регулярные задачи',
   railAttention: count =>
@@ -1262,7 +1304,9 @@ const ar: RoutinesCopy = {
     delivery: name => `تم تشغيل ${name}، لكن نتائجها لم تُرسل`,
     overdue: name => `لم تُشغَّل ${name} منذ موعدها`,
     overdueHint: 'ربما لا يعمل Hermes على هذا الجهاز.',
-    retryAt: when => `ستُعاد المحاولة ${when}.`
+    retryAt: when => `ستُعاد المحاولة ${when}.`,
+    agentNotRunning: agent => `${agent} لا يعمل على هذا الجهاز الآن.`,
+    details: 'التفاصيل'
   },
   actions: {
     runNow: 'تشغيل الآن',
@@ -1334,6 +1378,7 @@ const ar: RoutinesCopy = {
   customPlaceholder: 'every 2 hours',
   customHint: 'اكتبه بكلمات بسيطة، مثل «every 2 hours» أو «every monday 9am».',
   customHintDeveloper: 'كلمات بسيطة مثل «every 2 hours»، أو تعبير cron مثل «0 9 * * 1-5».',
+  localTimeHint: example => `بتوقيتك المحلي، مثل ${example}`,
   everyRunKept: 'يُحفظ كل تشغيل في السجل أيضًا',
   nothingSelected: 'لم تختر شيئًا؟ تبقى النتائج محفوظة في سجل التشغيل.',
   agentChat: agent => `المحادثة مع ${agent}`,

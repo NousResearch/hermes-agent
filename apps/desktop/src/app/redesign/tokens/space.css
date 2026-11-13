@@ -83,6 +83,8 @@
   --portal-tool-panel-width: 26.25rem;
   /* Full-width pages without a panel pad their catalog column by this much on each side. */
   --page-content-inset: 1.5rem;
+  /* How far a sideways scroller's trailing edge fades while more follows (portal-pages.css). */
+  --portal-scroll-edge-fade: 1.5rem;
   --page-content-max-width: calc(var(--portal-column-catalog) + 2 * var(--page-content-inset));
   /* The space a page scroller keeps below its last row, under its bottom fade. */
   --portal-page-end-space: 2rem;

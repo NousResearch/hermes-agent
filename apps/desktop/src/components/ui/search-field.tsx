@@ -35,6 +35,8 @@ interface SearchFieldProps {
    */
   variant?: 'underline' | 'box'
   'aria-label'?: string
+  /** Escape clears the text first, then a second press leaves the field (one press, one thing). */
+  escapeClears?: boolean
 }
 
 /**
@@ -58,7 +60,8 @@ export function SearchField({
   trailingAction,
   leadingContent,
   variant = 'underline',
-  'aria-label': ariaLabel
+  'aria-label': ariaLabel,
+  escapeClears = false
 }: SearchFieldProps) {
   const { t } = useI18n()
   const clear = onClear ?? (() => onChange(''))
@@ -69,6 +72,23 @@ export function SearchField({
   const [hintIndex] = useState(() => Math.floor(Math.random() * 4096))
   const hintCount = hints?.length ?? 0
   const effectivePlaceholder = hintCount > 0 ? hints![hintIndex % hintCount] : placeholder
+
+  const handleKeyDown: KeyboardEventHandler<HTMLInputElement> = event => {
+    onKeyDown?.(event)
+
+    if (!escapeClears || event.defaultPrevented || event.key !== 'Escape') {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (value) {
+      clear()
+    } else {
+      event.currentTarget.blur()
+    }
+  }
 
   return (
     <div
@@ -109,7 +129,7 @@ export function SearchField({
         )}
         onChange={event => onChange(event.target.value)}
         onFocus={onFocus}
-        onKeyDown={onKeyDown}
+        onKeyDown={escapeClears ? handleKeyDown : onKeyDown}
         placeholder={effectivePlaceholder}
         ref={inputRef}
         type="text"

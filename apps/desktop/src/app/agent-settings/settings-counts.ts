@@ -41,7 +41,8 @@ export function agentCapabilityCounts({
       connectors,
       plugins,
       messaging: messaging?.platforms.filter(platform => platform.configured).length,
-      schedules: jobs?.filter(job => job.enabled).length
+      // Every routine the agent owns, paused included: the Routines list and the sidebar chip count the same.
+      schedules: jobs?.length
     },
     tools: toolSummary,
     skills: skillsOn

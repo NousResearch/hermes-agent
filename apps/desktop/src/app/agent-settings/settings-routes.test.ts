@@ -20,6 +20,9 @@ describe('agent settings routes', () => {
     expect(resolveAgentSettingsSection(new URLSearchParams('tab=config:model&page=fallbacks'))).toBe('model')
     expect(resolveAgentSettingsSection(new URLSearchParams('panel=capabilities&tab=toolsets'))).toBe('tools')
     expect(resolveAgentSettingsSection(new URLSearchParams('panel=messaging'))).toBe('messaging')
+    // The Overview's Capabilities heading names the panel without a page: it opens Tools, not General.
+    expect(resolveAgentSettingsSection(new URLSearchParams('agentProfile=ops&panel=capabilities'))).toBe('tools')
+    expect(resolveAgentSettingsSection(new URLSearchParams('agentProfile=ops&panel=settings'))).toBe('general')
 
     for (const route of [
       'tab=config:appearance',

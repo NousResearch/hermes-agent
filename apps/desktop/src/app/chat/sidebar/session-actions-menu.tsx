@@ -797,6 +797,8 @@ function RenameSessionDialog({
 }: RenameSessionDialogProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
+  // The redesign names the field by its dialog: its placeholder ("Untitled chat") is not a name.
+  const portal = usePortalShell()
   const [value, setValue] = useState(currentTitle)
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -851,6 +853,7 @@ function RenameSessionDialog({
           <DialogTitle>{r.renameTitle}</DialogTitle>
         </DialogHeader>
         <Input
+          aria-label={portal ? r.renameTitle : undefined}
           autoFocus
           disabled={submitting}
           onChange={event => setValue(event.target.value)}

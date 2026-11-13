@@ -160,6 +160,8 @@ const en: BotsWording = {
     composerPlaceholder: 'Say something — every agent in this group chat sees your message.',
     createBotFirst: 'No agents yet — create one first.',
     noSeatableBots: 'None of your agents can join a group chat here yet:',
+    cannotJoinHere: 'These agents can’t join a group chat here:',
+    nonePicked: 'No agents picked yet',
     unseatableHere:
       'Hermes on this machine doesn’t seat it in group chats — it isn’t served here, or it’s being retired',
     createDesc: max =>
@@ -390,6 +392,8 @@ const ja: BotsWording = {
     composerPlaceholder: '何か書いてください — このグループチャットのすべてのエージェントがメッセージを受け取ります。',
     createBotFirst: 'まだエージェントがいません。まず作成してください。',
     noSeatableBots: 'ここではまだどのエージェントもグループチャットに参加できません：',
+    cannotJoinHere: 'これらのエージェントはここではグループチャットに参加できません：',
+    nonePicked: 'まだエージェントが選ばれていません',
     unseatableHere:
       'このマシンの Hermes はこのエージェントをグループチャットに参加させません — ここで提供されていないか、廃止中です',
     createDesc: max =>
@@ -606,6 +610,8 @@ const zh: BotsWording = {
     composerPlaceholder: '说点什么 — 这个群聊里的每个智能体都会看到你的消息。',
     createBotFirst: '还没有智能体，请先创建一个。',
     noSeatableBots: '这里还没有可加入群聊的智能体：',
+    cannotJoinHere: '这些智能体无法在此加入群聊：',
+    nonePicked: '尚未选择智能体',
     unseatableHere: '这台机器上的 Hermes 不会让它加入群聊——它不在此处提供，或正在停用',
     createDesc: max =>
       `选择 2–${max} 个智能体。本机成员关系通过各智能体同步；其他电脑上智能体的成员关系仅保存在此群聊中。`,
@@ -811,6 +817,8 @@ const zhHant: BotsWording = {
     composerPlaceholder: '說點什麼 — 這個群組聊天裡的每個智慧體都會看到你的訊息。',
     createBotFirst: '還沒有智慧體，請先建立一個。',
     noSeatableBots: '這裡還沒有可加入群組聊天的智慧體：',
+    cannotJoinHere: '這些智慧體無法在此加入群組聊天：',
+    nonePicked: '尚未選擇智慧體',
     unseatableHere: '這台機器上的 Hermes 不會讓它加入群組聊天——它不在此處提供，或正在停用',
     createDesc: max =>
       `選擇 2–${max} 個智慧體。本機成員關係透過各智慧體同步；其他電腦上智慧體的成員關係僅保存在此群組聊天中。`,
@@ -979,6 +987,8 @@ const ar: BotsWording = {
     composerPlaceholder: 'اكتب رسالة — سيراها كل وكيل في محادثة المجموعة هذه.',
     createBotFirst: 'لا توجد وكلاء بعد — أنشئ واحدًا أولًا.',
     noSeatableBots: 'لا يمكن لأي من وكلائك الانضمام إلى محادثة مجموعة هنا بعد:',
+    cannotJoinHere: 'لا يمكن لهؤلاء الوكلاء الانضمام إلى محادثة مجموعة هنا:',
+    nonePicked: 'لم يتم اختيار أي وكيل بعد',
     unseatableHere: 'لا يضمّه Hermes على هذا الجهاز إلى محادثات المجموعات — فهو غير مُقدَّم هنا أو قيد الإيقاف',
     createDesc: max =>
       `اختر ما بين وكيلين و${arabicAgents(max, 'وكيلين')}. تُزامَن العضويات المحلية عبر كل وكيل؛ أما عضوية الوكلاء على أجهزة أخرى فتُحفظ في محادثة المجموعة هذه فقط.`,
@@ -1126,6 +1136,8 @@ const ru: BotsWording = {
     composerPlaceholder: 'Напишите что-нибудь — все агенты в этом групповом чате увидят сообщение.',
     createBotFirst: 'Агентов пока нет — сначала создайте агента.',
     noSeatableBots: 'Пока ни один ваш агент не может присоединиться к групповому чату здесь:',
+    cannotJoinHere: 'Эти агенты не могут присоединиться к групповому чату здесь:',
+    nonePicked: 'Агенты ещё не выбраны',
     unseatableHere:
       'Hermes на этой машине не добавляет его в групповые чаты — он здесь не обслуживается или выводится из работы',
     createDesc: max =>
@@ -1280,6 +1292,8 @@ const fr: BotsWording = {
     composerPlaceholder: 'Écrivez un message — tous les agents de cette discussion de groupe le verront.',
     createBotFirst: 'Aucun agent pour le moment — créez-en un d’abord.',
     noSeatableBots: 'Aucun de vos agents ne peut encore rejoindre une discussion de groupe ici :',
+    cannotJoinHere: 'Ces agents ne peuvent pas rejoindre une discussion de groupe ici :',
+    nonePicked: 'Aucun agent choisi pour l’instant',
     unseatableHere:
       'Hermes sur cette machine ne l’accepte pas dans les discussions de groupe — il n’est pas servi ici ou il est en cours de retrait',
     createDesc: max =>
@@ -1437,6 +1451,8 @@ const de: BotsWording = {
     composerPlaceholder: 'Schreibe etwas — jeder Agent in diesem Gruppenchat sieht deine Nachricht.',
     createBotFirst: 'Noch keine Agenten — erstellen Sie zuerst einen.',
     noSeatableBots: 'Noch keiner Ihrer Agenten kann hier einem Gruppenchat beitreten:',
+    cannotJoinHere: 'Diese Agenten können hier keinem Gruppenchat beitreten:',
+    nonePicked: 'Noch keine Agenten ausgewählt',
     unseatableHere:
       'Hermes auf dieser Maschine nimmt ihn nicht in Gruppenchats auf – er wird hier nicht bereitgestellt oder wird gerade stillgelegt',
     createDesc: max =>
@@ -1591,6 +1607,8 @@ const es: BotsWording = {
     composerPlaceholder: 'Escribe algo — todos los agentes de este chat de grupo verán tu mensaje.',
     createBotFirst: 'Aún no hay agentes; crea uno primero.',
     noSeatableBots: 'Ninguno de tus agentes puede unirse todavía a un chat de grupo aquí:',
+    cannotJoinHere: 'Estos agentes no pueden unirse a un chat de grupo aquí:',
+    nonePicked: 'Aún no has elegido agentes',
     unseatableHere: 'Hermes en esta máquina no lo admite en chats de grupo: no se sirve aquí o se está retirando',
     createDesc: max =>
       `Elige de 2 a ${max} agentes. Las pertenencias locales se sincronizan a través de cada agente; para los agentes de otros equipos, la pertenencia solo se guarda en este chat de grupo.`,

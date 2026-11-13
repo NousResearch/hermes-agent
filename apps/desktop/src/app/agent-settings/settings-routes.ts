@@ -20,7 +20,8 @@ export function resolveAgentSettingsSection(params: URLSearchParams): AgentSetti
   }
 
   if (!tab) {
-    return 'general'
+    // The Overview's Capabilities heading opens the capabilities group, whose first page is Tools.
+    return params.get('panel') === 'capabilities' ? 'tools' : 'general'
   }
 
   if (tab.startsWith('agent:')) {

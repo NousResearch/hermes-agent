@@ -97,7 +97,7 @@
   font-weight: 500;
 }
 
-.agent-capability-banner-text > p + p {
+.agent-capability-banner-note {
   color: var(--ui-text-secondary);
   font-size: 13px;
 }

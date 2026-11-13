@@ -269,13 +269,54 @@ function errorDetail(error: unknown): string | undefined {
  *  could not be reached); `'open'` — resolving/opening the forever-chat. */
 export type BotOpenStep = 'open' | 'reach'
 
+/** How a failed open names its agent, and whether the toast body states the reason. */
+export interface BotOpenFailureNaming {
+  /** The agent's name as the clicked row shows it. */
+  botName?: string
+  /** Say why in one plain line in the body (the redesign's agent rows); the raw text stays in
+   *  `detail`. Off, the body is the classic next step only. */
+  explain?: boolean
+}
+
+/** One plain line for why the open failed, or null when the error names no cause we can word. */
+export function botOpenReason(error: unknown, bot: RosterRow, botName: string, step: BotOpenStep): null | string {
+  const b = botsText().bot
+  const text = `${String((error as { code?: unknown })?.code ?? '')} ${errorDetail(error) ?? ''}`
+
+  if (/profile_parked|\bparked\b|runtime_draining|not served|does not serve/i.test(text)) {
+    return b.openReasonParked(botName)
+  }
+
+  // Version skew: the backend refused what this Desktop sent.
+  if (/out of sync|different versions/i.test(text)) {
+    return b.openNeedsUpdateMessage(bot.connectionLabel || bot.connectionId || 'Hermes')
+  }
+
+  if (/timed? ?out|timeout/i.test(text)) {
+    return b.openReasonTimeout(botName)
+  }
+
+  if (step === 'reach' || /ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|unreachable|socket (?:closed|hang up)|not connected|offline/i.test(text)) {
+    return b.openReasonUnreachable
+  }
+
+  return null
+}
+
 /** Toast a failed bot open. Titles and bodies come from the plugin bundle and
  *  say what happened + what to do; the raw RPC/connection error only ever
  *  rides in `detail`. Every toast offers the Gateways settings tab. */
-export function notifyBotOpenFailure(error: unknown, bot: RosterRow, step: BotOpenStep, botName?: string) {
+export function notifyBotOpenFailure(
+  error: unknown,
+  bot: RosterRow,
+  step: BotOpenStep,
+  { botName, explain = false }: BotOpenFailureNaming = {}
+) {
   const b = botsText().bot
   const action = { label: b.openGateways, onClick: () => host.navigate(GATEWAY_SETTINGS_PATH) }
   const detail = errorDetail(error)
+  const name = botName || bot.name
+  const reason = explain ? botOpenReason(error, bot, name, step) : null
 
   if (botModeGatewayNeedsUpdate(error)) {
     const connectionLabel = bot.connectionLabel || bot.connectionId || 'Hermes'
@@ -290,7 +331,7 @@ export function notifyBotOpenFailure(error: unknown, bot: RosterRow, step: BotOp
     return
   }
 
-  if (step === 'reach') {
+  if (step === 'reach' && !explain) {
     host.notify?.({
       kind: 'error',
       title: b.openUnreachableTitle,
@@ -304,8 +345,8 @@ export function notifyBotOpenFailure(error: unknown, bot: RosterRow, step: BotOp
 
   host.notify?.({
     kind: 'error',
-    title: b.openChatFailedTitle(botName || bot.name),
-    message: b.openChatFailedMessage,
+    title: b.openChatFailedTitle(name),
+    message: reason ?? (step === 'reach' ? b.openUnreachableMessage : b.openChatFailedMessage),
     ...(detail ? { detail } : {}),
     action
   })

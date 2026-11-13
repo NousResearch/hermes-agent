@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -28,6 +28,26 @@ export function PortalGroupChats({ query }: { query: string }) {
   const active = useStore($groupChatWorkspace)
   const gatewayRooms = useGatewayGroupRooms()
   const [creating, setCreating] = useState(false)
+  const trigger = useRef<HTMLButtonElement>(null)
+  // The dialog unmounts as it closes, so nothing returns focus for it: a dismissal hands focus back
+  // to "+", while a created group chat takes it (create calls onClose, then onCreated).
+  const created = useRef(false)
+
+  const closeDialog = () => {
+    created.current = false
+    setCreating(false)
+    requestAnimationFrame(() => {
+      if (!created.current) {
+        trigger.current?.focus()
+      }
+    })
+  }
+
+  const onCreated: typeof openGroupChat = (...args) => {
+    created.current = true
+    openGroupChat(...args)
+  }
+
   const needle = query.trim().toLocaleLowerCase()
   const names = groupChatNames(meta, rooms).filter(name => name.toLocaleLowerCase().includes(needle))
   const visibleGatewayRooms = gatewayRooms.filter(room => room.name.toLocaleLowerCase().includes(needle))
@@ -46,6 +66,7 @@ export function PortalGroupChats({ query }: { query: string }) {
               aria-label={b.group.newTitle}
               className="portal-section-action"
               onClick={() => setCreating(true)}
+              ref={trigger}
               size="icon-xs"
               variant="ghost"
             >
@@ -82,7 +103,7 @@ export function PortalGroupChats({ query }: { query: string }) {
         </FadeScroll>
       )}
       {creating && (
-        <CreateGroupChatDialog onClose={() => setCreating(false)} onCreated={openGroupChat} open roster={roster} />
+        <CreateGroupChatDialog onClose={closeDialog} onCreated={onCreated} open roster={roster} />
       )}
     </section>
   )

@@ -1310,9 +1310,7 @@ export function AppearanceAdvancedSettings() {
         <FileBrowserRow />
         <ComposerPopoutRow />
         <ResumeLastSessionSetting />
-        {/* The overview's one "Tips & guided tours" switch drives both; these keep the tip reset. */}
-        <TipsRow />
-        <ToursRow />
+        {/* Tips and tours: the overview's one "Tips & guided tours" switch, with the tip reset. */}
         <div id={settingElementId(ids.pet)}>
           <PetSettings />
         </div>

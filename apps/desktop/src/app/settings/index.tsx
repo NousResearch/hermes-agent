@@ -163,7 +163,7 @@ function SettingsSearchPill() {
     >
       <Search className="size-3" />
       <span className="text-xs">{t.settings.search.pill}</span>
-      {searchCombo && <KbdCombo combo={searchCombo} size="sm" variant="ghost" />}
+      {searchCombo && <KbdCombo combo={searchCombo} data-slot="settings-search-shortcut" size="sm" variant="ghost" />}
     </button>
   )
 }

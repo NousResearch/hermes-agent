@@ -10,7 +10,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { CronJob } from '@/hermes'
 import { useI18n } from '@/i18n'
 
-import { lastErrorSummary } from '../cron/cron-job-model'
 import { usePageFrameCopy } from '../overlays/page-frame-copy'
 import { renderPanelMenuItems } from '../overlays/panel'
 import { PageHeader } from '../redesign/page-header'
@@ -19,7 +18,6 @@ import {
   filterRoutines,
   ROUTINE_FILTERS,
   type RoutineFilter,
-  routineIssue,
   routineStatus,
   routineTitle
 } from './routine-model'
@@ -95,8 +93,7 @@ export function RoutinesOverview({ actions, agentScoped = false, headerCreate, o
           {failing.map(job => (
             <RoutineBanner
               busy={actions.isBusy(job) || actions.isLive(job)}
-              detail={issueDetail(job)}
-              job={job}
+                  job={job}
               key={routineKey(job)}
               onOpen={() => onOpen(job)}
               onRetry={() => void actions.runNow(job)}
@@ -113,17 +110,6 @@ export function RoutinesOverview({ actions, agentScoped = false, headerCreate, o
       )}
     </div>
   )
-}
-
-/** The first plain sentence of what went wrong (proposal mapping: "Last run failed:" → banner). */
-export function issueDetail(job: CronJob): string {
-  const issue = routineIssue(job)
-
-  if (issue === 'failed') {
-    return lastErrorSummary(job.latest_execution?.error ?? job.last_error)
-  }
-
-  return issue === 'delivery' ? lastErrorSummary(job.last_delivery_error) : ''
 }
 
 interface RoutinesTableProps {

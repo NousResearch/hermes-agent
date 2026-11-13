@@ -11,6 +11,7 @@ import { jobState } from '../cron/job-state'
 import type { PanelMenuItem } from '../overlays/panel'
 import { SETTINGS_ROUTE } from '../routes'
 
+import { plainRunError, routineErrorText } from './routine-error'
 import { type RoutineIssue, routineIssue, type RoutineStatus, STATUS_TONE } from './routine-model'
 import { formatMoment } from './routine-schedule'
 import type { RoutineSource } from './routine-source'
@@ -60,7 +61,6 @@ const BANNER_TITLE: Record<RoutineIssue, (copy: RoutinesCopy, name: string, job:
 interface RoutineBannerProps {
   job: CronJob
   title: string
-  detail?: string
   busy: boolean
   onRetry: () => void
   onOpen?: () => void
@@ -68,8 +68,9 @@ interface RoutineBannerProps {
 
 /** A routine that needs attention (Figma 1098:8471): what went wrong in one plain sentence, when it
  *  will try again, and Retry. Shown only while there is a problem. */
-export function RoutineBanner({ busy, detail, job, onOpen, onRetry, title }: RoutineBannerProps) {
+export function RoutineBanner({ busy, job, onOpen, onRetry, title }: RoutineBannerProps) {
   const copy = useRoutinesCopy()
+  const agentLabel = useAgentLabel()
   const { locale } = useI18n()
   const issue = routineIssue(job)
 
@@ -85,6 +86,8 @@ export function RoutineBanner({ busy, detail, job, onOpen, onRetry, title }: Rou
         : ''
 
   const heading = BANNER_TITLE[issue](copy, title, job)
+  const raw = routineErrorText(job)
+  const detail = raw ? plainRunError(raw, copy, agentLabel(job.profile ?? '')) : ''
 
   return (
     <div className="routines-banner" role="status">
@@ -98,6 +101,13 @@ export function RoutineBanner({ busy, detail, job, onOpen, onRetry, title }: Rou
           <p className="routines-banner-title">{heading}</p>
         )}
         {(detail || next) && <p className="routines-banner-detail">{[detail, next].filter(Boolean).join(' · ')}</p>}
+        {/* The plain sentence is for reading; the backend's own words stay one click away for a fix. */}
+        {raw && raw !== detail && (
+          <details className="routines-banner-raw">
+            <summary>{copy.banner.details}</summary>
+            <p>{raw}</p>
+          </details>
+        )}
       </div>
       <Button disabled={busy} onClick={onRetry}>
         {copy.actions.retry}

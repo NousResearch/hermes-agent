@@ -140,6 +140,15 @@ it('duplicates the captured profile on the captured gateway even after the activ
   expect(refreshFleetRoster).toHaveBeenCalledWith({ force: true })
 })
 
+it('titles the duplicate dialog by the action that opened it, not "New agent"', async () => {
+  render(<AgentOverviewActions owner={owner} profile={profile} />)
+  openMenu()
+  await act(async () => fireEvent.click(screen.getByRole('menuitem', { name: 'Duplicate agent' })))
+
+  expect(screen.getByRole('dialog', { name: 'Duplicate agent' })).toBeTruthy()
+  expect(screen.queryByRole('heading', { name: en.profiles.newProfile })).toBeNull()
+})
+
 it('sets the owner route as default, not a same-named agent on the active gateway', async () => {
   $defaultProfileRoute.set({ connectionId: 'beta', profile: 'research' })
   $apiRequestScope.set({ connectionId: 'beta', profile: 'research' })

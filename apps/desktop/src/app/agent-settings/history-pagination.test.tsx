@@ -287,3 +287,18 @@ it.each([
     }))
   )
 })
+
+it('renders its loading summary as valid markup (no block skeleton inside a paragraph)', async () => {
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+  const { container } = renderHistory()
+
+  try {
+    // While the first page loads the summary line is a skeleton bar.
+    expect(container.querySelector('.agent-history-stats [data-slot="skeleton"]')).not.toBeNull()
+    expect(container.querySelector('p [data-slot="skeleton"], p div')).toBeNull()
+    await screen.findByText('History entry 24')
+    expect(errors.mock.calls.flat().join(' ')).not.toMatch(/cannot be a descendant|cannot contain a nested/)
+  } finally {
+    errors.mockRestore()
+  }
+})

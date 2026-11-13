@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { RootTooltipProvider } from '@/components/ui/tooltip'
@@ -16,6 +16,16 @@ vi.mock('@/plugins/hermes-bots/canonical-group-registry', async original => ({
   useGatewayGroupRooms: vi.fn(() => [])
 }))
 vi.mock('@/plugins/hermes-bots/group-chat-view', () => ({ openGroupChat: vi.fn() }))
+
+const dialog = vi.hoisted(() => ({ props: null as null | { onClose: () => void; onCreated: (key: string, origin: 'key') => void } }))
+
+vi.mock('@/plugins/hermes-bots/create-dialog', () => ({
+  CreateGroupChatDialog: (props: NonNullable<typeof dialog.props>) => {
+    dialog.props = props
+
+    return <div role="dialog" />
+  }
+}))
 vi.mock('@/plugins/hermes-bots/i18n', async original => {
   const module = await original<typeof BotsI18n>()
 
@@ -55,4 +65,28 @@ it('counts members from the published roster', () => {
   ] } })
   render(<RootTooltipProvider><PortalGroupChats query="" /></RootTooltipProvider>)
   expect(screen.getByRole('button', { name: /Pair/ }).textContent).toContain('2')
+})
+
+const nextFrame = () => act(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())))
+
+it('a dismissed group dialog hands focus back to its "+"; a created group chat keeps it', async () => {
+  render(<RootTooltipProvider><PortalGroupChats query="" /></RootTooltipProvider>)
+  const plus = screen.getByRole('button', { name: 'New group chat' })
+
+  fireEvent.click(plus)
+  ;(window.document.activeElement as HTMLElement | null)?.blur()
+  act(() => dialog.props?.onClose())
+  await nextFrame()
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(window.document.activeElement).toBe(plus)
+
+  fireEvent.click(plus)
+  plus.blur()
+  act(() => {
+    dialog.props?.onClose()
+    dialog.props?.onCreated('canonical:local:default:room', 'key')
+  })
+  await nextFrame()
+  expect(openGroupChat).toHaveBeenLastCalledWith('canonical:local:default:room', 'key')
+  expect(window.document.activeElement).not.toBe(plus)
 })

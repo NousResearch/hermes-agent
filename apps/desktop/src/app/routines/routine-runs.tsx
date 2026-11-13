@@ -7,12 +7,13 @@ import { type CronJob, getCronJobRuns, type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 
-import { lastErrorSummary } from '../cron/cron-job-model'
 import { isCronRunRow, openCronRun, reconcileCronRunVerdicts } from '../cron/open-cron-run'
 import { ListRow } from '../settings/primitives'
 import { SettingsCard, SettingsCardSkeleton, SettingsEmptyRow, SettingsGroup } from '../settings/settings-card'
 
+import { plainRunError } from './routine-error'
 import { outputRunStatus, runChip, runDurationSeconds } from './routine-model'
+import { useAgentLabel } from './routine-parts'
 import { capitalized, formatDuration, formatMoment } from './routine-schedule'
 import type { RoutineSource } from './routine-source'
 import { useRoutinesCopy } from './routines-copy'
@@ -40,7 +41,12 @@ export function RoutineRuns({ job, live, onOpenSession, source }: RoutineRunsPro
   const scope = source.scopeFor(job)
 
   const runs = useQuery({
-    queryKey: ['routine-runs', source.connectionId ?? '', job.profile ?? '', job.id],
+    // The routine row is the authority that an attempt happened: a run the scheduler refuses up front
+    // (its agent not running here) records a failed attempt and its output without a cron.changed
+    // event, so a new attempt is a new read rather than a wait for the slow poll. This routine's list
+    // stays on screen while it loads; another routine's never stands in for it.
+    queryKey: ['routine-runs', source.connectionId ?? '', job.profile ?? '', job.id, runAttemptKey(job)],
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[3] === job.id ? previous : undefined),
     queryFn: async () => {
       const result = await getCronJobRuns(job.id, 20, scope)
       // A fresh read re-evaluates every run already opened (#88443).
@@ -87,8 +93,17 @@ interface RunRowProps {
   onOpenSession?: (sessionId: string, session?: SessionInfo) => void
 }
 
+/** What changes when the routine makes a new attempt or one settles. */
+function runAttemptKey(job: CronJob): string {
+  const execution = job.latest_execution
+
+  return [execution?.id, execution?.status, job.last_run_at, job.last_status].map(part => part ?? '').join('|')
+}
+
 function RunRow({ job, locale, onOpenSession, run }: RunRowProps) {
   const copy = useRoutinesCopy()
+  const agentLabel = useAgentLabel()
+  const plain = (raw: string) => plainRunError(raw, copy, agentLabel(job.profile ?? ''))
   const chip = runChip(run, job)
   const seconds = runDurationSeconds(run)
   const when = capitalized(formatMoment((run.started_at || run.last_active) * 1000, locale), locale)
@@ -99,10 +114,10 @@ function RunRow({ job, locale, onOpenSession, run }: RunRowProps) {
     chip === 'running'
       ? copy.runningNow
       : output
-        ? lastErrorSummary(output.reason)
+        ? plain(output.reason)
         : seconds !== null && run.source === 'cron'
           ? copy.finishedIn(formatDuration(seconds, locale))
-          : lastErrorSummary(run.title || run.preview)
+          : plain(run.title || run.preview || '')
 
   return (
     <ListRow

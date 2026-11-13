@@ -259,17 +259,24 @@
 .agent-settings-editor[data-inline-navigation] {
   grid-template-columns: 184px minmax(0, 1fr);
 }
+/* The section menu above the page on a narrow editor (see AgentSettingsSectionPicker). */
+.agent-settings-section-picker {
+  display: none;
+}
 @container agent-editor (max-width: 620px) {
   .agent-settings-editor[data-inline-navigation] {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
-    gap: 24px;
-  }
-  .agent-settings-navigation {
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-    max-height: min(32vh, 260px);
-    padding-bottom: 0;
     gap: 16px;
+  }
+  /* A capped grid hid its last groups (Runtime) below a fold with no scroll cue: like app
+     Settings at this width, one "Section ⌄" menu lists every section instead. */
+  .agent-settings-editor[data-inline-navigation] > .agent-settings-navigation {
+    display: none;
+  }
+  .agent-settings-editor[data-inline-navigation] > .agent-settings-section-picker {
+    display: flex;
+    min-width: 0;
   }
 }
 /* Color swatches (895:9675): 24px circles, the selected one ringed in near-white ink. */

@@ -105,3 +105,39 @@ it('replaces chat tabs without remounting drafts, preserves mixed tabs and minim
     })
   }
 })
+
+it('lists every open chat once a second chat tab joins the main chat (the band strip), not just one title', () => {
+  stubMenuDomApis()
+  stubResizeObserver()
+  $workspaceIsPage.set(false)
+
+  const disposers = [
+    registry.register({ area: 'panes', id: 'workspace', title: 'Funnel review', data: { placement: 'main' }, render: () => null }),
+    registry.register({
+      area: 'panes',
+      id: 'session-tile:a',
+      title: 'Hiring loop',
+      data: { placement: 'main' },
+      render: () => null
+    })
+  ]
+
+  try {
+    render(
+      <MemoryRouter>
+        <TreeGroup
+          node={group(['workspace', 'session-tile:a'], { id: 'main', active: 'session-tile:a' })}
+          parentAxis="column"
+          topEdge={false}
+        />
+      </MemoryRouter>
+    )
+    expect(screen.getByRole('tab', { name: /Funnel review/ })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Hiring loop/, selected: true })).toBeTruthy()
+    // The conversation chrome stays beside the strip.
+    expect(screen.getByRole('button', { name: 'Agent settings' })).toBeTruthy()
+  } finally {
+    cleanup()
+    act(() => disposers.forEach(dispose => dispose()))
+  }
+})

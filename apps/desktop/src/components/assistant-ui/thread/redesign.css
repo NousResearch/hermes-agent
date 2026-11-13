@@ -74,6 +74,27 @@
   padding-block: 0 var(--portal-conversation-prompt-clearance);
 }
 
+/* A hard clip at the prompt's edge cut the reply line under it in half. Fade
+   the covered sibling out instead: hidden through the prompt's box, then
+   easing back to full ink over two reply lines: the line straddling the edge
+   is all but gone and the next one is faded, never half a line at full ink. A mask, like the
+   clip it replaces, paints no backing, so the stage (and its art) shows
+   through in either theme. */
+:root[data-shell='portal'] [data-sticky-prompt-clip] {
+  clip-path: none;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent var(--sticky-prompt-clip),
+    color-mix(in srgb, var(--portal-raw-black) 20%, transparent)
+      calc(var(--sticky-prompt-clip) + 0.5 * var(--portal-conversation-prompt-fade)),
+    var(--portal-raw-black) calc(var(--sticky-prompt-clip) + var(--portal-conversation-prompt-fade))
+  );
+}
+
+:root[data-shell='portal'] [data-slot='aui_thread-content'] {
+  --portal-conversation-prompt-fade: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size));
+}
+
 :root[data-shell='portal'] [data-slot='aui_user-bubble-actions'] {
   width: fit-content;
   max-width: min(100%, 23.75rem);

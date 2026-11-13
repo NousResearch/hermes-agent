@@ -40,7 +40,7 @@ import { openSession } from '../open-session'
 import { Panel, PanelHeader } from '../overlays/panel'
 import { PageHeader, PageTabs } from '../redesign/page-header'
 import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../routes'
-import { getNested, toolNames } from '../settings/helpers'
+import { getNested } from '../settings/helpers'
 import { SettingsOwnerContext, settingsScopeLabel } from '../settings/profile-scope'
 import type { SettingsPageProps } from '../settings/types'
 
@@ -446,7 +446,11 @@ function AgentSettingsContent({
   const editorOwner = useMemo(() => ({ connectionId, profile: owner.profile }), [connectionId, owner.profile])
   // The Agents destination reopens the agent this window last showed.
   useEffect(() => rememberViewedAgent({ connectionId, profile: owner.profile }), [connectionId, owner.profile])
-  const failed = [config, skills, tools, jobs, messaging, recent, soul].some(query => query.isError)
+
+  const failed =
+    [config, skills, tools, jobs, messaging, recent, soul].some(query => query.isError) ||
+    connectors.failed ||
+    plugins.failed
 
   // The endpoint backfills pinned sessions on each page; render each session once.
   const sessions = useMemo(() => {
@@ -459,8 +463,8 @@ function AgentSettingsContent({
   const inlineMenu = useInlineAgentSettingsMenu()
 
   const counts = agentCapabilityCounts({
-    connectors,
-    plugins,
+    connectors: connectors.value,
+    plugins: plugins.value,
     jobs: jobs.data,
     messaging: messaging.data,
     skills: skills.data,
@@ -564,6 +568,8 @@ function AgentSettingsContent({
                     recent.refetch(),
                     soul.refetch()
                   ])
+                  connectors.retry()
+                  plugins.retry()
                 }}
                 variant="secondary"
               >
@@ -588,32 +594,29 @@ function AgentSettingsContent({
                 value={value}
               />
               <Section onOpen={() => openPanel('capabilities')} title={c.capabilities}>
+                {/* One count per capability, the same number the settings menu shows (settings-counts.ts). */}
                 <SettingRow
-                  detail={pending(
-                    tools.isError,
-                    tools.isPending,
-                    new Set(tools.data?.filter(tool => tool.enabled).flatMap(toolNames)).size
-                  )}
+                  detail={pending(tools.isError, tools.isPending, counts.tools?.toolsets)}
                   onClick={() => openPanel('capabilities', 'toolsets')}
                   title={c.tools}
                 />
                 <SettingRow
-                  detail={pending(skills.isError, skills.isPending, skills.data?.length)}
+                  detail={pending(skills.isError, skills.isPending, counts.skills)}
                   onClick={() => openPanel('capabilities', 'skills')}
                   title={c.skills}
                 />
                 <SettingRow
-                  detail={connectors ?? pendingValue}
+                  detail={pending(connectors.failed, counts.nav.connectors === undefined, counts.nav.connectors)}
                   onClick={() => openPanel('capabilities', 'connectors')}
                   title={c.connectors}
                 />
                 <SettingRow
-                  detail={plugins ?? pendingValue}
+                  detail={pending(plugins.failed, counts.nav.plugins === undefined, counts.nav.plugins)}
                   onClick={() => openPanel('capabilities', 'plugins')}
                   title={t.skills.tabPlugins}
                 />
                 <SettingRow
-                  detail={pending(jobs.isError, jobs.isPending, jobs.data?.filter(job => job.enabled).length)}
+                  detail={pending(jobs.isError, jobs.isPending, counts.nav.schedules)}
                   onClick={() => document.getElementById('agent-routines')?.scrollIntoView({ block: 'nearest' })}
                   title={t.cron.title}
                 />

@@ -136,7 +136,7 @@ export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
   return !key || !HIDDEN_KEY_PREFIXES.some(prefix => key.startsWith(prefix))
 }
 
-let inflight: Promise<void> | null = null
+let inflight: Promise<boolean | undefined> | null = null
 let inflightProfile: string | null = null
 let inflightOwnerKey: string | undefined
 /** A completed background action must not replace a newer owner's inventory. */
@@ -154,8 +154,9 @@ const withProfile = (params: Record<string, unknown>, profile?: string | null) =
  *  HERMES_HOME. Always refetches (it's a cheap local disk scan on the
  *  backend); concurrent callers for the SAME profile share one in-flight
  *  request — a different profile starts fresh so a scope switch can't get a
- *  stale list. */
-export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<void> {
+ *  stale list. Resolves `true` once this load's list is published, `false`
+ *  when this load failed, and `undefined` when a newer load superseded it. */
+export function loadAgentPlugins(request: GatewayRequest, profile?: string | null): Promise<boolean | undefined> {
   const scope = profile ?? null
 
   if (inflight && inflightProfile === scope && inflightOwnerKey === request.ownerKey) {
@@ -182,7 +183,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
       )
 
       if (generation !== loadGeneration) {
-        return
+        return undefined
       }
 
       $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
@@ -190,13 +191,17 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
       $agentPluginsOwnerKey.set(request.ownerKey)
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
+
+      return true
     } catch (e) {
       if (generation !== loadGeneration) {
-        return
+        return undefined
       }
 
       $agentPluginsError.set(e instanceof Error ? e.message : String(e))
       $agentPluginsStatus.set('error')
+
+      return false
     } finally {
       if (generation === loadGeneration) {
         inflight = null

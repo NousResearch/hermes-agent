@@ -89,7 +89,11 @@ describe('Appearance overview', () => {
       expect(modePref.resolve(profile)).toBe(name.toLowerCase())
     }
 
-    for (const [name, scale] of [['Small', 100], ['Large', 125], ['Default', 110]] as const) {
+    for (const [name, scale] of [
+      ['Small', 100],
+      ['Large', 125],
+      ['Default', 110]
+    ] as const) {
       fireEvent.click(screen.getByRole('button', { name }))
       expect($chatTextScale.get()).toBe(scale)
     }
@@ -112,8 +116,20 @@ describe('Appearance overview', () => {
     expect(advanced.open).toBe(true)
     fireEvent.click(screen.getAllByRole('button', { name: '175%' })[1]!)
     expect($chatTextScale.get()).toBe(175)
-    expect(screen.getByRole('switch', { name: 'In-App Tips' })).toBeTruthy()
-    expect(screen.getByRole('switch', { name: 'Guided Tours' })).toBeTruthy()
+    // Advanced repeats neither half of the overview's one "Tips & guided tours" switch.
+    expect(screen.queryByRole('switch', { name: 'In-App Tips' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Guided Tours' })).toBeNull()
+    expect(screen.getAllByRole('switch', { name: 'Tips & guided tours' })).toHaveLength(1)
+  })
+
+  it('lands the tips and tours deep links on the one tips switch', () => {
+    const { container } = renderPage('general')
+    const byId = (id: string) => container.ownerDocument.getElementById(settingElementId(id))
+    const tips = byId(SETTING_IDS.appearance.tips)
+    const tours = byId(SETTING_IDS.appearance.tours)
+
+    expect(tips?.textContent).toContain('Tips & guided tours')
+    expect(tours?.contains(tips!)).toBe(true)
   })
 
   it('reveals an advanced general-setting deep link before focusing its original target', async () => {

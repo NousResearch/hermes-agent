@@ -90,7 +90,8 @@ export function SimplifiedBotChatRow({
           if (onOpen) {
             onOpen()
           } else if (botMode) {
-            void openRosterBot(bot)
+            // The toast names the agent as this row does, never by another name the roster holds.
+            void openRosterBot(bot, { label: agent.label })
           } else {
             startSimplifiedAgentSession(agent)
           }

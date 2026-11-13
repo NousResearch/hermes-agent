@@ -227,6 +227,13 @@
   flex-shrink: 0;
 }
 
+/* The blank option's hint is a sentence, not a label: it wraps under its name instead of losing its
+   end to an ellipsis in the sidebar-wide picker. */
+.new-session-option-hint {
+  overflow: visible;
+  white-space: normal;
+}
+
 .new-session-option-tile {
   display: grid;
   place-items: center;

@@ -287,7 +287,8 @@ describe('Portal sidebar', () => {
     const agent = screen.getByRole('button', { name: 'Research' })
     fireEvent.click(agent)
     expect(openRosterBot).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'research', targetProfile: 'research', sourceScoped: false })
+      expect.objectContaining({ name: 'research', targetProfile: 'research', sourceScoped: false }),
+      { label: 'Research' }
     )
     expect(screen.getByRole('button', { name: 'Expand: Research' }).getAttribute('aria-expanded')).toBe('false')
     expect(screen.getByTestId('route').textContent).toBe('')

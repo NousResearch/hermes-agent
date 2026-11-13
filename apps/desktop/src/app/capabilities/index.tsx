@@ -27,7 +27,7 @@ import { SETTINGS_ROUTE } from '../routes'
 import { useSettingsOwner } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { useConnectorsCount, usePluginsCount } from './capability-counts'
+import { type CapabilityCount, useConnectorsCount, usePluginsCount } from './capability-counts'
 import { syncCatalogArcs } from './catalog/catalog-arc'
 import { prefetchCatalogWhenIdle } from './catalog/catalog-data'
 import { CatalogSkeleton } from './catalog/catalog-skeleton'
@@ -265,7 +265,8 @@ function useCapabilityTabs({ pageFrame, scope, skills, toolsets }: CapabilityTab
   const { t } = useI18n()
   const plugins = usePluginsCount(scope.profile)
   const connectors = useConnectorsCount(scope.profile)
-  const redesignCount = (count: number | undefined) => (pageFrame ? (count ?? null) : undefined)
+  // A count the agent's backend could not answer drops its slot rather than reserving it forever.
+  const redesignCount = (count: CapabilityCount) => (pageFrame && !count.failed ? (count.value ?? null) : undefined)
 
   return [
     { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },

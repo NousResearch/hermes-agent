@@ -728,6 +728,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-column-landing` | `30rem` | ″ | The landing's composer before the first message (906). |
 | `--portal-tool-panel-width` | `26.25rem` | ″ | The developer tool panel's default width (Files, Terminal, Review and Browser share one width, redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. |
 | `--page-content-inset` | `1rem` | ″ | Full-width pages without a panel pad their catalog column by this much on each side. |
+| `--portal-scroll-edge-fade` | `1.5rem` | ″ | How far a sideways scroller's trailing edge fades while more follows (portal-pages.css). |
 | `--page-content-max-width` | `calc(var(--portal-column-catalog) + 2 * var(--page-content-inset))` | ″ |  |
 | `--portal-page-end-space` | `2rem` | ″ | The space a page scroller keeps below its last row, under its bottom fade. |
 | `--portal-page-top` | `1rem` | ″ | The page header (PageHeader, app/redesign/page-header.tsx), one geometry for every routed page so its H1, description and tab bar sit at the same y on all of them: the column's top (856:2827 y 18), a title block that always reserves the agent header's 68 (877:4166: 56 tile, or H1 44 + 6 + one 13px line), 24 to the tabs and from the tabs to the content (877:4166 gap 24), 32h tabs (877:4200) and the page rhythm of 32 between sections and after a heading with no tabs (1036:7405). |

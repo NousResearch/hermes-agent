@@ -790,7 +790,7 @@ function HistorySummary({ rows, archivedShown, pending, onCleanEmpty }: HistoryS
   ]
 
   return (
-    <p className="agent-history-stats">
+    <div className="agent-history-stats">
       {pending ? (
         <Skeleton className="agent-history-skeleton" style={{ width: '12rem' }} />
       ) : (
@@ -801,7 +801,7 @@ function HistorySummary({ rows, archivedShown, pending, onCleanEmpty }: HistoryS
           {c.emptyChats(empty)} · {c.cleanupLink}
         </button>
       )}
-    </p>
+    </div>
   )
 }
 

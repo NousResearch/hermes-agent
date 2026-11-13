@@ -7,9 +7,15 @@ import { type AutomationBlueprint, type CronJob, instantiateAutomationBlueprint 
 import { useI18n } from '@/i18n'
 import { notify } from '@/store/notifications'
 
-import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, initialBlueprintValues } from '../cron/blueprints'
+import {
+  BlueprintSlotControl,
+  blueprintSlotHelp,
+  cleanBlueprintFieldError,
+  initialBlueprintValues
+} from '../cron/blueprints'
 
 import { AgentSelect, DeliveryField } from './routine-fields'
+import { formatClock } from './routine-schedule'
 import type { RoutineSource } from './routine-source'
 import { useRoutinesCopy } from './routines-copy'
 
@@ -35,7 +41,7 @@ export function RoutineBlueprintForm({
   profile,
   source
 }: RoutineBlueprintFormProps) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const copy = useRoutinesCopy()
   const [values, setValues] = useState<Record<string, string>>(() => initialBlueprintValues(blueprint))
   const [error, setError] = useState<null | string>(null)
@@ -73,7 +79,13 @@ export function RoutineBlueprintForm({
       )}
       {blueprint.fields.map(field => {
         const id = `routine-slot-${field.name}`
-        const help = blueprintSlotHelp(field)
+
+        // The backend's time hint ("24h local time, e.g. 08:00") contradicts the time input, which
+        // shows the locale's clock: say the same thing in the field's own format.
+        const help =
+          field.type === 'time'
+            ? copy.localTimeHint(formatClock(field.default || '09:00', locale))
+            : blueprintSlotHelp(field)
 
         return field.name === 'deliver' ? (
           <DeliveryField
@@ -85,7 +97,12 @@ export function RoutineBlueprintForm({
           />
         ) : (
           <Field htmlFor={id} key={field.name} label={field.label}>
-            <BlueprintSlotControl field={field} id={id} onChange={next => set(field.name, next)} value={values[field.name] ?? ''} />
+            <BlueprintSlotControl
+              field={field}
+              id={id}
+              onChange={next => set(field.name, next)}
+              value={values[field.name] ?? ''}
+            />
             {help && <FieldHint>{help}</FieldHint>}
           </Field>
         )

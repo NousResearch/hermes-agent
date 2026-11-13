@@ -4,6 +4,7 @@ import { type KeyboardEvent, type ReactNode, useLayoutEffect, useMemo, useRef } 
 import { useLocation, useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
+import { TabDropdown } from '@/components/ui/tab-dropdown'
 import { useI18n } from '@/i18n'
 
 import { CapabilitiesView } from '../capabilities'
@@ -156,13 +157,16 @@ function AgentSettingsEditorContent({
   return (
     <div className="agent-settings-editor" data-inline-navigation={inlineNavigation || undefined}>
       {inlineNavigation && (
-        <AgentSettingsNavigation
-          ariaLabel={t.commandCenter.settings}
-          counts={counts?.nav}
-          labels={labels}
-          onOpen={open}
-          section={section}
-        />
+        <>
+          <AgentSettingsNavigation
+            ariaLabel={t.commandCenter.settings}
+            counts={counts?.nav}
+            labels={labels}
+            onOpen={open}
+            section={section}
+          />
+          <AgentSettingsSectionPicker counts={counts?.nav} labels={labels} onOpen={open} section={section} />
+        </>
       )}
       <section aria-label={t.commandCenter.settings} className="agent-settings-body scroll-fade-y" ref={bodyRef}>
         <AgentSettingsHeading counts={counts} labels={labels} section={section} />
@@ -437,6 +441,38 @@ function moveMenuFocus(event: KeyboardEvent<HTMLElement>) {
   }
 }
 
+const isCurrentSection = (section: AgentSettingsSection | null, id: AgentSettingsSection) =>
+  section === id || (id === 'tools' && section === 'tools-advanced')
+
+/** A narrow editor (the app Settings' rule, overlay-split-layout.tsx): one "Section ⌄" menu that
+ *  lists every section instead of a capped grid whose last groups fall below the fold. CSS swaps
+ *  it in for the inline menu at the editor's narrow container width. */
+export function AgentSettingsSectionPicker({
+  counts,
+  labels,
+  onOpen,
+  section
+}: Omit<AgentSettingsNavigationProps, 'ariaLabel'>) {
+  return (
+    <div className="agent-settings-section-picker" data-slot="agent-settings-section-picker">
+      <TabDropdown
+        align="start"
+        className="w-60"
+        items={AGENT_SETTINGS_GROUPS.flatMap(([group, sections], groupIndex) =>
+          sections.map((id, index) => ({
+            active: isCurrentSection(section, id),
+            id,
+            label: `${labels[group]} › ${labels[id]}`,
+            meta: counts?.[id] || undefined,
+            onSelect: () => onOpen(id),
+            separatorBefore: groupIndex > 0 && index === 0
+          }))
+        )}
+      />
+    </div>
+  )
+}
+
 export function AgentSettingsNavigation({ ariaLabel, labels, section, counts, onOpen }: AgentSettingsNavigationProps) {
   return (
     <nav aria-label={ariaLabel} className="agent-settings-navigation" onKeyDown={moveMenuFocus}>
@@ -445,7 +481,7 @@ export function AgentSettingsNavigation({ ariaLabel, labels, section, counts, on
           <h2>{labels[group]}</h2>
           {sections.map(id => (
             <button
-              aria-current={section === id || (id === 'tools' && section === 'tools-advanced') ? 'page' : undefined}
+              aria-current={isCurrentSection(section, id) ? 'page' : undefined}
               aria-label={counts?.[id] ? `${labels[id]}, ${counts[id]}` : undefined}
               key={id}
               onClick={() => onOpen(id)}

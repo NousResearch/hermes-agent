@@ -23,7 +23,8 @@ export function AgentCapabilityBanner({ title, description, action }: AgentCapab
       </span>
       <div className="agent-capability-banner-text">
         <p>{title}</p>
-        {description && <p>{description}</p>}
+        {/* A div: the description may be a loading Skeleton, which is itself a div. */}
+        {description && <div className="agent-capability-banner-note">{description}</div>}
       </div>
       {action}
     </div>

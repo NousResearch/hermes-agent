@@ -57,6 +57,12 @@
   box-shadow: inset 0 0 0 0.5px var(--portal-brand-ink);
 }
 
+/* Disabled is 40% for every control (DESIGN.md, "States are derived"), not the primitive's 50%: at
+   50% a brand-filled primary such as a dialog's "Create group (1)" still read as live. */
+:root[data-shell='portal'] button[data-size][data-variant]:disabled {
+  opacity: 0.4;
+}
+
 :root[data-shell='portal'] :is(button, a)[data-size][data-variant][data-variant='default']:hover {
   background-color: color-mix(in srgb, var(--portal-brand-fill) 86%, var(--ui-base));
 }
@@ -139,6 +145,26 @@
     [data-variant='textStrong']
   ) {
   min-height: var(--portal-dialog-action-height);
+}
+
+/* One dialog anatomy (DESIGN.md: "a bordered Cancel beside the solid action"): a footer's quiet
+   action is bordered whichever variant its dialog asked for, so New agent and Rename chat (ghost)
+   match Delete agent (outline). */
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  [data-slot='dialog-footer']
+  :is(button, a)[data-size][data-variant][data-variant='ghost'] {
+  padding-inline: 1rem;
+  background-color: var(--portal-control-fill);
+  box-shadow: inset 0 0 0 1px var(--portal-control-stroke);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  [data-slot='dialog-footer']
+  :is(button, a)[data-size][data-variant][data-variant='ghost']:hover {
+  background-color: var(--portal-control-fill-hover);
 }
 
 /* A list card's row action ("Change plan" 856:1835, "Manage"/"Reconnect" 895:17703), an empty

@@ -37,7 +37,8 @@ export function CreateProfileDialog({
   open,
   profiles = [],
   scope,
-  initialCloneFrom = 'default'
+  initialCloneFrom = 'default',
+  title
 }: {
   onClose: () => void
   onCreated?: (name: string) => Promise<void> | void
@@ -45,6 +46,8 @@ export function CreateProfileDialog({
   profiles?: ProfileInfo[]
   scope?: ProfileScope
   initialCloneFrom?: string | null
+  /** The verb that opened it ("Duplicate agent"); the default is New agent. */
+  title?: string
 }) {
   const { t } = useI18n()
   const p = t.profiles
@@ -111,7 +114,7 @@ export function CreateProfileDialog({
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{p.newProfile}</DialogTitle>
+          <DialogTitle>{title ?? p.newProfile}</DialogTitle>
           <DialogDescription>{p.createDesc}</DialogDescription>
         </DialogHeader>
 

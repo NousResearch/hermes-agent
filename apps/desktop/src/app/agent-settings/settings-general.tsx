@@ -247,6 +247,7 @@ export function AgentGeneralSettings({
         open={dialog === 'duplicate'}
         profiles={profiles.data?.profiles}
         scope={owner}
+        title={c.duplicate}
       />
       <DeleteProfileDialog
         onClose={() => setDialog(null)}

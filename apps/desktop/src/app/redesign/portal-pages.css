@@ -463,7 +463,43 @@
   font-size: var(--portal-type-ui-size);
 }
 
+/* Compact (breakpoints.ts: max-width 639.98px): a phone has no ⌘K to press, and the band has no room
+   for a hint it cannot use; the pill keeps its label. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-shortcut'] {
+    display: none;
+  }
+}
+
 :root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-pill']:focus-visible {
   outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
   outline-offset: var(--portal-focus-ring-offset);
+}
+
+/* ── Sideways scrollers: an edge fade says more follows ──
+   A tab row or chip row wider than its box scrolls sideways; with no cue the last item just looked cut
+   (Capabilities on a phone). The fade is driven by the row's own scroll: it shows at the trailing
+   edge while there is more to reach and is gone at the end, and a row that fits has no scroll
+   timeline, so it never fades. */
+@property --portal-scroll-fade-end {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes portal-scroll-fade-x {
+  /* No "to": the scroll's end falls back to the property's initial value, no fade. */
+  from {
+    --portal-scroll-fade-end: var(--portal-scroll-edge-fade);
+  }
+}
+
+:root[data-shell='portal'] :is([data-page-surface] [role='tablist'], .catalog-filter-chips) {
+  animation: portal-scroll-fade-x linear both;
+  animation-timeline: scroll(self inline);
+  mask-image: linear-gradient(
+    to right,
+    var(--portal-raw-black) calc(100% - var(--portal-scroll-fade-end)),
+    transparent
+  );
 }

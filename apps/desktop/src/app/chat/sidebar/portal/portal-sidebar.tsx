@@ -148,6 +148,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
         <SearchField
           aria-label={t.sidebar.searchAria}
           containerClassName="portal-sidebar-search"
+          escapeClears
           inputRef={searchInputRef}
           loading={search.pending}
           onChange={setQuery}

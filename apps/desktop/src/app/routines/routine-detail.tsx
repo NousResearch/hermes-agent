@@ -21,7 +21,6 @@ import { RoutineRuns } from './routine-runs'
 import { describeSchedule, formatMoment, scheduleText } from './routine-schedule'
 import type { RoutineSource } from './routine-source'
 import { useRoutinesCopy } from './routines-copy'
-import { issueDetail } from './routines-overview'
 import { $routinePendingDelete } from './routines-store'
 import type { RoutineActions } from './use-routine-actions'
 
@@ -104,7 +103,6 @@ export function RoutineDetail({ actions, embedded = false, job, onBack, onOpenSe
       <SettingsOverview>
         <RoutineBanner
           busy={actions.isBusy(job) || live}
-          detail={issueDetail(job)}
           job={job}
           onRetry={() => void actions.runNow(job)}
           title={title}

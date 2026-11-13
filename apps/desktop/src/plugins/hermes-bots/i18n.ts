@@ -229,6 +229,9 @@ const en: BotsMessages = {
     openUnreachableMessage: 'Check it is online and try again.',
     openChatFailedTitle: botName => `Could not open ${botName}’s chat`,
     openChatFailedMessage: 'Try again.',
+    openReasonParked: name => `${name} isn’t running on this machine right now — try again in a moment.`,
+    openReasonUnreachable: 'Couldn’t reach the machine it runs on — check that it’s on and connected.',
+    openReasonTimeout: name => `${name} took too long to answer — try again.`,
     openGateways: 'Open Gateways',
     chatEmpty: 'Say something to get started.',
     kickoff: 'Hey, tell me about yourself!'
@@ -669,6 +672,9 @@ const ja: BotsMessages = {
     openUnreachableMessage: 'オンラインか確認して、もう一度お試しください。',
     openChatFailedTitle: botName => `${botName} のチャットを開けませんでした`,
     openChatFailedMessage: 'もう一度お試しください。',
+    openReasonParked: name => `${name} は現在このマシンで実行されていません。しばらくしてからもう一度お試しください。`,
+    openReasonUnreachable: '実行中のマシンに接続できませんでした。電源と接続を確認してください。',
+    openReasonTimeout: name => `${name} の応答に時間がかかりすぎました。もう一度お試しください。`,
     openGateways: 'ゲートウェイを開く',
     chatEmpty: '何か書いて始めましょう。',
     kickoff: 'こんにちは、自己紹介をしてください！'
@@ -1102,6 +1108,9 @@ const zh: BotsMessages = {
     openUnreachableMessage: '请确认它在线后重试。',
     openChatFailedTitle: botName => `无法打开 ${botName} 的聊天`,
     openChatFailedMessage: '请重试。',
+    openReasonParked: name => `${name} 目前没有在这台机器上运行——请稍后再试。`,
+    openReasonUnreachable: '无法连接到它所在的机器——请确认机器已开机并已连接。',
+    openReasonTimeout: name => `${name} 响应超时——请重试。`,
     openGateways: '打开网关',
     chatEmpty: '说点什么开始吧。',
     kickoff: '你好，介绍一下你自己吧！'
@@ -1528,6 +1537,9 @@ const zhHant: BotsMessages = {
     openUnreachableMessage: '請確認它在線上後再試一次。',
     openChatFailedTitle: botName => `無法開啟 ${botName} 的聊天`,
     openChatFailedMessage: '請再試一次。',
+    openReasonParked: name => `${name} 目前沒有在這台機器上執行——請稍後再試。`,
+    openReasonUnreachable: '無法連線到它所在的機器——請確認機器已開機並已連線。',
+    openReasonTimeout: name => `${name} 回應逾時——請再試一次。`,
     openGateways: '開啟閘道',
     chatEmpty: '說點什麼開始吧。',
     kickoff: '你好，介紹一下你自己吧！'

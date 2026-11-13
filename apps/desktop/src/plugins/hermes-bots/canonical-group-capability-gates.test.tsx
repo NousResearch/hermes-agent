@@ -5,6 +5,7 @@ import type { WritableAtom } from 'nanostores'
 import { useSyncExternalStore } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { $botsPaneHosted } from './bots-pane-host'
 import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { $canonicalGroupBindings } from './canonical-group-registry'
 import { canonicalGroupCreateError } from './canonical-groups'
@@ -155,6 +156,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  $botsPaneHosted.set(true)
   $groupChats.set({})
   localStorage.clear()
   vi.restoreAllMocks()
@@ -356,6 +358,36 @@ it('names the bots the authority will not seat instead of claiming there are non
   expect(note.textContent).toContain(`Beta — ${b.group.unseatableHere}`)
   expect(note.textContent).toContain(`Faraway — ${b.crossGateway.peerRouteMissing}`)
   expect(screen.queryByText(b.group.createBotFirst)).toBeNull()
+})
+
+it('the redesign names the agents it leaves out beside the ones it offers, and a search finds them', async () => {
+  // The redesign's Agents page hosts Bots: no pane. Only `default` is seated by this gateway here.
+  $botsPaneHosted.set(false)
+  const agents: RosterRow[] = [{ name: 'default', connectionId: 'local' }, { name: 'ops', connectionId: 'local' }, { name: 'research', connectionId: 'local' }]
+  answer({ driver: true, persistent_process: true, seatable_profiles: ['default'] })
+  render(<CreateGroupChatDialog onClose={vi.fn()} open roster={agents} />)
+
+  const b = botsText()
+  await waitFor(() => expect(screen.getByTestId('group-picker-unseated').textContent).toContain(b.group.cannotJoinHere))
+  expect(screen.getAllByRole('checkbox')).toHaveLength(1)
+  // The picked row is there before the first pick, so picking never grows the dialog.
+  expect(screen.getByText(b.group.nonePicked)).toBeTruthy()
+  expect(screen.getByTestId('group-picker-unseated').textContent).toContain(`Ops — ${b.group.unseatableHere}`)
+  expect(screen.getByTestId('group-picker-unseated').textContent).toContain(`Research — ${b.group.unseatableHere}`)
+
+  // Searching for an agent the sidebar lists explains it rather than "No agents match".
+  fireEvent.change(screen.getByRole('textbox', { name: b.group.searchToAdd }), { target: { value: 'res' } })
+  await waitFor(() => expect(screen.getByTestId('group-picker-unseated').textContent).toContain(`Research — ${b.group.unseatableHere}`))
+  expect(screen.getByTestId('group-picker-unseated').textContent).not.toContain('Ops')
+  expect(screen.queryByText(b.group.noBotsMatch('res'))).toBeNull()
+})
+
+it('classic keeps its picker: unseatable bots are named only when none can be seated', async () => {
+  answer({ driver: true, persistent_process: true, seatable_profiles: ['alpha'] })
+  render(<CreateGroupChatDialog onClose={vi.fn()} open roster={roster} />)
+
+  await waitFor(() => expect(screen.getAllByRole('checkbox')).toHaveLength(1))
+  expect(screen.queryByTestId('group-picker-unseated')).toBeNull()
 })
 
 it('still says there are no bots yet when the roster is empty', async () => {

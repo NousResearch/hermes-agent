@@ -36,7 +36,9 @@ def test_v33_retags_unmarked_subagent_children_and_parent_resumes_itself(tmp_pat
     append_message(old, "kid", "assistant", "child report")
     append_message(old, "cont", "user", "continued turn")
     old._conn.commit()
-    assert resolve_resume_session_id(old, "parent") == "kid"
+    # The resume walk no longer follows a non-subagent's subagent child even without the marker
+    # (#154994), so the parent resumes itself before the backfill too.
+    assert resolve_resume_session_id(old, "parent") == "parent"
     old._conn.execute("UPDATE schema_version SET version = 32")
     old._conn.commit()
     old.close()
@@ -99,7 +101,9 @@ def test_v33_heals_the_rest_of_the_store_past_a_malformed_model_config(tmp_path)
     append_message(old, "parent", "user", "parent turn")
     append_message(old, "kid", "assistant", "child report")
     old._conn.commit()
-    assert resolve_resume_session_id(old, "parent") == "kid"
+    # The resume walk no longer follows a non-subagent's subagent child even without the marker
+    # (#154994), so the parent resumes itself before the backfill too.
+    assert resolve_resume_session_id(old, "parent") == "parent"
     _downgrade_to_v32(old)
 
     migrated = StoreHolder(db_path=db_path)

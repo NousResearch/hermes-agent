@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
+import { resetNearestScroller } from "@/lib/reset-scroll";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { AutoField } from "@/components/AutoField";
@@ -209,6 +210,20 @@ export default function ConfigPage() {
       setActiveCategory(categoryOrder[0]);
     }
   }, [categoryOrder, activeCategory]);
+
+  // The route outlet <main> is one shared scroller; a shorter category selected after
+  // scrolling a long one must not inherit the previous offset (#149966).
+  const pageRootRef = useRef<HTMLDivElement>(null);
+  const firstCategoryChange = useRef(true);
+  useEffect(() => {
+    // The initial category assignment happens before the fields exist — resetting then
+    // is a no-op that would also fight the browser's own focus scroll; skip first run.
+    if (firstCategoryChange.current) {
+      firstCategoryChange.current = false;
+      return;
+    }
+    resetNearestScroller(pageRootRef.current);
+  }, [activeCategory]);
 
   // Load YAML when switching to YAML mode
   useEffect(() => {
@@ -432,7 +447,7 @@ export default function ConfigPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div ref={pageRootRef} className="flex flex-col gap-4">
       <PluginSlot name="config:top" />
       <Toast toast={toast} />
 

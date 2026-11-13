@@ -48,16 +48,82 @@ async def test_concurrent_changed_conversation_cannot_replace_response_key(api, 
 
 
 def test_unsent_truncation_keeps_the_fingerprint_of_records_stored_before_it_was_keyed():
-    from gateway.platforms.api_server import _make_request_fingerprint
+    from gateway.platforms.api_server_idempotency import make_request_fingerprint
     from gateway.platforms.api_server_openai_routes import _responses_fingerprint_keys
     legacy_keys = ("input", "instructions", "previous_response_id", "conversation", "conversation_history",
                    "model", "provider", "model_options", "tools")
     body = {"input": "hi", "model": "m"}
-    assert _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)) == \
-        _make_request_fingerprint(body, keys=legacy_keys)
+    assert make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)) == \
+        make_request_fingerprint(body, keys=legacy_keys)
     truncated = dict(body, truncation="auto")
-    assert _make_request_fingerprint(truncated, keys=_responses_fingerprint_keys(truncated)) != \
-        _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body))
+    assert make_request_fingerprint(truncated, keys=_responses_fingerprint_keys(truncated)) != \
+        make_request_fingerprint(body, keys=_responses_fingerprint_keys(body))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("first_fields", "retry_fields"), [
+    ({"conversation_history": [{"role": "user", "content": "secret-A"}]},
+     {"conversation_history": [{"role": "user", "content": "secret-B"}]}),
+    ({}, {"truncation": "auto"}),
+    ({}, {"metadata": {"source": "room-a"}}),
+    ({}, {"store": False}),
+])
+async def test_durable_response_retry_rejects_changed_context(api, owner, first_fields, retry_fields):
+    api._api_key = "identity-fixture"
+    calls = []
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        calls.append(event.text)
+        execution_result.get()["result"] = {"final_response": "answer", "messages": []}
+        return "answer"
+
+    owner.runner._handle_message = handle
+    app = web.Application()
+    app.router.add_post("/v1/responses", api._handle_responses)
+    headers = {"Authorization": "Bearer identity-fixture", "Idempotency-Key": "same-context"}
+    async with TestClient(TestServer(app)) as client:
+        first = await client.post("/v1/responses", json={"input": "work", **first_fields}, headers=headers)
+        retry = await client.post("/v1/responses", json={"input": "work", **retry_fields}, headers=headers)
+        retry_data = await retry.json()
+
+    assert first.status == 200
+    assert retry.status == 409
+    assert retry_data["error"]["code"] == "admission_conflict"
+    assert calls == ["work"]
+
+
+@pytest.mark.asyncio
+async def test_durable_response_retry_rejects_changed_route_credentials(api, owner):
+    api._api_key = "identity-fixture"
+    api._direct_model_requests = True
+    route = {"model": "provider-model", "provider": "openai", "api_key": "route-secret-a",
+             "base_url": "https://a.example/v1"}
+    api._model_routes = {"alias": route}
+    calls = []
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        calls.append(event.text)
+        execution_result.get()["result"] = {"final_response": "answer", "messages": []}
+        return "answer"
+
+    owner.runner._handle_message = handle
+    app = web.Application()
+    app.router.add_post("/v1/responses", api._handle_responses)
+    headers = {"Authorization": "Bearer identity-fixture", "Idempotency-Key": "same-route"}
+    async with TestClient(TestServer(app)) as client:
+        first = await client.post("/v1/responses", json={"model": "alias", "input": "work"}, headers=headers)
+        first_data = await first.json()
+        api._model_routes["alias"] = {
+            **route, "api_key": "route-secret-b", "base_url": "https://b.example/v1"}
+        retry = await client.post("/v1/responses", json={"model": "alias", "input": "work"}, headers=headers)
+        retry_data = await retry.json()
+
+    assert first.status == 200, first_data
+    assert retry.status == 409
+    assert retry_data["error"]["code"] == "admission_conflict"
+    assert calls == ["work"]
 
 
 @pytest.mark.asyncio

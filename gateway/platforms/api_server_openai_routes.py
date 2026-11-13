@@ -102,9 +102,74 @@ def _settled(record):
 
 
 def _responses_fingerprint_keys(body):
-    """``truncation`` joins the fingerprint only when sent, so an exact retry of a request
-    recorded before it was fingerprinted keeps matching its stored key."""
-    return _RESPONSES_FINGERPRINT_KEYS + (("truncation",) if body.get("truncation") is not None else ())
+    """Include optional context fields when sent, preserving old keys when callers omit them."""
+    optional = tuple(key for key in ("truncation", "metadata", "store") if body.get(key) is not None)
+    return _RESPONSES_FINGERPRINT_KEYS + optional
+
+
+def _responses_fingerprint_payload(adapter, body, context=None):
+    """Fingerprint the request context that reaches the agent without retaining route secrets."""
+    from gateway.platforms.api_server import (
+        _auto_truncate_response_history, _coerce_request_bool, _request_agent_overrides,
+        _request_relay_metadata,
+    )
+    from gateway.platforms.api_server_idempotency import make_fingerprint_digest
+    if context is None:
+        messages, parse_error = _parse_responses_input(body.get("input"))
+        if parse_error is None:
+            history = []
+            history_is_valid = True
+            if body.get("conversation_history"):
+                history, history_error = _parse_conversation_history(body["conversation_history"])
+                if history_error is not None:
+                    history = body["conversation_history"]
+                    history_is_valid = False
+            if history_is_valid:
+                history.extend(messages[:-1])
+            user_message = messages[-1].get("content", "") if messages else ""
+            if history_is_valid and body.get("truncation") == "auto":
+                history = _auto_truncate_response_history(history)
+        else:
+            history = body.get("conversation_history") or []
+            user_message = body.get("input")
+        instructions = body.get("instructions")
+        route = adapter._resolve_route(body.get("model"))
+        overrides = _request_agent_overrides(
+            body, virtual_model=adapter._model_name, allow_bare_model=adapter._direct_model_requests)
+    else:
+        run_kwargs = context["run_kwargs"]
+        history = context["conversation_history"]
+        user_message = context["user_message"]
+        instructions = context["instructions"]
+        route = run_kwargs.get("route")
+        overrides = run_kwargs
+
+    route_identity = {
+        "alias": str(body.get("model") or "") if route else None,
+        "source": "model_routes" if route else "global",
+        "model": route.get("model") if isinstance(route, dict) else None,
+        "provider": route.get("provider") if isinstance(route, dict) else None,
+        "api_key_digest": make_fingerprint_digest(route.get("api_key")) if isinstance(route, dict) else None,
+        "base_url_digest": make_fingerprint_digest(route.get("base_url")) if isinstance(route, dict) else None,
+    }
+    return {
+        "user_message": user_message,
+        "conversation_history": history,
+        "instructions": instructions,
+        "truncation": "auto" if body.get("truncation") == "auto" else "none",
+        "request_options": {
+            "model_options": overrides.get("model_options"),
+            "requested_model": overrides.get("requested_model"),
+            "requested_provider": overrides.get("requested_provider"),
+        },
+        "route": route_identity,
+        "previous_response_id": body.get("previous_response_id"),
+        "conversation": body.get("conversation"),
+        "response_model": body.get("model", adapter._model_name),
+        "store": _coerce_request_bool(body.get("store"), default=True),
+        "tools": body.get("tools"),
+        "relay_metadata": _request_relay_metadata(body),
+    }
 
 
 async def _response_identity(store, durable_key):
@@ -865,8 +930,8 @@ class OpenAICompatRoutesMixin:
     async def _handle_chat_completions(self, request: web.Request) -> web.Response:
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
-            _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
+            ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
+            _content_has_visible_payload, _error_response, _invalid_request,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
@@ -929,11 +994,12 @@ class OpenAICompatRoutesMixin:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
         else:
-            # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
-            # one Hermes session; namespaced by the routed profile (#123989).
-            first_user = next(
-                (cm.get("content", "") for cm in conversation_messages if cm.get("role") == "user"), "")
-            session_id = _derive_chat_session_id(system_prompt, first_user, _api_request_profile.get())
+            # An authenticated idempotency retry needs a stable target, even when retries race
+            # before the durable admission is written. Unkeyed requests start fresh sessions.
+            request_id = self._chat_request_id(request)
+            canonical = getattr(self.gateway_runner, 'session_authority', None) is not None
+            session_id = (f"api-{uuid.uuid5(uuid.NAMESPACE_URL, 'hermes-api-chat:' + request_id).hex}"
+                          if request_id and canonical else f"api-{uuid.uuid4().hex}")
             session_id, lookup_error = await self._implicit_chat_session(request, session_id)
             if lookup_error is not None:
                 return lookup_error
@@ -952,8 +1018,8 @@ class OpenAICompatRoutesMixin:
             relay_metadata=relay_metadata,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
-            # and the client can resume the session by sending it again). A fingerprint-derived
-            # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
+            # and the client can resume the session by sending it again). A fresh id from a
+            # header-less client is NOT: delegate_task keeps its forced-sync fallback
             # there — the wake would hard-fail or land in history that client never reloads.
             session_history_delivery=("1" if provided_session_id else ""))
         run_kwargs.update(self._authority_chat_kwargs(request, provided_session_id))
@@ -1024,7 +1090,7 @@ class OpenAICompatRoutesMixin:
         budget_exhausted = _budget_exhausted(result)
         finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, budget_exhausted=budget_exhausted)
         # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
-        # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
+        # the stable id it sent; a header-less turn keeps reporting the
         # id the agent actually resolved, so headerless clients still learn where the turn went.
         response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
         if gateway_session_key:
@@ -1063,10 +1129,20 @@ class OpenAICompatRoutesMixin:
 
     def _chat_request_id(self, request: web.Request) -> Optional[str]:
         """Durable admission identity of a Chat Completions Idempotency-Key. It carries the
-        authenticated namespace: a rotated API key (or another profile) reusing a client key is a
-        new principal, not a retry."""
+        authenticated namespace and explicit session-header coordinates."""
         key = request.headers.get('Idempotency-Key')
-        return f'chat:{self._run_idempotency_scope(request)}:{key}' if key else None
+        if not key:
+            return None
+        from gateway.platforms.api_server import _api_request_profile
+        from gateway.platforms.api_server_idempotency import (
+            make_normalized_request_fingerprint, scope)
+        cache_scope = scope(self, request, "chat_completions", _api_request_profile.get())
+        if cache_scope is None:
+            return None
+        idempotency_scope = self._run_idempotency_scope(request)
+        if cache_scope[3] == "session-id:present" or cache_scope[5] == "session-key:present":
+            idempotency_scope += ":" + make_normalized_request_fingerprint({"headers": cache_scope[3:]})
+        return f'chat:{idempotency_scope}:{key}'
 
     def _authority_chat_kwargs(self, request: web.Request, provided_session_id) -> dict:
         """Admission identity of a Chat Completions turn under session authority; none before it."""
@@ -1076,8 +1152,8 @@ class OpenAICompatRoutesMixin:
                     run_owner_scope=self._run_idempotency_scope(request))
 
     async def _implicit_chat_session(self, request: web.Request, session_id: str) -> tuple:
-        """A derived (header-less) id whose session was deleted names a new conversation with the
-        same opening: the owning profile's store picks its generation (``implicit_api_session``).
+        """Resolve the owning profile's generation for a fresh header-less id, preserving it for
+        an exact durable retry and moving past it if the caller deleted it (``implicit_api_session``).
         -> ``(session_id, None)`` or ``(session_id, error response)``, before either response starts:
         a refusal keeps its reason and a busy or unreadable store is a retryable 503
         ``storage_unavailable`` (``store_error_response``); anything else is the OpenAI 500."""
@@ -1104,28 +1180,27 @@ class OpenAICompatRoutesMixin:
 
     async def _run_idempotent(
         self, request: web.Request, body: dict[str, Any], compute, *,
-        log_label: str, fingerprint_keys: list[str], route: str) -> tuple:
-        """Run ``compute()`` once per (principal scope, logical route, Idempotency-Key) + body fingerprint
+        log_label: str, fingerprint_keys: list[str], route: str,
+        fingerprint_payload: Optional[dict[str, Any]] = None) -> tuple:
+        """Run ``compute()`` once per authenticated adapter, endpoint, session scope, and
+        request fingerprint
         -> ``((result, usage), None)`` or ``(None, 500 response)``.
-
-        ``_idem_cache`` is process-global: under ``gateway.multiplex_profiles`` every profile's
-        ``/p/<profile>/v1/...`` mirror shares it, so the key carries ``_run_idempotency_scope`` (the same
-        ``sha256(profile, expected API key)`` namespace the durable ``/v1/runs`` API uses) — a client key
-        colliding across profiles, or a rotated API_SERVER_KEY, never replays another principal's response.
-        ``route`` is the logical endpoint (``/v1/...`` and its ``/p/<profile>/v1/...`` alias are the same
-        route), folded into the key because the store keeps the fingerprint only as the slot's value.
         """
-        from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
+        from gateway.platforms.api_server import _api_request_profile, _error_response
+        from gateway.platforms.api_server_idempotency import (
+            make_normalized_request_fingerprint, make_request_fingerprint, scope)
         from hermes_state_runtime import RuntimeStoreError
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
             # Durable /v1/runs admissions own idempotency under session authority; the in-memory
             # cache only serves the pre-authority path.
             if idempotency_key and getattr(self.gateway_runner, 'session_authority', None) is None:
-                principal_scope = self._run_idempotency_scope(request)
-                scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
-                fp = _make_request_fingerprint(body, keys=fingerprint_keys)
-                result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
+                caller_scope = scope(self, request, route, _api_request_profile.get())
+                fp = (make_normalized_request_fingerprint(fingerprint_payload)
+                      if fingerprint_payload is not None
+                      else make_request_fingerprint(body, keys=fingerprint_keys))
+                result, usage = await self._idempotency_cache.get_or_set(
+                    caller_scope, idempotency_key, fp, compute)
             else:
                 result, usage = await compute()
             return (result, usage), None
@@ -1332,15 +1407,22 @@ class OpenAICompatRoutesMixin:
         durable_key = idempotency_scope = None
         idempotency_key = request.headers.get('Idempotency-Key')
         canonical = getattr(self.gateway_runner, 'session_authority', None) is not None
+        from gateway.platforms.api_server_idempotency import (
+            make_normalized_request_fingerprint, make_request_fingerprint)
         if canonical and idempotency_key:
             # An exact retry replays the committed response BEFORE the conversation name is
             # expanded: the first success already advanced the conversation, so re-expanding
             # would build a different admission payload and refuse the retry as a conflict.
             # Streaming and nonstreaming share the record: transport mode is not identity.
-            from gateway.platforms.api_server import _make_request_fingerprint
             idempotency_scope = self._run_idempotency_scope(request)
+            fingerprint = make_request_fingerprint(body, keys=_responses_fingerprint_keys(body))
+            if self._resolve_route(body.get("model")):
+                fingerprint = make_normalized_request_fingerprint({
+                    "request_fingerprint": fingerprint,
+                    "route": _responses_fingerprint_payload(self, body)["route"],
+                })
             durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
-                           _make_request_fingerprint(body, keys=_responses_fingerprint_keys(body)))
+                           fingerprint)
             from gateway.platforms.api_server import _openai_error
             from gateway.platforms.api_server_response_admissions import request_binding
             response_store = self._current_response_store()
@@ -1452,7 +1534,8 @@ class OpenAICompatRoutesMixin:
             return await run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
-            fingerprint_keys=list(_responses_fingerprint_keys(body)), route="responses",
+            fingerprint_keys=[], route="responses",
+            fingerprint_payload=_responses_fingerprint_payload(self, body, context),
         )
         if err is not None:
             return err

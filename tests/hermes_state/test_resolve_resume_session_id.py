@@ -86,6 +86,21 @@ def test_follows_compression_tip_when_parent_retains_messages(db):
 
 
 
+def test_skips_delegate_subagent_child(db):
+    # A delegated subagent run hangs off the parent by parent_session_id, but it is
+    # a separate conversation: the parent's transcript must stay the parent's.
+    # Rows written before the ``_delegate_from`` marker was stamped (or rewritten
+    # away since) fall through the marker test, so the source alone has to stop
+    # the walk — otherwise the whole chat resolves to the subagent's few minutes.
+    _make_chain(db, [("parent", None), ("child", "parent")])
+    db._conn.execute("UPDATE sessions SET source = 'subagent' WHERE id = 'child'")
+    db._conn.commit()
+    db.append_message("parent", role="user", content="the real conversation")
+    db.append_message("child", role="user", content="delegated work")
+
+    assert db.resolve_resume_session_id("parent") == "parent"
+
+
 def test_prefers_most_recent_child_when_fork_exists(db):
     # If a session was somehow forked (two children), pick the latest one.
     # In practice, compression only produces single-chain shape, but the helper

@@ -980,6 +980,7 @@ platform:
     denied: "❌ Negato."
     approval_expired: "⌛ Approvazione scaduta — il comando non è stato eseguito (timeout già scattato o risolto altrove)."
   shared:
+    response_as_file: "📎 Risposta lunga: il testo completo è in allegato."
     truncated_suffix: "\n...(troncato)"
     unknown: "sconosciuto"
     approval_expired: "⌛ Approvazione scaduta — il comando non è stato eseguito (timeout già scattato o risolto altrove)."
@@ -1170,8 +1171,6 @@ platform:
         unknown: "Skill sconosciuta: `{name}`. Inizia a digitare per i suggerimenti di completamento automatico."
       auto_args_description: "Argomenti: {args_hint}"
       auto_description_fallback: "Esegui /{name}"
-    limits:
-      response_truncated: "⚠️ **Risposta troncata** — questa risposta ha superato il limite di consegna ({max_messages} messaggi). {dropped_chars} caratteri non sono stati consegnati; la risposta completa è nei log della sessione."
     forum:
       default_title: "Nuovo post"
     voice:

@@ -177,7 +177,7 @@ _MEDIA_KIND_KEYS = {
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_audio_meta import (
-    _coerce_duration_seconds, _probe_voice_duration_seconds, audio_player_fields, fit_thumbnail_jpeg)
+    _coerce_duration_seconds, _probe_video_geometry, _probe_voice_duration_seconds, _video_thumbnail_jpeg, audio_player_fields)
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
 from plugins.platforms.telegram.telegram_entities import (
     addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
@@ -209,6 +209,7 @@ from plugins.platforms.telegram.telegram_network import (
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind, FLOOD, UNSENT, rich_failure_result
+from plugins.platforms.telegram.telegram_split import REPLY_FILE_MAX_BYTES, reply_message_count, send_reply_document
 from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
@@ -239,48 +240,6 @@ def _flood_cap_result(wait: float) -> SendResult:
 
 _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".heic": "image/heic", ".heif": "image/heif", ".avif": "image/avif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {"image/jpg": ".jpg", **{m: e for e, m in _TELEGRAM_IMAGE_EXT_TO_MIME.items() if e != ".jpeg"}}
-
-
-def _probe_video_geometry(path: str) -> dict[str, int]:
-    """``{"width", "height", "duration"}`` for a local video; ``{}`` when ffprobe can't read it.
-
-    Telegram runs its own video processing only for uploads under roughly 10 MB; above that it
-    stores the file as an unprocessed ``320x320`` video with ``duration=0``, so the message must
-    carry the real geometry or clients draw a square tile for any aspect ratio.
-    """
-    try:
-        import shutil
-        import subprocess
-        if not shutil.which("ffprobe"):
-            return {}
-        proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-show_entries", "format=duration",
-             "-of", "json", path],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False)
-        if proc.returncode != 0:
-            return {}
-        blob = json.loads(proc.stdout or "{}")
-        streams = blob.get("streams") or []
-        if not streams:
-            return {}
-        geometry = {"width": int(streams[0]["width"]), "height": int(streams[0]["height"])}
-        duration = _coerce_duration_seconds((blob.get("format") or {}).get("duration"))
-        if duration:
-            geometry["duration"] = duration
-        return geometry
-    except Exception:
-        logger.debug("[Telegram] video geometry probe failed for %s", path, exc_info=True)
-        return {}
-
-
-def _video_thumbnail_jpeg(path: str, duration: Optional[int]) -> Optional[str]:
-    """A JPEG frame fitted inside 320x320 for Telegram's ``thumbnail`` field; None on failure.
-
-    Telegram keeps a supplied thumbnail for the uploads it did not process itself — without one the
-    chat shows a square placeholder tile until the video is opened.
-    """
-    return fit_thumbnail_jpeg(path, seek=max(1, int((duration or 3) * 0.25)), timeout=30)
 
 
 def telegram_deps_present() -> bool:
@@ -338,24 +297,14 @@ from plugins.platforms.telegram.rich_markdown import (
 from plugins.platforms.telegram.rich_parts import edit_rich_parts, resume_rich_parts, send_rich_parts
 
 
-def _strip_mdv2(text: str) -> str:
-    """Strip MarkdownV2 escapes and formatting markers for the plain-text fallback."""
-    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # escape backslashes
-    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)  # **bold** BEFORE MarkdownV2 *bold*
-    cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
-    cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)  # italic; word-bounded so snake_case survives
-    cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)  # strikethrough
-    cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)  # spoiler
-    return cleaned
-
-
 from plugins.platforms.telegram.telegram_chunking import (
     separate_chunk_indicator_from_fence as _separate_chunk_indicator_from_fence, split_formatted_mdv2, split_raw_carrying_emphasis)
+from plugins.platforms.telegram.telegram_split import _strip_mdv2
 
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
-    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, caption_is_command, compile_mention_patterns, prompt_id_counter)
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, caption_is_command, compile_mention_patterns, hand_off_split, prompt_id_counter)
 
 # Internal safety bounds (not user knobs): no reconnect/teardown path may hang on a dead CLOSE-WAIT
 # socket PTB's polling task is blocked on in epoll.
@@ -447,6 +396,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     _ptb_proxy_url: str | None = None  # set by _build_ptb_requests; error text then shows no detail
 
     MAX_MESSAGE_LENGTH = 4096
+    MAX_SPLIT_MESSAGES = 8  # a reply needing more messages goes out as one .md file instead (#152012)
+    REPLY_FILE_MAX_BYTES = REPLY_FILE_MAX_BYTES
+    reply_message_count, send_reply_document = reply_message_count, send_reply_document
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
     allow_from_covers_groups = True  # allow_from is global (DMs + groups); group_allow_from adds group-only users
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -3465,6 +3417,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 return rich_result
             # Entities cut by a split are closed and reopened; the (N/M) markers come back MarkdownV2-escaped.
             chunks = split_formatted_mdv2(self.format_message(content), self.MAX_MESSAGE_LENGTH, self.truncate_message, utf16_len)
+            if as_file := await hand_off_split(self, chat_id, content, len(chunks), reply_to=reply_to, metadata=metadata):
+                return as_file  # a refused rich send re-split past the cap: one file instead (#152012)
             return await self._send_chunks(chat_id, chunks, delivered, reply_to, metadata, error_types)
         except Exception as e:
             classified = self._classify_send_exception(e, error_types)

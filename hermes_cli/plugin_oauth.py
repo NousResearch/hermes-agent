@@ -11,6 +11,10 @@ Each grant remembers a fingerprint of the ``oauth:`` entry it was made for. A la
 that changes the token URL, hosts, scopes or client variables gets ``ProviderNotSignedIn`` until the user
 signs in again: the grant is used only for what the user consented to. Like capabilities, this is
 consent and visibility, not a sandbox.
+
+An entry may also declare ``device_authorization_url`` (RFC 8628): ``hermes auth add <plugin>:<id> --device``
+and ``/login <plugin>`` in the paired DM then sign in with a code on any device, for a Hermes on a headless
+box. The verification page must be on a host of the entry, and the grant lands in the same store.
 """
 
 from __future__ import annotations
@@ -20,9 +24,10 @@ import json
 import re
 import time
 from dataclasses import asdict, dataclass
+from dataclasses import field as _field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 from urllib.parse import urlparse
 
 _SECTION = "plugin_oauth"
@@ -47,11 +52,16 @@ class OAuthClient:
     hosts: tuple[str, ...]
     client_secret_env: str = ""
     authorize_params: tuple[tuple[str, str], ...] = ()
+    device_authorization_url: str = ""
 
     @property
     def fingerprint(self) -> str:
-        """Hash of every field: a grant is used only with the entry it was made for."""
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode("utf-8")).hexdigest()
+        """Hash of every field: a grant is used only with the entry it was made for. An undeclared device
+        endpoint is left out, so grants made before the field existed stay valid."""
+        fields = asdict(self)
+        if not fields["device_authorization_url"]:
+            del fields["device_authorization_url"]
+        return hashlib.sha256(json.dumps(fields, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 # ── Manifest ───────────────────────────────────────────────────────────────────────────────────────
@@ -93,6 +103,13 @@ def _entry_problems(entry: dict, where: str) -> list[str]:
         f"{where}.id: {entry.get('id')!r} must be lowercase letters, digits and dashes"]
     for field in ("authorize_url", "token_url"):
         problems += _url_problems(f"{where}.{field}", entry.get(field))
+    device = entry.get("device_authorization_url")
+    if device is not None:
+        device_problems = _url_problems(f"{where}.device_authorization_url", device)
+        token = _parse_url(entry.get("token_url"))
+        if not device_problems and token is not None and _parse_url(device).hostname != token.hostname:
+            device_problems = [f"{where}.device_authorization_url: must be on the token_url host"]
+        problems += device_problems
     scopes = entry.get("scopes")
     if not (isinstance(scopes, list) and scopes and all(isinstance(s, str) and s.strip() for s in scopes)):
         problems.append(f"{where}.scopes: must be a non-empty list of scope strings")
@@ -116,7 +133,8 @@ def _client(entry: dict) -> OAuthClient:
         id=entry["id"], authorize_url=entry["authorize_url"], token_url=entry["token_url"],
         scopes=tuple(entry["scopes"]), client_id_env=entry["client_id_env"], hosts=tuple(entry["hosts"]),
         client_secret_env=entry.get("client_secret_env") or "",
-        authorize_params=tuple(sorted((entry.get("authorize_params") or {}).items())))
+        authorize_params=tuple(sorted((entry.get("authorize_params") or {}).items())),
+        device_authorization_url=entry.get("device_authorization_url") or "")
 
 
 def parse_oauth_clients(manifest: Mapping[str, Any]) -> tuple[list[OAuthClient], list[str]]:
@@ -354,6 +372,199 @@ def _pkce_config(client: OAuthClient, key: str, *, timeout: Optional[float] = No
         label=key, token_request=_token_request(client, key), timeout_seconds=timeout or 180.0)
 
 
+# ── Device sign-in (RFC 8628) ──────────────────────────────────────────────────────────────────────
+
+_DEVICE_EXPIRY_CAP = 1800  # seconds: never poll longer than this, whatever the device endpoint says
+_DEVICE_INTERVAL_CAP = 30
+
+
+@dataclass(frozen=True)
+class DeviceCode:
+    """What the person needs (the verification link and the code) and what the poll needs."""
+
+    link: str
+    user_code: str
+    expires_in: int
+    interval: int
+    device_code: str = _field(repr=False)
+
+
+def _client_form(client: OAuthClient, key: str) -> dict[str, str]:
+    form = {"client_id": _env(client.client_id_env, "oauth_client_id_missing", key)}
+    if client.client_secret_env:
+        form["client_secret"] = _env(client.client_secret_env, "oauth_client_secret_missing", key)
+    return form
+
+
+def _post_form(client: OAuthClient, key: str, url: str, fields: dict[str, str], code: str):
+    """POST *fields* plus the client credentials to *url*, never following a redirect. A transport error is
+    raised outside its handler: httpx's error keeps the request, whose body holds the client secret."""
+    from hermes_cli.auth import _default_verify
+    from hermes_cli.auth_constants import httpx
+
+    form = {**fields, **_client_form(client, key)}
+    failure = ""
+    try:
+        return httpx.post(url, data=form, headers={"Accept": "application/json"}, timeout=_TOKEN_TIMEOUT,
+                          verify=_default_verify(), follow_redirects=False)
+    except httpx.HTTPError as exc:
+        failure = type(exc).__name__
+    raise _auth_error(key, f"the request to {urlparse(url).hostname} failed ({failure}).", code)
+
+
+def _verification_host_ok(client: OAuthClient, host: str) -> bool:
+    """A host of the entry, or a DNS name sharing the registered domain of its authorize or token host: IdPs often
+    serve the verification page beside the endpoints (``www.google.com/device`` for ``accounts.google.com``)."""
+    endpoints = {urlparse(client.authorize_url).hostname or "", urlparse(client.token_url).hostname or ""}
+    if host in endpoints | set(client.hosts):
+        return True
+    return bool(_HOST_RE.match(host)) and _parent(host) in {_parent(h) for h in endpoints if _HOST_RE.match(h)}
+
+
+def _verification_link(client: OAuthClient, payload: Mapping[str, Any], key: str) -> str:
+    """The page the person opens. Every verification URL the device endpoint names must be https on a host of
+    the entry or its sign-in provider's domain, or a compromised or misconfigured endpoint could send the person
+    to a look-alike page."""
+    links = [payload.get(name) for name in ("verification_uri_complete", "verification_uri") if payload.get(name)]
+    for link in links:
+        parsed = _parse_url(link)
+        if (parsed is None or parsed.scheme != "https" or not _verification_host_ok(client, parsed.hostname or "")
+                or parsed.username is not None or parsed.password is not None):
+            raise _auth_error(key, "the device endpoint named a verification page outside the plugin's declared "
+                              "hosts, so the sign-in was stopped.", "oauth_device_verification_rejected")
+    if not links:
+        raise _auth_error(key, "the device endpoint named no verification page.", "oauth_device_failed")
+    return str(links[0])
+
+
+def request_device_code(client: OAuthClient, key: str) -> DeviceCode:
+    """Start a device sign-in: POST the device authorization endpoint the entry declares."""
+    if not client.device_authorization_url:
+        raise _auth_error(key, f"the {client.id} entry declares no device_authorization_url, so it cannot sign "
+                          "in with a code.", "oauth_device_unsupported")
+    response = _post_form(client, key, client.device_authorization_url, {"scope": " ".join(client.scopes)},
+                          "oauth_device_failed")
+    payload = _json_object(response)
+    if not 200 <= response.status_code < 300:
+        raise _auth_error(key, f"the device endpoint failed with HTTP {response.status_code}.", "oauth_device_failed")
+    device_code, user_code = str(payload.get("device_code") or ""), str(payload.get("user_code") or "")
+    try:
+        expires_in, interval = int(payload.get("expires_in")), int(payload.get("interval") or 5)
+    except (TypeError, ValueError):
+        expires_in, interval = 0, 0
+    if not (device_code and user_code and expires_in > 0 and interval > 0):
+        raise _auth_error(key, "the device endpoint answered without a usable code.", "oauth_device_failed")
+    return DeviceCode(link=_verification_link(client, payload, key), user_code=user_code,
+                      expires_in=min(expires_in, _DEVICE_EXPIRY_CAP), interval=min(interval, _DEVICE_INTERVAL_CAP),
+                      device_code=device_code)
+
+
+def poll_device_grant(client: OAuthClient, key: str, code: DeviceCode, *,
+                      cancelled: Optional[Callable[[], bool]] = None) -> dict:
+    """Poll the token endpoint until the person approves, refuses or the code expires (RFC 8628 interval and
+    ``slow_down`` back-off), then check the granted scopes. Returns the grant row; nothing is saved here.
+    Raises ``AuthError`` (``oauth_device_code_expired``, ``oauth_authorization_denied``...) or
+    ``DeviceFlowCancelled`` once *cancelled* fires."""
+    from hermes_cli.auth_constants import DEVICE_CODE_GRANT_TYPE
+    from hermes_cli.auth_device_flow import _poll_device_token_generic
+    from hermes_cli.auth_oauth_pkce_plugin import _token_fields
+
+    fields = {"grant_type": DEVICE_CODE_GRANT_TYPE, "device_code": code.device_code}
+
+    def failed(response: Any, payload: Mapping[str, Any]):
+        error = str(payload.get("error") or "")
+        if error == "expired_token":
+            return _auth_error(key, "the sign-in code expired before it was approved.", "oauth_device_code_expired")
+        if error == "access_denied":
+            return _auth_error(key, "the sign-in was refused.", "oauth_authorization_denied")
+        return _token_error(key, response.status_code, payload)
+
+    payload = _poll_device_token_generic(
+        lambda: _post_form(client, key, client.token_url, fields, "oauth_device_failed"),
+        expires_in=code.expires_in, poll_interval=code.interval,
+        validate_success=lambda p: _require_granted_scopes(client, p, key),
+        on_non_json_error=lambda r: _auth_error(key, f"the token endpoint failed with HTTP {r.status_code}.",
+                                                "oauth_device_failed"),
+        on_error=failed,
+        on_timeout=lambda: _auth_error(key, "the sign-in code expired before it was approved.",
+                                       "oauth_device_code_expired"),
+        cancelled=cancelled)
+    return {**_token_fields(key, payload, {}, "oauth_device_failed"), "fingerprint": client.fingerprint}
+
+
+def save_grant(key: str, row: dict) -> None:
+    """Store a grant made by :func:`poll_device_grant` (the same row the browser sign-in stores)."""
+    _write_grant(key, row)
+
+
+def device_client(target: str) -> tuple[OAuthClient, str]:
+    """The ``oauth:`` entry ``/login <target>`` means: ``<plugin>`` when the plugin has one entry that can sign
+    in with a code, ``<plugin>:<id>`` otherwise. Raises ``LookupError`` with a value-free reason."""
+    plugin, _, oauth_id = str(target or "").strip().partition(":")
+    from hermes_cli.plugins_cmd import _find_plugin_entry
+
+    entry = _find_plugin_entry(plugin) if plugin and plugin != "custom" else None
+    if entry is None or not entry[4]:
+        raise LookupError(f"No installed plugin named '{plugin}'.")
+    plugin_dir = Path(str(entry[4]))
+    try:
+        clients = _declared_clients(plugin_dir)
+    except ValueError:
+        raise LookupError(f"Plugin '{plugin}' has an invalid oauth: block.") from None
+    capable = [c for c in clients if c.device_authorization_url and (not oauth_id or c.id == oauth_id)]
+    if not capable:
+        raise LookupError(f"Plugin '{plugin}' declares no sign-in that works with a code"
+                          + (f" under '{oauth_id}'." if oauth_id else "."))
+    if len(capable) > 1:
+        raise LookupError(f"Plugin '{plugin}' has several sign-ins; name one: "
+                          + ", ".join(f"/login {plugin}:{c.id}" for c in capable))
+    return capable[0], f"{plugin_key(plugin_dir)}:{capable[0].id}"
+
+
+def device_sign_in(client: OAuthClient, key: str, *, cancelled: Optional[Callable[[], bool]] = None,
+                   may_save: Optional[Callable[[], Any]] = None) -> Iterator[Any]:
+    """The device sign-in every surface renders: yields the :class:`DeviceCode`, then exactly one final
+    string, ``"signed_in"``, ``"cancelled"`` or an ``AuthError`` code, never an exception from ``next()``.
+    *may_save* is a context manager factory yielding whether the grant may be saved (the gateway's own
+    cancel check under its lock); without it the grant is saved unless *cancelled* fired."""
+    import contextlib
+
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.auth_device_flow import DeviceFlowCancelled
+
+    is_cancelled = cancelled or (lambda: False)
+    try:
+        code = request_device_code(client, key)
+    except AuthError as exc:
+        yield str(exc.code or "oauth_device_failed")
+        return
+    yield code
+    try:
+        row = poll_device_grant(client, key, code, cancelled=is_cancelled)
+    except DeviceFlowCancelled:
+        yield "cancelled"
+        return
+    except AuthError as exc:
+        yield str(exc.code or "oauth_device_failed")
+        return
+    except Exception:  # health: allow BLE001 -- one terminal state, never a raise; the detail may hold a token
+        yield "oauth_device_failed"
+        return
+
+    @contextlib.contextmanager
+    def default_guard():
+        yield not is_cancelled()
+
+    try:
+        with (may_save or default_guard)() as allowed:
+            if allowed:
+                save_grant(key, row)
+    except Exception:  # health: allow BLE001 -- a lock timeout or read-only home must not escape next()
+        yield "oauth_device_save_failed"
+        return
+    yield "signed_in" if allowed else "cancelled"
+
+
 # ── Bearer for credentialed_provider_request ───────────────────────────────────────────────────────
 
 def _not_signed_in(message: str):
@@ -467,13 +678,40 @@ def _unattended() -> bool:
     return _no_user_can_answer() or _is_gateway_approval_context()
 
 
+def _cli_add_device(client: OAuthClient, key: str) -> bool:
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.auth_device_flow import _print_device_code_instructions
+
+    plugin = key.rsplit(":", 1)[0]
+    if not client.device_authorization_url:
+        raise SystemExit(f"Plugin '{plugin}' does not declare a device sign-in for {client.id}; run "
+                         f"`hermes auth add {key}` without --device.")
+    try:
+        code = request_device_code(client, key)
+        print(f"Plugin '{plugin}' signs in to {client.id}; the token is sent only to {', '.join(client.hosts)}.")
+        _print_device_code_instructions(code.link, code.user_code, open_browser=False)
+        print(f"Waiting up to {max(1, code.expires_in // 60)} min (Ctrl+C to cancel)...")
+        row = poll_device_grant(client, key, code)
+    except KeyboardInterrupt:
+        print("\nLogin cancelled.")
+        raise SystemExit(130) from None
+    except AuthError as exc:
+        raise SystemExit(f"Login failed: {exc}") from None
+    save_grant(key, row)
+    print(f"Signed in to {client.id} for plugin '{plugin}'; the grant is stored in this Hermes profile.")
+    return True
+
+
 def _cli_add(args: Any, client: OAuthClient, key: str) -> bool:
     from hermes_cli.auth_constants import AuthError
     from hermes_cli.auth_oauth_pkce_plugin import login
 
     if _unattended():
         raise SystemExit(f"`hermes auth add {key}` signs you in through a browser; run it in your own terminal, "
-                         "not from a gateway, cron job or agent session.")
+                         "not from a gateway, cron job or agent session. From the paired DM, `/login "
+                         f"{key.rsplit(':', 1)[0]}` works when the plugin declares a device sign-in.")
+    if getattr(args, "device", False):
+        return _cli_add_device(client, key)
     secret = " and the client secret" if client.client_secret_env else ""
     print(f"Plugin '{key.rsplit(':', 1)[0]}' signs in to {client.id} at {urlparse(client.authorize_url).hostname}. "
           f"The sign-in code{secret} go to {urlparse(client.token_url).hostname}; the token is sent only to "
@@ -559,6 +797,6 @@ def handle_auth_action(action: str, args: Any, provider: str) -> Optional[bool]:
 
 
 __all__ = [
-    "OAuthClient", "forget_plugin_grants", "handle_auth_action", "oauth_admission_problems",
+    "DeviceCode", "OAuthClient", "device_client", "device_sign_in", "forget_plugin_grants", "handle_auth_action", "oauth_admission_problems",
     "oauth_admission_warnings", "oauth_notice", "oauth_surface", "parse_oauth_clients", "plugin_key",
 ]

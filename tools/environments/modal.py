@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import binascii
 import io
 import logging
 import shlex
@@ -198,7 +199,13 @@ class ModalEnvironment(BaseEnvironment):
             data = await proc.stdout.read.aio() if capture else None
             exit_code = await proc.wait.aio()
             if fail_label and exit_code != 0:
-                detail = "" if capture else f": {await proc.stderr.read.aio()}"
+                detail = ""
+                try:
+                    # Capturing callers still need the reason (a pipefail'd tar fails silently otherwise).
+                    stderr = await proc.stderr.read.aio()
+                    detail = f": {stderr}" if stderr else ""
+                except Exception:  # stderr is best-effort; never mask the real failure
+                    pass
                 raise RuntimeError(f"Modal {fail_label} failed (exit {exit_code}){detail}")
             return data
         return self._worker.run_coroutine(_run(), timeout=timeout)
@@ -222,10 +229,28 @@ class ModalEnvironment(BaseEnvironment):
         self._exec(cmd, stdin=payload, timeout=120, fail_label="bulk upload")
 
     def _modal_bulk_download(self, dest: Path) -> None:
-        """Download remote .hermes/ as a tar archive (sandboxes run as root, so /root/.hermes)."""
+        """Download remote .hermes/ as a tar archive (sandboxes run as root, so /root/.hermes).
+
+        Base64-encoded inside the sandbox: Modal's sandbox streams are UTF-8 text only, so a raw
+        tar piped to stdout blows up the SDK reader on the first non-UTF-8 byte (state.db, .pyc,
+        any binary under ~/.hermes) and the whole sync-back is lost. Same base64 trick as
+        _modal_bulk_upload, and uncompressed (``tar cf``) so the ``sync_back_max_bytes`` cap still
+        measures extracted size rather than a compressed one — like the ssh/daytona/vercel
+        backends. ``base64`` without ``-w0`` stays portable to BusyBox; the wraps are stripped
+        before a strict decode. Expect ~1.33x the archive size in memory while decoding.
+        """
         # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
-        data = self._exec("tar cf - --exclude='*.sock' -C / root/.hermes", timeout=120, fail_label="bulk download", capture=True)
-        dest.write_bytes(data.encode() if isinstance(data, str) else data)
+        data = self._exec(
+            "set -o pipefail; tar cf - --exclude='*.sock' -C / root/.hermes | base64",
+            timeout=120, fail_label="bulk download", capture=True,
+        )
+        try:
+            raw = data.encode("ascii") if isinstance(data, str) else data
+            dest.write_bytes(base64.b64decode(b"".join(raw.splitlines()), validate=True))
+        except (UnicodeEncodeError, binascii.Error) as exc:
+            # Non-ASCII bytes or a truncated/garbled payload: one labelled failure, not a stray
+            # Unicode* error that file_sync's retry loop cannot classify.
+            raise RuntimeError(f"Modal bulk download: corrupt base64 payload: {exc}") from exc
 
     def _modal_delete(self, remote_paths: list[str]) -> None:
         self._exec(quoted_rm_command(remote_paths), timeout=15)

@@ -7,7 +7,7 @@
   "rpc": {
    "authority": 108,
    "keep-host-wide": 1,
-   "undecided": 182
+   "undecided": 183
   },
   "websocket": {
    "undecided": 10
@@ -573,6 +573,7 @@
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "runtime.describe", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.activate", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: legacy server.dispatch", "decision": "authority", "handler": "session.active_list", "kind": "rpc", "ref": ""},
+  {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.append_message", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.archive", "kind": "rpc", "ref": "D3"},
   {"current_path": "authority; standalone: unknown method", "decision": "authority", "handler": "session.automation", "kind": "rpc", "ref": ""},
   {"current_path": "authority refuses (-32601); standalone: legacy server.dispatch", "decision": "undecided", "handler": "session.branch", "kind": "rpc", "ref": "D3"},

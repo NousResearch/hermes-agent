@@ -486,6 +486,8 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
     """One pass over the bound profile's records; returns the subagent ids it resumed. ``start(record, unit_row,
     message)`` performs the continue and returns an error string, or None once the child was dispatched."""
     from tools.delegate_tool_registry import is_spawn_paused
+    from tools.delegate_tool_resumable import retry_hand_backs
+    retry_hand_backs()  # a claim a failed start could not hand back is owed again before candidates are read
     if not enabled():  # nothing starts; a child the stop promised a resume still gets its one report
         _settle_disabled(now or time.time())
         return []

@@ -533,3 +533,28 @@ def test_an_expired_record_without_auto_resume_fields_is_still_deleted():
                  "expires_at) VALUES ('legacy','expired',0,'{}',1,1,1)")
     _write(Path(parent._session_db.db_path), _apply_limits)
     assert _sql(parent, "SELECT subagent_id FROM resumable_subagents WHERE subagent_id='legacy'") == []
+
+
+def test_a_failed_start_whose_hand_back_also_failed_still_reports_once_after_the_store_recovers(tmp_path):
+    import tools.delegate_tool_resumable as dr
+    from tests.tools.test_delegate_auto_resume import _settled
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent, dispatched = _parent(), []
+    sid, unit = _silent_stop(tmp_path, parent)
+    real = dr._write
+
+    def busy(path, fn):  # the run record and the claim's hand-back both hit the busy timeout
+        if fn.__qualname__ == "record_start.<locals>._do" or fn.__qualname__.startswith(
+                ("release_unstarted.", "_hand_back_pending.")):
+            return None
+        return real(path, fn)
+    with patch.object(dr, "_write", busy), patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
+        tick(_scheduler(parent, dispatched), capacity=3)
+        _settled(dispatched[0])
+    assert _events(dispatched[0]) == []  # never ran: silent, still owed
+    with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):  # the store is healthy again, deadline passed
+        for _ in range(3):
+            tick(_scheduler(parent, dispatched), capacity=3, now=time.time() + 30 * 86400)
+    events = _events(unit) + [e for d in dispatched for e in _events(d)]
+    assert len(events) == 1 and events[0]["results"][0]["status"] == "failed", (events, _db_rows(parent)[sid])

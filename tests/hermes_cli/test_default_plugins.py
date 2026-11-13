@@ -49,8 +49,10 @@ def test_default_is_installed_once_and_a_removal_sticks(tmp_path, installs):
     assert installs == [(home, "accent-picker")], "a removed default came back"
     assert not (home / "plugins" / "accent-picker").exists()
 
-    # A default added to the catalog later still reaches the home.
+    # A default added to the catalog later still reaches the home; a tree a refused enable left on disk
+    # (in neither plugins.enabled nor plugins.disabled) is installed again, not recorded as done.
     entries.append(_entry("second"))
+    (home / "plugins" / "second").mkdir()
     assert default_plugins.install_defaults(home, entries=entries)["installed"] == ["second"]
 
 

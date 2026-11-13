@@ -696,13 +696,20 @@ def _is_official_adapter(matched_source) -> bool:
     return isinstance(matched_source, OptionalSkillSource)
 
 
-def _scan_source_for_install(bundle, meta, identifier: str, matched_source) -> str:
-    """Scanner trust identity for a resolved hub bundle; builtin trust only via ``_is_official_adapter``."""
+def _scan_source_for_install(bundle, meta, identifier: str, matched_source) -> tuple[str, str | None]:
+    """``(scan source, explicit trust tier or None)`` for a resolved hub bundle. Builtin trust only for the
+    official adapter's LOCAL optional-skills bytes: a catalog stub's upstream bundle is live third-party
+    content the adapter labels ``trusted``, so it keeps that tier (a dangerous verdict blocks)."""
     if _is_official_adapter(matched_source):
-        return "official"
+        bundle_trust = getattr(bundle, "trust_level", "")
+        upstream_repo = (getattr(bundle, "metadata", None) or {}).get("upstream_repo")
+        if bundle_trust == "builtin" and not upstream_repo:
+            return "official", None
+        return (upstream_repo or "community",
+                bundle_trust if bundle_trust in {"trusted", "community"} else "trusted")
     candidate = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
     source_id = getattr(matched_source, "source_id", None)
-    return _untrusted_scan_source(candidate, source_id() if callable(source_id) else "")
+    return _untrusted_scan_source(candidate, source_id() if callable(source_id) else ""), None
 
 
 def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str, matched_source=None):
@@ -711,10 +718,10 @@ def _scan_quarantined(c: Console, q_path: Path, bundle, meta, identifier: str, m
     from tools.skills_hub_models import source_url_for_bundle
     from tools.skills_guard import scan_skill_cached, format_scan_report
     c.print("[bold]Running security scan...[/]")
-    scan_source = _scan_source_for_install(bundle, meta, identifier, matched_source)
+    scan_source, scan_trust = _scan_source_for_install(bundle, meta, identifier, matched_source)
     result, prov = scan_skill_cached(
         q_path, source=scan_source, source_url=source_url_for_bundle(bundle),
-        cache_dir=HUB_DIR / "scan-cache")
+        cache_dir=HUB_DIR / "scan-cache", trust_level=scan_trust)
     c.print(format_scan_report(result))
     c.print(f"[dim]Scan provenance: {'fresh' if prov['fresh'] else 'cached'}; scanner "
             f"{prov['scanner_version']}; hash {prov['bundle_hash']}[/]")

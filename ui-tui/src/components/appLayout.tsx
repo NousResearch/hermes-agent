@@ -676,6 +676,7 @@ export const AppLayout = memo(function AppLayout({
               onClose={actions.closeLiveSession}
               onHide={() => $sessionSidebarVisible.set(false)}
               onNew={actions.newLiveSession}
+              onResume={actions.resumeById}
               onSelect={actions.activateLiveSession}
               t={ui.theme}
               width={sidebarWidth}

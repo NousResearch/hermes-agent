@@ -85,7 +85,7 @@ export const relativeSessionAge = (ts?: number) => {
 }
 
 /** Drop already-live sessions from the resumable history list (dedupe by id). */
-export const resumableHistory = (history: readonly SessionListRow[], live: readonly SessionActiveItem[]) => {
+export const resumableHistory = <T extends SessionListRow>(history: readonly T[], live: readonly SessionActiveItem[]) => {
   const liveIds = new Set(live.map(s => s.id))
 
   return history.filter(h => !liveIds.has(h.id))

@@ -6,6 +6,7 @@ cli-level names through ``from cli import ...`` at call time so facade monkeypat
 
 from __future__ import annotations
 
+import codecs
 import functools
 import itertools
 import os
@@ -21,7 +22,7 @@ from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
-from typing import Any
+from typing import Any, TextIO
 
 def _cli():
     """Late import of the ``cli`` facade: mutable CLI module state (and its test seams) lives there."""
@@ -673,9 +674,10 @@ def _set_paint_gate(app, gate) -> None:
     _PAINT_GATE = (app, gate) if gate is not None else None
 
 
-# Rows from the top of the prompt chrome down to the bottom of the screen, once a refill left
-# the chrome's top at a known row (``None``: unknown). prompt_toolkit learns that only through
-# CPR, which the CLI leaves off; drawn at least this tall, the chrome keeps reaching the bottom
+# Rows from the top of the prompt chrome down to the bottom of the screen, once the chrome's top is at
+# a known row (``None``: unknown): after a refill, and after startup and an in-app ``/clear``, which
+# count the rows their output leaves below it. prompt_toolkit learns that only through CPR, which the
+# CLI leaves off on POSIX; drawn at least this tall, the chrome keeps reaching the bottom
 # row, where ``_transcript_room`` counts the transcript from, also when it shrinks (a narrower
 # status bar, a closed modal) — rows left blank below it would be counted as transcript (#95375).
 _CHROME_FLOOR = None
@@ -688,6 +690,145 @@ def _set_chrome_floor(rows) -> None:
 
 def _chrome_floor():
     return _CHROME_FLOOR
+
+
+def _terminal_size(stream: TextIO) -> os.terminal_size:
+    """The terminal's size as prompt_toolkit reads it, from the tty behind ``stream``; ``shutil``'s
+    (``$LINES`` first, which a shell may have exported at another height) when that is no tty."""
+    try:
+        size = os.get_terminal_size(stream.fileno())
+    except (AttributeError, OSError, ValueError):
+        size = os.terminal_size((0, 0))
+    return size if size.lines and size.columns else shutil.get_terminal_size()
+
+
+def _scroll_to_last_row(stream: TextIO | None = None) -> None:
+    """Print enough newlines to put the cursor on the terminal's last row, unless it is two rows
+    tall or less, or hung up (the next write reports that)."""
+    out = sys.stdout if stream is None else stream
+    rows = _terminal_size(out).lines
+    if rows <= 2:
+        return
+    with suppress(OSError, ValueError):
+        out.write("\n" * (rows - 1))
+        out.flush()
+
+
+# A cursor move this follows (CSI row;column H or f, CSI n A up, CSI n B down), any other escape
+# sequence, a line end, or a run of text.
+_TERMINAL_TOKEN_RE = re.compile(
+    r"\x1b\[([0-9;]*)([HfAB])|\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b.?|[\r\n]|[^\x1b\r\n]+")
+
+
+class _RowFollowingStdout:
+    """``sys.stdout`` while startup prints: each write goes straight through, and the cursor's row
+    is followed as the terminal moves it (line feeds, soft wraps at the width, cursor moves). Its
+    ``rows_below`` is what a cursor position report would say, which the CLI does not send (CPR is
+    off on POSIX, #13870).
+
+    The row is unknown at first. Counted from the top it is a lower bound of the real one, and stays
+    one through every move; it is exact from a cursor position on (the clear's cursor-home), or once
+    it reaches the last row (startup's scroll there).
+    Text the terminal gets by another route (stderr, the echo of a typed answer) only moves the real
+    row further down: ``rows_below`` can come out high, never low, which costs the banner rows off
+    the top of the screen and never the composer its place on the last rows.
+    """
+
+    def __init__(self, stream, size: os.terminal_size):
+        self._stream = stream
+        self._rows, self._columns = size.lines, size.columns
+        self._row = self._column = 0
+        self._known = False
+        self._following = True
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    @property
+    def rows_below(self) -> int | None:
+        """Rows from the cursor's row down to the bottom, its own included; ``None`` while unknown."""
+        return self._rows - self._row if self._known else None
+
+    def stop(self) -> None:
+        """Stop following; writes still pass through, for anything that kept this stream."""
+        self._following = False
+
+    def write(self, text):
+        self._follow(text)
+        return self._stream.write(text)
+
+    @property
+    def buffer(self):  # prompt_toolkit writes encoded bytes to ``stdout.buffer``
+        return _RowFollowingBuffer(self._stream.buffer, self)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+    def _follow(self, text: str) -> None:
+        from prompt_toolkit.utils import get_cwidth
+        if not self._following:
+            return
+        for match in _TERMINAL_TOKEN_RE.finditer(text):
+            token, parameters, move = match.group(), match.group(1), match.group(2)
+            if move:
+                self._move(move, parameters)
+            elif token == "\n":  # the tty's ONLCR returns the carriage too
+                self._line_feed()
+            elif token == "\r":
+                self._column = 0
+            elif not token.startswith("\x1b"):
+                for width in map(get_cwidth, token):
+                    if self._column + width > self._columns:
+                        self._line_feed()
+                    self._column += width
+
+    def _move(self, move: str, parameters: str) -> None:
+        numbers = [int(number) if number.isdigit() else 1 for number in parameters.split(";")]
+        if move in "Hf":  # row;column, both counted from 1
+            row, column = (numbers + [1, 1])[:2]
+            self._row = min(max(row, 1), self._rows) - 1
+            self._column = min(max(column, 1), self._columns) - 1
+            self._known = True
+        elif move == "A":  # stops at the top row; a lower bound stays one
+            self._row = max(self._row - max(numbers[0], 1), 0)
+        else:
+            self._down(max(numbers[0], 1))
+
+    def _line_feed(self) -> None:
+        self._down(1)  # on the last row the screen scrolls instead
+        self._column = 0
+
+    def _down(self, rows: int) -> None:
+        self._row = min(self._row + rows, self._rows - 1)
+        # On the last row a lower bound is exact: the real row is no higher, and there is none lower.
+        self._known = self._known or self._row == self._rows - 1
+
+
+class _RowFollowingBuffer:
+    """``stdout.buffer`` of a ``_RowFollowingStdout``: bytes pass through, decoded to be followed."""
+
+    def __init__(self, raw, follower: _RowFollowingStdout):
+        self._raw, self._follower = raw, follower
+
+    def write(self, data):
+        self._follower._follow(self._follower._decoder.decode(bytes(data)))
+        return self._raw.write(data)
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
+@contextmanager
+def _following_stdout_rows():
+    """Follow the cursor's row through what the block writes to ``sys.stdout``: yields the
+    ``_RowFollowingStdout``, and gives ``sys.stdout`` back after the block."""
+    stream = sys.stdout
+    follower = _RowFollowingStdout(stream, _terminal_size(stream))
+    sys.stdout = follower
+    try:
+        yield follower
+    finally:
+        follower.stop()
+        if sys.stdout is follower:
+            sys.stdout = stream
 
 
 # Rows output scrolled into scrollback while the terminal's width changed under it: a terminal

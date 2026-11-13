@@ -50,6 +50,21 @@ class TestChromeDebugLaunch:
         assert command is not None
         assert command.startswith("/usr/bin/chromium --remote-debugging-port=9222")
 
+    def test_manual_command_keeps_hidden_tabs_awake(self):
+        # #135435: parallel named sessions share one Chrome on hidden tabs; without these
+        # flags Chrome throttles/freezes them and CDP calls time out.
+        flags = ("--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+                 "--disable-renderer-backgrounding")
+        with patch("hermes_cli.browser_connect.shutil.which", side_effect=lambda name: "/usr/bin/chromium" if name == "chromium" else None), \
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == "/usr/bin/chromium"):
+            detected = manual_chrome_debug_command(9222, "Linux")
+        with patch("hermes_cli.browser_connect.get_chrome_debug_candidates", return_value=[]):
+            mac_fallback = manual_chrome_debug_command(9222, "Darwin")
+
+        for command in (detected, mac_fallback):
+            assert command is not None
+            assert all(flag in command.split() for flag in flags)
+
 
 
 

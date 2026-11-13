@@ -523,3 +523,16 @@ def test_packaged_only_flags_never_reach_an_explicit_binary(monkeypatch):
     assert not set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) & set(real)  # the user's own browser keeps its sandbox
     for argv in (packaged, dock, real):
         assert "--lang=de" in argv and argv[-1] == "about:blank"
+
+
+@pytest.mark.platforms("posix")
+def test_every_launch_keeps_background_tabs_awake(monkeypatch):
+    # #135435: the agent's tab is often not the selected one; without these flags Chrome
+    # throttles/freezes it and CDP calls time out.
+    monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", lambda: [])
+    flags = {"--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+             "--disable-renderer-backgrounding"}
+    for packaged, headed in ((True, False), (False, True)):
+        argv = launcher.build_chromium_argv("/c", "/p", packaged=packaged, headed=headed, sandbox_bypass=False)
+        assert flags <= set(argv)

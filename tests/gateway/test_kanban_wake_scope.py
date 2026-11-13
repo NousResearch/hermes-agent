@@ -15,9 +15,9 @@ from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.kanban_watchers_notifier import _wake_scope_id
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import build_session_key
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_notify as kbn
 from plugins.platforms.slack.adapter import SlackAdapter
 
 TEAM = "T0B8U2M6NRE"

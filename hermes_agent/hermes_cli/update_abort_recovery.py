@@ -50,7 +50,7 @@ def _surviving_pre_update_serve_runtimes(plan) -> list[dict]:
     if not planned:
         return []
     try:
-        from hermes_cli.process_identity import ledger_entries
+        from hermes_agent.hermes_cli.process_identity import ledger_entries
         live: dict[int, float | None] = {
             entry["pid"]: _numeric(entry.get("create_time"))
             for entry in ledger_entries()
@@ -97,9 +97,9 @@ def _qualified_serve_skips(skip_units) -> list[dict]:
 def _run_fresh_recovery_process(
     profiles, candidates, *, gateway_mode: bool, recover_serve: bool, skip_units
 ) -> subprocess.CompletedProcess | None:
-    """Spawn ``hermes_cli.update_restart_recovery --stdin`` detached from this process; None when it
+    """Spawn ``hermes_agent.hermes_cli.update_restart_recovery --stdin`` detached from this process; None when it
     could not run (no systemd-run in gateway mode, OSError, timeout) — the caller fails closed."""
-    command = [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"]
+    command = [sys.executable, "-m", "hermes_agent.hermes_cli.update_restart_recovery", "--stdin"]
     env = os.environ.copy()
     env["HERMES_UPDATE_RESTART_RECOVERY"] = "1"
     for marker in ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE"):
@@ -117,7 +117,7 @@ def _run_fresh_recovery_process(
 
     # The child inherits this environ's values but not their provenance: without it, a sibling's restart
     # env keeps every name only a secret source (or a since-removed .env line) supplied (#135792).
-    from hermes_cli.env_loader import env_provenance
+    from hermes_agent.hermes_cli.env_loader import env_provenance
     kwargs = {
         "input": json.dumps({
             "profiles": profiles, "supervisors": candidates,
@@ -166,7 +166,7 @@ def _recover_gateway_restart_after_abort(
     manager as two different processes, and an unqualified token would let a settled one suppress recovery
     of a stale one (review on #96235).
     """
-    from hermes_cli.update_cmd import _gateway_recovery_partition
+    from hermes_agent.hermes_cli.update_cmd import _gateway_recovery_partition
     candidates, skipped = _gateway_recovery_partition(plan, skip_profiles=skip_profiles)
     profiles = sorted(candidates)
     recover_serve = _serve_unit_recovery_available()
@@ -249,7 +249,7 @@ def _warn_stale_serve_runtimes(rows) -> None:
         print("    Ask their owner to relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend.")
     # A unit-managed backend restarts through its own unit and scope — never "ask the owner to
     # relaunch", and never a hardcoded user-scope hermes-serve (#141021).
-    from hermes_cli.main_dashboard import _format_restart_commands, _systemd_restart_commands
+    from hermes_agent.hermes_cli.main_dashboard import _format_restart_commands, _systemd_restart_commands
 
     for row in unit_rows:
         commands = _systemd_restart_commands(row.get("systemd_unit") or "<unit>", row.get("systemd_scope"))
@@ -265,7 +265,7 @@ def _owed_stale_serve_rows(rows) -> list[dict]:
     :func:`_warn_stale_serve_runtimes` and recorded in the receipt. See #111494. (The
     fleet-restart-pending marker draws the same boundary for its own inventory, so a supervisor-owned
     serve row no longer keeps that warning armed either.)"""
-    from hermes_cli.update_inventory import CLIENT_OWNED_SERVE_SUPERVISORS
+    from hermes_agent.hermes_cli.update_inventory import CLIENT_OWNED_SERVE_SUPERVISORS
 
     return [row for row in (rows or []) if row.get("supervisor") not in CLIENT_OWNED_SERVE_SUPERVISORS]
 

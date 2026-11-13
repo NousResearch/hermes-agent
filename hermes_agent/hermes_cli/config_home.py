@@ -26,7 +26,7 @@ def _operator_owned_links(links: list[Path], home: Path) -> list[Path]:
 
 
 def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> None:
-    from hermes_cli.config import _secure_dir
+    from hermes_agent.hermes_cli.config import _secure_dir
 
     detail = ""
     try:
@@ -54,7 +54,7 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
 
 
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> None:
-    from hermes_cli.config import _ensure_default_soul_md, is_managed
+    from hermes_agent.hermes_cli.config import _ensure_default_soul_md, is_managed
 
     managed = is_managed()
     old_umask = os.umask(0o007) if managed else None
@@ -81,7 +81,7 @@ def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> 
 
 
 def config_load_issue(exc: Exception):
-    from hermes_cli.config_issues import ConfigIssue
+    from hermes_agent.hermes_cli.config_issues import ConfigIssue
 
     if isinstance(exc, (HomeInitializationError, OSError)):
         return ConfigIssue(

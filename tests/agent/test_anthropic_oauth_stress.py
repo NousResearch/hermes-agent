@@ -47,7 +47,7 @@ def _process_claude_code_refresh_worker(
 
     from hermes_agent.agent import anthropic_credentials as anthropic_mod
     from hermes_agent.agent import credential_pool as credential_pool_mod
-    from hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import auth as auth_mod
 
     shared_path = Path(shared_credentials_path)
     server_path = Path(server_state_path)

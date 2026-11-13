@@ -19,7 +19,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from hermes_cli import desktop_release_holders, main_desktop
+from hermes_agent.hermes_cli import desktop_release_holders, main_desktop
 
 pytestmark = pytest.mark.platforms("windows")
 

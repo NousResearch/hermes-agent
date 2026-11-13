@@ -17,7 +17,7 @@ def resolve_display_language(value: str) -> Optional[str]:
     """Canonical id for *value* (alias/region-tolerant) or ``None`` when no layer supplies it."""
     from hermes_agent.agent.i18n import reset_language_cache, resolve_language_id
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
     except Exception:
         pass  # a broken plugin tree must not block setting a bundled language

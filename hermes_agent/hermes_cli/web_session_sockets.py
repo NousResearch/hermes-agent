@@ -5,11 +5,11 @@ request mints a one-use ticket for one socket instead: ``GATEWAY_SOCKET`` (``/ap
 ``HOST_TERMINAL_SOCKET`` (``/api/host-terminal``) or one of ``AUDIO_SOCKETS`` (the voice streams). A
 ticket named for one socket opens no other, and the host terminal opens only with its own ticket. A
 ticket minted with the session token records that browser credential's generation
-(``hermes_cli.browser_credential``) as ``session_token`` and opens nothing once the credential is
+(``hermes_agent.hermes_cli.browser_credential``) as ``session_token`` and opens nothing once the credential is
 replaced, nor behind the sign-in gate.
 
 Behind the sign-in gate the Webapp's browsers sign in instead, and each login is bound to the browser
-credential (``hermes_cli.webapp_sign_in``): a ticket such a login mints records the credential's
+credential (``hermes_agent.hermes_cli.webapp_sign_in``): a ticket such a login mints records the credential's
 generation as ``sign_in`` and likewise opens nothing once it is replaced.
 
 Every socket the browser credential admits, directly or through such a ticket, is tracked here under
@@ -28,7 +28,7 @@ from typing import Any, Optional
 
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import browser_credential
+from hermes_agent.hermes_cli import browser_credential
 
 _log = logging.getLogger(__name__)
 

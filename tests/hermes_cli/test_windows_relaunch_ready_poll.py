@@ -15,8 +15,8 @@ import time
 import pytest
 
 from hermes_agent.gateway import status
-from hermes_cli import gateway_windows, update_cmd_windows
-from hermes_cli.update_cmd_windows import _READY_CONFIRM_S, _verify_relaunched_gateways_alive
+from hermes_agent.hermes_cli import gateway_windows, update_cmd_windows
+from hermes_agent.hermes_cli.update_cmd_windows import _READY_CONFIRM_S, _verify_relaunched_gateways_alive
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def test_one_gateway_never_retires_two_unmapped_debts(running, monkeypatch, tmp_
     import subprocess
     import sys
 
-    from hermes_cli import gateway
+    from hermes_agent.hermes_cli import gateway
     monkeypatch.setattr(update_cmd_windows, "_RELAUNCH_VERIFY_TIMEOUT_S", 3.0)
     entry = tmp_path / "bin" / "hermes"
     entry.parent.mkdir()

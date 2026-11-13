@@ -21,8 +21,8 @@ import pytest
 from fastapi.testclient import TestClient
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from hermes_cli import web_server
-from hermes_cli.dashboard_auth import (
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.dashboard_auth import (
     DashboardAuthProvider,
     InvalidCredentialsError,
     ProviderError,
@@ -30,15 +30,15 @@ from hermes_cli.dashboard_auth import (
     clear_providers,
     register_provider,
 )
-from hermes_cli.dashboard_auth import routes as auth_routes
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
-from hermes_cli.dashboard_auth.login_page import render_login_html
-from hermes_cli.dashboard_auth.routes import (
+from hermes_agent.hermes_cli.dashboard_auth import routes as auth_routes
+from hermes_agent.hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
+from hermes_agent.hermes_cli.dashboard_auth.login_page import render_login_html
+from hermes_agent.hermes_cli.dashboard_auth.routes import (
     _PW_RATE_MAX_ATTEMPTS,
     _PW_RATE_MAX_BUCKETS,
     _reset_password_rate_limit,
 )
-from hermes_cli.web_server_lifecycle import _dashboard_forwarded_allow_ips
+from hermes_agent.hermes_cli.web_server_lifecycle import _dashboard_forwarded_allow_ips
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -125,7 +125,7 @@ class PasswordProvider(DashboardAuthProvider):
         )
 
     def refresh_session(self, *, refresh_token: str) -> Session:
-        from hermes_cli.dashboard_auth import RefreshExpiredError
+        from hermes_agent.hermes_cli.dashboard_auth import RefreshExpiredError
 
         p = _unsign(self._secret, refresh_token)
         if not p or p.get("kind") != "refresh" or p["exp"] <= int(time.time()):
@@ -441,7 +441,7 @@ class TestRateLimit:
 def test_client_ip_uses_asgi_peer_not_forwarded_header(peer: tuple[str, int] | None) -> None:
     from fastapi import Request
 
-    from hermes_cli.dashboard_auth.request_utils import client_ip
+    from hermes_agent.hermes_cli.dashboard_auth.request_utils import client_ip
 
     # Preserve the ASGI address, including one normalized by trusted upstream
     # middleware; a missing peer must not fall back to an untrusted header.

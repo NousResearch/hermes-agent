@@ -137,7 +137,7 @@ def _make_cli(**overrides):
     Avoids constructing HermesCLI (which loads config, sessions, and a
     prompt_toolkit app) while still exercising the shipped gate + emit code.
     """
-    import cli as cli_module
+    import hermes_agent.cli as cli_module
 
     class _Stub:
         _turn_summary_enabled = True
@@ -167,7 +167,7 @@ def _make_cli(**overrides):
 
 def _emit_and_capture(stub, monkeypatch):
     printed = []
-    import cli as cli_module
+    import hermes_agent.cli as cli_module
 
     monkeypatch.setattr(cli_module, "_cprint", lambda text: printed.append(text))
     stub._turn_summary_begin()

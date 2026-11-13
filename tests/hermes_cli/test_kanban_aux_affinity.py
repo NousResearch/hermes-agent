@@ -12,8 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import kanban_decompose as decompose
-from hermes_cli import kanban_specify as specify
+from hermes_agent.hermes_cli import kanban_decompose as decompose
+from hermes_agent.hermes_cli import kanban_specify as specify
 
 
 def _capturing_call_llm(seen: list):

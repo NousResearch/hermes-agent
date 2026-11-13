@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_cmd_fleet as fleet
-from hermes_cli import dashboard_procs
+from hermes_agent.hermes_cli import update_cmd_fleet as fleet
+from hermes_agent.hermes_cli import dashboard_procs
 
 FOREIGN_HOME = "/srv/other-account-home/.hermes"
 
@@ -27,7 +27,7 @@ def own_home(monkeypatch, tmp_path):
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     # The plan inventory is this install only; the fixture home has no profiles dir.
-    monkeypatch.setattr("hermes_cli.update_receipt._profile_homes", lambda: [("default", home)])
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_receipt._profile_homes", lambda: [("default", home)])
     return home
 
 
@@ -79,10 +79,10 @@ def test_manual_gateway_of_another_home_is_not_stopped(monkeypatch, own_home):
     """Of two ``gateway run`` processes on the host, only the one on the updating home is SIGTERMed;
     a process whose home cannot be read is spared as well."""
     _pid_homes(monkeypatch, {111: str(own_home), 222: FOREIGN_HOME, 333: None})
-    monkeypatch.setattr("hermes_cli.gateway._get_service_pids", lambda **k: set())
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [111, 222, 333])
-    monkeypatch.setattr("hermes_cli.gateway.find_profile_gateway_processes", lambda **k: [])
-    monkeypatch.setattr("hermes_cli.gateway._wait_for_gateway_exit", lambda **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway._get_service_pids", lambda **k: set())
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway.find_gateway_pids", lambda **k: [111, 222, 333])
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway.find_profile_gateway_processes", lambda **k: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway._wait_for_gateway_exit", lambda **k: None)
     killed: list[tuple[int, int]] = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
 

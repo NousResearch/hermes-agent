@@ -13,7 +13,7 @@ from typing import Optional
 
 import pytest
 
-from hermes_cli.dashboard_auth import (
+from hermes_agent.hermes_cli.dashboard_auth import (
     DashboardAuthProvider,
     LoginStart,
     Session,
@@ -24,8 +24,8 @@ from hermes_cli.dashboard_auth import (
     list_token_providers,
     register_provider,
 )
-from hermes_cli.dashboard_auth.base import ProviderError
-from hermes_cli.dashboard_auth import token_auth
+from hermes_agent.hermes_cli.dashboard_auth.base import ProviderError
+from hermes_agent.hermes_cli.dashboard_auth import token_auth
 
 
 # --------------------------------------------------------------------------

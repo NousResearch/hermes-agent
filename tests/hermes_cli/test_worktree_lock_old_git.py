@@ -10,13 +10,13 @@ import sys
 
 import pytest
 
-from hermes_cli import worktree_ops
+from hermes_agent.hermes_cli import worktree_ops
 from tests.hermes_cli import test_worktree
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX git shim")
 def test_stale_worktrees_are_reaped_on_git_without_list_z(tmp_path, monkeypatch):
-    import cli
+    from hermes_agent import cli
 
     git_repo = tmp_path / "repo"
     for args in (["init", str(git_repo)], ["-C", str(git_repo), "commit", "--allow-empty", "-m", "init"],

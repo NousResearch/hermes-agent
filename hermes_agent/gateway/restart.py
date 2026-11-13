@@ -7,7 +7,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping
 
-from hermes_cli.config import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
 # EX_TEMPFAIL (sysexits.h): ask the service manager to restart after a graceful drain/reload.
 GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
@@ -36,7 +36,7 @@ def map_fatal_config_exit_for_launchd(returncode: int) -> int:
 # environment (e.g. ``sudo env -i``).
 EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
 
-# Forwarded by the stderr-timestamp launchd wrapper (hermes_cli/stderr_timestamp.py) to the gateway
+# Forwarded by the stderr-timestamp launchd wrapper (hermes_agent/hermes_cli/stderr_timestamp.py) to the gateway
 # grandchild, which sees ``XPC_SERVICE_NAME=0``. Read only via :func:`launchd_job_label`.
 LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
 
@@ -261,7 +261,7 @@ def is_supervised_gateway_launch(environ: Mapping[str, str] | None = None) -> bo
 
     Superset of :func:`is_gateway_supervisor_process` that also honours ``HERMES_SUPERVISED_CHILD``,
     the marker every generated launcher exports (systemd unit, launchd plist, s6 run script, Windows
-    Scheduled Task — see ``hermes_cli.main._apply_profile_override``). This is the identity the
+    Scheduled Task — see ``hermes_agent.hermes_cli.main._apply_profile_override``). This is the identity the
     self-targeting guards key on: a kill or lifecycle command issued from inside such a gateway takes
     down the process hosting the caller with nobody at a terminal to bring it back (#113667).
     """

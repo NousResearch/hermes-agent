@@ -1,5 +1,5 @@
 """A finished task on the free tier: a turn that completed on its own with a reply arms the sign-in
-offer (``hermes_cli.free_tier_offer``); any user intervention while it ran disqualifies it."""
+offer (``hermes_agent.hermes_cli.free_tier_offer``); any user intervention while it ran disqualifies it."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import types
 import pytest
 
 from hermes_agent.tui_gateway import server
-from hermes_cli import anon_auth, free_tier_offer
+from hermes_agent.hermes_cli import anon_auth, free_tier_offer
 from hermes_agent.tui_gateway.free_tier_task_done import note_task_done
 
 CLEAN = {"completed": True, "final_response": "Here is your plan.", "user_intervened": False}

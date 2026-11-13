@@ -13,7 +13,7 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 
 from hermes_constants import get_hermes_home
-from hermes_cli.active_sessions import active_session_registry_snapshot, session_owner_details
+from hermes_agent.hermes_cli.active_sessions import active_session_registry_snapshot, session_owner_details
 
 
 def _local_origin(url: str, scheme: str) -> tuple[str, int]:

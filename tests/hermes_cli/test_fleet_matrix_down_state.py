@@ -12,19 +12,19 @@ import json
 import os
 from pathlib import Path
 
-import hermes_cli.update_receipt as ur
+import hermes_agent.hermes_cli.update_receipt as ur
 
 
 def _setup(monkeypatch, tmp_path, record: dict):
     home = tmp_path / ".hermes"
     home.mkdir(exist_ok=True)
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_code_identity",
+        "hermes_agent.hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home)
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
+        "hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
     monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", lambda h, **k: None)
     (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")

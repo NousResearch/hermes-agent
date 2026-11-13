@@ -1,4 +1,4 @@
-"""The boot-time onboarding due answer (``hermes_cli.onboarding_due``): a reader during the boot
+"""The boot-time onboarding due answer (``hermes_agent.hermes_cli.onboarding_due``): a reader during the boot
 computation waits for it, and a writer that moves the answer mid-computation is never lost."""
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from hermes_cli import onboarding_due
+from hermes_agent.hermes_cli import onboarding_due
 
 
 @pytest.fixture(autouse=True)

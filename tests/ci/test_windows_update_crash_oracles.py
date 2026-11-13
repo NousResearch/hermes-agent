@@ -17,7 +17,7 @@ import pytest
 from _pytest.mark.expression import Expression
 
 import tests.e2e.core.windows_update.test_crash_cells as crash
-from hermes_cli import update_lock
+from hermes_agent.hermes_cli import update_lock
 
 _REPO = Path(__file__).resolve().parents[2]
 _SUITE = "tests/e2e/core/windows_update"

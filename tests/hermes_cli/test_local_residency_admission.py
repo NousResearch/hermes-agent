@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.local_runtime import presets
-from hermes_cli.local_runtime.estimator import HardwareBudget, ModelProfile
+from hermes_agent.hermes_cli.local_runtime import presets
+from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget, ModelProfile
 
 GIB = 1 << 30
 
@@ -75,9 +75,9 @@ def _boom(**_kw):
 def test_boot_hands_the_router_the_derived_cap(tmp_path, monkeypatch, configured, probe, expected):
     """The wiring, not just the math: what ``ensure_local_runtime`` passes as ``--models-max``."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    import hermes_cli.local_runtime.bootstrap as bs
-    from hermes_cli.local_runtime import binaries, hardware, supervisor
-    from hermes_cli.local_runtime import endpoint
+    import hermes_agent.hermes_cli.local_runtime.bootstrap as bs
+    from hermes_agent.hermes_cli.local_runtime import binaries, hardware, supervisor
+    from hermes_agent.hermes_cli.local_runtime import endpoint
 
     mdir = _staged(tmp_path, monkeypatch, {"nine-b": 6 * GIB})
     monkeypatch.setattr(bs, "models_dir", lambda: mdir)

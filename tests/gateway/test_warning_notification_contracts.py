@@ -73,8 +73,8 @@ def test_real_retry_producers_keep_final_failure_and_persistence(tmp_path, monke
     assert response and response != "(empty)" and not silent
     sent.clear()
     with patch("hermes_agent.agent.nous_rate_guard.nous_rate_limit_remaining", return_value=60), \
-         patch("hermes_cli.anon_auth.apply_model_switch"), \
-         patch("hermes_cli.anon_auth.route_is_welcome_host", return_value=False):
+         patch("hermes_agent.hermes_cli.anon_auth.apply_model_switch"), \
+         patch("hermes_agent.hermes_cli.anon_auth.route_is_welcome_host", return_value=False):
         verdict = nous_rate_limit_guard(agent, _retry=SimpleNamespace(), api_messages=[], messages=[],
             conversation_history=[], active_system_prompt="", retry_count=0, compression_attempts=0, api_call_count=0)
     assert bool(sent) is enabled

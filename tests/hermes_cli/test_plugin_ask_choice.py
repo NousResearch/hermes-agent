@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.plugins as plugins_mod
-from hermes_cli.plugins import PluginManager
+import hermes_agent.hermes_cli.plugins as plugins_mod
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 _CHOICES = [{"value": "default", "label": "Default", "description": "delegation.model / parent model"},
             {"value": "model_map", "label": "Model routes"}, "profile_routes"]
@@ -55,9 +55,9 @@ def plugin_home(tmp_path, monkeypatch):
 
 
 def test_an_in_process_plugin_command_picks_with_the_cli_clarify_panel(plugin_home, monkeypatch, capsys):
-    from cli import HermesCLI
-    from hermes_cli.plugin_command_dispatch import invoke_plugin_command
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda _cli: None)
+    from hermes_agent.cli import HermesCLI
+    from hermes_agent.hermes_cli.plugin_command_dispatch import invoke_plugin_command
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda _cli: None)
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "s1"
     cli._clarify_callback, shown = _panel(1)
@@ -100,13 +100,13 @@ class _GatewayConnection:
 
 
 def test_a_gateway_plugin_command_choice_is_answered_while_the_cli_waits(monkeypatch, capsys):
-    from cli import HermesCLI
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.cli import HermesCLI
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "s1"
     cli._clarify_callback, shown = _panel(2)
     connection = _GatewayConnection("s1")
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda _cli: connection)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda _cli: connection)
     result: list = []
     runner = threading.Thread(target=lambda: result.append(gateway_plugin_commands.run(cli, "delegation", "")))
     runner.start()
@@ -121,8 +121,8 @@ def test_a_gateway_plugin_command_choice_is_answered_while_the_cli_waits(monkeyp
 def test_a_settled_choice_closes_the_cli_picker(monkeypatch, capsys):
     """Another viewer answers the command's picker (the gateway's ``request.cancel``): the CLI's panel closes
     instead of keeping the input for an already-settled request."""
-    from cli import HermesCLI
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.cli import HermesCLI
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = "s1"
     opened, closed = threading.Event(), threading.Event()
@@ -143,7 +143,7 @@ def test_a_settled_choice_closes_the_cli_picker(monkeypatch, capsys):
         connection.answers.get(timeout=10)  # the panel's late reply, dropped by the gateway
         return {"type": "exec", "output": "MODE=model_map"}
     connection.call_until = other_viewer_answers
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda _cli: connection)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda _cli: connection)
     result: list = []
     runner = threading.Thread(target=lambda: result.append(gateway_plugin_commands.run(cli, "delegation", "")))
     runner.start()
@@ -153,7 +153,7 @@ def test_a_settled_choice_closes_the_cli_picker(monkeypatch, capsys):
 
 
 def test_a_described_choice_still_accepts_its_plain_label():
-    from hermes_cli.plugin_choices import ask_choice, bind_asker
+    from hermes_agent.hermes_cli.plugin_choices import ask_choice, bind_asker
     with bind_asker(lambda question, labels: "model routes"):
         assert ask_choice("Delegation mode", [
             {"value": "model_map", "label": "Model routes", "description": "a model per task"}]) == "model_map"

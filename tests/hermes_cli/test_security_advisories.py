@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.security_advisories.
+"""Tests for hermes_agent.hermes_cli.security_advisories.
 
 The advisory module is the user-facing detection / remediation surface
 for supply-chain attacks (e.g. the Mini Shai-Hulud worm of May 2026 that
@@ -14,7 +14,7 @@ from typing import Iterator
 
 import pytest
 
-import hermes_cli.security_advisories as adv
+import hermes_agent.hermes_cli.security_advisories as adv
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +109,7 @@ class TestAck:
     def test_get_acked_ids_empty_when_no_config(self, monkeypatch):
         # load_config raises → returns empty set, doesn't crash.
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_agent.hermes_cli.config.load_config",
             lambda: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         assert adv.get_acked_ids() == set()
@@ -118,13 +118,13 @@ class TestAck:
 
     def test_ack_advisory_persists_id(self, isolated_home, monkeypatch):
         # Stub the config layer end-to-end with a tiny in-memory store so we
-        # don't depend on the full hermes_cli.config bootstrap.
+        # don't depend on the full hermes_agent.hermes_cli.config bootstrap.
         store: dict = {"security": {}}
         monkeypatch.setattr(
-            "hermes_cli.config.load_config", lambda: store
+            "hermes_agent.hermes_cli.config.load_config", lambda: store
         )
         monkeypatch.setattr(
-            "hermes_cli.config.save_config",
+            "hermes_agent.hermes_cli.config.save_config",
             lambda cfg: store.update(cfg) or None,
         )
         assert adv.ack_advisory("test-advisory-2026-99") is True

@@ -21,8 +21,8 @@ if "dotenv" not in sys.modules:
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     sys.modules["dotenv"] = fake_dotenv
 
-from hermes_cli.auth import resolve_api_key_provider_credentials
-from hermes_cli.models import normalize_provider
+from hermes_agent.hermes_cli.auth import resolve_api_key_provider_credentials
+from hermes_agent.hermes_cli.models import normalize_provider
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ class TestFireworksAliases:
 
     @pytest.mark.parametrize("alias", ["fireworks", "fireworks-ai", "fw"])
     def test_providers_normalize_provider(self, alias):
-        from hermes_cli.providers import normalize_provider as normalize_in_providers
+        from hermes_agent.hermes_cli.providers import normalize_provider as normalize_in_providers
 
         assert normalize_in_providers(alias) == "fireworks"
 
@@ -50,7 +50,7 @@ class TestFireworksAliases:
 
 class TestFireworksConfigRegistry:
     def test_optional_env_vars_include_fireworks(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
+        from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS
 
         assert "FIREWORKS_API_KEY" in OPTIONAL_ENV_VARS
         assert OPTIONAL_ENV_VARS["FIREWORKS_API_KEY"]["category"] == "provider"
@@ -67,7 +67,7 @@ class TestFireworksDoctor:
         """Fireworks' native model IDs are slash-form (accounts/fireworks/...),
         so doctor must NOT warn that provider should be 'openrouter' / the prefix
         dropped — that heuristic is for aggregator vendor slugs only."""
-        from hermes_cli import doctor as doctor_mod
+        from hermes_agent.hermes_cli import doctor as doctor_mod
 
         home = tmp_path / ".hermes"
         home.mkdir(parents=True)
@@ -97,7 +97,7 @@ class TestFireworksDoctor:
             types.SimpleNamespace(check_tool_availability=lambda *a, **k: ([], []), TOOLSET_REQUIREMENTS={}),
         )
         with contextlib.suppress(Exception):
-            from hermes_cli import auth as _auth_mod
+            from hermes_agent.hermes_cli import auth as _auth_mod
 
             monkeypatch.setattr(_auth_mod, "get_nous_auth_status", dict)
             monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)

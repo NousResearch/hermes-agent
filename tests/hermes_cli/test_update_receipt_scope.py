@@ -1,7 +1,7 @@
 """Nested command boundaries and copied contexts cannot close an outer receipt."""
 import contextvars
 
-from hermes_cli import update_receipt as receipts
+from hermes_agent.hermes_cli import update_receipt as receipts
 
 
 def test_command_scope_retains_outer_receipt(tmp_path, monkeypatch):

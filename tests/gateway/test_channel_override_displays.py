@@ -43,7 +43,7 @@ def home(tmp_path, monkeypatch):
     ("888", "global/default-model", "pinned/lane-model"),
 ])
 async def test_model_header_reports_channel_override(home, monkeypatch, thread_id, expected, absent):
-    monkeypatch.setattr("hermes_cli.model_switch.list_authenticated_providers", lambda **kw: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.list_authenticated_providers", lambda **kw: [])
     reply = await _runner()._handle_model_command(_event("/model", thread_id))
     header = reply.splitlines()[0]
     assert expected in header and absent not in header

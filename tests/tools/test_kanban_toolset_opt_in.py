@@ -27,8 +27,8 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.tools_config import _apply_toolset_change, _get_platform_tools
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.tools_config import _apply_toolset_change, _get_platform_tools
     from hermes_agent.tools.registry import registry
 
     save_config({"platform_toolsets": {"cli": ["file"], "telegram": ["file"]}})
@@ -42,7 +42,7 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
     if surface == "http":
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from hermes_cli.web_routers.tools import router
+        from hermes_agent.hermes_cli.web_routers.tools import router
 
         app = FastAPI()
         app.include_router(router)
@@ -84,8 +84,8 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
         assert _detect_kanban(), "Saved opt-in still hides the Kanban playbook"
         result = json.loads(registry.dispatch("kanban_create", {"title": "opt-in roundtrip", "assignee": "default"}))
         assert result.get("ok"), result
-        from hermes_cli.kanban_db_connect import connect_closing
-        from hermes_cli.kanban_db import get_task
+        from hermes_agent.hermes_cli.kanban_db_connect import connect_closing
+        from hermes_agent.hermes_cli.kanban_db import get_task
         with connect_closing() as conn:
             assert get_task(conn, result["task_id"]).title == "opt-in roundtrip"
         toggle(False)
@@ -103,8 +103,8 @@ def test_selection_is_scoped_and_preserves_worker_and_deny_boundaries(legacy, tm
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools
     from hermes_agent.agent.delegation_context import delegated_child_context
 
     save_config({"toolsets": ["kanban"] if legacy else [], "platform_toolsets": {"telegram": ["kanban"]}})

@@ -5,13 +5,13 @@ from __future__ import annotations
 import contextlib
 from typing import Iterator, Optional
 
-from hermes_cli.anon_sign_in import Code, SignInState, UPGRADE_CANCELLED, UPGRADE_START
+from hermes_agent.hermes_cli.anon_sign_in import Code, SignInState, UPGRADE_CANCELLED, UPGRADE_START
 
 
 def render_sign_in_cli_code(
     state: Code, *, open_browser: bool = False, chat: bool = True, printer=print) -> None:
     """Print the ``Code`` state alone: the link, the code, and the do-not-share line."""
-    from hermes_cli.auth_device_flow import _print_device_code_instructions
+    from hermes_agent.hermes_cli.auth_device_flow import _print_device_code_instructions
     _print_device_code_instructions(
         state.link, state.code, open_browser=open_browser, swallow_open_errors=True)
     printer(f"  {state.copy_with_wait if chat else state.copy}")
@@ -41,7 +41,7 @@ def render_sign_in_cli(
     ``chat=True`` renders the in-chat wording; *states* lets a caller hand in a partially drained
     :func:`run_sign_in` generator; *printer* lets a caller pin the output target.
     """
-    from hermes_cli import anon_auth as _core
+    from hermes_agent.hermes_cli import anon_auth as _core
 
     gen = states if states is not None else _core.run_sign_in(timeout_seconds=timeout_seconds)
     started = False
@@ -74,9 +74,9 @@ def upgrade_guest(args) -> int:
     Returns 0 on success (or when already signed in), 1 otherwise, 130 on Ctrl-C. Nothing is saved
     before the token grant.
     """
-    from hermes_cli import anon_auth as _core
-    from hermes_cli.auth_device_flow import _is_remote_session
-    from hermes_cli.guest_handoff import drain
+    from hermes_agent.hermes_cli import anon_auth as _core
+    from hermes_agent.hermes_cli.auth_device_flow import _is_remote_session
+    from hermes_agent.hermes_cli.guest_handoff import drain
     drain()   # a move an earlier sign-in left unfinished gets its next try first
     timeout_seconds = float(getattr(args, "timeout", None) or 15.0)
     open_browser = not getattr(args, "no_browser", False) and not _is_remote_session()

@@ -13,7 +13,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES as _LLAMACPP_ALIASES
+from hermes_agent.hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES as _LLAMACPP_ALIASES
 
 # Image formats the managed server's decoder actually handles. llama.cpp decodes with stb_image:
 # PNG/JPEG/GIF/BMP yes, WebP NO — and a WebP part fails SILENTLY (no HTTP error, no log line; the
@@ -31,7 +31,7 @@ def is_managed_provider(provider: str, base_url: str = "") -> bool:
     if p != "custom" or not base_url:
         return False
     with suppress(Exception):
-        from hermes_cli.local_runtime.growth import is_managed_endpoint
+        from hermes_agent.hermes_cli.local_runtime.growth import is_managed_endpoint
 
         return is_managed_endpoint(base_url)
     return False
@@ -41,7 +41,7 @@ def managed_reasoning_efforts(provider: str, base_url: str, model_id: str) -> tu
     """Reasoning-effort levels the chat template of this managed model accepts. None when the
     catalog lists none for the model (its template takes any level, or the model is not from the
     catalog) and when the route is someone else's server."""
-    from hermes_cli.local_runtime.catalog import entry_for_model
+    from hermes_agent.hermes_cli.local_runtime.catalog import entry_for_model
 
     entry = entry_for_model(model_id) if model_id else None
     if entry is None or not entry.reasoning_efforts or not is_managed_provider(provider, base_url):
@@ -53,7 +53,7 @@ def _props_modalities(model_id: str) -> bool | None:
     """Ask the running server whether this loaded child sees images. None when the server is down,
     the model isn't loaded, or the build doesn't report modalities."""
     with suppress(Exception):
-        from hermes_cli.local_runtime.endpoint import child_query, managed_get_json, managed_root
+        from hermes_agent.hermes_cli.local_runtime.endpoint import child_query, managed_get_json, managed_root
 
         ep = managed_root()
         if ep is None:
@@ -71,8 +71,8 @@ def managed_model_supports_vision(model_id: str) -> bool | None:
         return None
 
     with suppress(Exception):
-        from hermes_cli.local_runtime.bootstrap import assets_dir, staged_model_ids
-        from hermes_cli.local_runtime.catalog import entry_for_model
+        from hermes_agent.hermes_cli.local_runtime.bootstrap import assets_dir, staged_model_ids
+        from hermes_agent.hermes_cli.local_runtime.catalog import entry_for_model
 
         # Only answer for models actually staged with us.
         if model_id not in staged_model_ids():

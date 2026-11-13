@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli import update_receipt
+from hermes_agent.hermes_cli import update_receipt
 
 
 def _latest(home):
@@ -82,7 +82,7 @@ def test_live_running_record_is_not_reclaimed(tmp_path, monkeypatch):
     own_id = update_receipt._current.get().data["update_id"]
     for path in (tmp_path / "logs/update_receipts").glob("*.json"):
         data = json.loads(path.read_text())
-        from hermes_cli.process_identity import _process_create_time
+        from hermes_agent.hermes_cli.process_identity import _process_create_time
 
         parent_time = _process_create_time(os.getppid())
         data.update(pid=os.getppid(), writer_pid=os.getppid(),
@@ -105,12 +105,12 @@ def test_profile_process_writes_receipts_to_the_root_home(tmp_path, monkeypatch)
 
 
 def test_failed_web_build_does_not_skip_the_tui(tmp_path, monkeypatch, capsys):
-    from hermes_cli import source_build
+    from hermes_agent.hermes_cli import source_build
 
     built = []
-    monkeypatch.setattr("hermes_cli.main_install_repair._install_configured_features_missing_deps", lambda root: None)
-    monkeypatch.setattr("hermes_cli.update_stage.publish_stage", lambda text: None)
-    monkeypatch.setattr("hermes_cli.memory_provider_migration.migrate_all_homes", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main_install_repair._install_configured_features_missing_deps", lambda root: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_stage.publish_stage", lambda text: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.memory_provider_migration.migrate_all_homes", lambda: None)
     monkeypatch.setattr(source_build, "source_frontends", lambda root: ("web", "ui-tui"))
     monkeypatch.setattr(source_build, "source_build_env", lambda **kw: {"PATH": ""})
     monkeypatch.setattr(source_build, "prepare_source_dependencies", lambda *a, **kw: None)
@@ -129,23 +129,23 @@ def test_failed_web_build_does_not_skip_the_tui(tmp_path, monkeypatch, capsys):
 
 
 def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, monkeypatch, capsys):
-    from hermes_cli import update_cmd, update_cmd_maint as maint
+    from hermes_agent.hermes_cli import update_cmd, update_cmd_maint as maint
 
     calls = []
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_cli import update_windows_acl
+    from hermes_agent.hermes_cli import update_windows_acl
     monkeypatch.setattr(update_windows_acl, "repair_windows_home_acl", lambda: calls.append("repair_windows_home_acl"))
     for name in ("_verify_and_restore_state_dbs_post_update", "_invalidate_live_plugin_catalog_caches",
                  "_print_bundled_skills_sync_report", "_sync_profiles_after_update"):
         monkeypatch.setattr(maint, name, lambda name=name: calls.append(name))
-    monkeypatch.setattr("hermes_cli.gitlock.fetch_full_commit_graph", lambda *a, **kw: False)
-    monkeypatch.setattr("hermes_cli.model_catalog.seed_cache_from_checkout", lambda root: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gitlock.fetch_full_commit_graph", lambda *a, **kw: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_catalog.seed_cache_from_checkout", lambda root: False)
 
     def broken_graph_refresh(root):
         calls.append(("commit_graph", root))
         raise OSError("fork failed")  # a refresh that cannot start must not fail or owe anything
 
-    monkeypatch.setattr("hermes_cli.git_commit_graph.spawn_commit_graph_refresh", broken_graph_refresh)
+    monkeypatch.setattr("hermes_agent.hermes_cli.git_commit_graph.spawn_commit_graph_refresh", broken_graph_refresh)
 
     def broken_migration(**kwargs):
         raise SystemExit(1)  # a migration helper that exits must not fail the committed update
@@ -170,9 +170,9 @@ def test_failed_config_migration_is_owed_and_later_maintenance_runs(tmp_path, mo
 def test_owed_restart_names_its_gateways_so_a_dead_fleet_cannot_discharge_it(tmp_path, monkeypatch):
     # A gateway that died at boot leaves no live row. An inventory-less obligation would be settled
     # by the gateway-less discharge, silencing the warning that replaces exit 1 under C3.
-    from hermes_cli import update_cmd_fleet as fleet
-    from hermes_cli import update_cmd_fleet_verify as fleet_verify
-    from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+    from hermes_agent.hermes_cli import update_cmd_fleet as fleet
+    from hermes_agent.hermes_cli import update_cmd_fleet_verify as fleet_verify
+    from hermes_agent.hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
@@ -185,7 +185,7 @@ def test_owed_restart_names_its_gateways_so_a_dead_fleet_cannot_discharge_it(tmp
     assert [(r["kind"], r["profile"]) for r in inventory["runtimes"]] == [("gateway", "default")]
     # HEAD still holds the pulled code, so only the fleet evidence can settle it.
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "a" * 40)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", list)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_receipt.collect_fleet_versions", list)
     assert fleet._marker_only_restart_obsolete() is False
     assert fleet._fleet_restart_obligation_armed()
 
@@ -193,14 +193,14 @@ def test_owed_restart_names_its_gateways_so_a_dead_fleet_cannot_discharge_it(tmp
 def test_owed_restart_rearms_a_settled_obligation_and_a_later_run_keeps_owing_it(tmp_path, monkeypatch):
     # A pre-restart probe can settle an inventory-less record; the owed restart must re-arm it, and
     # a later verify that finds nothing to restart must keep owing the named gateway.
-    from hermes_cli import update_cmd_fleet as fleet
-    from hermes_cli import update_cmd_fleet_verify as fleet_verify
-    from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+    from hermes_agent.hermes_cli import update_cmd_fleet as fleet
+    from hermes_agent.hermes_cli import update_cmd_fleet_verify as fleet_verify
+    from hermes_agent.hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "b" * 40)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", list)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_receipt.collect_fleet_versions", list)
     assert not fleet._fleet_restart_obligation_armed()
     fleet_verify._record_owed_gateway_inventory(UpdatePlan(runtimes=[RuntimeRecord(kind="gateway", profile="default")]))
     assert fleet._obligation_fields()["expected_sha"] == "b" * 40
@@ -234,7 +234,7 @@ def test_interrupt_after_the_run_closed_as_success_never_tells_the_gateway_1(tmp
     """Review regression 3, the ``cmd_update`` boundary: once this run's receipt says ``success``,
     an interrupt escaping afterwards must not write 1 to the gateway /update status."""
     from types import SimpleNamespace
-    from hermes_cli import main, update_cmd, update_owning_install
+    from hermes_agent.hermes_cli import main, update_cmd, update_owning_install
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
@@ -256,7 +256,7 @@ def test_interrupt_after_the_run_closed_as_success_never_tells_the_gateway_1(tmp
 
 def test_a_failure_before_the_run_closed_still_tells_the_gateway_1(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from hermes_cli import main, update_cmd, update_owning_install
+    from hermes_agent.hermes_cli import main, update_cmd, update_owning_install
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
@@ -277,7 +277,7 @@ def test_a_failure_before_the_run_closed_still_tells_the_gateway_1(tmp_path, mon
 def test_completion_child_interrupted_after_verification_answers_its_success(tmp_path, monkeypatch):
     """Review regression 3, the selected completion child: verification finalized ``success`` and
     then an interrupt landed. Exit, result and gateway status follow the receipt (0), not 130/1."""
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     update_receipt.begin_update_receipt()
@@ -303,7 +303,7 @@ def test_both_completion_children_run_in_utf8_mode(tmp_path, monkeypatch):
     into a pipe: each argv carries -X utf8 (win-utf8 review; the bootstrap child got it first)."""
     import pm
     from pm import client, environments, receipt
-    from hermes_cli import gitlock, update_completion, venv_sync
+    from hermes_agent.hermes_cli import gitlock, update_completion, venv_sync
 
     calls = []
 

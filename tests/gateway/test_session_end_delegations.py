@@ -30,7 +30,7 @@ async def _owner(tmp_path, monkeypatch):
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
-    monkeypatch.setattr('hermes_cli.lifecycle.invoke_hook', lambda name, **kwargs: None)
+    monkeypatch.setattr('hermes_agent.hermes_cli.lifecycle.invoke_hook', lambda name, **kwargs: None)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
 
     async def finalize(**kwargs):

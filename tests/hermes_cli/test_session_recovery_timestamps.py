@@ -10,8 +10,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from hermes_cli.session_recovery import recover_session_database
-from hermes_cli.timefmt import coerce_epoch
+from hermes_agent.hermes_cli.session_recovery import recover_session_database
+from hermes_agent.hermes_cli.timefmt import coerce_epoch
 from hermes_agent.hermes_state import SessionDB
 
 

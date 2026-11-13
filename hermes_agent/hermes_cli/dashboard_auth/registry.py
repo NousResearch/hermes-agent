@@ -13,7 +13,7 @@ from typing import List, Optional
 
 from hermes_agent.agent.provider_registry import ProviderRegistry, exact_key
 from hermes_constants import hermes_home_key, normalize_scope
-from hermes_cli.dashboard_auth.base import DashboardAuthProvider, assert_protocol_compliance
+from hermes_agent.hermes_cli.dashboard_auth.base import DashboardAuthProvider, assert_protocol_compliance
 
 _log = logging.getLogger(__name__)
 _registry: ProviderRegistry[DashboardAuthProvider] = ProviderRegistry(

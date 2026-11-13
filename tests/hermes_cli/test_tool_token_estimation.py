@@ -4,7 +4,7 @@
 
 def test_curses_checklist_numbered_fallback_shows_status(monkeypatch, capsys):
     """The numbered fallback should print the status_fn output."""
-    from hermes_cli.curses_ui import _numbered_fallback
+    from hermes_agent.hermes_cli.curses_ui import _numbered_fallback
 
     def my_status(chosen):
         return f"Selected {len(chosen)} items"

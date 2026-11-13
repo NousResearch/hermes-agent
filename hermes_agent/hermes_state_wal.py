@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Any, Dict, Optional
 
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable
+from hermes_agent.hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable
 from hermes_agent.hermes_state_errors import is_sqlite_lock_error
 
 # Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_state").
@@ -158,7 +158,7 @@ def resolve_journal_mode() -> str:
     """The configured ``database.journal_mode`` (``wal`` default; ``delete`` for filesystems without WAL-safe
     durability: macOS virtiofs, NFS, SMB). Invalid values fail safe to ``wal``."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         database = (load_config_readonly() or {}).get("database", {})
         raw = database.get("journal_mode", "wal") if isinstance(database, dict) else "wal"
     except Exception:
@@ -256,7 +256,7 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
 
     Returns the mode actually set — or, when the read-only mode probe is blocked by a concurrent opener, ``"wal"``
     as the assumed mode with nothing touched (``require_wal=True`` raises instead). Shared by :class:`SessionDB`
-    and ``hermes_cli.kanban_db_connect.connect``. WAL-incompatible filesystems either raise ``OperationalError`` ("locking protocol" / "disk I/O error") or —
+    and ``hermes_agent.hermes_cli.kanban_db_connect.connect``. WAL-incompatible filesystems either raise ``OperationalError`` ("locking protocol" / "disk I/O error") or —
     macOS NFS / SMB / AgentFS — silently refuse and stay in DELETE; either way log ERROR once per process per
     ``db_label`` and fall back. ``require_wal=True`` raises :class:`WalUnsupportedError` instead. WAL-reset-bug
     builds (https://sqlite.org/wal.html#walresetbug) never enable WAL on non-WAL files; an already-WAL DB keeps WAL
@@ -274,7 +274,7 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
     still documents the WAL-reset bug as real through 3.51.2 with serious consequences. Until a fixed
     runtime is delivered, keep new databases out of WAL.
     """
-    config_module = sys.modules.get("hermes_cli.config")
+    config_module = sys.modules.get("hermes_agent.hermes_cli.config")
     if getattr(getattr(config_module, "__spec__", None), "_initializing", False):
         config_module = None
     config_lock = getattr(config_module, "_CONFIG_LOCK", None)
@@ -491,7 +491,7 @@ def _wal_reset_repair_hint() -> str:
     See #75153.
     """
     try:
-        from hermes_cli.config import detect_install_method, get_project_root, recommended_update_command_for_method
+        from hermes_agent.hermes_cli.config import detect_install_method, get_project_root, recommended_update_command_for_method
         method = detect_install_method(get_project_root())
         cmd = recommended_update_command_for_method(method)
         if method in {"git", "unknown"}:
@@ -650,7 +650,7 @@ def apply_database_pragmas(conn: sqlite3.Connection, *, db_label: str = "state.d
     between bundled/distro/Homebrew builds). Best-effort: failures are ignored so DB init never breaks on a
     malformed section. Applied to ALL connection types: writer, read_only, WAL readers."""
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly  # local: avoids a circular import
+        from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly  # local: avoids a circular import
         cfg = load_config_readonly()
     except Exception:
         return

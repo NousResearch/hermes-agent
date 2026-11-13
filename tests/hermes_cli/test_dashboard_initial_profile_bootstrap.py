@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 
 def test_spa_bootstrap_includes_dashboard_initial_profile(tmp_path, monkeypatch):

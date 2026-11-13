@@ -11,9 +11,9 @@ from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run_adapters import GatewayAdapterLifecycleMixin
 from hermes_agent.gateway.run_startup import GatewayStartupMixin
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from hermes_cli.observability import relay_shared_metrics as rsm
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability import shared_metrics_gateway as smg
+from hermes_agent.hermes_cli.observability import relay_shared_metrics as rsm
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability import shared_metrics_gateway as smg
 from hermes_constants import get_hermes_home
 
 

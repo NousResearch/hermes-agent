@@ -465,8 +465,8 @@ def test_takeover_arms_the_checkout_head_when_git_cannot_answer(tmp_path, monkey
     PATH (only PM's store copy) used to raise FileNotFoundError there, reporting a committed update
     as failed (F20); a git that runs but fails silently armed nothing (F25). Either way the record
     must still name the HEAD the checkout's own ref files hold."""
-    from hermes_cli import _early_recovery, _update_takeover
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli import _early_recovery, _update_takeover
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -503,8 +503,8 @@ def test_takeover_arms_the_checkout_head_when_git_cannot_answer(tmp_path, monkey
 def test_takeover_arms_an_sha_less_obligation_for_a_git_less_root(tmp_path, monkeypatch):
     """An archive install has no HEAD to name, yet its update still owes the fleet a restart (F21):
     an SHA-less record (readers hold the fleet to the checkout) instead of no record at all."""
-    from hermes_cli import _update_takeover
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli import _update_takeover
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))  # no enclosing repo answers for it
     root = tmp_path / "archive"
@@ -535,7 +535,7 @@ def test_takeover_arms_the_host_record_without_application_dependencies(tmp_path
          "import importlib.util, sys\nfrom pathlib import Path\n"
          f"sys.path.insert(0, {str(source)!r})\n"
          "assert importlib.util.find_spec('ruamel') is None, 'precondition: no app dependencies'\n"
-         "from hermes_cli._update_takeover import _arm_fleet_obligation\n"
+         "from hermes_agent.hermes_cli._update_takeover import _arm_fleet_obligation\n"
          f"_arm_fleet_obligation(Path({str(root)!r}))\n"],
         env={**os.environ, "HERMES_GATEWAY_LOCK_DIR": str(lock_dir), "HERMES_HOME": str(home)},
         stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=60,
@@ -550,7 +550,7 @@ def test_a_finish_child_that_cannot_start_after_the_commit_is_owed_not_failed(tm
     """The historical updater already moved the tree and prepare() armed the tail. A Popen/resume
     OSError starting update_finish used to land in the preparation catch-all: receipt failed,
     .update_exit_code=1, exit 1 for a committed update (review C7, invariant 3)."""
-    from hermes_cli import _update_takeover, update_custody, update_lock, update_receipt
+    from hermes_agent.hermes_cli import _update_takeover, update_custody, update_lock, update_receipt
     from hermes_constants import get_hermes_home
 
     class _Lock:
@@ -592,7 +592,7 @@ def test_a_finish_child_that_cannot_start_after_the_commit_is_owed_not_failed(tm
 def test_the_takeover_breadcrumb_is_written_temp_fsync_rename(tmp_path, monkeypatch):
     """With the host record unwritable the takeover falls back to the per-home breadcrumb; it was
     written in place (review C12, invariant 5): a crash mid-write left a truncated debt record."""
-    from hermes_cli import _update_takeover, update_host_obligation
+    from hermes_agent.hermes_cli import _update_takeover, update_host_obligation
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(update_host_obligation, "write_host_obligation", lambda **_kw: False)
@@ -616,7 +616,7 @@ def test_a_takeover_debt_another_profile_cannot_see_is_never_silent(tmp_path, mo
     fallback as the commit point: with the host record unwritable on a two-profile install, the
     arming profile's marker hides the debt from the other one, so the takeover must say so (it
     cannot refuse a move that already happened) (kshitijk4poor P2, review S2)."""
-    from hermes_cli import _update_takeover
+    from hermes_agent.hermes_cli import _update_takeover
 
     homes = {name: tmp_path / "profiles" / name for name in ("coder", "writer")}
     for home in homes.values():
@@ -641,8 +641,8 @@ def test_a_historical_updater_arms_the_host_record_under_the_current_mutex(tmp_p
     """An N-1 updater imported ``update_lock`` before its pull, then lazily imports the pulled
     ``update_host_obligation``: the arm must still write the record, under the same sidecar lock
     current processes hold, instead of crashing the update on the missing ``marker_mutex``."""
-    from hermes_cli import update_lock
-    from hermes_cli.update_host_obligation import read_host_obligation, write_host_obligation
+    from hermes_agent.hermes_cli import update_lock
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation, write_host_obligation
 
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
     monkeypatch.delattr(update_lock, "marker_mutex")  # N-1's in-memory update_lock had no such name

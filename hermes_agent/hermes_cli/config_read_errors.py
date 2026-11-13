@@ -72,10 +72,10 @@ def _warn_config_parse_failure(
 
     ``fallback`` selects the message wording: ``"defaults"`` (fresh process, nothing else to serve) or
     ``"last-known-good"`` (in-process retention of the previously loaded config — see the codex#31188 port
-    in ``hermes_cli.config._load_config_impl``).
+    in ``hermes_agent.hermes_cli.config._load_config_impl``).
     """
     try:
-        from hermes_cli.config_backend import config_version
+        from hermes_agent.hermes_cli.config_backend import config_version
         sig = config_version(config_path)
         key = (str(config_path), *sig)
         _CONFIG_PARSE_FAILURES[str(config_path)] = (*_failure_version(config_path), str(exc))
@@ -84,7 +84,7 @@ def _warn_config_parse_failure(
     if key in _CONFIG_PARSE_WARNED:
         return
     _CONFIG_PARSE_WARNED.add(key)
-    from hermes_cli.config_backups import backup_config
+    from hermes_agent.hermes_cli.config_backups import backup_config
     # A read error leaves an intact file behind: no "corrupt" copy of a good file.
     backup_path = None if isinstance(exc, OSError) else backup_config(config_path, "corrupt")
     msg = format_config_parse_failure(config_path, exc, fallback=fallback)
@@ -106,14 +106,14 @@ def _failure_version(path: Path) -> tuple:
     try:
         return file_cache_version(path, always_digest=True)
     except OSError:
-        from hermes_cli.config_backend import config_version
+        from hermes_agent.hermes_cli.config_backend import config_version
         return (*config_version(path), None)
 
 
 def get_active_config_parse_failure() -> Optional[str]:
     """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
     (``file_cache_version`` with its content digest) to the file that failed to parse; else None."""
-    from hermes_cli.config import get_config_path
+    from hermes_agent.hermes_cli.config import get_config_path
     try:
         record = _CONFIG_PARSE_FAILURES[str(path := get_config_path())]
         sig = _failure_version(path)

@@ -7,8 +7,8 @@ from __future__ import annotations
 import pytest
 
 from hermes_agent import providers
-from hermes_cli import models
-from hermes_cli import models_catalog_static as static
+from hermes_agent.hermes_cli import models
+from hermes_agent.hermes_cli import models_catalog_static as static
 from hermes_agent.providers.base import ProviderProfile
 
 

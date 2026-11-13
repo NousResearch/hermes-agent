@@ -5,8 +5,8 @@ import base64
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
-from hermes_cli.web_routers import files as file_routes
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.web_routers import files as file_routes
 
 
 @pytest.fixture

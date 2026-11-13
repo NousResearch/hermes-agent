@@ -47,7 +47,7 @@ async def _terminal(db, receipt):
 
 
 async def _model_prepare(authority, owner, tmp_path, db):
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     model_switch_real = model_switch.switch_model
     model_switch.switch_model = lambda **k: model_switch.ModelSwitchResult(
         success=True, new_model='switched', target_provider='custom', base_url='http://127.0.0.1:9/v1')

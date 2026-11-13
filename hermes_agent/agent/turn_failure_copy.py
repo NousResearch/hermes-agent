@@ -112,7 +112,7 @@ def failed_turn_notice(turn_messages: Any) -> str:
 
 def provider_label_for(provider: Any) -> str:
     """Human-friendly provider name for chat copy (``"OpenRouter"``, ``"Nous Portal"``…)."""
-    from hermes_cli.models import provider_label
+    from hermes_agent.hermes_cli.models import provider_label
 
     return provider_label(str(provider or ""))
 
@@ -469,7 +469,7 @@ def oauth_relogin_command(provider: Any) -> str:
 
 
 def _login_owned_by_external_cli(slug: str) -> bool:
-    from hermes_cli.auth_plugin_providers import plugin_auth_handler, plugin_profile
+    from hermes_agent.hermes_cli.auth_plugin_providers import plugin_auth_handler, plugin_profile
 
     return getattr(plugin_profile(slug), "auth_type", "") == "external_process" and plugin_auth_handler(slug) is None
 

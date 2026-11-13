@@ -24,9 +24,9 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.macos_tcc_anchor as tcc
+import hermes_agent.hermes_cli.macos_tcc_anchor as tcc
 from pm.environments import venv_python
-from hermes_cli import doctor_platform
+from hermes_agent.hermes_cli import doctor_platform
 
 
 def _build_store(tmp_path, version: str = "3.11.15", *, with_libpython: bool = False) -> Path:
@@ -143,7 +143,7 @@ class TestEnsureTccAnchor:
         signed = []
 
         monkeypatch.setattr(
-            "hermes_cli.macos_signing.sign_managed_python", lambda p: signed.append(Path(p)) or True
+            "hermes_agent.hermes_cli.macos_signing.sign_managed_python", lambda p: signed.append(Path(p)) or True
         )
         store_bin = _build_store(tmp_path)
         root = _build_checkout(tmp_path, store_bin=store_bin)

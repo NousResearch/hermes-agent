@@ -7,8 +7,8 @@ import pytest
 
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_common import SCHEMA_VERSION
-from hermes_cli import sessions_cmd
-from hermes_cli.web_server_sessions import _open_session_db_at_path
+from hermes_agent.hermes_cli import sessions_cmd
+from hermes_agent.hermes_cli.web_server_sessions import _open_session_db_at_path
 
 
 @pytest.fixture(autouse=True)

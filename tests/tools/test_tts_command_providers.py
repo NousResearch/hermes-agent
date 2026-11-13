@@ -538,7 +538,7 @@ class TestCommandProviderSpawnGroupKwargs:
     """
 
     def test_nt_branch_hides_the_console_window(self, monkeypatch):
-        from hermes_cli import _subprocess_compat
+        from hermes_agent.hermes_cli import _subprocess_compat
         from hermes_agent.tools.tts_command_provider import provider_popen_group_kwargs
 
         # Pin the compat module's host probe so the nt data branch is assertable
@@ -552,7 +552,7 @@ class TestCommandProviderSpawnGroupKwargs:
         assert "start_new_session" not in kwargs
 
     def test_nt_branch_matches_the_shared_detach_bundle(self, monkeypatch):
-        from hermes_cli import _subprocess_compat
+        from hermes_agent.hermes_cli import _subprocess_compat
         from hermes_agent.tools.tts_command_provider import provider_popen_group_kwargs
 
         monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)

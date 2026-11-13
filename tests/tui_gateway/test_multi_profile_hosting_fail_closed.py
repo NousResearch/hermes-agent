@@ -130,7 +130,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
         seen["options"] = (Path(get_hermes_home()), get_secret("B_ONLY_TOKEN"), get_secret("A_ONLY_TOKEN"))
         return {"providers": []}
 
-    monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload", build_payload)
+    monkeypatch.setattr("hermes_agent.hermes_cli.inventory.build_model_options_payload", build_payload)
 
     r = server._methods["llm.oneshot"]("r1", {"profile": "b", "instructions": "x", "input": "y"})
     assert r["result"]["text"] == "t"

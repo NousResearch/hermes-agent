@@ -37,7 +37,7 @@ def _record_status(monkeypatch, runner):
 async def test_secondary_polling_conflict_reconnects_then_parks_a_foreign_holder(monkeypatch):
     monkeypatch.setattr(recovery, "_TOKEN_CONTENTION_RECONNECT_DELAYS", (0.01, 0.01, 0.01), raising=False)
     runner = _secondary_recovery_runner()
-    monkeypatch.setattr("hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.get_profile_dir", lambda name: Path("/profiles") / name)
     monkeypatch.setattr("hermes_agent.gateway.run_adapters.record_platform_disconnect", lambda *a, **k: None)
     monkeypatch.setattr(runner, "_safe_adapter_disconnect", AsyncMock())
     writes = _record_status(monkeypatch, runner)

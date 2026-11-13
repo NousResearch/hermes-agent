@@ -90,7 +90,7 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
     compressed so a simulated 60s pending deadline elapses in well under a
     second of wall clock.
     """
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 
     printed: list[str] = []
 
@@ -124,7 +124,7 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
     def fake_sleep(secs):
         clock["t"] += max(secs * 4, 2.0)
 
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     with patch.object(gwc, "load_gateway_config", return_value=gw_config), \
          patch("time.time", side_effect=fake_time), \

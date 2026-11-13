@@ -24,8 +24,8 @@ async def test_profiles_burst_leaves_threadpool_status_responsive(monkeypatch):
     import anyio.to_thread
     import httpx
     from fastapi import FastAPI
-    from hermes_cli import profiles as profiles_mod
-    from hermes_cli.web_routers import profiles
+    from hermes_agent.hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli.web_routers import profiles
     from starlette.concurrency import run_in_threadpool
     release = threading.Event()
     calls = []

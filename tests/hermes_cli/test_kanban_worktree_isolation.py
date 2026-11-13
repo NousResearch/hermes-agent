@@ -21,10 +21,10 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_db_graph import decompose_triage_task
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_workspace as kbw
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli.kanban_db_graph import decompose_triage_task
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_workspace as kbw
 
 
 @pytest.fixture

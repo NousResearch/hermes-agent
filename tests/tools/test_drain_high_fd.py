@@ -95,7 +95,7 @@ def test_pty_bridge_reads_and_waits_above_fd_setsize(high_fds, monkeypatch):
     import errno
 
     pytest.importorskip("ptyprocess")
-    from hermes_cli.pty_bridge import PtyBridge
+    from hermes_agent.hermes_cli.pty_bridge import PtyBridge
     from hermes_agent.tools.environments import fd_wait
 
     bridge = PtyBridge.spawn(["/bin/sh", "-c", "echo pty-high-fd; exec sleep 30"])

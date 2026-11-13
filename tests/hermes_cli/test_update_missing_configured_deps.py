@@ -41,7 +41,7 @@ def configured_update(source_launch, tmp_path, monkeypatch):
     for path in repository.iterdir():
         if path.name in {"hermes_agent", "hermes_cli", "gateway", "agent", "tools", "plugins", "pm"} or path.suffix == ".py":
             if (root / path.name).exists():
-                # source_launch already stubs hermes_cli/source_completion.py; link the rest of that
+                # source_launch already stubs hermes_agent/hermes_cli/source_completion.py; link the rest of that
                 # package's modules beside it.
                 for module in path.iterdir():
                     if not (root / path.name / module.name).exists():
@@ -51,7 +51,7 @@ def configured_update(source_launch, tmp_path, monkeypatch):
     def build_in_child():
         script = (
             "import json, sys; from pathlib import Path\n"
-            "from hermes_cli import source_build\n"
+            "from hermes_agent.hermes_cli import source_build\n"
             "source_build.source_build_env = lambda **kwargs: {}\n"
             "source_build.prepare_source_dependencies = lambda *args, **kwargs: None\n"
             "source_build.build_source_tui = lambda *args, **kwargs: None\n"
@@ -118,7 +118,7 @@ def test_unconfigured_or_disabled_features_are_quiet(configured_update, capfd):
 
 def test_update_installs_the_extras_configured_features_need(monkeypatch, tmp_path, capsys):
     """#124228: an enabled platform's SDK joins the environment instead of only a warning."""
-    from hermes_cli import main_install_repair as repair
+    from hermes_agent.hermes_cli import main_install_repair as repair
 
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "x"\nversion = "0"\n'

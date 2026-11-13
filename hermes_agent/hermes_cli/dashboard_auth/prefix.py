@@ -101,7 +101,7 @@ def _normalise_public_url(raw: Optional[str]) -> str:
 def _load_dashboard_section() -> dict:
     """``dashboard`` block of config.yaml as a dict, or ``{}`` when unloadable/absent/non-dict."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
     except Exception:
         return {}
     try:

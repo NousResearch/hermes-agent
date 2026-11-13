@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     DEFAULT_CONFIG,
     atomic_config_write,
     get_compatible_custom_providers,
     read_user_config_raw,
 )
-from hermes_cli.profiles import create_profile
-from hermes_cli.profile_model_seed import launch_model_seed, merge_endpoint_seed
-from hermes_cli import runtime_provider
+from hermes_agent.hermes_cli.profiles import create_profile
+from hermes_agent.hermes_cli.profile_model_seed import launch_model_seed, merge_endpoint_seed
+from hermes_agent.hermes_cli import runtime_provider
 
 
 @pytest.fixture
@@ -180,7 +180,7 @@ def test_model_seed_matches_env_referenced_endpoint_names(monkeypatch, schema, e
 
 
 def test_model_seed_uses_supplied_config_without_reading_credentials(monkeypatch):
-    import hermes_cli.runtime_provider_custom as custom_runtime
+    import hermes_agent.hermes_cli.runtime_provider_custom as custom_runtime
 
     def unexpected_read(*args, **kwargs):
         pytest.fail(

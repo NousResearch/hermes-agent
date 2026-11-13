@@ -111,7 +111,7 @@ async def test_watcher_gates_profile_scope_on_pending_handoffs(monkeypatch):
     ]
     monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: scopes)
 
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     entered = []
 

@@ -8,7 +8,7 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 
 if TYPE_CHECKING:
     from hermes_agent.tools.process_registry import ProcessSession

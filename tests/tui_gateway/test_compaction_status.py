@@ -26,8 +26,8 @@ def server():
             "hermes_constants": MagicMock(
                 get_hermes_home=MagicMock(return_value="/tmp/hermes_test_compaction")
             ),
-            "hermes_cli.env_loader": MagicMock(),
-            "hermes_cli.banner": MagicMock(),
+            "hermes_agent.hermes_cli.env_loader": MagicMock(),
+            "hermes_agent.hermes_cli.banner": MagicMock(),
             "hermes_agent.hermes_state": MagicMock(),
         },
     ):

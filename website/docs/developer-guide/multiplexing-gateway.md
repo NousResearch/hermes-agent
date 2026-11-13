@@ -8,7 +8,7 @@ description: "Design of the one-gateway-for-all-profiles mode: scope composition
 One gateway process can serve every profile in the install. The mode is on by
 default (`gateway.multiplex_profiles`, default `true`), and everything it
 changes reverts the moment the flag is off. An *unset* flag is settled at boot
-by `hermes_cli/gateway_multiplex_mode.py::resolve_multiplex_mode`, which runs
+by `hermes_agent/hermes_cli/gateway_multiplex_mode.py::resolve_multiplex_mode`, which runs
 the `hermes gateway migrate` preflight and keeps the gateway standalone when a
 secondary still runs its own gateway, a blocker exists, or the host cannot be
 migrated (see "The mode flag"). This document is the design rationale
@@ -55,7 +55,7 @@ is documented as a known limitation at the end of this document.
   not a per-task value. Its only job is to arm the fail-closed behavior in
   `get_secret()`.
 - The dashboard / remote-Desktop backend (`hermes serve`) has no such flag, so
-  `hermes_cli/web_server.py::start_server` calls
+  `hermes_agent/hermes_cli/web_server.py::start_server` calls
   `hermes_agent.tui_gateway.launch_profile_policy.activate_multi_profile_hosting_eagerly()`
   as its LAST boot step: the host arms the guard when the machine has more than
   one servable profile home, instead of waiting for the first
@@ -199,7 +199,7 @@ B's turns and into every subprocess spawned with `env=dict(os.environ)`.
 Because the per-turn `.env` reload is a no-op under multiplexing, rotated
 credentials are picked up through the profile scope on the next turn — never
 via `os.environ`. This holds at the loader boundary, not just the gateway's
-reload helper: `hermes_cli.env_loader.load_hermes_dotenv` skips the
+reload helper: `hermes_agent.hermes_cli.env_loader.load_hermes_dotenv` skips the
 process-global load whenever multiplexing is active *and* a profile-home
 override is installed (import-time and cron callers hit it mid-turn), while
 still hydrating the profile's external secret sources into its private
@@ -234,7 +234,7 @@ dropped, not misdelivered). Full schema and matching rules:
 
 ## Serving selected profiles
 
-`profiles_to_serve(multiplex, profile_allowlist)` in `hermes_cli/profiles.py`
+`profiles_to_serve(multiplex, profile_allowlist)` in `hermes_agent/hermes_cli/profiles.py`
 is the single chokepoint for which profiles a multiplexer serves: default plus
 every valid profile directory, optionally filtered by allowlist. A malformed
 allowlist fails safe to default-only. The served set gates adapter startup,
@@ -382,5 +382,5 @@ out of scope for this document.
 - [Multi-profile gateways](../user-guide/multi-profile-gateways.md) — user-facing guide, including `profile_routes`
   and the standalone one-gateway-per-profile alternative.
 - `hermes_agent/agent/secret_scope.py`, `hermes_constants.py`, `hermes_agent/gateway/profile_routing.py`,
-  `hermes_agent/gateway/run.py` (`_profile_runtime_scope`), `hermes_cli/profiles.py`
+  `hermes_agent/gateway/run.py` (`_profile_runtime_scope`), `hermes_agent/hermes_cli/profiles.py`
   (`profiles_to_serve`), `hermes_agent/gateway/session.py`, `hermes_agent/tui_gateway/methods_profiles.py`.

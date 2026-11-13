@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import web_server
-import hermes_cli.web_server_chat as _web_server_chat
-from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
+from hermes_agent.hermes_cli import web_server
+import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
+from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
 
 
 @pytest.fixture

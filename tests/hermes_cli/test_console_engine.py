@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from hermes_cli.console_engine import HermesConsoleEngine, run_console_repl
+from hermes_agent.hermes_cli.console_engine import HermesConsoleEngine, run_console_repl
 
 
 def test_sessions_optimize_accepts_the_force_override_it_advertises(_isolate_hermes_home):
@@ -253,7 +253,7 @@ def test_repl_runs_non_interactive_lines_without_prompts(_isolate_hermes_home):
 
 
 def test_capture_output_surfaces_string_exit_code_as_command_error():
-    from hermes_cli.console_engine import ConsoleCommandError, _capture_output
+    from hermes_agent.hermes_cli.console_engine import ConsoleCommandError, _capture_output
 
     def _boom():
         sys.exit("No credential matching \"nope\".")

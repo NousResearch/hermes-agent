@@ -53,8 +53,8 @@ class _Relay:
 @pytest.fixture
 def owner(monkeypatch, tmp_path):
     from websockets.sync.server import serve
-    from hermes_cli import gateway_client, gateway_runtime
-    import hermes_cli.gateway_runtime_discovery as discovery
+    from hermes_agent.hermes_cli import gateway_client, gateway_runtime
+    import hermes_agent.hermes_cli.gateway_runtime_discovery as discovery
 
     state = SimpleNamespace(connections=0, tickets=0, requests=[], drop=None, closed=threading.Event(),
                             pongs=[], flooded=threading.Event(), relay=None, live=None)

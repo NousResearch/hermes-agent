@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
-from hermes_cli.profile_provision import (
+from hermes_agent.hermes_cli.profile_provision import (
     ProfileCreateReceipt, ProfileCreateRequest, message_from, redact_create_text, refusal_from,
 )
 
@@ -76,7 +76,7 @@ def _where(remote: str) -> str:
 
 
 def _local_profile_dir(name: str) -> Optional[Path]:
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_profile_dir
     try:
         return Path(get_profile_dir(name))
     except ValueError:
@@ -93,7 +93,7 @@ def _is_profile(local: Optional[Path]) -> bool:
 def _made_here(made: ProfileCreateReceipt, local: Optional[Path], was_profile: bool) -> bool:
     """Whether this create made the profile ``-p <name>`` selects on this machine, given the gateway is this
     home's owner: not a profile before the request, one now, at the path the gateway reports."""
-    from hermes_cli.profiles import profile_matches_home
+    from hermes_agent.hermes_cli.profiles import profile_matches_home
     return (not was_profile and _is_profile(local)
             and profile_matches_home(local.name, Path(made.path)))
 
@@ -119,14 +119,14 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
     ``ValueError`` / ``FileExistsError`` / ``FileNotFoundError``. When this create made the profile in this
     machine's profiles directory, the terminal's ``~/.local/bin`` wrapper is written here.
     """
-    from hermes_cli.sessions_owner import live_owner
+    from hermes_agent.hermes_cli.sessions_owner import live_owner
     remote = os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
     where = _where(remote)
     endpoint, profile = None, None
     if remote:
         # The profile this terminal runs in, resolved like the local dial (an overlay task home is served by
         # the profile its lock names); a home outside the profiles tree has no name a gateway can resolve.
-        from hermes_cli.gateway_runtime import gateway_profile_home
+        from hermes_agent.hermes_cli.gateway_runtime import gateway_profile_home
         from hermes_constants import get_hermes_home, profile_name_for_home
         profile = profile_name_for_home(gateway_profile_home(get_hermes_home()))
         if not profile:
@@ -139,7 +139,7 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
             logger.debug("profile create: gateway discovery failed", exc_info=True)
     if not remote and endpoint is None:
         return None
-    from hermes_cli.gateway_client import GatewayRPCError, NOT_SENT, connect_gateway
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError, NOT_SENT, connect_gateway
     machine = " on the gateway's machine" if remote else ""
     unknown = f"{where} may have created '{request.name}'; check `hermes profile list`{machine} before retrying"
     local = _local_profile_dir(request.name)
@@ -200,7 +200,7 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
 
 
 def _with_local_alias(made: ProfileCreateReceipt, request: ProfileCreateRequest) -> ProfileCreateReceipt:
-    from hermes_cli.profile_provision import write_alias
+    from hermes_agent.hermes_cli.profile_provision import write_alias
     try:
         path, collision = write_alias(request.name)
     except Exception as exc:  # the profile exists: a wrapper failure is a warning, as for a local create

@@ -58,7 +58,7 @@ async def test_a_mode_change_queued_behind_a_new_watermark_still_repaints_the_ed
     async def client():
         return gateway
     monkeypatch.setattr(agent, '_client', client)
-    from hermes_cli import models
+    from hermes_agent.hermes_cli import models
     monkeypatch.setattr(models, 'parse_model_input', lambda m, d: ('p', 'm'))
     await install(agent)
     # The owner's session.info for the other viewer's change (seq 11) is delivered after the resume.

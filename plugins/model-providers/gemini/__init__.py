@@ -79,7 +79,7 @@ def _keepalive_http_client(base_url: str) -> Any:
     try:
         from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
         from hermes_agent.agent.ssl_verify import resolve_httpx_verify
-        from hermes_cli.config_providers import get_custom_provider_tls_settings
+        from hermes_agent.hermes_cli.config_providers import get_custom_provider_tls_settings
 
         tls = get_custom_provider_tls_settings(base_url)
         verify = resolve_httpx_verify(ca_bundle=tls.get("ssl_ca_cert"), ssl_verify=tls.get("ssl_verify"), base_url=base_url)

@@ -90,7 +90,7 @@ def _db_path_for(parent_agent: Any = None) -> Optional[Path]:
 
 
 def _connect(path: Path):
-    from hermes_cli.sqlite_util import transaction
+    from hermes_agent.hermes_cli.sqlite_util import transaction
     from hermes_agent.tools.async_delegation import open_state_db
     return transaction(open_state_db(path, "state.db (resumable_subagents)"))
 
@@ -151,7 +151,7 @@ def _apply_limits(conn) -> None:
 
 # ── worktrees ──────────────────────────────────────────────────────────────
 def _git_lines(args: list[str], cwd: str) -> list[str]:
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from hermes_agent.hermes_cli._subprocess_compat import noninteractive_repo_git_env
     env = noninteractive_repo_git_env(cwd)
     if env is None:
         return []
@@ -695,7 +695,7 @@ def last_workspace(parent_agent: Any, sid: str) -> Optional[dict[str, Any]]:
 
 # ── worktree sweep pin ─────────────────────────────────────────────────────
 def _profile_dbs() -> list[Path]:
-    from hermes_cli.profiles import profiles_to_serve
+    from hermes_agent.hermes_cli.profiles import profiles_to_serve
     homes = [home for _name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)]
     return [Path(home) / "state.db" for home in homes if (Path(home) / "state.db").is_file()]
 
@@ -713,7 +713,7 @@ def _settings_of(home: Path) -> tuple[float, int]:
 
 def _read_pins(db: Path, now: float) -> Iterable[tuple[str, dict[str, Any]]]:
     import sqlite3
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
     from hermes_agent.hermes_state_holders import read_only_db_uri
     _ttl, cap = _settings_of(db.parent)
     try:

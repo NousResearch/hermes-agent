@@ -14,9 +14,9 @@ import pytest
 
 import hermes_agent.agent.billing_usage as bu
 import hermes_agent.agent.subscription_view as sv
-import hermes_cli.nous_billing as nb
+import hermes_agent.hermes_cli.nous_billing as nb
 from hermes_agent.agent.subscription_view import CurrentSubscription, SubscriptionState, SubscriptionTier
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 @pytest.fixture
@@ -129,8 +129,8 @@ def test_open_url_in_browser_refuses_remote_session(cli, monkeypatch):
     # (4): a remote/SSH session must NOT auto-open — webbrowser.open is never called.
     import webbrowser
 
-    from hermes_cli import auth
-    from hermes_cli import auth_device_flow
+    from hermes_agent.hermes_cli import auth
+    from hermes_agent.hermes_cli import auth_device_flow
 
     monkeypatch.setattr(auth, "_is_remote_session", lambda: True, raising=False)
     monkeypatch.setattr(auth_device_flow, "_is_remote_session", lambda: True, raising=False)

@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import sys
 
-from hermes_cli._launchers import mint_launcher
+from hermes_agent.hermes_cli._launchers import mint_launcher
 
 
 def publish_fixture_launcher(root: Path, main_source: str) -> Path:

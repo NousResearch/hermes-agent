@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import main as hermes_main
-from hermes_cli import main_web_build
+from hermes_agent.hermes_cli import main as hermes_main
+from hermes_agent.hermes_cli import main_web_build
 
 
 def _make_repo(tmp_path: Path, sha: str = "a" * 40) -> Path:
@@ -63,7 +63,7 @@ def test_sweep_clears_pycache_when_checkout_changed(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_clear_plugin_bytecode_removes_nested_caches(tmp_path):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
 
     plugin = tmp_path / "myplugin"
     top = plugin / "__pycache__"
@@ -129,7 +129,7 @@ def test_a_sweep_that_cannot_list_dropped_files_keeps_the_old_fingerprint(monkey
     old commit from every later sweep. The old fingerprint stays, so the next launch retries."""
     import subprocess
 
-    from hermes_cli import main_web_build as build
+    from hermes_agent.hermes_cli import main_web_build as build
 
     repo = tmp_path / "repo"
     repo.mkdir()

@@ -63,7 +63,7 @@ class TestRequestToolApproval:
         assert res["approved"] is True
 
     def test_cli_deny_blocks(self, monkeypatch):
-        from hermes_cli import lifecycle
+        from hermes_agent.hermes_cli import lifecycle
 
         monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
         monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)

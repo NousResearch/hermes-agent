@@ -9,7 +9,7 @@ import logging
 
 import pytest
 
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 
 @pytest.fixture()
@@ -23,7 +23,7 @@ def test_identical_hook_failure_warns_once_then_debug(manager, caplog):
         return None
 
     manager._hooks.setdefault("pre_tool_call", []).append(on_pre_tool)
-    with caplog.at_level(logging.DEBUG, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.hermes_cli.plugins"):
         for i in range(5):
             manager.invoke_hook("pre_tool_call", tool_name="read_file", args={"path": f"/p{i}"})
 
@@ -45,7 +45,7 @@ def test_distinct_hook_failures_each_warn(manager, caplog):
         raise RuntimeError(f"failure #{len(calls)}")
 
     manager._hooks.setdefault("post_tool_call", []).append(flaky)
-    with caplog.at_level(logging.DEBUG, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.hermes_cli.plugins"):
         for _ in range(3):
             manager.invoke_hook("post_tool_call", tool_name="x", args={}, result="ok")
 
@@ -61,7 +61,7 @@ def test_middleware_failure_warns_once_and_unload_forgets_it(manager, caplog):
         return None
 
     manager._middleware.setdefault("agent_tool_execution", []).append(on_exec)
-    with caplog.at_level(logging.DEBUG, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.hermes_cli.plugins"):
         for i in range(3):
             manager.invoke_middleware("agent_tool_execution", tool_name="x", args={"path": f"/p{i}"})
         manager._reset_after_unload_all([])
@@ -78,9 +78,9 @@ def test_execution_chain_middleware_failure_warns_once(manager, caplog, monkeypa
     """The execution chain (``tool_execution``/``llm_execution``, one frame per tool or LLM call)
     reports a mis-declared callback through the same warn-once path as hooks — and still skips the
     frame and runs the tool."""
-    from hermes_cli import middleware as mw
+    from hermes_agent.hermes_cli import middleware as mw
 
-    monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins._plugin_manager", manager)
 
     def on_exec(tool_data, next_call):  # core sends tool_name/args, never tool_data
         return next_call()
@@ -105,7 +105,7 @@ def test_stream_observer_hook_failure_warns_once(manager, caplog, monkeypatch):
     the per-consumer worker reports a mis-declared callback through the same warn-once path."""
     from hermes_agent.agent import plugin_stream_hooks as psh
 
-    monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins._plugin_manager", manager)
 
     def on_stream_delta(tool_data, **kwargs):  # core sends delta, never tool_data
         return None
@@ -138,7 +138,7 @@ def test_event_subscriber_failure_warns_once(manager, caplog):
         return None
 
     manager._subscribe_event("listener", "emitter:tick", on_event)
-    with caplog.at_level(logging.DEBUG, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.hermes_cli.plugins"):
         for i in range(4):
             assert manager._dispatch_event("emitter:tick", {"n": i}) == 1
         assert manager._wait_for_event_dispatch(timeout=2.0)

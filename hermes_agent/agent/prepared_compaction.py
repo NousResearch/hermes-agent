@@ -94,7 +94,7 @@ class _Miss(str):
 
 def _record(event: str, **dims: Any) -> None:
     """Count one event in opt-in shared metrics (a no-op when off; never raises)."""
-    from hermes_cli.observability.shared_metrics_prepared_compaction import record_prepared_compaction
+    from hermes_agent.hermes_cli.observability.shared_metrics_prepared_compaction import record_prepared_compaction
 
     record_prepared_compaction(event, **dims)
 

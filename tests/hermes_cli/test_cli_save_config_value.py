@@ -24,14 +24,14 @@ class TestSaveConfigValueAtomic:
         # point HERMES_HOME at the temp dir (the _hermes_home import-time
         # constant is no longer consulted).
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setattr("cli._hermes_home", hermes_home)
+        monkeypatch.setattr("hermes_agent.cli._hermes_home", hermes_home)
         return config_path
 
 
 
     def test_creates_nested_keys(self, config_env):
         """Dot-separated paths create intermediate dicts as needed."""
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
         save_config_value("auxiliary.compression.model", "google/gemini-3-flash-preview")
 
         result = yaml.safe_load(config_env.read_text())
@@ -46,7 +46,7 @@ class TestSaveConfigValueAtomic:
 
         monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", exploding_write)
 
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
         result = save_config_value("display.skin", "broken")
 
         assert result is False
@@ -68,7 +68,7 @@ class TestSaveConfigValueTargetsUserConfig:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
 
         assert save_config_value("wake_word.enabled", True) is True
 
@@ -80,7 +80,7 @@ class TestSaveConfigValueTargetsUserConfig:
     def test_does_not_write_repo_cli_config(self, tmp_path, monkeypatch):
         # Even when the repo's cli-config.yaml exists, the write goes to the
         # user config, so a runtime setting is never buried in the shipped file.
-        import cli as cli_module
+        import hermes_agent.cli as cli_module
 
         repo_cli_config = Path(cli_module.__file__).parent / "cli-config.yaml"
         before = repo_cli_config.read_text() if repo_cli_config.exists() else None
@@ -89,7 +89,7 @@ class TestSaveConfigValueTargetsUserConfig:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
 
         save_config_value("wake_word.enabled", True)
 

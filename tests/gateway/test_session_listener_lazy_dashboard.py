@@ -1,6 +1,6 @@
 """The gateway's session listener serves local sessions without importing the dashboard app.
 
-``start_gateway_api`` imported ``hermes_cli.web_server`` (about 690 routes, ~0.6 s on the event loop)
+``start_gateway_api`` imported ``hermes_agent.hermes_cli.web_server`` (about 690 routes, ~0.6 s on the event loop)
 before the listener bound, stalling every cold start and the control socket's identify. The native
 ticketed ``/api/ws`` must be served — with the same Host and peer boundary — before the dashboard is
 imported, and the dashboard routes must still answer on the same origin (mounted on first request).

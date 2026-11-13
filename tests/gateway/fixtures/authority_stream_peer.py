@@ -108,7 +108,7 @@ async def probe(peer, target):
     from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_agent.gateway.session import SessionSource
     from hermes_agent.gateway.session_authority import initialize_session_authority
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from hermes_agent.run_agent import AIAgent
 

@@ -310,7 +310,7 @@ class TestVerifierEnabled:
         monkeypatch.delenv("HERMES_FILE_MUTATION_VERIFIER", raising=False)
         agent = _bare_agent()
 
-        import hermes_cli.config as _cfg_mod
+        import hermes_agent.hermes_cli.config as _cfg_mod
         monkeypatch.setattr(
             _cfg_mod, "load_config", lambda: {"display": {"file_mutation_verifier": False}}
         )

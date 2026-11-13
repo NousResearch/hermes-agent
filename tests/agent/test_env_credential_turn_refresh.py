@@ -215,7 +215,7 @@ CUSTOM_BASE = "https://api.longcat.example/openai/v1"
 def named_custom_provider(monkeypatch):
     """Register a named custom provider (config `providers.longcat` block)."""
     block = {"name": "longcat", "base_url": CUSTOM_BASE, "key_env": "LONGCAT_API_KEY"}
-    import hermes_cli.runtime_provider as rp
+    import hermes_agent.hermes_cli.runtime_provider as rp
 
     monkeypatch.setattr(
         rp,

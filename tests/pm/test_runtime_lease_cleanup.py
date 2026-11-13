@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import runtime_state
+from hermes_agent.hermes_cli import runtime_state
 
 
 def _generation(root: Path) -> Path:

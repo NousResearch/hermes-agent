@@ -91,7 +91,7 @@ def test_transformed_reply_original_drops_echoed_memory_block(monkeypatch):
     def invoke_hook(hook_name, **kwargs):
         return [kwargs["response_text"] + "\n\n-- footer"] if hook_name == "transform_llm_output" else []
 
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke_hook)
+    monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.invoke_hook", invoke_hook)
     result = _run(f"Auth restored.\n\n{ECHOED_BLOCK}")
 
     assert result["response_transformed"] is True

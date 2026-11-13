@@ -3,7 +3,7 @@
 from queue import Queue
 from unittest.mock import patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def test_queue_expands_collapsed_paste_reference(tmp_path):
@@ -16,7 +16,7 @@ def test_queue_expands_collapsed_paste_reference(tmp_path):
     cli_obj._pending_input = Queue()
     cli_obj._pending_resume_sessions = None
 
-    with patch("cli._cprint"):
+    with patch("hermes_agent.cli._cprint"):
         assert cli_obj.process_command(f"/queue {placeholder}") is True
 
     assert cli_obj._pending_input.get_nowait() == pasted

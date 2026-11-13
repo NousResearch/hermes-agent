@@ -29,7 +29,7 @@ before the next cell starts, noted in the evidence: ``_run_cells``):
   deterministic: a smudge filter the harness names in the install's own ``.git/config`` and
   ``.git/info/attributes`` (git's filter hook, nothing in the product) holds git while it
   writes ``hermes_constants.py``, the last changed path in index order. At that moment git
-  has written the cell's new file and ``hermes_cli/main.py`` and unlinked
+  has written the cell's new file and ``hermes_agent/hermes_cli/main.py`` and unlinked
   ``hermes_constants.py``: the torn tree, stale ``index.lock`` and missing startup module
   a mid-merge kill leaves;
 * ``mid_git_bootstrap``: the same hold on ``hermes_bootstrap.py``, the first changed path in
@@ -72,7 +72,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from hermes_cli import update_lock
+from hermes_agent.hermes_cli import update_lock
 from tests.e2e.core._pending_fixes import known_failure
 
 from tests.e2e.core.windows._helpers import _decode
@@ -128,7 +128,7 @@ def _git_fetching(proc, machine, target) -> str | None:
 # The update's git commands that write the checkout and its index.
 LOCAL_GIT_OPS = ("merge", "reset", "checkout")
 HOLD_FILTER = "hermes-e2e-hold"
-# The last changed path in index order (".hermes-e2e-*" < "hermes_cli/main.py" <
+# The last changed path in index order (".hermes-e2e-*" < "hermes_agent/hermes_cli/main.py" <
 # "hermes_constants.py"): when git reaches it, the other two are already written at the target.
 HELD_PATH = "hermes_constants.py"
 # The smudge filter. Git runs it while it checks out HELD_PATH, inside unpack_trees with
@@ -459,7 +459,7 @@ def _direct_update_child(proc) -> psutil.Process | None:
     return None
 
 
-# Printed by ``_cmd_update_impl``, which hermes_cli/main.py enters only after
+# Printed by ``_cmd_update_impl``, which hermes_agent/hermes_cli/main.py enters only after
 # ``UpdateLock.acquire()`` returned: once update.log gains one, the update child has
 # taken its place under the script's claim (and named itself in it, where it does).
 UPDATE_BANNER = "Updating Hermes Agent..."
@@ -481,7 +481,7 @@ def _receipts(machine) -> set[Path]:
 
 
 def _new_receipt_outcome(machine, before: set[Path]) -> str | None:
-    """The outcome of the newest update receipt not in ``before`` (hermes_cli/update_receipt.py)."""
+    """The outcome of the newest update receipt not in ``before`` (hermes_agent/hermes_cli/update_receipt.py)."""
     new = _receipts(machine) - before
     if not new:
         return None
@@ -784,8 +784,8 @@ def test_update_killed_mid_fetch_leaves_a_runnable_install(journey: Journey) -> 
 
 
 # Red on main (wine2e run 37139409703): the killed git leaves .git/index.lock, which
-# hermes_cli/gitlock.py only sweeps once it is 10 minutes old, and the launch-time
-# interrupted-pull repair (hermes_cli/_early_recovery.py) dies with WinError 2 on a
+# hermes_agent/hermes_cli/gitlock.py only sweeps once it is 10 minutes old, and the launch-time
+# interrupted-pull repair (hermes_agent/hermes_cli/_early_recovery.py) dies with WinError 2 on a
 # machine whose only Git is the installer's private copy — so the next update refuses.
 # Fixed by #132361. Until round 6 every green run killed at fetch (index.lock never
 # existed); the hold now lands the kill inside the merge's checkout, lock held.

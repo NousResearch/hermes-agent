@@ -43,11 +43,11 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Optional, TypeVar
 from urllib.parse import urlparse
 
-from hermes_cli.anon_auth import (
+from hermes_agent.hermes_cli.anon_auth import (
     ANON_CHALLENGE_REQUIRED, ANON_FAILURE_COPY, ANON_SIGNIN_REQUIRED, _anon_headers, _mint_memo_key)
-from hermes_cli.auth_constants import AuthError, httpx
+from hermes_agent.hermes_cli.auth_constants import AuthError, httpx
 
-logger = logging.getLogger("hermes_cli.auth")
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 BROWSER_CAPABILITY = "browser-v1"
 CHALLENGE_EVENT = "free_tier.challenge"
@@ -121,7 +121,7 @@ def client_surface() -> str:
     console) unless it is serving the local Desktop app, ``desktop`` for that and for the backend the
     desktop app spawned, else ``cli``. ``HERMES_DESKTOP``
     alone is inherited by every terminal-pane shell, so desktop ownership needs the spawn credential."""
-    from hermes_cli.process_identity import is_desktop_owned_backend, serves_local_desktop_now
+    from hermes_agent.hermes_cli.process_identity import is_desktop_owned_backend, serves_local_desktop_now
     if serves_local_desktop_now():
         return "desktop"
     status = sys.modules.get("hermes_agent.gateway.status")
@@ -133,13 +133,13 @@ def client_surface() -> str:
 def client_info() -> dict[str, Any]:
     """The self-reported ``client`` block on a token exchange. It sorts honest clients (which
     surface, which challenge primitives) for the service's rules; it proves nothing, by design."""
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
     return {"name": "hermes-agent", "version": get_version_info().base_version, "surface": client_surface(),
             "platform": sys.platform, "capabilities": [BROWSER_CAPABILITY]}
 
 
 def user_agent() -> str:
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
     return (f"hermes-agent/{get_version_info().base_version} "
             f"({client_surface()}; {sys.platform}; {platform.machine() or 'unknown'})")
 
@@ -338,7 +338,7 @@ def _announce(challenge: BrowserChallenge) -> bool:
 
 
 def _present_in_terminal(challenge: BrowserChallenge) -> None:
-    from hermes_cli.auth_device_flow import _can_open_graphical_browser, _is_remote_session
+    from hermes_agent.hermes_cli.auth_device_flow import _can_open_graphical_browser, _is_remote_session
     opened = False
     # One tab per ticket, however many attempts resume it: a user who has not got to it yet is
     # not helped by a second copy. A gateway has no console of its own: it logs the link only.
@@ -408,8 +408,8 @@ def wait_for_challenge(exc: AnonChallengeRequired) -> bool:
 
     Called under the profile's work lock. A caller that queued behind another finds the ticket
     already settled on its first status read and returns without presenting anything."""
-    from hermes_cli.auth import _resolve_verify
-    from hermes_cli.auth_nous import _nous_http_client
+    from hermes_agent.hermes_cli.auth import _resolve_verify
+    from hermes_agent.hermes_cli.auth_nous import _nous_http_client
     if _gave_up_recently():
         return False
     challenge = exc.challenge

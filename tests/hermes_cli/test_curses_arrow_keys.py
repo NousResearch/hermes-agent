@@ -17,7 +17,7 @@ if sys.platform == "win32":
     pytest.skip("curses is not available on Windows", allow_module_level=True)
 import curses
 
-from hermes_cli.curses_ui import (
+from hermes_agent.hermes_cli.curses_ui import (
     NAV_BACK,
     NAV_CANCEL,
     NAV_DOWN,
@@ -153,7 +153,7 @@ def test_enhanced_enter_selects_filtered_model_while_search_is_active(monkeypatc
     monkeypatch.setattr(curses, "wrapper", lambda draw: draw(fake))
     monkeypatch.setattr(curses, "curs_set", lambda _value: None)
     monkeypatch.setattr(curses, "has_colors", lambda: False)
-    monkeypatch.setattr("hermes_cli.curses_ui.flush_stdin", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.curses_ui.flush_stdin", lambda: None)
 
     selected = curses_radiolist(
         "Pick",
@@ -218,7 +218,7 @@ def test_numbered_fallback_ctrl_c_dispatches_scoped_cancel(monkeypatch):
         lambda _draw: (_ for _ in ()).throw(fake_error),
     )
     monkeypatch.setattr(
-        "hermes_cli.curses_ui._read_numbered_input",
+        "hermes_agent.hermes_cli.curses_ui._read_numbered_input",
         lambda _prompt="": _NumberedNavigation.CANCEL,
     )
 
@@ -256,7 +256,7 @@ def test_navigation_handler_programming_error_is_not_hidden_by_fallback(monkeypa
 
 
 def test_standalone_model_flow_renders_previous_and_reopens_provider(monkeypatch):
-    from hermes_cli import main as main_mod
+    from hermes_agent.hermes_cli import main as main_mod
 
     provider_screen = FakeStdscr([13])
     model_back_screen = FakeStdscr([curses.KEY_LEFT])
@@ -274,7 +274,7 @@ def test_standalone_model_flow_renders_previous_and_reopens_provider(monkeypatch
     monkeypatch.setattr(curses, "wrapper", lambda draw: draw(screens.pop(0)))
     monkeypatch.setattr(curses, "curs_set", lambda _value: None)
     monkeypatch.setattr(curses, "has_colors", lambda: False)
-    monkeypatch.setattr("hermes_cli.curses_ui.flush_stdin", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.curses_ui.flush_stdin", lambda: None)
     monkeypatch.setattr(main_mod, "_require_tty", lambda _command: None)
 
     def fake_select_provider_and_model(args=None):
@@ -314,7 +314,7 @@ def test_radiolist_dispatches_contextual_back_navigation(monkeypatch):
     monkeypatch.setattr(curses, "wrapper", lambda draw: draw(fake))
     monkeypatch.setattr(curses, "curs_set", lambda _value: None)
     monkeypatch.setattr(curses, "has_colors", lambda: False)
-    monkeypatch.setattr("hermes_cli.curses_ui.flush_stdin", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.curses_ui.flush_stdin", lambda: None)
 
     def handler(event, *_args):
         events.append(event)

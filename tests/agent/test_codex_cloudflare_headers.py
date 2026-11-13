@@ -26,7 +26,7 @@ import base64
 import json
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.version_info import get_version_info
+from hermes_agent.hermes_cli.version_info import get_version_info
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ class TestCodexCloudflareHeaders:
 
         from hermes_agent.agent import model_metadata
         from hermes_agent.agent.auxiliary_client import _codex_cloudflare_headers
-        from hermes_cli import codex_models
+        from hermes_agent.hermes_cli import codex_models
 
         both = _make_codex_jwt(data_residency="us", compute_residency="eu")
         assert _codex_cloudflare_headers(both)["x-openai-internal-codex-residency"] == "us"

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.profile_distribution import install_distribution
+from hermes_agent.hermes_cli.profile_distribution import install_distribution
 from tests.hermes_cli import test_profile_distribution as _base
 
 _make_staging_dir = _base._make_staging_dir
@@ -34,7 +34,7 @@ def test_force_install_preserves_existing_dir_when_new_copy_fails(
         return original_copytree(src, dst, *args, **kwargs)
 
     monkeypatch.setattr(
-        "hermes_cli.profile_distribution.shutil.copytree", fail_skill_root_copy
+        "hermes_agent.hermes_cli.profile_distribution.shutil.copytree", fail_skill_root_copy
     )
 
     with pytest.raises(OSError, match="WinError 145"):
@@ -70,7 +70,7 @@ def test_force_install_restores_existing_dir_when_staged_swap_fails(
 
 def test_force_install_locked_old_tree_is_not_discovered(profile_env, monkeypatch):
     from hermes_agent.agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
-    import hermes_cli.profile_distribution as pd
+    import hermes_agent.hermes_cli.profile_distribution as pd
 
     staged = _make_staging_dir(profile_env, "src")
     plan = install_distribution(str(staged), name="target")

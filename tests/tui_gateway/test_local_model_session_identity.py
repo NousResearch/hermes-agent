@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import runtime_provider as rp
-from hermes_cli.local_runtime import endpoint
+from hermes_agent.hermes_cli import runtime_provider as rp
+from hermes_agent.hermes_cli.local_runtime import endpoint
 from hermes_agent.tui_gateway import server
 
 
@@ -14,14 +14,14 @@ def local_route(tmp_path, monkeypatch):
            "local_runtime": {"enabled": True}}
     monkeypatch.setattr(rp, "load_config", lambda: cfg)
     monkeypatch.setattr(rp, "_get_model_config", lambda: cfg["model"])
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: cfg)
     monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
     route = {"base_url": "http://127.0.0.1:18434/v1", "api_key": "local-test-key"}
     monkeypatch.setattr(endpoint, "_state_endpoint", lambda: route)
     monkeypatch.setattr(endpoint, "resolve_llamacpp_endpoint", lambda **kw: route)
     monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
-    monkeypatch.setattr("hermes_cli.banner.get_update_result", lambda **kw: None)
-    monkeypatch.setattr("hermes_cli.banner.get_available_skills", dict)
+    monkeypatch.setattr("hermes_agent.hermes_cli.banner.get_update_result", lambda **kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.banner.get_available_skills", dict)
     return route, {"cwd": str(tmp_path), "session_key": "local-identity"}
 
 
@@ -93,8 +93,8 @@ def test_session_info_recovers_identity_from_the_owning_profile(tmp_path, monkey
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(server, "_hermes_home", launch)
     monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
-    monkeypatch.setattr("hermes_cli.banner.get_update_result", lambda **kw: None)
-    monkeypatch.setattr("hermes_cli.banner.get_available_skills", dict)
+    monkeypatch.setattr("hermes_agent.hermes_cli.banner.get_update_result", lambda **kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.banner.get_available_skills", dict)
     agent = SimpleNamespace(model="same-model", provider="custom", base_url=url,
                             reasoning_config=None, service_tier=None, session_id="profile-identity")
     session = {"cwd": str(tmp_path), "session_key": "profile-identity", "profile_home": str(secondary)}

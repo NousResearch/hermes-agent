@@ -29,8 +29,8 @@ async def test_the_classic_chat_view_reads_no_plugin_manager(monkeypatch):
     """No plugin code runs in the classic CLI process on a gateway session, so its chat view has no
     plugin inject slot to install."""
     import asyncio
-    import hermes_cli.plugins as plugins_mod
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    import hermes_agent.hermes_cli.plugins as plugins_mod
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     monkeypatch.setattr(plugins_mod, 'get_plugin_manager', lambda: pytest.fail('the chat view read the plugin manager'))
 
     class Peer:

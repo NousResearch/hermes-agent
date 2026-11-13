@@ -6,7 +6,7 @@ import acp
 import pytest
 
 from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 
 def _agent(rpc):
@@ -95,7 +95,7 @@ async def test_steer_while_this_editors_prompt_waits_behind_another_clients_turn
 
 @pytest.mark.asyncio
 async def test_a_refused_steer_is_reported_and_never_resent_as_a_prompt():
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     calls = []
 
     async def rpc(method, **params):
@@ -113,7 +113,7 @@ async def test_a_refused_steer_is_reported_and_never_resent_as_a_prompt():
 
 @pytest.mark.asyncio
 async def test_a_steer_for_a_turn_that_just_ended_becomes_the_next_prompt():
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     calls = []
 
     async def rpc(method, **params):
@@ -187,7 +187,7 @@ async def test_the_editors_own_pick_projected_before_the_mutation_answers_is_har
                                   lambda a: a.set_config_option('edit_approval_policy', 's', 'session')])
 async def test_a_mode_pick_during_a_turn_is_refused_with_the_reason(pick):
     """The owner changes the edit policy on an idle session only; the editor is told why, by name."""
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
 
     async def rpc(method, **params):
         if method == 'session.resume':
@@ -207,7 +207,7 @@ async def test_a_mode_pick_during_a_turn_is_refused_with_the_reason(pick):
 @pytest.mark.asyncio
 async def test_a_mode_pick_behind_a_lost_turn_says_to_resolve_it_not_to_wait():
     """unknown_execution: no turn is running, so "after this turn" would never come true."""
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
 
     async def rpc(method, **params):
         if method == 'session.resume':

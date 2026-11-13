@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import _launchers
+from hermes_agent.hermes_cli import _launchers
 
 SOURCE = Path(__file__).resolve().parents[2]
 # What a minted launcher imports before the application entry.
@@ -34,7 +34,7 @@ BOOT = ("hermes_bootstrap.py", "hermes_constants.py", "hermes_cli/__init__.py", 
         "hermes_cli/update_lock.py", "hermes_cli/update_custody.py", "pm/environments.py",
         "pm/filesystem.py", "pm/paths.py")
 _HOLDER = ("import sys, time\nfrom pathlib import Path\nsys.path.insert(0, sys.argv[1])\n"
-           "from hermes_cli.update_lock import UpdateLock\n"
+           "from hermes_agent.hermes_cli.update_lock import UpdateLock\n"
            "lock = UpdateLock(path=Path(sys.argv[2]) / 'owner', install_root=Path(sys.argv[2]))\n"
            "assert lock.acquire()\nprint('HELD', flush=True)\ntime.sleep(120)\n")
 
@@ -71,7 +71,7 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
     armed = subprocess.run(
         [sys.executable, "-I", "-c",
          "import sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; "
-         "from hermes_cli.update_cmd_commit import arm_tree_move; "
+         "from hermes_agent.hermes_cli.update_cmd_commit import arm_tree_move; "
          "arm_tree_move([sys.argv[2]], Path(sys.argv[3]), pre=sys.argv[4], target=sys.argv[5], stash=None)",
          str(SOURCE), git_exe, str(root), pre, target], env=env, capture_output=True, text=True, encoding="utf-8",
                             errors="replace", timeout=60, check=False)
@@ -227,8 +227,8 @@ def test_a_stdlib_named_file_in_the_tree_never_runs_before_the_repair(tmp_path, 
 def test_the_closure_is_pres_committed_bytes_read_in_one_cat_file_spawn(tmp_path, monkeypatch):
     """The published repair is ``pre``'s committed bytes, not the working tree's, read with one
     ``git cat-file --batch`` (the preflight's batched reader), not a ``cat-file`` per file."""
-    from hermes_cli import update_cmd_commit as commit
-    from hermes_cli._early_recovery import RECOVERY_CLOSURE
+    from hermes_agent.hermes_cli import update_cmd_commit as commit
+    from hermes_agent.hermes_cli._early_recovery import RECOVERY_CLOSURE
 
     root = tmp_path / "checkout"
     for rel in RECOVERY_CLOSURE:

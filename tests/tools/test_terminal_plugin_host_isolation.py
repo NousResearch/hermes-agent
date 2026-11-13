@@ -9,8 +9,8 @@ from __future__ import annotations
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 BACKEND_PLUGIN = '''
 from pathlib import Path

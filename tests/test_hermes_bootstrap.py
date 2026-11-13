@@ -261,7 +261,7 @@ def test_pre_pm_editable_venv_reaches_pm_through_the_bootstrap(tmp_path):
 
     setuptools' flat-layout editable finder maps only the top-level names it saw at
     install time (no ``pm``) and never puts the checkout on ``sys.path``. The console
-    script imports ``hermes_cli`` first, then ``hermes_cli.main`` imports the bootstrap;
+    script imports ``hermes_cli`` first, then ``hermes_agent.hermes_cli.main`` imports the bootstrap;
     both must load, and the bootstrap must reach ``pm``, or PM adoption never runs.
     """
     root = Path(__file__).resolve().parents[1]

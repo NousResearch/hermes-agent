@@ -3,13 +3,13 @@ import os
 
 import pytest
 
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 
 
 def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):
     """The post-recovery updater must not remap native vault dependencies."""
-    from hermes_cli import env_loader
-    from hermes_cli import _early_recovery
+    from hermes_agent.hermes_cli import env_loader
+    from hermes_agent.hermes_cli import _early_recovery
 
     home = tmp_path / "hermes"
     home.mkdir()
@@ -62,7 +62,7 @@ def test_bom_first_key_is_seen_by_installer_and_scrub_alike(tmp_path, monkeypatc
     the key set the installers define (``load_hermes_dotenv`` into os.environ, ``load_env_file`` into a
     profile scope). A BOM'd first line, ``export``, quotes and inline comments must not split them —
     a key one side sees and the other doesn't is a scrub miss."""
-    from hermes_cli.env_loader import _env_keys_defined_in_dotenv
+    from hermes_agent.hermes_cli.env_loader import _env_keys_defined_in_dotenv
     from hermes_agent.agent.secret_scope import load_env_file
 
     home = tmp_path / "hermes"
@@ -122,7 +122,7 @@ def test_utf8_bom_plus_invalid_utf8_preserves_first_key(tmp_path, monkeypatch):
 
 def test_latin1_fallback_stream_honors_override(tmp_path, monkeypatch):
     """Stream-based latin-1 fallback must honor override= identically to dotenv_path."""
-    from hermes_cli.env_loader import _load_dotenv_with_fallback
+    from hermes_agent.hermes_cli.env_loader import _load_dotenv_with_fallback
 
     home = tmp_path / "hermes"
     home.mkdir()
@@ -223,14 +223,14 @@ def test_utf32_le_bom_leaves_file_untouched(tmp_path, caplog):
     """
     import logging
 
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+    from hermes_agent.hermes_cli.env_loader import _sanitize_env_file_if_needed
 
     env_file = tmp_path / ".env"
     content = "HERMES_TEST_KEY=hello_utf32\nSECOND_KEY=world\n"
     raw = codecs.BOM_UTF32_LE + content.encode("utf-32-le")
     env_file.write_bytes(raw)
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.env_loader"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.env_loader"):
         _sanitize_env_file_if_needed(env_file)
 
     assert env_file.read_bytes() == raw  # untouched
@@ -247,8 +247,8 @@ def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
     """
     import logging
 
-    from hermes_cli import env_loader
-    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+    from hermes_agent.hermes_cli import env_loader
+    from hermes_agent.hermes_cli.env_loader import _sanitize_env_file_if_needed
 
     # Isolate process-level seen-set so other tests' paths don't leak in.
     monkeypatch.setattr(env_loader, "_WARNED_UTF32_PATHS", set())
@@ -258,7 +258,7 @@ def test_utf32_warning_fires_once_per_path(tmp_path, caplog, monkeypatch):
     raw = codecs.BOM_UTF32_LE + content.encode("utf-32-le")
     env_file.write_bytes(raw)
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.env_loader"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.env_loader"):
         _sanitize_env_file_if_needed(env_file)
         _sanitize_env_file_if_needed(env_file)
         _sanitize_env_file_if_needed(env_file)
@@ -465,7 +465,7 @@ def test_cleanup_scope_is_the_profile_managed_set():
     widened _PROFILE_MANAGED_ENV_KEYS toward the full known-key set, which
     re-introduces the shell-export deletion bug.
     """
-    from hermes_cli.env_loader import _PROFILE_MANAGED_ENV_KEYS
+    from hermes_agent.hermes_cli.env_loader import _PROFILE_MANAGED_ENV_KEYS
 
     for key in _PROFILE_MANAGED_ENV_KEYS:
         assert not key.endswith(("_API_KEY", "_TOKEN", "_SECRET")), (
@@ -481,7 +481,7 @@ def test_cleanup_scope_is_the_profile_managed_set():
 # TERMINAL_ENV=docker in .env used to silently beat config.yaml's
 # terminal.backend on every reload (gateway per-turn reload, cron standalone
 # runs). The bridge re-applies config.yaml's EXPLICIT terminal keys last via
-# the shared hermes_cli.config.apply_terminal_config_to_env helper.
+# the shared hermes_agent.hermes_cli.config.apply_terminal_config_to_env helper.
 # ---------------------------------------------------------------------------
 
 
@@ -652,12 +652,12 @@ def test_user_env_cannot_repoint_managed_dir_with_launch_value(tmp_path, monkeyp
 
     load_hermes_dotenv(hermes_home=home)
 
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
     managed_scope.invalidate_managed_cache()
     assert os.environ["HERMES_MANAGED_DIR"] == str(admin_dir)
     assert managed_scope.load_managed_env() == {"SLACK_ALLOWED_USERS": "admin-only"}
     # Not recorded as launch dotenv residue either: a routed child keeps the launch value.
-    from hermes_cli.env_loader import launch_dotenv_keys
+    from hermes_agent.hermes_cli.env_loader import launch_dotenv_keys
     assert "HERMES_MANAGED_DIR" not in launch_dotenv_keys()
 
 
@@ -689,7 +689,7 @@ def test_reload_env_skips_launch_only_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_MANAGED_DIR", "/launch/admin-dir")
     monkeypatch.delenv("RELOAD_TEST_KEY", raising=False)
 
-    from hermes_cli import config as cfg
+    from hermes_agent.hermes_cli import config as cfg
     cfg.invalidate_env_cache()
     try:
         changed = cfg.reload_env()
@@ -754,7 +754,7 @@ def test_lowercase_launch_only_keys_in_user_env_are_ignored(tmp_path, monkeypatc
     monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+    with caplog.at_level("WARNING", logger="hermes_agent.hermes_cli.env_loader"):
         load_hermes_dotenv(load_external_secrets=False)
 
     # POSIX: the lowercase names stay unset. Windows (keys upper-cased): the real keys keep their values.
@@ -775,7 +775,7 @@ def test_launch_only_warning_is_logged_once_per_profile_home(tmp_path, monkeypat
         homes.append(home)
     monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
 
-    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+    with caplog.at_level("WARNING", logger="hermes_agent.hermes_cli.env_loader"):
         for home in homes:
             monkeypatch.setenv("HERMES_HOME", str(home))
             for _ in range(3):
@@ -788,9 +788,9 @@ def test_launch_only_warning_is_logged_once_per_profile_home(tmp_path, monkeypat
 def test_config_yaml_launch_only_warning_is_keyed_by_profile_home(tmp_path, monkeypatch, caplog):
     """The ``config.yaml`` source label is the same string for every home, so only the home part
     of the once-only key gives a second profile its own warning."""
-    from hermes_cli.env_loader import bridge_config_scalars
+    from hermes_agent.hermes_cli.env_loader import bridge_config_scalars
 
-    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+    with caplog.at_level("WARNING", logger="hermes_agent.hermes_cli.env_loader"):
         for name in ("a", "b"):
             home = tmp_path / name
             home.mkdir()
@@ -810,7 +810,7 @@ def test_reload_env_skips_lowercase_launch_only_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("hermes_managed_dir", raising=False)
 
-    from hermes_cli import config as cfg
+    from hermes_agent.hermes_cli import config as cfg
     cfg.invalidate_env_cache()
     try:
         cfg.reload_env()

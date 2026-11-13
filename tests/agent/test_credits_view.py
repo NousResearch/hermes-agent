@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_agent.agent.account_usage import build_credits_view
-from hermes_cli.nous_account import NousPortalAccountInfo, NousPaidServiceAccessInfo
+from hermes_agent.hermes_cli.nous_account import NousPortalAccountInfo, NousPaidServiceAccessInfo
 
 def _account(**kwargs) -> NousPortalAccountInfo:
     kwargs.setdefault("logged_in", True)
@@ -25,13 +25,13 @@ def _account(**kwargs) -> NousPortalAccountInfo:
 def _logged_in_account(monkeypatch):
     """Stub the auth token + account fetch so build_credits_view runs offline."""
     monkeypatch.setattr(
-        "hermes_cli.auth.get_provider_auth_state",
+        "hermes_agent.hermes_cli.auth.get_provider_auth_state",
         lambda provider: {"access_token": "tok", "portal_base_url": "https://portal.example.test"},
     )
 
     def _install(account):
         monkeypatch.setattr(
-            "hermes_cli.nous_account.get_nous_portal_account_info",
+            "hermes_agent.hermes_cli.nous_account.get_nous_portal_account_info",
             lambda *a, **kw: account,
         )
 

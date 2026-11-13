@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import sys
 
-from hermes_cli import doctor_platform as dp
-from hermes_cli.doctor_report import Finding
+from hermes_agent.hermes_cli import doctor_platform as dp
+from hermes_agent.hermes_cli.doctor_report import Finding
 
 
 class _FakeCompleted:

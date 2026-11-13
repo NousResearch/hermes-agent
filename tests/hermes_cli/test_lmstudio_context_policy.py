@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from hermes_cli import models
-from hermes_cli import models_local
+from hermes_agent.hermes_cli import models
+from hermes_agent.hermes_cli import models_local
 
 
 MODEL = "publisher/model"

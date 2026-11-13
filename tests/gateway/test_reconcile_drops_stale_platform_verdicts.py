@@ -23,7 +23,7 @@ def _platforms(home):
 async def test_rescan_drops_fatal_for_removed_credential_keeps_live(tmp_path, monkeypatch):
     runner, home = _runner(tmp_path, monkeypatch)
     alpha = _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
-    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    with patch("hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="default"):
         await runner._start_secondary_profile_adapters()
         assert Platform.DISCORD in runner._profile_adapters["alpha"]
         publish_runtime_status(platform="alpha:discord", platform_state="connected")

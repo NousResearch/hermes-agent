@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 from starlette.websockets import WebSocket
 
-from hermes_cli.web_server_chat import _legacy_pump
+from hermes_agent.hermes_cli.web_server_chat import _legacy_pump
 
 
 @pytest.fixture

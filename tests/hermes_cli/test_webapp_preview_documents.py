@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
-    from hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server as server
 
     monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
     monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
@@ -15,7 +15,7 @@ def client(monkeypatch, tmp_path):
 
 
 def test_preview_assets_expose_only_a_sandboxed_empty_shell(client):
-    from hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server as server
 
     response = client.get("/assets/webapp-preview.html", params={"html": "private-content", "profile": "other"})
     assert response.status_code == 200
@@ -50,7 +50,7 @@ def _policy(response):
 
 def test_plugin_guest_shell_caps_at_the_sdk_sandbox_allowlist(client):
     """SandboxedFrame data: HTML runs here, never with same-origin or navigation tokens."""
-    from hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server as server
 
     response = client.get("/assets/webapp-guest.html", params={"html": "private-content"})
     assert response.status_code == 200

@@ -2,10 +2,10 @@ import asyncio
 import time
 
 import pytest
-import hermes_cli.config as _cfg_mod
-import hermes_cli.web_models as _web_models
-import hermes_cli.web_routers.messaging as _rt_messaging
-import hermes_cli.web_server_messaging as _web_server_messaging
+import hermes_agent.hermes_cli.config as _cfg_mod
+import hermes_agent.hermes_cli.web_models as _web_models
+import hermes_agent.hermes_cli.web_routers.messaging as _rt_messaging
+import hermes_agent.hermes_cli.web_server_messaging as _web_server_messaging
 
 
 class _FakeProc:
@@ -36,7 +36,7 @@ class _FakeProc:
 
 
 def test_apply_whatsapp_onboarding_saves_pairing_policy(monkeypatch):
-    from hermes_cli import web_server as ws
+    from hermes_agent.hermes_cli import web_server as ws
 
     saved = {}
     removed = []
@@ -80,7 +80,7 @@ def test_apply_whatsapp_onboarding_saves_pairing_policy(monkeypatch):
 
 
 def test_start_whatsapp_onboarding_existing_creds_returns_linked_account(monkeypatch, tmp_path):
-    from hermes_cli import web_server as ws
+    from hermes_agent.hermes_cli import web_server as ws
 
     session_dir = tmp_path / "session"
     session_dir.mkdir()

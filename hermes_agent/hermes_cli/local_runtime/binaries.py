@@ -92,7 +92,7 @@ def resolve_backend(requested: str = "auto", *, gpu_vendor: str | None = None,
                     target: str | None = None) -> str:
     """Explicit choices are strict. Auto only falls back to compatible pinned builds."""
     if requested == "auto" and target is None and gpu_vendor is None:
-        from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
+        from hermes_agent.hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
 
         gpu_vendor = _detect_gpu_vendor()
     target = target or pm.current_target()
@@ -117,7 +117,7 @@ def installed_engine(backend: str = "auto", *, allow_outdated: bool = True) -> E
     """Boot may retain a prior PM pin and moves a pre-PM engine into PM's store once; it never downloads."""
     vendor = None
     if backend == "auto":
-        from hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
+        from hermes_agent.hermes_cli.local_runtime.bootstrap import _detect_gpu_vendor
 
         vendor = _detect_gpu_vendor()
     candidates = _candidates(backend, vendor, pm.current_target())

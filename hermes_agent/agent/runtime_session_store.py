@@ -135,17 +135,17 @@ class WorkerRPC:
                 return self.link
             # The owner closed it while idle, before any send: redial with a fresh ticket.
             self._drop()
-        from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
-        from hermes_cli.gateway_runtime_discovery import query_identify
+        from hermes_agent.hermes_cli.gateway_client import _session_ticket, gateway_ws_target
+        from hermes_agent.hermes_cli.gateway_runtime_discovery import query_identify
         from websockets.sync.client import connect
         # A served secondary has no socket; its multiplexer's descriptor names it.
-        from hermes_cli.gateway_runtime import discover_gateway_endpoint
+        from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
         discovery = discover_gateway_endpoint(self.home, timeout=5)
         if discovery.state == 'ready' and discovery.endpoint is not None:
             self.endpoint = discovery.endpoint
         elif discovery.state != 'draining' or self.endpoint is None:
             raise WorkerPersistenceError('owner_unavailable')
-        from hermes_cli.gateway_runtime import control_home_for
+        from hermes_agent.hermes_cli.gateway_runtime import control_home_for
         endpoint = self.endpoint
         descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
         if descriptor.get('pid') == os.getpid():

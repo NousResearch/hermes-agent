@@ -10,6 +10,6 @@ class TestApiServerPlatformConfig:
         'terminal' entirely. Its static membership (terminal, process) IS in the
         composite, so it must stay enabled."""
         from hermes_agent.tools.registry import discover_builtin_tools
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools
         discover_builtin_tools()
         assert "terminal" in _get_platform_tools({}, "api_server")

@@ -128,7 +128,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
             return False
     except Exception:
         return False
-    from hermes_cli.process_identity import _process_create_time
+    from hermes_agent.hermes_cli.process_identity import _process_create_time
 
     actual = _process_create_time(pid_int)
     if actual is None:
@@ -262,7 +262,7 @@ def check_state_db_integrity(home: Optional[Path] = None, *, deadline_s: Optiona
         except (TypeError, ValueError):
             deadline_at = None
     try:
-        from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
+        from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
 
         with closing(connect_tracked(str(path), tracking_path=path)) as conn:
             _install_integrity_check_lease(conn, deadline_at=deadline_at)
@@ -280,7 +280,7 @@ def _state_db_journal_mode(path: Path) -> Optional[str]:
     """On-disk journal mode of ``path`` via one ``PRAGMA journal_mode`` read on a short-lived
     connection (no lock outlives it); ``None`` when undeterminable.  Never raises."""
     try:
-        from hermes_cli.sqlite_safe_read import connect_tracked
+        from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
         from hermes_agent.hermes_state_wal import _on_disk_journal_mode
 
         with closing(connect_tracked(str(path), timeout=1.0, tracking_path=path)) as conn:
@@ -341,7 +341,7 @@ def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool =
                                  "start_time": time.time(), "started_at": _now_iso()}
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
         # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
-        from hermes_cli.process_identity import _process_create_time
+        from hermes_agent.hermes_cli.process_identity import _process_create_time
 
         create_time = _process_create_time(os.getpid())
         if create_time is not None:

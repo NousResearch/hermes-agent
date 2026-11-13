@@ -99,7 +99,7 @@ store._db.close()
 
 from contextlib import redirect_stdout
 from io import StringIO
-from hermes_cli.cli_info_mixin import CLIInfoMixin
+from hermes_agent.hermes_cli.cli_info_mixin import CLIInfoMixin
 status_output = StringIO()
 with redirect_stdout(status_output):
     CLIInfoMixin._show_gateway_status(object.__new__(CLIInfoMixin))

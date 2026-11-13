@@ -5,7 +5,7 @@ all runtime services and signals. This module owns only HTTP resources; it does
 not bootstrap an agent, scheduler, hosted room, or a second gateway.
 
 The native session WebSocket (ticketed ``/api/ws`` — every local CLI/TUI/Desktop session) is served
-without the dashboard app: importing ``hermes_cli.web_server`` (about 690 routes, ~0.6 s) before the
+without the dashboard app: importing ``hermes_agent.hermes_cli.web_server`` (about 690 routes, ~0.6 s) before the
 listener bound stalled every cold start and the control socket's identify. The dashboard is mounted
 on its first request (imported off the event loop) or warmed after READY for a supervised gateway
 (``warm_gateway_dashboard``); a gated listener (non-loopback bind, ``webapp.public_url`` on the Webapp's,
@@ -45,7 +45,7 @@ class GatewayAPIHandle:
 
 
 class GatewayDashboardMount:
-    """ASGI app that imports and mounts the dashboard (``hermes_cli.web_server.app``) on first use.
+    """ASGI app that imports and mounts the dashboard (``hermes_agent.hermes_cli.web_server.app``) on first use.
 
     ``state`` is the listener's boundary state (``bound_host``, ``bound_port``, ``auth_required``,
     ``trusted_public_hosts``, ``gateway_runner``, ``session_authority``) — what the native WebSocket
@@ -137,7 +137,7 @@ class GatewayDashboardMount:
             if self._closed:
                 raise RuntimeError("gateway API stopped")
             import importlib
-            web = sys.modules.get("hermes_cli.web_server") or await asyncio.to_thread(
+            web = sys.modules.get("hermes_agent.hermes_cli.web_server") or await asyncio.to_thread(
                 importlib.import_module, "hermes_cli.web_server")
             if self._closed:  # the listener stopped while the import ran
                 raise RuntimeError("gateway API stopped")
@@ -213,15 +213,15 @@ def _listener_public_url(webapp) -> str | None:
 async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0, webapp=None) -> GatewayAPIHandle:
     global _ACTIVE_RUNNER
     from hermes_agent.gateway.webapp_listener import dial_origin
-    from hermes_cli.web_server_boundary import (
+    from hermes_agent.hermes_cli.web_server_boundary import (
         _dashboard_public_hosts, listener_auth_required, public_hosts_engage_gate, public_url_hosts,
         should_require_auth,
     )
-    from hermes_cli.web_server_lifecycle import build_listener_server
+    from hermes_agent.hermes_cli.web_server_lifecycle import build_listener_server
 
     # Existing routers/auth helpers share one process-local app. Never rebind it
     # underneath another listener. Each authority is bound to its own profile DB.
-    loaded_web = sys.modules.get("hermes_cli.web_server")
+    loaded_web = sys.modules.get("hermes_agent.hermes_cli.web_server")
     if _ACTIVE_RUNNER is not None or (
             loaded_web is not None and getattr(loaded_web.app.state, "gateway_runner", None) is not None):
         raise RuntimeError("gateway API already started")
@@ -369,7 +369,7 @@ async def stop_gateway_api(handle: GatewayAPIHandle) -> None:
 def _embedded_chat_enabled() -> bool:
     """``web_server._DASHBOARD_EMBEDDED_CHAT_ENABLED`` without importing the dashboard (always True
     unless a loaded dashboard says otherwise)."""
-    web = sys.modules.get("hermes_cli.web_server")
+    web = sys.modules.get("hermes_agent.hermes_cli.web_server")
     return True if web is None else bool(getattr(web, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True))
 
 
@@ -460,7 +460,7 @@ class GatewayRuntimeAPI:
 
         receive = receive_admitted
         from starlette.websockets import WebSocket
-        from hermes_cli.web_server_boundary import (
+        from hermes_agent.hermes_cli.web_server_boundary import (
             _gateway_ws_ticket_from_subprotocol, ws_client_reason, ws_host_origin_reason,
         )
         state = getattr(self.web_app, 'state', None)
@@ -475,7 +475,7 @@ class GatewayRuntimeAPI:
                 # Let a Webapp tab's ticket reach its normal upgrade gate during restart wait: only a
                 # surface that mints browser tickets redeems one there (elsewhere the loopback gate
                 # takes ``?token=``).
-                from hermes_cli.web_server_surface import policy
+                from hermes_agent.hermes_cli.web_server_surface import policy
                 admitted_in_wait = (reason == 'ok' and 'internal' not in ws.query_params
                                     and policy(state).gateway_ticket
                                     and restart_wait_open(self.runner))

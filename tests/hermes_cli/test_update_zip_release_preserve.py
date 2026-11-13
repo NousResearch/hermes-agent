@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def test_zip_swap_keeps_every_nested_build_output_and_the_guard_admits_them(tmp_path):
-    from hermes_cli.update_cmd_zip import (
+    from hermes_agent.hermes_cli.update_cmd_zip import (
         _commit_staged_replacements,
         _is_zip_preserved_entry_status_line,
         _stage_entries,
@@ -76,7 +76,7 @@ def test_guard_admits_a_real_installs_ignored_set_and_blocks_only_what_the_swap_
     output). Blocking on any of them kept the ZIP fallback — and the graft — unreachable (#90495)."""
     import subprocess
 
-    from hermes_cli.update_cmd_zip import _zip_overlay_block_reason
+    from hermes_agent.hermes_cli.update_cmd_zip import _zip_overlay_block_reason
 
     root = tmp_path / "install"
     root.mkdir()

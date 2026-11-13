@@ -142,7 +142,7 @@ def validate_tool_calls(
         replace_native_tool_blocks(provider_data, {coalesce_tool_call_id(tc): [tc] for tc in tool_calls
                                                    if id(tc) in repaired_ids})
     # Counted here, before any exit or normalization, so every emitted call is seen once as the model sent it.
-    from hermes_cli.observability.shared_metrics_model import record_tool_call_quality
+    from hermes_agent.hermes_cli.observability.shared_metrics_model import record_tool_call_quality
     record_tool_call_quality(agent, tool_calls, repaired_ids)
     invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
     # Mixed batch: error-result ONLY the invalid calls and run the valid

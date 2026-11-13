@@ -58,7 +58,7 @@ class Archive:
 
 
 def _env(cwd, index: Optional[str] = None) -> dict:
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from hermes_agent.hermes_cli._subprocess_compat import noninteractive_repo_git_env
     env = noninteractive_repo_git_env(cwd)
     if env is None:
         raise ArchiveError("git filter discovery failed")
@@ -219,7 +219,7 @@ def archive_preflight(wt_path, max_untracked_mb: float = 50) -> Optional[tuple[s
     """``(keep-action, reason)`` when archiving and removing *wt_path* would lose something
     (``worktree_retention.removal_blocker``: submodule, embedded repository, per-worktree ref,
     an untracked file over the size cap), else None. Read-only."""
-    from hermes_cli.worktree_retention import KEEP_UNARCHIVABLE, removal_blocker
+    from hermes_agent.hermes_cli.worktree_retention import KEEP_UNARCHIVABLE, removal_blocker
     try:
         wt = Path(wt_path)
         skipped = _split_oversized(wt, _untracked(wt, _env(wt)), max_untracked_mb)
@@ -409,7 +409,7 @@ def restore_archive(repo_root: str, name: str, target=None) -> dict:
     _write_raw(dest, wenv)  # checkout-index still converted per info/attributes
     _ok(["read-tree", f"{index_commit}^{{tree}}"], dest, wenv)
     _run(["update-index", "-q", "--refresh"], dest, wenv)
-    from hermes_cli.worktree_registry import record_worktree_repo
+    from hermes_agent.hermes_cli.worktree_registry import record_worktree_repo
     record_worktree_repo(repo_root)
     return {"path": str(dest), "branch": meta.get("branch"), "detached": detached, "head": head,
             "ref": arc.ref, "skipped_untracked": meta.get("skipped_untracked") or []}

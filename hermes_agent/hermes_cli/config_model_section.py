@@ -1,12 +1,12 @@
 """The ``model:`` section's load/save canon: root-level legacy keys, the ``api_base`` alias, a
-dict-valued model id, and the model-id key itself. ``hermes_cli.config`` re-exports it and runs it
+dict-valued model id, and the model-id key itself. ``hermes_agent.hermes_cli.config`` re-exports it and runs it
 on every load and on what every save writes."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from hermes_cli.config_providers import _warn_once_per_provider, coerce_provider_id
+from hermes_agent.hermes_cli.config_providers import _warn_once_per_provider, coerce_provider_id
 
 
 def _normalize_root_model_keys(config: dict[str, Any]) -> dict[str, Any]:

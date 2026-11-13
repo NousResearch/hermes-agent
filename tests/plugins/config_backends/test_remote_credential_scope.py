@@ -44,7 +44,7 @@ def launch_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def refreshes(monkeypatch):
-    from hermes_cli import auth, auth_nous
+    from hermes_agent.hermes_cli import auth, auth_nous
 
     seen: list[tuple[str, str]] = []
 
@@ -129,7 +129,7 @@ def test_another_profiles_bound_scope_does_not_route_this_profiles_token(launch_
 
 def test_scope_is_reset_when_resolution_fails(launch_home, monkeypatch):
     from hermes_agent.agent.secret_scope import current_secret_scope
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
 
     set_multiplex_active(True)
 
@@ -204,7 +204,7 @@ def test_secondary_never_borrows_the_launch_profiles_env_override(launch_home, m
 def test_single_profile_binds_nothing(launch_home, refreshes, monkeypatch):
     """Not multiplexing: no scope is bound and the process env still routes (unchanged behaviour)."""
     from hermes_agent.agent.secret_scope import current_secret_scope
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
 
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", OTHER)
     real = auth.resolve_nous_access_token

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 _PENDING = ('queued', 'claimed')
 # Owner of a Bot Chat the gateway mints for a peer's create-if-missing (no native client asked).
 _PEER_SUBJECT = 'api-peer'
-# The whole body ``hermes peer dm`` sends (``hermes_cli/subcommands/peer.py::_ensure_bot_chat``).
+# The whole body ``hermes peer dm`` sends (``hermes_agent/hermes_cli/subcommands/peer.py::_ensure_bot_chat``).
 _PEER_CREATE_FIELDS = frozenset({'title', 'source'})
 
 

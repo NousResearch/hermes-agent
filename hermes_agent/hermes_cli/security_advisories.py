@@ -120,7 +120,7 @@ def get_acked_ids() -> set[str]:
     the advisory keeps firing until config is repaired).
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         raw = (load_config().get("security") or {}).get("acked_advisories") or []
     except Exception:
         logger.debug("Could not load config for advisory acks", exc_info=True)
@@ -134,7 +134,7 @@ def ack_advisory(advisory_id: str) -> bool:
     if not advisory_id:
         return False
     try:
-        from hermes_cli.config import load_config, save_config
+        from hermes_agent.hermes_cli.config import load_config, save_config
     except Exception:
         logger.warning("Could not import config module to persist ack")
         return False

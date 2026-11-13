@@ -13,15 +13,15 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
 
-from hermes_cli.providers import (
+from hermes_agent.hermes_cli.providers import (
     LLAMACPP_ALIASES, ProviderDef, custom_provider_aliases, determine_api_mode, get_label,
     host_mandated_api_mode, is_aggregator, normalize_provider, resolve_provider_full)
-from hermes_cli.model_normalize import normalize_model_for_provider
+from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
 from hermes_agent.agent.models_dev import (
     ModelCapabilities, ModelInfo, get_model_capabilities, get_model_info, list_provider_models)
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
-# Re-exported: callers/tests patch hermes_cli.model_switch.<name>.
-from hermes_cli.model_switch_providers import list_authenticated_providers
+# Re-exported: callers/tests patch hermes_agent.hermes_cli.model_switch.<name>.
+from hermes_agent.hermes_cli.model_switch_providers import list_authenticated_providers
 
 
 logger = logging.getLogger(__name__)
@@ -214,7 +214,7 @@ def _load_direct_aliases(cfg: Optional[dict] = None) -> dict[str, DirectAlias]:
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
         if cfg is None:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             cfg = load_config()
 
         user_aliases = cfg.get("model_aliases")
@@ -270,7 +270,7 @@ def _direct_alias_source_identity() -> Optional[tuple]:
         path = get_config_path()
     except Exception:
         return None
-    from hermes_cli.config_backend import config_cache_version
+    from hermes_agent.hermes_cli.config_backend import config_cache_version
     try:
         version = config_cache_version(path)
     except OSError:
@@ -397,8 +397,8 @@ def resolve_startup_model_route(
     # accepts. Left undecoded, the configured default provider receives the unsplit string as
     # the model name and the whole prompt goes to its endpoint before it 404s (#73943). The
     # configured ids come from the caller's config, the same source the ``/`` branch below uses.
-    from hermes_cli.models import parse_model_input
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_agent.hermes_cli.models import parse_model_input
+    from hermes_agent.hermes_cli.providers import custom_provider_slug
     custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
                   for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
@@ -414,9 +414,9 @@ def resolve_startup_model_route(
 
     if current_provider:
         try:
-            from hermes_cli.providers import is_routing_aggregator, normalize_provider as _norm_prov
+            from hermes_agent.hermes_cli.providers import is_routing_aggregator, normalize_provider as _norm_prov
             if is_routing_aggregator(_norm_prov(current_provider)):
-                from hermes_cli.models import _find_openrouter_slug
+                from hermes_agent.hermes_cli.models import _find_openrouter_slug
                 if _find_openrouter_slug(raw):
                     return None
         except Exception:
@@ -428,7 +428,7 @@ def resolve_startup_model_route(
         for entry in (custom_providers or [])
         if isinstance(entry, dict) and _clean(entry.get("name")))
     try:
-        from hermes_cli.models import normalize_provider
+        from hermes_agent.hermes_cli.models import normalize_provider
         canonical = normalize_provider(prefix)
     except Exception:
         canonical = prefix.lower()
@@ -540,7 +540,7 @@ def resolve_persist_behavior(
     if is_global:
         return True
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         model_cfg = load_config().get("model")
     except Exception:
         return False
@@ -822,7 +822,7 @@ def resolve_alias(raw_input: str, current_provider: str, user_providers: Optiona
     # models.dev catalog merged with static _PROVIDER_MODELS entries it may be missing.
     catalog = list_provider_models(current_provider)
     try:
-        from hermes_cli.models import static_catalog
+        from hermes_agent.hermes_cli.models import static_catalog
         seen = {m.lower() for m in catalog}
         catalog.extend(m for m in static_catalog(current_provider) if m.lower() not in seen)
     except Exception:
@@ -900,7 +900,7 @@ def effective_context_pin(
     if config_context_length is None or not (configured_model or configured_provider or configured_base_url):
         return config_context_length
     try:
-        from hermes_cli.route_identity import should_clear_context_pin
+        from hermes_agent.hermes_cli.route_identity import should_clear_context_pin
         clear = should_clear_context_pin(
             configured_model, model, configured_base_url, base_url, configured_provider, provider)
     except Exception:  # any route-identity failure drops the pin, as resolve_display_context_length always did
@@ -995,7 +995,7 @@ def _configured_provider_identity(slug: str, cfg: dict) -> tuple[str, str, str, 
     normalizer that builds the compat view, so a ``providers.<slug>`` row, its ``custom:<name>``
     projection and a legacy duplicate of the same endpoint reduce to one tuple. Any difference in
     endpoint, credential identity or wire protocol keeps two rows distinct."""
-    from hermes_cli.config_providers import _canonical_api_mode, _normalize_custom_provider_entry
+    from hermes_agent.hermes_cli.config_providers import _canonical_api_mode, _normalize_custom_provider_entry
     # ``provider_key`` is the compat view's stamp, not a config key: drop it so the normalizer does
     # not warn about it as unknown.
     entry = _normalize_custom_provider_entry({k: v for k, v in cfg.items() if k != "provider_key"},
@@ -1078,20 +1078,20 @@ def _entry_configured_key(cfg: dict, read_env) -> str:
 
 
 def _ollama_configured_base() -> tuple[dict, str]:
-    from hermes_cli.models import _get_provider_config_dict
+    from hermes_agent.hermes_cli.models import _get_provider_config_dict
     cfg = _get_provider_config_dict("ollama")
     return cfg, _clean(cfg.get("base_url") or cfg.get("api") or cfg.get("url"))
 
 
 def _unknown_provider_message(explicit_provider: str) -> str:
-    from hermes_cli.left_core_migration import provider_install_hint
+    from hermes_agent.hermes_cli.left_core_migration import provider_install_hint
     if moved := provider_install_hint(explicit_provider):
         return f"Unknown provider '{explicit_provider}'. {moved}"
     msg = (
         f"Unknown provider '{explicit_provider}'. Check 'hermes model' for available "
         f"providers, or define it in config.yaml under 'providers:'.")
     try:  # Surface common config issues that cause provider resolution failures
-        from hermes_cli.config import validate_config_structure
+        from hermes_agent.hermes_cli.config import validate_config_structure
         issues = validate_config_structure()
         if issues:
             msg += "\n\nRun 'hermes doctor' — config issues detected:" + "".join(f"\n  • {ci.message}" for ci in issues[:3])
@@ -1106,8 +1106,8 @@ def _aggregator_alias_error(
     """Guard against silent aggregator hops: a vendor alias like bare "openai" resolves to an
     aggregator ("openrouter"); if that aggregator has no credentials, refuse instead of switching
     the user onto an unauthed endpoint (HTTP 401) and point at the real direct provider."""
-    from hermes_cli.models import _AGGREGATOR_PROVIDERS
-    from hermes_cli.providers import ALIASES
+    from hermes_agent.hermes_cli.models import _AGGREGATOR_PROVIDERS
+    from hermes_agent.hermes_cli.providers import ALIASES
     explicit_norm = explicit_provider.strip().lower()
     alias_target = ALIASES.get(explicit_norm)
     if not (
@@ -1139,7 +1139,7 @@ def _config_declares_model(
     when the remote /v1/models does not list it (cloud/aliased models). Custom entries match by
     slug alias or by base_url."""
     if user_providers:
-        from hermes_cli.config import is_provider_enabled
+        from hermes_agent.hermes_cli.config import is_provider_enabled
         cfg = user_providers.get(target_provider)
         if cfg is not None and is_provider_enabled(cfg) and new_model in _declared_model_ids(cfg.get("models", {})):
             return True
@@ -1159,8 +1159,8 @@ def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
     own endpoint decides: its declared key; else the session key only for the SAME ORIGIN; else a
     fresh resolution against the alias base_url (env-key fallbacks are host-gated: OLLAMA_API_KEY
     resolves for ollama.com, OPENROUTER_API_KEY never reaches an unrelated host)."""
-    from hermes_cli.models_local import _same_ollama_native_root
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.models_local import _same_ollama_native_root
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
     alias_key = direct_alias_api_key(da)
     same_host = _may_reuse_session_credential(st.base_url, da.base_url)
     if alias_key:
@@ -1201,8 +1201,8 @@ def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
 
 def _moa_default_preset() -> str:
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.moa_config import normalize_moa_config
         return normalize_moa_config(load_config().get("moa") or {})["default_preset"]
     except Exception:
         return "default"
@@ -1251,7 +1251,7 @@ class _Switch:
     def resolve_runtime(self, **kwargs) -> None:
         """Fill api_key / base_url / api_mode / validation_headers from ``resolve_runtime_provider``
         for ``new_model``; headers keep their current value when the resolver returns none."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         rt = resolve_runtime_provider(target_model=self.new_model, **kwargs)
         self.api_key, self.base_url = rt.get("api_key", ""), rt.get("base_url", "")
         self.api_mode = rt.get("api_mode", "")
@@ -1281,7 +1281,7 @@ def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
             return st.fail_on_target(
                 f"Provider '{pdef.name}' has no base URL configured. "
                 f"Specify a model: /model <model-name> --provider {st.explicit_provider}")
-        from hermes_cli.runtime_provider import _auto_detect_local_model
+        from hermes_agent.hermes_cli.runtime_provider import _auto_detect_local_model
         st.new_model = _auto_detect_local_model(pdef.base_url)
         if not st.new_model:
             return st.fail_on_target(
@@ -1348,7 +1348,7 @@ def _convert_vendor_colon_slug(st: _Switch) -> None:
 
 def _names_known_provider(name: str, st: _Switch) -> bool:
     """Whether ``name`` is a built-in provider id/alias or a provider the user configured."""
-    from hermes_cli.providers import get_provider
+    from hermes_agent.hermes_cli.providers import get_provider
     if resolve_provider_full(name, st.user_providers, st.custom_providers) is not None:
         return True
     try:
@@ -1381,7 +1381,7 @@ def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | boo
     # A built-in-named entry with its own base_url is the user's endpoint (custom:<key>, #151775);
     # a tuning-only one (no base_url) keeps the built-in. One predicate decides both.
     if isinstance(st.user_providers, dict) and st.target_provider in st.user_providers:
-        from hermes_cli.runtime_provider_custom import persisted_provider_id
+        from hermes_agent.hermes_cli.runtime_provider_custom import persisted_provider_id
         persisted = persisted_provider_id(st.target_provider, st.user_providers)
         if persisted != st.target_provider:
             st.target_provider = persisted
@@ -1394,11 +1394,11 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     """PATH B (no ``--provider``): MoA preset / alias on the current provider (a) -> alias
     fallback (b) or ``vendor:model`` conversion (c) -> aggregator catalog search (d) ->
     configured-provider match (d.5) -> detect_provider_for_model() as last resort (e)."""
-    from hermes_cli.models import detect_provider_for_model
+    from hermes_agent.hermes_cli.models import detect_provider_for_model
     raw_input, current_provider = st.raw_input, st.current_provider
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import exact_moa_preset_name, normalize_moa_config
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.moa_config import exact_moa_preset_name, normalize_moa_config
         moa_match = exact_moa_preset_name(normalize_moa_config(load_config().get("moa") or {}), raw_input)
     except Exception:
         moa_match = None  # MoA config unreadable: fall through to plain alias resolution
@@ -1436,7 +1436,7 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     if current_provider == "nous":
         # The welcome host serves nous/welcome only; a model outside it needs an account or a key.
         # Never hop to another provider on the user's behalf here (there is no key to hop to).
-        from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
+        from hermes_agent.hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
         if route_is_welcome_host(st.current_base_url) and st.new_model != GUEST_MODEL:
             return st.fail(
                 f"{st.new_model} needs a Nous account or an API key. "
@@ -1474,7 +1474,7 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
     user_pdef = None
     explicit_norm = st.explicit_provider.strip().lower()
     if st.explicit_provider and st.user_providers:
-        from hermes_cli.providers import resolve_user_provider
+        from hermes_agent.hermes_cli.providers import resolve_user_provider
         user_pdef = (resolve_user_provider(explicit_norm, st.user_providers)
                      or resolve_user_provider(st.target_provider, st.user_providers))
     if user_pdef is not None and user_pdef.base_url:
@@ -1510,7 +1510,7 @@ def _creds_for_switched_provider(st: _Switch) -> Optional[ModelSwitchResult]:
         # one. A built-in label (anthropic, openai, …) must NOT get the alias URL: its resolver
         # would pair the vendor key with the foreign host, and _apply_direct_alias_endpoint then
         # sees a same-origin credential and keeps it (#28660).
-        from hermes_cli.runtime_provider import _resolves_to_custom
+        from hermes_agent.hermes_cli.runtime_provider import _resolves_to_custom
         da = DIRECT_ALIASES.get(st.resolved_alias) if st.resolved_alias else None
         alias_url = da.base_url if da is not None and _resolves_to_custom(st.target_provider) else None
         try:
@@ -1531,12 +1531,12 @@ def _creds_for_current_provider(st: _Switch) -> None:
     """Credentials when staying on the current provider. Mid-session ``/model <name>`` on a local
     Ollama-compatible endpoint keeps the endpoint in use; re-resolving bare ``custom`` from config
     can fall through to an unrelated default provider."""
-    from hermes_cli.models_local import _get_ollama_request_headers, _same_ollama_native_root
+    from hermes_agent.hermes_cli.models_local import _get_ollama_request_headers, _same_ollama_native_root
     keep_current_ollama_endpoint = False
     ollama_headers: dict[str, str] = {}
     if st.current_provider == "custom" and st.current_base_url:
         try:
-            from hermes_cli.models_local import should_use_ollama_native_catalog
+            from hermes_agent.hermes_cli.models_local import should_use_ollama_native_catalog
             ollama_headers = _get_ollama_request_headers()
             _, configured_ollama_base = _ollama_configured_base()
             # Provider-level Ollama headers only belong to the configured native root; without
@@ -1593,7 +1593,7 @@ def _custom_endpoint_source() -> str:
         env_url = (get_secret_str("CUSTOM_BASE_URL", "") or "").strip()
         if env_url:
             return env_url
-        from hermes_cli.runtime_provider import (
+        from hermes_agent.hermes_cli.runtime_provider import (
             _config_base_url_trustworthy_for_bare_custom, _get_model_config)
         model_cfg = _get_model_config() or {}
         base = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
@@ -1640,7 +1640,7 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
     # session state when the host mandates one wire protocol (e.g. gpt-5.x on api.openai.com
     # would otherwise 400 on tools+reasoning). ``codex_app_server`` is the resolver's
     # ``model.openai_runtime`` opt-in, not a wire protocol the host can mandate: keep it.
-    from hermes_cli.providers import is_actual_route
+    from hermes_agent.hermes_cli.providers import is_actual_route
     mandated_mode = "chat_completions" if is_actual_route(st.target_provider, st.base_url) else host_mandated_api_mode(st.base_url)
     if mandated_mode is not None and st.api_mode != "codex_app_server":
         st.api_mode = mandated_mode
@@ -1651,12 +1651,12 @@ def _resolve_switch_credentials(st: _Switch) -> Optional[ModelSwitchResult]:
 def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     """COMMON PATH part 2: normalize the model name for the target provider, validate it, and
     accept config-declared models the remote catalog lacks."""
-    from hermes_cli.models_local import _get_ollama_request_headers
-    from hermes_cli.models_validate import validate_requested_model
+    from hermes_agent.hermes_cli.models_local import _get_ollama_request_headers
+    from hermes_agent.hermes_cli.models_validate import validate_requested_model
     st.new_model = _resolve_named_custom_model_id(st.new_model, st.target_provider, st.custom_providers)
     st.new_model = normalize_model_for_provider(st.new_model, st.target_provider)
 
-    from hermes_cli.chat_catalog import is_known_non_chat_model
+    from hermes_agent.hermes_cli.chat_catalog import is_known_non_chat_model
     if is_known_non_chat_model(st.new_model):
         return st.fail(
             f"`{st.new_model}` is a generation model and cannot be used for chat. "
@@ -1711,7 +1711,7 @@ def _opencode_api_mode(provider: str, model: str, api_key: str) -> str:
     # chat_completions (e.g. deepseek-v4-flash) and switching models via /model would otherwise carry the
     # previous mode forward, stripping /v1 from base_url for chat_completions models and 404'ing. Refs
     # #16878.
-    from hermes_cli.models import opencode_model_api_mode
+    from hermes_agent.hermes_cli.models import opencode_model_api_mode
     return opencode_model_api_mode(provider, model)
 
 
@@ -1719,7 +1719,7 @@ def _nous_api_mode(provider: str, model: str, api_key: str) -> str:
     # Portal serves anthropic/* on /v1/messages and everything else on /chat/completions;
     # re-derive from the FINAL model so alias clears / empty fallbacks cannot leave Claude on the
     # OpenAI wire.
-    from hermes_cli.providers import nous_api_mode
+    from hermes_agent.hermes_cli.providers import nous_api_mode
     return nous_api_mode(model)
 
 
@@ -1736,7 +1736,7 @@ def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Opti
     declaring ``api_mode_for_model``); None when the provider's wire is fixed by its endpoint. A persisted
     api_mode from an earlier model of such a provider is never authoritative — resume paths must call this
     instead of honoring the row (#96066)."""
-    from hermes_cli.models import opencode_provider_family
+    from hermes_agent.hermes_cli.models import opencode_provider_family
     key = str(provider or "").strip().lower()
     override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
     if override is None and key:
@@ -1750,7 +1750,7 @@ def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Opti
 
 def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     """COMMON PATH part 3: final api_mode / base_url shaping, metadata, warnings."""
-    from hermes_cli.runtime_provider_custom import persisted_provider_id
+    from hermes_agent.hermes_cli.runtime_provider_custom import persisted_provider_id
     st.target_provider = persisted_provider_id(st.target_provider, st.user_providers)
     derived = model_derived_api_mode(st.target_provider, st.new_model, st.api_key)
     if derived is not None:
@@ -1761,7 +1761,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     # OpenCode base URLs end with /v1 for OpenAI-compatible models but the Anthropic SDK prepends
     # its own /v1/messages: strip for anthropic_messages, re-append for
     # chat_completions/codex_responses (mirrors resolve_runtime_provider).
-    from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+    from hermes_agent.hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
     if opencode_provider_family(st.target_provider) is not None and isinstance(st.base_url, str):
         st.base_url = normalize_opencode_base_url(st.target_provider, st.api_mode, st.base_url)
 
@@ -1773,14 +1773,14 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
     warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
-    from hermes_cli.model_picker_usage import large_model_notice
+    from hermes_agent.hermes_cli.model_picker_usage import large_model_notice
     usage_notice = large_model_notice(st.new_model, st.target_provider, fetch=True) or ""
 
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.
     request_overrides = None
     try:
-        from hermes_cli.runtime_provider import _get_named_custom_provider, _custom_provider_request_overrides
+        from hermes_agent.hermes_cli.runtime_provider import _get_named_custom_provider, _custom_provider_request_overrides
         cp_for_ro = _get_named_custom_provider(st.target_provider)
         request_overrides = _custom_provider_request_overrides(cp_for_ro) or None if cp_for_ro else None
     except Exception:
@@ -1836,7 +1836,7 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
     (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
-    from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, should_clear_context_pin
+    from hermes_agent.hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, should_clear_context_pin
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
@@ -1861,7 +1861,7 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
 def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
     """Provider or endpoint differs between a ``model:`` block and the switch target. The one
     route-identity test for endpoint-bound credentials (inline keys, ``key_env``, launch keys)."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
         return True
     return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(result.base_url)
@@ -1896,7 +1896,7 @@ def remote_model_selection_guard(before: Any, after: Any) -> None:
     would land the rest of the route (a new endpoint with the old provider, say) half-applied;
     :func:`persist_model_selection` gets the same all-or-nothing refusal from its one keyed write.
     No-op for the file backend."""
-    from hermes_cli.config_backend import ConfigLockedError, get_config_backend, supports_file_tooling
+    from hermes_agent.hermes_cli.config_backend import ConfigLockedError, get_config_backend, supports_file_tooling
     if supports_file_tooling():
         return
     from hermes_constants import get_hermes_home
@@ -1928,8 +1928,8 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     recomputed against the fresh block. ``_CONFIG_LOCK`` is in-process only: a cross-process
     config lock, once one exists, must wrap the same section."""
     from pathlib import Path
-    from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
-    from hermes_cli.config_backend import supports_file_tooling, write_config_keys
+    from hermes_agent.hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
+    from hermes_agent.hermes_cli.config_backend import supports_file_tooling, write_config_keys
     path = Path(config_path) if config_path else get_config_path()
     planned_from = read_user_config_raw(path).get("model")
     updates = model_selection_config_updates(result, planned_from)
@@ -1940,7 +1940,7 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         # profile-level unset cannot reach it (contract §5.4): an inherited old-endpoint api_key
         # would stay active at the new endpoint. A key the switch clears and the effective block
         # still holds is therefore masked with null ("no value"); an absent one is just unset.
-        from hermes_cli.config_backend import Changes, write_changes
+        from hermes_agent.hermes_cli.config_backend import Changes, write_changes
         held = planned_from if isinstance(planned_from, dict) else {}
         masked = _merge_selection_updates(held, updates, mask_cleared=True)
         write_changes(path, Changes(
@@ -1971,7 +1971,7 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     if not isinstance(entry, dict):
         return {}
-    from hermes_cli.config import normalize_extra_headers
+    from hermes_agent.hermes_cli.config import normalize_extra_headers
     return normalize_extra_headers(entry.get("extra_headers"))
 
 

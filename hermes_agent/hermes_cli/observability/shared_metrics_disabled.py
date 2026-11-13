@@ -69,7 +69,7 @@ def current_surface() -> str | None:
 
 @functools.cache
 def _bundled_plugin_names() -> frozenset[str]:
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
 
     root = get_bundled_plugins_dir()
     try:
@@ -96,7 +96,7 @@ def skill_metric_name(raw: Any) -> str:
 @functools.cache
 def default_on_settings() -> frozenset[str]:
     """Dotted ``DEFAULT_CONFIG`` paths whose shipped value is ``True`` (the closed setting vocabulary)."""
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
     from .shared_metrics_contract import FEATURE_DISABLED_NAME_MAX_LENGTH, _metric_identifier
 
@@ -178,7 +178,7 @@ def _toolset_transitions(old: dict, new: dict) -> Iterable[tuple[str, str, str]]
 
     if scope(old) == scope(new):
         return
-    from hermes_cli.tools_config import _configurable_keys, _get_platform_tools
+    from hermes_agent.hermes_cli.tools_config import _configurable_keys, _get_platform_tools
 
     platforms = {"cli"}
     for config in (old, new):
@@ -275,7 +275,7 @@ def recording_raw_config_write(config_path: Any, user_config: Any, write) -> Non
             from .relay_shared_metrics import enabled
 
             if enabled():
-                from hermes_cli.config import read_user_config_raw
+                from hermes_agent.hermes_cli.config import read_user_config_raw
 
                 before = read_user_config_raw(config_path)
         except Exception:

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from hermes_cli import projects_db as pdb
+from hermes_agent.hermes_cli import projects_db as pdb
 from hermes_agent.tools import project_tools, terminal_tool
 from hermes_agent.tools.registry import registry
 
@@ -137,7 +137,7 @@ def test_session_switch_to_pathless_project_sets_profile_active_pointer(monkeypa
 @pytest.fixture
 def gui_sessions(monkeypatch):
     """Live GUI sessions wired through the real gateway workspace callback."""
-    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.banner.prefetch_update_check", lambda: None)
     from hermes_agent.tui_gateway import server
 
     monkeypatch.setattr(server, "_sessions", {})

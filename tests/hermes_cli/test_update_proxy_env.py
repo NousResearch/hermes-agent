@@ -1,6 +1,6 @@
 import os
 
-from hermes_cli.update_proxy_env import restore_user_proxy_env
+from hermes_agent.hermes_cli.update_proxy_env import restore_user_proxy_env
 
 
 def test_marked_update_proxy_env_is_undone_and_the_users_own_env_kept():
@@ -24,7 +24,7 @@ def test_a_proxy_the_users_dotenv_sets_survives_the_restore(tmp_path, monkeypatc
     """`hermes update` restarts a gateway/backend with the Desktop's marked env; that process loads the
     user's .env (override) at import, then restores. The .env value is the user's own. The .env spells the
     proxy lower-case: on Windows that is the same variable as the inherited upper-case one."""
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
 
     monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
     monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set())
@@ -48,7 +48,7 @@ def test_a_proxy_the_users_dotenv_sets_survives_the_restore(tmp_path, monkeypatc
 
 def _desktop_injected_env(monkeypatch, tmp_path, dotenv: str, own_no_proxy: str | None = None):
     """The env the Desktop hands `hermes update` (system proxy in both spellings), then the .env load."""
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
 
     monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
     monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set())
@@ -73,7 +73,7 @@ def test_hermes_update_sends_the_update_to_the_users_dotenv_proxy(tmp_path, monk
     lower-case one. Once `hermes update` applied its .env, the .env proxy and NO_PROXY must win."""
     import urllib.request
 
-    from hermes_cli.update_proxy_env import prefer_dotenv_proxy_env
+    from hermes_agent.hermes_cli.update_proxy_env import prefer_dotenv_proxy_env
 
     _desktop_injected_env(monkeypatch, tmp_path, "HTTPS_PROXY=http://proxy.corp:3128\nNO_PROXY=mirror.corp\n")
     prefer_dotenv_proxy_env()

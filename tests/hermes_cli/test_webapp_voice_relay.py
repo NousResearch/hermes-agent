@@ -30,12 +30,12 @@ def voice_config(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(home))
-    for name in ("hermes_cli.config", "hermes_agent.tools.transcription_tools", "hermes_agent.tools.tts_tool",
+    for name in ("hermes_agent.hermes_cli.config", "hermes_agent.tools.transcription_tools", "hermes_agent.tools.tts_tool",
                  "hermes_agent.tools.voice_client_config"):
         if name in sys.modules:
             importlib.reload(sys.modules[name])
 
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     monkeypatch.setattr(web_server.app.state, "bound_host", "localhost", raising=False)
     monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)

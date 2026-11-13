@@ -214,7 +214,7 @@ class TestCoverageGaps:
         """get_clarify_timeout returns the 90s default when load_config raises."""
         from hermes_agent.tools import clarify_gateway as cm
 
-        monkeypatch.setattr("hermes_cli.config.load_config",
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config",
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert cm.get_clarify_timeout() == 90
 
@@ -230,7 +230,7 @@ class TestClarifyTimeoutResolution:
         legacy ``clarify.timeout`` there wins over the user's ``agent.clarify_timeout`` in
         the resolver, capping every CLI modal at that value (120 s) while the docs promise
         90 s / unlimited. The CLI defaults must leave the legacy key unset."""
-        import cli
+        from hermes_agent import cli
         from hermes_agent.tools import clarify_gateway as cm
 
         defaults = cli._cli_config_defaults()

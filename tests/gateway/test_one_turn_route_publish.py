@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway.session_cli_turn import cli_turn_scope, one_turn_runtime
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
 
 def test_settled_info_publishes_the_policy_route_and_drops_the_cached_agent(monkeypatch):
@@ -45,8 +45,8 @@ def test_same_provider_override_keeps_the_session_endpoint_and_key(monkeypatch):
             api_key="", base_url="https://openrouter.ai/api/v1", api_mode="chat_completions",
             request_overrides={})
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _resolve)
-    monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", lambda _config: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", _resolve)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_compatible_custom_providers", lambda _config: [])
     pool = object()
     model, runtime = one_turn_runtime(
         {"model": "openai/gpt-4.1", "provider": "openrouter"},
@@ -67,8 +67,8 @@ def _same_provider_override(monkeypatch, provider, model, api_mode, base_url, se
         return ModelSwitchResult(success=True, new_model=model, target_provider=provider, api_key="",
                                  base_url=base_url, api_mode=api_mode, request_overrides={})
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _resolve)
-    monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", lambda _config: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", _resolve)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_compatible_custom_providers", lambda _config: [])
     return one_turn_runtime({"model": model, "provider": provider}, "session-model",
                             {"provider": provider, "api_key": "tok-session", **session}, {})[1]
 
@@ -201,11 +201,11 @@ def alias_config(monkeypatch):
     cfg = {"model": {"default": "session-model", "provider": "custom", "base_url": SESSION_URL},
            "model_aliases": {"fast": {"model": "fast-model", "provider": "custom", "base_url": ALIAS_URL,
                                       "api_key": "sk-alias"}}}
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
-    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {
         "accepted": True, "persist": True, "recognized": True, "message": ""})
-    monkeypatch.setattr("hermes_cli.model_switch.DIRECT_ALIASES", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.DIRECT_ALIASES", {})
     return cfg
 
 
@@ -247,17 +247,17 @@ def test_a_same_provider_alias_without_an_endpoint_keeps_the_session_route(monke
     a session behind a proxy, or rotating a pool, ran that turn on the provider's default host and key.
     Only an alias that names its own endpoint leaves the session's route."""
     cfg = {"model": {"default": "claude-sonnet-4-6", "provider": "anthropic"}, "model_aliases": aliases}
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
-    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {
         "accepted": True, "persist": True, "recognized": True, "message": ""})
-    monkeypatch.setattr("hermes_cli.model_switch.DIRECT_ALIASES", {})
-    monkeypatch.setattr("hermes_cli.model_switch.list_provider_models",
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.DIRECT_ALIASES", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.list_provider_models",
                         lambda provider: ["claude-haiku-4-5", "claude-sonnet-4-6"] if provider == "anthropic" else [])
-    monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {})
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     # The provider's default route, which the explicit provider re-resolves.
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_k: {
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_k: {
         "provider": "anthropic", "api_key": "sk-default", "base_url": "https://api.anthropic.com",
         "api_mode": "anthropic_messages"})
     pool = object()
@@ -281,19 +281,19 @@ def test_a_process_providers_declared_model_keeps_the_session_command(monkeypatc
                               fallback_models=("claude-sonnet-5", "claude-opus-5"), model_aliases={"opus": "claude-opus-5"})
     monkeypatch.setattr("hermes_agent.providers.get_provider_profile", lambda name: profile if name == profile.name else None)
     cfg = {"model": {"default": "claude-sonnet-5", "provider": profile.name}}
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: cfg)
-    monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
-    monkeypatch.setattr("hermes_cli.model_switch.DIRECT_ALIASES", {})
-    monkeypatch.setattr("hermes_cli.model_switch.list_provider_models", lambda provider: [])
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.DIRECT_ALIASES", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.list_provider_models", lambda provider: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {
         "accepted": True, "persist": True, "recognized": True, "message": ""})
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_k: {
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", lambda **_k: {
         "provider": profile.name, "api_key": "external-process", "base_url": profile.base_url,
         "api_mode": "chat_completions"})
-    monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", lambda _config: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_compatible_custom_providers", lambda _config: [])
     model, runtime = one_turn_runtime(
         {"model": typed, "provider": profile.name}, "claude-sonnet-5",
         {"provider": profile.name, "api_key": "external-process", "base_url": profile.base_url,
@@ -307,7 +307,7 @@ def test_an_alias_runs_on_the_endpoint_the_switch_resolved_when_the_config_chang
     """The owner re-read the alias table after ``switch_model`` had resolved and validated the alias's
     endpoint, so a ``config.yaml`` edit in between (its ``base_url`` removed) ran the alias's model on the
     session's endpoint and key. The route the switch resolved decides."""
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     from hermes_constants import get_config_path
     path = get_config_path()
     config = ("model:\n  default: session-model\n  provider: custom\n  base_url: " + SESSION_URL + "\n"
@@ -320,7 +320,7 @@ def test_an_alias_runs_on_the_endpoint_the_switch_resolved_when_the_config_chang
         edited.append(True)
         return {"accepted": True, "persist": True, "recognized": True, "message": ""}
 
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", validate)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", validate)
     monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
     monkeypatch.setattr(model_switch, "_DIRECT_ALIAS_IDENTITY", None)
     monkeypatch.setattr(model_switch, "_DIRECT_ALIAS_LOADED", None)

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 def build_connectors_parser(subparsers) -> None:
     """Attach the ``connectors`` subcommand to ``subparsers``."""
-    from hermes_cli.connectors_cmd import cmd_connectors
+    from hermes_agent.hermes_cli.connectors_cmd import cmd_connectors
 
     parser = subparsers.add_parser(
         "connectors", help="Manage hosted app connectors and their accounts",

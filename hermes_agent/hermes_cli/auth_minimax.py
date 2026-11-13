@@ -1,7 +1,7 @@
 """MiniMax OAuth (user-code grant) login, refresh and runtime credentials.
 
-Split out of ``hermes_cli/auth.py``; origin helpers are imported lazily per function so
-``hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
+Split out of ``hermes_agent/hermes_cli/auth.py``; origin helpers are imported lazily per function so
+``hermes_agent.hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
 """
 
 from __future__ import annotations
@@ -14,14 +14,14 @@ import time
 import uuid
 from datetime import datetime, timezone, UTC
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
-from hermes_cli.auth_constants import (
+from hermes_agent.hermes_cli.auth_constants import (
     AuthError, MINIMAX_OAUTH_GRANT_TYPE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, MINIMAX_OAUTH_SCOPE,
     _FORM_JSON_HEADERS, _minimax_err, httpx,
 )
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
-    from hermes_cli.auth import ProviderConfig
-logger = logging.getLogger("hermes_cli.auth")
+    from hermes_agent.hermes_cli.auth import ProviderConfig
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 _MINIMAX_OAUTH_ERROR_BODY_LIMIT = 16 * 1024
 
@@ -166,7 +166,7 @@ def _minimax_save_auth_state(auth_state: dict[str, Any], *, set_active: bool = T
     rewrites credentials, not the user's choice of provider); only
     ``_minimax_oauth_login`` — the user just chose the provider — sets active.
     """
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _store_provider_state
+    from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _store_provider_state
     with _auth_store_lock():
         auth_store = _load_auth_store()
         _store_provider_state(auth_store, "minimax-oauth", auth_state, set_active=set_active)
@@ -175,7 +175,7 @@ def _minimax_save_auth_state(auth_state: dict[str, Any], *, set_active: bool = T
 
 def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, timeout_seconds: float = 15.0) -> dict[str, Any]:
     """Run MiniMax OAuth flow, persist tokens, return auth state dict."""
-    from hermes_cli.auth import PROVIDER_REGISTRY, _can_open_graphical_browser, _is_remote_session, _minimax_pkce_pair, _minimax_request_user_code, _minimax_save_auth_state, _print_device_code_instructions
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, _can_open_graphical_browser, _is_remote_session, _minimax_pkce_pair, _minimax_request_user_code, _minimax_save_auth_state, _print_device_code_instructions
     pconfig = PROVIDER_REGISTRY["minimax-oauth"]
     if region == "cn":
         portal_base_url = pconfig.extra["cn_portal_base_url"]
@@ -235,7 +235,7 @@ def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, t
 
 def _refresh_minimax_oauth_state(state: dict[str, Any], *, timeout_seconds: float = 15.0, force: bool = False) -> dict[str, Any]:
     """Refresh MiniMax OAuth access token if close to expiry (or forced)."""
-    from hermes_cli.auth import _minimax_save_auth_state
+    from hermes_agent.hermes_cli.auth import _minimax_save_auth_state
     if not state.get("refresh_token"):
         raise _minimax_err("MiniMax OAuth state has no refresh_token; please re-login.", "no_refresh_token", relogin=True)
     try:
@@ -278,7 +278,7 @@ def _refresh_minimax_oauth_state(state: dict[str, Any], *, timeout_seconds: floa
 
 def _minimax_oauth_quarantine_on_terminal_refresh(state: dict[str, Any], exc: AuthError) -> None:
     """Wipe dead tokens from auth.json after a terminal refresh failure (fail fast, no network retry)."""
-    from hermes_cli.auth import _minimax_save_auth_state, _quarantine_flat_oauth_state
+    from hermes_agent.hermes_cli.auth import _minimax_save_auth_state, _quarantine_flat_oauth_state
     if not (exc.relogin_required and state.get("refresh_token")):
         return
     _quarantine_flat_oauth_state(state, "minimax-oauth", exc)
@@ -301,7 +301,7 @@ def _minimax_fresh_state() -> dict[str, Any]:
     new expiry and skip its own refresh. The lock timeout outlives the refresh POST so
     a waiter adopts the rotated pair instead of timing out (codex pattern).
     """
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         AUTH_LOCK_TIMEOUT_SECONDS, _auth_store_lock, _refresh_minimax_oauth_state,
         get_provider_auth_state,
     )
@@ -351,7 +351,7 @@ def resolve_minimax_oauth_runtime_credentials(
 
 def _login_minimax_oauth(args, pconfig: ProviderConfig) -> None:
     """CLI entry for MiniMax OAuth login."""
-    from hermes_cli.auth import format_auth_error
+    from hermes_agent.hermes_cli.auth import format_auth_error
     try:
         _minimax_oauth_login(
             region=getattr(args, "region", None) or "global",

@@ -296,7 +296,7 @@ class TestWelcomeRouteCopy:
         return verdict, buffered, statuses
 
     def test_the_welcome_host_rate_limit_message_names_the_slash_command(self, monkeypatch):
-        from hermes_cli import anon_auth
+        from hermes_agent.hermes_cli import anon_auth
 
         verdict, buffered, statuses = self._drive_guard(
             "https://welcome-api.nousresearch.com/v1", monkeypatch

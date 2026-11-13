@@ -1,4 +1,4 @@
-"""Tests for the shared tar.gz writer (``hermes_cli.archive_safe.make_targz``).
+"""Tests for the shared tar.gz writer (``hermes_agent.hermes_cli.archive_safe.make_targz``).
 
 ``make_targz`` backs both ``hermes profile export`` and ``hermes kanban
 export``. The contract pinned down here: a failure partway through writing
@@ -19,7 +19,7 @@ _WORKTREE = Path(__file__).resolve().parents[2]
 if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
-from hermes_cli.archive_safe import make_targz
+from hermes_agent.hermes_cli.archive_safe import make_targz
 
 
 def _stage_source(tmp_path: Path) -> None:

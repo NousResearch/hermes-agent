@@ -11,7 +11,7 @@ import time
 import pytest
 
 import hermes_dir_acl
-from hermes_cli.gateway_runtime_service import remaining
+from hermes_agent.hermes_cli.gateway_runtime_service import remaining
 
 _REAL_PROCESS_IS_ELEVATED = hermes_dir_acl.process_is_elevated
 
@@ -25,8 +25,8 @@ def _non_elevated_client(monkeypatch):
 
 def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from hermes_cli import gateway_runtime_start as start
-    from hermes_cli import gateway_windows
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_windows
 
     flags = ('HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG')
     for key in flags:
@@ -49,7 +49,7 @@ def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypat
 @pytest.mark.platforms("linux")
 def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(tmp_path):
     from hermes_agent.gateway.control_socket import GatewayControlServer
-    from hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
 
     assert callable(getattr(runtime, "ensure_gateway_runtime", None))
 
@@ -89,10 +89,10 @@ def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(t
 
 @pytest.mark.platforms("linux")
 def test_installed_service_start_is_nonmutating_and_failed_manager_never_spawns(tmp_path, monkeypatch):
-    from hermes_cli import gateway as gw, gateway_runtime as runtime
+    from hermes_agent.hermes_cli import gateway as gw, gateway_runtime as runtime
 
     assert callable(getattr(runtime, "ensure_gateway_runtime", None))
-    from hermes_cli.gateway_runtime_service import service_suffix
+    from hermes_agent.hermes_cli.gateway_runtime_service import service_suffix
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / "profile"
     home.mkdir(mode=0o700)
@@ -103,7 +103,7 @@ def test_installed_service_start_is_nonmutating_and_failed_manager_never_spawns(
     original = unit.read_bytes()
     calls = tmp_path / "calls.jsonl"
     helper = tmp_path / "inert-supervisor"
-    from hermes_cli.gateway_runtime_service_identity import SYSTEMD_IDENTITY_PROPERTIES
+    from hermes_agent.hermes_cli.gateway_runtime_service_identity import SYSTEMD_IDENTITY_PROPERTIES
     identity = {key: "" for key in SYSTEMD_IDENTITY_PROPERTIES}
     identity.update(User=str(os.getuid()), DynamicUser="no",
                     Environment=f'"HERMES_HOME={home}"',
@@ -149,12 +149,12 @@ def test_installed_service_start_is_nonmutating_and_failed_manager_never_spawns(
 
 @pytest.mark.platforms("linux")
 def test_public_ensure_json_deadline_and_invalid_invocation(tmp_path):
-    from hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
     assert callable(getattr(runtime, "ensure_gateway_runtime", None))
     home = tmp_path / "profile"
     home.mkdir(mode=0o700)
     # A LIVE claim (this test process, at its own incarnation) fences; a dead one would not.
-    from hermes_cli.update_lock import process_create_time
+    from hermes_agent.hermes_cli.update_lock import process_create_time
     (home / ".hermes-update-in-progress").write_text(
         f"{os.getpid()}\n{int(time.time())}\nct:{process_create_time():.3f}\nrun:private-token-not-for-stdout\n",
         encoding="utf-8")
@@ -179,8 +179,8 @@ def test_public_ensure_json_deadline_and_invalid_invocation(tmp_path):
 def test_update_fence_follows_update_lock_judgement(tmp_path, monkeypatch):
     """A killed update's dead or malformed marker never blocks a launch (main's launch contract);
     the same marker fences while the checkout lock is held, and a live claim always fences."""
-    from hermes_cli import gateway_runtime as runtime, update_lock
-    from hermes_cli.update_lock import process_create_time
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, update_lock
+    from hermes_agent.hermes_cli.update_lock import process_create_time
 
     marker = tmp_path / update_lock.MARKER_NAME
     dead = subprocess.Popen([sys.executable, "-c", "pass"])
@@ -201,7 +201,7 @@ def test_update_fence_follows_update_lock_judgement(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("linux")
 def test_unmanaged_child_uses_explicit_home_and_survives_launcher_exit(tmp_path, monkeypatch):
-    from hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
     assert callable(getattr(start, "spawn_unmanaged_gateway", None))
     home = tmp_path / "profile"
     home.mkdir(mode=0o700)
@@ -244,7 +244,7 @@ def test_unmanaged_child_uses_explicit_home_and_survives_launcher_exit(tmp_path,
 def test_unmanaged_runtime_does_not_inherit_client_launch_flags(tmp_path, monkeypatch):
     # --yolo / --ignore-rules are frozen on the launching session's policy; inherited by the
     # daemon they would bypass approvals or skip skills.auto_load for every later session.
-    from hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
 
     home = tmp_path / 'policy-home'
     home.mkdir(mode=0o700)
@@ -279,7 +279,7 @@ def test_unmanaged_runtime_does_not_inherit_client_launch_flags(tmp_path, monkey
 @pytest.mark.platforms("linux")
 def test_reserved_profile_without_pid_or_control_is_never_absent(tmp_path):
     from hermes_agent.gateway.runtime_ownership import ProfileOwnership
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
     home = tmp_path / "reserved"
     home.mkdir(mode=0o700)
     owner = ProfileOwnership()
@@ -301,7 +301,7 @@ def test_native_windows_discovery_uses_same_user_pipe(tmp_path, monkeypatch):
     # read its real elevation: a pinned non-elevated client refuses its own elevated server.
     monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", _REAL_PROCESS_IS_ELEVATED)
     from hermes_agent.gateway.runtime_bootstrap_windows import NativeControlServer
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
     home = tmp_path.resolve()
     def handle(raw, subject):
         assert subject.startswith("sid:")
@@ -321,9 +321,9 @@ def test_native_windows_discovery_uses_same_user_pipe(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("windows")
 def test_native_windows_spawn_never_retries_without_breakaway(tmp_path, monkeypatch):
-    from hermes_cli import gateway_runtime_start as start
-    from hermes_cli.gateway_runtime_service import RuntimeStartError
-    from hermes_cli._subprocess_compat import windows_detach_flags
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli.gateway_runtime_service import RuntimeStartError
+    from hermes_agent.hermes_cli._subprocess_compat import windows_detach_flags
     calls = []
     def denied(argv, **kwargs):
         calls.append(kwargs)
@@ -336,7 +336,7 @@ def test_native_windows_spawn_never_retries_without_breakaway(tmp_path, monkeypa
 
 
 def _absent_owner_home(tmp_path, monkeypatch):
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service
     home = tmp_path / "home"
     home.mkdir(mode=0o700)
     monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
@@ -347,7 +347,7 @@ def _absent_owner_home(tmp_path, monkeypatch):
 @pytest.mark.platforms("windows")
 def test_breakaway_refusal_names_the_winerror(tmp_path, monkeypatch):
     """A job that forbids breakaway reaches the client with the OS's own refusal, not a bare code."""
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
     home = _absent_owner_home(tmp_path, monkeypatch)
     def denied(argv, **kwargs):
         raise OSError(13, "Access is denied", None, 5)  # CreateProcess in a job without BREAKAWAY_OK
@@ -359,7 +359,7 @@ def test_breakaway_refusal_names_the_winerror(tmp_path, monkeypatch):
 
 def test_unopenable_stdio_log_is_not_a_breakaway_refusal(tmp_path, monkeypatch):
     """Only CreateProcess's refusal is the job's verdict: a start that cannot open its log says so."""
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
     home = _absent_owner_home(tmp_path, monkeypatch)
     (home / "logs" / "gateway-stdio.log").mkdir(parents=True)  # a directory: open("ab") fails on every host
     spawned = []
@@ -374,7 +374,7 @@ def test_unopenable_stdio_log_is_not_a_breakaway_refusal(tmp_path, monkeypatch):
 def test_detached_restart_reports_a_spent_budget(monkeypatch, capsys, tmp_path):
     """`gateway restart --detach` prints the deadline verdict, not a TimeoutError traceback, when its
     budget runs out mid-start (spawn_unmanaged_gateway lets TimeoutError through for ensure)."""
-    from hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
     def spent(*args, **kwargs):
         raise TimeoutError
     monkeypatch.setattr(start, "spawn_unmanaged_gateway", spent)
@@ -384,7 +384,7 @@ def test_detached_restart_reports_a_spent_budget(monkeypatch, capsys, tmp_path):
 
 @pytest.mark.platforms("macos")
 def test_native_launchd_ambiguous_domains_cannot_start(tmp_path, monkeypatch):
-    from hermes_cli.gateway_runtime_service import discover_existing_gateway_service, RuntimeStartError
+    from hermes_agent.hermes_cli.gateway_runtime_service import discover_existing_gateway_service, RuntimeStartError
     peer = tmp_path / "inert_launchd.py"
     peer.write_text("print('state = not running')\n", encoding="utf-8")
     actual = subprocess.run
@@ -404,7 +404,7 @@ def test_native_launchd_ambiguous_domains_cannot_start(tmp_path, monkeypatch):
 def test_unmanaged_root_home_child_ignores_sticky_active_profile(tmp_path, monkeypatch):
     """Explicit default selection survives the CLI child's own profile bootstrap (F15): with
     active_profile=other sticky, the spawned `gateway run` must still resolve the root home."""
-    from hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
     root = tmp_path / ".hermes"
     (root / "profiles" / "other").mkdir(parents=True)
     (root / "active_profile").write_text("other", encoding="utf-8")
@@ -414,7 +414,7 @@ def test_unmanaged_root_home_child_ignores_sticky_active_profile(tmp_path, monke
     def boundary(argv, **kwargs):
         assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
         # Same argv and env as the real child; the module-import bootstrap is what resolves the profile.
-        code = ("import json, os, sys\nsys.argv = ['hermes', *sys.argv[1:]]\nimport hermes_cli.main\n"
+        code = ("import json, os, sys\nsys.argv = ['hermes', *sys.argv[1:]]\nimport hermes_agent.hermes_cli.main\n"
                 f"open({str(witness)!r}, 'w').write(json.dumps({{'home': os.environ['HERMES_HOME'], 'argv': sys.argv}}))")
         return real([sys.executable, "-c", code, *argv[3:]], **kwargs)
 
@@ -436,7 +436,7 @@ def test_unmanaged_root_home_child_ignores_sticky_active_profile(tmp_path, monke
 @pytest.mark.parametrize("standalone", [False, True])
 def test_named_profile_without_multiplex_evidence_starts_the_host_gateway(tmp_path, monkeypatch, standalone):
     """`gateway run` refuses a profiles/<name> home a gateway of its own, so ensure must start the host."""
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
 
     root = tmp_path / ".hermes"
     home = root / "profiles" / "alpha"
@@ -457,7 +457,7 @@ def test_named_profile_without_multiplex_evidence_starts_the_host_gateway(tmp_pa
 def test_cold_start_target_follows_boot_multiplex_policy(tmp_path, monkeypatch, flag, standalone, owner):
     """Boot settles a retired `multiplex_profiles: false` like unset (the host still serves the
     profile) and never serves a `standalone: true` secondary even under an explicit `true`."""
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
 
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     root = tmp_path / ".hermes"
@@ -481,7 +481,7 @@ def test_reserved_root_never_suppresses_a_standalone_profile_start(tmp_path, mon
     """A held root reservation means "the multiplexer is coming" only for profiles its boot policy
     serves; a `gateway.standalone: true` secondary must still get its own owner started."""
     from hermes_agent.gateway.runtime_ownership import ProfileOwnership
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
 
     root = tmp_path / ".hermes"
     home = root / "profiles" / "alpha"
@@ -503,8 +503,8 @@ def test_reserved_root_never_suppresses_a_standalone_profile_start(tmp_path, mon
 def _standalone_host(tmp_path, monkeypatch, record):
     """A named profile whose root holds its gateway lock and has written *record* (or nothing)
     to the root's real gateway_state.json; returns (home, spawned targets)."""
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_discovery as discovery
-    from hermes_cli import gateway_runtime_service as service, gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_discovery as discovery
+    from hermes_agent.hermes_cli import gateway_runtime_service as service, gateway_runtime_start as start
 
     root = tmp_path / ".hermes"
     home = root / "profiles" / "alpha"
@@ -526,7 +526,7 @@ _REASON = "duplicate Telegram token; run hermes gateway migrate --multiplex"
 def test_ensure_reports_a_standalone_host_reason_for_an_unserved_named_profile(tmp_path, monkeypatch):
     """A live standalone host cannot later add this profile, so do not wait on its root lock: its
     reason is read from the root's real gateway_state.json (path and key included)."""
-    from hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
 
     home, spawned = _standalone_host(tmp_path, monkeypatch, {
         "gateway_state": "running", "pid": os.getpid(), "served_profiles": [],
@@ -547,7 +547,7 @@ def test_ensure_reports_a_standalone_host_reason_for_an_unserved_named_profile(t
 def test_a_reserved_root_without_a_live_refusal_is_still_awaited(tmp_path, monkeypatch, record):
     """A held root lock with no LIVE standalone refusal is a multiplexer still starting: the named
     profile waits for it (never parked on a stale reason, never a competing per-profile spawn)."""
-    from hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
 
     home, spawned = _standalone_host(tmp_path, monkeypatch, record)
 
@@ -562,7 +562,7 @@ def test_dead_unmanaged_start_is_a_prompt_terminal_verdict(tmp_path, monkeypatch
     """The one start this call requested exited without leaving an owner: report it with the
     redacted tail of that launch's own output (never an earlier run's), never `starting` until the
     deadline, and never launch a second daemon."""
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
 
     home = tmp_path / "profile"
     (home / "logs").mkdir(parents=True, mode=0o700)
@@ -592,7 +592,7 @@ def test_dead_unmanaged_start_is_a_prompt_terminal_verdict(tmp_path, monkeypatch
 @pytest.fixture
 def fast_runway(monkeypatch):
     """A real StartRunway on a sub-second scale: base 0.5 s, 0.2 s windows, cap 5 s."""
-    from hermes_cli import gateway_runtime as runtime, gateway_runtime_progress as progress
+    from hermes_agent.hermes_cli import gateway_runtime as runtime, gateway_runtime_progress as progress
     monkeypatch.setattr(runtime, "DEFAULT_ENSURE_TIMEOUT", 0.5)
     monkeypatch.setattr(progress, "PROGRESS_WINDOW_S", 0.2)
     monkeypatch.setattr(progress, "_SAMPLE_EVERY_S", 0.05)
@@ -675,7 +675,7 @@ def _probes(runtime, *answers, ready_after):
 
 
 def _no_spawn_targets(monkeypatch, runtime, *, reserved=None, second="absent"):
-    from hermes_cli import gateway_runtime_multiplex as multiplex, gateway_runtime_service as service
+    from hermes_agent.hermes_cli import gateway_runtime_multiplex as multiplex, gateway_runtime_service as service
     monkeypatch.setattr(runtime, "_starting_multiplexer_root", lambda home: reserved)
     monkeypatch.setattr(runtime, "_standalone_multiplexer_reason", lambda root: None)
     monkeypatch.setattr(multiplex, "multiplexer_serves_home", lambda home: None)

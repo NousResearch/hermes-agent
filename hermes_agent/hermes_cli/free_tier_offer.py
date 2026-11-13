@@ -51,7 +51,7 @@ def _read(kind: str) -> dict[str, Any]:
 
 @contextmanager
 def _transaction(kind: str) -> Iterator[tuple[dict[str, Any], Any]]:
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
     from utils import atomic_write_text
     path = _path(kind)
     with _file_lock(path.with_suffix(".lock"), _LOCK, 5.0, f"Timed out waiting for the sign-in offer record ({path})"):
@@ -61,7 +61,7 @@ def _transaction(kind: str) -> Iterator[tuple[dict[str, Any], Any]]:
 def _eligible(kind: str) -> bool:
     """``trial``: the welcome trial carries inference. ``connector``: a guest that connected an app,
     guests are still allowed (``nous.guest``), and no trial makes its own offer."""
-    from hermes_cli import anon_auth
+    from hermes_agent.hermes_cli import anon_auth
     if kind == TRIAL:
         return anon_auth.free_inference_active()
     state = anon_auth.current_nous_state()
@@ -100,7 +100,7 @@ def note_app_connected() -> None:
     """An app finished connecting. On a guest identity, count a finished task for the connector offer,
     then flag the guest (so the flag dies with it). The flag ends list-read sightings, so it is set only
     once the task is recorded. Never fails the connection."""
-    from hermes_cli import anon_auth
+    from hermes_agent.hermes_cli import anon_auth
     try:
         if anon_auth.is_guest_state(anon_auth.current_nous_state()):
             record_task_done(CONNECTOR)
@@ -113,7 +113,7 @@ def note_connected_apps_seen(rows: list[Any]) -> None:
     """A connector list read (agent status, the Connectors page). The first one that shows a guest an
     app connected counts as the connect: a connect by link (messaging, one-shot runs) never passes the
     operation watcher, and an older Hermes connected apps without setting the flag."""
-    from hermes_cli import anon_auth
+    from hermes_agent.hermes_cli import anon_auth
     if not any(isinstance(row, dict) and row.get("connected") for row in rows):
         return
     state = anon_auth.current_nous_state()

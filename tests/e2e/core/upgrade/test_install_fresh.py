@@ -103,7 +103,7 @@ def _turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str) -> None:
 
 def _configure(sb: I.Sandbox, provider: FakeLLMServer) -> None:
     py = sb.python
-    ver = sb.run([py, "-c", "from hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"])
+    ver = sb.run([py, "-c", "from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"])
     assert ver.returncode == 0, I.describe(ver)
     version = int(ver.stdout.strip().splitlines()[-1])
     (sb.hermes_home / "config.yaml").write_text(I.provider_config(provider.base_url, version), encoding="utf-8")
@@ -121,7 +121,7 @@ def test_fresh_install_serves_head_and_runs_a_turn(installed, provider):
     assert I.git("status", "--porcelain", "--untracked-files=no", cwd=sb.checkout) == "", "installer dirtied the checkout"
     ver = sb.cli("--version")
     assert ver.returncode == 0 and I.TRACEBACK not in ver.stdout + ver.stderr, I.describe(ver)
-    probe = sb.run([sb.python, "-c", "import hermes_cli; from hermes_agent import run_agent; print(hermes_cli.__file__); print(run_agent.__file__)"])
+    probe = sb.run([sb.python, "-c", "from hermes_agent import hermes_cli; from hermes_agent import run_agent; print(hermes_cli.__file__); print(run_agent.__file__)"])
     assert probe.returncode == 0, I.describe(probe)
     workspace = Path(sb.python).parent.parent.parent / "workspace"
     for line in probe.stdout.split():

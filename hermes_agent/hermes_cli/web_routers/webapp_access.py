@@ -1,6 +1,6 @@
 """Web Access routes: Desktop's Web Access pane turns the gateway-served Webapp on and off here.
 
-Thin HTTP over :mod:`hermes_cli.webapp_access`. Every handler acts on the home of the gateway that
+Thin HTTP over :mod:`hermes_agent.hermes_cli.webapp_access`. Every handler acts on the home of the gateway that
 serves the requested profile; start and stop write its ``webapp:`` config and restart that gateway,
 which reads the config only when it starts. Start, Stop and Restart run one at a time. Only native
 Desktop on this computer reaches them (:func:`owner_on_this_machine`), never a browser, and only on
@@ -18,17 +18,17 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from hermes_cli import webapp_access
-from hermes_cli.web_deps import late
-from hermes_cli.web_routers._common import (
+from hermes_agent.hermes_cli import webapp_access
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.web_routers._common import (
     _profile_scope,
     config_scoped_to_thread,
     config_write_scope,
     destructive_profile,
 )
 
-_restart_gateway_after = late("_restart_gateway_after", "hermes_cli.web_server_gateway")
-_gateway_restart_failure = late("gateway_restart_failure", "hermes_cli.web_server_gateway")
+_restart_gateway_after = late("_restart_gateway_after", "hermes_agent.hermes_cli.web_server_gateway")
+_gateway_restart_failure = late("gateway_restart_failure", "hermes_agent.hermes_cli.web_server_gateway")
 # One Web Access change at a time in this backend (every Desktop window's pane talks to it): a
 # Start, Stop or Restart waits for the one in flight, from its build through the restart request,
 # so the Portal's callback, the config and the gateway all end on the last change asked for.

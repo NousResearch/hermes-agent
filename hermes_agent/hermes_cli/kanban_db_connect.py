@@ -1,6 +1,6 @@
 """SQLite connection lifecycle for the Kanban DB: open/configure, cross-process init and dispatch-tick locks, WAL checkpoints, corruption detection + quarantine + repair, additive migrations and the busy-retrying ``write_txn`` boundary.
 
-Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
+Split out of ``hermes_agent.hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 ``kanban_db.<name>`` keeps working.
 """
@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from dataclasses import field
 from hermes_agent.agent.deadline import poll_until
-from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_agent.hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from pathlib import Path
 from typing import Any
 from typing import Optional
@@ -59,7 +59,7 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     """Open a Kanban SQLite connection via ``connect_tracked``: while registered,
     byte-level probes of the file are refused because an ``open()``/``close()``
     would cancel this process's POSIX advisory locks (see ``sqlite_safe_read``)."""
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
     busy_timeout_ms = _resolve_busy_timeout_ms()
     conn = connect_tracked(
@@ -275,7 +275,7 @@ def _validate_sqlite_header(path: Path) -> None:
     # Byte-level probe: must run BEFORE any connection to this path exists
     # (read_header_bytes_preopen refuses once one is live, because the close()
     # would cancel this process's POSIX locks).
-    from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+    from hermes_agent.hermes_cli.sqlite_safe_read import read_header_bytes_preopen
 
     head = read_header_bytes_preopen(path, length=64)
     if head is None or head.startswith(_SQLITE_HEADER):
@@ -359,7 +359,7 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     # must only run once the board is out of service. Another SessionDB/kanban
     # connection in this process would still be at risk — so REFUSE rather than
     # warn-and-proceed: losing a forensic copy beats corrupting the live DB.
-    from hermes_cli.sqlite_safe_read import has_live_connection
+    from hermes_agent.hermes_cli.sqlite_safe_read import has_live_connection
 
     if has_live_connection(resolved):
         _kb._log.error(
@@ -1177,7 +1177,7 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
     file, silently dropping concurrent writers' (and a running VACUUM's) locks
     and letting other processes write into a database a writer still believed
     it owned (sqlite.org/howtocorrupt.html §2.2)."""
-    from hermes_cli.sqlite_safe_read import file_length_matches_header
+    from hermes_agent.hermes_cli.sqlite_safe_read import file_length_matches_header
 
     # In WAL mode a just-committed page can still live in -wal, so the main
     # file legitimately lags its page count; only enforce under a rollback
@@ -1293,4 +1293,4 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb
+from hermes_agent.hermes_cli import kanban_db as _kb

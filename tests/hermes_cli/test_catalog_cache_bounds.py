@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.agent import models_dev
-import hermes_cli.models_catalog_static as static
-import hermes_cli.models_pricing as pricing
+import hermes_agent.hermes_cli.models_catalog_static as static
+import hermes_agent.hermes_cli.models_pricing as pricing
 
 
 def test_xai_floor_reuses_the_process_models_dev_copy_without_network(monkeypatch):
@@ -39,8 +39,8 @@ from hermes_agent.agent import models_dev
 parses = []
 real = models_dev._load_disk_cache
 models_dev._load_disk_cache = lambda: parses.append(1) or real()
-import hermes_cli.models  # the import every gateway/CLI process pays
-from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+import hermes_agent.hermes_cli.models  # the import every gateway/CLI process pays
+from hermes_agent.hermes_cli.models_catalog_static import _PROVIDER_MODELS
 at_import = len(parses)
 _PROVIDER_MODELS.get("nous")
 after_other_row = len(parses)

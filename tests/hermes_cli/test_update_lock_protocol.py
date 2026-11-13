@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.update_lock import UpdateLock, marker_mutex_path, process_create_time
+from hermes_agent.hermes_cli.update_lock import UpdateLock, marker_mutex_path, process_create_time
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals / fd inheritance")
@@ -56,7 +56,7 @@ def _wait_for_pid(path: Path, proc: subprocess.Popen | None = None, timeout: flo
 
 
 def _alive(pid: int) -> bool:
-    from hermes_cli.update_lock import _pid_alive
+    from hermes_agent.hermes_cli.update_lock import _pid_alive
 
     return _pid_alive(pid)
 
@@ -168,7 +168,7 @@ def test_a_reader_reports_the_live_claim_that_replaced_its_stale_snapshot(tmp_pa
         assert reader.returncode == 0
         assert out.strip() == "True", "the reader reported a live replacement claim as no update"
         assert marker.read_bytes() == claim, "the live replacement claim was not preserved byte-for-byte"
-        from hermes_cli.update_lock import checkout_lock_held
+        from hermes_agent.hermes_cli.update_lock import checkout_lock_held
         # update_in_progress() is this answer OR the checkout lease, which a marker-only claim lacks.
         assert checkout_lock_held(install) is False, "the claim is marker-only: no checkout lease answers for it"
     finally:
@@ -395,7 +395,7 @@ time.sleep(120)
 def test_a_completion_from_another_home_never_builds_an_owned_checkout(tmp_path, monkeypatch):
     """R2 admission: `complete_source_checkout` ACQUIRES the checkout lock. Pre-fix it claimed
     only its own home's marker and entered the build body beside the owning update."""
-    from hermes_cli import source_completion
+    from hermes_agent.hermes_cli import source_completion
 
     root = tmp_path / "checkout"
     (root / ".git").mkdir(parents=True)
@@ -454,7 +454,7 @@ time.sleep(120)
 
 
 def test_dead_marker_is_kept_and_reported_held_while_the_checkout_lock_is_held(tmp_path):
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     install = tmp_path / "install"
     install.mkdir()
@@ -485,7 +485,7 @@ def test_a_claimer_never_reclaims_a_dead_marker_while_the_checkout_lock_is_held(
     """M1 (round 7): the launch path claims the marker before it takes the checkout lock
     (venv_sync). Its claim step deleted the dead marker over a held lock, then dropped its own
     claim when the checkout refused: the marker was gone while the killed update's tree ran."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     install = tmp_path / "install"
     install.mkdir()
@@ -533,7 +533,7 @@ def test_a_refusal_over_a_dead_updaters_lock_uses_the_held_wording(tmp_path):
     """m6: `hermes update`, launch repair and source completion refuse through the lock's
     holder record. Its updater is dead and a child it started holds the lock: say so, never
     name the dead process."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     install = tmp_path / "install"
     install.mkdir()
@@ -578,7 +578,7 @@ print(n)
 
 @posix_only
 def test_held_probe_never_fails_a_concurrent_acquire(tmp_path):
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     install = tmp_path / "install"
     install.mkdir()
@@ -604,7 +604,7 @@ def test_held_probe_never_fails_a_concurrent_acquire(tmp_path):
 # --- oversized numeric marker fields never raise ---------------------------------------------
 
 def test_oversized_marker_numbers_never_raise_and_are_reclaimed(tmp_path):
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     install = tmp_path / "install"
     install.mkdir()

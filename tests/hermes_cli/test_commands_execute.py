@@ -1,12 +1,12 @@
 """Invariant for registry-owned slash execution (CommandDef.execute).
 
 Every ``CommandDef`` with ``execute`` set must name a key that exists in
-:data:`hermes_cli.slash_exec.EXECUTORS`; otherwise the command silently falls
+:data:`hermes_agent.hermes_cli.slash_exec.EXECUTORS`; otherwise the command silently falls
 through to "unknown command" on every surface.
 """
 
-from hermes_cli.commands import COMMAND_REGISTRY
-from hermes_cli.slash_exec import resolve_executor
+from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY
+from hermes_agent.hermes_cli.slash_exec import resolve_executor
 
 
 def test_every_execute_key_resolves_to_an_executor():

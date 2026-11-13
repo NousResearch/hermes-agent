@@ -2,7 +2,7 @@
 interactive CLI.
 
 Mixin bound onto ``HermesCLI`` via the MRO. cli.py-internal symbols are imported LAZILY
-inside each method (``from cli import ...``) — never at module load time (import cycle).
+inside each method (``from hermes_agent.cli import ...``) — never at module load time (import cycle).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import time
 from hermes_agent.agent.i18n import t
 from hermes_agent.agent import terminal_image
 from hermes_agent.agent.pet import render as pet_render
-from hermes_cli.banner import _format_context_length
+from hermes_agent.hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
 
 _SB = "class:status-bar"
@@ -102,7 +102,7 @@ class CLIStatusBarMixin:
     def _handle_battery_command(self, cmd_original: str) -> None:
         """``/battery`` toggles, ``/battery on|off`` sets, ``/battery status`` reports the
         setting plus a live reading. Persisted to ``display.battery``."""
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
         parts = (cmd_original or "").split()
         arg = parts[1].strip().lower() if len(parts) > 1 else ""
 
@@ -185,13 +185,13 @@ class CLIStatusBarMixin:
     def _format_idle_since(last_finished_at: Optional[float], turn_live: bool) -> str:
         """``✓ 42s`` since the last final response; empty while a turn is live or before the
         first turn completes."""
-        from cli import format_duration_compact
+        from hermes_agent.cli import format_duration_compact
         if turn_live or last_finished_at is None:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
     def _get_status_bar_snapshot(self) -> dict[str, Any]:
-        from cli import _reverse_alias_for_display, datetime, format_duration_compact
+        from hermes_agent.cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
         # Prefer the agent's model name — it updates on fallback; self.model never changes.
         model_name = (getattr(agent, "model", None) or self.model or t("cli.shared.unknown"))
@@ -201,7 +201,7 @@ class CLIStatusBarMixin:
         if model_short == model_name:
             model_short = model_name.split("/")[-1] if "/" in model_name else model_name
             # Shared RID-prefix stripper so this and ModelSwitchResult can't drift.
-            from hermes_cli.model_switch import format_model_for_display
+            from hermes_agent.hermes_cli.model_switch import format_model_for_display
             model_short = format_model_for_display(model_short)
         model_short = model_short.removesuffix(".gguf")
         if len(model_short) > 26:
@@ -236,7 +236,7 @@ class CLIStatusBarMixin:
             "goal_max_turns": 0}
 
         try:
-            from hermes_cli.focus_view import focus_statusbar_segment
+            from hermes_agent.hermes_cli.focus_view import focus_statusbar_segment
 
             snapshot["focus_label"] = focus_statusbar_segment(
                 bool(getattr(self, "_focus_view_enabled", False)))
@@ -248,7 +248,7 @@ class CLIStatusBarMixin:
         try:
             _fields = self._get_status_bar_field_set()
             if _fields is not None and "git_branch" in _fields:
-                from hermes_cli.status_bar_git import current_git_branch
+                from hermes_agent.hermes_cli.status_bar_git import current_git_branch
 
                 snapshot["git_branch"] = current_git_branch()
         except Exception:
@@ -274,7 +274,7 @@ class CLIStatusBarMixin:
         except Exception:
             pass
         try:
-            from hermes_cli.gateway_tools import background_counts
+            from hermes_agent.hermes_cli.gateway_tools import background_counts
             snapshot.update(background_counts())
         except Exception:
             pass
@@ -635,7 +635,7 @@ class CLIStatusBarMixin:
 
     def _turn_summary_emit(self) -> None:
         """Print the post-turn accounting line, when enabled for this surface."""
-        from cli import _DIM as _D, _RST, _cprint, logger
+        from hermes_agent.cli import _DIM as _D, _RST, _cprint, logger
         collector = getattr(self, "_turn_summary_collector", None)
         if collector is None or not self._turn_summary_is_active():
             return
@@ -643,7 +643,7 @@ class CLIStatusBarMixin:
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
             line = collector.render(max(0.0, time.monotonic() - started) if started else 0.0)
             if line and getattr(self, "_modern_layout", False):
-                from hermes_cli.cli_modern_layout import turn_footer
+                from hermes_agent.hermes_cli.cli_modern_layout import turn_footer
                 _cprint(turn_footer(line))
             elif line:
                 _cprint(f"  {_D}{line}{_RST}")
@@ -666,7 +666,7 @@ class CLIStatusBarMixin:
         without a restart (mirrors the TUI's steady poll). Fail-open: any problem disables."""
         try:
             from hermes_agent.agent.pet import constants, store
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             from utils import is_truthy_value
 
             cfg = load_config()
@@ -957,7 +957,7 @@ class CLIStatusBarMixin:
         """Populate the voice label cache from a raw ``voice.record_key``; called after the
         prompt_toolkit binding is registered so the label matches the live binding."""
         try:
-            from hermes_cli.voice import format_voice_record_key_for_status
+            from hermes_agent.hermes_cli.voice import format_voice_record_key_for_status
             self._voice_record_key_display_cache = format_voice_record_key_for_status(raw_key)
         except Exception:
             self._voice_record_key_display_cache = "Ctrl+B"
@@ -1001,7 +1001,7 @@ class CLIStatusBarMixin:
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
         (opt-in only). Order is fixed; the config controls visibility only.
         """
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
             return self._status_bar_field_set_cache
         result = None
@@ -1021,7 +1021,7 @@ class CLIStatusBarMixin:
         """Ordered status-bar segments for one width tier (<52 / <76 / wide), each a list of
         ``(style, text)`` fragments. Shared by the plain-text and prompt_toolkit renderers so
         the two can never drift; ``styled`` selects the graphical context bar."""
-        from cli import format_token_count_compact
+        from hermes_agent.cli import format_token_count_compact
         model_short = snapshot["model_short"]
         duration_label = snapshot["duration"]
         goal_segment = self._status_bar_goal_segment(snapshot)
@@ -1140,7 +1140,7 @@ class CLIStatusBarMixin:
             or getattr(self, "_command_palette_state", None)):
             return []
         if getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import status_line_fragments
+            from hermes_agent.hermes_cli.cli_modern_layout import status_line_fragments
             return status_line_fragments(self)
         try:
             snapshot = self._get_status_bar_snapshot()

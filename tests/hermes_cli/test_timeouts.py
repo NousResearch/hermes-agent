@@ -72,9 +72,9 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     _write_config(tmp_path, "")
     # Clear the cached config load
     import importlib
-    from hermes_cli import config as cfg_mod
+    from hermes_agent.hermes_cli import config as cfg_mod
     importlib.reload(cfg_mod)
-    from hermes_cli import timeouts as to_mod
+    from hermes_agent.hermes_cli import timeouts as to_mod
     importlib.reload(to_mod)
     import hermes_agent.run_agent as ra_mod
     importlib.reload(ra_mod)

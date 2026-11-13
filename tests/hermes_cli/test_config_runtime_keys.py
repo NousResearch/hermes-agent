@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.config import config_command, set_config_value
+from hermes_agent.hermes_cli.config import config_command, set_config_value
 
 NOTICE = "not a recognized config key"
 
@@ -71,8 +71,8 @@ def _moa_key(name, field):
 
 @pytest.mark.parametrize("name", ["default", "review", "review.v2", "code review"])
 def test_moa_preset_fields_set_and_get_without_notice(name, hermes_home, capsys):
-    from hermes_cli.config import get_config_value, load_config
-    from hermes_cli.moa_config import resolve_moa_preset
+    from hermes_agent.hermes_cli.config import get_config_value, load_config
+    from hermes_agent.hermes_cli.moa_config import resolve_moa_preset
 
     slot = {"provider": "openrouter", "model": "test/actor"}
     _write_config(hermes_home, {"moa": {"presets": {name: {"reference_models": [slot], "aggregator": slot}}}})
@@ -88,8 +88,8 @@ def test_moa_preset_fields_set_and_get_without_notice(name, hermes_home, capsys)
 
 @pytest.mark.parametrize("name", ["default", "review"])
 def test_moa_aggregator_slot_fields_set_without_notice(name, hermes_home, capsys):
-    from hermes_cli.config import load_config
-    from hermes_cli.moa_config import resolve_moa_preset
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.moa_config import resolve_moa_preset
 
     slot = {"provider": "openrouter", "model": "test/actor"}
     _write_config(hermes_home, {"moa": {"presets": {name: {"reference_models": [slot], "aggregator": slot}}}})
@@ -115,7 +115,7 @@ def test_moa_aggregator_slot_fields_set_without_notice(name, hermes_home, capsys
 ])
 def test_moa_non_field_paths_still_notice(key, hermes_home, monkeypatch, capsys):
     # Only the schema walk and the MoA rule decide these keys; skip the plugin scan they would fall through to.
-    monkeypatch.setattr("hermes_cli.config_runtime_keys.plugin_declared_config_keys", frozenset)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config_runtime_keys.plugin_declared_config_keys", frozenset)
     assert _set_notice(key, "5", capsys)
 
 

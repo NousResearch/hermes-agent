@@ -5,7 +5,7 @@ from __future__ import annotations
 import textwrap
 
 import pytest
-from hermes_cli import main_install_repair
+from hermes_agent.hermes_cli import main_install_repair
 
 pytestmark = pytest.mark.platforms("windows")
 
@@ -27,7 +27,7 @@ def temp_pyproject(tmp_path, monkeypatch):
     """
         )
     )
-    import hermes_cli.main as main_mod
+    import hermes_agent.hermes_cli.main as main_mod
 
     monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
     return tmp_path

@@ -144,7 +144,7 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        from hermes_cli._early_recovery import _pid_is_running
+        from hermes_agent.hermes_cli._early_recovery import _pid_is_running
         return _pid_is_running(pid)
     except Exception as exc:
         logger.debug("Could not probe pid %s: %s", pid, exc)
@@ -433,7 +433,7 @@ def _windows_parent_pid(pid: int) -> int | None:
 def _stdlib_parent_pid(pid: int) -> int | None:
     """The parent of ``pid`` without psutil, or ``None`` when unresolvable.
 
-    The update-takeover child is spawned ``-I -S -B`` (hermes_cli/_old_updater.py) so
+    The update-takeover child is spawned ``-I -S -B`` (hermes_agent/hermes_cli/_old_updater.py) so
     psutil cannot import there — and that grandchild is exactly the process that most
     needs the two-hop ancestry walk to adopt the orchestrator's marker. /proc serves
     Linux; macOS keeps /proc absent, so shell out to ps once per hop; Windows has
@@ -536,9 +536,9 @@ def _is_ancestor_pid(pid: int) -> bool:
 
 def _is_runtime_host(cmdline: list[str]) -> bool:
     """A long-lived Hermes host (``gateway run`` / ``serve`` / ``dashboard``), by the canonical
-    command-line matchers (profile flags, ``hermes_cli/main.py`` paths, inline bootstraps)."""
+    command-line matchers (profile flags, ``hermes_agent/hermes_cli/main.py`` paths, inline bootstraps)."""
     from hermes_agent.gateway.status import looks_like_gateway_command_line
-    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_agent.hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     line = " ".join(cmdline)
     return looks_like_gateway_command_line(line) or _hermes_holder_subcommand(line) in ("serve", "dashboard")
 

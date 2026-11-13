@@ -7,8 +7,8 @@ import sqlite3
 from pathlib import Path
 
 from hermes_agent import hermes_state_repair
-from hermes_cli.doctor_report import Finding
-from hermes_cli.doctor_state import _state_db_wal
+from hermes_agent.hermes_cli.doctor_report import Finding
+from hermes_agent.hermes_cli.doctor_state import _state_db_wal
 
 
 def _large_wal_db(tmp_path):
@@ -57,7 +57,7 @@ def test_session_count_reads_a_home_with_uri_reserved_characters(tmp_path):
     """`file:` URIs treat '?' and '#' as delimiters; a home named `profile?blue` must still count."""
     import sqlite3
 
-    from hermes_cli.doctor_state import _session_count
+    from hermes_agent.hermes_cli.doctor_state import _session_count
 
     home = tmp_path / "profile?blue#x"
     home.mkdir()

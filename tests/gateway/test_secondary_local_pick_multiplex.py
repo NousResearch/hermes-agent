@@ -38,7 +38,7 @@ async def test_secondary_pick_reaches_next_turn_after_primary_local_session(tmp_
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.gateway.session_policy import policy_for_source
     from hermes_agent.gateway.session_local import LocalSessionAdapter, create_local_session
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda *a: {
         'platform_toolsets': {'cli': [], 'tui': []},

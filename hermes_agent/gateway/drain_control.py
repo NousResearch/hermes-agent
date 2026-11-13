@@ -69,7 +69,7 @@ def restart_wait_socket_ticket(runner, method, path, query) -> bool:
 
     Exempts the request from the drain's refusal only: it does not authenticate it."""
     from urllib.parse import parse_qs
-    from hermes_cli.web_session_sockets import GATEWAY_SOCKET
+    from hermes_agent.hermes_cli.web_session_sockets import GATEWAY_SOCKET
     return (method == "POST" and path == "/api/webapp/socket-ticket"
             and parse_qs(query or "").get("socket") == [GATEWAY_SOCKET] and restart_wait_open(runner))
 

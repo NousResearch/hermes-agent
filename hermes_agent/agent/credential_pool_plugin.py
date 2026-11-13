@@ -25,8 +25,8 @@ import time
 from dataclasses import fields, replace
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Tuple
 
-from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
-from hermes_cli.auth_constants import AuthError
+from hermes_agent.hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
+from hermes_agent.hermes_cli.auth_constants import AuthError
 
 if TYPE_CHECKING:  # pragma: no cover
     from hermes_agent.agent.credential_pool import CredentialPool, PooledCredential

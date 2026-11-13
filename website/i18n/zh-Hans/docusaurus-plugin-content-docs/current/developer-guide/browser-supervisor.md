@@ -130,7 +130,7 @@ supervisor 附加期间，`CDPSupervisor.snapshot()` 包含三个字段：
 - `hermes_agent/toolsets.py` — 在 `browser`、`hermes-acp`、`hermes-api-server`、核心工具集中注册 `browser_dialog`（通过 CDP 可达性门控）
 - `hermes_agent/tools/browser_session_cdp.py` — `ensure_cdp_supervisor` / `stop_cdp_supervisor`、`/browser connect` 重新附加、对话框策略配置
 - `hermes_agent/tools/browser_session_lifecycle.py` — 按会话拆除（先停止 supervisor）
-- `hermes_cli/config.py` — 向 `DEFAULT_CONFIG` 添加 `browser.dialog_policy` 和 `browser.dialog_timeout_s`
+- `hermes_agent/hermes_cli/config.py` — 向 `DEFAULT_CONFIG` 添加 `browser.dialog_policy` 和 `browser.dialog_timeout_s`
 - 文档：`website/docs/user-guide/features/browser.md`、`website/docs/reference/tools-reference.md`、`website/docs/reference/toolsets-reference.md`
 
 ## 非目标

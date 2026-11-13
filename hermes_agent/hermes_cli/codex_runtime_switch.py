@@ -99,7 +99,7 @@ def _migration_lines(config: dict) -> list[str]:
     """Run the ~/.codex/config.toml migration and describe it; failures are non-fatal."""
     lines: list[str] = []
     try:
-        from hermes_cli.codex_runtime_plugin_migration import HERMES_TOOLS_MCP_SERVER_NAME, migrate
+        from hermes_agent.hermes_cli.codex_runtime_plugin_migration import HERMES_TOOLS_MCP_SERVER_NAME, migrate
         mig_report = migrate(config)
         # The hermes-tools callback is internal plumbing — surfaced separately below.
         user_servers = [s for s in mig_report.migrated if s != HERMES_TOOLS_MCP_SERVER_NAME]

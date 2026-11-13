@@ -2,14 +2,14 @@
 
 from unittest.mock import patch
 
-from hermes_cli.status import _effective_provider_label
+from hermes_agent.hermes_cli.status import _effective_provider_label
 
 
 def _label_with(config, env_base_url=""):
-    with patch("hermes_cli.status.resolve_requested_provider", return_value="auto"), \
-         patch("hermes_cli.status.resolve_provider", return_value="openrouter"), \
-         patch("hermes_cli.status.load_config", return_value=config), \
-         patch("hermes_cli.status.get_env_value",
+    with patch("hermes_agent.hermes_cli.status.resolve_requested_provider", return_value="auto"), \
+         patch("hermes_agent.hermes_cli.status.resolve_provider", return_value="openrouter"), \
+         patch("hermes_agent.hermes_cli.status.load_config", return_value=config), \
+         patch("hermes_agent.hermes_cli.status.get_env_value",
                side_effect=lambda k: env_base_url if k == "OPENAI_BASE_URL" else ""):
         return _effective_provider_label()
 
@@ -25,7 +25,7 @@ def test_blank_base_url_stays_openrouter():
 
 
 def test_non_openrouter_provider_untouched():
-    with patch("hermes_cli.status.resolve_requested_provider", return_value="anthropic"), \
-         patch("hermes_cli.status.resolve_provider", return_value="anthropic"):
+    with patch("hermes_agent.hermes_cli.status.resolve_requested_provider", return_value="anthropic"), \
+         patch("hermes_agent.hermes_cli.status.resolve_provider", return_value="anthropic"):
         label = _effective_provider_label()
     assert "OpenRouter" not in label

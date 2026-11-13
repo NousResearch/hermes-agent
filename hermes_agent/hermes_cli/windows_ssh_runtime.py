@@ -451,8 +451,8 @@ def _probe(*_: str) -> dict[str, Any]:
 
 def _inventory(*_: str) -> dict[str, Any]:
     """Desktop's read-only roster: the canonical root and profile predicate; never mints an identity."""
-    from hermes_cli.install_identity import _INSTALL_ID_FILENAME, _read_existing
-    from hermes_cli.profiles import _iter_named_profile_dirs
+    from hermes_agent.hermes_cli.install_identity import _INSTALL_ID_FILENAME, _read_existing
+    from hermes_agent.hermes_cli.profiles import _iter_named_profile_dirs
     install_id, _ = _read_existing(get_default_hermes_root() / _INSTALL_ID_FILENAME)
     return {"profiles": ["default", *[p.name for p in _iter_named_profile_dirs()]], "installId": install_id}
 

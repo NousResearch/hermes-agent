@@ -1,6 +1,6 @@
 """Gateway restart/drain, Hermes update and background-action status dashboard routes.
 
-Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
+Extracted from ``hermes_agent.hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are late-bound (cycle-safe).
 """
 
@@ -16,35 +16,35 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from hermes_cli.config import format_docker_update_message, recommended_update_command_for_method
-from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
-from hermes_cli.version_info import get_version_info
-from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
-from hermes_cli.web_routers._common import http_failure
+from hermes_agent.hermes_cli.config import format_docker_update_message, recommended_update_command_for_method
+from hermes_agent.hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
+from hermes_agent.hermes_cli.version_info import get_version_info
+from hermes_agent.hermes_cli.web_deps import LateState, late
+from hermes_agent.hermes_cli.web_server_gateway import _ACTION_LOG_FILES
+from hermes_agent.hermes_cli.web_routers._common import http_failure
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 status_router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
+_dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_agent.hermes_cli.web_server_files")
 _spawn_gateway_restart = late("_spawn_gateway_restart")
-_spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
-detect_install_method = late("detect_install_method", "hermes_cli.config")
-get_hermes_home = late("get_hermes_home", "hermes_cli.config")
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
-_ACTION_COMMANDS = LateState("_ACTION_COMMANDS", "hermes_cli.web_server_gateway")
-_ACTION_IDS = LateState("_ACTION_IDS", "hermes_cli.web_server_gateway")
-_ACTION_PROCS = LateState("_ACTION_PROCS", "hermes_cli.web_server_gateway")
-_ACTION_RESULTS = LateState("_ACTION_RESULTS", "hermes_cli.web_server_gateway")
+_spawn_hermes_action = late("_spawn_hermes_action", "hermes_agent.hermes_cli.web_server_gateway")
+detect_install_method = late("detect_install_method", "hermes_agent.hermes_cli.config")
+get_hermes_home = late("get_hermes_home", "hermes_agent.hermes_cli.config")
+_config_profile_scope = late("_config_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
+_ACTION_COMMANDS = LateState("_ACTION_COMMANDS", "hermes_agent.hermes_cli.web_server_gateway")
+_ACTION_IDS = LateState("_ACTION_IDS", "hermes_agent.hermes_cli.web_server_gateway")
+_ACTION_PROCS = LateState("_ACTION_PROCS", "hermes_agent.hermes_cli.web_server_gateway")
+_ACTION_RESULTS = LateState("_ACTION_RESULTS", "hermes_agent.hermes_cli.web_server_gateway")
 
 
 def _server_path(name: str) -> Path:
     """Live Path value (``_ACTION_LOG_DIR`` on web_server_gateway, ``PROJECT_ROOT`` on
     web_server; plain values are not proxied by LateState)."""
-    import hermes_cli.web_server as ws
-    import hermes_cli.web_server_gateway as gw
+    import hermes_agent.hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server_gateway as gw
     return getattr(gw if name == "_ACTION_LOG_DIR" else ws, name)
 
 
@@ -169,7 +169,7 @@ async def restart_gateway(profile: Optional[str] = None):
 @router.get("/api/gateway/migrate/plan")
 async def gateway_migrate_plan():
     """Preflight for folding per-profile gateways into one multiplexer (same JSON as the CLI plan)."""
-    from hermes_cli.gateway_migrate import build_migration_plan
+    from hermes_agent.hermes_cli.gateway_migrate import build_migration_plan
     plan = await asyncio.to_thread(build_migration_plan)
     return plan.to_dict()
 
@@ -178,7 +178,7 @@ async def gateway_migrate_plan():
 async def gateway_migrate():
     """Run ``hermes gateway migrate --multiplex --yes`` detached; the CLI re-runs the preflight and
     refuses (exit 1 into the action log) when blocked, so the UI should gate on the plan first."""
-    from hermes_cli.web_server_gateway import _spawn_hermes_action
+    from hermes_agent.hermes_cli.web_server_gateway import _spawn_hermes_action
     with http_failure("Failed to spawn gateway migrate", 500, "Failed to start gateway migration"):
         proc = _spawn_hermes_action(["gateway", "migrate", "--multiplex", "--yes"], "gateway-migrate")
     return {"ok": True, "pid": proc.pid, "name": "gateway-migrate"}
@@ -251,7 +251,7 @@ async def update_hermes():
 
     # Shared admission gate: marker-first, then the docker/nix/apt heuristics —
     # one decision with the CLI paths.
-    from hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
+    from hermes_agent.hermes_cli.update_contract import evaluate_update_admission, record_refusal_receipt
 
     refusal = evaluate_update_admission(_server_path("PROJECT_ROOT"))
     if refusal is not None:
@@ -331,7 +331,7 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
     status: dict[str, Any] = {}
     try:
-        from hermes_cli.source_check import check_for_updates
+        from hermes_agent.hermes_cli.source_check import check_for_updates
 
         with _config_profile_scope(profile):
             status = await asyncio.to_thread(check_for_updates, force=force)
@@ -398,7 +398,7 @@ async def get_action_status(name: str, lines: int = 200):
     if name == "hermes-update":
         # ``hermes update`` mirrors to the ROOT home's update.log (main_dashboard), never this
         # dashboard's profile home: read it where it is written.
-        from hermes_cli.logs import log_file_path
+        from hermes_agent.hermes_cli.logs import log_file_path
 
         durable_update_action_id = _durable_completed_update_action_id(_tail_lines(log_file_path("update"), 2000))
         spawned_action_id = (_latest_spawned_update_action_id(_tail_lines(log_dir / log_file_name, 2000))
@@ -447,7 +447,7 @@ async def get_action_status(name: str, lines: int = 200):
 def _read_latest_receipt() -> Optional[dict[str, Any]]:
     """Latest update receipt, or None on any failure (never raises)."""
     try:
-        from hermes_cli.update_receipt import read_latest_receipt
+        from hermes_agent.hermes_cli.update_receipt import read_latest_receipt
         return read_latest_receipt() or None
     except Exception:
         return None
@@ -466,7 +466,7 @@ def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[
     """
     receipt = None
     if action_id:
-        from hermes_cli.update_receipt import read_receipt_for_action
+        from hermes_agent.hermes_cli.update_receipt import read_receipt_for_action
         receipt = read_receipt_for_action(action_id)
     receipt = receipt or _read_latest_receipt()
     if not receipt:

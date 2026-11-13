@@ -22,7 +22,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 _PLUGIN_API = '''
 from pathlib import Path
@@ -77,8 +77,8 @@ def daemon(_isolate_hermes_home, monkeypatch):
 
     import hermes_agent.tui_gateway.launch_profile_policy as launch_policy
     from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
-    from hermes_cli import profiles
-    from hermes_cli.plugin_host import PluginHost
+    from hermes_agent.hermes_cli import profiles
+    from hermes_agent.hermes_cli.plugin_host import PluginHost
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_agent.gateway.session_authorities import SessionAuthorities
     from hermes_constants import get_hermes_home
@@ -215,9 +215,9 @@ def test_launch_consent_read_under_a_secondary_grant_keeps_the_launch_secrets(da
     name (PLG-3): its host serves it."""
     from starlette.testclient import WebSocketDenialResponse
 
-    from hermes_cli import plugins as plugins_mod
-    from hermes_cli.config import load_config
-    from hermes_cli.web_server_profiles import _config_profile_scope
+    from hermes_agent.hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope
 
     monkeypatch.delenv("PLG_SCOPE_PROBE", raising=False)
     _install(tmp_path / "bundled-home", "scope-bundled")

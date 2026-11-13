@@ -1,6 +1,6 @@
 """Regression coverage for CLI delivery after transform_llm_output streaming."""
 
-from cli import _post_stream_transform_output
+from hermes_agent.cli import _post_stream_transform_output
 
 
 def test_streamed_transform_prints_only_appended_suffix():

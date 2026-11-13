@@ -6,7 +6,7 @@ import sys
 
 import psutil
 
-from hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.process_identity import worker_birth
 from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
 from tests.gateway.fixtures.agent_persistence_worker import writable_fds
 

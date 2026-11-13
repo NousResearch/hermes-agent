@@ -59,7 +59,7 @@ async def _serving(root, homes, home):
 def _rename_alpha(root, homes):
     """What ``rename_profile`` does with no live multiplexer: move ``alpha``'s home to ``gamma``,
     then migrate its identity. Returns the renamed homes and gamma's home."""
-    from hermes_cli.profile_identity import _migrate_profile_identity
+    from hermes_agent.hermes_cli.profile_identity import _migrate_profile_identity
     renamed = root / 'profiles' / 'gamma'
     homes[1][1].rename(renamed)
     assert _migrate_profile_identity('alpha', 'gamma', False)

@@ -28,7 +28,7 @@ def client(monkeypatch):
 
 @pytest.fixture()
 def restarts(monkeypatch):
-    import hermes_cli.web_server_gateway as gw
+    import hermes_agent.hermes_cli.web_server_gateway as gw
 
     calls: list[str] = []
 
@@ -42,7 +42,7 @@ def restarts(monkeypatch):
 
 @pytest.fixture()
 def nous(monkeypatch):
-    from hermes_cli import webapp_access
+    from hermes_agent.hermes_cli import webapp_access
 
     monkeypatch.setattr(webapp_access, "nous_signed_in", lambda: True)
     monkeypatch.setattr(webapp_access, "_register_nous_sign_in", lambda _callback: None)
@@ -67,8 +67,8 @@ def _status_from_another_window(client, profile: str | None = None) -> dict:
 
 
 def test_status_names_each_step_of_a_start_in_flight_and_none_after(client, restarts, nous, monkeypatch):
-    import hermes_cli.web_server_gateway as gw
-    from hermes_cli import webapp, webapp_access
+    import hermes_agent.hermes_cli.web_server_gateway as gw
+    from hermes_agent.hermes_cli import webapp, webapp_access
 
     seen: dict[str, dict] = {}
 
@@ -100,7 +100,7 @@ def test_status_names_each_step_of_a_start_in_flight_and_none_after(client, rest
 
 
 def test_a_failed_build_leaves_no_start_in_flight(client, restarts, nous, monkeypatch):
-    from hermes_cli import webapp
+    from hermes_agent.hermes_cli import webapp
 
     def fail(_project_root, **_options):
         raise webapp.WebappBuildError("Browser-hosted Desktop build failed: npm exited 1")
@@ -115,7 +115,7 @@ def test_a_failed_build_leaves_no_start_in_flight(client, restarts, nous, monkey
 def test_a_profile_with_its_own_gateway_never_shows_another_gateways_start(restarts, nous, monkeypatch):
     """``solo`` runs a gateway of its own and ``served`` is served by the default one: while the
     default gateway's Start builds, ``served`` shows it and ``solo`` shows none."""
-    from hermes_cli import webapp
+    from hermes_agent.hermes_cli import webapp
     from hermes_constants import get_hermes_home
     from tests.hermes_cli.native_gateway_client import native_desktop_client
 
@@ -144,8 +144,8 @@ def test_a_status_read_during_the_last_step_still_reports_that_start(client, nou
     """A second window's status read that starts while the Start restarts the gateway, and whose
     control-socket round trip outlasts the Start, reports the Start it began during: the pane shows
     it running and polls again instead of showing Stopped with Start enabled until its next refetch."""
-    import hermes_cli.web_server_gateway as gw
-    from hermes_cli import webapp, webapp_access
+    import hermes_agent.hermes_cli.web_server_gateway as gw
+    from hermes_agent.hermes_cli import webapp, webapp_access
 
     in_restart, release, start_done = threading.Event(), threading.Event(), threading.Event()
     armed = threading.Event()

@@ -12,7 +12,7 @@ agent exists.
 from datetime import datetime
 from types import SimpleNamespace
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _run_show_config(stand_in, capsys):

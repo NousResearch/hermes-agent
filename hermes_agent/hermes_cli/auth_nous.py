@@ -1,7 +1,7 @@
 """Nous Portal OAuth: device-code login, refresh, shared-store mirroring, JWT selection, status.
 
-Split out of ``hermes_cli/auth.py``; origin helpers are imported lazily inside each function
-so ``hermes_cli.auth.<name>`` patches still intercept (and no import cycle).
+Split out of ``hermes_agent/hermes_cli/auth.py``; origin helpers are imported lazily inside each function
+so ``hermes_agent.hermes_cli.auth.<name>`` patches still intercept (and no import cycle).
 """
 
 from __future__ import annotations
@@ -18,20 +18,20 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional
 from urllib.parse import urlparse
-from hermes_cli.auth_codex import _pool_entries
-from hermes_cli.auth_constants import (
+from hermes_agent.hermes_cli.auth_codex import _pool_entries
+from hermes_agent.hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError, DEFAULT_NOUS_CLIENT_ID,
     DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_PORTAL_URL, DEFAULT_NOUS_SCOPE, DEFAULT_NOUS_WELCOME_URL,
     DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS, NOUS_AUTH_PATH_INVOKE_JWT, NOUS_BILLING_MANAGE_SCOPE,
     NOUS_DEVICE_CODE_SOURCE, NOUS_INFERENCE_INVOKE_SCOPE, NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     WELCOME_CLAIM_FLAG, _nous_err, httpx)
-from hermes_cli.guest_handoff import drain, note_replacement, result_lines
+from hermes_agent.hermes_cli.guest_handoff import drain, note_replacement, result_lines
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
-    from hermes_cli.auth import ProviderConfig
+    from hermes_agent.hermes_cli.auth import ProviderConfig
 
-# Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
-logger = logging.getLogger("hermes_cli.auth")
+# Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_cli.auth").
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 _UNUSABLE_JWT_RELOGIN = "Re-authenticate with: hermes auth add nous"
 
@@ -81,7 +81,7 @@ _NOUS_STALE_PORTAL_HOSTS: frozenset[str] = frozenset({"api.nousresearch.com"})
 
 def _portal_entitlement_message(capability: str) -> str:
     """Portal entitlement notice for *capability* (fresh account data), "" when unavailable."""
-    from hermes_cli.nous_account import (
+    from hermes_agent.hermes_cli.nous_account import (
         format_nous_portal_entitlement_message, get_nous_portal_account_info)
     account_info = get_nous_portal_account_info(force_fresh=True)
     return format_nous_portal_entitlement_message(account_info, capability=capability) or ""
@@ -195,7 +195,7 @@ def _nous_inference_env_override() -> Optional[str]:
     resolver so a multiplexed profile uses its own override and never inherits the default
     profile's process-wide value (#65941).
     """
-    from hermes_cli.auth import _optional_base_url
+    from hermes_agent.hermes_cli.auth import _optional_base_url
     return _optional_base_url(_scoped_operator_override("NOUS_INFERENCE_BASE_URL"))
 
 
@@ -209,7 +209,7 @@ def _nous_portal_env_override() -> Optional[str]:
     turn (``_nous_effective_routing``), and a raw environ read would POST a multiplexed
     secondary's refresh token to the DEFAULT profile's Portal.
     """
-    from hermes_cli.auth import _optional_base_url
+    from hermes_agent.hermes_cli.auth import _optional_base_url
     return _optional_base_url(_scoped_operator_override("HERMES_PORTAL_BASE_URL", "NOUS_PORTAL_BASE_URL"))
 
 
@@ -220,7 +220,7 @@ def _nous_portal_base_url(state: dict[str, Any]) -> str:
     env_portal_override = _nous_portal_env_override()
     if env_portal_override:
         return env_portal_override.rstrip("/")
-    from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
+    from hermes_agent.hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
     portal_base_url = _optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL
     portal_base_url = portal_base_url.rstrip("/")
     host = urlparse(portal_base_url).hostname
@@ -247,7 +247,7 @@ def _nous_invoke_jwt_status(
     token: Any, *, scope: Any = None, expires_at: Any = None,
     min_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS) -> Optional[str]:
     """Return None when the token can be used for inference, else a reason."""
-    from hermes_cli.auth import _is_expiring
+    from hermes_agent.hermes_cli.auth import _is_expiring
     claims = _decode_jwt_claims(token)
     if not claims:
         return "access_token_not_jwt"
@@ -265,14 +265,14 @@ def _nous_invoke_jwt_status(
 def _nous_invoke_jwt_is_usable(
     token: Any, *, scope: Any = None, expires_at: Any = None,
     min_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS) -> bool:
-    from hermes_cli.auth import _nous_invoke_jwt_status
+    from hermes_agent.hermes_cli.auth import _nous_invoke_jwt_status
     return _nous_invoke_jwt_status(
         token, scope=scope, expires_at=expires_at, min_ttl_seconds=min_ttl_seconds) is None
 
 
 def _state_invoke_jwt_status(state: dict[str, Any], token: Any) -> Optional[str]:
     """``_nous_invoke_jwt_status`` for *token* using *state*'s scope / expires_at (patchable)."""
-    from hermes_cli.auth import _nous_invoke_jwt_status
+    from hermes_agent.hermes_cli.auth import _nous_invoke_jwt_status
     return _nous_invoke_jwt_status(
         token, scope=state.get("scope"), expires_at=state.get("expires_at"))
 
@@ -286,7 +286,7 @@ def _assert_nous_inference_jwt_usable(state: dict[str, Any], *, access_token: An
 
 def _remaining_ttl(expires_at: Any, fallback_expires_in: Any) -> int:
     """Seconds until *expires_at* (ISO), else *fallback_expires_in* coerced to a TTL."""
-    from hermes_cli.auth import _coerce_ttl_seconds, _parse_iso_timestamp
+    from hermes_agent.hermes_cli.auth import _coerce_ttl_seconds, _parse_iso_timestamp
     expires_epoch = _parse_iso_timestamp(expires_at)
     if expires_epoch is not None:
         return max(0, int(expires_epoch - time.time()))
@@ -304,7 +304,7 @@ def _nous_jwt_expires_at(token: Any, fallback_expires_at: Any = None) -> Optiona
 
 def _set_nous_agent_key_from_invoke_jwt(
     state: dict[str, Any], *, obtained_at: Optional[str] = None) -> None:
-    from hermes_cli.auth import _nonempty_str
+    from hermes_agent.hermes_cli.auth import _nonempty_str
     access_token = state.get("access_token")
     if not _nonempty_str(access_token):
         return
@@ -324,7 +324,7 @@ def _set_nous_agent_key_from_invoke_jwt(
 
 def _select_nous_invoke_jwt(
     state: dict[str, Any], *, access_token: Any = None, sequence_id: Optional[str] = None) -> None:
-    from hermes_cli.auth import _nonempty_str
+    from hermes_agent.hermes_cli.auth import _nonempty_str
     if _nonempty_str(access_token):
         state["access_token"] = access_token
     _set_nous_agent_key_from_invoke_jwt(state)
@@ -388,7 +388,7 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     Lock ordering invariant: if both this and ``_auth_store_lock`` need to be held, acquire
     ``_auth_store_lock`` FIRST. All runtime refresh paths follow this order.
     """
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
     try:
         lock_path = _nous_shared_store_path().with_suffix(".lock")
     except RuntimeError:
@@ -423,7 +423,7 @@ def _nous_state_order(a: dict[str, Any], b: dict[str, Any]) -> Optional[int]:
     A side stamped only by expiry against one stamped only by issue time is a tie (no adopt, no
     push); JWT states carry both claims, so they always order.
     """
-    from hermes_cli.auth_oauth_grants import oauth_pair_order
+    from hermes_agent.hermes_cli.auth_oauth_grants import oauth_pair_order
     return oauth_pair_order(a, b)
 
 
@@ -442,7 +442,7 @@ def _merge_shared_nous_oauth_state(state: dict[str, Any]) -> bool:
     detection (forced re-login). When the profile is the newer one it is pushed to the shared
     store instead, so sibling profiles stop reading the stale copy. Caller holds the shared lock.
     """
-    from hermes_cli.auth import _nonempty_str, _read_shared_nous_state
+    from hermes_agent.hermes_cli.auth import _nonempty_str, _read_shared_nous_state
     shared = _read_shared_nous_state() or {}
     renewed = shared.get(_SHARED_RENEWAL_KEY)
     if isinstance(renewed, dict) and _nous_identity(renewed) == _nous_identity(state):
@@ -494,7 +494,7 @@ def _nous_shared_shape(src: dict[str, Any]) -> dict[str, Any]:
 def _nous_identity(state: dict[str, Any]) -> tuple[str, Any]:
     """Who a Nous state is: the guest's ``anon_`` credential, else the account's JWT subject (which,
     unlike the refresh token, survives a refresh)."""
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
     if is_guest_state(state):
         return "guest", state.get("anon_token")
     return "account", _decode_jwt_claims(state.get("access_token")).get("sub")
@@ -503,7 +503,7 @@ def _nous_identity(state: dict[str, Any]) -> tuple[str, Any]:
 def _shared_copy_is_newer(held: Optional[dict[str, Any]], state: dict[str, Any], *, same: bool) -> bool:
     """True when the shared store already holds a NEWER copy of *state*'s account (a renewal never
     rolls it back to an older, possibly already-redeemed refresh token)."""
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
     if held is None or is_guest_state(state):
         return False
     copy = held if same else held.get(_SHARED_RENEWAL_KEY)
@@ -521,7 +521,7 @@ def _write_shared_nous_state(state: dict[str, Any], *, renewal: bool) -> None:
     single-use refresh token from there (``_merge_shared_nous_oauth_state``).
     Best-effort: failures are logged and swallowed; per-profile auth.json stays the source of truth.
     """
-    from hermes_cli.auth import _nonempty_str, _save_private_json
+    from hermes_agent.hermes_cli.auth import _nonempty_str, _save_private_json
     refresh_token = state.get("refresh_token")
     # Nothing worth sharing without refresh material: an OAuth refresh_token (with its access token),
     # or a guest's anon_ credential, which is the whole identity and may not have been exchanged yet.
@@ -560,7 +560,7 @@ def _read_shared_nous_state() -> Optional[dict[str, Any]]:
 
     None (missing / unreadable / malformed / lacking tokens) means "fall through to device-code".
     """
-    from hermes_cli.auth import _nonempty_str
+    from hermes_agent.hermes_cli.auth import _nonempty_str
     try:
         path = _nous_shared_store_path()
     except RuntimeError:
@@ -596,7 +596,7 @@ def _quarantine_forensics(state: dict[str, Any], error: AuthError, reason: str) 
     12-char SHA-256 prefix correlates to NAS's refreshTokenHash without leaking the secret;
     provenance is client_id + agent_key_id (Nous state has no session_id).
     """
-    from hermes_cli.auth import _auth_file_path
+    from hermes_agent.hermes_cli.auth import _auth_file_path
     forensic: dict[str, Any] = {
         "reason": reason, "error_code": error.code, "client_id": state.get("client_id"),
         "agent_key_id": state.get("agent_key_id"),
@@ -634,7 +634,7 @@ def _quarantine_nous_oauth_state(state: dict[str, Any], error: AuthError, *, rea
     refresh_token_reused; ``*_auth_missing_refresh_token``), all ``relogin_required=True`` —
     transient 429/5xx never quarantine.
     """
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         _FLAT_OAUTH_TOKEN_KEYS, _last_auth_error_marker, invalidate_nous_auth_status_cache)
     # Forensics BEFORE clearing token material: a hosted agent quarantined here is otherwise only
     # visible as a later "No access token found" WARNING, too late to root-cause. Managed log
@@ -671,7 +671,7 @@ def _try_import_shared_nous_state(*, timeout_seconds: float = 15.0) -> Optional[
     Returns auth_state ready for ``persist_nous_credentials()``; None on any failure (expired
     token, portal unreachable) so the caller falls through to device-code.
     """
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         _read_shared_nous_state, _write_shared_nous_state, refresh_nous_oauth_from_state,
         _is_terminal_nous_refresh_error)
     try:
@@ -727,7 +727,7 @@ def _refresh_access_token(
             f"x-vercel-mitigated={mitigated}). Credentials kept; try again shortly.",
             provider="nous", code="upstream_blocked", retryable=True,
             retry_after=parse_retry_after_seconds(response.headers))
-    from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
+    from hermes_agent.hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
     try:
         error_payload = response.json()
     except Exception:
@@ -767,7 +767,7 @@ def _refresh_nous_or_quarantine(
     portal_base_url: str, client_id: str, refresh_token: str, reason: str,
     persist: Callable[[], None]) -> dict[str, Any]:
     """Redeem the refresh token; on terminal failure quarantine state + pool, persist, re-raise."""
-    from hermes_cli.auth import _refresh_access_token, _is_terminal_nous_refresh_error
+    from hermes_agent.hermes_cli.auth import _refresh_access_token, _is_terminal_nous_refresh_error
     try:
         return _refresh_access_token(
             client=client, portal_base_url=portal_base_url, client_id=client_id,
@@ -788,7 +788,7 @@ def _apply_nous_refreshed_tokens(
     *inference_base_url*, when given, is the healed network-provenance URL to persist alongside
     the rotated tokens (key order in auth.json is preserved from the original login shape).
     """
-    from hermes_cli.auth import _coerce_ttl_seconds
+    from hermes_agent.hermes_cli.auth import _coerce_ttl_seconds
     now = datetime.now(UTC)
     access_ttl = _coerce_ttl_seconds(refreshed.get("expires_in"))
     state["access_token"] = refreshed["access_token"]
@@ -831,7 +831,7 @@ def fetch_nous_models(
     *, inference_base_url: str, api_key: str, timeout_seconds: float = 15.0,
     verify: bool | str = True) -> list[str]:
     """Fetch available model IDs from the Nous inference API."""
-    from hermes_cli.auth import _nonempty_str
+    from hermes_agent.hermes_cli.auth import _nonempty_str
     with _nous_http_client(timeout_seconds, verify) as client:
         response = client.get(
             f"{inference_base_url.rstrip('/')}/models",
@@ -858,7 +858,7 @@ def fetch_nous_models(
 
 
 def _agent_key_is_usable(state: dict[str, Any], min_ttl_seconds: int) -> bool:
-    from hermes_cli.auth import _nonempty_str
+    from hermes_agent.hermes_cli.auth import _nonempty_str
     key = state.get("agent_key")
     return _nonempty_str(key) and _nous_invoke_jwt_is_usable(
         key, scope=state.get("scope"), expires_at=state.get("agent_key_expires_at"),
@@ -894,7 +894,7 @@ def refresh_nous_oauth_from_state(
     src: dict[str, Any], *, timeout_seconds: float = 15.0, force_refresh: bool = False,
     on_state_update: Optional[Callable[[dict[str, Any], str], None]] = None) -> dict[str, Any]:
     """Refresh Nous OAuth from a state dict (defaults filled in) without mutating auth.json."""
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         _assert_nous_inference_jwt_usable, _refresh_access_token, _resolve_verify,
         _select_nous_invoke_jwt)
     tls = src.get("tls") or {}
@@ -944,7 +944,7 @@ def persist_nous_credentials(creds: dict[str, Any], *, label: Optional[str] = No
     canonical ``device_code`` entry in place. ``label`` rides in the singleton so re-seeding keeps
     it.
     """
-    from hermes_cli.auth import _save_active_provider_state, _write_shared_nous_state
+    from hermes_agent.hermes_cli.auth import _save_active_provider_state, _write_shared_nous_state
     from hermes_agent.agent.credential_pool import load_pool
     state = dict(creds)
     if label and str(label).strip():
@@ -970,7 +970,7 @@ def _nous_effective_routing(state: dict[str, Any]) -> tuple[str, str, str, str]:
     The stored inference URL is re-validated network-provenance (persisted); the effective one
     layers the runtime-only ``NOUS_INFERENCE_BASE_URL`` override on top and is never persisted.
     """
-    from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
+    from hermes_agent.hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
     portal_url = (_optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
     # A persisted/stale portal_base_url is where the refresh token gets POSTed — reject any host
     # outside the allowlist so a poisoned value can't exfiltrate the bearer, healing to the
@@ -991,7 +991,7 @@ def _nous_effective_routing(state: dict[str, Any]) -> tuple[str, str, str, str]:
             portal_url = DEFAULT_NOUS_PORTAL_URL
     # A guest never falls back to the paid host: the gateway cross-refuses an anonymous JWT there
     # (400 naming the welcome host), so an absent or disallowed URL heals to the welcome literal.
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
     stored_inference_url = (
         _validate_nous_inference_url_from_network(
             _optional_base_url(state.get("inference_base_url")))
@@ -1027,7 +1027,7 @@ class _NousRuntimeResolve:
          self.client_id) = _nous_effective_routing(self.state)
 
     def persist(self, reason: str) -> None:
-        from hermes_cli.auth import _save_provider_state_to_source, _write_shared_nous_state
+        from hermes_agent.hermes_cli.auth import _save_provider_state_to_source, _write_shared_nous_state
         state = self.state
         persisted = _nous_effective_provider_state(self._persisted_state)
         if _nous_effective_provider_state(state) == persisted:
@@ -1115,7 +1115,7 @@ class _NousRuntimeResolve:
 
     def ensure_usable_access_token(self, client: httpx.Client) -> None:
         """Merge from the shared store / refresh until the access token is a usable invoke JWT."""
-        from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+        from hermes_agent.hermes_cli.anon_auth import is_guest_state, refresh_guest_state
         if is_guest_state(self.state):
             # Guest seam: the anon_ credential is the refresh material; re-exchange instead of
             # redeeming a rotating refresh token. Quarantine never applies to a guest.
@@ -1156,8 +1156,8 @@ def resolve_nous_runtime_credentials(
     replaced here: the welcome trial is claimed once per OS user, so that user goes on to sign-in or
     provider setup.
     """
-    from hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest
-    from hermes_cli.anon_challenge import run_with_challenge
+    from hermes_agent.hermes_cli.anon_auth import AnonCredentialDead, clear_dead_guest
+    from hermes_agent.hermes_cli.anon_challenge import run_with_challenge
     try:
         # A free-tier exchange may be answered with a browser challenge; it is worked here, after
         # the exchange's locks have unwound, and the exchange is then run once more.
@@ -1165,7 +1165,7 @@ def resolve_nous_runtime_credentials(
             timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
             force_refresh=force_refresh, stale_access_token=stale_access_token))
     except AnonCredentialDead as dead_exc:
-        from hermes_cli.auth import get_provider_auth_state
+        from hermes_agent.hermes_cli.auth import get_provider_auth_state
         dead = get_provider_auth_state("nous") or {}
         clear_dead_guest(str(dead_exc.code or "anon_credential_dead"), dead_token=dead.get("anon_token"))
         raise
@@ -1181,14 +1181,14 @@ def _resolve_nous_runtime_credentials(
     the refresh POST is skipped if the store (re-read under the lock) already holds a *different*
     usable token — a peer won the rotation; adopt it rather than invalidate a sibling's token.
     """
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         _assert_nous_inference_jwt_usable, _auth_file_path, _provider_state_transaction,
         _resolve_verify, _select_nous_invoke_jwt, _sync_nous_pool_from_auth_store,
         _tls_state_from_verify)
     with _provider_state_transaction("nous") as (auth_store, state, state_source_path):
         if not state:
             raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing", relogin=True)
-        from hermes_cli.anon_auth import guest_without_free_tier
+        from hermes_agent.hermes_cli.anon_auth import guest_without_free_tier
         if guest_without_free_tier(state):
             # Not terminal (no relogin): the identity stays for connectors.
             raise _nous_err("Hermes is not logged into Nous Portal.", "nous_auth_missing")
@@ -1242,7 +1242,7 @@ def _snapshot_nous_pool_status() -> dict[str, Any]:
     Fallback only: the auth-store provider state is the runtime source of truth because it is what
     ``resolve_nous_runtime_credentials()`` refreshes.
     """
-    from hermes_cli.auth import _parse_iso_timestamp
+    from hermes_agent.hermes_cli.auth import _parse_iso_timestamp
     try:
         from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool("nous")
@@ -1281,7 +1281,7 @@ def _snapshot_nous_pool_status() -> dict[str, Any]:
 def _nous_status_from_state(
     state: dict[str, Any], *, logged_in: bool, source: str) -> dict[str, Any]:
     """Auth-store-backed Nous status snapshot (shared by the live and refresh-free variants)."""
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
     access_token = state.get("access_token")
     account_tier = state.get("account_tier")
     return {
@@ -1299,8 +1299,8 @@ def _nous_status_from_state(
 
 def _compute_nous_auth_status() -> dict[str, Any]:
     """Uncached implementation of get_nous_auth_status(). See that function."""
-    from hermes_cli.anon_auth import guest_without_free_tier
-    from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
+    from hermes_agent.hermes_cli.anon_auth import guest_without_free_tier
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
     state = get_provider_auth_state("nous")
     if not state or guest_without_free_tier(state):
         return _snapshot_nous_pool_status()
@@ -1308,7 +1308,7 @@ def _compute_nous_auth_status() -> dict[str, Any]:
         state, logged_in=bool(state.get("access_token")), source="auth_store")
     try:
         # A status paint must not park on (or open a browser for) a free-tier challenge.
-        from hermes_cli.anon_challenge import background_caller
+        from hermes_agent.hermes_cli.anon_challenge import background_caller
         with background_caller():
             creds = resolve_nous_runtime_credentials()
         refreshed_state = get_provider_auth_state("nous") or state
@@ -1355,8 +1355,8 @@ def get_nous_auth_status_local() -> dict[str, Any]:
     ``logged_in`` = usable invoke JWT, or a refresh token not terminally quarantined — not proof
     the server still accepts it.
     """
-    from hermes_cli.anon_auth import guest_without_free_tier
-    from hermes_cli.auth import get_provider_auth_state
+    from hermes_agent.hermes_cli.anon_auth import guest_without_free_tier
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state
     try:
         state = get_provider_auth_state("nous")
     except Exception:
@@ -1389,7 +1389,7 @@ def get_nous_session_validity() -> str:
     only a *terminal* failure maps to "terminal" — a rotation blip, network error, or expiring
     token must NOT (that would trigger a spurious NAS re-mint on a healthy box).
     """
-    from hermes_cli.auth import get_provider_auth_state
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state
     try:
         state = get_provider_auth_state("nous")
     except Exception:
@@ -1423,7 +1423,7 @@ def _pool_first_oauth_status(
     provider as unconfigured while the runtime resolver still serves it. Refreshing stays with the
     runtime resolver reached through *resolve*, whose failures persist nothing.
     """
-    from hermes_cli.auth import _auth_file_path
+    from hermes_agent.hermes_cli.auth import _auth_file_path
     try:
         from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool(provider_id)
@@ -1463,7 +1463,7 @@ def _nous_device_code_login(
     timeout_seconds: float = 15.0, insecure: bool = False, ca_bundle: Optional[str] = None,
     on_verification: Optional[Callable[[str, str], None]] = None) -> dict[str, Any]:
     """Run the Nous device-code flow and return full OAuth state without persisting."""
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         PROVIDER_REGISTRY, _coerce_ttl_seconds, _is_remote_session, _optional_base_url,
         _poll_for_token, _print_device_code_instructions, _request_device_code,
         _tls_state_from_verify, format_auth_error, refresh_nous_oauth_from_state)
@@ -1537,7 +1537,7 @@ def _nous_device_code_login(
 
 def _mirror_nous_state_best_effort(auth_state: dict[str, Any]) -> None:
     """Mirror to the shared store + reseed the pool, swallowing all errors (same as _login_nous)."""
-    from hermes_cli.auth import _sync_nous_pool_from_auth_store, _write_shared_nous_state
+    from hermes_agent.hermes_cli.auth import _sync_nous_pool_from_auth_store, _write_shared_nous_state
     with suppress(Exception):
         _write_shared_nous_state(auth_state, renewal=False)
     with suppress(Exception):
@@ -1553,7 +1553,7 @@ def step_up_nous_billing_scope(
     server silently downscopes and this returns False. Persists like ``_login_nous`` minus the
     model picker.
     """
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         PROVIDER_REGISTRY, _nous_device_code_login, _save_active_provider_state,
         get_provider_auth_state)
     prior = get_provider_auth_state("nous") or {}
@@ -1575,11 +1575,11 @@ def step_up_nous_billing_scope(
     # Every caller replays the refused billing action next: drop the billing client's 30s token cache
     # here (not per caller) so that replay sends the new token, not the pre-approval one (403 again).
     try:
-        from hermes_cli.nous_billing import invalidate_cached_token
+        from hermes_agent.hermes_cli.nous_billing import invalidate_cached_token
         invalidate_cached_token()
     except Exception:
         logger.debug("Billing token cache invalidation failed", exc_info=True)
-    from hermes_cli.anon_auth import settle_after_upgrade
+    from hermes_agent.hermes_cli.anon_auth import settle_after_upgrade
     settle_after_upgrade(auth_state)  # a step-up that replaced the free tier moves its config too
     granted = auth_state.get("scope")
     return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()
@@ -1592,11 +1592,11 @@ def _pick_nous_model_after_login(
     Returns the selected model id, or None when the user skipped / nothing was selectable.
     Raises on any fetch failure so the caller can print the "Login succeeded, but..." notice.
     """
-    from hermes_cli.auth import _prompt_model_selection
+    from hermes_agent.hermes_cli.auth import _prompt_model_selection
     runtime_key = auth_state.get("agent_key") or auth_state.get("access_token")
     if not isinstance(runtime_key, str) or not runtime_key:
         raise _nous_err("No runtime API key available to fetch models", "invalid_token")
-    from hermes_cli.models import (
+    from hermes_agent.hermes_cli.models import (
         get_curated_nous_model_ids,
         check_nous_free_tier,
         partition_nous_models_by_tier,
@@ -1604,7 +1604,7 @@ def _pick_nous_model_after_login(
         union_with_portal_free_recommendations,
         union_with_portal_paid_recommendations,
     )
-    from hermes_cli.models_pricing import (
+    from hermes_agent.hermes_cli.models_pricing import (
         get_pricing_for_provider,
         nous_policy_allowed_ids,
         restrict_to_nous_policy,
@@ -1640,11 +1640,11 @@ def _pick_nous_model_after_login(
             model_ids, unavailable_models = partition_nous_models_by_tier(
                 model_ids, pricing, free_tier=True)
     if model_ids:
-        from hermes_cli.nous_account import nous_policy_notice
+        from hermes_agent.hermes_cli.nous_account import nous_policy_notice
         _policy_notice = nous_policy_notice(removed=_policy_narrowed)
         if _policy_notice:
             print(_policy_notice)
-        from hermes_cli.model_picker_usage import featured_first, nous_picker_usage
+        from hermes_agent.hermes_cli.model_picker_usage import featured_first, nous_picker_usage
         _usage = nous_picker_usage(warm=True)
         # Window plans: every model is usable; the plan's featured picks lead the list.
         if _usage is not None:
@@ -1672,8 +1672,8 @@ def _offer_shared_nous_import(timeout_seconds: float) -> Optional[dict[str, Any]
     Checks the shared store before launching a fresh device-code flow. Returns the refreshed
     auth state when the user accepted and the import succeeded, else None.
     """
-    from hermes_cli.auth import _prompt_yes_no, _read_shared_nous_state
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.auth import _prompt_yes_no, _read_shared_nous_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
     shared = _read_shared_nous_state()
     if not shared or is_guest_state(shared):
         # A free-tier identity is not an OAuth credential to import; a real sign-in replaces it
@@ -1697,7 +1697,7 @@ def _offer_shared_nous_import(timeout_seconds: float) -> Optional[dict[str, Any]
 
 def _restore_active_provider(prior_active_provider: Any) -> None:
     """Undo the ``active_provider="nous"`` that ``_save_provider_state`` wrote during login."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     with _auth_store_lock():
         auth_store = _load_auth_store()
         if prior_active_provider:
@@ -1709,7 +1709,7 @@ def _restore_active_provider(prior_active_provider: Any) -> None:
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:
     """Nous Portal device authorization flow."""
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         _auth_store_lock, _load_auth_store, _nous_device_code_login, _save_active_provider_state,
         _save_model_choice, _sync_nous_pool_from_auth_store, _update_config_for_provider,
         _write_shared_nous_state, format_auth_error)
@@ -1738,7 +1738,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         _write_shared_nous_state(auth_state, renewal=False)
         handoff = drain()  # a replaced free tier hands its apps over once both saves land
         _sync_nous_pool_from_auth_store()
-        from hermes_cli.anon_auth import settle_after_upgrade
+        from hermes_agent.hermes_cli.anon_auth import settle_after_upgrade
         settle_after_upgrade(auth_state)  # a config left on the free tier's route moves to the account
         print()
         print("Login successful!")
@@ -1765,7 +1765,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             "nous", inference_base_url, default_model=selected_model)
         _save_model_choice(selected_model)
         print(f"Default model set to: {selected_model}")
-        from hermes_cli.model_picker_usage import large_model_notice
+        from hermes_agent.hermes_cli.model_picker_usage import large_model_notice
         if _notice := large_model_notice(selected_model, "nous"):
             print(f"  ⚠ {_notice}")  # window plans only (a Large mark exists only on their catalog)
         print(f"  Config updated: {config_path} (model.provider=nous)")
@@ -1773,7 +1773,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         print("\nLogin cancelled.")
         raise SystemExit(130)
     except Exception as exc:
-        from hermes_cli.auth_error_copy import sign_in_failure_lines
+        from hermes_agent.hermes_cli.auth_error_copy import sign_in_failure_lines
         logger.debug("nous login failed: %r", exc)
         print()
         for line in sign_in_failure_lines(exc, service_host=_portal_host(getattr(args, "portal_url", None))):

@@ -91,7 +91,7 @@ def endpoint_identity(base_url: str) -> str:
 def endpoint_api_key_env(base_url: str) -> str:
     """``HERMES_CUSTOM_<HOST[_PORT][_PATH]>_<HASH>_API_KEY``; ``HERMES_MODEL_API_KEY`` when the URL
     has no host."""
-    from hermes_cli.config import custom_endpoint_key_env
+    from hermes_agent.hermes_cli.config import custom_endpoint_key_env
     identity = endpoint_identity(base_url)
     return custom_endpoint_key_env(identity) if identity else model_api_key_env()
 
@@ -126,7 +126,7 @@ def env_reference_owners(cfg: dict, env_name: str) -> list[dict]:
 def env_still_referenced(cfg: dict, env_name: str) -> bool:
     """True when a block of ``cfg`` (raw or ``load_config``-expanded) still reads ``env_name``; an
     expanded ``${NAME}`` shows up as the variable's value, so a block holding that value counts."""
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
     if env_reference_owners(cfg, env_name):
         return True
     value = load_env().get(env_name)
@@ -141,7 +141,7 @@ def other_endpoint_reads(env_name: str, base_url: str, own_provider: Any = None)
     """True when a RAW config block for an endpoint other than ``base_url`` reads ``env_name``.
     ``own_provider`` is the ``providers.<key>`` being saved: its on-disk row is the caller itself,
     even when this save changes its ``base_url``."""
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     raw = read_raw_config()
     providers = raw.get("providers")
     own = providers.get(own_provider) if own_provider is not None and isinstance(providers, dict) else None
@@ -153,7 +153,7 @@ def other_endpoint_reads(env_name: str, base_url: str, own_provider: Any = None)
 def _refuse_cross_endpoint_overwrite(env_name: str, value: str, base_url: str, own_provider: Any = None) -> None:
     """Refuse to change ``env_name`` when a config block for ANOTHER endpoint reads it: the new value
     is this endpoint's key, and overwriting would send it to that other host."""
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
     current = load_env().get(env_name)
     if not current or current == value:
         return
@@ -193,7 +193,7 @@ def is_env_reference(value: Any) -> bool:
 def refs_supported() -> bool:
     """Only a file-backed config shares the machine's ``.env``. Under Remote Config the document is
     served to every host while ``.env`` stays local, so a reference would not resolve elsewhere."""
-    from hermes_cli.config_backend import supports_file_tooling
+    from hermes_agent.hermes_cli.config_backend import supports_file_tooling
     return supports_file_tooling()
 
 
@@ -202,7 +202,7 @@ def store_secret(env_name: str, value: str, base_url: str = "", own_provider: An
     Raises ``ValueError`` when the ``.env`` write lock forbids the name, or when ``base_url`` (the
     endpoint the key is for) is given and another endpoint's block reads ``env_name``, so the caller
     refuses the whole write instead of pointing config.yaml at a variable that was never saved."""
-    from hermes_cli.config import require_env_writable, save_env_value
+    from hermes_agent.hermes_cli.config import require_env_writable, save_env_value
     require_env_writable(env_name, "set")
     if base_url:
         _refuse_cross_endpoint_overwrite(env_name, value, base_url, own_provider)
@@ -229,7 +229,7 @@ def _literal_path(parts: list[str], user_config: dict) -> list[str]:
     """``parts`` regrouped the way ``_set_nested`` walks them: an existing literal key containing
     dots (``providers["lab.example"]``) is one segment, so ``providers.lab.example.api_key`` is
     classified as the provider block it writes, not as an unknown 4-part path."""
-    from hermes_cli.config import _greedy_literal_match
+    from hermes_agent.hermes_cli.config import _greedy_literal_match
     out: list[str] = []
     node: Any = user_config
     i = 0
@@ -292,7 +292,7 @@ def config_set_secret_value(key: str, value: Any, user_config: dict) -> Any:
     """``hermes config set``'s credential routing: the value to write at ``key``. A literal secret
     for a path in :func:`config_path_api_key_env` is saved to ``.env`` (a note names the variable)
     and its ``${VAR}`` reference returned; a refused ``.env`` write exits without writing."""
-    from hermes_cli.config import _exit_invalid, _split_key_path
+    from hermes_agent.hermes_cli.config import _exit_invalid, _split_key_path
     parts = _literal_path(_split_key_path(key), user_config)
     env_name = config_path_api_key_env(parts, user_config)
     if env_name is None:
@@ -310,7 +310,7 @@ def masked_display_value(key: str, value: Any) -> Any:
     """The value ``hermes config set`` echoes: masked when the (possibly nested) key is
     credential-shaped, e.g. ``model.api_key`` (lowercase, so it misses the .env routing). A
     ``${VAR}`` reference is not a secret and is shown as is."""
-    from hermes_cli.config import _is_secret_config_key
+    from hermes_agent.hermes_cli.config import _is_secret_config_key
     if _is_secret_config_key(key) and isinstance(value, str) and value and not is_env_reference(value):
         from hermes_agent.agent.redact import mask_secret
         return mask_secret(value)

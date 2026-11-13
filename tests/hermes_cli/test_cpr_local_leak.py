@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from cli import (
+from hermes_agent.cli import (
     _select_classic_cli_pt_output,
     _terminal_may_leak_cpr,
 )

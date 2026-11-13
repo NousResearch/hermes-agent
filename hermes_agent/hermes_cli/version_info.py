@@ -18,9 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from hermes_cli.steward import UPDATE_MECHANISMS
-from hermes_cli.update_channel import STABLE_TAG_RE
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.steward import UPDATE_MECHANISMS
+from hermes_agent.hermes_cli.update_channel import STABLE_TAG_RE
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 @dataclass(frozen=True)

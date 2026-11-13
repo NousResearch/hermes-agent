@@ -15,7 +15,7 @@ from hermes_constants import get_hermes_home
 
 @pytest.fixture
 def llamacpp_home(monkeypatch):
-    from hermes_cli.local_runtime import detect
+    from hermes_agent.hermes_cli.local_runtime import detect
 
     def write(local_runtime: dict) -> None:
         home = get_hermes_home()
@@ -29,7 +29,7 @@ def llamacpp_home(monkeypatch):
 
 
 def _resolution_error():
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     with pytest.raises(ValueError) as caught:
         resolve_runtime_provider(requested="llamacpp", target_model="local-qwen")
@@ -38,7 +38,7 @@ def _resolution_error():
 
 @pytest.mark.parametrize("enabled", [False, True])
 def test_runtime_check_names_a_down_local_server(llamacpp_home, enabled):
-    from hermes_cli.runtime_readiness import readiness_failure
+    from hermes_agent.hermes_cli.runtime_readiness import readiness_failure
 
     llamacpp_home({"enabled": enabled})
     answer = readiness_failure(_resolution_error())
@@ -49,7 +49,7 @@ def test_runtime_check_names_a_down_local_server(llamacpp_home, enabled):
 
 
 def test_runtime_check_leaves_other_failures_uncoded():
-    from hermes_cli.runtime_readiness import readiness_failure
+    from hermes_agent.hermes_cli.runtime_readiness import readiness_failure
 
     assert readiness_failure(ValueError("No usable credentials found for openrouter.")) == {
         "ok": False, "error": "No usable credentials found for openrouter."}

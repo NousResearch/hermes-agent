@@ -20,7 +20,7 @@ process-start fingerprint (boot-relative on Linux/WSL); ``createTime`` remains t
 A dead PID or a mismatched process incarnation is STALE and ignored — an attaching client must
 never dial a recycled PID's port.
 
-**Relationship to ``spawn-ledger.json``** (``hermes_cli/process_identity.py``): the ledger stays
+**Relationship to ``spawn-ledger.json``** (``hermes_agent/hermes_cli/process_identity.py``): the ledger stays
 the append-only machine roster of every long-lived Hermes process (Desktop's attach ladder reads
 it) and is still written unchanged. It cannot be the host record: it has no lock, no
 single-writer semantics, no removal on exit, and no place to publish a protocol version or
@@ -233,14 +233,14 @@ def token_fingerprint(token: str) -> str:
 
 def process_create_time(pid: Optional[int] = None) -> Optional[float]:
     """Creation time of ``pid`` (default: this process); ``None`` when unknowable."""
-    from hermes_cli.process_identity import _process_create_time
+    from hermes_agent.hermes_cli.process_identity import _process_create_time
 
     return _process_create_time(pid)
 
 
 def _pid_incarnation_matches(pid: int, create_time: Optional[float]) -> Optional[bool]:
     """Reuse the spawn ledger's proof: True/False when provable, ``None`` when it cannot say."""
-    from hermes_cli.process_identity import _pid_alive_matches
+    from hermes_agent.hermes_cli.process_identity import _pid_alive_matches
 
     return _pid_alive_matches(pid, create_time)
 
@@ -475,7 +475,7 @@ def _write_private_text(path: Path, text: str) -> None:
     token file another process still holds open fails on Windows.
     """
     if sys.platform == "win32":
-        from hermes_cli.windows_ssh_runtime import write_private_file
+        from hermes_agent.hermes_cli.windows_ssh_runtime import write_private_file
 
         write_private_file(path, text.encode("utf-8"))
         return
@@ -778,7 +778,7 @@ def cleanup_on_exit(role: str) -> None:
 
 def _multiplex_profiles_enabled() -> bool:
     """Will THIS process multiplex? An explicit ``true`` and an unset key both say yes, and an
-    explicit ``false`` is RETIRED (``hermes_cli.gateway_multiplex_mode``) — it is warned about and
+    explicit ``false`` is RETIRED (``hermes_agent.hermes_cli.gateway_multiplex_mode``) — it is warned about and
     ignored at boot, so it must not make the claim-time record advertise a narrower roster than
     the process actually serves. Reading it here was the last place the retired flag still decided
     topology, and it made CLI/dashboard report "standalone, serving default" while the runtime
@@ -796,7 +796,7 @@ def served_profiles(*, multiplex: Optional[bool] = None) -> tuple[str, ...]:
     and a second profile's supervised unit then stood down against a set nobody serves.
     """
     try:
-        from hermes_cli.profiles import profiles_to_serve
+        from hermes_agent.hermes_cli.profiles import profiles_to_serve
 
         enabled = _multiplex_profiles_enabled() if multiplex is None else bool(multiplex)
         return tuple(name for name, _ in profiles_to_serve(multiplex=enabled))

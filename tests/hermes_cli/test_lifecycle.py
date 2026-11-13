@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from hermes_agent.agent import relay_runtime
-from hermes_cli import lifecycle, observability, plugins
+from hermes_agent.hermes_cli import lifecycle, observability, plugins
 
 
 def test_invoke_hook_notifies_builtin_observers_before_plugins(monkeypatch):

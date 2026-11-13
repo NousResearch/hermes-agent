@@ -64,7 +64,7 @@ def detect_service_manager() -> ServiceManagerKind:
     """
     # Deferred so importing this module (Protocol type, validate_profile_name) doesn't drag in
     # the whole gateway dependency graph.
-    from hermes_cli.gateway import is_macos, is_windows, supports_systemd_services
+    from hermes_agent.hermes_cli.gateway import is_macos, is_windows, supports_systemd_services
     # Gate on _s6_running() alone, NOT is_container(): the latter only detects Docker/Podman/lxc
     # and is False on Fly's Firecracker microVMs even though s6-overlay is PID 1 there — that
     # made the s6 dispatch inert on Fly, so `hermes gateway start` spawned a foreground gateway
@@ -102,8 +102,8 @@ def _s6_running() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Host backends: thin facades over ``hermes_cli.gateway`` (systemd/launchd) and
-# ``hermes_cli.gateway_windows``. The protocol's ``name`` parameter is unused here — host backends
+# Host backends: thin facades over ``hermes_agent.hermes_cli.gateway`` (systemd/launchd) and
+# ``hermes_agent.hermes_cli.gateway_windows``. The protocol's ``name`` parameter is unused here — host backends
 # operate on the currently active profile (``hermes -p <profile>``); the shape exists for s6 where
 # each profile maps to a distinct service directory.
 # ---------------------------------------------------------------------------
@@ -121,8 +121,8 @@ class _HostServiceManager:
 
     def _backend_module(self):
         import importlib
-        import hermes_cli
-        importlib.import_module(f"hermes_cli.{self._backend}")
+        from hermes_agent import hermes_cli
+        importlib.import_module(f"hermes_agent.hermes_cli.{self._backend}")
         return getattr(hermes_cli, self._backend)
 
     def _call(self, op: str) -> None:
@@ -158,7 +158,7 @@ class _HostServiceManager:
 
 
 class SystemdServiceManager(_HostServiceManager):
-    """Wraps the ``systemd_*`` functions in hermes_cli.gateway (host call sites still use those
+    """Wraps the ``systemd_*`` functions in hermes_agent.hermes_cli.gateway (host call sites still use those
     directly; this exists for backend-agnostic code such as the profile create/delete hooks)."""
 
     kind: ServiceManagerKind = "systemd"
@@ -171,7 +171,7 @@ class SystemdServiceManager(_HostServiceManager):
 
 
 class LaunchdServiceManager(_HostServiceManager):
-    """Wraps the ``launchd_*`` functions in hermes_cli.gateway."""
+    """Wraps the ``launchd_*`` functions in hermes_agent.hermes_cli.gateway."""
 
     kind: ServiceManagerKind = "launchd"
     _backend = "gateway"
@@ -182,7 +182,7 @@ class LaunchdServiceManager(_HostServiceManager):
 
 
 class WindowsServiceManager(_HostServiceManager):
-    """Wraps ``hermes_cli.gateway_windows`` (Scheduled Task / Startup-folder fallback).
+    """Wraps ``hermes_agent.hermes_cli.gateway_windows`` (Scheduled Task / Startup-folder fallback).
 
     Not a true init service but the lifecycle protocol is the same. ``install`` takes
     Windows-specific kwargs passed straight through — non-Windows callers must never call it.
@@ -204,7 +204,7 @@ class WindowsServiceManager(_HostServiceManager):
         )
 
     def is_running(self, name: str) -> bool:
-        from hermes_cli.gateway import find_gateway_pids
+        from hermes_agent.hermes_cli.gateway import find_gateway_pids
         if not self._backend_module().is_installed():
             return False
         return bool(find_gateway_pids())
@@ -505,7 +505,7 @@ class S6ServiceManager:
         both leave the port unset will both try to bind 8642 — give each profile a distinct
         ``API_SERVER_PORT`` in its ``.env``. Previously this method took a ``port`` parameter that was
         passed in but never substituted into the rendered script (carried for "API parity" with a
-        deterministic SHA-256 allocator in ``hermes_cli.profiles._allocate_gateway_port``). PR #30136 review
+        deterministic SHA-256 allocator in ``hermes_agent.hermes_cli.profiles._allocate_gateway_port``). PR #30136 review
         item I5 retired both the allocator and the parameter because they were dead code through the entire
         stack.
         """
@@ -523,7 +523,7 @@ class S6ServiceManager:
         # `gateway run --replace` → `gateway start` … (see the matching guard there).
         lines.append("export HERMES_S6_SUPERVISED_CHILD=1")
         # Generalized supervisor marker — same meaning for the profile-redirect guard in
-        # hermes_cli.main._apply_profile_override; kept alongside the s6 one for back-compat.
+        # hermes_agent.hermes_cli.main._apply_profile_override; kept alongside the s6 one for back-compat.
         lines.append("export HERMES_SUPERVISED_CHILD=1")
         # ``--replace`` makes the supervised gateway authoritative for its HERMES_HOME. Without it
         # a gateway started OUTSIDE s6 (stray ``hermes gateway run``, an agent action, the Open

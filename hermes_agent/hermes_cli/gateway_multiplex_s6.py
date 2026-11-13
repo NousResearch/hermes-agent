@@ -1,7 +1,7 @@
 """s6 leg of the one-gateway-per-host convergence, shared by container boot and in-process migration.
 
 Inside the official image every profile has an s6 slot (``/run/hermes-service/gateway-<profile>``). The
-container's boot (``hermes_cli/container_boot.py``) registers every NAMED slot down and lets the
+container's boot (``hermes_agent/hermes_cli/container_boot.py``) registers every NAMED slot down and lets the
 root slot inherit their autostart intent; ``hermes gateway migrate --multiplex`` (and the hook
 ``hermes update`` runs) must be able to do the same thing to a slot that is UP, from inside the
 running container, without a container restart. Both paths decide "which named intents fold into
@@ -46,7 +46,7 @@ def fold_named_slot_intent(default_prior_state: Optional[str],
 
 
 def named_slot_name(profile: str) -> str:
-    from hermes_cli.service_manager import S6_SERVICE_PREFIX
+    from hermes_agent.hermes_cli.service_manager import S6_SERVICE_PREFIX
     return f"{S6_SERVICE_PREFIX}{profile}"
 
 
@@ -92,7 +92,7 @@ def _set_down_marker(service_dir: Path, *, down: bool) -> None:
     relative to that fd. An existing marker that resolves is left untouched; a dangling ``down``
     symlink (which s6 would not honour) is replaced by a regular file.
     """
-    from hermes_cli.service_manager import _root_hermes_account
+    from hermes_agent.hermes_cli.service_manager import _root_hermes_account
 
     slot_fd = os.open(service_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -125,7 +125,7 @@ def _set_down_marker(service_dir: Path, *, down: bool) -> None:
 
 
 def _wait_down(service_dir: Path, timeout_ms: int = 15000) -> None:
-    from hermes_cli.service_manager import S6ServiceManager
+    from hermes_agent.hermes_cli.service_manager import S6ServiceManager
     try:
         # As root, s6-svwait would create its subscription FIFO through a hermes-owned event/.
         S6ServiceManager._s6("s6-svwait", "-d", "-t", str(timeout_ms), str(service_dir),
@@ -147,5 +147,5 @@ def bring_root_slot_up(manager=None) -> str:
 
 
 def _manager():
-    from hermes_cli.service_manager import S6ServiceManager
+    from hermes_agent.hermes_cli.service_manager import S6ServiceManager
     return S6ServiceManager()

@@ -1,7 +1,7 @@
 """Provider/model catalogs: discovery, caching, and identity helpers.
 
 Origin module; cohesive clusters live in siblings and are re-imported here so
-``hermes_cli.models.<name>`` stays the stable import/monkeypatch surface:
+``hermes_agent.hermes_cli.models.<name>`` stays the stable import/monkeypatch surface:
 ``models_catalog_static`` (curated tables, provider registry, aliases), ``models_reasoning_caps``,
 ``models_local`` (Ollama / LM Studio), ``models_pricing``, ``models_validate``.
 """
@@ -28,10 +28,10 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 from hermes_agent.agent.proxy_bypass import is_loopback_host
-from hermes_cli.route_identity import normalize_route_base_url
-from hermes_cli.urllib_security import open_credentialed_url
-from hermes_cli.version_info import hermes_user_agent
-from hermes_cli.models_catalog_static import (
+from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
+from hermes_agent.hermes_cli.urllib_security import open_credentialed_url
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.models_catalog_static import (
     CuratedFallbackModels,
     CANONICAL_PROVIDERS,
     OPENROUTER_MODELS,
@@ -50,10 +50,10 @@ from hermes_cli.models_catalog_static import (
     _PROVIDER_RETIRED_ALIASES,
     _SILENT_DEFAULT_PROVIDERS,
     _xai_finalize_catalog)
-from hermes_cli.models_reasoning_caps import (
+from hermes_agent.hermes_cli.models_reasoning_caps import (
     _OPENROUTER_CATALOG_URL,
     _seed_reasoning_caps)
-from hermes_cli.models_local import (
+from hermes_agent.hermes_cli.models_local import (
     _OLLAMA_LOCAL_MODELS_CACHE,
     _OLLAMA_LOCAL_MODELS_CACHE_TTL,
     _OLLAMA_LOCAL_PROBE_FAILURE_CACHE,
@@ -146,7 +146,7 @@ _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
 def _openrouter_catalog_disk_ttl() -> float:
     """Same TTL as the catalog manifest this list is filtered from (honours ``model_catalog.ttl_minutes``)."""
-    from hermes_cli.model_catalog import refresh_interval_seconds
+    from hermes_agent.hermes_cli.model_catalog import refresh_interval_seconds
 
     return refresh_interval_seconds()
 
@@ -280,7 +280,7 @@ def union_with_nous_on_sale_models(curated_ids: list[str], pricing: dict[str, di
     image/video generation rows are skipped because they are not chat models."""
     from math import isfinite
 
-    from hermes_cli.models_pricing import _price_float, compute_sale_discount
+    from hermes_agent.hermes_cli.models_pricing import _price_float, compute_sale_discount
 
     seen = set(curated_ids)
     on_sale: list[tuple[int, str]] = []
@@ -331,7 +331,7 @@ def check_nous_free_tier(*, force_fresh: bool = False, cached_only: bool = False
     if cached_only:
         return False
     try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
+        from hermes_agent.hermes_cli.nous_account import get_nous_portal_account_info
 
         result = get_nous_portal_account_info(force_fresh=force_fresh).is_free_tier
     except Exception:
@@ -424,7 +424,7 @@ def fetch_nous_recommended_models(
 def _resolve_nous_portal_url() -> str:
     """Best-effort lookup of the Portal base URL the user is authed against."""
     try:
-        from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL, get_provider_auth_state
+        from hermes_agent.hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL, get_provider_auth_state
 
         state = get_provider_auth_state("nous") or {}
         portal = str(state.get("portal_base_url") or "").strip()
@@ -462,7 +462,7 @@ def get_preferred_silent_default_model(provider: str = "openrouter") -> str:
     """Silent-default model id: the cached remote catalog's ``"default": true`` label (never hits the
     network — safe on hot paths), else :data:`PREFERRED_SILENT_DEFAULT_MODEL`."""
     try:
-        from hermes_cli.model_catalog import get_default_model_from_cache
+        from hermes_agent.hermes_cli.model_catalog import get_default_model_from_cache
         labeled = get_default_model_from_cache(provider)
         if labeled:
             return labeled
@@ -538,10 +538,10 @@ def recommended_nous_default_model() -> dict[str, Any]:
     Contacts the Portal for a fresh tier read, so never call it on a hot path. Returns
     ``{"provider": "nous", "model": str, "free_tier": bool}``; ``model`` may be ``""`` when nothing
     is selectable (callers degrade). Shared by ``GET /api/model/recommended-default`` and the
-    sign-in completion in ``hermes_cli.anon_auth`` so both land on the same model.
+    sign-in completion in ``hermes_agent.hermes_cli.anon_auth`` so both land on the same model.
     """
-    from hermes_cli import model_picker_usage, models_pricing as mp
-    from hermes_cli.auth import get_provider_auth_state
+    from hermes_agent.hermes_cli import model_picker_usage, models_pricing as mp
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state
     model_ids = get_curated_nous_model_ids()
     pricing = mp.get_pricing_for_provider("nous") or {}
     free_tier = check_nous_free_tier(force_fresh=True)
@@ -657,7 +657,7 @@ def fetch_openrouter_models(
     ``cache_only`` never opens a socket: memory, then disk (stale accepted), then the in-repo snapshot."""
     # The curated list is filtered from this profile's manifest (``model_catalog.*`` config, its
     # ``<home>/cache`` copy), so a routed profile keeps its own slot instead of the module one.
-    from hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
+    from hermes_agent.hermes_cli.models_profile_cache import profile_slot_get, profile_slot_set
     _me = sys.modules[__name__]
     cached = profile_slot_get(_me, "_openrouter_catalog_cache")
 
@@ -678,7 +678,7 @@ def fetch_openrouter_models(
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.
     try:
-        from hermes_cli.model_catalog import get_curated_openrouter_models
+        from hermes_agent.hermes_cli.model_catalog import get_curated_openrouter_models
         remote = get_curated_openrouter_models()
     except Exception:
         remote = None
@@ -729,7 +729,7 @@ def get_curated_nous_model_ids() -> list[str]:
     """Curated Nous Portal model ids: the remote catalog manifest, else the in-repo
     ``_PROVIDER_MODELS["nous"]`` snapshot. Always a list."""
     try:
-        from hermes_cli.model_catalog import get_curated_nous_models
+        from hermes_agent.hermes_cli.model_catalog import get_curated_nous_models
         remote = get_curated_nous_models()
     except Exception:
         remote = None
@@ -795,8 +795,8 @@ def _configured_custom_provider_ids() -> set[str]:
     """Return routable custom-provider IDs configured by the user."""
     ids = {"custom"}
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.providers import custom_provider_slug
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.providers import custom_provider_slug
 
         config = load_config()
         providers = config.get("providers", {})
@@ -814,12 +814,12 @@ def _configured_custom_provider_ids() -> set[str]:
 
 def _provider_has_credentials(pid: str) -> bool:
     try:
-        from hermes_cli.auth import get_auth_status, has_usable_secret
+        from hermes_agent.hermes_cli.auth import get_auth_status, has_usable_secret
 
         if pid == "custom":
             return bool((_get_custom_base_url() or "").strip())
         if pid == "openrouter":
-            from hermes_cli.model_switch import _scoped_key_env
+            from hermes_agent.hermes_cli.model_switch import _scoped_key_env
             return has_usable_secret(_scoped_key_env("OPENROUTER_API_KEY"))
         status = get_auth_status(pid)
         return bool(status.get("logged_in") or status.get("configured"))
@@ -829,7 +829,7 @@ def _provider_has_credentials(pid: str) -> bool:
 
 def list_available_providers() -> list[dict[str, str]]:
     """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``)."""
-    from hermes_cli.models_catalog_static import listed_canonical_providers
+    from hermes_agent.hermes_cli.models_catalog_static import listed_canonical_providers
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
@@ -884,7 +884,7 @@ def _get_provider_config_dict(provider: str) -> dict[str, Any]:
     if not key:
         return {}
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         providers_cfg = load_config().get("providers", {})
         if isinstance(providers_cfg, dict):
             entry = providers_cfg.get(key) or providers_cfg.get(key.lower())
@@ -898,7 +898,7 @@ def _get_provider_config_dict(provider: str) -> dict[str, Any]:
 def _get_model_config_dict() -> dict[str, Any]:
     """Return the main model config mapping, or an empty dict."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         model_cfg = load_config().get("model", {})
         if isinstance(model_cfg, dict):
             return model_cfg
@@ -990,7 +990,7 @@ def _resolve_static_model_alias(
     name_lower: str, current_keys: set[str]) -> Optional[tuple[str, str]]:
     """Resolve short aliases (e.g. sonnet/opus) using static catalogs only."""
     try:
-        from hermes_cli.model_switch import MODEL_ALIASES
+        from hermes_agent.hermes_cli.model_switch import MODEL_ALIASES
     except Exception:
         return None
 
@@ -1077,7 +1077,7 @@ def _configured_provider_ids() -> set[str]:
     """Provider ids (incl. ``custom:*``) from the user's ``providers:`` config block; empty when config
     is unreadable (callers fall through to built-in catalogs)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         providers = (load_config() or {}).get("providers")
         if not isinstance(providers, dict):
@@ -1119,7 +1119,7 @@ def detect_provider_for_model(
     skipped and the ladder continues (``None`` = stay on the current provider). Exceptions: the user
     NAMED the provider (``/model nous``), or there is no current provider yet (``auto``) — then the
     first guess is returned so the credential step fails loudly instead of silently ignoring input."""
-    from hermes_cli.models_detect import (
+    from hermes_agent.hermes_cli.models_detect import (
         current_provider_catalog_match, current_provider_owns_vendor, provider_has_credentials)
 
     name = (model_name or "").strip()
@@ -1199,7 +1199,7 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
 
 def normalize_provider(provider: Optional[str]) -> str:
     """Normalize provider aliases to canonical ids. ``"auto"`` passes through — use
-    ``hermes_cli.auth.resolve_provider()`` to resolve it from credentials."""
+    ``hermes_agent.hermes_cli.auth.resolve_provider()`` to resolve it from credentials."""
     normalized = (provider or "openrouter").strip().lower()
     return _PROVIDER_ALIASES.get(normalized, normalized)
 
@@ -1300,7 +1300,7 @@ def _model_dedup_key(model_id: str) -> str:
     id and its curated public slug (Kimi ``k3`` / ``kimi-k3``) don't both survive a merge."""
     key = str(model_id).strip().lower()
     try:
-        from hermes_cli.model_search import model_alias_canonical
+        from hermes_agent.hermes_cli.model_search import model_alias_canonical
         return model_alias_canonical(key)
     except Exception:
         return key
@@ -1340,7 +1340,7 @@ def _openai_discovery_base_url(provider: str) -> str:
 
 
 def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
-    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_agent.hermes_cli.codex_models import get_codex_model_ids
 
     # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
     # catalog without a token / when unreachable. Read-only (#68004): a picker never imports,
@@ -1350,7 +1350,7 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     # gateway key is only ever sent to that gateway, never to the chatgpt.com default.
     base_url = None
     try:
-        from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+        from hermes_agent.hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
 
         creds = resolve_codex_runtime_credentials(read_only=True)
         access_token, base_url = creds.get("api_key"), creds.get("base_url")
@@ -1363,8 +1363,8 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
 
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     try:
-        from hermes_cli.anon_challenge import background_caller
-        from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
+        from hermes_agent.hermes_cli.anon_challenge import background_caller
+        from hermes_agent.hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
         with background_caller():  # never waits on or opens a challenge
             creds = resolve_nous_runtime_credentials()
         if creds:
@@ -1380,7 +1380,7 @@ def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
 def _api_key_credentials(normalized: str) -> tuple[str, str]:
     """``(api_key, base_url)`` from ``resolve_api_key_provider_credentials``; empty strings on any miss."""
     try:
-        from hermes_cli.auth import resolve_api_key_provider_credentials
+        from hermes_agent.hermes_cli.auth import resolve_api_key_provider_credentials
 
         creds = resolve_api_key_provider_credentials(normalized)
         return str(creds.get("api_key") or "").strip(), str(creds.get("base_url") or "").strip()
@@ -1447,7 +1447,7 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
     # Their /v1/models listing is access-scoped and authoritative — a model absent from it is one this key
     # CANNOT serve, so the curated soft-accept would manufacture a selection that 400s at first use. Custom
     # OpenAI-compatible proxies keep the fallback (incomplete listings are common there).
-    from hermes_cli.providers import is_official_openai_host
+    from hermes_agent.hermes_cli.providers import is_official_openai_host
 
     try:
         live = fetch_api_models(api_key, base)
@@ -1504,8 +1504,8 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
     ``/anthropic`` routes serve no ``/models``; the probe never raises, so any miss keeps ``[]``.
     """
     try:
-        from hermes_cli.azure_detect import _probe_openai_models
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+        from hermes_agent.hermes_cli.azure_detect import _probe_openai_models
+        from hermes_agent.hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
 
         runtime = _resolve_azure_foundry_runtime(requested_provider=normalized, model_cfg=_get_model_config_dict())
         base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
@@ -1635,7 +1635,7 @@ def _drop_delisted_opencode_models(normalized: str, rows: Optional[list[str]]) -
 
 def _chat_catalog_rows(models):
     """Drop generation ids from a chat-catalog list, keeping its list subclass."""
-    from hermes_cli.chat_catalog import without_generation_models
+    from hermes_agent.hermes_cli.chat_catalog import without_generation_models
     return without_generation_models(models)
 
 
@@ -1667,7 +1667,7 @@ def _configured_relay_base_url(provider: str) -> str:
     # profile leaves it empty; OpenRouter has no registry row) is not a relay: setup persists
     # canonical URLs, and OAuth providers (Codex) need native discovery.
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
         from hermes_agent.providers import get_provider_profile
 
         profile_url = getattr(get_provider_profile(normalized), "base_url", "")
@@ -1870,7 +1870,7 @@ def _credential_fingerprint(provider: str) -> str:
 
     parts: list[str] = []
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
         pcfg = PROVIDER_REGISTRY.get(provider)
         if pcfg is not None:
             for ev in getattr(pcfg, "api_key_env_vars", ()) or ():
@@ -1881,7 +1881,7 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
-    from hermes_cli.models_process_fingerprint import process_catalog_identity
+    from hermes_agent.hermes_cli.models_process_fingerprint import process_catalog_identity
     process_profile, process_parts = process_catalog_identity(provider)
     parts += process_parts
 
@@ -1897,7 +1897,7 @@ def _credential_fingerprint(provider: str) -> str:
     # resource switch under the same key must not serve the previous resource's catalog (#27989).
     if provider == "azure-foundry":
         try:
-            from hermes_cli.runtime_provider import _config_base_url_for_provider
+            from hermes_agent.hermes_cli.runtime_provider import _config_base_url_for_provider
             parts.append(f"effective_base={_config_base_url_for_provider(_get_model_config_dict(), 'azure-foundry')}")
         except Exception:
             pass
@@ -1931,7 +1931,7 @@ def _credential_fingerprint(provider: str) -> str:
             pass
 
     if provider == "openai-codex":
-        from hermes_cli.codex_models import codex_catalog_credential_identity
+        from hermes_agent.hermes_cli.codex_models import codex_catalog_credential_identity
         parts.append(f"codex_identity={codex_catalog_credential_identity()}")
     elif process_profile is not None:
         # Only the profile's own files: the vendor CLI rewrites its token file on every refresh (#129094).
@@ -1976,7 +1976,7 @@ def _save_provider_models_cache(data: dict) -> None:
 def _store_cache_entry(cache_key: str, entry: dict) -> None:
     """Write one row into the disk cache, re-reading it under the thread + cross-process locks: a slow
     fetch worker or another process must never write back the snapshot it loaded before fetching."""
-    from hermes_cli.models_cache_lock import write_under_cache_lock
+    from hermes_agent.hermes_cli.models_cache_lock import write_under_cache_lock
 
     def write_row() -> None:
         cache = _load_provider_models_cache()
@@ -2067,7 +2067,7 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     """Drop one provider's cache entry, or wipe the whole cache (``provider=None``). Used by
     ``/model --refresh`` and ``hermes model --refresh``."""
     try:
-        from hermes_cli.model_catalog import clear_fetch_backoff
+        from hermes_agent.hermes_cli.model_catalog import clear_fetch_backoff
         clear_fetch_backoff()  # a recovered catalog is fetched now, not after the offline backoff
         # Native Ollama tags are keyed by root URL, not provider slug: clear them on every refresh.
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
@@ -2078,7 +2078,7 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         from hermes_agent.providers import list_providers
         for profile in list_providers():
             profile.invalidate_catalog_cache()
-        from hermes_cli.models_cache_lock import write_under_cache_lock
+        from hermes_agent.hermes_cli.models_cache_lock import write_under_cache_lock
         path = _provider_models_cache_path()
 
         # Under the cache lock like every other writer: a locked writer that loaded the cache
@@ -2104,7 +2104,7 @@ def _resolve_anthropic_pool_catalog_credentials() -> tuple[str, str]:
     ``api_key`` pool entries — its runtime contract is OAuth-oriented)."""
     try:
         from hermes_agent.agent.credential_pool import AUTH_TYPE_API_KEY
-        from hermes_cli.auth import read_credential_pool
+        from hermes_agent.hermes_cli.auth import read_credential_pool
 
         for entry in read_credential_pool("anthropic"):
             if not isinstance(entry, dict) or entry.get("auth_type") != AUTH_TYPE_API_KEY:
@@ -2348,7 +2348,7 @@ def probe_api_models(
         headers["Authorization"] = f"Bearer {api_key}"
     if isinstance(request_headers, dict):
         # Per-provider custom headers can contain secrets: merge last so endpoint config wins; never log.
-        from hermes_cli.config import normalize_extra_headers
+        from hermes_agent.hermes_cli.config import normalize_extra_headers
 
         headers.update(normalize_extra_headers(request_headers))
 
@@ -2371,7 +2371,7 @@ def probe_api_models(
             continue
         if _neg_key is not None:
             _probe_neg_cache.pop(_neg_key, None)
-        from hermes_cli.chat_catalog import note_catalog_item
+        from hermes_agent.hermes_cli.chat_catalog import note_catalog_item
 
         probed = []
         for item in data.get("data", []):
@@ -2414,7 +2414,7 @@ _DEEPINFRA_CATALOG_NEG_TTL = 60.0  # seconds
 
 def _deepinfra_env(key: str) -> str:
     """Profile-scoped ``.env``/environ read: under a multiplexed turn the launch env is not this profile's."""
-    from hermes_cli.config import get_env_value_prefer_dotenv
+    from hermes_agent.hermes_cli.config import get_env_value_prefer_dotenv
     return (get_env_value_prefer_dotenv(key) or "").strip()
 
 
@@ -2593,7 +2593,7 @@ def cached_fetch_api_models(
     opens that must not block on a stopped local endpoint) still get a warm catalog instead of
     collapsing to the config-declared subset. ``fetch_models`` supplies native-aware discovery
     without minting a command token before cache admission."""
-    from hermes_cli.model_switch_providers import _NativePickerModelList
+    from hermes_agent.hermes_cli.model_switch_providers import _NativePickerModelList
 
     def _catalog(entry):
         rows = (_NativePickerModelList if entry.get("native_catalog") else list)(entry["models"])

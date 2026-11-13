@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from hermes_cli.gateway_runtime import GatewayDiscovery
+    from hermes_agent.hermes_cli.gateway_runtime import GatewayDiscovery
 
 # Launch policy travels in session.create, not into daemon-wide defaults. That includes the Kanban
 # board `hermes --tui` pins at launch (_pin_kanban_board_env): a daemon started from here would
@@ -75,10 +75,10 @@ def attach_gateway(home: str | Path, *, start: bool, recover: bool = False, time
     discovery waits at most ``DISCOVER_TIMEOUT`` of it. A daemon this starts ends itself once idle.
     A failed mint (control socket I/O, a refused or changed grant) raises ``TicketUnavailable``.
     """
-    from hermes_cli.gateway_client import _session_ticket
-    from hermes_cli.gateway_runtime import (attachable, discover_gateway_endpoint, ensure_gateway_runtime,
+    from hermes_agent.hermes_cli.gateway_client import _session_ticket
+    from hermes_agent.hermes_cli.gateway_runtime import (attachable, discover_gateway_endpoint, ensure_gateway_runtime,
                                            gateway_profile_home)
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import DiscoveryError
 
     home = gateway_profile_home(home)
     receipt = (ensure_gateway_runtime(home, timeout=timeout, idle_exit=True) if start

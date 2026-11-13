@@ -1,6 +1,6 @@
 """Desktop (Electron) app: build/stamp, stage-and-swap pack, exe integrity gate, macOS signing, Linux sandbox, launch (hermes gui/desktop).
 
-Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
+Split out of ``hermes_agent/hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
 are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
@@ -21,11 +21,11 @@ import time as _time_mod
 
 from pathlib import Path
 from typing import Callable, Optional
-from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
+from hermes_agent.hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
 from hermes_platform.host import facts
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("hermes_cli.main")
+logger = logging.getLogger("hermes_agent.hermes_cli.main")
 
 _PREVIOUS_APP_KEPT = "  ↩ The previous desktop app was left untouched and still works."
 
@@ -125,7 +125,7 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
         print("  ⚠ The packaged desktop app has no node-pty native binary; rebuilding it")
         return True
 
-    from hermes_cli.source_build import source_product_current
+    from hermes_agent.hermes_cli.source_build import source_product_current
 
     return dist_dir is None or not source_product_current(project_root, "desktop", dist_dir)
 
@@ -142,8 +142,8 @@ def _packaged_desktop_current_for_head(desktop_dir: Path, project_root: Path) ->
     resources = _packaged_resources_dir(desktop_dir)
     if resources is None:
         return False
-    from hermes_cli.steward import read_install_stamp
-    from hermes_cli.version_info import _run_git
+    from hermes_agent.hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli.version_info import _run_git
 
     commit = read_install_stamp(resources).get("commit")
     if not isinstance(commit, str) or commit != _run_git(project_root, "rev-parse", "HEAD"):
@@ -269,7 +269,7 @@ def _move_live_app_aside(live_root: Path, previous: Path, held_by: Optional[list
     except PermissionError:
         if sys.platform != "win32":
             raise
-        from hermes_cli.desktop_release_holders import find_release_cwd_holders, release_after_refused_rename
+        from hermes_agent.hermes_cli.desktop_release_holders import find_release_cwd_holders, release_after_refused_rename
         holders, closed = release_after_refused_rename(live_root, consent=consent)
         if not closed:
             if held_by is not None:
@@ -289,8 +289,8 @@ def _swap_staged_desktop_app(
     """Promote a VERIFIED staged pack over ``release/`` by two renames (live → ``.previous``, staged →
     live); a failure between them rolls back. Returns the live exe or None (live app kept). Never raises.
     ``held_by`` collects the named programs that blocked the swap (Windows cwd holders)."""
-    from hermes_cli.desktop_release_holders import take_consent
-    from hermes_cli.update_receipt import _launcher_correlation_id
+    from hermes_agent.hermes_cli.desktop_release_holders import take_consent
+    from hermes_agent.hermes_cli.update_receipt import _launcher_correlation_id
     release_dir = desktop_dir / "release"
     # A "close and retry" consent covers this one attempt of the run it was given for (#101789).
     consent = take_consent(release_dir, _launcher_correlation_id())
@@ -623,7 +623,7 @@ def _desktop_macos_local_signing_identity() -> Optional[str]:
     if sys.platform != "darwin":
         return None
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         desktop = load_config().get("desktop", {})
         if not isinstance(desktop, dict):
             return None
@@ -1025,7 +1025,7 @@ def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
             print(f"  ✓ Installed the rebuilt Desktop app at {app}")
     for problem in problems:
         print(f"  ⚠ {problem}")
-    from hermes_cli.gui_uninstall import desktop_install_record
+    from hermes_agent.hermes_cli.gui_uninstall import desktop_install_record
     from utils import atomic_json_write, read_json_or_empty
     # A copy that failed to reinstall stays recorded, so the next update retries it. Every
     # `hermes desktop` launch lands here: write only when the set changed.
@@ -1063,7 +1063,7 @@ def _owns_installed_desktop_apps() -> bool:
     backend."""
     if sys.platform != "darwin":
         return False
-    from hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
     from hermes_constants import get_default_hermes_root
     return Path(PROJECT_ROOT).resolve() == (get_default_hermes_root() / "hermes-agent").resolve()
 
@@ -1078,7 +1078,7 @@ def _installed_desktop_apps() -> list[Path]:
     """
     if not _owns_installed_desktop_apps():
         return []
-    from hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths
+    from hermes_agent.hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths
     from utils import read_json_or_empty
     candidates = packaged_gui_app_paths()
     if owned := _update_owned_macos_bundles(candidates):
@@ -1247,7 +1247,7 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if _sandbox_helper_is_setuid_root(st):
         return True
 
-    from hermes_cli.main_desktop_apparmor import chromium_userns_sandbox_verdict
+    from hermes_agent.hermes_cli.main_desktop_apparmor import chromium_userns_sandbox_verdict
 
     verdict = chromium_userns_sandbox_verdict(packaged_executable)
     if verdict if verdict is not None else _desktop_linux_userns_sandbox_available():
@@ -1341,7 +1341,7 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
     disable_gpu = password_store = ozone_hint = "auto"
     renderer_accessibility = True
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         desktop_cfg = (load_config() or {}).get("desktop") or {}
     except Exception:
         return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
@@ -1387,9 +1387,9 @@ def _register_linux_desktop_entry(defer: bool = False):
     entry only once the Electron window is on screen (#111906); ``None`` when nothing is
     pending. Terminal, detached and ``--build-only`` launches install synchronously.
     """
-    from hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
     try:
-        from hermes_cli.linux_desktop_entry import DeferredDesktopEntryInstall, install_desktop_entry, is_supported
+        from hermes_agent.hermes_cli.linux_desktop_entry import DeferredDesktopEntryInstall, install_desktop_entry, is_supported
         if not is_supported():
             return None
         if defer:
@@ -1442,7 +1442,7 @@ def _promote_staged_desktop_app(
     held_by: list = []
     packaged_executable = _swap_staged_desktop_app(desktop_dir, staging_dir, held_by=held_by)
     if packaged_executable is None and held_by:
-        from hermes_cli.desktop_release_holders import describe_block, holder_names
+        from hermes_agent.hermes_cli.desktop_release_holders import describe_block, holder_names
         print(describe_block(held_by, desktop_dir / "release"))
         raise RuntimeError(
             f"Could not publish the desktop build: {holder_names(held_by)} is using its folder. {_PREVIOUS_APP_KEPT}")
@@ -1470,7 +1470,7 @@ def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, pnpm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
-    from hermes_cli.source_build import run_in_custody  # pnpm writes the checkout: update custody
+    from hermes_agent.hermes_cli.source_build import run_in_custody  # pnpm writes the checkout: update custody
 
     if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
         # The Desktop running this build holds the exe lock the promotion rename needs,
@@ -1506,7 +1506,7 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, pnpm: str, e
     try:
         run_in_custody(desktop_dir.parents[1], build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
-            from hermes_cli.update_stage import publish_stage
+            from hermes_agent.hermes_cli.update_stage import publish_stage
 
             publish_stage("Packaging the desktop app")
             run_in_custody(desktop_dir.parents[1], [pnpm, "run", "builder", "--dir", "--publish", "never",
@@ -1625,7 +1625,7 @@ def _check_desktop_skip_build(
 
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
-    from hermes_cli.main_desktop_apparmor import print_no_sandbox_fallback
+    from hermes_agent.hermes_cli.main_desktop_apparmor import print_no_sandbox_fallback
 
     launch_command = [str(packaged_executable)]
     if not _desktop_linux_sandbox_fixup(packaged_executable):
@@ -1666,7 +1666,7 @@ def _launch_installed_macos_desktop_app() -> bool:
     executable = Path("/Applications/Hermes.app/Contents/MacOS/Hermes")
     if not executable.is_file():
         return False
-    from hermes_cli.bundled_app import launch_detached
+    from hermes_agent.hermes_cli.bundled_app import launch_detached
 
     pid = launch_detached([str(executable)], cwd=executable.parent)
     print(f"→ Launched the installed Hermes Desktop app: {executable} (pid {pid})")
@@ -1677,14 +1677,14 @@ def _run_desktop_one_shot(args: argparse.Namespace, desktop_dir: Path, *, bundle
     """Run a host-setup one-shot flag, then exit without building or launching."""
     # macOS: a self-signed code-signing identity so TCC grants survive rebuilds.
     if getattr(args, "setup_tcc_identity", False):
-        from hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
+        from hermes_agent.hermes_cli.main_desktop_tcc import _desktop_macos_setup_tcc_identity
         identity = getattr(args, "identity", None) or "Hermes Local Signing"
         sys.exit(0 if _desktop_macos_setup_tcc_identity(identity) else 1)
     # Linux: the per-binary AppArmor profile for Chromium's namespace sandbox (#130177).
     if getattr(args, "install_apparmor_profile", False):
-        from hermes_cli.bundled_app import NotBundledApp, resolve_bundle_layout
-        from hermes_cli.main import PROJECT_ROOT
-        from hermes_cli.main_desktop_apparmor import install_profile
+        from hermes_agent.hermes_cli.bundled_app import NotBundledApp, resolve_bundle_layout
+        from hermes_agent.hermes_cli.main import PROJECT_ROOT
+        from hermes_agent.hermes_cli.main_desktop_apparmor import install_profile
         exe = _desktop_packaged_executable(desktop_dir)
         if bundled:
             with contextlib.suppress(NotBundledApp):
@@ -1696,14 +1696,14 @@ def _run_desktop_one_shot(args: argparse.Namespace, desktop_dir: Path, *, bundle
 
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
-    from hermes_cli.main import PROJECT_ROOT
-    from hermes_cli.source_build import prepare_source_dependencies, source_build_env
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.source_build import prepare_source_dependencies, source_build_env
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     # A bundled install IS the app: no source tree, no build, and the
     # launcher is a sibling of this payload rather than something we
     # produce. Every rung below assembles a checkout build, so the sealed
     # shape leaves here with the env it just built.
-    from hermes_cli.steward import is_bundled_payload
+    from hermes_agent.hermes_cli.steward import is_bundled_payload
 
     bundled = is_bundled_payload(PROJECT_ROOT)
     if not bundled and not (desktop_dir / "package.json").exists():
@@ -1746,7 +1746,7 @@ def cmd_gui(args: argparse.Namespace):
     # across processes so a manual `hermes desktop` racing `hermes update`'s
     # rebuild cannot corrupt either (#93940). The lock lives outside the
     # checkout, keyed by the resolved checkout path.
-    from hermes_cli.desktop_build_lock import DesktopBuildLock
+    from hermes_agent.hermes_cli.desktop_build_lock import DesktopBuildLock
 
     build_lock: DesktopBuildLock | None = None
     if not bundled and not skip_build:
@@ -1795,7 +1795,7 @@ def cmd_gui(args: argparse.Namespace):
     # An app-grid launch (DESKTOP_STARTUP_ID) must not write its own entry while the
     # shell still has the app in STARTING, so it defers the write until Electron
     # reports the window on screen (#111906). --build-only spawns no app: write now.
-    from hermes_cli.linux_desktop_entry import launched_from_shell
+    from hermes_agent.hermes_cli.linux_desktop_entry import launched_from_shell
     build_only = bool(getattr(args, "build_only", False))
     deferred_entry = _register_linux_desktop_entry(defer=launched_from_shell() and not build_only)
 
@@ -1872,7 +1872,7 @@ def cmd_gui(args: argparse.Namespace):
         # macOS/Linux keep the foreground run below: those launches are
         # expected to stay attached to the terminal, and the desktop_console
         # drain is a Windows-only concern.
-        from hermes_cli._subprocess_compat import (
+        from hermes_agent.hermes_cli._subprocess_compat import (
             windows_detach_flags,
             windows_detach_flags_without_breakaway,
         )
@@ -1927,7 +1927,7 @@ def _explicit_profile_args() -> list[str]:
     Explicit flag only. A bare `hermes desktop` must not forward the sticky CLI
     profile — Electron would persist it over the stored desktop one.
     """
-    from hermes_cli.main import explicit_cli_profile
+    from hermes_agent.hermes_cli.main import explicit_cli_profile
 
     profile = explicit_cli_profile()
     return ["--profile", profile] if profile else []
@@ -1947,8 +1947,8 @@ def _launch_bundled_desktop(
 
     Never returns.
     """
-    from hermes_cli.bundled_app import NotBundledApp, launch_detached, resolve_bundle_layout
-    from hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.bundled_app import NotBundledApp, launch_detached, resolve_bundle_layout
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
 
     refused = [
         flag

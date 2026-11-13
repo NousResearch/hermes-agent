@@ -94,7 +94,7 @@ def test_background_review_installs_thread_local_whitelist():
     whitelist is set with exactly the memory+skills tool names.
     """
     from hermes_agent import run_agent
-    from hermes_cli import plugins as _plugins
+    from hermes_agent.hermes_cli import plugins as _plugins
 
     captured = {}
 
@@ -224,8 +224,8 @@ def test_background_review_whitelist_includes_configured_extra_tools(
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     from hermes_agent import run_agent
-    from hermes_cli import config as config_module
-    from hermes_cli import plugins as _plugins
+    from hermes_agent.hermes_cli import config as config_module
+    from hermes_agent.hermes_cli import plugins as _plugins
 
     config_module._LOAD_CONFIG_CACHE.clear()
     config_module._RAW_CONFIG_CACHE.clear()

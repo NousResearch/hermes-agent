@@ -249,7 +249,7 @@ class TestNextSteps:
 def test_free_picks_come_from_this_profiles_own_portal_entry(monkeypatch):
     """One process holds several profiles' recommended lists side by side: a limit card offers only the
     calling profile's own Portal picks, else its own disk copy; another profile's entry never answers."""
-    from hermes_cli import models as m
+    from hermes_agent.hermes_cli import models as m
     portal = "https://portal.example.test"
     monkeypatch.setattr(m, "_resolve_nous_portal_url", lambda: portal)
     other = {"freeRecommendedModels": [{"modelName": "other/profile:free"}]}

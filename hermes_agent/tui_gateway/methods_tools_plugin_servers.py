@@ -16,12 +16,12 @@ def _plugin_server_rows(
 ) -> list[dict]:
     if not portable or plugin_dir is None:
         return []
-    package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
+    package = _tools_mod("hermes_agent.hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
     namespace = package.manifest.get("extensions", {}).get("com.nousresearch.hermes", {})
     declared = namespace.get("servers", {})
     if not isinstance(declared, dict):
         return []
-    server_name_for = _tools_mod("hermes_cli.plugins_manifest").portable_mcp_server_name
+    server_name_for = _tools_mod("hermes_agent.hermes_cli.plugins_manifest").portable_mcp_server_name
     liveness = _tools_mod("hermes_agent.tools.mcp_liveness")
     core = _tools_mod("hermes_agent.tools.mcp_tool_common")._core
     resolve_key = _tools_mod("hermes_agent.tools.mcp_tool_scope")._resolve_server_key
@@ -31,7 +31,7 @@ def _plugin_server_rows(
     # (one live-catalog resolution per listing): a per-plugin ``get_live_catalog_entry`` would
     # re-resolve the whole catalog once per installed plugin.
     display_name = str(package.manifest.get("name") or "") or None
-    sidecar = _tools_mod("hermes_cli.plugins_cmd_catalog").catalog_install_record(plugin_dir)
+    sidecar = _tools_mod("hermes_agent.hermes_cli.plugins_cmd_catalog").catalog_install_record(plugin_dir)
     if sidecar:
         title = (catalog_titles or {}).get(str(sidecar.get("catalog_name") or ""))
         if title:
@@ -98,11 +98,11 @@ def _plugin_tool_ownership() -> dict[str, list[str]]:
     server the loader attributed to the package registered (``_portable_server_tools``; a server
     that never connected or cached its tools owns nothing yet). A name two packages list belongs
     to neither."""
-    plugins_mod = _tools_mod("hermes_cli.plugins")
+    plugins_mod = _tools_mod("hermes_agent.hermes_cli.plugins")
     toolsets = _tools_mod("hermes_agent.toolsets")
     plugins_mod.discover_plugins()
     manager = plugins_mod.get_plugin_manager()
-    native = _tools_mod("hermes_cli.config").load_config().get("mcp_servers")
+    native = _tools_mod("hermes_agent.hermes_cli.config").load_config().get("mcp_servers")
     builtin = set(toolsets._HERMES_CORE_TOOLS)
     for entry in toolsets.TOOLSETS.values():
         builtin.update(entry.get("tools", ()))

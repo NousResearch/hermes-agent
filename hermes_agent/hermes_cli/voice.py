@@ -127,7 +127,7 @@ def _debug(msg: str) -> None:
 def _beeps_enabled() -> bool:
     """CLI parity: voice.beep_enabled in config.yaml (default True)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         from utils import is_truthy_value
 
         voice_cfg = load_config().get("voice", {})

@@ -39,7 +39,7 @@ def get_tool_output_limits() -> dict[str, int]:
     if cached is not None:
         return cached
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config() or {}
         section = cfg.get("tool_output") if isinstance(cfg, dict) else None
     except Exception:

@@ -276,7 +276,7 @@ def pin_process_hermes_home(path: str | Path | None) -> None:
     profile look like the launch profile: ``hermes_agent.agent.secret_scope.serves_routed_profile()`` turns
     False and that turn's MCP connections fall back to bare, cross-profile names; the sibling
     launch-home checks (``secret_scope._is_process_home``, ``hermes_agent.tools.environments.local._is_routed_home``,
-    ``hermes_cli.env_loader._process_hermes_home``) misjudge the same way. ``None`` clears the pin.
+    ``hermes_agent.hermes_cli.env_loader._process_hermes_home``) misjudge the same way. ``None`` clears the pin.
 
     Process-global on purpose: it names the process's own identity, not a per-task value. It is NOT
     folded into :func:`get_process_hermes_home`: :func:`get_hermes_home` falls back to that for
@@ -544,7 +544,7 @@ def _run_version_probe(argv: list[str], **kwargs):
     """Run a hidden ``--version`` probe; ``None`` when it cannot run."""
     import subprocess
     try:
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
         return subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
             argv, capture_output=True, timeout=10, creationflags=windows_hide_flags(), **kwargs,
         
@@ -867,8 +867,8 @@ def socket_safe_tmpdir() -> str:
 # would void administrator policy at a directory the user controls (#135200); ``HERMES_HOME``
 # moves identity, policy and plugin scope wholesale — one write to ``~/.hermes/.env`` would
 # otherwise relocate SOUL.md, config.yaml, plugins, skills and cron on the next start (#144685).
-# Skipped by ``hermes_cli.env_loader._load_dotenv_with_fallback``,
-# ``hermes_cli.config.reload_env``, ``hermes_agent.agent.secret_sources.registry.apply_all`` (reported as
+# Skipped by ``hermes_agent.hermes_cli.env_loader._load_dotenv_with_fallback``,
+# ``hermes_agent.hermes_cli.config.reload_env``, ``hermes_agent.agent.secret_sources.registry.apply_all`` (reported as
 # ``skipped_protected``) and ``onepassword.apply_onepassword_secrets``; refused by the ``.env``
 # writers (``validate_env_var_name_for_write``) and never mirrored by ``_publish_env_value``.
 LAUNCH_ONLY_ENV_KEYS = frozenset({"HERMES_MANAGED_DIR", "HERMES_HOME"})
@@ -882,7 +882,7 @@ def is_launch_only_env_key(name: str) -> bool:
 
 
 # ---- Managed mode (NixOS declarative config) ----
-# Canonical home of "is this install package-manager managed": ``hermes_cli.config`` re-exports
+# Canonical home of "is this install package-manager managed": ``hermes_agent.hermes_cli.config`` re-exports
 # these, and :func:`apply_secure_dir_policy` below reads them. Lives here because constants
 # must stay import-safe from the CLI.
 _MANAGED_TRUE_VALUES = ("true", "1", "yes")
@@ -984,7 +984,7 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     marker is read, for callers that already resolved it; without it the effective home is
     consulted.
 
-    Import-safe twin of ``hermes_cli.config._secure_dir`` (which delegates here), so callers
+    Import-safe twin of ``hermes_agent.hermes_cli.config._secure_dir`` (which delegates here), so callers
     outside the CLI package — like :func:`get_scratch_dir` — share one policy implementation.
     """
     if get_managed_system(home) is not None:
@@ -1013,7 +1013,7 @@ def ensure_private_store(path: str | Path, *, home: str | Path | None = None) ->
 
     Managed installs (group-share by design, #77579) and containers / ``HERMES_SKIP_CHMOD``
     (mounts shared across UIDs) keep the inherited modes and get ``-1`` (inherit the umask): the
-    carve-outs ``hermes_cli.config._secure_file`` makes. ``HERMES_HOME_MODE`` is not applied: it
+    carve-outs ``hermes_agent.hermes_cli.config._secure_file`` makes. ``HERMES_HOME_MODE`` is not applied: it
     opens the home for traversal to a served subdirectory, never to a credential store.
     """
     from hermes_dir_acl import make_user_dir
@@ -1401,7 +1401,7 @@ def openrouter_variant_base(model_id: str) -> str | None:
     OpenRouter routing-variant suffix (e.g. ``x-ai/grok-4:nitro`` →
     ``x-ai/grok-4``), else ``None``.
 
-    Lives here rather than in ``hermes_cli.models`` so the metadata layer
+    Lives here rather than in ``hermes_agent.hermes_cli.models`` so the metadata layer
     (``hermes_agent.agent.model_metadata``) can share one definition without importing the
     CLI — this module is dependency-free by contract.
 

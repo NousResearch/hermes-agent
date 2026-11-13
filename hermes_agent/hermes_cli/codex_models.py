@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from hermes_cli.route_identity import normalize_route_base_url
+from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +29,14 @@ DEFAULT_CODEX_MODELS: list[str] = [
     "gpt-5.4-mini",
     "gpt-5.4",
     # Research preview exposed ONLY via the Codex OAuth backend for ChatGPT Pro subscribers —
-    # not in the public API, so it stays out of the "openai" catalog in hermes_cli/models.py.
+    # not in the public API, so it stays out of the "openai" catalog in hermes_agent/hermes_cli/models.py.
     # The backend reports ``supported_in_api: false`` for it; that flag describes API
     # availability, not Codex availability, so fetch/cache paths must not filter on it.
     "gpt-5.3-codex-spark"]
 
 # gpt-5.3-codex-spark is in research preview and is exposed *only* via the Codex CLI / OAuth backend
 # (chatgpt.com/backend-api/codex/models) for ChatGPT Pro subscribers. It is NOT available in the public
-# OpenAI API, so it intentionally stays out of the "openai" provider catalog in hermes_cli/models.py — only
+# OpenAI API, so it intentionally stays out of the "openai" provider catalog in hermes_agent/hermes_cli/models.py — only
 # the openai-codex (OAuth) provider surfaces it. The Codex backend reports ``supported_in_api: false`` for
 # this slug; that flag describes API availability, not Codex backend availability, so the fetch/cache code
 # paths below intentionally do not filter on it. PR #12994 removed this entry on the assumption it was
@@ -115,7 +115,7 @@ def codex_catalog_credential_identity() -> str:
     principal's key. Opaque non-JWT tokens
     fall back to the token itself (the caller hashes every part before anything is persisted).
     """
-    from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+    from hermes_agent.hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
 
     try:
         creds = resolve_codex_runtime_credentials(read_only=True)
@@ -165,7 +165,7 @@ def _fetch_models_from_api(access_token: str, base_url: Optional[str] = None) ->
     """
     try:
         from hermes_agent.agent.model_metadata import _codex_catalog_probe_allowed
-        from hermes_cli.auth_codex import _codex_base_url
+        from hermes_agent.hermes_cli.auth_codex import _codex_base_url
         catalog_base = (base_url or "").strip().rstrip("/") or _codex_base_url()
         if not _codex_catalog_probe_allowed(access_token, catalog_base):
             return []
@@ -224,7 +224,7 @@ def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[s
         if api_models:
             return _finalize_codex_models(api_models)
     # Late: models_catalog_static builds its codex table from this module at import time.
-    from hermes_cli.models_catalog_static import CuratedFallbackModels
+    from hermes_agent.hermes_cli.models_catalog_static import CuratedFallbackModels
 
     default_model = _read_default_model(codex_home)
     return CuratedFallbackModels(_finalize_codex_models(_drop_undiscovered_astra(_dedupe([

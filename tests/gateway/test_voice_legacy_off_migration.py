@@ -21,7 +21,7 @@ def _restart(tmp_path, *, profile=None):
     runner._voice_mode = runner._load_voice_modes()
     adapter = SimpleNamespace(platform=Platform.TELEGRAM, _auto_tts_default=False, _owner_profile=profile,
                               _auto_tts_enabled_chats=set(), _auto_tts_disabled_chats=set())
-    with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
         runner._sync_voice_mode_state_to_adapter(adapter)
     return runner, adapter
 
@@ -65,7 +65,7 @@ def test_a_legacy_off_holds_for_every_chat_id_shape(tmp_path, platform, chat_id)
     runner._voice_mode = runner._load_voice_modes()
     adapter = SimpleNamespace(platform=platform, _auto_tts_default=False, _owner_profile=None,
                               _auto_tts_enabled_chats=set(), _auto_tts_disabled_chats=set())
-    with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
         runner._sync_voice_mode_state_to_adapter(adapter)
 
     assert not _speaks(adapter, chat_id)

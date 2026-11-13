@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli import source_check, source_releases
+from hermes_agent.hermes_cli import source_check, source_releases
 
 
 def _git(cwd, *args):

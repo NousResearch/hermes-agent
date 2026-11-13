@@ -144,9 +144,9 @@ async def forward(connection, params):
 
 async def forward_to_owner(home, *, agent, tenant, peer, context_id, input_id, text, timeout):
     """Transport-only caller; a timeout never cancels or re-identifies accepted work."""
-    from hermes_cli.gateway_client import (GATEWAY_WS_PROTOCOL, GatewayClient, GatewayClientError,
+    from hermes_agent.hermes_cli.gateway_client import (GATEWAY_WS_PROTOCOL, GatewayClient, GatewayClientError,
         _session_ticket, gateway_ws_target)
-    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+    from hermes_agent.hermes_cli.gateway_runtime import ensure_gateway_runtime
     from websockets.asyncio.client import connect
     home = await asyncio.to_thread(Path(home).resolve)
     async with asyncio.timeout(timeout):

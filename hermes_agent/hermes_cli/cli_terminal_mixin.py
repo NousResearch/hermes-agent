@@ -12,7 +12,7 @@ import threading
 import time
 
 from hermes_agent.agent.i18n import t
-from hermes_cli.cli_render import (
+from hermes_agent.hermes_cli.cli_render import (
     _chrome_floor,
     _hold_paints,
     _output_history_rows,
@@ -81,7 +81,7 @@ class CLITerminalMixin:
 
     def _mark_terminal_io_broken(self, reason: str = "") -> None:
         """Stop UI paints after the PTY/stdout becomes unusable (#81521)."""
-        from cli import logger
+        from hermes_agent.cli import logger
         if getattr(self, "_terminal_io_broken", False):
             return
         self._terminal_io_broken = True
@@ -153,7 +153,7 @@ class CLITerminalMixin:
         repaint without SIGWINCH, so prompt_toolkit's tracked ``_cursor_pos`` is stale
         and the next incremental redraw stacks on old content (ghost status bars).
         """
-        from cli import _replay_output_history
+        from hermes_agent.cli import _replay_output_history
         if getattr(self, "_terminal_io_broken", False):
             return
         app = getattr(self, "_app", None)
@@ -194,7 +194,7 @@ class CLITerminalMixin:
         maximize/restore; CSI 2J cannot remove those rows, so affected users opt in to 3J
         followed by the bounded output-history replay.
         """
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         display_config = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else {}
         raw = (display_config.get("cli_rebuild_scrollback_on_redraw", False)
                if isinstance(display_config, dict) else False)
@@ -213,7 +213,7 @@ class CLITerminalMixin:
         if getattr(self, "_terminal_io_broken", False):
             return
         try:
-            from hermes_cli.curses_ui import flush_stdin
+            from hermes_agent.hermes_cli.curses_ui import flush_stdin
             flush_stdin()
         except Exception:
             pass
@@ -234,7 +234,7 @@ class CLITerminalMixin:
         drawn from there to the bottom (``_set_chrome_floor``), where the next count assumes it.
         A clear that fails replays nothing: the history is already on screen or in scrollback.
         """
-        from cli import _terminal_reflows
+        from hermes_agent.cli import _terminal_reflows
         if getattr(self, "_terminal_io_broken", False):
             return _NO_REPLAY
         try:
@@ -292,7 +292,7 @@ class CLITerminalMixin:
         its preferred height (it fills the rows below the cursor it measured, or down to the
         bottom row once a refill left its top at a known row).
         """
-        from cli import _terminal_reflows
+        from hermes_agent.cli import _terminal_reflows
         renderer = app.renderer
         size = renderer.output.get_size()
         screen = renderer._last_screen
@@ -397,7 +397,7 @@ class CLITerminalMixin:
             # Its erase/replay belongs to the suspended composer, not the monitor.
             if getattr(getattr(self, '_subagent_monitor', None), 'opening', False):
                 return
-            from cli import _replay_output_history, _terminal_reflows
+            from hermes_agent.cli import _replay_output_history, _terminal_reflows
             self._status_bar_suppressed_after_resize = True
             try:
                 new_width = self._get_tui_terminal_width()
@@ -579,8 +579,8 @@ class CLITerminalMixin:
 
     def _try_attach_clipboard_image(self) -> bool:
         """Save a clipboard image to ~/.hermes/images/ and attach it; True if attached."""
-        from cli import datetime
-        from hermes_cli.clipboard import save_clipboard_image
+        from hermes_agent.cli import datetime
+        from hermes_agent.hermes_cli.clipboard import save_clipboard_image
         self._image_counter += 1
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         img_path = get_hermes_home() / "images" / f"clip_{ts}_{self._image_counter}.png"
@@ -606,7 +606,7 @@ class CLITerminalMixin:
 
     def _recover_terminal_input_modes(self, *, reason: str) -> None:
         """Best-effort reset when leaked mouse reports indicate mode drift."""
-        from cli import (
+        from hermes_agent.cli import (
             CLI_CONFIG, _DIM, _RST, _TERMINAL_INPUT_MODE_RESET_SEQ,
             _cli_multiline_shortcuts_enabled, _cprint, _enable_extended_enter_keys, logger)
         now = time.monotonic()
@@ -642,7 +642,7 @@ class CLITerminalMixin:
         ``run_in_terminal`` legitimately holds cooked mode, while the agent runs
         (approval/sudo prompts touch the tty), and on Windows (no termios).
         """
-        from cli import _DIM, _RST, _cprint, _heal_cooked_mode_drift, logger
+        from hermes_agent.cli import _DIM, _RST, _cprint, _heal_cooked_mode_drift, logger
         if os.name == "nt":
             return
         app = getattr(self, "_app", None)

@@ -156,7 +156,7 @@ def test_another_agents_process_never_makes_a_prefix_ambiguous(provider):
 def test_local_long_lived_process_dies_with_hermes_until_stopped(tmp_path, monkeypatch):
     """A long-lived local process is owned (its group is covered by the owner-death supervisor, so a
     SIGKILLed Hermes takes it down) from start until ``stop_process`` releases it."""
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
     from hermes_agent.tools.environments.local import LocalEnvironment
 
     owned, released = [], []
@@ -249,7 +249,7 @@ def test_stopping_an_exited_leader_still_stops_its_descendants(tmp_path, monkeyp
     import os
     import signal
     psutil = pytest.importorskip("psutil")
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
     from tests.waiting import wait_until
     from hermes_agent.tools.environments.local import LocalEnvironment
 

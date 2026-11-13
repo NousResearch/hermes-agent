@@ -6,8 +6,8 @@ import logging
 
 import pytest
 
-from hermes_cli.config import DEFAULT_CONFIG
-from hermes_cli.observability.shared_metrics_send_config import (
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.observability.shared_metrics_send_config import (
     DEFAULT_ENDPOINT,
     resolve_send_config,
 )

@@ -55,7 +55,7 @@ def test_every_surface_honours_preview_without_compressing(surface, monkeypatch)
     agent, history = _agent(), _history()
     frozen = copy.deepcopy(history)
     if surface == "cli":
-        from hermes_cli.cli_session_mixin import CLISessionMixin
+        from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
         cli = CLISessionMixin.__new__(CLISessionMixin)
         cli.agent, cli.conversation_history = agent, history
         cli._manual_compress("/compress --preview")

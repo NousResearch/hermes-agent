@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, Optional
 
 import httpx
 
-from hermes_cli.dashboard_auth import (
+from hermes_agent.hermes_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, LoginStart, ProviderError, RefreshExpiredError, Session,
     classify_jwks_lookup_error)
 
@@ -42,7 +42,7 @@ def load_config_section(logger: logging.Logger, tag: str, *path: str) -> dict:
     """The ``config.yaml`` block at ``path`` as a dict, or ``{}`` — robust to load_config()
     raising (fresh install, malformed YAML), absent keys, or a non-dict value."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_agent.hermes_cli.config import cfg_get, load_config
 
         cfg = load_config()
     except Exception as exc:

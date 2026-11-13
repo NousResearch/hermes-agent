@@ -16,8 +16,8 @@ from hermes_agent.agent.context_compressor import ContextCompressor
 from hermes_agent.agent.conversation_compression import compress_context
 from hermes_agent.agent.conversation_compression_checkpoint import CompressionCheckpointUnavailable
 from hermes_agent.agent.transports.codex_app_server_session import TurnResult
-from hermes_cli.observability import shared_metrics_events
-from hermes_cli.observability.shared_metrics_fields import compression_fields
+from hermes_agent.hermes_cli.observability import shared_metrics_events
+from hermes_agent.hermes_cli.observability.shared_metrics_fields import compression_fields
 
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"
 

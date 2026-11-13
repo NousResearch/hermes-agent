@@ -84,7 +84,7 @@ def _subdict(node: Any, *keys: str) -> dict[str, Any]:
 def _read_config_section(*path: str, label: str, log: logging.Logger = logger) -> dict[str, Any]:
     """Read a nested section of ~/.hermes/config.yaml. Tolerates missing file."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
     except Exception as e:
         log.debug("Failed to load config for %s: %s", label, e)
@@ -121,7 +121,7 @@ _warned_bad_values: set = set()
 
 def _bounded_count(key: str, default: int) -> int:
     """*key* (a ``curator.<key>`` day/hour count), floored at 1 like ``curator prune --days`` already
-    refuses (hermes_cli/curator.py::_cmd_prune). A value < 1 collapses stale_cutoff/archive_cutoff
+    refuses (hermes_agent/hermes_cli/curator.py::_cmd_prune). A value < 1 collapses stale_cutoff/archive_cutoff
     onto or past "now" in apply_automatic_transitions(), mass-transitioning every skill with any
     past activity on the next automatic pass — unlike the manual prune path this runs unconfirmed,
     so it falls back to the default instead of acting on the bad value."""
@@ -707,7 +707,7 @@ def _notify_post_curator_run(run_dir: Optional[Path], dry_run: bool) -> None:
     pass's state is saved, so a slow plugin load never delays what ``hermes curator status`` reports."""
     if run_dir is None or not ((run_dir / "run.json").is_file() and (run_dir / "REPORT.md").is_file()):
         return
-    from hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
+    from hermes_agent.hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
     invoke_hook("post_curator_run", run_dir=str(run_dir), run_json_path=str(run_dir / "run.json"),
                 report_md_path=str(run_dir / "REPORT.md"), dry_run=dry_run)
 
@@ -1021,7 +1021,7 @@ def run_curator_review(
 # --- Provider/model resolution for the review fork ---
 
 def _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home) -> None:
-    from hermes_cli.observability.shared_metrics_loop import record_curator_run
+    from hermes_agent.hermes_cli.observability.shared_metrics_loop import record_curator_run
 
     def what_changed() -> dict[str, int]:
         before, after = _by_name(before_report), _by_name(after_report)
@@ -1082,8 +1082,8 @@ def _resolve_review_provider() -> tuple:
     rp: dict[str, Any] = {}
     overrides, provider, model_name, binding = {}, None, "", None
     try:
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         binding = _resolve_review_runtime(load_config_readonly())
         model_name = binding.model
         rp = resolve_runtime_provider(
@@ -1118,7 +1118,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
         from hermes_agent.agent.conversation_compression_checkpoint import checkpoint_required_from_config
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         from hermes_constants import resolve_reasoning_config
 
         review_agent = AIAgent(

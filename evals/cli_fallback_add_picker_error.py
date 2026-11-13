@@ -38,7 +38,7 @@ CONFIG = (
 def _persisted_model(root: Path, env: dict) -> dict:
     """``config.yaml`` ``model`` section as the CLI itself reads it (owner module, same env)."""
     out = subprocess.run(
-        [sys.executable, "-c", "import json; from hermes_cli.config import load_config; "
+        [sys.executable, "-c", "import json; from hermes_agent.hermes_cli.config import load_config; "
          "print(json.dumps(load_config().get('model')))"],
         cwd=root, env=env, capture_output=True, text=True, check=True)
     return json.loads(out.stdout.strip().splitlines()[-1])
@@ -62,7 +62,7 @@ def run(root: Path, output: Path) -> dict:
                "TERM": "dumb", "LANG": "C.UTF-8"}
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 120, 0, 0))
-        proc = subprocess.Popen([sys.executable, "-m", "hermes_cli.main", "fallback", "add"],
+        proc = subprocess.Popen([sys.executable, "-m", "hermes_agent.hermes_cli.main", "fallback", "add"],
                                 cwd=root, env=env, stdin=slave, stdout=slave, stderr=slave,
                                 start_new_session=True)
         os.close(slave)

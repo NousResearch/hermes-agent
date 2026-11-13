@@ -1,7 +1,7 @@
 """``hermes plugins remove``: tree + install-metadata removal kept consistent, config bookkeeping, and the
 dashboard/TUI remove path.
 
-Sibling of :mod:`hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
+Sibling of :mod:`hermes_agent.hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
 imported late here, never at module level).
 """
 
@@ -15,7 +15,7 @@ from typing import Any
 
 def _pc():
     """The facade, read at call time: tests patch ``plugins_cmd.<name>`` and sibling calls must see it."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     return plugins_cmd
 
 
@@ -133,7 +133,7 @@ def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str,
     entry = next((e for e in _pc()._discover_all_plugins() if Path(str(e[4])) == target), None)
     key = entry[5] if entry else target.name
     aliases = _pc()._plugin_aliases(key) | {target.name}
-    from hermes_cli.plugin_oauth import forget_plugin_grants, plugin_key
+    from hermes_agent.hermes_cli.plugin_oauth import forget_plugin_grants, plugin_key
     grant_key = plugin_key(target)  # grants are stored by directory key, which the manifest name may not match
     _pc()._toggle_plugin_toolset(key, enable=False)
     _remove_plugin_core(target)

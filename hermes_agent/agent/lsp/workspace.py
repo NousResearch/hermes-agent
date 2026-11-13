@@ -125,7 +125,7 @@ def nearest_root(
         # Excludes are checked before markers at each level.
         if present(cur, excludes_list):
             return None
-        # A directory holding __init__.py is a Python package, never a project root (hermes_cli/setup.py
+        # A directory holding __init__.py is a Python package, never a project root (hermes_agent/hermes_cli/setup.py
         # matched the python marker list and gave every package dir its own pyright).
         if not present(cur, ["__init__.py"]) and present(cur, markers_list):
             return str(cur)

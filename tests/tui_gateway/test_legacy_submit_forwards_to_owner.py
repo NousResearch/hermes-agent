@@ -41,7 +41,7 @@ class _OwnerClient:
     async def rpc(self, method, **params):
         reply = await self.conn.dispatch({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
         if "error" in reply:
-            from hermes_cli.gateway_client import rpc_error
+            from hermes_agent.hermes_cli.gateway_client import rpc_error
             raise rpc_error(reply["error"])
         return reply["result"]
 
@@ -221,7 +221,7 @@ def test_a_receipt_lost_after_the_owner_queued_it_is_unconfirmed_not_resendable(
     server runs the real ``AuthorityConnection``; the relay uses the real ``GatewayClient``."""
     import json
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli.gateway_client import GatewayClient
+    from hermes_agent.hermes_cli.gateway_client import GatewayClient
     from websockets.asyncio.client import connect
     from websockets.asyncio.server import serve
     from hermes_agent.tui_gateway import owner_forward

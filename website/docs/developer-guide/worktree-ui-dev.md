@@ -43,7 +43,7 @@ htui() {
   local root
   root="$(_hermes_root)" || { echo "htui: not in a Hermes checkout" >&2; return 1; }
   ( cd "$root" && PYTHONPATH="$root" \
-      "$HERMES_MAIN_CHECKOUT/.venv/bin/python" -m hermes_cli.main --tui --dev "$@" )
+      "$HERMES_MAIN_CHECKOUT/.venv/bin/python" -m hermes_agent.hermes_cli.main --tui --dev "$@" )
 }
 ```
 

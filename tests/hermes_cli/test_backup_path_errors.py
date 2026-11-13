@@ -20,7 +20,7 @@ def _make_home(tmp_path, monkeypatch):
 
 def test_backup_unwritable_parent_errors_cleanly(tmp_path, monkeypatch, capsys):
     _make_home(tmp_path, monkeypatch)
-    import hermes_cli.backup as backup_mod
+    import hermes_agent.hermes_cli.backup as backup_mod
 
     # A parent directory that cannot be created (a file stands where the dir
     # would go) reliably triggers an OSError on mkdir without needing root.

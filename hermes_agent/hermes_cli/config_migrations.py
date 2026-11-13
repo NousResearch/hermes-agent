@@ -2,7 +2,7 @@
 
 Each step is ``_migrate_to_N(results, quiet)`` (a large topical step lives in a
 ``config_migrations_<topic>.py`` sibling, registered here); the version gate and strict ascending
-order live in :func:`run_migrations`. Every write goes through ``hermes_cli.config._persist_migration`` so a
+order live in :func:`run_migrations`. Every write goes through ``hermes_agent.hermes_cli.config._persist_migration`` so a
 step may only persist values that differ from the schema default (plus removals/renames).
 """
 
@@ -16,7 +16,7 @@ import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_cli.config_migrations_browser import migrate_to_52
+from hermes_agent.hermes_cli.config_migrations_browser import migrate_to_52
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,8 @@ def support_floor_message() -> str:
 
 
 def _cfg():
-    """Return the live ``hermes_cli.config`` module (lazy, cycle-free, monkeypatch-friendly)."""
-    from hermes_cli import config
+    """Return the live ``hermes_agent.hermes_cli.config`` module (lazy, cycle-free, monkeypatch-friendly)."""
+    from hermes_agent.hermes_cli import config
 
     return config
 
@@ -478,7 +478,7 @@ def _migrate_to_34(results: dict[str, Any], quiet: bool) -> None:
     # once display.personality became authoritative, stale names resurrected personalities users
     # had turned off. Reset display.personality → "" and scrub agent.system_prompt ONLY when it
     # verbatim-equals a known personality's rendered text; any other text is user-owned.
-    from hermes_cli.personality import (
+    from hermes_agent.hermes_cli.personality import (
         available_personalities, normalize_personality_name, prompt_text, render_personality_prompt)
 
     config = read_raw_config()
@@ -528,7 +528,7 @@ def _migrate_to_34(results: dict[str, Any], quiet: bool) -> None:
 def _migrate_to_38(results: dict[str, Any], quiet: bool) -> None:
     # 37 → 38: the bundled observability/nemo_relay plugin was removed (Relay lifecycle moved
     # into the agent core); drop it from plugins.enabled.
-    from hermes_cli.relay_plugin_cutover import legacy_relay_plugin_keys
+    from hermes_agent.hermes_cli.relay_plugin_cutover import legacy_relay_plugin_keys
 
     config = read_raw_config()
     plugins = config.get("plugins")
@@ -607,8 +607,8 @@ def _migrate_to_45(results: dict[str, Any], quiet: bool) -> None:
     # already records `connections` (a decline) or `agent.disabled_toolsets` names it (the
     # resolver subtracts that list last, so the append would have no effect).
     from hermes_agent.agent.skill_utils import parse_config_string_list
-    from hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys
-    from hermes_cli.toolset_scope import toolset_allowed_for_platform
+    from hermes_agent.hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys
+    from hermes_agent.hermes_cli.toolset_scope import toolset_allowed_for_platform
 
     config = read_raw_config()
     saved = config.get("platform_toolsets")
@@ -681,7 +681,7 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
     # the file follows the default. It is not rewritten to the new image, because a written image
     # is a pin and a pin recreates a persisted Docker container without asking; unpinned, the
     # runtime keeps an existing sandbox and the CLI / Screen pane ask first. A pinned image stays.
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
     _rewrite_stale_defaults(results, quiet, section="terminal", rows=[
         (key, old, None, f"terminal.{key} unset (follows the default, {DEFAULT_SANDBOX_IMAGE})",
          f"  ✓ terminal.{key}: was the old default; now follows the default sandbox image ({DEFAULT_SANDBOX_IMAGE})")
@@ -706,7 +706,7 @@ def _migrate_to_49(results: dict[str, Any], quiet: bool) -> None:
     # not a choice, so both are dropped and fresh sandboxes follow terminal.vercel_image. A runtime
     # the user chose (node22, python3.13) stays and keeps overriding the image, as before. Persisted
     # sandboxes are unaffected either way: a snapshot restore never sends a runtime or an image.
-    from hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_VERCEL_IMAGE, LEGACY_VERCEL_RUNTIME
     _rewrite_stale_default(
         section="terminal", key="vercel_runtime", old=LEGACY_VERCEL_RUNTIME, new=None,
         added=f"terminal.vercel_runtime unset (fresh sandboxes use terminal.vercel_image, {DEFAULT_VERCEL_IMAGE})",
@@ -763,7 +763,7 @@ def disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> None
     if not isinstance(raw_mcp_servers, dict):
         return
     try:
-        from hermes_cli.mcp_security import validate_mcp_server_entry
+        from hermes_agent.hermes_cli.mcp_security import validate_mcp_server_entry
     except Exception:
         return
     mcp_touched = False

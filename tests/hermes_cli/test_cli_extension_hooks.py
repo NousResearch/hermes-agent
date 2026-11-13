@@ -11,7 +11,7 @@ from __future__ import annotations
 
 def _make_cli():
     """Bare HermesCLI (no __init__): the layout hooks need no init state."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     return HermesCLI.__new__(HermesCLI)
 

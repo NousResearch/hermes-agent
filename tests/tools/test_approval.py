@@ -52,7 +52,7 @@ class TestApprovalModeParsing:
 
 
     def test_config_bool_false_maps_to_off(self):
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"mode": False}}):
+        with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"approvals": {"mode": False}}):
             assert _get_approval_mode() == "off"
 
 
@@ -740,7 +740,7 @@ class TestPermanentAllowlistReload:
 
     def test_load_permanent_allowlist_clears_when_config_is_empty(self):
         with mock_patch.object(approval_module, "_permanent_approved", {"stale-pattern"}):
-            with mock_patch("hermes_cli.config.load_config_readonly", return_value={"command_allowlist": []}):
+            with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"command_allowlist": []}):
                 assert approval_module.load_permanent_allowlist() == set()
 
             assert approval_module._permanent_approved == set()
@@ -1994,7 +1994,7 @@ class TestApprovalPromptRedaction:
             "print(api_key)"
         )
         cfg = {"approvals": {"mode": "manual"}}
-        with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        with _patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg):
             with _patch("hermes_agent.tools.approval._is_gateway_approval_context",
                         return_value=True):
                 with _patch("hermes_agent.tools.approval_context._get_approval_mode",
@@ -2054,7 +2054,7 @@ class TestCliApprovalTimeoutClassifiedSeparately:
 
         cfg = {"approvals": {"mode": "manual"}}
         with self._interactive_env():
-            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            with _patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg):
                 result = mod.check_all_command_guards(
                     "rm -rf /var/data", "local",
                     approval_callback=lambda *a, **kw: "timeout",
@@ -2078,7 +2078,7 @@ class TestCliApprovalTimeoutClassifiedSeparately:
 
         cfg = {"approvals": {"mode": "manual"}}
         with self._interactive_env():
-            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            with _patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg):
                 result = mod.check_all_command_guards(
                     "rm -rf /var/data", "local",
                     approval_callback=lambda *a, **kw: "deny",
@@ -2101,7 +2101,7 @@ class TestCliApprovalTimeoutClassifiedSeparately:
 
         cfg = {"approvals": {"mode": "manual"}}
         with self._interactive_env():
-            with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+            with _patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg):
                 result = mod.request_tool_approval(
                     "write_file", "plugin flagged this write",
                     approval_callback=lambda *a, **kw: "timeout",

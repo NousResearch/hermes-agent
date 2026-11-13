@@ -5,7 +5,7 @@ from types import MappingProxyType
 
 import pytest
 
-from hermes_cli.plugins import (
+from hermes_agent.hermes_cli.plugins import (
     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS,
     PluginContext,
     PluginManager,
@@ -55,7 +55,7 @@ def test_render_is_deterministic_bounded_and_session_info_is_read_only(caplog):
     ctx.register_system_prompt_section("example.a", "A", max_chars=4)
     ctx.register_system_prompt_section("example.too-large", "12345", max_chars=4)
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
         rendered = manager.render_system_prompt_sections({"session_id": "session-1"})
 
     assert [(item.id, item.content) for item in rendered] == [
@@ -81,7 +81,7 @@ def test_render_fails_open_for_callback_failure_wrong_type_and_aggregate_budget(
     ctx.register_system_prompt_section("example.second", "b" * chunk, max_chars=chunk)
     ctx.register_system_prompt_section("example.zzlast", "c" * 500, max_chars=500)
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
         rendered = manager.render_system_prompt_sections({})
 
     assert [item.id for item in rendered] == ["example.first", "example.second"]

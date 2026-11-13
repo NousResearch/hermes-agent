@@ -100,7 +100,7 @@ def _effective_sessions(home: Optional[Path]) -> Optional[dict]:
     """*home*'s ``sessions:`` block as maintenance sees it (user file, ``${VAR}`` expansion, managed
     overlay; no defaults merged) or None when the file cannot be read. Read through *home*'s own
     config path, so gateway housekeeping gets each served profile's values, not the caller's."""
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     try:
         sessions = load_user_config_effective(_home(home) / "config.yaml", fail_closed=True).get("sessions")
     except Exception as exc:  # health: allow BLE001 -- any parse/read failure means "unreadable": never ask on it
@@ -338,7 +338,7 @@ def notice_due(home: Optional[Path], shown: dict) -> bool:
 
 def managed() -> bool:
     """True when an administrator pins ``sessions.auto_prune`` (the user cannot change it)."""
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
     return managed_scope.is_key_managed("sessions.auto_prune")
 
 
@@ -346,7 +346,7 @@ def decide(enable: bool, home: Optional[Path] = None) -> bool:
     """Persist the user's answer as an explicit ``sessions.auto_prune``; ends the prompt for good.
     False when the save failed or did not take effect (an administrator-managed value wins)."""
     import hermes_yaml as yaml
-    from hermes_cli.config_backend import ConfigWriteError, write_config_key
+    from hermes_agent.hermes_cli.config_backend import ConfigWriteError, write_config_key
     from hermes_constants import mkdir_under_hermes_home
     if managed():
         return False

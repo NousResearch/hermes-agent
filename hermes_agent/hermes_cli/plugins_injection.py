@@ -6,7 +6,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any, Optional
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 
 def inject_plugin_message(

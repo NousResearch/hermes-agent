@@ -6,8 +6,8 @@ Each test asserts the CONTRACT (what happened + the exact command pointer, raw d
 
 import pytest
 
-from hermes_cli.cli_chat_error_copy import chat_error_response
-from hermes_cli.cli_unknown_command import unknown_command_lines
+from hermes_agent.hermes_cli.cli_chat_error_copy import chat_error_response
+from hermes_agent.hermes_cli.cli_unknown_command import unknown_command_lines
 
 
 class _StatusError(Exception):
@@ -68,7 +68,7 @@ def test_chat_error_response_returns_site_copy_verbatim_instead_of_double_wrappi
 
 
 def test_sessions_db_open_failure_points_to_repair(monkeypatch, capsys):
-    from hermes_cli import sessions_cmd
+    from hermes_agent.hermes_cli import sessions_cmd
 
     class _Boom:
         def __init__(self, *a, **k):

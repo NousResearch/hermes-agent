@@ -2,7 +2,7 @@
 
 After an upgrade the old daemon keeps answering the home's control socket, but its ``identify`` has
 no ``runtime_protocol`` (it predates the session-authority runtime). Every client of this version
-ensures through :func:`hermes_cli.gateway_runtime.ensure_gateway_runtime` (the TUI bootstrap,
+ensures through :func:`hermes_agent.hermes_cli.gateway_runtime.ensure_gateway_runtime` (the TUI bootstrap,
 Desktop's ``hermes gateway ensure``, ``hermes chat``), so ensure replaces that owner once, exactly as
 ``hermes gateway stop`` would stop it (a planned-stop marker in the owner's home, then SIGTERM; a
 bounded wait; a start-time-guarded force kill), and then starts the current one the normal way.
@@ -43,8 +43,8 @@ def _install_root() -> Path:
 def _identify(home: Path, timeout: float) -> tuple[Path, dict] | None:
     """``(control_home, identify payload)`` of the process answering for *home*: its own socket, or
     the default multiplexer's for a served named profile (the same order discovery uses)."""
-    from hermes_cli.gateway_runtime_discovery import query_identify
-    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import query_identify
+    from hermes_agent.hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
     for control in (home, multiplexer_root_for(home)):
         if control is None:
             continue

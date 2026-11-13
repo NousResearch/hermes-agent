@@ -1,4 +1,4 @@
-"""hermes_cli.tips reads its catalog through i18n: count follows the English catalog, text follows the
+"""hermes_agent.hermes_cli.tips reads its catalog through i18n: count follows the English catalog, text follows the
 active language, and a partial translation falls back to English per tip."""
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ import pytest
 
 from hermes_agent.agent import i18n
 from hermes_agent.agent.i18n import t
-from hermes_cli import tips
+from hermes_agent.hermes_cli import tips
 
 
 @pytest.fixture(autouse=True)

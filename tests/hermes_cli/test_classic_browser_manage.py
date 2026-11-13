@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 class _Conn:
@@ -33,7 +33,7 @@ class _Conn:
 def gateway_cli(monkeypatch):
     def make(**replies):
         conn = _Conn(replies)
-        monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+        monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
         cli = HermesCLI.__new__(HermesCLI)
         cli.session_id = "local-s"
         cli.agent = SimpleNamespace(_checkpoint_mgr=None)

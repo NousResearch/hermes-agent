@@ -4,7 +4,7 @@ import json
 import sys
 
 from hermes_agent import hermes_state
-import hermes_cli.main as main_mod
+import hermes_agent.hermes_cli.main as main_mod
 
 
 class _FakeDB:

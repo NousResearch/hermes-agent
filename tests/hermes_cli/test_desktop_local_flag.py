@@ -9,7 +9,7 @@ in cmd_gui's launch paths.
 
 import argparse
 
-from hermes_cli.subcommands.gui import build_gui_parser
+from hermes_agent.hermes_cli.subcommands.gui import build_gui_parser
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="hermes")

@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from hermes_cli.dashboard_auth.base import Session
+from hermes_agent.hermes_cli.dashboard_auth.base import Session
 
 _PENDING_TTL_SECONDS = 600  # whole interactive login (mirrors the PKCE cookie)
 _CODE_TTL_SECONDS = 120  # loopback redirect + immediate token POST only

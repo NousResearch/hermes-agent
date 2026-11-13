@@ -298,7 +298,7 @@ def _ensure_bootstrap_env() -> None:
     """Once per process, before the first selection: the deployment that selects, addresses and
     authenticates the backend comes from the process env, the launch home's ``.env`` and the
     managed ``.env`` (design §4.4 steps 1-2, D26/D32) — also when the first config read comes before
-    ``load_hermes_dotenv`` (``hermes_cli.config`` reads config at import time)."""
+    ``load_hermes_dotenv`` (``hermes_agent.hermes_cli.config`` reads config at import time)."""
     if not _BOOTSTRAPPED:
         _bootstrap(None, None, once=True)
 
@@ -318,7 +318,7 @@ def _bootstrap(home: Optional[Path], project_env: Optional[Path], *, once: bool)
             return  # done, or this thread's own bootstrap re-entering (import-time config read)
         _BOOTSTRAP_OWNER = threading.get_ident()
         try:
-            from hermes_cli.env_loader import apply_config_bootstrap_env
+            from hermes_agent.hermes_cli.env_loader import apply_config_bootstrap_env
             # names resolved only for the kind the .env layers select
             apply_config_bootstrap_env(_bootstrap_names, home, project_env)
         except ImportError:  # no usable python-dotenv (a bare installer interpreter): no .env loads either

@@ -10,8 +10,8 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.agent.portal_tags import reset_conversation_context, set_conversation_context
-from hermes_cli import lifecycle
-from hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli import lifecycle
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
 from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _stored_values,
     direct_runtime,
@@ -30,7 +30,7 @@ def _flush() -> None:
 
 
 def _all_rows(home) -> list[tuple[str, dict]]:
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     root = home / "telemetry" / "shared_metrics"
     if not (root / "metrics.sqlite3").exists():
@@ -52,9 +52,9 @@ def _turn(session_id, task_id, provider, model, *, prompt_tokens=1_000, context_
 
 def _emit_every_model_metric(provider, model) -> dict:
     """Drive every emitter that carries a provider/model dimension through its real entry point."""
-    from hermes_cli.observability import shared_metrics_events as events
-    from hermes_cli.observability.shared_metrics_model import record_model_friction, record_tool_call_quality
-    from hermes_cli.observability.shared_metrics_snapshot import collect_install_snapshot
+    from hermes_agent.hermes_cli.observability import shared_metrics_events as events
+    from hermes_agent.hermes_cli.observability.shared_metrics_model import record_model_friction, record_tool_call_quality
+    from hermes_agent.hermes_cli.observability.shared_metrics_snapshot import collect_install_snapshot
 
     _turn("s1", "t1", provider, model)  # model_route, model_tokens (primary), context_peak
     lifecycle.invoke_hook("post_auxiliary_call", session_id="s1", provider=provider, model=model,
@@ -115,8 +115,8 @@ def test_user_provider_plugin_name_and_model_never_leave(direct_runtime, tmp_pat
     """A ``$HERMES_HOME/plugins/model-providers`` profile joins PROVIDER_REGISTRY under a name (and
     aliases) the user chose: every metric, the provider-setup marker and the snapshot read
     ``custom``/``custom``. An in-tree provider plugin (``deepinfra``) keeps its public name."""
-    from hermes_cli import auth, auth_plugin_providers, models_catalog_static as mcs
-    from hermes_cli.observability import shared_metrics_catalog as catalog, shared_metrics_setup as setup
+    from hermes_agent.hermes_cli import auth, auth_plugin_providers, models_catalog_static as mcs
+    from hermes_agent.hermes_cli.observability import shared_metrics_catalog as catalog, shared_metrics_setup as setup
     from hermes_agent.providers import get_provider_profile
 
     for mod, attr in ((auth, "PROVIDER_REGISTRY"), (auth_plugin_providers, "PLUGIN_MIRRORED_PROVIDERS"),
@@ -159,8 +159,8 @@ def test_network_address_model_ids_and_raw_injected_marks_never_reach_counters(d
     """A ``host:port``/IP/localhost model id on a public provider reads ``custom`` (Bedrock's
     ``-v1:0`` and OpenRouter's ``:free`` stay), and the subscriber re-runs the catalog on a mark's
     provider/model so a raw mark that skipped the producer's pass stores nothing."""
-    from hermes_cli.observability import shared_metrics_contract as contract
-    from hermes_cli.observability.shared_metrics_model import model_route
+    from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+    from hermes_agent.hermes_cli.observability.shared_metrics_model import model_route
 
     for model in ("127.0.0.1:8080/x", "localhost/qwen", "10.0.0.5/x", "gpu-box.lan:8000/qwen", "gpu-box.lan:8000"):
         assert model_route("openrouter", model)["model"] == "custom", model
@@ -208,7 +208,7 @@ def test_tui_switch_before_first_prompt_blames_the_configured_route(
     result = SimpleNamespace(
         success=True, new_model="gpt-5", target_provider="openai", base_url="https://api.openai.com/v1",
         api_key="k", api_mode="chat_completions", warning_message="", error_message="")
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", lambda **kw: result)
     server._apply_model_switch("", {"agent": None}, "gpt-5 --provider openai", confirm_expensive_model=True)
     _flush()
 
@@ -282,8 +282,8 @@ def test_multiplexed_gateway_switch_records_in_the_owning_profile(direct_runtime
 
 
 def _cli(db):
-    from hermes_cli.cli_loops_mixin import CLILoopsMixin
-    from hermes_cli.cli_session_mixin import CLISessionMixin
+    from hermes_agent.hermes_cli.cli_loops_mixin import CLILoopsMixin
+    from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
 
     class FakeCLI(CLILoopsMixin, CLISessionMixin):
         _slash_metrics_surface = "cli"

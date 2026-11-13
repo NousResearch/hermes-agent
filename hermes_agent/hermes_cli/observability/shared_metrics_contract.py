@@ -12,7 +12,7 @@ from hermes_agent.agent.relay_runtime import (
     RUNTIME_SCHEMA_KEY,
     RUNTIME_SCHEMA_VERSION,
 )
-from hermes_cli.platforms import PLATFORMS
+from hermes_agent.hermes_cli.platforms import PLATFORMS
 from hermes_agent.tools.connectors.gateway.names import CONNECTOR_NAME_PREFIX
 from hermes_agent.toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
 
@@ -189,7 +189,7 @@ SIZE_BUCKETS = frozenset({
 
 
 def _bundled_memory_providers() -> frozenset[str]:
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
 
     root = get_bundled_plugins_dir() / "memory"
     try:
@@ -432,8 +432,8 @@ FEATURE_DISABLED_NAME_MAX_LENGTH = 64
 
 # ---- iuf c1 ----
 # Why an extension install failed, named at each failure exit of the three emitters
-# (hermes_cli/skills_hub.py::_install_skill, hermes_cli/plugins_cmd_install.py::recorded_install,
-# hermes_cli/mcp_catalog.py::recorded_catalog_install / record_mcp_install); ``none`` on success.
+# (hermes_agent/hermes_cli/skills_hub.py::_install_skill, hermes_agent/hermes_cli/plugins_cmd_install.py::recorded_install,
+# hermes_agent/hermes_cli/mcp_catalog.py::recorded_catalog_install / record_mcp_install); ``none`` on success.
 # A raised exception with no class of its own is classified by its TYPE: network / permission /
 # filesystem_error, anything else ``exception:<Type>``, which keeps only the ``exception`` prefix
 # (as on compression rows). Never the error message.
@@ -1581,7 +1581,7 @@ def execution_surface(kwargs: dict[str, Any]) -> str:
     if value in _SURFACE_ALIASES:
         return _SURFACE_ALIASES[value]
     try:
-        from hermes_cli.platforms import get_all_platforms
+        from hermes_agent.hermes_cli.platforms import get_all_platforms
 
         if value in get_all_platforms():
             return "gateway"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.colors import Colors, color
 
 
 def unknown_subkey_refusal(key: str, suggestion: Optional[str]) -> str:

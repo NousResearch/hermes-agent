@@ -6,14 +6,14 @@ import sys
 from dataclasses import dataclass
 from typing import List, Optional
 
-from hermes_cli.colors import Colors
-from hermes_cli.cli_output import prompt_yes_no
-from hermes_cli.curses_ui import curses_single_select
-from hermes_cli.mcp_catalog import (
+from hermes_agent.hermes_cli.colors import Colors
+from hermes_agent.hermes_cli.cli_output import prompt_yes_no
+from hermes_agent.hermes_cli.curses_ui import curses_single_select
+from hermes_agent.hermes_cli.mcp_catalog import (
     CatalogEntry, CatalogError, catalog_diagnostics, install_entry, is_enabled, is_installed,
     list_catalog, installed_servers, remove_server, server_enabled, uninstall_entry, _say,
 )
-from hermes_cli.config import load_config, save_config
+from hermes_agent.hermes_cli.config import load_config, save_config
 
 _STATUS_NOT_INSTALLED = "available"
 _STATUS_DISABLED = "installed (disabled)"
@@ -86,7 +86,7 @@ def _enable_disable(name: str, *, enable: bool) -> None:
 def _configure_tools(name: str) -> None:
     """Open the tool selection checklist for an already-installed MCP."""
     from argparse import Namespace
-    from hermes_cli.mcp_config import cmd_mcp_configure
+    from hermes_agent.hermes_cli.mcp_config import cmd_mcp_configure
 
     cmd_mcp_configure(Namespace(name=name))
 
@@ -209,7 +209,7 @@ def run_picker() -> None:
 
 def install_by_name(identifier: str) -> int:
     """`hermes mcp install <name>` — non-interactive entry-point."""
-    from hermes_cli.mcp_catalog import get_entry
+    from hermes_agent.hermes_cli.mcp_catalog import get_entry
 
     entry = get_entry(identifier)
     if entry is None:

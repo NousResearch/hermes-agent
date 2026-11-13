@@ -22,8 +22,8 @@ _RETRY = "the next `hermes update` or `hermes gateway restart` rewrites it"
 
 def refresh_launch_files() -> None:
     """Regenerate every profile's launch file that differs from what this checkout generates."""
-    from hermes_cli.config_backend import ConfigBackendUnavailable
-    from hermes_cli.update_receipt import _profile_homes, record_followup
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli.update_receipt import _profile_homes, record_followup
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     try:
@@ -51,7 +51,7 @@ def refresh_launch_files() -> None:
 def _refresh_systemd_system_unit() -> None:
     """The invoking home's system unit; the refresh adopts the unit's ``HERMES_HOME`` into the
     environment, which the rest of the update must not inherit."""
-    from hermes_cli.gateway import refresh_systemd_unit_if_needed
+    from hermes_agent.hermes_cli.gateway import refresh_systemd_unit_if_needed
 
     launch_home = os.environ.get("HERMES_HOME")
     try:
@@ -68,7 +68,7 @@ def _refreshers():
         return [("Windows gateway launcher", _refresh_windows_launcher_scripts)]
     if sys.platform == "darwin":
         return [("launchd plist", _refresh_unloaded_launchd_plist)]
-    from hermes_cli.gateway import supports_systemd_services
+    from hermes_agent.hermes_cli.gateway import supports_systemd_services
 
     if supports_systemd_services():
         return [("systemd user unit", _refresh_systemd_user_unit)]
@@ -76,19 +76,19 @@ def _refreshers():
 
 
 def _refresh_systemd_user_unit() -> None:
-    from hermes_cli.gateway import refresh_systemd_unit_if_needed
+    from hermes_agent.hermes_cli.gateway import refresh_systemd_unit_if_needed
 
     refresh_systemd_unit_if_needed(system=False)  # rewrites only a stale unit, then daemon-reloads
 
 
 def _refresh_unloaded_launchd_plist() -> None:
-    from hermes_cli.gateway_launchd import refresh_unloaded_launchd_plist
+    from hermes_agent.hermes_cli.gateway_launchd import refresh_unloaded_launchd_plist
 
     refresh_unloaded_launchd_plist()
 
 
 def _refresh_windows_launcher_scripts() -> None:
-    from hermes_cli import gateway_windows
+    from hermes_agent.hermes_cli import gateway_windows
 
     if gateway_windows.is_installed() and gateway_windows.launcher_script_drift():
         script = gateway_windows._write_task_script()

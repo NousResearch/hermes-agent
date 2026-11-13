@@ -328,7 +328,7 @@ class TestApplyWalWithFallback:
         """Repeated calls with the same db_label log exactly ONE error.
 
         Prevents log spam when NFS users run kanban (which opens a fresh
-        connection on every operation — see hermes_cli/kanban_db.py).
+        connection on every operation — see hermes_agent/hermes_cli/kanban_db.py).
         Regression guard: the fix for #22032 ran apply_wal_with_fallback()
         on every kb.connect() call; without dedup, errors.log fills with
         hundreds of identical errors per hour.

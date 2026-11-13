@@ -12,10 +12,10 @@ import logging
 from dataclasses import replace
 from typing import Any, Optional
 
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
 # The dashboard's logger, as before the move: hermes_logging routes it to gui.log.
-logger = logging.getLogger("hermes_cli.web_server")
+logger = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 
 class ModelAssignmentRejected(ValueError):
@@ -41,10 +41,10 @@ def normalize_main_model_assignment(provider: str, model: str) -> tuple[str, str
     2. Model-format normalization for the resolved provider via
        ``normalize_model_for_provider`` (custom/user providers keep the model verbatim).
     """
-    from hermes_cli.config import get_compatible_custom_providers, load_config
-    from hermes_cli.models import _AGGREGATOR_PROVIDERS, _KNOWN_PROVIDER_NAMES, normalize_provider
-    from hermes_cli.model_normalize import normalize_model_for_provider
-    from hermes_cli.providers import resolve_custom_provider, resolve_user_provider
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config
+    from hermes_agent.hermes_cli.models import _AGGREGATOR_PROVIDERS, _KNOWN_PROVIDER_NAMES, normalize_provider
+    from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
+    from hermes_agent.hermes_cli.providers import resolve_custom_provider, resolve_user_provider
 
     prov_in = (provider or "").strip()
     model_in = (model or "").strip()
@@ -72,7 +72,7 @@ def normalize_main_model_assignment(provider: str, model: str) -> tuple[str, str
             canonical = normalize_provider(cur_provider)
             prov_in = cur_provider
         else:
-            from hermes_cli.models_detect import provider_has_credentials
+            from hermes_agent.hermes_cli.models_detect import provider_has_credentials
 
             # Only guess OpenRouter when the user actually holds a key for it; otherwise keep the
             # pair as sent rather than persisting a provider they never selected.
@@ -117,8 +117,8 @@ def validated_main_model_selection(
     <provider> --global``. A bare ``custom`` target carries the submitted endpoint as the current
     one, which is how ``switch_model`` binds a custom base_url/key. A rejection raises
     :class:`ModelAssignmentRejected`."""
-    from hermes_cli.config import get_compatible_custom_providers
-    from hermes_cli.model_switch import switch_model
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers
+    from hermes_agent.hermes_cli.model_switch import switch_model
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     is_bare_custom = provider.strip().lower() in BARE_CUSTOM_SELECTORS
@@ -154,7 +154,7 @@ def validated_main_model_selection(
         # wire protocol it mandates: ``model.base_url`` and ``model.api_mode`` are persisted
         # together, so a mode derived from the displaced host would route the submitted endpoint
         # over the wrong wire.
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.hermes_cli.providers import determine_api_mode
         url = base_url.strip()
         result = replace(result, base_url=url,
                          api_mode=determine_api_mode(result.target_provider, url))
@@ -163,13 +163,13 @@ def validated_main_model_selection(
 
 def apply_main_model_assignment(model_cfg: Any, result: ModelSwitchResult, api_key: str = "") -> dict:
     """Apply a main-slot selection to a ``model`` config dict via the canonical /model shape
-    (``hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
+    (``hermes_agent.hermes_cli.model_switch.apply_model_selection``). An explicit key for a custom endpoint is
     the one inline credential the runtime reads (``model.api_key``); the legacy ``api`` alias is
     dropped so a stale secret cannot shadow it.
 
     Returns a new dict."""
-    from hermes_cli.config_backend import supports_file_tooling
-    from hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
+    from hermes_agent.hermes_cli.config_backend import supports_file_tooling
+    from hermes_agent.hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
 
     before = model_cfg
     # Remote Config: the caller saves the effective block as a whole document, so a cleared
@@ -191,10 +191,10 @@ def apply_inherited_model_assignment(model_cfg: Any, inherited: dict) -> dict:
     are compared as this profile resolves them, so two spellings of one endpoint keep its own keys.
 
     Returns a new dict."""
-    from hermes_cli.config import _expand_env_vars
-    from hermes_cli.config_backend import supports_file_tooling
-    from hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
-    from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS
+    from hermes_agent.hermes_cli.config import _expand_env_vars
+    from hermes_agent.hermes_cli.config_backend import supports_file_tooling
+    from hermes_agent.hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
+    from hermes_agent.hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS
 
     current = dict(model_cfg) if isinstance(model_cfg, dict) else {}
     here = str(_expand_env_vars(current.get("base_url") or ""))
@@ -224,9 +224,9 @@ def drop_model_key(model_cfg: dict, key: str) -> None:
     """Remove *key* from a ``model`` block an assignment is building. Under Remote Config the block
     is the EFFECTIVE one, so a key it holds may be inherited from an upper level that a profile
     removal cannot reach (contract §5.4); store null ("no value") instead, the same mask
-    :func:`hermes_cli.model_switch.apply_model_selection` applies. A key the block lacks stays
+    :func:`hermes_agent.hermes_cli.model_switch.apply_model_selection` applies. A key the block lacks stays
     absent. File backend: a plain removal."""
-    from hermes_cli.config_backend import supports_file_tooling
+    from hermes_agent.hermes_cli.config_backend import supports_file_tooling
     if key not in model_cfg:
         return
     if supports_file_tooling():

@@ -51,7 +51,7 @@ def _continue_now(parent, sid, tree):
 
 @pytest.mark.parametrize("mode", ["classic", "archive"])
 def test_a_sweep_planned_before_a_continue_keeps_the_tree_the_continue_pinned(tmp_path, mode):
-    from hermes_cli import worktree_ops, worktree_sweep
+    from hermes_agent.hermes_cli import worktree_ops, worktree_sweep
     from hermes_constants import get_hermes_home
     if mode == "classic":
         (get_hermes_home() / "config.yaml").write_text(json.dumps({"worktrees": {"archive_dirty": False}}))
@@ -79,7 +79,7 @@ def test_a_sweep_planned_before_a_continue_keeps_the_tree_the_continue_pinned(tm
 
 
 def test_a_pin_taken_while_the_archive_snapshot_ran_keeps_the_tree(tmp_path):
-    from hermes_cli import worktree_archive, worktree_ops
+    from hermes_agent.hermes_cli import worktree_archive, worktree_ops
     parent = _parent()
     repo = _repo(tmp_path / "repo")
     resumed = _tree(repo, "subagent-resumed", dirty=True)

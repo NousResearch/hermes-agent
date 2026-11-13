@@ -1,12 +1,12 @@
 """Interactive ``hermes gateway setup`` wizard for Signal. Helpers resolve late through the
-``hermes_cli.gateway`` facade so the plugin stays importable outside the CLI and the seams tests
+``hermes_agent.hermes_cli.gateway`` facade so the plugin stays importable outside the CLI and the seams tests
 patch there keep intercepting."""
 
 import shutil
 
 
 def _gw():
-    from hermes_cli import gateway  # late: CLI-only dependency
+    from hermes_agent.hermes_cli import gateway  # late: CLI-only dependency
     return gateway
 
 

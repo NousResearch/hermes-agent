@@ -40,7 +40,7 @@ def codex_cloudflare_headers(access_token: str, *, base_url: str = CODEX_AUX_BAS
     OAuth JWT (see :func:`codex_account_headers`).
     """
     if is_official_codex_base_url(base_url):
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli.version_info import get_version_info
         headers = {
             "User-Agent": f"HermesAgent/{get_version_info().base_version}",
             "originator": "hermes-agent",

@@ -49,7 +49,7 @@ def test_stop_mark_never_blocks_restart_and_unit_wires_exec_stop(monkeypatch):
     monkeypatch.setenv("MAINPID", "4242")
     assert systemd_stop_mark.main(["m"]) == 0
 
-    from hermes_cli import gateway as gateway_cli
+    from hermes_agent.hermes_cli import gateway as gateway_cli
 
     unit = gateway_cli.generate_systemd_unit(system=False)
     # Both modules run through the installation launcher (`hermes --run-module <mod>`).

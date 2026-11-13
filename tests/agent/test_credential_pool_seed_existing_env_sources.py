@@ -23,7 +23,7 @@ def _write_home(home, provider, env_file: dict, extra_var: str):
     (home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {provider: [
         {"id": "x2", "label": extra_var, "auth_type": "api_key", "priority": 1, "source": f"env:{extra_var}"},
     ]}}), encoding="utf-8")
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
     invalidate_env_cache()
 
 
@@ -83,7 +83,7 @@ def test_numbered_env_siblings_seed_rotation_without_config(home, provider, prim
         encoding="utf-8",
     )
     (home / "config.yaml").write_text(f"credential_pool_strategies:\n  {provider}: round_robin\n", encoding="utf-8")
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
     invalidate_env_cache()
 
     pool = load_pool(provider)

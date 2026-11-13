@@ -20,7 +20,7 @@ def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     pool). Fails closed on unknown/error — never blocks startup. Callers narrow per category
     via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
     try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
+        from hermes_agent.hermes_cli.nous_account import get_nous_portal_account_info
         # Branched call, not ``force_fresh=force_fresh``: tests stub the reader with zero-arg lambdas.
         account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
                         else get_nous_portal_account_info())
@@ -33,7 +33,7 @@ def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gatew
                                           force_fresh: bool = False) -> str:
     """Return account-aware guidance for an unavailable Nous Tool Gateway path."""
     try:
-        from hermes_cli.nous_account import (
+        from hermes_agent.hermes_cli.nous_account import (
             format_nous_portal_entitlement_message, get_nous_portal_account_info)
         message = format_nous_portal_entitlement_message(
             get_nous_portal_account_info(force_fresh=force_fresh), capability=capability,
@@ -103,9 +103,9 @@ def _scoped_credential(name: str) -> str:
 
 
 def _dotenv_value(env_var: str) -> str:
-    """``.env`` value via ``hermes_cli.config.get_env_value`` (``""`` when unavailable)."""
+    """``.env`` value via ``hermes_agent.hermes_cli.config.get_env_value`` (``""`` when unavailable)."""
     try:
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
         return str(get_env_value(env_var) or "").strip()
     except Exception:  # pragma: no cover — config is in-repo
         return ""
@@ -118,7 +118,7 @@ def _env_source_suppressed(provider_id: str, env_var: str) -> bool:
     if not provider_id:
         return False
     try:
-        from hermes_cli.auth import is_source_suppressed
+        from hermes_agent.hermes_cli.auth import is_source_suppressed
         return is_source_suppressed(provider_id, f"env:{env_var}")
     except Exception:  # pragma: no cover — auth store unreadable: keep prior behavior
         return False
@@ -128,7 +128,7 @@ def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = 
                             env_getter=None) -> str:
     """Resolve a voice-provider API key (single owner for STT/TTS lookup). Order: explicit
     ``config_value`` -> profile secret scope / env -> ``.env`` via ``env_getter`` (or
-    ``hermes_cli.config.get_env_value``) -> credential pool for ``provider_id``. Under an
+    ``hermes_agent.hermes_cli.config.get_env_value``) -> credential pool for ``provider_id``. Under an
     active multiplex turn the profile scope is authoritative: a miss returns ``""`` rather
     than borrowing another profile's env or pool. Never raises. The env/.env tier is skipped
     entirely while ``env:<env_var>`` is suppressed for ``provider_id`` (#116155).
@@ -183,7 +183,7 @@ def resolve_openai_audio_api_key() -> str:
 def prefers_gateway(config_section: str) -> bool:
     """True when ``<section>.use_gateway`` is set in config.yaml. Never raises."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         section = (load_config() or {}).get(config_section)
         return isinstance(section, dict) and is_truthy_value(section.get("use_gateway"))
     except Exception:
@@ -218,7 +218,7 @@ def selection_config_keys() -> frozenset[str]:
 def _raw_section(section: str) -> dict[str, Any] | None:
     """The RAW (unmerged) config.yaml mapping for ``section``, or None."""
     try:
-        from hermes_cli.config import read_raw_config_readonly
+        from hermes_agent.hermes_cli.config import read_raw_config_readonly
         cfg = read_raw_config_readonly() or {}
         raw = cfg.get(section) if isinstance(cfg, dict) else None
         return raw if isinstance(raw, dict) else None
@@ -280,7 +280,7 @@ REMOVED_BACKENDS: dict[str, dict[str, str]] = {}
 # Backends that once shipped in-tree but were removed. A config that still points at one otherwise fails
 # silently at the FIRST tool call with a generic "no registered provider has that name" — no migration, no
 # startup notice (reported after the Tavily removal in #99199). Both the startup config check
-# (hermes_cli.config.validate_config_structure) and selection_error() consult this map so the user learns
+# (hermes_agent.hermes_cli.config.validate_config_structure) and selection_error() consult this map so the user learns
 # what actually happened and what to do. Declared data, one policy — add future removals here, never as
 # one-off string checks at call sites.
 # Currently empty: the Tavily removal (#99199) that introduced this registry was reverted by the #99731

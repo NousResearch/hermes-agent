@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def _w():
-    from hermes_cli import gateway_windows  # facade binding is the seam for tests
+    from hermes_agent.hermes_cli import gateway_windows  # facade binding is the seam for tests
 
     return gateway_windows
 

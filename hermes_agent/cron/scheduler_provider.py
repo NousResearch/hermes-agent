@@ -97,7 +97,7 @@ def routed_profile_fire(home=None) -> bool:
 
     Derived from the fire's home itself (``home``, else the task's active ``get_hermes_home()``), never from
     a marker one entry point sets: the desktop ticker (``_profile_cron_scope``), the dashboard's
-    manual Run now (``hermes_cli.web_server_cron._cron_store_scope``) and any other caller that
+    manual Run now (``hermes_agent.hermes_cli.web_server_cron._cron_store_scope``) and any other caller that
     binds a HERMES_HOME override for a sibling profile all reach ``run_one_job`` the same way, and a
     marker set only in the ticker left the manual path with the original cross-profile leak.
 
@@ -280,7 +280,7 @@ def provider_supports_split_fire(provider: Any) -> bool:
 def _misfire_grace_minutes() -> float:
     """``cron.misfire_grace_minutes`` from config; non-positive disables the catch-up sweep."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_agent.hermes_cli.config import cfg_get, load_config
 
         config = load_config()
         return float(
@@ -389,7 +389,7 @@ def resolve_cron_scheduler() -> CronScheduler:
     with a warning — cron must never be left without a trigger."""
     name = ""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_agent.hermes_cli.config import cfg_get, load_config
         name = (cfg_get(load_config(), "cron", "provider", default="") or "").strip()
     except Exception:
         pass

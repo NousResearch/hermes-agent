@@ -33,7 +33,7 @@ def _cancelled_run(job: dict) -> str:
 
 
 def test_receipt_recovery_does_not_replay_a_cancelled_agent_run(store, monkeypatch):
-    from hermes_cli import gateway_client
+    from hermes_agent.hermes_cli import gateway_client
 
     calls: list = []
 
@@ -150,7 +150,7 @@ def test_overlapping_cancel_requests_keep_the_first_reason(store, monkeypatch):
 
 def test_monitoring_reports_stops_and_misses_as_themselves(monkeypatch):
     from hermes_agent.agent.monitoring.cron_health import project_execution_event
-    from hermes_cli.observability import shared_metrics_gateway as metrics
+    from hermes_agent.hermes_cli.observability import shared_metrics_gateway as metrics
 
     assert project_execution_event({"status": "cancelled", "job_id": "j"}).status == "cancelled"
     assert project_execution_event({"status": "missed", "job_id": "j"}).status == "missed"
@@ -163,7 +163,7 @@ def test_monitoring_reports_stops_and_misses_as_themselves(monkeypatch):
 
 
 def test_a_cancelled_agent_run_names_its_reason_in_history():
-    from hermes_cli.web_routers.cron import _reconcile_cron_runs
+    from hermes_agent.hermes_cli.web_routers.cron import _reconcile_cron_runs
 
     session = {"id": "s1", "title": "Morning brief", "cron_execution_id": "ex1",
                "started_at": 100.0}

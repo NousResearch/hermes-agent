@@ -36,7 +36,7 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
         # Read-only schema query: catches unreadable/corrupt DBs without competing with
         # writers. ``closing`` is required — sqlite3's context manager only commits/rolls
         # back, never closes, so a bare ``with connect()`` leaks a connection per poll.
-        from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
+        from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
         from hermes_agent.hermes_state_holders import read_only_db_uri
 
         with closing(connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0,
@@ -52,7 +52,7 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
 
 
 def _probe_config(home: Path) -> dict[str, Any]:
-    from hermes_cli.config_backend import ConfigBackendUnavailable, config_exists, read_config_doc_readonly
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable, config_exists, read_config_doc_readonly
     path = home / "config.yaml"
     try:
         if not config_exists(path):

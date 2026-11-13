@@ -1,7 +1,7 @@
 """Classic-CLI terminal input helpers: file-drop/attachment path resolution, bracketed-paste patching, extended Enter-key sequences, CPR leak guards and TUI input-height estimation.
 
 Split out of ``cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
-cli-level names through ``from cli import ...`` at call time so facade monkeypatch seams hold.
+cli-level names through ``from hermes_agent.cli import ...`` at call time so facade monkeypatch seams hold.
 """
 
 from __future__ import annotations
@@ -20,12 +20,12 @@ from urllib.parse import unquote, urlparse
 from hermes_agent.agent.i18n import t
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("cli")
+logger = logging.getLogger("hermes_agent.cli")
 
 
 def _cli():
     """Late import of the ``cli`` facade: mutable CLI module state (and its test seams) lives there."""
-    import cli
+    from hermes_agent import cli
 
     return cli
 
@@ -138,13 +138,13 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
 
 
 def _file_drop_result(path: Path, remainder: str) -> dict:
-    from cli import _IMAGE_EXTENSIONS
+    from hermes_agent.cli import _IMAGE_EXTENSIONS
     return {"path": path, "is_image": path.suffix.lower() in _IMAGE_EXTENSIONS, "remainder": remainder}
 
 
 def _detect_file_drop(user_input: str) -> dict | None:
     """Detect a dragged/pasted file path at the start of *user_input* -> ``{path, is_image, remainder}`` or None."""
-    from cli import _file_drop_result, _resolve_attachment_path, _split_path_input
+    from hermes_agent.cli import _file_drop_result, _resolve_attachment_path, _split_path_input
     if not isinstance(user_input, str):
         return None
 
@@ -388,14 +388,14 @@ def _enable_extended_enter_keys(output=None, env: Optional[Mapping[str, str]] = 
     mode as ``ESC[<codepoint>;<mod>u`` (plus the Esc key as ``ESC[27u``), modifyOtherKeys=2 as
     ``ESC[27;<mod>;<codepoint>~``. Stock prompt_toolkit 3.x maps almost none of these, which is why the CSI
     >1u push was temporarily removed in 87074 (Ctrl+C arrived as ``ESC[99;5u`` and died, #56684).
-    ``install_modify_other_keys_aliases()`` (called at CLI startup from ``hermes_cli.pt_input_extras``) now
+    ``install_modify_other_keys_aliases()`` (called at CLI startup from ``hermes_agent.hermes_cli.pt_input_extras``) now
     populates ``ANSI_SEQUENCES`` with the full Ctrl/Alt/Shift/multi-modifier and functional-key tables under
     BOTH formats, so every existing key binding continues to fire — including Ctrl+C, which is handled by
     prompt_toolkit's ``c-c`` binding (raw mode clears ISIG, so the kernel INTR path was never in play for
     the CLI).
     See #87630.
     """
-    from cli import _EXTENDED_ENTER_KEYS_SEQ, _MODIFY_OTHER_KEYS_SEQ, _is_ghostty_terminal, _terminal_supports_extended_enter_keys
+    from hermes_agent.cli import _EXTENDED_ENTER_KEYS_SEQ, _MODIFY_OTHER_KEYS_SEQ, _is_ghostty_terminal, _terminal_supports_extended_enter_keys
     if not _terminal_supports_extended_enter_keys(env):
         return False
     seq = _MODIFY_OTHER_KEYS_SEQ if _is_ghostty_terminal(env) else _EXTENDED_ENTER_KEYS_SEQ
@@ -426,13 +426,13 @@ def _cli_multiline_shortcuts_enabled(config: Optional[dict[str, Any]] = None) ->
 
 def _is_backslash_line_continuation(text: str) -> bool:
     """True when Enter should turn a trailing backslash into a newline."""
-    from cli import _BACKSLASH_LINE_CONTINUATION_RE
+    from hermes_agent.cli import _BACKSLASH_LINE_CONTINUATION_RE
     return bool(_BACKSLASH_LINE_CONTINUATION_RE.search(text or ""))
 
 
 def _apply_backslash_line_continuation(text: str) -> str:
     """Replace a trailing ``\\`` marker with an actual newline."""
-    from cli import _BACKSLASH_LINE_CONTINUATION_RE
+    from hermes_agent.cli import _BACKSLASH_LINE_CONTINUATION_RE
     return _BACKSLASH_LINE_CONTINUATION_RE.sub("", text or "") + "\n"
 
 
@@ -468,7 +468,7 @@ def _bind_prompt_submit_keys(kb, handler, *, multiline_shortcuts_enabled: Option
     WSL, SSH, Windows Terminal, Ghostty) keep c-j reserved for newline; otherwise Ctrl+Enter submits instead
     of composing. See _preserve_ctrl_enter_newline() and issue #22379.
     """
-    from cli import _cli_multiline_shortcuts_enabled, _preserve_ctrl_enter_newline
+    from hermes_agent.cli import _cli_multiline_shortcuts_enabled, _preserve_ctrl_enter_newline
     if multiline_shortcuts_enabled is None:
         multiline_shortcuts_enabled = _cli_multiline_shortcuts_enabled()
     kb.add("enter")(handler)
@@ -520,13 +520,13 @@ def _build_cpr_disabled_output(stdout):
 
 def _select_classic_cli_pt_output(stdout):
     """CPR-disabled ``Vt100_Output`` when CPR may leak, else None (Application keeps pt's default)."""
-    from cli import _build_cpr_disabled_output, _terminal_may_leak_cpr
+    from hermes_agent.cli import _build_cpr_disabled_output, _terminal_may_leak_cpr
     return _build_cpr_disabled_output(stdout) if _terminal_may_leak_cpr() else None
 
 
 def _strip_leaked_terminal_responses_with_meta(text: str) -> tuple[str, bool]:
     """Strip leaked CPR replies and mouse-report fragments -> ``(cleaned, had_mouse_reports)``."""
-    from cli import _DSR_CPR_ESC_RE, _DSR_CPR_VISIBLE_RE, _SGR_MOUSE_BARE_RE, _SGR_MOUSE_ESC_RE, _SGR_MOUSE_VISIBLE_RE
+    from hermes_agent.cli import _DSR_CPR_ESC_RE, _DSR_CPR_VISIBLE_RE, _SGR_MOUSE_BARE_RE, _SGR_MOUSE_ESC_RE, _SGR_MOUSE_VISIBLE_RE
     if not text:
         return text, False
 
@@ -552,7 +552,7 @@ def _estimate_tui_input_height(
 
     Never substitute a fake wide fallback: a mis-sized TextArea leaves stale cells at the bottom.
     """
-    from cli import _int_or
+    from hermes_agent.cli import _int_or
     try:
         from prompt_toolkit.utils import get_cwidth
     except Exception:
@@ -581,7 +581,7 @@ def _status_bar_visible_from_display_config(display_config: object) -> bool:
 
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
-    from cli import _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path
+    from hermes_agent.cli import _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path
     message = query or ""
     images: list[Path] = []
 

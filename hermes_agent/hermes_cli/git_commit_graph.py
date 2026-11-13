@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
-from hermes_cli._subprocess_compat import (
+from hermes_agent.hermes_cli._subprocess_compat import (
     IS_WINDOWS,
     NO_LAZY_FETCH_ENV,
     bounded_probe_run,
@@ -33,7 +33,7 @@ from hermes_cli._subprocess_compat import (
     windows_detach_flags_without_breakaway,
     windows_detach_popen_kwargs,
 )
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ _FRESH_STAMP = "hermes-commit-graph.fresh"
 # and tmp_graph_*, and that lock fails every later write until the stale-lock sweep removes it.
 _KILL_GRACE = 5.0
 _CHILD = ("import sys; sys.path.insert(0, sys.argv[1]); "
-          "from hermes_cli.git_commit_graph import refresh_in_child; refresh_in_child(*sys.argv[2:])")
+          "from hermes_agent.hermes_cli.git_commit_graph import refresh_in_child; refresh_in_child(*sys.argv[2:])")
 
 
 @contextmanager
@@ -118,7 +118,7 @@ def run_bounded_git(repo_root: str, args: Sequence[str], timeout: float, env: Op
     git can delete its own lock and tmp files, and the owner-death supervisor kills the group when we
     are SIGKILLed or OOM-killed mid-repack.
     """
-    from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+    from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
     cmd = ["git", *args]
     if os.name == "posix":
@@ -186,7 +186,7 @@ def _commit_graph_disabled(repo_root: str) -> bool:
 def common_git_dir(repo_root: str | Path) -> Optional[Path]:
     """The git dir holding the object store: ``.git`` itself, or the dir a linked worktree's or
     submodule's ``.git`` file leads to. None when ``repo_root`` is no checkout."""
-    from hermes_cli.update_lock import _git_common_dir
+    from hermes_agent.hermes_cli.update_lock import _git_common_dir
 
     return _git_common_dir(Path(repo_root))
 
@@ -195,7 +195,7 @@ def refresh_commit_graph(repo_root: str, git_dir: Path) -> None:
     """Clear what a killed writer stranded, then write the graph (bounded, niced, never lazy-fetching).
 
     ``git_dir`` is the common git dir (:func:`common_git_dir`): objects, debris and stamp live there."""
-    from hermes_cli.gitlock import clear_stale_object_store_locks, clear_stale_tmp_packs
+    from hermes_agent.hermes_cli.gitlock import clear_stale_object_store_locks, clear_stale_tmp_packs
 
     if _commit_graph_disabled(repo_root):
         logger.info("core.commitGraph=false in %s; not writing a commit-graph", repo_root)

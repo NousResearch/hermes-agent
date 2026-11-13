@@ -11,7 +11,7 @@ def _voice_config() -> dict:
     """``voice`` section of config.yaml, or ``{}`` when missing, malformed, or the
     config system can't be imported (broken config mid-install)."""
     with suppress(Exception):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         voice_cfg = load_config().get("voice", {})
         return voice_cfg if isinstance(voice_cfg, dict) else {}
     return {}

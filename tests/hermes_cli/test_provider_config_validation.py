@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     _PROVIDER_NORMALIZE_WARNED,
     _normalize_custom_provider_entry,
 )
@@ -80,7 +80,7 @@ class TestNormalizeCustomProviderEntry:
 
     def test_numeric_yaml_name_and_key_become_strings(self):
         """Unquoted YAML `name: 2070` / key 2070 must not be dropped as non-str."""
-        from hermes_cli.config import find_provider_entry, stringify_provider_map
+        from hermes_agent.hermes_cli.config import find_provider_entry, stringify_provider_map
 
         result = _normalize_custom_provider_entry(
             {"name": 2070, "base_url": "http://192.168.1.10:8082/v1"},

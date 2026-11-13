@@ -311,7 +311,7 @@ def test_unwritable_store_is_shown_in_cron_status_and_announced_once(cron_store,
     from types import SimpleNamespace
     from hermes_agent.gateway import cron_store_notices
     from hermes_agent.gateway.cron_store_notices import install_cron_store_notices
-    from hermes_cli import cron as cron_cli
+    from hermes_agent.hermes_cli import cron as cron_cli
 
     from hermes_agent.cron import scheduler
 

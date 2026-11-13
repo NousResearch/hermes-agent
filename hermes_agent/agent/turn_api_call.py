@@ -52,7 +52,7 @@ def _should_stream(agent: Any) -> bool:
     if _base.startswith(("acp://", "acp+tcp://")):
         return False
     from hermes_agent.providers import get_provider_profile
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    from hermes_agent.hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     profile = get_provider_profile(agent.provider)
     streaming = getattr(profile, "supports_streaming", None)
@@ -125,7 +125,7 @@ def perform_api_call(
             defer_logical_completion=True,
         )
 
-    from hermes_cli.middleware import run_llm_execution_middleware
+    from hermes_agent.hermes_cli.middleware import run_llm_execution_middleware
 
     # The ``_model_request_active`` bracket is taken under the redirect lock when one exists,
     # so redirect() can't observe a half-toggled flag.
@@ -247,7 +247,7 @@ def nous_rate_limit_guard(
         # A gateway ``x-nous-model-switch`` recorded on the previous response moves this session
         # (and the config default, when it still names the free tier's model) before the next call.
         try:
-            from hermes_cli.anon_auth import apply_model_switch
+            from hermes_agent.hermes_cli.anon_auth import apply_model_switch
             apply_model_switch(agent)
         except Exception:
             pass
@@ -255,7 +255,7 @@ def nous_rate_limit_guard(
             from hermes_agent.agent.nous_rate_guard import (
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
             )
-            from hermes_cli import anon_auth
+            from hermes_agent.hermes_cli import anon_auth
             _anonymous = anon_auth.is_anonymous_agent(agent)
             _nous_remaining = nous_rate_limit_remaining(anonymous=_anonymous)
             if _nous_remaining is not None and _nous_remaining > 0:

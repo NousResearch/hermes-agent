@@ -115,7 +115,7 @@ def busy_ledger() -> Optional[str]:
     global _probe_failure_logged
     try:
         import hermes_agent.tui_gateway.server as gateway
-        from hermes_cli.backend_retirement import retirement
+        from hermes_agent.hermes_cli.backend_retirement import retirement
 
         if retirement.active_count():
             return "retirement_admission"

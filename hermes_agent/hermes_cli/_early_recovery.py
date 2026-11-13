@@ -70,12 +70,12 @@ _UPDATE_RETRY_RECOVERED = False
 def _should_skip_external_secret_sources() -> bool:
     """True inside any ``hermes update`` process (and its import probes).
 
-    Every dotenv load in the process — ``hermes_cli.main``, ``run_agent``, ``cli`` — consults
+    Every dotenv load in the process — ``hermes_agent.hermes_cli.main``, ``run_agent``, ``cli`` — consults
     this, so the updater never resolves external secret sources: on Windows they map
     ``cryptography._rust.pyd`` into the process replacing that venv, and everywhere a slow
     ``op``/``bws``/command helper (up to 120s per source) would run inside the updater's
     120s critical-module import probe and be reported as an import-health timeout.
-    Profile flags are stripped before ``hermes_cli.main`` loads dotenv, so ``argv[1]`` is
+    Profile flags are stripped before ``hermes_agent.hermes_cli.main`` loads dotenv, so ``argv[1]`` is
     the authoritative subcommand.
     """
     return _UPDATE_RETRY_RECOVERED or sys.argv[1:2] == ["update"]
@@ -946,7 +946,7 @@ def restore_interrupted_pull(project_root: Path | None = None, *, after_failure:
     edits are never touched; the updater's autostash (if any) stays in ``git stash list``. Concurrent
     launches take turns (``_restore_claim``); a launch that waited out another's restore relaunches.
 
-    A torn ``hermes_bootstrap.py``, ``hermes_cli/__init__.py`` or recovery/lock/custody module fails
+    A torn ``hermes_bootstrap.py``, ``hermes_agent/hermes_cli/__init__.py`` or recovery/lock/custody module fails
     before (or inside) the checkout's copy of this code: a minted launcher then runs the copy the
     updater published beside the marker (``RECOVERY_CLOSURE``). Limits, by design: other entry points
     (``python -m``, the ``hermes-agent`` hook's ``hermes_agent/agent/__init__.py``) have no such fallback, and a
@@ -969,7 +969,7 @@ def restore_interrupted_pull(project_root: Path | None = None, *, after_failure:
                 if busy:
                     print(busy_note.format(busy), file=sys.stderr)
                     return False
-                from hermes_cli._early_recovery_zip import restore_interrupted_zip_swap
+                from hermes_agent.hermes_cli._early_recovery_zip import restore_interrupted_zip_swap
 
                 if restore_interrupted_zip_swap(root):
                     return True
@@ -1001,7 +1001,7 @@ def restore_interrupted_pull(project_root: Path | None = None, *, after_failure:
 
 @contextlib.contextmanager
 def _checkout_custody(root: Path):
-    """Hold the checkout kernel lock (``hermes_cli.update_lock``) for a repair, like an updater (R2).
+    """Hold the checkout kernel lock (``hermes_agent.hermes_cli.update_lock``) for a repair, like an updater (R2).
 
     Yields ``""`` while this process holds or joined it (the updater's own ``after_failure``
     settle and its children join), else the busy reason: a live update tree owns the checkout and
@@ -1013,7 +1013,7 @@ def _checkout_custody(root: Path):
     copy and may still be writing this checkout. Refuse launch rather than race that writer.
     """
     try:
-        from hermes_cli import update_lock
+        from hermes_agent.hermes_cli import update_lock
     except Exception as exc:
         raise RuntimeError(
             "Cannot safely repair the interrupted update: checkout custody is unavailable "
@@ -1097,7 +1097,7 @@ def _custody_git(root: Path, recorded: str):
     """The restore's ``git(*args)``: the binary the updater recorded, every run under custody (``run_git``)."""
     executable = _git_executable(recorded)
     try:
-        from hermes_cli.update_custody import run_git
+        from hermes_agent.hermes_cli.update_custody import run_git
     except Exception as exc:
         raise RuntimeError(
             "Cannot safely repair the interrupted update: child custody is unavailable "
@@ -1338,7 +1338,7 @@ def _keep_aside(file: Path) -> Path:
 def relaunch_after_restore() -> None:
     """Re-run this command from the restored tree; never returns.
 
-    Everything imported so far (this package, ``hermes_bootstrap``, ``hermes_cli.main`` itself) may
+    Everything imported so far (this package, ``hermes_bootstrap``, ``hermes_agent.hermes_cli.main`` itself) may
     be the killed git's new files, and they would run against the restored old tree.
     """
     argv = [sys.executable, *sys.orig_argv[1:]]
@@ -1394,7 +1394,7 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
     root = _project_root() if project_root is None else Path(project_root).resolve()
     if not explicit and _pytest_owns_live_checkout(root):
         return False
-    from hermes_cli._parser import command_argv
+    from hermes_agent.hermes_cli._parser import command_argv
 
     args = command_argv(sys.argv[1:] if argv is None else argv)
     if not explicit and args[:1] == ["pm"]:
@@ -1452,7 +1452,7 @@ _EARLY_CORE_INSTALL_MAX_ATTEMPTS = 3
 def _claim_recovery_lock(root: Path) -> int | None:
     """Hold a kernel lock in writable state; process exit releases it."""
     from pm.environments import install_state_dir
-    from hermes_cli.runtime_state import _lock
+    from hermes_agent.hermes_cli.runtime_state import _lock
 
     state = install_state_dir(root)
     state.mkdir(parents=True, exist_ok=True)

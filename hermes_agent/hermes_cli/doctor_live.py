@@ -10,9 +10,9 @@ import os
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from hermes_cli.browser_runtime import chromium_executable
-from hermes_cli.doctor import _section, check_info
-from hermes_cli.doctor_report import check_fail, check_ok, check_warn
+from hermes_agent.hermes_cli.browser_runtime import chromium_executable
+from hermes_agent.hermes_cli.doctor import _section, check_info
+from hermes_agent.hermes_cli.doctor_report import check_fail, check_ok, check_warn
 from utils import normalize_proxy_env_vars
 
 DEFAULT_PROBE_TIMEOUT = 10.0
@@ -74,7 +74,7 @@ def _launch_browser_probe(timeout: float) -> tuple:
 
 def _probe_mcp_server(name: str, config: dict, timeout: float):
     """initialize + tools/list against one configured MCP server."""
-    from hermes_cli.mcp_config import _probe_single_server
+    from hermes_agent.hermes_cli.mcp_config import _probe_single_server
     return _probe_single_server(name, config, connect_timeout=timeout)
 
 
@@ -152,7 +152,7 @@ def _run_one(name: str, fn: Callable[[], ProbeResult], issues: list[str]) -> Pro
 def run_live_checks(issues: list[str]) -> list[ProbeResult]:
     """Run one bounded, read-only probe per configured tool backend — sequential by design (predictable output
     ordering). Appends a remediation line to ``issues`` per failed probe; skipped backends never append."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     config = load_config_readonly()
     try:
         timeout = float((config.get("doctor") or {}).get("live_probe_timeout", DEFAULT_PROBE_TIMEOUT))

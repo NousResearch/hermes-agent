@@ -32,11 +32,11 @@ class TestOllamaCloudCredentials:
             }
         }
         monkeypatch.setattr(
-            "hermes_cli.runtime_provider._get_model_config",
+            "hermes_agent.hermes_cli.runtime_provider._get_model_config",
             lambda: mock_config.get("model", {}),
         )
 
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested="custom")
 
         assert runtime["base_url"] == "https://ollama.com/v1"
@@ -63,11 +63,11 @@ class TestDirectAliases:
             }
         }
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_agent.hermes_cli.config.load_config",
             lambda: mock_config,
         )
 
-        from hermes_cli.model_switch import _load_direct_aliases
+        from hermes_agent.hermes_cli.model_switch import _load_direct_aliases
         aliases = _load_direct_aliases()
 
         assert "mymodel" in aliases
@@ -77,8 +77,8 @@ class TestDirectAliases:
 
     def test_direct_alias_resolved_before_catalog(self, monkeypatch):
         """Direct aliases take priority over models.dev catalog lookup."""
-        from hermes_cli.model_switch import DirectAlias, resolve_alias
-        import hermes_cli.model_switch as ms
+        from hermes_agent.hermes_cli.model_switch import DirectAlias, resolve_alias
+        import hermes_agent.hermes_cli.model_switch as ms
 
         test_aliases = {
             "glm": DirectAlias("glm-4.7", "custom", "https://ollama.com/v1"),
@@ -110,11 +110,11 @@ class TestLoadDirectAliasesEdgeCases:
             }
         }
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_agent.hermes_cli.config.load_config",
             lambda: mock_config,
         )
 
-        from hermes_cli.model_switch import _load_direct_aliases
+        from hermes_agent.hermes_cli.model_switch import _load_direct_aliases
         aliases = _load_direct_aliases()
         assert "empty" not in aliases
         assert "good" in aliases
@@ -130,8 +130,8 @@ class TestResolveAliasEdgeCases:
 
     def test_whitespace_input_handled(self, monkeypatch):
         """Input with whitespace is stripped before lookup."""
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
+        from hermes_agent.hermes_cli.model_switch import DirectAlias
+        import hermes_agent.hermes_cli.model_switch as ms
 
         test_aliases = {
             "myalias": DirectAlias("my-model", "custom", "https://example.com"),
@@ -157,9 +157,9 @@ class TestResolveAliasSorting:
         the display ordering demotes date-stamped snapshots."""
         import pytest
 
-        import hermes_cli.model_switch as ms
+        import hermes_agent.hermes_cli.model_switch as ms
 
-        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {})
         monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
         monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
         monkeypatch.setattr(ms, "list_provider_models",
@@ -179,9 +179,9 @@ class TestResolveAliasSorting:
         older, dated siblings in the candidate ordering."""
         import pytest
 
-        import hermes_cli.model_switch as ms
+        import hermes_agent.hermes_cli.model_switch as ms
 
-        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {})
         monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
         monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
         monkeypatch.setattr(ms, "list_provider_models",
@@ -194,9 +194,9 @@ class TestResolveAliasSorting:
 
     def test_single_match_resolves_without_error(self, monkeypatch):
         """Exactly one family match still resolves automatically."""
-        import hermes_cli.model_switch as ms
+        import hermes_agent.hermes_cli.model_switch as ms
 
-        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {})
         monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
         monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
         monkeypatch.setattr(ms, "list_provider_models",
@@ -207,9 +207,9 @@ class TestResolveAliasSorting:
     def test_switch_model_surfaces_ambiguity_message(self, monkeypatch):
         """switch_model returns a failure result listing the candidates
         instead of switching to a heuristic guess."""
-        import hermes_cli.model_switch as ms
+        import hermes_agent.hermes_cli.model_switch as ms
 
-        monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
+        monkeypatch.setattr("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {})
         monkeypatch.setattr(ms, "_ensure_direct_aliases", lambda: None)
         monkeypatch.setattr(ms, "DIRECT_ALIASES", {})
         monkeypatch.setattr(ms, "list_provider_models",
@@ -234,8 +234,8 @@ class TestSwitchModelDirectAliasOverride:
 
     def test_switch_model_uses_alias_base_url(self, monkeypatch):
         """When resolved alias has base_url, switch_model should use it."""
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
+        from hermes_agent.hermes_cli.model_switch import DirectAlias
+        import hermes_agent.hermes_cli.model_switch as ms
 
         test_aliases = {
             "qwen": DirectAlias("qwen3.5:397b", "custom", "https://ollama.com/v1"),
@@ -246,13 +246,13 @@ class TestSwitchModelDirectAliasOverride:
             lambda raw, prov, *_: ("custom", "qwen3.5:397b", "qwen"))
 
         monkeypatch.setattr(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
 
-        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
+        monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
-        monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
+        monkeypatch.setattr("hermes_agent.hermes_cli.models.opencode_model_api_mode",
             lambda *a, **kw: "openai_compat")
 
         result = ms.switch_model("qwen", "openrouter", "old-model")
@@ -262,8 +262,8 @@ class TestSwitchModelDirectAliasOverride:
 
     def test_switch_model_alias_no_api_key_gets_default(self, monkeypatch):
         """When alias has base_url but no api_key, 'no-key-required' is set."""
-        from hermes_cli.model_switch import DirectAlias
-        import hermes_cli.model_switch as ms
+        from hermes_agent.hermes_cli.model_switch import DirectAlias
+        import hermes_agent.hermes_cli.model_switch as ms
 
         test_aliases = {
             "local": DirectAlias("local-model", "custom", "http://localhost:11434/v1"),
@@ -272,12 +272,12 @@ class TestSwitchModelDirectAliasOverride:
         monkeypatch.setattr(ms, "resolve_alias",
             lambda raw, prov, *_: ("custom", "local-model", "local"))
         monkeypatch.setattr(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kwargs: {"api_key": "", "base_url": "", "api_mode": "openai_compat", "provider": "custom"},
         )
-        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
+        monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
-        monkeypatch.setattr("hermes_cli.models.opencode_model_api_mode",
+        monkeypatch.setattr("hermes_agent.hermes_cli.models.opencode_model_api_mode",
             lambda *a, **kw: "openai_compat")
 
         result = ms.switch_model("local", "openrouter", "old-model")
@@ -292,8 +292,8 @@ class TestSwitchModelDirectAliasOverride:
         import os
         from pathlib import Path
 
-        import hermes_cli.model_switch as ms
-        from hermes_cli.config import load_config
+        import hermes_agent.hermes_cli.model_switch as ms
+        from hermes_agent.hermes_cli.config import load_config
 
         monkeypatch.setenv("PROVIDER_B_KEY", "sk-provider-b")
         (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
@@ -303,7 +303,7 @@ class TestSwitchModelDirectAliasOverride:
             "  provider-b:\n    base_url: https://api-b.example.com/v1\n    key_env: PROVIDER_B_KEY\n"
             + extra_cfg)
         monkeypatch.setattr(ms, "DIRECT_ALIASES", aliases)
-        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
+        monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
         cfg = load_config()
         return ms.switch_model(
@@ -315,7 +315,7 @@ class TestSwitchModelDirectAliasOverride:
     def test_explicit_provider_never_adopts_alias_bound_to_another_provider(self, monkeypatch):
         """An alias on another provider's endpoint that targets the same model id must not
         outrank --provider: the turn and the credential stay on the provider the user named."""
-        from hermes_cli.model_switch import DirectAlias
+        from hermes_agent.hermes_cli.model_switch import DirectAlias
 
         result = self._explicit_switch_to_provider_b(monkeypatch, {
             "a-alias": DirectAlias("shared-model", "custom", "https://alias-host.example.com/v1",
@@ -331,7 +331,7 @@ class TestSwitchModelDirectAliasOverride:
     def test_explicit_provider_prefers_its_own_alias_for_a_shared_model(self, monkeypatch):
         """Several aliases expose one model id: the one owned by the named provider wins,
         whatever the mapping order (provider spelling is normalized)."""
-        from hermes_cli.model_switch import DirectAlias
+        from hermes_agent.hermes_cli.model_switch import DirectAlias
 
         result = self._explicit_switch_to_provider_b(monkeypatch, {
             "a-alias": DirectAlias("shared-model", "custom", "https://alias-host.example.com/v1",
@@ -347,7 +347,7 @@ class TestSwitchModelDirectAliasOverride:
     def test_explicit_provider_keeps_alias_owned_by_legacy_custom_provider(self, monkeypatch):
         """A legacy ``custom_providers`` entry resolves to ``custom:<name>``; an alias that names
         it by its bare name is still that provider's alias and keeps its own endpoint and key."""
-        from hermes_cli.model_switch import DirectAlias
+        from hermes_agent.hermes_cli.model_switch import DirectAlias
 
         result = self._explicit_switch_to_provider_b(monkeypatch, {
             "a-alias": DirectAlias("shared-model", "provider-a", "https://alias-host.example.com/v1",
@@ -370,9 +370,9 @@ class TestSwitchModelDirectAliasOverride:
         import os
         from pathlib import Path
 
-        import hermes_cli.model_switch as ms
-        from hermes_cli.config import load_config
-        from hermes_cli.model_switch import DirectAlias
+        import hermes_agent.hermes_cli.model_switch as ms
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.model_switch import DirectAlias
 
         (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(
             "model:\n  provider: custom:corp-llm\n  default: old-model\n"
@@ -385,7 +385,7 @@ class TestSwitchModelDirectAliasOverride:
             "corp-alias": DirectAlias("shared-model", "corp-llm", "https://corp.example.com/v2",
                                       api_key="sk-corp-alias"),
         })
-        monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model",
+        monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model",
             lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None})
         cfg = load_config()
 

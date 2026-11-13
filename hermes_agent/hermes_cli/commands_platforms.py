@@ -9,11 +9,11 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from hermes_agent.agent.i18n import t
-from hermes_cli.commands import (
+from hermes_agent.hermes_cli.commands import (
     COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries, _resolve_config_gates)
 
-# Logger name parity with the origin module (tests capture "hermes_cli.commands").
-logger = logging.getLogger("hermes_cli.commands")
+# Logger name parity with the origin module (tests capture "hermes_agent.hermes_cli.commands").
+logger = logging.getLogger("hermes_agent.hermes_cli.commands")
 
 _CMD_NAME_LIMIT = 32  # max command name length shared by Telegram and Discord
 
@@ -120,7 +120,7 @@ _TELEGRAM_MENU_PRIORITY = (
 def _telegram_command_menu_config() -> dict[str, Any]:
     """Normalized ``platforms.telegram.extra.command_menu`` config with safe defaults."""
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.hermes_cli.config import read_raw_config
         node: Any = read_raw_config() or {}
     except Exception:
         node = {}
@@ -270,7 +270,7 @@ def _collect_gateway_skill_entries(
         return _clamp_command_names(out, reserved_names)
 
     def _plugin_rows():
-        from hermes_cli.plugins import get_plugin_commands
+        from hermes_agent.hermes_cli.plugins import get_plugin_commands
         plugin_cmds = get_plugin_commands()
         for cmd_name in sorted(plugin_cmds):
             meta = plugin_cmds[cmd_name]

@@ -28,7 +28,7 @@ def test_get_nous_auth_status_caches_consecutive_calls(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _seed_auth_file(tmp_path)
 
-    from hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import auth as auth_mod
 
     auth_mod.invalidate_nous_auth_status_cache()
 

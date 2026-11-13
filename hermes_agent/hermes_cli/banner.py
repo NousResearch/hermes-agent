@@ -7,12 +7,12 @@ import shutil
 import sys
 import threading
 from pathlib import Path
-from hermes_cli import source_check
+from hermes_agent.hermes_cli import source_check
 # Historical updater import (tests/compat/old_updater_surface.json). In-tree callers use the owner.
-from hermes_cli.source_check import _github_compare_behind
+from hermes_agent.hermes_cli.source_check import _github_compare_behind
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 # rich and prompt_toolkit are imported lazily: this module sits on the TUI gateway's critical
 # startup path purely for the lightweight update-check helpers, and eager rich/prompt_toolkit
@@ -57,7 +57,7 @@ def cprint(text: str):
 
 def _active_skin():
     """The active skin object (raises when the skin engine is unavailable)."""
-    from hermes_cli.skin_engine import get_active_skin
+    from hermes_agent.hermes_cli.skin_engine import get_active_skin
     return get_active_skin()
 
 
@@ -68,8 +68,8 @@ def _skin_color(key: str, fallback: str) -> str:
 
 # === ASCII Art & Branding ===
 
-from hermes_cli import __release_date__ as RELEASE_DATE
-from hermes_cli.version_info import get_version_info
+from hermes_agent.hermes_cli import __release_date__ as RELEASE_DATE
+from hermes_agent.hermes_cli.version_info import get_version_info
 
 HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
@@ -170,7 +170,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
 def _baked_banner_state() -> Optional[dict]:
     """Banner state from the baked build SHA (Docker image path), or None."""
     def _baked():
-        from hermes_cli.version_info import get_code_identity
+        from hermes_agent.hermes_cli.version_info import get_code_identity
         return get_code_identity().get("short_sha")
     baked = _quiet(_baked)
     return {"upstream": baked, "local": baked, "ahead": 0} if baked else None
@@ -205,9 +205,9 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
 
 def format_banner_version_label() -> str:
     """Return the version label shown in the startup banner title."""
-    from hermes_cli.config import get_project_root
-    from hermes_cli.steward import read_install_stamp
-    from hermes_cli.update_channel import is_canary_tag
+    from hermes_agent.hermes_cli.config import get_project_root
+    from hermes_agent.hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli.update_channel import is_canary_tag
 
     stamp = read_install_stamp(get_project_root())
     if stamp.get("distribution") == "desktop-app":
@@ -225,8 +225,8 @@ def format_banner_version_label() -> str:
         return label
 
     base = f"Hermes Agent v{get_version_info().derived_version} ({RELEASE_DATE})"
-    from hermes_cli.config import load_config
-    from hermes_cli.update_channel import resolve_update_channel
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.update_channel import resolve_update_channel
 
     channel = resolve_update_channel(_quiet(load_config), get_project_root())
     if channel != "main":
@@ -321,7 +321,7 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 
 def _format_update_notice(behind: int) -> str:
     """Render the update warning line for a non-zero ``behind`` result."""
-    from hermes_cli.config import get_managed_update_command, recommended_update_command
+    from hermes_agent.hermes_cli.config import get_managed_update_command, recommended_update_command
     if behind > 0:
         return (
             f"[bold yellow]⚠ {behind} {_plural(behind, 'commit')} behind[/]"
@@ -411,7 +411,7 @@ def banner_snapshot_fingerprint() -> Optional[str]:
     """Fingerprint the inputs the banner tool panel depends on."""
     import hashlib
     def _inputs():
-        from hermes_cli.config import get_config_path
+        from hermes_agent.hermes_cli.config import get_config_path
         return (get_config_path(), get_hermes_home() / ".env")
     paths = _quiet(_inputs)
     if paths is None:
@@ -556,8 +556,8 @@ def _pack_skill_names(skill_names: list[str], avail: int) -> str:
 
 def _moa_aggregator_label(preset_name: str) -> str:
     """Short aggregator-model label for a MoA preset ("" when the preset has none)."""
-    from hermes_cli.config import load_config
-    from hermes_cli.moa_config import normalize_moa_config
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.moa_config import normalize_moa_config
     preset = normalize_moa_config(load_config().get("moa") or {}).get("presets", {}).get(preset_name)
     model = str(((preset or {}).get("aggregator") or {}).get("model") or "")
     return model.split("/")[-1]
@@ -571,11 +571,11 @@ def _mcp_configured() -> bool:
     When either probe can't tell, take the full path.
     """
     def _native():
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         return bool((load_config() or {}).get("mcp_servers"))
 
     def _portable():
-        from hermes_cli.plugins import get_portable_mcp_server_names_nowait
+        from hermes_agent.hermes_cli.plugins import get_portable_mcp_server_names_nowait
         return bool(get_portable_mcp_server_names_nowait())
     return _quiet(_native, True) or _quiet(_portable, True)
 
@@ -587,13 +587,13 @@ def _probe_mcp_status() -> list:
 
 def _codex_runtime_active() -> bool:
     """True when the codex_app_server runtime is active (tool counts then live inside codex)."""
-    from hermes_cli.codex_runtime_switch import get_current_runtime
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.codex_runtime_switch import get_current_runtime
+    from hermes_agent.hermes_cli.config import load_config
     return get_current_runtime(load_config()) == "codex_app_server"
 
 
 def _active_profile_name() -> Optional[str]:
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     return get_active_profile_name()
 
 

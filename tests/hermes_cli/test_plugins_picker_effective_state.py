@@ -16,14 +16,14 @@ from tests.hermes_cli.plugin_worker_support import (
 
 @pytest.fixture
 def run_picker(plugin_world, monkeypatch):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
 
     world = plugin_world
     for leaf in ("telegram", "slack"):
         platform = world.core / "plugins" / "platforms" / leaf
         platform.mkdir(parents=True)
         (platform / "plugin.yaml").write_text(f"name: {leaf}-platform\nkind: platform\n", encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_bundled_plugins_dir", lambda: world.core / "plugins")
     monkeypatch.setattr(plugins_cmd, "_provider_categories", list)
     monkeypatch.setattr(plugins_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setitem(plugins_cmd.sys.modules, "curses", None)

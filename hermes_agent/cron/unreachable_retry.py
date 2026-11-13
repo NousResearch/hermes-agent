@@ -44,7 +44,7 @@ def retry_enabled(cfg: Optional[dict] = None) -> bool:
     model calls were made)."""
     if cfg is None:
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
 
             cfg = load_config() or {}
         except Exception:  # config unreadable — keep the reliability default

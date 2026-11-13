@@ -123,7 +123,7 @@ def _validate_accounts(action: str, managed: list[HostedTarget]) -> Optional[str
 
 def catalog_names() -> set[str]:
     try:
-        from hermes_cli.mcp_catalog import list_catalog
+        from hermes_agent.hermes_cli.mcp_catalog import list_catalog
 
         return {e.name for e in list_catalog()}
     except Exception as exc:

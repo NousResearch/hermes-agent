@@ -2,8 +2,8 @@
 
 import pytest
 
-from hermes_cli import plugin_catalog as pc
-from hermes_cli import plugin_catalog_presence as presence_mod
+from hermes_agent.hermes_cli import plugin_catalog as pc
+from hermes_agent.hermes_cli import plugin_catalog_presence as presence_mod
 
 SHA = "0" * 40
 NEEDS_APP = {"extensions": {"com.nousresearch.hermes": {"servers": {"srv": {

@@ -14,7 +14,7 @@ def _observe(hook_name: str, **kwargs: Any) -> None:
     if safe_worker_enabled():
         return
     try:
-        from hermes_cli.observability import observe_lifecycle
+        from hermes_agent.hermes_cli.observability import observe_lifecycle
 
         observe_lifecycle(hook_name, **kwargs)
     except Exception:
@@ -22,7 +22,7 @@ def _observe(hook_name: str, **kwargs: Any) -> None:
 
 
 def _plugin_hooks(hook_name: str, **kwargs: Any) -> list[Any]:
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     return plugins.invoke_hook(hook_name, **kwargs)
 
@@ -41,7 +41,7 @@ async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """:func:`invoke_hook` for callers on an event loop: same observers-then-plugins
     composition, with ``async def`` plugin callbacks awaited on that loop."""
     _observe(hook_name, **kwargs)
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     return await plugins.ainvoke_hook(hook_name, **kwargs)
 
@@ -53,14 +53,14 @@ def has_hook(hook_name: str) -> bool:
     if safe_worker_enabled():
         return False
     try:
-        from hermes_cli.observability import handles_hook
+        from hermes_agent.hermes_cli.observability import handles_hook
 
         if handles_hook(hook_name):
             return True
     except Exception:
         logger.warning("Unable to inspect built-in observability hooks", exc_info=True)
 
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     return plugins.has_hook(hook_name)
 
@@ -74,11 +74,11 @@ def hook_known_unused(hook_name: str) -> bool:
 
     if safe_worker_enabled():
         return True
-    from hermes_cli.observability.relay_shared_metrics import HANDLED_HOOKS
+    from hermes_agent.hermes_cli.observability.relay_shared_metrics import HANDLED_HOOKS
 
     if hook_name in HANDLED_HOOKS:
         return False
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     return plugins.hook_unused_nowait(hook_name)
 

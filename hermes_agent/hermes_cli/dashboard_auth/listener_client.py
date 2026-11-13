@@ -1,7 +1,7 @@
 """The Nous Portal client the listener this process serves signs in with instead of the configured one.
 
 The gateway's Webapp listener signs browsers in with the client Web Access registered for it
-(``hermes_cli.webapp_access.sign_in_client``), so the dashboard's ``HERMES_DASHBOARD_OAUTH_CLIENT_ID``
+(``hermes_agent.hermes_cli.webapp_access.sign_in_client``), so the dashboard's ``HERMES_DASHBOARD_OAUTH_CLIENT_ID``
 keeps the redirect URI its own sign-in needs. Plugin discovery imports the bundled Nous sign-in
 plugin under a module name of its own, so the plugin and the gateway meet here: the plugin offers
 its provider swap when discovery loads it (:func:`offer`), and reads :func:`current` whenever it

@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 class _FakeBuffer:
@@ -43,7 +43,7 @@ def test_open_external_editor_uses_prompt_toolkit_buffer_editor():
 def test_open_external_editor_rejects_when_no_tui():
     cli_obj = _make_cli(with_app=False)
 
-    with patch("cli._cprint") as mock_cprint:
+    with patch("hermes_agent.cli._cprint") as mock_cprint:
         assert cli_obj._open_external_editor() is False
 
     assert mock_cprint.called

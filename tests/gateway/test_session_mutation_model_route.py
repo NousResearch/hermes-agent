@@ -201,7 +201,7 @@ async def test_a_route_that_cannot_authenticate_does_not_block_switching_away(ho
     try:
         live = await _create(owner, authority, home, 'bare')
         sid = next(sid for sid, value in authority.sessions.items() if value is live)
-        from hermes_cli.auth_constants import AuthError
+        from hermes_agent.hermes_cli.auth_constants import AuthError
         with pytest.raises(AuthError):
             _route(runner, live)
 
@@ -221,7 +221,7 @@ async def test_a_stopped_local_runtime_does_not_block_switching_away(home, endpo
     out of ``session.mutate`` — only AuthError was caught — so the client got ``internal error`` and
     could never leave the dead local route, not even by picking a remote provider."""
     # A llama-server the developer runs on its default port would be detected and resolve this route.
-    monkeypatch.setattr('hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint',
+    monkeypatch.setattr('hermes_agent.hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint',
                         lambda *args, **kwargs: None)
     (_, url), _ = endpoints
     (home / 'config.yaml').write_text(json.dumps({

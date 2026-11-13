@@ -124,7 +124,7 @@ def publishes_service_launcher(repo_root: Path) -> bool:
 
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
-#: Publish-UserCommand and hermes_cli/_install_repair.py.
+#: Publish-UserCommand and hermes_agent/hermes_cli/_install_repair.py.
 WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
 
 #: command name -> (entry module, callable): the commands in pyproject.toml [project.scripts];
@@ -479,7 +479,7 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
     # ``hermes_bootstrap`` right after the repair (``_PIN_DEFAULT_HOME``), and here again for a
     # bootstrap that predates that hook.
     root = str(repo_root.resolve())
-    from hermes_cli._early_recovery import (
+    from hermes_agent.hermes_cli._early_recovery import (
         INTERRUPTED_PULL_MARKER,
         RECOVERY_CLOSURE,
         RECOVERY_CLOSURE_DIR,
@@ -912,14 +912,14 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         return _expose_windows_user_bin(root, create=create)
     if create:
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
         except ImportError:
             # Installers expose after sync; never invent a config reader here.
             return {"ok": True, "skipped": "config-unavailable"}
         cli_cfg = (load_config() or {}).get("cli", {})
         if isinstance(cli_cfg, dict) and not cli_cfg.get("expose_on_path", True):
             return {"ok": True, "skipped": "config-disabled"}
-    from hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli.steward import read_install_stamp
 
     if _is_bundled_payload(root):
         if create and sys.platform == "darwin":
@@ -1130,7 +1130,7 @@ def _is_bundled_payload(root: Path) -> bool:
     sibling-directory sniff; a .git tree is a dev checkout regardless."""
     if (root / ".git").exists():
         return False
-    from hermes_cli.steward import STEWARD_DESKTOP, read_install_stamp
+    from hermes_agent.hermes_cli.steward import STEWARD_DESKTOP, read_install_stamp
 
     stamp = read_install_stamp(root)
     if not stamp:

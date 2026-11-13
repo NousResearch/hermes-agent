@@ -24,7 +24,7 @@ async def test_bot_chat_creation_commits_off_the_owner_loop(bot):
     # A serving owner discovered plugins at startup (_start_register_plugins_relay_hooks); this
     # bare fixture has not, so the first policy build would load every plugin ON the loop and
     # the ticker would time plugin import instead of the held writer.
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
     await asyncio.to_thread(discover_plugins)
     held, release = threading.Event(), threading.Event()
 

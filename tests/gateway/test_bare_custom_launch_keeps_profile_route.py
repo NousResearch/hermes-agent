@@ -122,12 +122,12 @@ def test_a_kanban_custom_provider_override_stays_on_the_profiles_endpoint(tmp_pa
     from types import SimpleNamespace
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.gateway.session_kanban import build_kanban_policy
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
-    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path))
+    monkeypatch.setattr('hermes_agent.hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path))
     kb.create_board('owned')
     with closing(connect(board='owned')) as conn:
         task_id = kb.create_task(conn, title='t', assignee='default', workspace_kind='dir',

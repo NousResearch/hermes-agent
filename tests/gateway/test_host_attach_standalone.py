@@ -11,7 +11,7 @@ from hermes_agent.gateway import host_attach, host_rendezvous as hr
 
 def test_boot_notice_only_labels_configured_standalone_profiles(standalone_home, monkeypatch, caplog):
     from hermes_agent.gateway.run import _log_standalone_profiles_at_boot
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     root, solo = standalone_home
     member = root / "profiles" / "member"
@@ -40,7 +40,7 @@ def standalone_home(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("gateway:\n  standalone: true\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
     monkeypatch.setattr(profiles, "_get_profiles_root", lambda: root / "profiles")
     return root, home

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import web_server_sessions as wss
+from hermes_agent.hermes_cli import web_server_sessions as wss
 
 
 def _write_config(home: Path, *, auto_archive_days: int) -> None:

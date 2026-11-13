@@ -132,7 +132,7 @@ def test_a_single_profile_gateway_never_advertises_the_root_gateways_listener(le
 async def test_a_granted_run_executes_in_the_lent_profile_and_its_grant_answers_nowhere_else(lender, monkeypatch):
     from hermes_agent.gateway.hosted_room_peer import PROTOCOL_VERSION
     from hermes_constants import get_hermes_home
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     seen = []
 
     class Agent:

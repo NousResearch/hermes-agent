@@ -2,7 +2,7 @@
 
 from typing import NoReturn
 
-from hermes_cli._old_updater import in_historical_update, stop_for_relaunch
+from hermes_agent.hermes_cli._old_updater import in_historical_update, stop_for_relaunch
 
 
 def ensure(feature: str, *, prompt: bool = True) -> NoReturn:

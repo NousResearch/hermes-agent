@@ -12,7 +12,7 @@ import pytest
 
 @pytest.mark.platforms("linux")
 def test_restart_without_service_unit_runs_gateway_even_without_linger(monkeypatch):
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
@@ -33,8 +33,8 @@ def test_restart_without_service_unit_runs_gateway_even_without_linger(monkeypat
 def test_detached_restart_without_service_never_runs_the_gateway_in_the_caller(monkeypatch):
     """Desktop runs `gateway restart --detach` as a bounded, piped client. In the foreground the
     client became the gateway: a Desktop child its timeout killed, holding app quit open."""
-    from hermes_cli import gateway as gw
-    from hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
 
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
@@ -56,7 +56,7 @@ def test_detached_restart_without_service_never_runs_the_gateway_in_the_caller(m
 
 @pytest.mark.platforms("linux")
 def test_restart_with_systemd_unit_still_reports_missing_linger(monkeypatch):
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
@@ -81,8 +81,8 @@ def test_restart_with_systemd_unit_still_reports_missing_linger(monkeypatch):
 def test_detached_restart_keeps_force_for_the_replacement(monkeypatch):
     """`restart --force --detach`: the old owner needed `--force` (a named profile under a
     multiplexer); a replacement launched without it exits on the run-side guard."""
-    from hermes_cli import gateway as gw
-    from hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
 
     monkeypatch.setattr(gw, "_refuse_from_inside_gateway", lambda *a, **k: None)
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
@@ -115,7 +115,7 @@ def test_detached_restart_all_never_runs_the_host_gateway_in_the_caller(monkeypa
     import sys
 
     import hermes_constants
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     (tmp_path / "profiles" / "work").mkdir(parents=True)
     (tmp_path / "active_profile").write_text("work\n", encoding="utf-8")

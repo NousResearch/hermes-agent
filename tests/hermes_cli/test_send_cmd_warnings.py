@@ -3,7 +3,7 @@ its cause ("Timed out ...") instead of only the generic "No deliverable" error (
 
 import json
 
-from hermes_cli.send_cmd import _emit_result
+from hermes_agent.hermes_cli.send_cmd import _emit_result
 
 
 def test_plain_output_prints_warnings_before_the_error(capsys):

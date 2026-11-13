@@ -49,7 +49,7 @@ def test_stop_before_hello_terminates_child_and_settles_interrupted(monkeypatch)
 
 
 CHILD = """import json, os, sys, psutil
-from hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
 def send(frame):

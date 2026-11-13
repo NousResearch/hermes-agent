@@ -27,7 +27,7 @@ def _mirror_busy(cli, arg):
 
 def _watch_reviewer(cli, _arg):
     """/review spawns its reviewer off-turn: have the live-work dock poll for it right away."""
-    from hermes_cli.gateway_tools import process_view
+    from hermes_agent.hermes_cli.gateway_tools import process_view
     view = process_view()
     if view is not None:
         view.watch_subagents()
@@ -58,21 +58,21 @@ def _call(cli, connection, canonical, arg):
         return connection.call("slash.exec", session_id=cli.session_id, command=command)
     # No deadline, on a socket of its own so the session's prompts never queue behind it
     # (GatewayConnection.call_until); Ctrl+C stops waiting.
-    from hermes_cli.gateway_plugin_commands import call_unbounded
+    from hermes_agent.hermes_cli.gateway_plugin_commands import call_unbounded
     return call_unbounded(cli, connection, canonical, command)
 
 
 def run(cli, canonical, cmd):
     """True when the gateway answered the command (the local handler must not run)."""
-    from hermes_cli.gateway_side import connection_for
+    from hermes_agent.hermes_cli.gateway_side import connection_for
     if canonical not in GATEWAY_SETTINGS:
         return False
     connection = connection_for(cli)
     if connection is None:
         return False
-    from cli import _cprint
-    from hermes_cli.gateway_client import GatewayClientError
-    from hermes_cli.gateway_plugin_commands import STOPPED
+    from hermes_agent.cli import _cprint
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_plugin_commands import STOPPED
     parts = (cmd or "").strip().split(None, 1)
     arg = parts[1].strip() if len(parts) > 1 else ""
     try:

@@ -14,8 +14,8 @@ def build_pets_parser(subparsers) -> None:
             "and Hermes shows it reacting to agent activity across the CLI, "
             "TUI, and desktop app.")
     try:
-        from hermes_cli.pets import register_cli as _register_pets_cli
+        from hermes_agent.hermes_cli.pets import register_cli as _register_pets_cli
 
         _register_pets_cli(pets_parser)
     except Exception as _exc:
-        logging.getLogger("hermes_cli.main").debug("pets CLI wiring failed: %s", _exc)
+        logging.getLogger("hermes_agent.hermes_cli.main").debug("pets CLI wiring failed: %s", _exc)

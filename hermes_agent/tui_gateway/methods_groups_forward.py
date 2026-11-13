@@ -71,7 +71,7 @@ def _root_home():
 
 
 def _discover(home):
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
     return discover_gateway_endpoint(home, timeout=5)
 
 
@@ -122,7 +122,7 @@ def _standalone_rooms(params: dict | None = None) -> list[dict]:
 
 
 def _call(server, rid, home, endpoint, method: str, params: dict) -> dict:
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     from hermes_agent.tui_gateway import owner_forward
     try:
         result = owner_forward.forward_rpc(home, endpoint, method, params)

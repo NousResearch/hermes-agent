@@ -20,8 +20,8 @@ def runtime_outside_gateway_evidence(runtime: dict) -> bool:
     is a manual serve whose restart ``defer_manual_serve`` has handed to its own durable reminder.
     Unclassified backends and failed transfers stay evidence against settlement (#115090, #111494).
     """
-    from hermes_cli.update_cmd_fleet import _SUPERVISOR_OWNED_SERVE_BACKENDS
-    from hermes_cli.update_serve_obligations import defer_manual_serve
+    from hermes_agent.hermes_cli.update_cmd_fleet import _SUPERVISOR_OWNED_SERVE_BACKENDS
+    from hermes_agent.hermes_cli.update_serve_obligations import defer_manual_serve
 
     return runtime.get("kind") in ("serve", "dashboard") and (
         defer_manual_serve(runtime) or runtime.get("supervisor") in _SUPERVISOR_OWNED_SERVE_BACKENDS
@@ -36,8 +36,8 @@ def host_owes_no_gateway_restart() -> bool:
     behind; it keeps the obligation. Profiles that never ran a gateway have no record at all.
     """
     from hermes_agent.gateway.status import read_runtime_status
-    from hermes_cli.update_inventory import collect_runtime_inventory
-    from hermes_cli.update_receipt import _NOT_EXPECTED_STATES, _profile_homes
+    from hermes_agent.hermes_cli.update_inventory import collect_runtime_inventory
+    from hermes_agent.hermes_cli.update_receipt import _NOT_EXPECTED_STATES, _profile_homes
 
     for _profile, home in _profile_homes():
         record = read_runtime_status(home / "gateway_state.json")

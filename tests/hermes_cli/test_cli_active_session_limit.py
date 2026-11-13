@@ -1,5 +1,5 @@
-from cli import HermesCLI
-from hermes_cli.active_sessions import (
+from hermes_agent.cli import HermesCLI
+from hermes_agent.hermes_cli.active_sessions import (
     active_session_registry_snapshot,
     try_acquire_active_session,
 )

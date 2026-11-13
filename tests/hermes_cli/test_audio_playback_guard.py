@@ -11,7 +11,7 @@ leaked shell variable, so ``scripts/run_tests.sh``'s ``env -i`` was no help:
   2. The flag outlives that test (``monkeypatch.delenv`` on an *absent* key
      records no undo entry), so every later test in the process sees it.
   3. Any later test that drives a turn to completion hits the TTS dispatch in
-     ``prompt.submit``, which calls ``hermes_cli.voice.speak_text`` on a
+     ``prompt.submit``, which calls ``hermes_agent.hermes_cli.voice.speak_text`` on a
      daemon thread with the turn's final response text.
   4. ``speak_text`` needs no API key to be audible — ``hermes_agent/tools/tts_tool.py``
      defaults to the keyless ``edge`` provider.
@@ -79,9 +79,9 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
     )
 
     # Called exactly as hermes_agent/tui_gateway/server.py's prompt.submit completion path
-    # calls it (a late `from hermes_cli.voice import speak_text`), with the
+    # calls it (a late `from hermes_agent.hermes_cli.voice import speak_text`), with the
     # exact fixture string that came out of the speakers.
-    from hermes_cli.voice import speak_text
+    from hermes_agent.hermes_cli.voice import speak_text
 
     assert speak_text("partial answer complete") is None
     assert calls == [], (

@@ -73,14 +73,14 @@ author: Your Name
 
 | 集成点 | 位置 | 获得的能力 |
 |---|---|---|
-| 凭据解析 | `hermes_cli/auth.py` | `PROVIDER_REGISTRY["acme-inference"]` 从 profile 填充 |
-| `--provider` CLI 标志 | `hermes_cli/main.py` | 接受 `acme-inference` |
-| `hermes model` 选择器 | `hermes_cli/models.py` | 出现在 `CANONICAL_PROVIDERS` 中，从 `{base_url}/models` 获取模型列表 |
-| `hermes doctor` | `hermes_cli/doctor.py` | 对 `ACME_API_KEY` 及 `{base_url}/models` 进行健康检查 |
-| `hermes setup` | `hermes_cli/config.py` | `ACME_API_KEY` 出现在 `OPTIONAL_ENV_VARS` 和设置向导中 |
+| 凭据解析 | `hermes_agent/hermes_cli/auth.py` | `PROVIDER_REGISTRY["acme-inference"]` 从 profile 填充 |
+| `--provider` CLI 标志 | `hermes_agent/hermes_cli/main.py` | 接受 `acme-inference` |
+| `hermes model` 选择器 | `hermes_agent/hermes_cli/models.py` | 出现在 `CANONICAL_PROVIDERS` 中，从 `{base_url}/models` 获取模型列表 |
+| `hermes doctor` | `hermes_agent/hermes_cli/doctor.py` | 对 `ACME_API_KEY` 及 `{base_url}/models` 进行健康检查 |
+| `hermes setup` | `hermes_agent/hermes_cli/config.py` | `ACME_API_KEY` 出现在 `OPTIONAL_ENV_VARS` 和设置向导中 |
 | URL 反向映射 | `hermes_agent/agent/model_metadata.py` | 主机名 → 提供商名称，用于自动检测 |
 | 辅助模型 | `hermes_agent/agent/auxiliary_client.py` | 使用 `default_aux_model` 进行压缩/摘要 |
-| 运行时解析 | `hermes_cli/runtime_provider.py` | 返回正确的 `base_url`、`api_key`、`api_mode` |
+| 运行时解析 | `hermes_agent/hermes_cli/runtime_provider.py` | 返回正确的 `base_url`、`api_key`、`api_mode` |
 | 传输层 | `hermes_agent/agent/transports/chat_completions.py` | Profile 路径通过 `prepare_messages` / `build_extra_body` / `build_api_kwargs_extras` 生成 kwargs |
 
 ## ProviderProfile 字段

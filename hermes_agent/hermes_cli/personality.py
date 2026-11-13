@@ -131,7 +131,7 @@ def persist_personality(value: Any) -> bool:
     name = normalize_personality_name(value)
     try:
         from hermes_constants import get_hermes_home
-        from hermes_cli.config_backend import write_config_key
+        from hermes_agent.hermes_cli.config_backend import write_config_key
 
         config_path = get_hermes_home() / "config.yaml"
         from hermes_constants import mkdir_under_hermes_home

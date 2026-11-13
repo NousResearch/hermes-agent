@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli.config_backend import (
+from hermes_agent.hermes_cli.config_backend import (
     Changes, ConfigBackendUnavailable, ConfigLockedError, ConfigValueError, ConfigWriteError, UserLayer,
     pinned_keys, refused_locked_omission_prefixes)
 
@@ -46,7 +46,7 @@ def poll_interval() -> float:
 
 
 def _latest_config_version() -> int:
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     version = DEFAULT_CONFIG.get("_config_version")
     return version if isinstance(version, int) else 1
 
@@ -101,7 +101,7 @@ _UNKNOWN = object()
 class _Private:
     """An in-memory migration's working copy of one profile's document (D12).
 
-    The migration steps read and persist through ``hermes_cli.config`` like any reader and writer;
+    The migration steps read and persist through ``hermes_agent.hermes_cli.config`` like any reader and writer;
     while one runs, THAT thread sees this copy instead of the published one (``_PRIVATE``), and
     everyone else keeps seeing the published doc with its matching diff base. The migrated doc and
     its base are published together, in one step, when the migration ends: a concurrent writer
@@ -358,7 +358,7 @@ class RemoteBackend:
 
     def _completed(self, st: _ProfileState) -> bool:
         """Bring the published doc to its completed postprocess output; False when that is not
-        possible yet (``hermes_cli.config`` still importing during the boot fetch)."""
+        possible yet (``hermes_agent.hermes_cli.config`` still importing during the boot fetch)."""
         if _private_for(st) is not None:
             return True  # a migration's own reads use its private copy (never another pass)
         for _ in range(self._MAX_POSTPROCESS):
@@ -373,13 +373,13 @@ class RemoteBackend:
 
     def _postprocess(self, st: _ProfileState) -> bool:
         """First read after a change: warn on unknown keys and migrate in memory (D12). Runs on a
-        read, not at fetch, because both need ``hermes_cli.config``, which may still be importing
+        read, not at fetch, because both need ``hermes_agent.hermes_cli.config``, which may still be importing
         when the boot fetch runs (then False: nothing could be done).
 
         No single flight: a reader or writer that finds the published doc unmigrated runs its own
         private pass, even while another thread's pass is in flight, and the first pass to finish
         publishes. Waiting for the other pass instead could deadlock (a migration reads through
-        hermes_cli.config's _CONFIG_LOCK, which the waiting caller may hold), and returning the
+        hermes_agent.hermes_cli.config's _CONFIG_LOCK, which the waiting caller may hold), and returning the
         unmigrated doc meanwhile would hand that caller legacy settings the migration removes."""
         if _private_for(st) is not None:
             return True  # a migration's own reads: never start another one
@@ -393,8 +393,8 @@ class RemoteBackend:
             current = int(st.doc.get("_config_version") or 0)
             doc = copy.deepcopy(st.doc)
         try:
-            from hermes_cli.config import _known_top_level_keys
-            from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
+            from hermes_agent.hermes_cli.config import _known_top_level_keys
+            from hermes_agent.hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
         except ImportError:
             return False  # still importing; the next read retries
         for key in sorted(set(doc) - _known_top_level_keys() - {"_config_version"}):
@@ -416,7 +416,7 @@ class RemoteBackend:
     def _run_private(self, st: _ProfileState, doc: dict[str, Any], current: int) -> dict[str, Any]:
         """Run the migrations from schema *current* over a private copy of *doc* and return it.
         Nothing is published: only this thread sees the copy while the steps run (:class:`_Private`)."""
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         m = _Private(st=st, doc=copy.deepcopy(doc), serial=next(_PRIVATE_SERIAL))
         m.doc["_config_version"] = current
@@ -574,7 +574,7 @@ class RemoteBackend:
             for _ in range(self._MAX_PREPARE):
                 # Diff against the doc readers get, i.e. migrated in memory (D12) — also after the
                 # CAS re-read below or a poll landing mid-prepare. Outside st.lock: a migration
-                # reads through hermes_cli.config.
+                # reads through hermes_agent.hermes_cli.config.
                 ready = self._completed(st)
                 with st.lock:
                     if ready and not st.postprocessed:
@@ -730,7 +730,7 @@ class RemoteBackend:
         if not sets:
             return None
         try:
-            from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
+            from hermes_agent.hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
         except ImportError:
             return None
         latest = _latest_config_version()
@@ -829,7 +829,7 @@ class RemoteBackend:
         return PLANE_CREDENTIAL_ENV_NAMES
 
     def deployment_env_names(self) -> frozenset:
-        from hermes_cli.config_backend import BACKEND_ENV
+        from hermes_agent.hermes_cli.config_backend import BACKEND_ENV
         return frozenset({BACKEND_ENV, client.URL_ENV, client.INSTANCE_ENV})
 
     def bootstrap_env_names(self) -> frozenset:
@@ -927,7 +927,7 @@ class RemoteBackend:
 
 
 def managed_config_file() -> Optional[Path]:
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
     managed_dir = managed_scope.get_managed_dir()
     path = managed_dir / "config.yaml" if managed_dir else None
     if path is None:

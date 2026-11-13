@@ -28,14 +28,14 @@ def id_profile(request):
 
 
 def test_profile_normalizer_wins_over_generic_rules(id_profile):
-    from hermes_cli.model_normalize import normalize_model_for_provider
+    from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
 
     assert normalize_model_for_provider("fancy-4-5", NAME) == "fancy-4.5"
     assert normalize_model_for_provider("vendor/fancy-4-5", NAME) == "fancy-4.5"
 
 
 def test_profiles_without_the_hook_keep_generic_normalization():
-    from hermes_cli.model_normalize import normalize_model_for_provider
+    from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
 
     assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
     assert normalize_model_for_provider("claude-sonnet-4.6", "anthropic") == "claude-sonnet-4-6"

@@ -52,7 +52,7 @@ def record_worktree_repo(repo_root) -> None:
     if not repo_root:
         return
     try:
-        from hermes_cli.auth import _file_lock
+        from hermes_agent.hermes_cli.auth import _file_lock
         from utils import atomic_json_write
 
         repo = os.path.realpath(str(repo_root))

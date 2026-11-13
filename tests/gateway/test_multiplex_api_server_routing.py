@@ -44,7 +44,7 @@ class TestApiServerProfileResolution:
     def test_unserved_prefix_is_rejected(self, monkeypatch):
         adapter = _make_adapter(multiplex=True)
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "hermes_agent.hermes_cli.profiles.profiles_to_serve",
             lambda multiplex: [
                 ("default", "/profiles/default"),
                 ("worker", "/profiles/worker"),
@@ -66,7 +66,7 @@ class TestApiServerProfileResolution:
         does (#118076), not 404."""
         adapter = _make_adapter(multiplex=True)
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "hermes_agent.hermes_cli.profiles.profiles_to_serve",
             lambda multiplex: [
                 ("default", "/profiles/default"),
                 ("worker", "/profiles/worker"),
@@ -83,7 +83,7 @@ class TestApiServerProfileResolution:
         resolving to itself, never silently redirect to 'default'."""
         adapter = _make_adapter(multiplex=True)
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "hermes_agent.hermes_cli.profiles.profiles_to_serve",
             lambda multiplex: [
                 ("default", "/profiles/default"),
                 ("hermes", "/profiles/hermes"),
@@ -188,7 +188,7 @@ class TestApiServerModelsUnderProfile:
         adapter = _make_adapter(multiplex=True)
         adapter._model_name = "hermes-agent"
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name",
+            "hermes_agent.hermes_cli.profiles.get_active_profile_name",
             lambda: "coder",
         )
         token_prof = _api_request_profile.set("coder")

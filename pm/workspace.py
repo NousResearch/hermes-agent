@@ -564,7 +564,7 @@ def core_requirement_error(declaration, extras: Iterable[str] | None = None,
     from packaging.markers import default_environment
     from packaging.version import InvalidVersion, Version
 
-    from hermes_cli.plugins_manifest import running_hermes_version
+    from hermes_agent.hermes_cli.plugins_manifest import running_hermes_version
     from pm.install import _extra_key
 
     if declaration.external:
@@ -595,7 +595,7 @@ def hermes_fit_error(declaration, extras: Iterable[str] | None = None) -> Option
     ``hermes-agent`` requirement rejects the running version. Either verdict is only as good as
     our version identity, so a selected misfit sits out of the build (config untouched) and
     rejoins once it flips; admission refuses it."""
-    from hermes_cli.plugins_manifest import requires_hermes_error
+    from hermes_agent.hermes_cli.plugins_manifest import requires_hermes_error
 
     return requires_hermes_error(declaration.manifest) or core_requirement_error(declaration, extras)
 

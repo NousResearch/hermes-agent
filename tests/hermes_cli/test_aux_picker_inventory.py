@@ -2,7 +2,7 @@
 
 Every aux picker (``hermes model`` → Configure auxiliary models, the
 ``hermes tools`` vision picker, and any future one) must route through
-``hermes_cli.inventory.build_aux_picker_rows()`` so it shows the same
+``hermes_agent.hermes_cli.inventory.build_aux_picker_rows()`` so it shows the same
 provider universe as ``/model``.
 
 Two independent contributor PRs fixed the same two call sites for exactly
@@ -70,7 +70,7 @@ def test_aux_picker_surfaces_user_defined_providers(configured_home):
     neither ``user_providers`` nor ``custom_providers``, so a user who had
     configured their own endpoint could not route any auxiliary task to it.
     """
-    from hermes_cli.inventory import build_aux_picker_rows
+    from hermes_agent.hermes_cli.inventory import build_aux_picker_rows
 
     slugs = {r["slug"] for r in build_aux_picker_rows()}
 
@@ -85,7 +85,7 @@ def test_aux_picker_requests_exhausted_pool_visibility(configured_home):
     """#66624: a provider whose credential pool is entirely rate-limited
     must stay visible. Rate limits are per-model and the aux picker writes a
     config the user runs later, once the cooldown has cleared."""
-    from hermes_cli import inventory
+    from hermes_agent.hermes_cli import inventory
 
     seen = {}
 
@@ -93,7 +93,7 @@ def test_aux_picker_requests_exhausted_pool_visibility(configured_home):
         seen.update(kwargs)
         return []
 
-    with patch("hermes_cli.model_switch.list_authenticated_providers", _capture):
+    with patch("hermes_agent.hermes_cli.model_switch.list_authenticated_providers", _capture):
         inventory.build_aux_picker_rows()
 
     assert seen.get("for_picker") is True

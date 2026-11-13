@@ -7,7 +7,7 @@ live session exceeds a configurable token threshold.
 
 from unittest.mock import patch
 
-from hermes_cli.model_selection_guards import (
+from hermes_agent.hermes_cli.model_selection_guards import (
     DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD,
     SelectionContext,
     _context_cache_guard,
@@ -21,7 +21,7 @@ def _no_config(*_a, **_k):
 
 
 def _guard(model, ctx, cfg=_no_config):
-    with patch("hermes_cli.config.load_config", cfg):
+    with patch("hermes_agent.hermes_cli.config.load_config", cfg):
         return _context_cache_guard(model, "openrouter", None, None, None, ctx)
 
 
@@ -49,7 +49,7 @@ class TestContextCacheGuard:
 
     def test_registry_threads_selection_context(self):
         ctx = SelectionContext(context_tokens=DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD + 1, current_model="old/model")
-        with patch("hermes_cli.config.load_config", _no_config):
+        with patch("hermes_agent.hermes_cli.config.load_config", _no_config):
             with_ctx = selection_warnings("new/model", provider="openrouter", selection_context=ctx)
             without = selection_warnings("new/model", provider="openrouter")
         assert any(w.kind == "context_cache" for w in with_ctx)

@@ -9,7 +9,7 @@ resolves offline local path-source fixtures):
    pyproject belonging to a nested or external sidecar dir must NOT
    join the pm workspace union, because pm scans only plugin roots.
 2. Conflict admission. Through the PUBLIC admission authority
-   (hermes_cli.plugins_admission.admit_plugin_set_change — the one path
+   (hermes_agent.hermes_cli.plugins_admission.admit_plugin_set_change — the one path
    `hermes plugins enable/install` use), a candidate union with no
    valid solution is REFUSED before anything is published: the
    candidate stays unenabled (so the loader never imports it), the
@@ -191,7 +191,7 @@ def test_conflicting_candidate_refused_unenabled_and_unimported(admission_env):
     plugin identity + resolver reason; the candidate is NOT published to
     config (so the plugin loader never imports it); plugin trees and
     configs survive; the receipt records the failure."""
-    from hermes_cli import plugins_admission as admission
+    from hermes_agent.hermes_cli import plugins_admission as admission
 
     tmp_path, home = admission_env
     plug_a, plug_b, *_ = _local_conflict_members(home)
@@ -330,7 +330,7 @@ def test_plugin_whose_pyproject_installs_nothing_keeps_the_environment(admission
     of locking and syncing a new one. A plugin with a real dependency still joins the workspace."""
     import tomllib
 
-    from hermes_cli import plugins_admission as admission
+    from hermes_agent.hermes_cli import plugins_admission as admission
     from pm.environments import runtime_facts_path, selected_venv
     from pm.install import sync_venv, venv_is_current
     from pm.lock import Facts
@@ -570,7 +570,7 @@ def test_plugin_our_version_rejects_sits_out_without_being_disabled(admission_en
     from pm.install import sync_venv, venv_is_current
     from pm.lock import Facts
 
-    from hermes_cli import plugins_manifest
+    from hermes_agent.hermes_cli import plugins_manifest
 
     tmp_path, home = admission_env
     core = tmp_path / "core"
@@ -614,7 +614,7 @@ def test_plugin_requiring_a_newer_hermes_sits_out_until_hermes_fits(admission_en
     from pm.install import sync_venv, venv_is_current
     from pm.lock import Facts
 
-    from hermes_cli import plugins_manifest
+    from hermes_agent.hermes_cli import plugins_manifest
 
     tmp_path, home = admission_env
     core = tmp_path / "core"
@@ -659,8 +659,8 @@ def test_only_enabling_a_plugin_that_requires_a_newer_hermes_is_refused(admissio
     as it refuses a failing requires_hermes, although it installs nothing and is no workspace
     member. One enabled before sits out as the build leaves it out, so enabling another plugin
     beside it is admitted."""
-    from hermes_cli import plugins_admission as admission
-    from hermes_cli import plugins_manifest
+    from hermes_agent.hermes_cli import plugins_admission as admission
+    from hermes_agent.hermes_cli import plugins_manifest
 
     _tmp_path, home = admission_env
     monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")

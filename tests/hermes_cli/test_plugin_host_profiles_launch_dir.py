@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from hermes_cli.plugin_host_profiles import load_hosted_profiles
+from hermes_agent.hermes_cli.plugin_host_profiles import load_hosted_profiles
 
 PROVIDER_PLUGIN = '''
 from hermes_agent.providers import register_provider

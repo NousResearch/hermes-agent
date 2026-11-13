@@ -10,8 +10,8 @@ Models" action) is allowed to block on probes.
 import threading
 import time
 
-import hermes_cli.models as models_mod
-from hermes_cli.inventory import build_model_options_payload, load_picker_context
+import hermes_agent.hermes_cli.models as models_mod
+from hermes_agent.hermes_cli.inventory import build_model_options_payload, load_picker_context
 
 _DEAD_PROVIDER = "deepseek"
 
@@ -39,7 +39,7 @@ def _picker_env(monkeypatch, tmp_path, *, hung=None):
         lambda *a, **k: {_DEAD_PROVIDER: {"env": ["DEEPSEEK_API_KEY"], "name": "DeepSeek"}},
     )
     monkeypatch.setattr("hermes_agent.agent.models_dev.PROVIDER_TO_MODELS_DEV", {_DEAD_PROVIDER: _DEAD_PROVIDER})
-    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.providers.HERMES_OVERLAYS", {})
     return live_calls, release
 
 

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway_runtime
+from hermes_agent.hermes_cli import gateway_runtime
 import hermes_constants
 
 
@@ -147,7 +147,7 @@ def test_restart_wait_owner_is_attachable_on_start_and_recover(monkeypatch, tmp_
         import hermes_agent.gateway.runtime_bootstrap_windows as windows_bootstrap
         monkeypatch.setattr(windows_bootstrap, "query_runtime_control", lambda h, req, timeout: reply)
     else:
-        import hermes_cli.gateway_runtime_discovery as discovery
+        import hermes_agent.hermes_cli.gateway_runtime_discovery as discovery
         stream = io.BytesIO(reply)
 
         class Peer:

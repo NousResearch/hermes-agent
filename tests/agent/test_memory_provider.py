@@ -173,7 +173,7 @@ class TestMemoryManager:
 
     @staticmethod
     def _set_spill_config(monkeypatch, tmp_path, *, max_chars):
-        from hermes_cli.config import atomic_config_write
+        from hermes_agent.hermes_cli.config import atomic_config_write
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         atomic_config_write(tmp_path / "config.yaml", {
@@ -218,7 +218,7 @@ class TestMemoryManager:
     ):
         """Provider-ranked recall stays intact unless both spill switches permit it (#130974)."""
         from hermes_agent.agent.turn_context import _collect_pre_llm_call_context
-        from hermes_cli.config import atomic_config_write
+        from hermes_agent.hermes_cli.config import atomic_config_write
         from hermes_agent.tools.hook_output_spill import DEFAULT_MAX_CHARS
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -236,7 +236,7 @@ class TestMemoryManager:
         assert not (tmp_path / "hook_outputs").exists()
 
         # Exercise the independent plugin-hook consumer, not just the spill helper.
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda *a, **kw: [{"context": text}])
+        monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.invoke_hook", lambda *a, **kw: [{"context": text}])
         result = _collect_pre_llm_call_context(
             SimpleNamespace(session_id="hook", model="test"), effective_task_id="task",
             turn_id="turn", original_user_message="recall", messages=[], conversation_history=[],
@@ -258,7 +258,7 @@ class TestMemoryManager:
 
     def test_runaway_recall_still_spills_without_opt_in(self, tmp_path, monkeypatch):
         """Opt-out keeps normal recall whole but still caps a runaway provider at the ceiling."""
-        from hermes_cli.config import atomic_config_write
+        from hermes_agent.hermes_cli.config import atomic_config_write
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         atomic_config_write(tmp_path / "config.yaml", {"memory": {}})
@@ -278,7 +278,7 @@ class TestMemoryManager:
             is_multiplex_active, reset_secret_scope, set_multiplex_active, set_secret_scope,
         )
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import atomic_config_write
+        from hermes_agent.hermes_cli.config import atomic_config_write
 
         a, b = tmp_path / "a", tmp_path / "b"
         a.mkdir()
@@ -938,7 +938,7 @@ class TestEntryPointMemoryProviderDiscovery:
     def test_inactive_entry_point_load_does_not_register_skill(
         self, tmp_path, monkeypatch
     ):
-        from hermes_cli.plugins import get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import get_plugin_manager
         from plugins.memory import load_memory_provider
         import plugins.memory as memory_plugins
 
@@ -970,7 +970,7 @@ class TestEntryPointMemoryProviderDiscovery:
     def test_switching_provider_prunes_registered_entry_point_skill(
         self, tmp_path, monkeypatch
     ):
-        from hermes_cli.plugins import get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import get_plugin_manager
         from hermes_agent.tools.skills_tool import skill_view
         import plugins.memory as memory_plugins
 

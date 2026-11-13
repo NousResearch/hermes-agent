@@ -1,14 +1,14 @@
 """Regression tests for interactive setup provider/model persistence.
 
 Since setup_model_provider delegates to select_provider_and_model()
-from hermes_cli.main, these tests mock the delegation point and verify
+from hermes_agent.hermes_cli.main, these tests mock the delegation point and verify
 that the setup wizard correctly syncs config from disk after the call.
 """
 
 from __future__ import annotations
 
-from hermes_cli.config import load_config, save_config
-from hermes_cli.setup import _print_setup_summary, setup_model_provider
+from hermes_agent.hermes_cli.config import load_config, save_config
+from hermes_agent.hermes_cli.setup import _print_setup_summary, setup_model_provider
 
 
 def _clear_provider_env(monkeypatch):
@@ -50,7 +50,7 @@ def test_setup_model_provider_preserves_auxiliary_choices_written_by_picker(tmp_
     def fake_select():
         _write_aux_config("compression", "gemini", "gemini-2.5-flash")
 
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.select_provider_and_model", fake_select)
 
     setup_model_provider(config, quick=True)
     save_config(config)  # mirrors run_setup_wizard(section="model") final save
@@ -69,7 +69,7 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
 
     Unlike the mocked-feature tests above, this drives the real
     ``get_nous_subscription_features`` so the surface stays aligned with the
-    launcher's Chromium selection (``hermes_cli.browser_runtime.chromium_executable``).
+    launcher's Chromium selection (``hermes_agent.hermes_cli.browser_runtime.chromium_executable``).
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
@@ -83,12 +83,12 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
     save_config(cfg)
 
     # Only stub the readiness probes; the feature resolver itself is real.
-    monkeypatch.setattr("hermes_cli.nous_subscription._has_browser_harness", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.nous_subscription._has_browser_harness", lambda: True)
     monkeypatch.setattr(
-        "hermes_cli.nous_subscription.get_nous_portal_account_info",
+        "hermes_agent.hermes_cli.nous_subscription.get_nous_portal_account_info",
         lambda *a, **k: None,
     )
-    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
     monkeypatch.setattr(
         "hermes_agent.agent.auxiliary_client.get_available_vision_backends", list
     )

@@ -7,8 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_agent.hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
+from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 from hermes_agent.agent.skill_utils import is_excluded_skill_path
 from datetime import UTC
@@ -56,7 +56,7 @@ def _get_git_commit(project_root: Path) -> str:
 
     The requested *project_root* is authoritative: when it has no git,
     the install-stamp fallback is only valid for the RUNNING install
-    (``hermes_cli.version_info`` has no per-root API — it reads
+    (``hermes_agent.hermes_cli.version_info`` has no per-root API — it reads
     HERMES_INSTALL_ROOT / the running code root, never an arbitrary
     directory). For any other root the provenance is unknown.
     """
@@ -66,7 +66,7 @@ def _get_git_commit(project_root: Path) -> str:
     if project_root.resolve() != get_project_root():
         return "(unknown)"
     try:
-        from hermes_cli.version_info import get_code_identity  # deferred: keeps dump cheap on non-dump paths
+        from hermes_agent.hermes_cli.version_info import get_code_identity  # deferred: keeps dump cheap on non-dump paths
         return get_code_identity().get("short_sha") or "(unknown)"
     except Exception:
         return "(unknown)"
@@ -86,7 +86,7 @@ def _get_git_commit_date(project_root: Path) -> str:
     try:
         from datetime import datetime, timezone
 
-        from hermes_cli.version_info import get_version_info  # deferred: keeps dump cheap on non-dump paths
+        from hermes_agent.hermes_cli.version_info import get_version_info  # deferred: keeps dump cheap on non-dump paths
         commit_date = get_version_info().commit_date
         return datetime.fromtimestamp(commit_date, tz=UTC).strftime("%Y-%m-%d") if commit_date else ""
     except Exception:
@@ -102,7 +102,7 @@ def _redact(value: str) -> str:
 def _gateway_status() -> str:
     """Return a short gateway status string."""
     try:
-        from hermes_cli.gateway import get_gateway_runtime_snapshot
+        from hermes_agent.hermes_cli.gateway import get_gateway_runtime_snapshot
         snapshot = get_gateway_runtime_snapshot()
         if snapshot.running:
             mode = "manual" if snapshot.has_process_service_mismatch else snapshot.manager
@@ -166,7 +166,7 @@ _INTERESTING_PATHS = (
 
 def _config_overrides(config: dict) -> dict[str, str]:
     """Find non-default config values worth reporting."""
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
     overrides = {}
     for section, key in _INTERESTING_PATHS:
         default_section = DEFAULT_CONFIG.get(section, {})
@@ -181,7 +181,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         overrides["toolsets"] = str(user_toolsets)
     fallbacks = config.get("fallback_providers", [])
     if fallbacks:
-        from hermes_cli.debug_redaction import redact_debug_support_text
+        from hermes_agent.hermes_cli.debug_redaction import redact_debug_support_text
 
         overrides["fallback_providers"] = redact_debug_support_text(
             str(_fallback_debug_projection(fallbacks))
@@ -246,7 +246,7 @@ _API_KEYS = [
 def _version_line(project_root: Path) -> str:
     """``<version> [<commit>] (<commit date>)`` using the running code identity."""
     try:
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli.version_info import get_version_info
 
         version = get_version_info().derived_version
     except Exception:
@@ -311,7 +311,7 @@ def run_dump(args):
         config = {}
     model, provider = _get_model_and_provider(config)
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name() or "(default)"
     except Exception:
         profile = "(default)"

@@ -8,7 +8,7 @@ import logging
 import hermes_yaml as yaml
 
 import hermes_agent.agent.auxiliary_unavailable as unavailable
-from hermes_cli.auth_constants import AuthError
+from hermes_agent.hermes_cli.auth_constants import AuthError
 
 
 def _reset(monkeypatch):
@@ -24,7 +24,7 @@ def test_goal_judge_reason_names_nous_auth_failure_and_still_fails_open(tmp_path
         "model": {"provider": "nous", "default": "test-model"},
         "auxiliary": {"goal_judge": {"provider": "nous", "model": "test-model"}},
     }), encoding="utf-8")
-    from hermes_cli.goals import judge_goal
+    from hermes_agent.hermes_cli.goals import judge_goal
 
     verdict, reason, parse_failed, wait_directive, judge_errored = judge_goal(
         "ship the fix", "edited the file and ran the tests", timeout=5)

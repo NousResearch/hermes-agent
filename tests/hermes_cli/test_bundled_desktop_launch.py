@@ -3,7 +3,7 @@
 A bundled artifact ships the CLI inside ``<app>/resources/agent-payload``
 and the desktop app is the artifact itself — there is no source tree to
 build and the app resources are signed and read-only. These tests pin the
-two halves of that: where the launcher is (hermes_cli.bundled_app) and
+two halves of that: where the launcher is (hermes_agent.hermes_cli.bundled_app) and
 that cmd_gui starts it instead of running the checkout build ladder.
 
 The layout resolver is pure path arithmetic over real directories, so
@@ -19,13 +19,13 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_cli.main as cli_main
-from hermes_cli.bundled_app import (
+import hermes_agent.hermes_cli.main as cli_main
+from hermes_agent.hermes_cli.bundled_app import (
     NotBundledApp,
     launch_detached,
     resolve_bundle_layout,
 )
-from hermes_cli.steward import is_bundled_payload
+from hermes_agent.hermes_cli.steward import is_bundled_payload
 
 STAMP = {
     "schemaVersion": 2,
@@ -183,7 +183,7 @@ class TestLaunchDetached:
             seen["kwargs"] = kwargs
             return SimpleNamespace(pid=1234)
 
-        with patch("hermes_cli.bundled_app.subprocess.Popen", side_effect=fake_popen):
+        with patch("hermes_agent.hermes_cli.bundled_app.subprocess.Popen", side_effect=fake_popen):
             pid = launch_detached(["/app/Hermes", "--no-sandbox"], cwd="/app")
 
         assert pid == 1234
@@ -239,7 +239,7 @@ class TestCmdGuiOnABundle:
             launches.append([str(a) for a in argv])
             return SimpleNamespace(pid=4242)
 
-        from hermes_cli import main_desktop, source_build
+        from hermes_agent.hermes_cli import main_desktop, source_build
         import pm
         monkeypatch.setattr(cli_main, "PROJECT_ROOT", repo)
         monkeypatch.setattr(source_build, "source_build_env", lambda env, **kwargs: dict(env))
@@ -252,7 +252,7 @@ class TestCmdGuiOnABundle:
         monkeypatch.setattr(main_desktop, "_desktop_linux_needs_disable_setuid_sandbox", lambda *a: setuid_helper_unusable)
         monkeypatch.setattr(main_desktop, "_detect_linux_password_store", lambda: None)
 
-        with patch("hermes_cli.bundled_app.subprocess.Popen", side_effect=record_popen), \
+        with patch("hermes_agent.hermes_cli.bundled_app.subprocess.Popen", side_effect=record_popen), \
              patch.object(cli_main.subprocess, "run", side_effect=record_run), \
              pytest.raises(SystemExit) as exit_info:
             cli_main.cmd_gui(args)

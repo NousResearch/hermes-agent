@@ -132,7 +132,7 @@ async def test_unserve_keeps_ownership_without_aborting_the_reconcile(tmp_path, 
         _served_profile_homes={'stuck': stuck, 'gone': gone}, _served_profile_signatures={}, _agent_cache={},
         _evict_cached_agent=lambda key: None, served_profile_names=lambda: sorted(runner._served_profile_homes),
         _live_resource_claims=lambda active: {}, _record_served_profiles=lambda active, homes: None)
-    monkeypatch.setattr('hermes_cli.profiles.profiles_to_serve', lambda **kwargs: [])
+    monkeypatch.setattr('hermes_agent.hermes_cli.profiles.profiles_to_serve', lambda **kwargs: [])
     runner._unserve_profile = GatewayProfileReconcileMixin._unserve_profile.__get__(runner)
     result = await GatewayProfileReconcileMixin._apply_profile_changes(
         runner, {}, [], ['stuck', 'gone'], [], reason='watcher')

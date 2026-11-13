@@ -9,7 +9,7 @@ never reaches that step, so the move happens at its first stamp instead, exactly
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
 _AB_ENV = ("AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_PROFILE", "AGENT_BROWSER_ARGS",
            "AGENT_BROWSER_HEADED", "AGENT_BROWSER_ENGINE")
@@ -38,12 +38,12 @@ def _home(tmp_path, monkeypatch, config_text):
 
 
 def _boot():
-    from hermes_cli import post_update
+    from hermes_agent.hermes_cli import post_update
     return post_update.step_migrate_config()
 
 
 def _first_save():
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     save_config(load_config())
 
 
@@ -81,7 +81,7 @@ def test_a_save_before_any_migration_keeps_the_legacy_browser_settings(tmp_path,
 
 
 def test_explicit_migration_recovers_a_home_without_config(tmp_path, monkeypatch):
-    from hermes_cli.config import migrate_config
+    from hermes_agent.hermes_cli.config import migrate_config
 
     home = _home(tmp_path, monkeypatch, None)
     migrate_config(interactive=False, quiet=True)
@@ -92,7 +92,7 @@ def test_explicit_migration_recovers_a_home_without_config(tmp_path, monkeypatch
 def test_the_retained_env_is_converted_once_never_over_later_edits(tmp_path, monkeypatch):
     """.env keeps the AGENT_BROWSER_* lines; the user's later choice must still win for good, even the
     defaults (``engine: auto``, ``headed: false``) that the v52 step lets the env override."""
-    from hermes_cli.config import load_config, migrate_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, migrate_config, save_config
 
     _home(tmp_path, monkeypatch, None)
     _boot()

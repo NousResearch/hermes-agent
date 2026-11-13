@@ -1,6 +1,6 @@
 """``hermes clipboard image``: the clipboard image extractor as a device-local command.
 
-Runs ``hermes_cli.clipboard.save_clipboard_image`` (the extractor the CLI and Ink use) and reports
+Runs ``hermes_agent.hermes_cli.clipboard.save_clipboard_image`` (the extractor the CLI and Ink use) and reports
 the outcome. It reads this machine's clipboard only: no gateway, no session store, no profile
 files, so a client whose gateway is remote still reads the clipboard where it runs.
 """
@@ -33,7 +33,7 @@ def _mime(head: bytes) -> str:
 
 def extract_clipboard_image(dest: Path) -> tuple[int, dict]:
     """Write the clipboard image to *dest*; ``(exit code, JSON reply)``."""
-    from hermes_cli import clipboard
+    from hermes_agent.hermes_cli import clipboard
     from hermes_platform.resolver import locate_command
 
     dest = dest.expanduser().absolute()

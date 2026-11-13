@@ -11,7 +11,7 @@ it returns when the *pipe* reaches EOF. On Windows the write end of a redirected
 pipe is handed to the child as an inheritable handle, so every descendant
 spawned without its own redirection holds a duplicate, and EOF waits for the
 last of them to close it. ``hermes update`` deliberately runs build steps with
-stdout inherited (the tee-stderr runner in ``hermes_cli/main.py``), so the
+stdout inherited (the tee-stderr runner in ``hermes_agent/hermes_cli/main.py``), so the
 process tree under a step is arbitrarily deep and not something the hand-off can
 enumerate. When one of those descendants is a resident gateway, the pipe never
 closes and ``Invoke-HermesStep`` blocks for the life of the gateway.

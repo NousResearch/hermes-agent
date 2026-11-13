@@ -62,7 +62,7 @@ def ok(cp: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
 
 def configure(sb: I.Sandbox, provider: FakeLLMServer) -> None:
     """Point the install at the fake provider with a current-version config."""
-    ver = ok(sb.run([sb.python, "-c", "from hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"]))
+    ver = ok(sb.run([sb.python, "-c", "from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"]))
     version = int(ver.stdout.strip().splitlines()[-1])
     (sb.hermes_home / "config.yaml").write_text(I.provider_config(provider.base_url, version), encoding="utf-8")
     (sb.hermes_home / ".env").write_text(f"OPENAI_API_KEY={I.FAKE_KEY}\n", encoding="utf-8")

@@ -83,7 +83,7 @@ def client(monkeypatch, _isolate_hermes_home):
         pytest.skip("fastapi/starlette not installed")
     from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     plugin_dir = get_hermes_home() / "plugins" / "ownprov"
@@ -101,7 +101,7 @@ def _config_path():
 
 
 def test_put_writes_through_the_provider_with_natives_and_saves_the_secret(client):
-    from hermes_cli.config import load_config, load_env
+    from hermes_agent.hermes_cli.config import load_config, load_env
 
     resp = client.put(_URL, json={"values": {
         "apiKey": "own-test-key", "baseUrl": "https://own.example.dev", "workspace": "myws", "saveMessages": "false",
@@ -145,7 +145,7 @@ def test_a_config_the_provider_cannot_read_is_a_400(client):
 
 
 def test_a_refused_write_is_a_400_with_no_secret_saved_and_no_switch(client):
-    from hermes_cli.config import load_config, load_env
+    from hermes_agent.hermes_cli.config import load_config, load_env
 
     _config_path().write_text("{not json", encoding="utf-8")
 
@@ -166,7 +166,7 @@ def _install(name, init, schema):
 
 
 def test_storage_provider_without_a_writer_is_a_501_with_no_secret_saved(client):
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
 
     init = _INIT.replace("class OwnProv", "class _Unused").replace("def write_config_fields", "def _unused_write")
     init = init.replace("ctx.register_memory_provider(OwnProv())", "ctx.register_memory_provider(_Unused())")

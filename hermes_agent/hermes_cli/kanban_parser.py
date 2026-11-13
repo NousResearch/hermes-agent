@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import argparse
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli import kanban_db_notify as kbn
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
 
 def _arg(*flags: str, **kw):

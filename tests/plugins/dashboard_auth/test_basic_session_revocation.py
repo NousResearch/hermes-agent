@@ -10,7 +10,7 @@ import secrets
 
 import pytest
 
-from hermes_cli.dashboard_auth import RefreshExpiredError
+from hermes_agent.hermes_cli.dashboard_auth import RefreshExpiredError
 from plugins.dashboard_auth import basic
 
 SECRET = secrets.token_bytes(32)
@@ -148,9 +148,9 @@ def test_access_token_revocation_ends_its_login_and_ignores_other_tokens(monkeyp
 def gated_basic():
     from fastapi.testclient import TestClient
 
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth import clear_providers, register_provider
-    from hermes_cli.dashboard_auth import refresh_singleflight
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_agent.hermes_cli.dashboard_auth import refresh_singleflight
 
     provider = _provider()
     clear_providers()

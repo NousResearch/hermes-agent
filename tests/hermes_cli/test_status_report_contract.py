@@ -1,6 +1,6 @@
 """Contract: the CLI, gateway and TUI /status renderers report the SAME common facts.
 
-Every surface renders through ``hermes_cli.status_report.build_status_fields``; each keeps
+Every surface renders through ``hermes_agent.hermes_cli.status_report.build_status_fields``; each keeps
 its own header, labels (the gateway is i18n) and extras. This test feeds the three real
 renderers the same session facts and asserts every common value appears in each output —
 a contract between one builder and three renderers, not a snapshot of any layout.
@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionEntry, SessionSource
-from hermes_cli.cli_session_mixin import CLISessionMixin
+from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
 
 SESSION_ID = "status-contract-7f3a"
 MODEL = "vendor/distinctive-model-9000"

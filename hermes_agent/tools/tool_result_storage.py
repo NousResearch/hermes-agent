@@ -54,7 +54,7 @@ def _spillover_retention_hours() -> int:
     days later must still find what the ``<persisted-output>`` pointer promises (#126351).
     Falls back to the legacy 24h cache age when the config is unreadable."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
         if not math.isfinite(days):  # YAML ``.inf`` / ``.nan`` parse as floats; int() would raise
             return SPILLOVER_MAX_AGE_HOURS
@@ -111,7 +111,7 @@ def referenced_spillover_names(spill_dir) -> set | None:
         return set()
     try:
         # as_uri(): a plain f"file:{path}" breaks on Windows drive letters
-        from hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
+        from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked  # tracked: raw byte probes must see this reader
 
         conn = connect_tracked(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0, tracking_path=db_path)
         try:

@@ -25,8 +25,8 @@ def hermes_home(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("windows")
 def test_restart_stamps_the_marker_after_the_old_gateway_is_gone(hermes_home, monkeypatch):
-    from hermes_cli import gateway as gw_facade
-    from hermes_cli import gateway_windows as gw
+    from hermes_agent.hermes_cli import gateway as gw_facade
+    from hermes_agent.hermes_cli import gateway_windows as gw
 
     marker = hermes_home / MARKER
     seen: dict[str, bool] = {}

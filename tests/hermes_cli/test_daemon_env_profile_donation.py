@@ -11,8 +11,8 @@ import pytest
 @pytest.mark.platforms("linux")
 @pytest.mark.spawns_gateway_lookalike  # stub interpreter records env then exits; reaped below
 def test_host_daemon_does_not_inherit_named_profile_dotenv(tmp_path, monkeypatch):
-    from hermes_cli import gateway_runtime_start as start
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli import gateway_runtime_start as start
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     root = tmp_path / 'root'
     work = root / 'profiles' / 'work'
     work.mkdir(parents=True, mode=0o700)

@@ -10,7 +10,7 @@ import contextlib
 import json
 import logging
 
-from hermes_cli.plugins_dispatch import resolve_plugin_command_result
+from hermes_agent.hermes_cli.plugins_dispatch import resolve_plugin_command_result
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -27,10 +27,10 @@ async def _off_loop(connection, func):
 async def resolve_plugin_rpc(connection, method):
     """The plugin handler serving ``method``, looked up in a worker: discovery waits on the lock a
     concurrent ``reload-plugins`` holds, which must stall this call only, never the gateway loop."""
-    from hermes_cli.plugin_events import PLUGIN_EVENT_PREFIX
+    from hermes_agent.hermes_cli.plugin_events import PLUGIN_EVENT_PREFIX
     if not isinstance(method, str) or not method.startswith(PLUGIN_EVENT_PREFIX):
         return None
-    from hermes_cli.plugin_rpc import plugin_rpc_handler
+    from hermes_agent.hermes_cli.plugin_rpc import plugin_rpc_handler
     return await _off_loop(connection, lambda: plugin_rpc_handler(method))
 
 

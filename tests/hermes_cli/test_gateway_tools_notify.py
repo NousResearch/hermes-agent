@@ -10,9 +10,9 @@ import queue
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_connection import GatewayConnection
-from hermes_cli.gateway_session_store import GatewaySessionStore
+from hermes_agent.hermes_cli.gateway_agent import GatewayAgent
+from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
+from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
 from tests.hermes_cli.test_gateway_agent import SID, FakeClient, connect_with, frame
 from tests.waiting import wait_until
 
@@ -53,7 +53,7 @@ def _play(conn, client, frames):
 
 
 def _idle_cli(conn):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id = SID
     cli._pending_input = queue.Queue()

@@ -17,22 +17,22 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from hermes_agent.agent.file_safety import HOME_CREDENTIAL_DIRS
-from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
-from hermes_cli import config_backend as _config_backend
-from hermes_cli.profiles_config import _migrate_profile_config_if_outdated
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
-from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
-from hermes_cli.profiles_export_scrub import (
+from hermes_agent.hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_agent.hermes_cli import config_backend as _config_backend
+from hermes_agent.hermes_cli.profiles_config import _migrate_profile_config_if_outdated
+from hermes_agent.hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_STORES
+from hermes_agent.hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
+from hermes_agent.hermes_cli.profiles_export_scrub import (
     GATEWAY_CONNECTION_STORE_RE as _GATEWAY_CONNECTION_STORE_RE, GATEWAY_CONNECTION_STORES as _GATEWAY_CONNECTION_STORES,
     scrub_export_secrets as _scrub_export_secrets)
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
-from hermes_cli.config_backend import (
+from hermes_agent.hermes_cli.config_backend import (
     config_cache_version, config_cache_version_or_none, config_exists, require_file_tooling)
-from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, json_safe_dumps
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ _CLONE_ALL_STRIP: list[str] = [
 # gate avoids silently dropping user data from a named-profile source. Export uses a root
 # allow-list instead (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot,
 # a clone must run. The runtime trio is ``LOCAL_RUNTIME_ROOT_DIRS``, shared with
-# ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
+# ``hermes_agent.hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
     "hermes-agent",
     ".worktrees",
@@ -721,7 +721,7 @@ def _read_config_model(profile_dir: Path) -> tuple:
     def _read() -> tuple:
         try:
             # load_config() targets the ACTIVE profile's home; read THIS profile's file raw.
-            from hermes_cli.config import read_user_config_raw
+            from hermes_agent.hermes_cli.config import read_user_config_raw
             model_cfg = read_user_config_raw(config_path).get("model", {})
             if isinstance(model_cfg, str):
                 return model_cfg, None
@@ -743,8 +743,8 @@ def _seed_model_config(profile_dir: Path) -> None:
         return
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
         from hermes_constants import get_hermes_home
-        from hermes_cli.config import atomic_config_write, read_user_config_raw
-        from hermes_cli.profile_model_seed import launch_model_seed
+        from hermes_agent.hermes_cli.config import atomic_config_write, read_user_config_raw
+        from hermes_agent.hermes_cli.profile_model_seed import launch_model_seed
         source = get_hermes_home() / "config.yaml"
         seed = launch_model_seed(read_user_config_raw(source)) if config_exists(source) else {}
         if seed:
@@ -772,7 +772,7 @@ def _served_by_running_multiplexer(profile_name: str) -> bool:
     Single shared lookup with the named-profile start guard and cron liveness (#97120).
     """
     try:
-        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+        from hermes_agent.hermes_cli.gateway import named_profile_served_by_running_multiplexer
         return named_profile_served_by_running_multiplexer(profile_name)
     except Exception:
         return False
@@ -1046,7 +1046,7 @@ def profile_is_standalone(home: Path) -> bool:
         return cached[1]
     value = None
     if signature is not None:
-        from hermes_cli.config import read_user_config_raw
+        from hermes_agent.hermes_cli.config import read_user_config_raw
         try:
             cfg = read_user_config_raw(cfg_path) or {}
         except (YAMLError, OSError, UnicodeError) as exc:
@@ -1238,7 +1238,7 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional
     # (Anthropic / Codex / xAI): one credential with two owners, and the first profile to
     # refresh revokes the pair for every sibling. Drop the copies; the clone reads the root
     # grant through the credential-pool fallback.
-    from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+    from hermes_agent.hermes_cli.auth import strip_cloned_single_use_oauth_grants
     stripped = strip_cloned_single_use_oauth_grants(profile_dir)
     if any(stripped.values()):
         logger.info(
@@ -1258,7 +1258,7 @@ def _strip_multiplex_flag(config_path: Path) -> None:
     if not config_exists(config_path):
         return
     with contextlib.suppress(Exception):  # creation must not fail over an unreadable copy
-        from hermes_cli.config import atomic_config_replace, read_user_config_raw
+        from hermes_agent.hermes_cli.config import atomic_config_replace, read_user_config_raw
         cfg = read_user_config_raw(config_path)
         gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
         if "multiplex_profiles" not in cfg and "multiplex_profiles" not in gateway:
@@ -1335,7 +1335,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
     _clone_plugins(source_dir, profile_dir)
-    from hermes_cli.profile_memory_config import _load_config_dict, active_memory_provider, clone_memory_provider_config
+    from hermes_agent.hermes_cli.profile_memory_config import _load_config_dict, active_memory_provider, clone_memory_provider_config
     clone_memory_provider_config(source_dir, profile_dir, active_memory_provider(_load_config_dict(source_dir)))
     if sync_imports:  # a plain file at the profile root, written by the agent-importers plugin
         _clone_file(source_dir, profile_dir, "import-sync.json")
@@ -1352,7 +1352,7 @@ def create_profile(
     ``clone_config`` copies config.yaml/.env/SOUL.md, installed skills, and identity files.
     Either clone strips the source's messaging channels — bot tokens, allowlists, platform
     sections, pairing/session state — unless ``clone_channels`` opts in: a copied bot credential
-    makes two gateways fight over one bot (``hermes_cli.profile_channels``; callers list what
+    makes two gateways fight over one bot (``hermes_agent.hermes_cli.profile_channels``; callers list what
     was left behind with ``channel_platforms_configured(source_dir)``).
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
     re-seeding its skills; it is mutually exclusive with the clone options, which copy skills.
@@ -1392,7 +1392,7 @@ def create_profile(
         raise _profile_exists_error(canon)
     source_dir = _resolve_clone_source(clone_from) if cloning else None
     if source_dir is not None and clone_channels:
-        from hermes_cli.profile_channels import clone_channels_refusal
+        from hermes_agent.hermes_cli.profile_channels import clone_channels_refusal
         refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
         if refusal:
             raise ValueError(refusal)
@@ -1401,7 +1401,7 @@ def create_profile(
     # on every create and every 30 s, and ``_iter_named_profile_dirs`` only lists valid ids (no leading
     # dot), so it can never adopt the half-copied tree and start adapters on credentials the strip
     # below has not removed yet.
-    from hermes_cli.profiles_initialization import clone_staging_dir, discard_unpublished_vault_key, finish_profile_layout
+    from hermes_agent.hermes_cli.profiles_initialization import clone_staging_dir, discard_unpublished_vault_key, finish_profile_layout
     staging = clone_staging_dir(profile_dir)
     clone_key = None  # the keychain entry made for this clone's vault, if any
     try:
@@ -1410,7 +1410,7 @@ def create_profile(
         else:
             _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports, seed_model=seed_model)
         if source_dir is not None and not clone_channels:
-            from hermes_cli.profile_channels import strip_channel_settings
+            from hermes_agent.hermes_cli.profile_channels import strip_channel_settings
             stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
@@ -1420,7 +1420,7 @@ def create_profile(
         discard_unpublished_vault_key(clone_key)
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    from hermes_cli.profile_memory_config import notify_memory_provider
+    from hermes_agent.hermes_cli.profile_memory_config import notify_memory_provider
     notify_memory_provider(profile_dir, lambda p: p.on_profile_created(canon, str(profile_dir)))
 
     # Inside a container under s6, register the gateway as a runtime s6 service so
@@ -1434,7 +1434,7 @@ def create_profile(
 
 
 def _notify_multiplexer(canon: str) -> None:
-    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    from hermes_agent.hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
     notify_multiplexer_profiles_changed(canon)
 
 
@@ -1443,7 +1443,7 @@ def _purge_identity(canon: str) -> bool:
 
     False means the filesystem delete happened but the identity settlement did not — the caller
     reports that as a pending settlement rather than a clean success."""
-    from hermes_cli.profile_identity import purge_profile_identity
+    from hermes_agent.hermes_cli.profile_identity import purge_profile_identity
     return purge_profile_identity(canon)
 
 
@@ -1451,7 +1451,7 @@ def _live_default_multiplexer() -> bool:
     """True when a live default gateway has recorded a served-profile set: every dir under
     profiles/ is then served by it, so a profile-identity change must be unrouted first."""
     try:
-        from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+        from hermes_agent.hermes_cli.gateway_multiplex_served import recorded_served_profiles
         return recorded_served_profiles() is not None
     except Exception:
         return False
@@ -1682,7 +1682,7 @@ def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapp
 
 class ProfileIdentitySettlementPending(RuntimeError):
     """The profile's directory was deleted, but its durable session/routing identity was not
-    settled (``hermes_cli.profile_identity.purge_profile_identity`` returned False).
+    settled (``hermes_agent.hermes_cli.profile_identity.purge_profile_identity`` returned False).
 
     Subclasses ``RuntimeError`` so delete-failure handling that treats the error as fatal (the
     CLI's ``hermes profile delete``) keeps working unchanged; surfaces that can report a partial
@@ -1807,7 +1807,7 @@ def _s6_runtime_manager():
     """The s6 service manager inside the container, else None. Silent on host: a failing/
     absent detector must never print a confusing s6 warning to non-container users."""
     try:
-        from hermes_cli.service_manager import detect_service_manager, get_service_manager
+        from hermes_agent.hermes_cli.service_manager import detect_service_manager, get_service_manager
         if detect_service_manager() != "s6":
             return None
         mgr = get_service_manager()
@@ -1861,12 +1861,12 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> bool:
     home_token = set_hermes_home_override(str(profile_dir))
     try:
         os.environ["HERMES_HOME"] = str(profile_dir)
-        from hermes_cli.gateway import get_service_name, get_launchd_plist_path, user_systemd_unit_dir
+        from hermes_agent.hermes_cli.gateway import get_service_name, get_launchd_plist_path, user_systemd_unit_dir
 
         def _run(*cmd: str) -> None:
             subprocess.run(list(cmd), capture_output=True, check=False, timeout=10)
 
-        from hermes_cli.profiles_service_cleanup import owned_by_profile, remove_system_systemd_unit, remove_windows_task
+        from hermes_agent.hermes_cli.profiles_service_cleanup import owned_by_profile, remove_system_systemd_unit, remove_windows_task
 
         system = _platform.system()
         removed = False
@@ -2285,11 +2285,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 2b. Record the rename so Bot Mode group chats can re-link persisted
     # member descriptors to the new slug (#110200). Best-effort: a metadata
     # write failure must never fail the rename itself.
-    from hermes_cli.profile_identity import _record_profile_rename
+    from hermes_agent.hermes_cli.profile_identity import _record_profile_rename
     _record_profile_rename(new_dir, old_canon)
 
     # 3. Let the profile's memory provider re-key what it stores under the old name.
-    from hermes_cli.profile_memory_config import notify_memory_provider
+    from hermes_agent.hermes_cli.profile_memory_config import notify_memory_provider
     notify_memory_provider(new_dir, lambda p: p.on_profile_renamed(old_canon, new_canon, str(new_dir)))
 
     # 4. Update wrapper script
@@ -2307,7 +2307,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 6. Migrate profile-name-keyed session/routing state (session keys, profile_name, heartbeats,
     # delivery + routing index) from the old name to the new one. A stale ``agent:<old>:*`` routing
     # key otherwise resolves to a profile that no longer exists on every inbound event.
-    from hermes_cli.profile_identity import _migrate_profile_identity
+    from hermes_agent.hermes_cli.profile_identity import _migrate_profile_identity
     _migrate_profile_identity(old_canon, new_canon, live_mux)
 
     # 7. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).

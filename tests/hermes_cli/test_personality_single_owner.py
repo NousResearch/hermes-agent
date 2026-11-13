@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.personality — the single owner of personality state —
+"""Tests for hermes_agent.hermes_cli.personality — the single owner of personality state —
 and the v34 one-time personality reset migration.
 
 Regression coverage for the post-#81946 resurrection bug: personality state
@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.personality import (
+from hermes_agent.hermes_cli.personality import (
     BUILTIN_PERSONALITIES,
     available_personalities,
     active_personality_name,
@@ -155,7 +155,7 @@ def test_persist_personality_never_touches_system_prompt(tmp_path):
 def _run_migration(home, cfg):
     (home / "config.yaml").write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
     with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
-        from hermes_cli.config import migrate_config, read_raw_config
+        from hermes_agent.hermes_cli.config import migrate_config, read_raw_config
 
         results = migrate_config(interactive=False, quiet=True)
         return read_raw_config(), results

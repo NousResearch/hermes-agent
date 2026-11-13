@@ -49,7 +49,7 @@ def test_pm_selection_ignores_vendor_tree_and_is_passive(cua_home, monkeypatch):
 @pytest.mark.platforms("linux")
 def test_setup_acquires_through_pm_and_validates_real_manifest(cua_home, monkeypatch):
     import pm
-    from hermes_cli.tools_config_cua import install_cua_driver
+    from hermes_agent.hermes_cli.tools_config_cua import install_cua_driver
     from hermes_agent.tools.computer_use.cua_backend_driver import cua_driver_runtime_contract_status
 
     monkeypatch.setenv("PATH", "")
@@ -117,7 +117,7 @@ def test_private_start_uses_post_ensure_binary(cua_home, monkeypatch, permission
 
     monkeypatch.setattr(subprocess, "Popen", capture_serve)
     # The stand-in daemon has no real process group: keep it away from the owner-death supervisor.
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
     monkeypatch.setattr(process_identity, "_update_supervised_pgids", lambda verb, pgids: None)
     monkeypatch.setattr(process_identity, "register_child", lambda pid, purpose: None)
     # Re-start the same backend after PM publishes another version as well.

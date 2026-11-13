@@ -90,7 +90,7 @@ def friction_pair(kind: Any, detail: Any) -> tuple[str, str] | None:
 def _store_and_resource() -> tuple[Any, dict[str, str]]:
     """The active profile's store and client resource (the subscriber's), for rows that latch
     durably or belong to a past period and so cannot ride the relay's current-day marks."""
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
 
     from .shared_metrics import SharedMetricsStore
     from .shared_metrics_install import detect_client_install_method
@@ -160,7 +160,7 @@ def _setting_direction(key: str) -> tuple[str, str]:
     """``(setting, direction)`` for a config key the Desktop settings page just saved: the key only if
     it is a DEFAULT_CONFIG leaf (the settings schema), the direction from comparing the saved value to
     the default here in the backend, so the value never leaves this process."""
-    from hermes_cli.config import DEFAULT_CONFIG, load_config
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, load_config
 
     defaults = _setting_leaves(DEFAULT_CONFIG)
     if key not in defaults or len(key) > contract.DESKTOP_SETTING_KEY_MAX_LENGTH:

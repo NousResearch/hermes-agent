@@ -9,7 +9,7 @@ import time
 
 import pm.environments
 import pytest
-from hermes_cli.worktree_ops import _prune_stale_worktrees
+from hermes_agent.hermes_cli.worktree_ops import _prune_stale_worktrees
 from pm.filesystem import lock_fd
 from pm.install_states import collect_orphan_install_states, orphan_install_states
 
@@ -176,7 +176,7 @@ def test_state_used_while_another_orphan_is_removed_is_kept(tmp_path, monkeypatc
     """Candidates are listed before any removal starts; a state launched (lease taken and
     released) while an earlier, large orphan is still being removed is back in use."""
     import pm.install_states
-    from hermes_cli.runtime_state import lease_directory
+    from hermes_agent.hermes_cli.runtime_state import lease_directory
 
     installs = tmp_path / "home" / "installs"
     deleted = _state(installs, "aaaa", tmp_path / "home" / "cache" / "scratch" / "gone")

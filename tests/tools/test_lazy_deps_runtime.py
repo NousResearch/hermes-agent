@@ -12,7 +12,7 @@ import pytest
      "    _hermes_current_updater_frame = True\n"),
 ])
 def test_runtime_lookalikes_do_not_start_updates(module, name, locals_, monkeypatch):
-    from hermes_cli import _old_updater
+    from hermes_agent.hermes_cli import _old_updater
     from hermes_agent.tools.lazy_deps import install_specs
 
     child = Mock(return_value=(0, {}))

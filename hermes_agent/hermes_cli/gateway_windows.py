@@ -26,13 +26,13 @@ from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 from hermes_agent.agent.deadline import poll_until
-from hermes_cli._subprocess_compat import (
+from hermes_agent.hermes_cli._subprocess_compat import (
     _WINDOWS_GATEWAY_BREAKAWAY_ENV,
     windows_detach_flags,
     windows_detach_flags_without_breakaway,
     windows_hide_flags,
 )
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def _assert_windows() -> None:
 
 
 def _hermes_home() -> Path:
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     return Path(get_hermes_home())
 
@@ -234,7 +234,7 @@ def _is_running_as_admin() -> bool:
 
 def _current_profile_cli_args() -> list[str]:
     """Return CLI args that preserve the current Hermes profile."""
-    from hermes_cli.gateway import _profile_arg
+    from hermes_agent.hermes_cli.gateway import _profile_arg
 
     profile_arg = _profile_arg()
     return shlex.split(profile_arg) if profile_arg else []
@@ -249,7 +249,7 @@ def _launch_elevated_gateway_command(command: str, extra_args: list[str] | None 
     All operator decisions are already collected in the parent shell before this point. See #54220, #56747.
     """
     _assert_windows()
-    args = ["-m", "hermes_cli.main", *_current_profile_cli_args(), "gateway", command, *(extra_args or [])]
+    args = ["-m", "hermes_agent.hermes_cli.main", *_current_profile_cli_args(), "gateway", command, *(extra_args or [])]
     params = subprocess.list2cmdline(args)
     cwd = project_root_str()
     try:
@@ -293,7 +293,7 @@ def _launch_elevated_install(force: bool = False, *, start_now: bool | None = No
 def get_task_name() -> str:
     """Scheduled Task name, scoped per profile."""
     _assert_windows()
-    from hermes_cli.gateway import _profile_suffix  # local: avoids circular init during boot
+    from hermes_agent.hermes_cli.gateway import _profile_suffix  # local: avoids circular init during boot
 
     suffix = _profile_suffix()
     return f"{_TASK_NAME_DEFAULT}_{suffix}" if suffix else _TASK_NAME_DEFAULT
@@ -341,7 +341,7 @@ def _startup_staging_path() -> Path:
 def _stable_gateway_working_dir(project_root: Path, home: Path | None = None) -> str:
     """Stable cwd for detached/startup runs: anchor at ``home`` (default HERMES_HOME) when it exists (mirrors
     the POSIX service invariant) so a moved checkout/worktree can't fail the ``cd`` step; else the checkout."""
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     try:
         home = home if home is not None else get_hermes_home()
@@ -355,7 +355,7 @@ def _stable_gateway_working_dir(project_root: Path, home: Path | None = None) ->
 # ── Script rendering
 
 def _gateway_run_argv(python_exe: str, profile_arg: str) -> list[str]:
-    """``python -m hermes_cli.main [--profile X] gateway run`` — shared by every launcher renderer."""
+    """``python -m hermes_agent.hermes_cli.main [--profile X] gateway run`` — shared by every launcher renderer."""
     argv = [python_exe, "-m", "hermes_cli.main"]
     if profile_arg:
         argv.extend(profile_arg.split())
@@ -366,7 +366,7 @@ def _gateway_run_argv(python_exe: str, profile_arg: str) -> list[str]:
 def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
     """Return (python_path, working_dir, hermes_home, profile_arg) for generated launchers.
     ``home`` targets another profile's HERMES_HOME (per-profile cold-start, #110959)."""
-    from hermes_cli.gateway import PROJECT_ROOT, _profile_arg, get_python_path  # avoid circular init
+    from hermes_agent.hermes_cli.gateway import PROJECT_ROOT, _profile_arg, get_python_path  # avoid circular init
 
     hermes_home = str(home if home is not None else _hermes_home())
     return (
@@ -504,7 +504,7 @@ def refresh_dead_launcher(home: Path, task_name: str) -> bool:
     dead launcher (#150448). Only a launcher this installer wrote for ``home`` is touched, and only
     its files: the task and the Startup entry already point at them.
     """
-    from hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text, read_definition
+    from hermes_agent.hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text, read_definition
 
     vbs = home / "gateway-service" / f"{_sanitize_filename(task_name)}.vbs"
     try:
@@ -792,7 +792,7 @@ def _build_gateway_argv(home: Path | None = None) -> tuple[list[str], str, dict[
     """Build (argv, working_dir, env_overlay) for the gateway subprocess — the same logical command
     as gateway.cmd, assembled as a native argv so no cmd.exe layer sits in between."""
     _assert_windows()
-    from hermes_cli.gateway import PROJECT_ROOT
+    from hermes_agent.hermes_cli.gateway import PROJECT_ROOT
 
     python_path, working_dir, hermes_home, profile_arg = _launcher_settings(home)
     python_exe, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
@@ -817,7 +817,7 @@ def windowless_gateway_restart_spec(run_argv: list[str], home: str | None = None
     """
     if not run_argv or sys.platform != "win32":
         return run_argv, "", {}
-    from hermes_cli.gateway import PROJECT_ROOT
+    from hermes_agent.hermes_cli.gateway import PROJECT_ROOT
 
     try:
         hidden_console_python, venv_dir, extra_pythonpath = _resolve_detached_python(run_argv[0])
@@ -930,7 +930,7 @@ def _prompt_install_choices(start_now: bool | None = None, start_on_login: bool 
     if start_now is not None and start_on_login is not None:
         return start_now, start_on_login
 
-    from hermes_cli.setup import prompt_yes_no
+    from hermes_agent.hermes_cli.setup import prompt_yes_no
 
     if start_now is None:
         start_now = prompt_yes_no("Start the gateway now after install?", True)
@@ -973,7 +973,7 @@ def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -
     if running_pids or start_now:
         _start_or_report_running(running_pids)
     else:
-        from hermes_cli.gateway import _profile_arg
+        from hermes_agent.hermes_cli.gateway import _profile_arg
 
         profile_arg = _profile_arg()
         start_cmd = f"hermes {profile_arg} gateway start" if profile_arg else "hermes gateway start"
@@ -984,7 +984,7 @@ def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -
 
 def _offer_elevated_install(headline: str, force: bool, start_now: bool, start_on_login: bool) -> bool:
     """Offer the UAC prompt for a Scheduled Task install. True when handed off to an elevated child."""
-    from hermes_cli.setup import prompt_yes_no
+    from hermes_agent.hermes_cli.setup import prompt_yes_no
 
     print(headline)
     print("  UAC is Windows' admin approval prompt; it is needed to create/update the Scheduled Task.")
@@ -1031,7 +1031,7 @@ def install(
     if force:
         # Pre-suffix strays (task ``Hermes_Gateway``, Startup ``Hermes_Gateway.vbs``) are unreachable by
         # the current names, so a plain reconcile never heals them (#116157).
-        from hermes_cli.gateway_windows_legacy import remove_legacy_launchers
+        from hermes_agent.hermes_cli.gateway_windows_legacy import remove_legacy_launchers
         remove_legacy_launchers()
 
     # On locked-down accounts schtasks can sit for the full timeout before returning Access Denied.
@@ -1090,7 +1090,7 @@ def _live_gateway_pids(
         pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
         pids = [pid] if pid else []
     else:
-        from hermes_cli.gateway import find_gateway_pids
+        from hermes_agent.hermes_cli.gateway import find_gateway_pids
         pids = list(find_gateway_pids(all_profiles=all_profiles))
     return list(pid_filter(pids)) if pid_filter is not None else pids
 
@@ -1166,7 +1166,7 @@ def _write_start_attestation(pids: list[int], via: str, home: Path | None = None
     try:
         path = _start_attestation_path(home)
         path.parent.mkdir(parents=True, exist_ok=True)
-        from hermes_cli.process_identity import _process_create_time
+        from hermes_agent.hermes_cli.process_identity import _process_create_time
 
         payload = {
             "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(UTC).isoformat(),
@@ -1324,7 +1324,7 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
 
     if current_pids is None:
         try:
-            from hermes_cli.gateway import find_gateway_pids
+            from hermes_agent.hermes_cli.gateway import find_gateway_pids
 
             current_pids = list(find_gateway_pids())
         except Exception:
@@ -1412,7 +1412,7 @@ def uninstall() -> None:
             scheduled_task_removed = True
             print(f"✓ Removed Scheduled Task {task_name!r}")
         elif _is_access_denied(detail) and not _is_running_as_admin():
-            from hermes_cli.setup import prompt_yes_no
+            from hermes_agent.hermes_cli.setup import prompt_yes_no
 
             print(f"↻ Scheduled Task uninstall needs administrator approval ({detail or 'access denied'})")
             print("  UAC is Windows' admin approval prompt; it is needed to remove the Scheduled Task.")
@@ -1438,7 +1438,7 @@ def uninstall() -> None:
         except FileNotFoundError:
             pass
 
-    from hermes_cli.gateway_windows_legacy import remove_legacy_launchers
+    from hermes_agent.hermes_cli.gateway_windows_legacy import remove_legacy_launchers
     remove_legacy_launchers()
 
     if is_task_registered() and not scheduled_task_removed:
@@ -1476,7 +1476,7 @@ def registered_task_launchers() -> list[str]:
     it. Empty off Windows, and when Task Scheduler does not answer, as for an unreadable Startup entry."""
     if sys.platform != "win32":
         return []
-    from hermes_cli.gateway_service_owner import service_definition_launchers
+    from hermes_agent.hermes_cli.gateway_service_owner import service_definition_launchers
 
     code, listing, _err = _exec_schtasks(["/Query", "/FO", "CSV", "/NH"], timeout=_TASK_PROBE_TIMEOUT_S)
     names = re.findall(rf'^"\\({_TASK_NAME_DEFAULT}[^"\\]*)"', listing, flags=re.MULTILINE) if code == 0 else []
@@ -1602,7 +1602,7 @@ def query_task_status() -> dict[str, str]:
 
 def _gateway_pids() -> list[int]:
     """Reuse the cross-platform PID scanner in gateway.py."""
-    from hermes_cli.gateway import find_gateway_pids
+    from hermes_agent.hermes_cli.gateway import find_gateway_pids
 
     return list(find_gateway_pids())
 
@@ -1744,7 +1744,7 @@ def status(deep: bool = False) -> None:
         print(f"✓ Windows login item installed: {entry if entry.exists() else _legacy_startup_entry_path()}")
     else:
         print("✗ Gateway service not installed")
-    from hermes_cli.gateway_windows_legacy import warn_legacy_launchers
+    from hermes_agent.hermes_cli.gateway_windows_legacy import warn_legacy_launchers
     warn_legacy_launchers()
 
     print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})" if pids else "✗ No gateway process detected")
@@ -1775,7 +1775,7 @@ def start() -> None:
         # non-TTY default (#113977). Declining still starts the gateway; the command is ``start``.
         start_on_login = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
         if start_on_login is None:
-            from hermes_cli.setup import is_interactive_stdin, is_noninteractive, prompt_yes_no
+            from hermes_agent.hermes_cli.setup import is_interactive_stdin, is_noninteractive, prompt_yes_no
 
             print("✗ Gateway service is not installed")
             if is_noninteractive() or not _stdout_isatty() or not _stdin_is_interactive(
@@ -1820,7 +1820,7 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
 def _windows_stop_drain_timeout() -> float:
     """Bounded stop grace period: a real graceful-drain window, but the CLI must never wedge."""
     try:
-        from hermes_cli.gateway import _get_restart_drain_timeout
+        from hermes_agent.hermes_cli.gateway import _get_restart_drain_timeout
 
         configured = float(_get_restart_drain_timeout() or 30.0)
     except Exception:
@@ -1962,7 +1962,7 @@ def restart() -> None:
                 "start a duplicate. Investigate stray PIDs before retrying."
             )
 
-    from hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
+    from hermes_agent.hermes_cli.gateway import _wait_for_api_server_port_free  # avoid circular init
 
     _wait_for_api_server_port_free()
     _mark_planned_restart()

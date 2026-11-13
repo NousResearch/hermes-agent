@@ -144,7 +144,7 @@ def _browser_env() -> dict:
 
 def _cdp_ready(url: str, timeout: float = 0.2) -> bool:
     try:
-        from hermes_cli.browser_connect import is_browser_debug_ready
+        from hermes_agent.hermes_cli.browser_connect import is_browser_debug_ready
         return is_browser_debug_ready(url, timeout=timeout)
     except Exception as e:
         logger.debug("CDP readiness probe failed for %s: %s", url, e)

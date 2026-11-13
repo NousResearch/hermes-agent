@@ -280,7 +280,7 @@ def test_home_refusing_sockets_listens_on_private_fallback_both_clients_reach(sh
     import os
     import stat
 
-    from hermes_cli.gateway_runtime_discovery import query_identify
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import query_identify
 
     home = short_home.resolve()  # the server resolves its home; macOS /tmp is a symlink to /private/tmp
     home.chmod(0o700)
@@ -400,20 +400,20 @@ def _fake_identity(pid: int, sha: str):
 
 
 def test_collect_fleet_versions_prefers_socket(tmp_path: Path, monkeypatch):
-    import hermes_cli.update_receipt as ur
+    import hermes_agent.hermes_cli.update_receipt as ur
 
     home = tmp_path / ".hermes"
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_code_identity",
+        "hermes_agent.hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_default_hermes_home", lambda: home
+        "hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
+        "hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
     # stale state file that would report a WRONG pid — socket must win
     (home / "gateway_state.json").write_text(
@@ -442,20 +442,20 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     """
     import os
 
-    import hermes_cli.update_receipt as ur
+    import hermes_agent.hermes_cli.update_receipt as ur
 
     home = tmp_path / ".hermes"
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_code_identity",
+        "hermes_agent.hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_default_hermes_home", lambda: home
+        "hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
+        "hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
     monkeypatch.setattr(
         "hermes_agent.gateway.control_socket.identify_gateway", lambda h, **kw: None
@@ -492,7 +492,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
 def test_runtime_inventory_dedupes_same_pid_across_homes(tmp_path: Path, monkeypatch):
     """One multiplex gateway answering identify for two profile homes must
     yield exactly ONE runtime record (reviewer point on #92447)."""
-    import hermes_cli.update_inventory as ui
+    import hermes_agent.hermes_cli.update_inventory as ui
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -500,16 +500,16 @@ def test_runtime_inventory_dedupes_same_pid_across_homes(tmp_path: Path, monkeyp
     (profiles_root / "coder").mkdir(parents=True)
 
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_default_hermes_home", lambda: home
+        "hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: profiles_root
+        "hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: profiles_root
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
+        "hermes_agent.hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway.find_profile_gateway_processes", list
+        "hermes_agent.hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
         "hermes_agent.gateway.control_socket.identify_gateway",
@@ -523,22 +523,22 @@ def test_runtime_inventory_dedupes_same_pid_across_homes(tmp_path: Path, monkeyp
 
 
 def test_runtime_inventory_prefers_socket_supervisor(tmp_path: Path, monkeypatch):
-    import hermes_cli.update_inventory as ui
+    import hermes_agent.hermes_cli.update_inventory as ui
 
     home = tmp_path / ".hermes"
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_default_hermes_home", lambda: home
+        "hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
+        "hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
+        "hermes_agent.hermes_cli.gateway._get_service_pids", lambda all_profiles=False: set()
     )
     monkeypatch.setattr(
-        "hermes_cli.gateway.find_profile_gateway_processes", list
+        "hermes_agent.hermes_cli.gateway.find_profile_gateway_processes", list
     )
     monkeypatch.setattr(
         "hermes_agent.gateway.control_socket.identify_gateway",

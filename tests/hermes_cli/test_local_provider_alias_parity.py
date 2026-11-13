@@ -3,9 +3,9 @@
 The CLI, config, and credential layers each normalise provider names through a
 different table:
 
-* ``hermes_cli.providers.normalize_provider``  (routing / api-mode)
-* ``hermes_cli.models.normalize_provider``     (model picker / web server)
-* ``hermes_cli.auth.resolve_provider``         (credential resolution)
+* ``hermes_agent.hermes_cli.providers.normalize_provider``  (routing / api-mode)
+* ``hermes_agent.hermes_cli.models.normalize_provider``     (model picker / web server)
+* ``hermes_agent.hermes_cli.auth.resolve_provider``         (credential resolution)
 
 Historically these disagreed for the local self-hosted server aliases: bare
 ``local`` stayed ``"local"`` in ``providers`` and ``models`` while ``auth`` mapped
@@ -18,9 +18,9 @@ which the picker's Local row and the staged-library validator key on.
 
 import pytest
 
-from hermes_cli.auth import resolve_provider
-from hermes_cli.models import normalize_provider as models_normalize
-from hermes_cli.providers import LLAMACPP_ALIASES, normalize_provider as providers_normalize
+from hermes_agent.hermes_cli.auth import resolve_provider
+from hermes_agent.hermes_cli.models import normalize_provider as models_normalize
+from hermes_agent.hermes_cli.providers import LLAMACPP_ALIASES, normalize_provider as providers_normalize
 from hermes_agent.providers import get_provider_profile
 
 _CUSTOM_ALIASES = tuple(get_provider_profile("custom").aliases)

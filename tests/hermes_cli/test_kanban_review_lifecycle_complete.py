@@ -16,10 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli import kanban_diagnostics as kd
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_diagnostics as kd
 
 
 @pytest.fixture

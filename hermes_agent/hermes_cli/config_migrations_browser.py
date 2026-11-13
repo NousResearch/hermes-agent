@@ -1,4 +1,4 @@
-"""Config step 51 -> 52 (registered in ``hermes_cli.config_migrations.MIGRATIONS``): agent-browser and the
+"""Config step 51 -> 52 (registered in ``hermes_agent.hermes_cli.config_migrations.MIGRATIONS``): agent-browser and the
 built-in browser_* tools left Hermes, so ``browser.backend`` / ``browser.extension_control`` go and the
 AGENT_BROWSER_* settings a home's .env gave agent-browser move to the ``browser.*`` keys the launcher reads."""
 
@@ -22,7 +22,7 @@ _AGENT_BROWSER_ENV_KEYS = (
 def _agent_browser_env(home) -> dict[str, str]:
     """AGENT_BROWSER_* as *home* set them: its dotenv layers, then the process env for the launch home
     only (a served profile's env is the launch profile's, not its own)."""
-    from hermes_cli.env_loader import resolve_home_dotenv
+    from hermes_agent.hermes_cli.env_loader import resolve_home_dotenv
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
 
     dotenv = resolve_home_dotenv(home)
@@ -123,7 +123,7 @@ def agent_browser_env_pending() -> bool:
     """The active home's config.yaml would still take AGENT_BROWSER_* settings from its .env (the v52 move)."""
     from pathlib import Path
 
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     from hermes_constants import get_hermes_home
 
     config = read_raw_config()
@@ -140,7 +140,7 @@ def adopt_agent_browser_env(home, config: dict) -> list[str]:
     if moved:
         config["browser"] = browser
     if pinned:
-        from hermes_cli.left_core_migration import defer_startup_notice
+        from hermes_agent.hermes_cli.left_core_migration import defer_startup_notice
         for note in pinned:
             defer_startup_notice(f"{note[0].upper()}{note[1:]}.")
     return moved
@@ -157,8 +157,8 @@ def migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
     # browser-extension control lane dispatched to the removed tools, so its key goes too.
     from pathlib import Path
 
-    from hermes_cli.config_migrations import _persist_migration, read_raw_config
-    from hermes_cli.left_core_migration import record_core_use
+    from hermes_agent.hermes_cli.config_migrations import _persist_migration, read_raw_config
+    from hermes_agent.hermes_cli.left_core_migration import record_core_use
     from hermes_constants import get_hermes_home
 
     config = read_raw_config()

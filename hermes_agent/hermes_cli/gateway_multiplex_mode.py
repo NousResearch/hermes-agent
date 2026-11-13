@@ -60,7 +60,7 @@ def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
     ``GATEWAY_MULTIPLEX_PROFILES``, else ``gateway.multiplex_profiles`` (or the top-level alias) as
     written in its config.yaml; ``None`` when neither is set. Raw read on purpose: the callers are
     other processes (``hermes -p X ...`` has X's config loaded) asking about the default's file."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     from hermes_agent.gateway.config import _bool_token, _env_multiplex_profiles_override
     env = _env_multiplex_profiles_override()
     if env is not None:
@@ -68,7 +68,7 @@ def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
     cfg_path = Path(default_home) / "config.yaml"
     if not config_exists(cfg_path):
         return None
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     cfg = read_user_config_raw(cfg_path) or {}
     gateway_section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
     value = cfg.get("multiplex_profiles")
@@ -93,7 +93,7 @@ def host_serves_named_profile(default_home: Path, home: Path) -> Optional[bool]:
     ``False`` for a ``gateway.standalone: true`` secondary (``profiles_to_serve`` never serves it),
     ``True`` for an explicit ``true`` on the default, ``None`` when boot settles it (unset or the
     retired ``false``, see :func:`resolve_multiplex_mode`)."""
-    from hermes_cli.profiles import profile_is_standalone
+    from hermes_agent.hermes_cli.profiles import profile_is_standalone
     if profile_is_standalone(home):
         return False
     return settled_explicit_flag(explicit_multiplex_flag(default_home))
@@ -110,7 +110,7 @@ def default_gateway_multiplexes(default_home: Optional[Path] = None) -> bool:
     it made every CLI surface contradict the gateway that was about to multiplex anyway.
     """
     from hermes_constants import get_default_hermes_root
-    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    from hermes_agent.hermes_cli.gateway_multiplex_served import recorded_served_profiles
     root = Path(default_home) if default_home is not None else get_default_hermes_root()
     recorded = recorded_served_profiles(root)
     if recorded is not None:
@@ -130,7 +130,7 @@ class MultiplexDecision:
 
 def _standalone_launcher() -> bool:
     from hermes_constants import get_hermes_home, profile_name_for_home
-    from hermes_cli.profiles import profile_is_standalone
+    from hermes_agent.hermes_cli.profiles import profile_is_standalone
 
     home = get_hermes_home()
     return profile_name_for_home(home) not in (None, "default") and profile_is_standalone(home)
@@ -162,7 +162,7 @@ def implicit_multiplex_blocker() -> Optional[str]:
     whose only gateway runs under a named profile permanently standalone — and every lifecycle
     verb built on "the default's multiplexer" blind to the process actually serving the host.
     """
-    from hermes_cli.profiles import profiles_to_serve
+    from hermes_agent.hermes_cli.profiles import profiles_to_serve
     if _standalone_launcher():
         return STANDALONE_PROFILE_REASON
     # Cheap and first: a single-profile install has nothing to multiplex, and the fail-closed secret
@@ -171,7 +171,7 @@ def implicit_multiplex_blocker() -> Optional[str]:
     # Parking is reversible without a host restart, so keep the reconcile watcher alive.
     if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
         return SINGLE_PROFILE_REASON
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND, _host_supports_migration, build_migration_plan
+    from hermes_agent.hermes_cli.gateway_migrate import MIGRATE_COMMAND, _host_supports_migration, build_migration_plan
     host_reason = _host_supports_migration()
     if host_reason:
         return host_reason
@@ -197,19 +197,19 @@ def persist_resolved_default(decision: MultiplexDecision, default_home: Optional
     is made explicit ("left unset" was read as "off"), a retired ``false`` is rewritten in place and
     leaves a one-time marker for the boxed notice. Comment-preserving writer, once, and NEVER on a guard
     refusal (the file must not say true while the runtime is standalone). Returns True on a write."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     if not decision.enabled or decision.source == "guard":
         return False
     default_home = Path(default_home) if default_home is not None else _default_profile_home()
     cfg_path = default_home / "config.yaml"
     try:
-        from hermes_cli.config import read_user_config_raw
+        from hermes_agent.hermes_cli.config import read_user_config_raw
         cfg = read_user_config_raw(cfg_path) or {} if config_exists(cfg_path) else {}
         section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
         in_file = cfg.get("multiplex_profiles", section.get("multiplex_profiles"))
         if in_file is True:
             return False
-        from hermes_cli.gateway_migrate import _write_multiplex_flag
+        from hermes_agent.hermes_cli.gateway_migrate import _write_multiplex_flag
         _write_multiplex_flag(default_home, True)
         if decision.source == "retired-opt-out":
             (default_home / REWRITTEN_MARKER_NAME).write_text(RETIRED_OPT_OUT_REASON + "\n", encoding="utf-8")
@@ -334,7 +334,7 @@ def log_multiplex_decision(decision: MultiplexDecision) -> None:
 def unserved_profiles() -> list[str]:
     """Named profiles a standalone gateway leaves without a bot (the whole point of the warning)."""
     from hermes_constants import get_hermes_home, profile_name_for_home
-    from hermes_cli.profiles import profiles_to_serve
+    from hermes_agent.hermes_cli.profiles import profiles_to_serve
     me = profile_name_for_home(get_hermes_home()) or "default"
     return [name for name, _home in profiles_to_serve(multiplex=True, include_parked=True) if name != me]
 
@@ -355,7 +355,7 @@ def standalone_warning_lines(decision: MultiplexDecision, unserved: Optional[lis
             unserved = []
     if not unserved:
         return []
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    from hermes_agent.hermes_cli.gateway_migrate import MIGRATE_COMMAND
     body = [
         "⚠ This gateway is STANDALONE: it serves only its own profile.",
         "Profiles NOT served (their bots stay silent): " + ", ".join(unserved),

@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-import hermes_cli.browser_connect as bc
+import hermes_agent.hermes_cli.browser_connect as bc
 
 _LOCKED = ("Login Data", "Login Data For Account", "Web Data")
 

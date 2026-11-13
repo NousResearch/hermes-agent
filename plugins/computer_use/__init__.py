@@ -89,7 +89,7 @@ class _ProviderCollector(_loader.NoopPluginContext):
 
 def configured_backend_name() -> str:
     """``computer_use.backend`` from the active profile's config.yaml (``cua`` when unset)."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
 
     raw = ((load_config_readonly() or {}).get("computer_use") or {}).get("backend")
     return raw.strip() if isinstance(raw, str) and raw.strip() else DEFAULT_BACKEND

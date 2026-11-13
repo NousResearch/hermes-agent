@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_cmd_commit as commit
-from hermes_cli.update_host_obligation import host_obligation_path
+from hermes_agent.hermes_cli import update_cmd_commit as commit
+from hermes_agent.hermes_cli.update_host_obligation import host_obligation_path
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +36,7 @@ def root(tmp_path) -> Path:
 
 def test_arm_refuses_when_no_store_accepts_the_fleet_restart(root):
     """Both the host record and the per-home breadcrumb unwritable: the move must not start (F26)."""
-    from hermes_cli.update_cmd_fleet import _fleet_restart_pending_marker_path
+    from hermes_agent.hermes_cli.update_cmd_fleet import _fleet_restart_pending_marker_path
 
     host_obligation_path().mkdir(parents=True)  # a directory where the record goes
     _fleet_restart_pending_marker_path().mkdir(parents=True)
@@ -123,10 +123,10 @@ def test_a_refused_pull_after_the_branch_switch_owes_the_head_the_switch_landed_
     obligation used to stay on B, which the checkout at A never contains, while disarm refused
     (HEAD != X): an undischargeable debt (review C1). It must name A, and the refusal must not
     claim the checkout was untouched."""
-    import hermes_cli.main as hermes_main
-    from hermes_cli import update_cmd
-    from hermes_cli._early_recovery import interrupted_pull_marker
-    from hermes_cli.update_host_obligation import read_host_obligation
+    import hermes_agent.hermes_cli.main as hermes_main
+    from hermes_agent.hermes_cli import update_cmd
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     up, clone = tmp_path / "up", tmp_path / "clone"
     up.mkdir()
@@ -177,7 +177,7 @@ def test_one_installs_disarm_never_deletes_another_installs_debt_for_the_same_sh
     """Install A and install B both arm SHA X. Same-SHA arms share one host record, so a byte
     compare cannot tell them apart: A's failed run used to delete the record B still owes through
     (review C2). A's disarm hands back only A's stake; the last owner to leave puts back what the first found."""
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     other = tmp_path / "other-install"
     other.mkdir()
@@ -198,7 +198,7 @@ def test_one_installs_disarm_never_deletes_another_installs_debt_for_the_same_sh
 
 def _abc_clone(tmp_path, monkeypatch):
     """Upstream commits A, B, C; a clone of it with PROJECT_ROOT pointed at it. Returns (clone, a, b, c)."""
-    import hermes_cli.main as hermes_main
+    import hermes_agent.hermes_cli.main as hermes_main
 
     up, clone = tmp_path / "up", tmp_path / "clone"
     up.mkdir()
@@ -232,9 +232,9 @@ def _move_ref_after_arm(monkeypatch, clone, ref, sha):
 def test_the_pull_merges_the_armed_commit_not_a_tracking_ref_that_moved(tmp_path, monkeypatch):
     """CP1 armed B, then origin/main moved to C before ``merge --ff-only origin/main``: HEAD landed C
     while the debt named B and the marker was gone (review O3). The merge names the armed OID."""
-    from hermes_cli import update_cmd
-    from hermes_cli._early_recovery import interrupted_pull_marker
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli import update_cmd
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     clone, a, b, c = _abc_clone(tmp_path, monkeypatch)
     _git(clone, "reset", "-q", "--hard", a)
@@ -253,9 +253,9 @@ def test_a_branch_that_moves_during_the_switch_leaves_head_and_debt_agreeing(tmp
     """CP0 resolved main to A and armed A, then main moved to B before ``checkout main``: the switch
     landed B, reported success and dropped the marker while the debt named A (review O2). It must
     refuse, with the debt following the HEAD it landed on."""
-    from hermes_cli import update_cmd
-    from hermes_cli._early_recovery import interrupted_pull_marker
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli import update_cmd
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     clone, a, b, _c = _abc_clone(tmp_path, monkeypatch)
     _git(clone, "reset", "-q", "--hard", a)
@@ -322,7 +322,7 @@ def test_an_owner_leaving_a_shared_record_for_another_target_hands_the_others_st
     """Installs X and Y joined one record for SHA S; X then retargets to T and fails. Y's stake
     (and the first owner's baseline) comes back, and Y's own release then restores what stood
     before either of them (review R1)."""
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     host = host_obligation_path()
     host.parent.mkdir(parents=True, exist_ok=True)
@@ -349,8 +349,8 @@ def test_a_second_update_in_one_process_never_hands_back_the_first_updates_debt(
     delete B's debt as its own undo (review O5). ``_cmd_update_impl`` starts a fresh attempt."""
     from types import SimpleNamespace
 
-    from hermes_cli import update_cmd
-    from hermes_cli.venv_sync import completion_pending_path
+    from hermes_agent.hermes_cli import update_cmd
+    from hermes_agent.hermes_cli.venv_sync import completion_pending_path
 
     commit.arm_commit_obligations(root, "b" * 40)  # update 1: committed, nothing handed back
     tail, host = completion_pending_path(root), host_obligation_path()
@@ -377,7 +377,7 @@ def test_disarm_restores_through_an_unpredictable_temp_and_leaves_every_sibling(
     """The restore used a fixed ``.<name>.<pid>.restore`` temp and unlinked whatever stood there
     first: a user's ordinary file of that name was deleted (review O1). Nothing at the old name, or
     any alias target, is touched; the record still comes back."""
-    from hermes_cli.venv_sync import completion_pending_path
+    from hermes_agent.hermes_cli.venv_sync import completion_pending_path
 
     tail = completion_pending_path(root)
     tail.parent.mkdir(parents=True, exist_ok=True)
@@ -412,7 +412,7 @@ def test_an_arm_racing_a_release_is_never_undone_by_it(root, monkeypatch):
     write under one mutex, so the racing arm lands after the release, never under it."""
     import threading
 
-    from hermes_cli.update_host_obligation import read_host_obligation, write_host_obligation
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation, write_host_obligation
 
     commit.arm_commit_obligations(root, "a" * 40)  # run X, over an absent record
     host, real_unlink, racer = host_obligation_path(), Path.unlink, []

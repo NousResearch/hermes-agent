@@ -277,7 +277,7 @@ def adopt_legacy_session(authority, actor, row):
     from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
     from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.hermes_state_local import commit_local_session
-    from hermes_cli.active_sessions import active_session_liveness_guard, ActiveSessionRegistryError
+    from hermes_agent.hermes_cli.active_sessions import active_session_liveness_guard, ActiveSessionRegistryError
 
     request_id = 'legacy:' + row['id']
     sid = row['id']
@@ -291,7 +291,7 @@ def adopt_legacy_session(authority, actor, row):
     if 'provider' not in params and params.get('model') and params['model'] != _profile_default(model_cfg):
         # A row with a model but no provider would run on the profile's slot, which serves another model
         # (#132648); its saved URL/wire may be stamps of exactly those misrouted turns.
-        from hermes_cli.runtime_provider_custom import empty_provider_identity
+        from hermes_agent.hermes_cli.runtime_provider_custom import empty_provider_identity
         if healed := empty_provider_identity(params.get('base_url'), params['model']):
             params['provider'] = healed
             params.pop('base_url', None)

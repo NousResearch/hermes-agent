@@ -24,13 +24,13 @@ def should_run(*, assume_fresh: bool = False) -> bool:
     value = _explicit_run()
     if value is not None:
         return value
-    from hermes_cli.install_state import probe
+    from hermes_agent.hermes_cli.install_state import probe
 
     return assume_fresh or probe().fresh
 
 
 def _explicit_run() -> bool | None:
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
 
     # Not load_config(): it resolves the launch profile and fills the default None for an unset flag.
     section = load_user_config_effective(_root_config()).get("onboarding")
@@ -42,7 +42,7 @@ def latch_first_install() -> bool:
     """The desktop backend's first boot on a fresh install records the decision: ``onboarding.run:
     true`` and the trial reserved. A launch that misses the run (a late answer, the app closed, the
     user chatting first) then stays due until a run ends. True when it wrote them."""
-    from hermes_cli.install_state import probe, reserve_trial
+    from hermes_agent.hermes_cli.install_state import probe, reserve_trial
 
     if _explicit_run() is not None or not probe().fresh:
         return False
@@ -55,7 +55,7 @@ def set_run(value: bool, *, mark_profile_offered: bool = False) -> None:
     """Persist ``onboarding.run`` (and, with *mark_profile_offered*, ``onboarding.seen.profile_build_offered``)
     in the root ``config.yaml`` as one write, keeping every other key and comment. A failed write raises."""
     from hermes_agent.agent.onboarding import PROFILE_BUILD_FLAG
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     path = _root_config()
     with config_mod._CONFIG_LOCK:
@@ -65,6 +65,6 @@ def set_run(value: bool, *, mark_profile_offered: bool = False) -> None:
         if mark_profile_offered:
             config_mod._ensure_dict(section, "seen")[PROFILE_BUILD_FLAG] = True
         config_mod.atomic_config_write(path, config)
-    from hermes_cli import onboarding_due
+    from hermes_agent.hermes_cli import onboarding_due
 
     onboarding_due.invalidate()

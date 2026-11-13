@@ -4,8 +4,8 @@ import os
 
 from hermes_agent.agent import kanban_turn_recovery as rec
 from hermes_agent.gateway import session_kanban
-from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_db_connect import connect_closing
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli.kanban_db_connect import connect_closing
 
 FAILED = {"failed": True, "failure_retryable": True, "failure_reason": "timeout",
           "error": "stream died", "messages": [{"role": "user", "content": "first"}]}
@@ -71,7 +71,7 @@ def test_failed_turn_retries_in_place_from_frame_carrier(tmp_path, monkeypatch):
 def test_unprovable_claim_denies_retry_and_goal_continuation(tmp_path, monkeypatch):
     path, context, frame = _claimed_frame(tmp_path, monkeypatch, expired=True, goal_mode=True)
     goal_calls = []
-    monkeypatch.setattr("hermes_cli.goals.run_kanban_goal_loop", lambda **kw: goal_calls.append(kw))
+    monkeypatch.setattr("hermes_agent.hermes_cli.goals.run_kanban_goal_loop", lambda **kw: goal_calls.append(kw))
     agent = _Agent([dict(FAILED)])
 
     result = session_kanban.run_worker_turns(agent, frame, [])

@@ -121,7 +121,7 @@ class TestCallbackSubprocess:
         """Registering via register_from_config makes
         get_pre_tool_call_block_message surface the block — the real
         end-to-end control flow used by hermes_agent.run_agent._invoke_tool."""
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_script(
             tmp_path, "block.sh",
@@ -154,7 +154,7 @@ class TestCallbackSubprocess:
     def test_approve_reaches_the_human_gate_through_plugin_manager(self, tmp_path, monkeypatch):
         """End to end: a shell hook's approve directive escalates to request_tool_approval with its
         message and rule_key, and the gate's denial blocks the tool (#92553)."""
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_script(
             tmp_path, "approve.sh",
@@ -308,7 +308,7 @@ class TestParseHooksBlock:
 
 class TestIdempotentRegistration:
     def test_double_call_registers_once(self, tmp_path, monkeypatch):
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_script(tmp_path, "h.sh",
                                "#!/usr/bin/env bash\nprintf '{}\\n'\n")
@@ -332,7 +332,7 @@ class TestIdempotentRegistration:
     ):
         """Same script used for different matchers under one event must
         register both callbacks — dedupe keys on (event, matcher, command)."""
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_script(tmp_path, "h.sh",
                                "#!/usr/bin/env bash\nprintf '{}\\n'\n")
@@ -756,7 +756,7 @@ def test_real_tool_hooks_receive_only_the_owning_workers_identity(tmp_path, monk
     from hermes_agent.agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
     from hermes_agent.agent.agent_runtime_helpers import _pre_tool_block_message
     from hermes_agent.agent.inline_tool_executors import emit_terminal_post_tool_call
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))

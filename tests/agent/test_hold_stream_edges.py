@@ -29,7 +29,7 @@ def _write_plugin(home: Path, body: str) -> None:
 
 
 def test_reload_during_a_held_turn_cannot_skip_the_final_rewrite(monkeypatch):
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     home = Path(os.environ["HERMES_HOME"])
     gate = types.ModuleType("hold_reload_gate")
@@ -74,7 +74,7 @@ def test_reload_during_a_held_turn_cannot_skip_the_final_rewrite(monkeypatch):
 
 
 def test_held_transform_that_raises_withholds_the_reply():
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     home = Path(os.environ["HERMES_HOME"])
     with FakeLLMServer([Text(RAW)]) as server:
@@ -103,7 +103,7 @@ def _assistant_commentary(request: dict) -> list:
 
 def test_held_commentary_stays_out_of_history_but_in_the_model_context():
     from hermes_agent.gateway.session_controls import display_projection
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
     from hermes_agent.hermes_state import SessionDB
 
     home = Path(os.environ["HERMES_HOME"])
@@ -139,7 +139,7 @@ def test_held_commentary_stays_out_of_history_but_in_the_model_context():
 def test_codex_reply_that_failed_after_its_text_is_still_rewritten(monkeypatch):
     from hermes_agent.agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
     from hermes_agent.gateway.session_controls import display_projection
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
     from tests.agent.test_codex_app_server_integration import _make_codex_agent
 
     home = Path(os.environ["HERMES_HOME"])

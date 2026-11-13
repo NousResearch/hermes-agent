@@ -10,7 +10,7 @@ import pytest
 from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 
 CHILD = """import json, os, sys, psutil
-from hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
 out.write((json.dumps({'type': 'hello', 'pid': me.pid, 'birth': worker_birth(me),

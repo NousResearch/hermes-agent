@@ -8,7 +8,7 @@ there, the channel read (Python) passed and the next ``git fetch`` failed. The m
 import os
 import subprocess
 
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd
 
 
 def _git_config(configured: str | None):

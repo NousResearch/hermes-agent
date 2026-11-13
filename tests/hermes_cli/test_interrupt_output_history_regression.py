@@ -22,8 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import cli as cli_mod
-from cli import HermesCLI, _suspend_output_history
+import hermes_agent.cli as cli_mod
+from hermes_agent.cli import HermesCLI, _suspend_output_history
 
 
 @pytest.fixture(autouse=True)
@@ -54,7 +54,7 @@ class TestRecoverTerminalPreservesHistory:
         cli = object.__new__(HermesCLI)
         cli._force_full_redraw = MagicMock()
 
-        with patch("hermes_cli.curses_ui.flush_stdin"):
+        with patch("hermes_agent.hermes_cli.curses_ui.flush_stdin"):
             cli._recover_terminal_after_interrupt()
 
         assert list(cli_mod._OUTPUT_HISTORY) == ["normal response text"], (
@@ -71,7 +71,7 @@ class TestRecoverTerminalPreservesHistory:
         cli = object.__new__(HermesCLI)
         cli._force_full_redraw = MagicMock()
 
-        with patch("hermes_cli.curses_ui.flush_stdin"):
+        with patch("hermes_agent.hermes_cli.curses_ui.flush_stdin"):
             cli._recover_terminal_after_interrupt()
 
         assert len(cli_mod._OUTPUT_HISTORY) == 5

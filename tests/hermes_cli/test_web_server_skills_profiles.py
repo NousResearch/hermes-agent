@@ -9,8 +9,8 @@ profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
 import pytest
 import hermes_yaml as yaml
-import hermes_cli.web_server_gateway as _web_server_gateway
-import hermes_cli.web_server_profiles as _web_server_profiles
+import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_agent.hermes_cli.web_server_profiles as _web_server_profiles
 
 
 def _write_skill(skills_dir, name, description="test skill"):
@@ -26,7 +26,7 @@ def _write_skill(skills_dir, name, description="test skill"):
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated default home + one named profile, each with its own skills."""
     from hermes_constants import get_hermes_home
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = get_hermes_home()
     profiles_root = default_home / "profiles"
@@ -52,7 +52,7 @@ def client(monkeypatch, isolated_profiles):
 
     from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
@@ -169,7 +169,7 @@ class TestProfileScopedHubActions:
         """Hub installs must go through a fresh ``hermes -p <profile>``
         subprocess — the in-process scope can't reach skills_hub's
         import-time SKILLS_DIR binding."""
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
 
         calls = []
 

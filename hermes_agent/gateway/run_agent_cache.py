@@ -17,9 +17,9 @@ from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.session import SessionSource, build_session_context_prompt
 from hermes_agent.gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
 from hermes_agent.gateway.run_shutdown import _log_suppressed
-from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
-from hermes_cli.observability.shared_metrics_busy import observe_running_chats
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_agent.hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+from hermes_agent.hermes_cli.observability.shared_metrics_busy import observe_running_chats
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from hermes_agent.gateway.run import GatewayRunner
@@ -163,7 +163,7 @@ class GatewayAgentCacheMixin:
             return
         override: dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
         provider = persisted.get("provider")
-        from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+        from hermes_agent.hermes_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
             override["base_url"] = None  # left over from a switch that kept the previous provider's URL
         if provider:
@@ -180,7 +180,7 @@ class GatewayAgentCacheMixin:
                     # The managed llama.cpp supervisor owns its live port; a persisted loopback URL from a
                     # boot that fell back to an ephemeral port would strand the session on a dead endpoint.
                     override["base_url"] = runtime.get("base_url")
-                from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+                from hermes_agent.hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
                 if opencode_provider_family(provider) is not None and override.get("base_url"):
                     # api_mode was just re-derived from the target model; a relay URL persisted by an older
                     # build for another wire (/v1-stripped) or the other family is healed to match (#96066).
@@ -286,12 +286,12 @@ class GatewayAgentCacheMixin:
         # Vendor prefix stripped on native providers, else the cached agent is evicted every turn,
         # destroying prompt caching.
         with suppress(Exception):
-            from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
+            from hermes_agent.hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
             if provider and provider not in _AGGREGATOR_PROVIDERS:
                 model = normalize_model_for_provider(model, provider)
         # The Nous welcome host runs its one model whatever the chat configured (pin_model_for_route).
         with suppress(Exception):
-            from hermes_cli.anon_auth import pin_model_for_route
+            from hermes_agent.hermes_cli.anon_auth import pin_model_for_route
             model = pin_model_for_route(provider, primary.get("base_url", getattr(agent, "base_url", None)), model)
         return model
 
@@ -573,7 +573,7 @@ class GatewayAgentCacheMixin:
             # running-agent fast path; the pending-sentinel /stop has no in-flight work, so it stays
             # silent. Dispatch failures are swallowed so a misbehaving plugin cannot break an interrupt.
             try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                from hermes_agent.hermes_cli.plugins import invoke_hook as _invoke_hook
 
                 _invoke_hook(
                     "agent_loop_stopped",
@@ -1103,7 +1103,7 @@ class GatewayAgentCacheMixin:
                 logger.debug("Pressure release failed for %s: %s", key, _e)
             del agent
         with suppress(Exception):
-            from hermes_cli.mem_trim import trim_memory
+            from hermes_agent.hermes_cli.mem_trim import trim_memory
             trim_memory(force=True, reason="agent_cache_pressure")
 
     def _enforce_agent_cache_cap(self) -> None:

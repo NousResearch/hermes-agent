@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_cli.auth import PROVIDER_REGISTRY
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
 
 def _runner(monkeypatch, tmp_path):
@@ -98,8 +98,8 @@ async def test_recorded_explicit_routes_keep_their_own_key(tmp_path, monkeypatch
     runner._async_session_store = SimpleNamespace(_store=None, set_model_override=AsyncMock())
     runner._evict_cached_agent = Mock()
     ctx = SimpleNamespace(session_key="session", current_model="old-model", persist_global=False)
-    from hermes_cli.model_switch import DirectAlias
-    monkeypatch.setattr("hermes_cli.model_switch.DIRECT_ALIASES", {
+    from hermes_agent.hermes_cli.model_switch import DirectAlias
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.DIRECT_ALIASES", {
         alias: DirectAlias("selected-model", provider, endpoint, api_key="explicit-key")
     } if alias else {})
     result = ModelSwitchResult(
@@ -122,17 +122,17 @@ async def test_recorded_explicit_routes_keep_their_own_key(tmp_path, monkeypatch
     ("xai-oauth", "grok", "grok-fixture"),
 ])
 async def test_catalog_alias_producer_keeps_managed_credential_ownership(tmp_path, monkeypatch, provider, alias, selected):
-    from hermes_cli.model_switch import switch_model
+    from hermes_agent.hermes_cli.model_switch import switch_model
 
     runner = _runner(monkeypatch, tmp_path)
     endpoint = PROVIDER_REGISTRY[provider].inference_base_url
-    monkeypatch.setattr("hermes_cli.model_switch.DIRECT_ALIASES", {})
-    monkeypatch.setattr("hermes_cli.model_switch.list_provider_models", lambda *_: [selected])
-    monkeypatch.setattr("hermes_cli.models._PROVIDER_MODELS", {})
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {"accepted": True})
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **k: {
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.DIRECT_ALIASES", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.list_provider_models", lambda *_: [selected])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models._PROVIDER_MODELS", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *a, **k: {"accepted": True})
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", lambda **k: {
         "provider": provider, "api_key": "switch-key", "base_url": endpoint, "api_mode": "codex_responses"})
     result = switch_model(alias, provider, "old-model", endpoint, "switch-key")
     assert result.success, result.error_message

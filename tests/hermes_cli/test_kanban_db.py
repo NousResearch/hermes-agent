@@ -1,4 +1,4 @@
-"""Tests for the Kanban DB layer (hermes_cli.kanban_db)."""
+"""Tests for the Kanban DB layer (hermes_agent.hermes_cli.kanban_db)."""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 
 from hermes_agent import hermes_state_wal
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli import kanban_db_workspace as kbw
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_db_workspace as kbw
 
 
 @pytest.fixture
@@ -216,7 +216,7 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
     (#23025: previous payload only had ``stale_lock`` which gives no
     timing context)."""
     import json
-    import hermes_cli.kanban_db as _kb
+    import hermes_agent.hermes_cli.kanban_db as _kb
 
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
@@ -278,7 +278,7 @@ def test_stale_claim_extend_live_worker_does_not_count_failure(
 ):
     """The live-worker extend path must NOT increment ``consecutive_failures``
     (#111306): extending a still-alive worker's claim is not a failure."""
-    import hermes_cli.kanban_db as _kb
+    import hermes_agent.hermes_cli.kanban_db as _kb
 
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="live worker", assignee="a")
@@ -327,8 +327,8 @@ def test_rate_limit_exit_requeues_without_counting_failure(
     """A rate-limit sentinel exit releases the task to ``ready`` and leaves
     ``consecutive_failures`` untouched — the breaker must never trip on a
     transient throttle, even across many quota-wall hits."""
-    import hermes_cli.kanban_db as _kb
-    from hermes_cli import kanban_db_dispatch as _kbd
+    import hermes_agent.hermes_cli.kanban_db as _kb
+    from hermes_agent.hermes_cli import kanban_db_dispatch as _kbd
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
@@ -390,8 +390,8 @@ def test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane(kanban_h
     gone) parks the card ``blocked`` on the FIRST death — well below ``failure_limit`` and the
     per-task ``max_retries`` — with the provider error as the reason, sticky against
     ``recompute_ready``. Same booking for the implementation and the review lane (#114587)."""
-    import hermes_cli.kanban_db as _kb
-    from hermes_cli import kanban_db_dispatch as _kbd
+    import hermes_agent.hermes_cli.kanban_db as _kb
+    from hermes_agent.hermes_cli import kanban_db_dispatch as _kbd
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
     monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
@@ -436,7 +436,7 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
     """Within the cooldown after a rate-limit requeue, the guard defers the
     respawn; after the cooldown it allows a probe — and crucially does NOT
     fall into ``blocker_auth`` (which would defer forever)."""
-    import hermes_cli.kanban_db as _kb
+    import hermes_agent.hermes_cli.kanban_db as _kb
 
     monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
     now = 5_000_000
@@ -1245,7 +1245,7 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
             *args, factory=_WalBlockingConnection, **kwargs
         )
 
-    with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
+    with _patch("hermes_agent.hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
         with caplog.at_level("ERROR", logger="hermes_agent.hermes_state"):
             conn = kbc.connect()
 
@@ -1299,7 +1299,7 @@ def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplo
         )
 
     with _patch(
-        "hermes_cli.kanban_db.sqlite3.connect",
+        "hermes_agent.hermes_cli.kanban_db.sqlite3.connect",
         side_effect=wal_silent_noop_connect,
     ):
         with caplog.at_level("ERROR", logger="hermes_agent.hermes_state"):
@@ -1323,7 +1323,7 @@ def test_connect_works_when_wal_is_silently_refused(tmp_path, monkeypatch, caplo
 
 def test_sqlite_connect_closes_tracked_conn_on_setup_failure(tmp_path, monkeypatch):
     """A PRAGMA failure after connect must not abandon a tracked kanban fd."""
-    from hermes_cli import sqlite_safe_read
+    from hermes_agent.hermes_cli import sqlite_safe_read
 
     db_path = tmp_path / "kanban.db"
     real_connect = sqlite3.connect
@@ -1492,7 +1492,7 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
     """
     import sqlite3
 
-    from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+    from hermes_agent.hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -1581,7 +1581,7 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     explicit ``$HERMES_BIN`` overrides it."""
     import shutil
     import sys
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
@@ -1597,13 +1597,13 @@ def test_resolve_hermes_argv_module_actually_runs():
     """The fallback module name must be importable + runnable.
 
     A unit test that pins the literal string is necessary but not
-    sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
-    handling or its argparse setup, `python -m hermes_cli.main --version`
+    sufficient — if `hermes_agent.hermes_cli.main` ever loses `if __name__ == "__main__"`
+    handling or its argparse setup, `python -m hermes_agent.hermes_cli.main --version`
     would fail and so would every dispatcher spawn that hits the fallback.
     Run it as a real subprocess to catch that regression.
     """
     import subprocess
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
     import shutil
     from unittest import mock
 
@@ -1622,7 +1622,7 @@ def test_resolve_hermes_argv_module_actually_runs():
 def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monkeypatch):
     """The dispatcher's worker must carry the import context of the install that spawned it.
 
-    The worker is always ``sys.executable -m hermes_cli.kanban_worker_client`` (it only submits
+    The worker is always ``sys.executable -m hermes_agent.hermes_cli.kanban_worker_client`` (it only submits
     the claim to the profile owner), and the worker env scrub strips Hermes-owned PYTHONPATH
     entries, so a bare module child died on import and the board auto-blocked (#122299,
     #122487, #122500). The spawned env must put the running install's root first on
@@ -1634,7 +1634,7 @@ def test_default_spawn_pins_repo_root_on_module_worker_pythonpath(tmp_path, monk
     import sys
     from pathlib import Path
 
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 
     root = str(Path(kbd.__file__).resolve().parents[1])
     home = tmp_path / ".hermes"
@@ -1976,8 +1976,8 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
     way the file must never come back clean.
     """
     import struct
-    from hermes_cli.kanban_db_connect import connect
-    from hermes_cli.sqlite_safe_read import file_length_matches_header
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli.sqlite_safe_read import file_length_matches_header
 
     db = tmp_path / "synthetic.db"
     conn = connect(db_path=db)

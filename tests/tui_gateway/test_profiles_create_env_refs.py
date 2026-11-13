@@ -49,7 +49,7 @@ def test_a_full_clone_of_the_active_profile_gets_no_bundled_skills(tmp_path, mon
     monkeypatch.setenv("HERMES_HOME", str(home))
     (home / "config.yaml").write_text("{}\n", encoding="utf-8")
     seeded: list[Path] = []
-    monkeypatch.setattr("hermes_cli.profiles.seed_profile_skills", lambda path, **_kw: seeded.append(path) or {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.seed_profile_skills", lambda path, **_kw: seeded.append(path) or {})
 
     _ok("profiles.create", {"name": "copy", "clone_all": True, "no_alias": True})
     _ok("profiles.create", {"name": "fresh", "no_alias": True})

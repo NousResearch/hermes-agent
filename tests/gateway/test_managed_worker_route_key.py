@@ -202,16 +202,16 @@ def test_primary_auth_failure_never_borrows_a_fallback_providers_key(tmp_path, m
     def resolve(config, **kwargs):
         calls.append(kwargs)
         return {'provider': 'openrouter', 'api_key': 'fake-other-provider'}, {'provider': 'openrouter', 'model': 'x'}
-    monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_with_fallback', resolve)
-    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
+    monkeypatch.setattr('hermes_agent.hermes_cli.runtime_provider.resolve_runtime_with_fallback', resolve)
+    monkeypatch.setattr('hermes_agent.hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
     built = _execute(_minimax_frame(tmp_path, monkeypatch), monkeypatch)
     assert calls and built['api_key'] is None
 
 
 def _kanban_failures():
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.auth import AuthError
-    from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
     return [(AuthError('quota', provider='openai-codex', code=CODEX_RATE_LIMITED_CODE), kb.KANBAN_RATE_LIMIT_EXIT_CODE),
             (AuthError('relogin', provider='nous', relogin_required=True), kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE)]
 
@@ -229,7 +229,7 @@ def test_keyless_worker_credential_failure_keeps_the_kanban_start_exit(tmp_path,
 
     def resolve(**kwargs):
         raise error
-    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', resolve)
+    monkeypatch.setattr('hermes_agent.hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', resolve)
     # Only the HERMES_KANBAN_* environment binding is skipped (it writes os.environ directly).
     monkeypatch.setattr(session_kanban, 'bind_worker_context', lambda frame: None)
     built = {}
@@ -251,7 +251,7 @@ def _with_turn_chain(frame, chain):
 
 
 def _primary_auth_failure(monkeypatch, fallback_ok):
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
     calls = []
 
     def resolve(requested=None, **kwargs):
@@ -259,8 +259,8 @@ def _primary_auth_failure(monkeypatch, fallback_ok):
         if requested == FALLBACK['provider'] and fallback_ok:
             return {'provider': 'openrouter', 'api_key': 'fake-fallback', 'base_url': 'https://openrouter.ai/api/v1'}
         raise AuthError('relogin', provider='nous', relogin_required=True)
-    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
-    monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_provider', resolve)
+    monkeypatch.setattr('hermes_agent.hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
+    monkeypatch.setattr('hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider', resolve)
     return calls
 
 
@@ -276,8 +276,8 @@ def test_primary_auth_failure_reaches_the_turns_refreshed_fallback_chain(tmp_pat
 
 def test_primary_auth_failure_with_an_unusable_turn_chain_keeps_the_kanban_start_exit(tmp_path, monkeypatch):
     from hermes_agent.gateway import session_kanban
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.auth import AuthError
     from tests.gateway.test_kanban_result_exit import _bound_claim
     path, context = _bound_claim(tmp_path / 'kanban', monkeypatch)
     frame = _with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK])
@@ -297,8 +297,8 @@ def test_keyless_worker_on_a_fallback_never_sends_its_key_to_the_primary_endpoin
     is constructed; this does not drive a turn through the fallback."""
     fallback_key = 'fake-fallback-' + secrets.token_hex(8)
     monkeypatch.delenv(KEY_ENV, raising=False)
-    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
-    monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_with_fallback', lambda config, **kw: (
+    monkeypatch.setattr('hermes_agent.hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
+    monkeypatch.setattr('hermes_agent.hermes_cli.runtime_provider.resolve_runtime_with_fallback', lambda config, **kw: (
         {'provider': 'openrouter', 'api_key': fallback_key, 'base_url': 'https://openrouter.ai/api/v1'},
         {'provider': 'openrouter', 'model': 'fallback-model'}))
     clients = []

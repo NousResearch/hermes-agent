@@ -194,7 +194,7 @@ sys.path.insert(0, str(root))
 from pm.lock import Facts, Lockfile
 from pm.packages import Venv
 from pm.environments import install_state_dir, runtime_facts_path, site_packages
-from hermes_cli._launchers import ensure_install_launchers
+from hermes_agent.hermes_cli._launchers import ensure_install_launchers
 lock = Lockfile(root / 'pm/lock.json')
 lock.set_pin('node', 'fixture', {})
 lock.save()
@@ -247,7 +247,7 @@ for (const [product, out] of [['tui', 'ui-tui/dist'], ['web', 'hermes_cli/web_di
     elif fault == "foreign-launcher":
         foreign = tmp_path / "foreign"
         shutil.copytree(root, foreign)
-        from hermes_cli._launchers import mint_launcher
+        from hermes_agent.hermes_cli._launchers import mint_launcher
         launcher = mint_launcher("hermes", foreign, root / ".hermes/bin", Path(sys.executable), None)
         assert launcher is not None
     elif fault == "missing-launcher":

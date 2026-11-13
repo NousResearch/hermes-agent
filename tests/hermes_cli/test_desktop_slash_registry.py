@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from hermes_cli.commands import COMMAND_REGISTRY, desktop_surface_registry, resolve_command
+from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY, desktop_surface_registry, resolve_command
 
 ROOT = Path(__file__).resolve().parents[2]
 DUMP = ROOT / "apps" / "desktop" / "src" / "lib" / "desktop-slash-registry.json"

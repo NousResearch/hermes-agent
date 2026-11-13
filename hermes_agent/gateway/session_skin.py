@@ -16,8 +16,8 @@ def resolved_skin() -> dict:
     """``resolve_skin()``'s dict for the profile in scope (the dispatcher's ``owner_scope``); ``{}``
     when the skin engine fails, which the client treats as the default theme, as main did."""
     try:
-        from hermes_cli.config_effective import load_user_config_effective
-        from hermes_cli.skin_engine import get_active_skin, init_skin_from_config
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.skin_engine import get_active_skin, init_skin_from_config
         from hermes_constants import get_hermes_home
         init_skin_from_config(load_user_config_effective(get_hermes_home() / "config.yaml"))
         skin = get_active_skin()

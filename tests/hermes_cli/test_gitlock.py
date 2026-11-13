@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.gitlock — stale git lock recovery + ancestry probe.
+"""Tests for hermes_agent.hermes_cli.gitlock — stale git lock recovery + ancestry probe.
 
 These cover the two failure modes that produced the false "update available"
 notification and the hard ``update --check`` failure after a crashed fetch on
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.gitlock import (
+from hermes_agent.hermes_cli.gitlock import (
     LOCK_NAMES,
     STALE_LOCK_MIN_AGE_SECONDS,
     _git_proc_running as _REAL_GIT_GUARD,
@@ -72,7 +72,7 @@ def no_git_running(monkeypatch: pytest.MonkeyPatch) -> None:
     code under test.  The guard's own behavior is pinned separately in
     :func:`test_clear_skips_sweep_while_git_running`.
     """
-    from hermes_cli import gitlock
+    from hermes_agent.hermes_cli import gitlock
 
     monkeypatch.setattr(gitlock, "_git_proc_running", lambda: False)
 
@@ -103,8 +103,8 @@ def test_graph_refresh_clears_object_store_debris_and_leaves_the_index_lock(
     lock stays, and a write that could not run leaves no freshness stamp."""
     import sys
 
-    from hermes_cli import gitlock
-    from hermes_cli.git_commit_graph import _FRESH_STAMP, refresh_commit_graph
+    from hermes_agent.hermes_cli import gitlock
+    from hermes_agent.hermes_cli.git_commit_graph import _FRESH_STAMP, refresh_commit_graph
 
     git_dir = repo / ".git"
     debris = [git_dir / "objects" / rel for rel in (
@@ -150,7 +150,7 @@ def test_graph_refresh_clears_object_store_debris_and_leaves_the_index_lock(
 
 def test_clear_skips_sweep_while_git_running(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A running git process must block the sweep even for stale locks."""
-    from hermes_cli import gitlock
+    from hermes_agent.hermes_cli import gitlock
 
     monkeypatch.setattr(gitlock, "_git_proc_running", lambda: True)
     _touch(repo / ".git" / "shallow.lock", STALE_LOCK_MIN_AGE_SECONDS + 60)
@@ -186,7 +186,7 @@ def test_clear_noop_with_no_locks(repo: Path) -> None:
 
 from subprocess import CompletedProcess
 
-from hermes_cli.gitlock import (
+from hermes_agent.hermes_cli.gitlock import (
     fetch_with_partial_clone_recovery,
     is_partial_clone_pack_objects_crash,
 )
@@ -263,7 +263,7 @@ def test_recovery_marks_unmarked_packs_and_retries_the_same_fetch(crash_stderr, 
 # `git gc --auto` (git's own gc.autoPackLimit decides when it is worth it). Real git against a
 # local blobless clone: these pin how the pieces interact, not their command lines.
 
-from hermes_cli.gitlock import settle_partial_clone_maintenance, disable_tree0_auto_maintenance
+from hermes_agent.hermes_cli.gitlock import settle_partial_clone_maintenance, disable_tree0_auto_maintenance
 
 _GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
@@ -414,8 +414,8 @@ def _status_blocked_on_a_fifo(repo: Path, *argv: str) -> subprocess.Popen:
 def test_a_killed_gits_index_lock_goes_at_once_and_a_live_ones_stays(repo: Path) -> None:
     """The next update must not die on the lock a killed one left (the age floor kept it for 10
     minutes), and must never take the lock of a git that is still running."""
-    from hermes_cli import update_receipt
-    from hermes_cli.gitlock import release_dead_index_lock
+    from hermes_agent.hermes_cli import update_receipt
+    from hermes_agent.hermes_cli.gitlock import release_dead_index_lock
 
     lock = repo / ".git" / "index.lock"
     _killed_update_receipt()
@@ -436,7 +436,7 @@ def test_a_killed_gits_index_lock_goes_at_once_and_a_live_ones_stays(repo: Path)
 def test_a_fresh_lock_with_no_killed_update_behind_it_is_kept(repo: Path) -> None:
     """No process holding a lock it just created proves nothing (the git may not have opened it
     yet): without a killed update run behind it, the update refuses on it and the lock stays."""
-    from hermes_cli.gitlock import release_dead_index_lock
+    from hermes_agent.hermes_cli.gitlock import release_dead_index_lock
 
     lock = repo / ".git" / "index.lock"
     lock.write_text("", encoding="utf-8")
@@ -448,7 +448,7 @@ def _killed_update_receipt() -> None:
     """A real running receipt whose owner is a pid that already exited (the killed update)."""
     import json
 
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import update_receipt
 
     dead = subprocess.Popen(["true"])
     dead.wait()
@@ -497,7 +497,7 @@ def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: P
     live ``/usr/lib/git-core/git-commit -a`` waiting in its editor (fd closed, and not ``comm == git``):
     the user's commit then died "unable to write new index file". No git of any form may be working in
     the checkout when the start-of-update reclaim takes the lock."""
-    from hermes_cli.gitlock import release_dead_index_lock
+    from hermes_agent.hermes_cli.gitlock import release_dead_index_lock
 
     lock = repo / ".git" / "index.lock"
     _killed_update_receipt()
@@ -526,8 +526,8 @@ def test_a_killed_updates_lock_stays_while_any_git_works_in_the_checkout(repo: P
         released = release_dead_index_lock(repo)
         why = None
         if not released:  # name which leg kept it: owner proof, an unreadable process, or a holder
-            from hermes_cli import _early_recovery as er
-            from hermes_cli.gitlock import _killed_update_owns
+            from hermes_agent.hermes_cli import _early_recovery as er
+            from hermes_agent.hermes_cli.gitlock import _killed_update_owns
             why = {"lock_exists": lock.exists(), "killed_update_owns": _killed_update_owns(lock),
                    "held_open": er._held_open(lock, repo, any_git=True)}
         assert released is True, f"once the checkout's git is gone the killed update's lock goes: {why}"
@@ -539,7 +539,7 @@ def test_a_git_elsewhere_exiting_mid_scan_is_gone_not_a_hidden_holder(repo: Path
     (unreadable once it has released its memory) is gone: it holds nothing and takes no lock. Read
     as a hidden git that may work here, any busy machine's git churn postponed the launch repair
     ("a running git holds the index after an interrupted `hermes update`")."""
-    from hermes_cli import _early_recovery as er
+    from hermes_agent.hermes_cli import _early_recovery as er
     from tests.waiting import wait_until
 
     other = tmp_path / "other"
@@ -573,8 +573,8 @@ def test_lock_keeping_git_is_recognised_in_every_form_and_by_path_components(tmp
     (``hermes-backup`` read as inside ``hermes``). Injected process metadata, not a native run."""
     import types
 
-    from hermes_cli import _early_recovery as er
-    from hermes_cli import gitlock
+    from hermes_agent.hermes_cli import _early_recovery as er
+    from hermes_agent.hermes_cli import gitlock
 
     assert er._git_subcommand_of(b"/usr/lib/git-core/git-commit\0-a\0") == "commit"
     assert er._git_subcommand_of(["C:\\Git\\mingw64\\libexec\\git-core\\GIT-COMMIT.EXE"]) == "commit"
@@ -619,8 +619,8 @@ def test_a_failed_retry_never_erases_the_killed_updates_claim(repo: Path) -> Non
     """Review secondary: a retry that kept the then-live lock and failed replaced latest.json, so once
     the git died the killed run's lock waited for the 10-minute sweep. The durable per-run records
     still name the killed run: the last run that started before the lock was written."""
-    from hermes_cli import update_receipt
-    from hermes_cli.gitlock import release_dead_index_lock
+    from hermes_agent.hermes_cli import update_receipt
+    from hermes_agent.hermes_cli.gitlock import release_dead_index_lock
 
     lock = repo / ".git" / "index.lock"
     _killed_update_receipt()  # started before the lock, as a real killed run did
@@ -663,7 +663,7 @@ def test_a_killed_fetchs_ref_lock_goes_and_the_next_fetch_lands(repo: Path, tmp_
     """A fetch killed inside its ref transaction strands ``refs/remotes/origin/main.lock`` and git
     then refuses every later fetch ("reference already exists"): the next update must drop that
     lock once its killed run's git is gone, and never while the fetch still runs."""
-    from hermes_cli.gitlock import release_dead_fetch_locks
+    from hermes_agent.hermes_cli.gitlock import release_dead_fetch_locks
 
     clone = tmp_path / "clone"
     subprocess.run(["git", "branch", "-M", "main"], cwd=repo, check=True)
@@ -722,7 +722,7 @@ def test_a_killed_shallow_fetchs_shallow_lock_goes_and_the_next_fetch_lands(repo
     its killed run's git is gone, never while the fetch still runs."""
     from tests.waiting import wait_until
 
-    from hermes_cli.gitlock import release_dead_fetch_locks
+    from hermes_agent.hermes_cli.gitlock import release_dead_fetch_locks
 
     clone = tmp_path / "clone"
     subprocess.run(["git", "branch", "-M", "main"], cwd=repo, check=True)
@@ -770,7 +770,7 @@ def test_a_killed_shallow_fetchs_shallow_lock_goes_and_the_next_fetch_lands(repo
 def test_a_live_hermes_shallow_lock_holder_keeps_its_lock(repo: Path) -> None:
     """Hermes's own ``_ShallowLock`` holder runs no git between its git calls: the reclaim must
     still see it (it keeps the lock open), even after a killed update."""
-    from hermes_cli.gitlock import _ShallowLock, release_dead_fetch_locks
+    from hermes_agent.hermes_cli.gitlock import _ShallowLock, release_dead_fetch_locks
 
     _killed_update_receipt()
     with _ShallowLock(repo / ".git" / "shallow"):

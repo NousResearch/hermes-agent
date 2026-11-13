@@ -2,7 +2,7 @@
 
 from typing import NoReturn
 
-from hermes_cli._old_updater import stop_for_relaunch
+from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
 
 
 def maybe_repair_npm_engine(*args, **kwargs) -> NoReturn:

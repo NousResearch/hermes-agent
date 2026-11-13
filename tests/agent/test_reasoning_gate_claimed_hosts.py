@@ -34,7 +34,7 @@ def _agent(provider, base_url, model):
 
 def test_openrouter_keeps_its_reasoning_gate_and_body_when_a_plugin_claims_the_host(claiming_profile):
     agent = _agent("openrouter", "https://openrouter.ai/api/v1", "anthropic/claude-sonnet-4.5")
-    with patch("hermes_cli.models_reasoning_caps.openrouter_model_reasoning_capabilities",
+    with patch("hermes_agent.hermes_cli.models_reasoning_caps.openrouter_model_reasoning_capabilities",
                return_value={"supports_reasoning": True}):
         assert agent._supports_reasoning_extra_body() is True
         extra_body = agent._build_api_kwargs([{"role": "user", "content": "x"}]).get("extra_body") or {}

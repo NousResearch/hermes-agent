@@ -7,7 +7,7 @@ from pathlib import Path
 import hermes_yaml as yaml
 
 from hermes_agent.compat.paths import current_module
-from hermes_cli.plugin_validate import validate_plugin_dir
+from hermes_agent.hermes_cli.plugin_validate import validate_plugin_dir
 
 
 def _plugin(root: Path, files: dict[str, str]) -> Path:
@@ -222,7 +222,7 @@ def _published_entries() -> list[str]:
 
 
 def test_every_published_plugin_api_entry_passes_validate(tmp_path):
-    """hermes_cli/data/plugin_api.json is the list validate enforces: every entry imports without a
+    """hermes_agent/hermes_cli/data/plugin_api.json is the list validate enforces: every entry imports without a
     warning, while an unlisted name of a listed name-only module still warns."""
     imports = [f"from {m} import {n}" if n else f"import {m}"
                for m, _, n in (entry.partition(":") for entry in _published_entries())]
@@ -250,7 +250,7 @@ def test_a_published_module_moved_under_hermes_agent_is_public_in_every_spelling
     """Once ``hermes_constants`` moves, ``from hermes_agent import hermes_constants`` names the same
     published module as ``import hermes_constants`` and must not warn."""
     from hermes_agent.compat.paths import PathMoves
-    from hermes_cli import plugin_validate_private_imports as private_imports
+    from hermes_agent.hermes_cli import plugin_validate_private_imports as private_imports
 
     monkeypatch.setattr(private_imports, "original_module",
                         PathMoves({"hermes_constants": "hermes_agent.hermes_constants"}).original_module)

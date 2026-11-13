@@ -56,7 +56,7 @@ def test_invalidation_evicts_in_process_probe_caches_when_the_lock_is_unavailabl
     dropped even when that lock cannot be taken, or the next resolution reuses it for its TTL."""
     import contextlib
 
-    import hermes_cli.auth as auth_module
+    import hermes_agent.hermes_cli.auth as auth_module
     from hermes_constants import hermes_home_key
 
     base_url = "https://a.example/v1"

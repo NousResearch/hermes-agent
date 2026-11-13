@@ -7,7 +7,7 @@ def test_slash_worker_refuses_skill_before_process_command(monkeypatch):
     """A skill command is refused before process_command, so the banner is never the reply."""
     from hermes_agent.tui_gateway import slash_worker
 
-    monkeypatch.setattr("cli.get_skill_commands", lambda: {"/grilling": {"name": "grilling"}})
+    monkeypatch.setattr("hermes_agent.cli.get_skill_commands", lambda: {"/grilling": {"name": "grilling"}})
 
     class _CLI:
         def __init__(self):
@@ -27,7 +27,7 @@ def test_slash_worker_refuses_skill_before_process_command(monkeypatch):
 def test_slash_worker_still_runs_non_skill_commands(monkeypatch):
     from hermes_agent.tui_gateway import slash_worker
 
-    monkeypatch.setattr("cli.get_skill_commands", lambda: {"/grilling": {"name": "grilling"}})
+    monkeypatch.setattr("hermes_agent.cli.get_skill_commands", lambda: {"/grilling": {"name": "grilling"}})
 
     class _CLI:
         def __init__(self):

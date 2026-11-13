@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from hermes_cli.web_routers import profiles
+from hermes_agent.hermes_cli.web_routers import profiles
 
 
 class SidebarCacheTests(unittest.TestCase):

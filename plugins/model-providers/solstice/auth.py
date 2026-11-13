@@ -2,7 +2,7 @@
 Nous portal (NAS), which holds the confidential client secret. Hermes keeps its own PKCE verifier and
 the user's tokens; NAS never sees a prompt.
 
-The generic ``hermes_cli.auth_oauth_pkce_plugin`` flow runs the browser leg, the credential-pool row
+The generic ``hermes_agent.hermes_cli.auth_oauth_pkce_plugin`` flow runs the browser leg, the credential-pool row
 and the single-use-safe refresh. This module supplies only what is NAS-specific: the client config it
 discovers and the token POSTs it brokers. Every NAS call carries the user's Nous access token.
 """
@@ -18,19 +18,19 @@ _TIMEOUT_SECONDS = 30.0
 
 
 def _err(message: str, code: str, *, relogin: bool = False):
-    from hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.auth_constants import AuthError
     return AuthError(f"solstice: {message}", provider="solstice", code=code, relogin_required=relogin)
 
 
 def _nas_base_url() -> str:
     """The Nous portal the user is signed into (``HERMES_PORTAL_BASE_URL`` override first)."""
-    from hermes_cli.auth import _nous_portal_base_url, get_provider_auth_state
+    from hermes_agent.hermes_cli.auth import _nous_portal_base_url, get_provider_auth_state
     return _nous_portal_base_url(get_provider_auth_state("nous") or {})
 
 
 def _nas_request(method: str, path: str, *, json: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    from hermes_cli.auth import _default_verify, resolve_nous_access_token
-    from hermes_cli.auth_constants import httpx
+    from hermes_agent.hermes_cli.auth import _default_verify, resolve_nous_access_token
+    from hermes_agent.hermes_cli.auth_constants import httpx
 
     try:
         token = resolve_nous_access_token()

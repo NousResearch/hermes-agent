@@ -18,7 +18,7 @@ import pytest
 
 from hermes_agent.agent.secret_scope import set_multiplex_active
 from hermes_agent.gateway.config import Platform, load_gateway_config
-from hermes_cli.plugins import discover_plugins
+from hermes_agent.hermes_cli.plugins import discover_plugins
 
 
 @pytest.fixture(autouse=True)

@@ -89,7 +89,7 @@ def test_reconcile_cont_init_leaves_root_scandir_root_owned(tmp_path: Path) -> N
 def test_profile_gateway_scandir_is_supervised_unprivileged(tmp_path: Path) -> None:
     """Per-profile gateway slots are hermes-writable, so the s6-svscan watching them must run as
     hermes (never as root), and on the same directory the service manager registers into."""
-    from hermes_cli.service_manager import S6ServiceManager
+    from hermes_agent.hermes_cli.service_manager import S6ServiceManager
 
     gateway_scandir = str(S6ServiceManager().scandir)
     log = tmp_path / "calls.log"

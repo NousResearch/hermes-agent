@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict
 
 from hermes_constants import display_hermes_home
 from utils import atomic_json_write
-from hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
@@ -40,7 +40,7 @@ def _subscriptions_lock_path() -> Path:
 @contextmanager
 def _subscriptions_lock():
     """Serialize subscription snapshots and mutations across threads and processes."""
-    from hermes_cli.active_sessions import _FileLock
+    from hermes_agent.hermes_cli.active_sessions import _FileLock
 
     with _SUBSCRIPTIONS_THREAD_LOCK:
         with _FileLock(_subscriptions_lock_path()):
@@ -109,7 +109,7 @@ def _replace_subscription(name: str, route: dict, expected: object) -> dict:
 def _get_webhook_config() -> dict:
     """Load webhook platform config. Returns {} if not configured."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config()
         return cfg_get(cfg, "platforms", "webhook", default={})
     except Exception:
@@ -203,7 +203,7 @@ def _cmd_subscribe(args):
     if profile_arg is None:
         profile = existing.get("profile", "default")
     else:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
+        from hermes_agent.hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
         try:
             profile = normalize_profile_name(profile_arg)
             validate_profile_name(profile)
@@ -301,7 +301,7 @@ def _cmd_subscribe(args):
 def _resolve_route_cron_job(profile: str, reference: str):
     """Match runtime routing without changing the caller's subscription/config home."""
     from hermes_agent.cron.jobs import resolve_job_ref, use_cron_store
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_profile_dir
 
     # Bare/default routes execute in the ambient home, including standalone installs.
     if profile == "default":

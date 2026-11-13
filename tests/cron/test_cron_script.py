@@ -360,7 +360,7 @@ class TestRunJobScript:
         (deps / "snapshot.pth").write_text(f"{snapshot}\n", encoding="utf-8")
 
         monkeypatch.setattr(
-            "hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
+            "hermes_agent.hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
         )
         monkeypatch.setattr("pm.environments.selected_venv", lambda repo: venv)
         monkeypatch.delenv("PYTHONPATH", raising=False)
@@ -401,7 +401,7 @@ class TestRunJobScript:
             raise RuntimeError("dependency environment is missing or outside this install")
 
         monkeypatch.setattr(
-            "hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
+            "hermes_agent.hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable)
         )
         monkeypatch.setattr(
             "pm.environments.selected_venv",

@@ -16,10 +16,10 @@ from typing import Awaitable, Callable, Optional, Tuple
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
-from hermes_cli.dashboard_auth import list_token_providers
-from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import ProviderError, TokenPrincipal
-from hermes_cli.dashboard_auth.request_utils import (
+from hermes_agent.hermes_cli.dashboard_auth import list_token_providers
+from hermes_agent.hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+from hermes_agent.hermes_cli.dashboard_auth.base import ProviderError, TokenPrincipal
+from hermes_agent.hermes_cli.dashboard_auth.request_utils import (
     client_ip as _client_ip, extract_bearer as extract_bearer_token, unreachable_response)
 
 _log = logging.getLogger(__name__)

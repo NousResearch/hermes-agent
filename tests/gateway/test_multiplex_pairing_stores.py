@@ -45,9 +45,9 @@ def test_secondary_profile_pairing_stores_created(tmp_path, monkeypatch):
     runner._start_one_profile_adapters = _no_secondary
     runner._adapter_credential_fingerprint = lambda adapter: None
 
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=[
+    with patch("hermes_agent.hermes_cli.profiles.profiles_to_serve", return_value=[
         ("coder", tmp_path / ".hermes" / "profiles" / "coder"),
-    ]), patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    ]), patch("hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="default"):
         runner._profile_adapters["coder"] = {}
         asyncio.run(runner._start_secondary_profile_adapters())
 
@@ -74,9 +74,9 @@ def test_pairing_store_scoped_to_profile_dir(tmp_path, monkeypatch):
     runner._start_one_profile_adapters = _no_secondary
     runner._adapter_credential_fingerprint = lambda adapter: None
 
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=[
+    with patch("hermes_agent.hermes_cli.profiles.profiles_to_serve", return_value=[
         ("ops", tmp_path / ".hermes" / "profiles" / "ops"),
-    ]), patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+    ]), patch("hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="default"):
         runner._profile_adapters["ops"] = {}
         asyncio.run(runner._start_secondary_profile_adapters())
 
@@ -96,7 +96,7 @@ def test_routed_pairing_grant_mirror_stays_in_profile_scope(tmp_path, monkeypatc
     from hermes_agent.agent import secret_scope as ss
     from hermes_agent.gateway.pairing import _sync_allowlist_add
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.config import save_env_value
 
     root = tmp_path / ".hermes"
     prof = root / "profiles" / "b"

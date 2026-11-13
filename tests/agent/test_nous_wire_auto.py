@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.agent import nous_wire
-from hermes_cli import providers as _providers
+from hermes_agent.hermes_cli import providers as _providers
 
 
 def _resp(**kw):

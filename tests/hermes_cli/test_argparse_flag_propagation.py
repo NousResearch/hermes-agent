@@ -21,7 +21,7 @@ class TestChatVerboseArg:
     """Verify chat --verbose preserves config fallback when absent."""
 
     def test_chat_without_verbose_leaves_attribute_unset(self):
-        from hermes_cli._parser import build_top_level_parser
+        from hermes_agent.hermes_cli._parser import build_top_level_parser
 
         parser, _subparsers, _chat_parser = build_top_level_parser()
         args = parser.parse_args(["chat"])
@@ -33,26 +33,26 @@ class TestChatVerboseArg:
         import types
         import sys
 
-        import hermes_cli.main as main_mod
-        from hermes_cli._parser import build_top_level_parser
+        import hermes_agent.hermes_cli.main as main_mod
+        from hermes_agent.hermes_cli._parser import build_top_level_parser
 
         parser, _subparsers, chat_parser = build_top_level_parser()
         chat_parser.set_defaults(func=main_mod.cmd_chat)
         args = parser.parse_args(["chat"])
         captured = {}
-        fake_cli = types.ModuleType("cli")
+        fake_cli = types.ModuleType("hermes_agent.cli")
 
         def fake_main(**kwargs):
             captured.update(kwargs)
 
         fake_cli.main = fake_main
-        fake_banner = types.ModuleType("hermes_cli.banner")
+        fake_banner = types.ModuleType("hermes_agent.hermes_cli.banner")
         fake_banner.prefetch_update_check = lambda: None
         fake_skills_sync = types.ModuleType("hermes_agent.tools.skills_sync")
         fake_skills_sync.sync_skills = lambda quiet=True: None
 
-        monkeypatch.setitem(sys.modules, "cli", fake_cli)
-        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.banner", fake_banner)
         monkeypatch.setitem(sys.modules, "hermes_agent.tools.skills_sync", fake_skills_sync)
         monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
         monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
@@ -72,22 +72,22 @@ class TestChatVerboseArg:
         profile's credential; the TUI refuses both flags and points here."""
         import types
 
-        import hermes_cli.main as main_mod
-        from hermes_cli._parser import build_top_level_parser
+        import hermes_agent.hermes_cli.main as main_mod
+        from hermes_agent.hermes_cli._parser import build_top_level_parser
 
         parser, _subparsers, chat_parser = build_top_level_parser()
         chat_parser.set_defaults(func=main_mod.cmd_chat)
         args = parser.parse_args(argv)
         captured = {}
-        fake_cli = types.ModuleType("cli")
+        fake_cli = types.ModuleType("hermes_agent.cli")
         fake_cli.main = lambda **kwargs: captured.update(kwargs)
-        fake_banner = types.ModuleType("hermes_cli.banner")
+        fake_banner = types.ModuleType("hermes_agent.hermes_cli.banner")
         fake_banner.prefetch_update_check = lambda: None
         fake_skills_sync = types.ModuleType("hermes_agent.tools.skills_sync")
         fake_skills_sync.sync_skills = lambda quiet=True: None
 
-        monkeypatch.setitem(sys.modules, "cli", fake_cli)
-        monkeypatch.setitem(sys.modules, "hermes_cli.banner", fake_banner)
+        monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
+        monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.banner", fake_banner)
         monkeypatch.setitem(sys.modules, "hermes_agent.tools.skills_sync", fake_skills_sync)
         monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: True)
         monkeypatch.setattr(main_mod, "_pin_kanban_board_env", lambda: None)
@@ -116,8 +116,8 @@ class TestAcceptHooksOnAgentSubparsers:
         ["acp", "--accept-hooks", "--help"],
     ]
 
-    # One driver subprocess parses ALL argvs: hermes_cli.main is a very heavy
-    # import (previously 11 separate `python -m hermes_cli.main` spawns with a
+    # One driver subprocess parses ALL argvs: hermes_agent.hermes_cli.main is a very heavy
+    # import (previously 11 separate `python -m hermes_agent.hermes_cli.main` spawns with a
     # 15s timeout each — a cold import on a loaded CI worker regularly blew
     # that deadline, making this test flaky). Importing once and parsing each
     # argv removes the repeated-import cost entirely; the generous timeout
@@ -180,14 +180,14 @@ class TestChatSubparserInheritedValueFlags:
     `default=None`, which clobbered the top-level parser's value during
     subparser dispatch.
 
-    Uses the real `hermes_cli._parser.build_top_level_parser()` rather than
+    Uses the real `hermes_agent.hermes_cli._parser.build_top_level_parser()` rather than
     the hand-rolled replica above so this also fails if the production
     parser drifts back to `default=None` on these flags.
     """
 
     @pytest.fixture
     def real_parser(self):
-        from hermes_cli._parser import build_top_level_parser
+        from hermes_agent.hermes_cli._parser import build_top_level_parser
         parser, _subparsers, _chat = build_top_level_parser()
         return parser
 
@@ -214,7 +214,7 @@ class TestChatSubparserInheritedValueFlags:
         subparser silently overwrites the top-level value with its own
         default during dispatch. This is the structural class behind #28780.
         """
-        from hermes_cli._parser import build_top_level_parser
+        from hermes_agent.hermes_cli._parser import build_top_level_parser
         parser, _subparsers, chat_parser = build_top_level_parser()
 
         top_level_dests = {
@@ -245,5 +245,5 @@ class TestChatSubparserInheritedValueFlags:
 def test_checkpoints_parses_at_the_top_level_and_survives_chat(argv):
     """`hermes --tui --checkpoints` is the TUI launch the docs and gateway refusals name; it was
     declared only on `chat`, so the top-level form failed with "unrecognized arguments"."""
-    from hermes_cli._parser import build_top_level_parser
+    from hermes_agent.hermes_cli._parser import build_top_level_parser
     assert build_top_level_parser()[0].parse_args(argv).checkpoints is True

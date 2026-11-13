@@ -87,7 +87,7 @@ def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
     kill-on-close job), so the checkout is never handed to a contender while one of them still
     writes. Outside an update it is ``run_contained`` as is."""
     from pm.progress import run_contained
-    from hermes_cli.update_custody import contained_command
+    from hermes_agent.hermes_cli.update_custody import contained_command
 
     with contained_command(command, root=project_root) as (argv, custody):
         return run_contained(argv, label, **kwargs, **custody)
@@ -116,7 +116,7 @@ def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...],
 
 def prepare_launch_dependencies(project_root: Path, *, env: dict) -> None:
     """A launch rebuild must not prune another installed source frontend."""
-    from hermes_cli.main_desktop import _desktop_dist_exists, _desktop_packaged_executable
+    from hermes_agent.hermes_cli.main_desktop import _desktop_dist_exists, _desktop_packaged_executable
 
     desktop_dir = project_root / "apps/desktop"
     desktop = _desktop_dist_exists(desktop_dir) or _desktop_packaged_executable(desktop_dir) is not None
@@ -159,7 +159,7 @@ def build_source_tui(project_root: Path, *, env: dict) -> None:
 def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None) -> None:
     # Bounded build (#63338): the Vite/Rolldown dashboard build saturates small
     # hosts; cap the V8 heap and the native bundler's rayon thread pool.
-    from hermes_cli.web_build_limits import apply_web_build_limits
+    from hermes_agent.hermes_cli.web_build_limits import apply_web_build_limits
 
     apply_web_build_limits(env)
     # Default-brand icons are committed; installs never render them.
@@ -210,8 +210,8 @@ def build_update_products(project_root: Path, *, desktop: bool, after_dependenci
     """
     # Both current updates and historical takeover reach this in a fresh target
     # interpreter, never in the updater's pre-sync import graph.
-    from hermes_cli.main_install_repair import _install_configured_features_missing_deps
-    from hermes_cli.update_stage import publish_stage
+    from hermes_agent.hermes_cli.main_install_repair import _install_configured_features_missing_deps
+    from hermes_agent.hermes_cli.update_stage import publish_stage
 
     failures: list[tuple[str, BaseException]] = []
     publish_stage("Building the apps")
@@ -291,15 +291,15 @@ def build_update_products(project_root: Path, *, desktop: bool, after_dependenci
     # catalog for every profile home sharing this venv (config, data and tool names
     # unchanged). The update must finish even if the migration blows up.
     try:
-        from hermes_cli.memory_provider_migration import migrate_all_homes
+        from hermes_agent.hermes_cli.memory_provider_migration import migrate_all_homes
 
         migrate_all_homes()
     except Exception as exc:  # health: allow BLE001 -- post-commit boundary: printed as ⚠, never fails the committed update; every later update/tail re-runs it
         print(f"  ⚠ Memory provider migration skipped: {exc}")
     # Same for a gateway platform / toolset that left core (Home Assistant): every home that used
-    # it gets its catalog plugin (hermes_cli/left_core_migration.py).
+    # it gets its catalog plugin (hermes_agent/hermes_cli/left_core_migration.py).
     try:
-        from hermes_cli.left_core_migration import migrate_all_homes as migrate_left_core
+        from hermes_agent.hermes_cli.left_core_migration import migrate_all_homes as migrate_left_core
 
         migrate_left_core()
     except Exception as exc:  # health: allow BLE001 -- post-commit boundary: printed as ⚠, never fails the committed update; every later update/tail re-runs it
@@ -315,7 +315,7 @@ def _rebuild_served_webapp(project_root: Path, publish_stage) -> None:
     uses, which reuses a current bundle. A failed build leaves the previous bundle on disk, marked
     out of date: its gateways report the Webapp unavailable until ``hermes webapp`` rebuilds it."""
     from hermes_agent.gateway.webapp_listener import webapp_settings
-    from hermes_cli.webapp import mark_webapp_stale, prepare_webapp_renderer
+    from hermes_agent.hermes_cli.webapp import mark_webapp_stale, prepare_webapp_renderer
     from pm.plugins_state import dependency_homes
 
     if not any(webapp_settings(home).enabled for home in dependency_homes()):
@@ -333,8 +333,8 @@ def _rebuild_served_webapp(project_root: Path, publish_stage) -> None:
 
 
 def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None:
-    from hermes_cli.desktop_build_reuse import packaged_desktop_reusable
-    from hermes_cli.main_desktop import (
+    from hermes_agent.hermes_cli.desktop_build_reuse import packaged_desktop_reusable
+    from hermes_agent.hermes_cli.main_desktop import (
         _packaged_desktop_current_for_head, _refresh_installed_desktop_apps, build_prepared_desktop)
 
     desktop_dir = project_root / "apps/desktop"
@@ -349,7 +349,7 @@ def _build_desktop_product(project_root: Path, env: dict, publish_stage) -> None
         # `hermes desktop` (#93940). The update path waits rather than exits:
         # the in-flight build it queues behind produces the same fresh tree
         # this update needs.
-        from hermes_cli.desktop_build_lock import DesktopBuildLock
+        from hermes_agent.hermes_cli.desktop_build_lock import DesktopBuildLock
 
         build_lock = DesktopBuildLock(project_root)
         build_lock.acquire(wait=True)

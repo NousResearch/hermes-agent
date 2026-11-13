@@ -2,7 +2,7 @@
 
 A ``plugin.yaml`` ``config_schema`` describes the keys under ``plugins.entries.<id>.settings``.
 This module turns that schema into renderable form fields (type, current value, choices) and
-writes edits back through :func:`hermes_cli.plugins_state.save_plugin_setting` — the same writer
+writes edits back through :func:`hermes_agent.hermes_cli.plugins_state.save_plugin_setting` — the same writer
 ``ctx.set_config`` uses, so the CLI, the plugin and the Desktop never disagree on where a
 setting lives. Secrets are declared with ``type: secret`` and never touch ``config.yaml``: the
 field carries the ``.env`` name (``env:`` or ``<PLUGIN>_<KEY>``) plus a presence flag, and the
@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from hermes_cli.plugins_state import _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting
+from hermes_agent.hermes_cli.plugins_state import _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def _portable_config_schema(plugin_dir: Path) -> Any:
     if not portable.is_file():
         return None
     import json
-    from hermes_cli.agent_plugins import manifest_config_schema
+    from hermes_agent.hermes_cli.agent_plugins import manifest_config_schema
     return manifest_config_schema(json.loads(portable.read_text(encoding="utf-8-sig")))
 
 
@@ -94,7 +94,7 @@ def plugin_settings_fields(plugin_id: str, plugin_dir: Optional[Path]) -> list[d
     schema = _manifest_config_schema(plugin_dir)
     if not schema:
         return []
-    from hermes_cli.config import get_env_value, load_config_readonly
+    from hermes_agent.hermes_cli.config import get_env_value, load_config_readonly
     entry = _plugin_settings_entry(load_config_readonly() or {}, plugin_id) or {}
     raw_current = entry.get("settings")
     current: Mapping[str, Any] = raw_current if isinstance(raw_current, Mapping) else {}

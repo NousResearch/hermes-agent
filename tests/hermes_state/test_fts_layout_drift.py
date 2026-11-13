@@ -102,7 +102,7 @@ def test_realign_does_not_stamp_current_while_the_trigram_is_stale(v1_trigram_db
 
 
 def test_doctor_offers_optimize_storage_for_a_stale_trigram(v1_trigram_db, monkeypatch):
-    from hermes_cli import doctor_state
+    from hermes_agent.hermes_cli import doctor_state
     from hermes_agent.hermes_state_dbfile import collect_state_db_stats
 
     stats = collect_state_db_stats(v1_trigram_db)
@@ -112,7 +112,7 @@ def test_doctor_offers_optimize_storage_for_a_stale_trigram(v1_trigram_db, monke
 
 
 def test_fresh_store_is_stamped_on_creation_and_doctor_stays_quiet(tmp_path, monkeypatch):
-    from hermes_cli import doctor_state
+    from hermes_agent.hermes_cli import doctor_state
     from hermes_agent.hermes_state_dbfile import collect_state_db_stats
 
     db_path = tmp_path / "state.db"
@@ -127,7 +127,7 @@ def test_fresh_store_is_stamped_on_creation_and_doctor_stays_quiet(tmp_path, mon
 
 def _notice_for(db_path: pathlib.Path, monkeypatch) -> str:
     """Run the `hermes update` notice against *db_path* with the size gate satisfied for state.db only."""
-    from hermes_cli import update_cmd_maint
+    from hermes_agent.hermes_cli import update_cmd_maint
     import hermes_constants
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: db_path.parent)
@@ -481,7 +481,7 @@ def test_optimize_storage_on_a_newer_layout_finishes_its_work_without_restamping
 
 def test_doctor_offers_the_resume_after_backfill_before_teardown(tmp_path, monkeypatch):
     """optimize-storage interrupted after backfill but before trash teardown: doctor agrees with the update notice."""
-    from hermes_cli import doctor_state
+    from hermes_agent.hermes_cli import doctor_state
     from hermes_agent.hermes_state_dbfile import collect_state_db_stats
 
     db_path = tmp_path / "state.db"
@@ -503,7 +503,7 @@ def test_doctor_offers_the_resume_after_backfill_before_teardown(tmp_path, monke
 @pytest.mark.parametrize("mode, heading", [("advise", "Search index update available"),
                                            ("require", "required by your notice policy")])
 def test_the_follow_up_notice_makes_no_size_or_effort_claim(v1_trigram_db, monkeypatch, mode, heading):
-    from hermes_cli import config as hermes_config
+    from hermes_agent.hermes_cli import config as hermes_config
 
     monkeypatch.setattr(hermes_config, "load_config", lambda: {"sessions": {"fts_optimize_notice": mode}})
     out = _notice_for(v1_trigram_db, monkeypatch)

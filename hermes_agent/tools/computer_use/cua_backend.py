@@ -17,7 +17,7 @@ import uuid
 from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_platform.host.runtime import is_wsl
 from hermes_agent.tools.computer_use.backend import ActionResult, ComputerUseBackend
 from hermes_agent.tools.computer_use.cua_backend_capture import _CaptureMixin
@@ -38,7 +38,7 @@ _CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 def _computer_use_cfg() -> dict[str, Any]:
     """The ``computer_use`` config block, or ``{}`` when config is unreadable."""
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         return (load_config() or {}).get("computer_use") or {}
     return {}
 

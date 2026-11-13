@@ -12,9 +12,9 @@ import pytest
     ([], ["remaining repair"], 1, True, 1),
 ])
 def test_doctor_command_reports_remaining_findings(monkeypatch, capsys, issues, manual, fixed, fix, expected):
-    from hermes_cli import doctor
-    from hermes_cli.main import cmd_doctor
-    from hermes_cli.doctor_report import Finding
+    from hermes_agent.hermes_cli import doctor
+    from hermes_agent.hermes_cli.main import cmd_doctor
+    from hermes_agent.hermes_cli.doctor_report import Finding
 
     def check(should_fix):
         assert should_fix is fix
@@ -36,9 +36,9 @@ def test_doctor_cli_process_status_matches_summary(unresolved):
 
     program = f"""
 import sys
-import hermes_cli.doctor as doctor
-from hermes_cli.doctor_report import Finding
-from hermes_cli.main import main
+from hermes_agent.hermes_cli import doctor
+from hermes_agent.hermes_cli.doctor_report import Finding
+from hermes_agent.hermes_cli.main import main
 issues = ['fixture unresolved problem'] if {unresolved!r} else []
 doctor.DOCTOR_CHECKS = ((None, lambda fix: Finding(issues=issues)),)
 sys.argv = ['hermes', 'doctor']

@@ -47,10 +47,10 @@ def _restore_tool_and_agent_modules():
 def _install_fake_tools_package(*, credential_mounts=None):
     _reset_modules(("hermes_agent.tools", "agent", "hermes_cli"))
 
-    hermes_cli = types.ModuleType("hermes_cli")
+    hermes_cli = types.ModuleType("hermes_agent.hermes_cli")
     hermes_cli.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["hermes_cli"] = hermes_cli
-    sys.modules["hermes_cli.config"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.hermes_cli"] = hermes_cli
+    sys.modules["hermes_agent.hermes_cli.config"] = types.SimpleNamespace(
         get_hermes_home=lambda: Path(tempfile.gettempdir()) / "hermes-home",
     )
 

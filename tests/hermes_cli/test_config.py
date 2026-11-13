@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     DEFAULT_CONFIG,
     InvalidUserConfigError,
     check_config_version,
@@ -56,7 +56,7 @@ class TestEnsureHermesHome:
         # Older installers seeded a comment-only scaffold that shadowed the
         # runtime default. A SOUL.md still matching that scaffold carries no
         # user persona and should be upgraded in place to DEFAULT_SOUL_MD.
-        from hermes_cli.default_soul import DEFAULT_SOUL_MD, _LEGACY_TEMPLATE_SOULS
+        from hermes_agent.hermes_cli.default_soul import DEFAULT_SOUL_MD, _LEGACY_TEMPLATE_SOULS
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             soul_path = tmp_path / "SOUL.md"
@@ -84,7 +84,7 @@ class TestEnsureHermesHome:
         # and its #95681 rewrite got the old text auto-written on first run —
         # not user-authored, so it's just as safe to upgrade in place as the
         # comment-only scaffolds above. Regression test for that upgrade path.
-        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+        from hermes_agent.hermes_cli.default_soul import DEFAULT_SOUL_MD
 
         assert self._PRE_REWRITE_DEFAULT_SOUL != DEFAULT_SOUL_MD  # sanity: fixture predates the rewrite
 
@@ -97,7 +97,7 @@ class TestEnsureHermesHome:
     def test_does_not_upgrade_user_customized_soul_md(self, tmp_path):
         # A SOUL.md that merely starts with the old default but was edited by
         # the user carries real intent and must never be silently overwritten.
-        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+        from hermes_agent.hermes_cli.default_soul import DEFAULT_SOUL_MD
 
         customized = self._PRE_REWRITE_DEFAULT_SOUL + " Also: always answer in rhyming couplets."
 
@@ -157,7 +157,7 @@ class TestLoadConfigParseFailure:
         Ported from google-gemini/gemini-cli#21541 (policy-file TOML recovery),
         adapted: we back up but deliberately do NOT reset config.yaml.
         """
-        from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
+        from hermes_agent.hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
         _CONFIG_PARSE_WARNED.clear()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -190,7 +190,7 @@ class TestLoadConfigParseFailure:
         parses again.
         """
         import time
-        from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
+        from hermes_agent.hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
         _CONFIG_PARSE_WARNED.clear()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -241,7 +241,7 @@ class TestEmptyConfigSections:
     def test_null_override_of_non_dict_default_still_applies(self, tmp_path):
         """None only shields dict defaults — explicit null for a scalar
         key remains an override (unchanged behavior)."""
-        from hermes_cli.config import _deep_merge
+        from hermes_agent.hermes_cli.config import _deep_merge
 
         merged = _deep_merge({"scalar": 5, "section": {"a": 1}},
                              {"scalar": None, "section": None})
@@ -382,7 +382,7 @@ class TestSaveAndLoadRoundtrip:
 
     def test_atomic_config_write_refuses_unparseable_existing_config(self, tmp_path):
         """Shared chokepoint must refuse unparseable YAML, not only unreadable."""
-        from hermes_cli.config import atomic_config_write
+        from hermes_agent.hermes_cli.config import atomic_config_write
 
         config_path = tmp_path / "config.yaml"
         original = "broken: [unterminated\n"
@@ -396,7 +396,7 @@ class TestSaveAndLoadRoundtrip:
 
     def test_atomic_config_write_refuses_partial_state_instead_of_wiping_config(self, tmp_path):
         """A partial dict is not a full-state replacement: preserve the existing document."""
-        from hermes_cli.config import atomic_config_write
+        from hermes_agent.hermes_cli.config import atomic_config_write
 
         config_path = tmp_path / "config.yaml"
         original = {f"k{i}": i for i in range(99)}
@@ -409,7 +409,7 @@ class TestSaveAndLoadRoundtrip:
 
     def test_atomic_config_write_refuses_nested_omissions_with_same_top_level_keys(self, tmp_path):
         """Completeness is recursive: keeping the root names must not hide sibling deletion."""
-        from hermes_cli.config import atomic_config_write
+        from hermes_agent.hermes_cli.config import atomic_config_write
 
         config_path = tmp_path / "config.yaml"
         original = {
@@ -428,7 +428,7 @@ class TestSaveAndLoadRoundtrip:
 
     def test_atomic_config_replace_makes_delete_by_omission_explicit(self, tmp_path):
         """Full-state owners can still deliberately prune keys without a count-based heuristic."""
-        from hermes_cli.config import atomic_config_replace
+        from hermes_agent.hermes_cli.config import atomic_config_replace
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
@@ -447,7 +447,7 @@ class TestLoadEnvInlineComments:
         """load_env is the one dotenv reader (hermes_agent.agent.secret_scope.load_env_file): an unquoted ` #...` tail
         is a comment, a quoted value keeps its hash. Hermes' own writer (_quote_env_value) always quotes
         values containing `#`, so a saved secret round-trips."""
-        from hermes_cli.config import invalidate_env_cache
+        from hermes_agent.hermes_cli.config import invalidate_env_cache
 
         (tmp_path / ".env").write_text('PASSWORD=abc #123\nPASSWORD2="abc #123"\n', encoding="utf-8")
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -646,15 +646,15 @@ class TestSanitizeEnvLines:
     def test_migrate_reports_normalized_line_formatting(self, capsys):
         latest_version = DEFAULT_CONFIG["_config_version"]
         with (
-            patch("hermes_cli.config.sanitize_env_file", return_value=2),
+            patch("hermes_agent.hermes_cli.config.sanitize_env_file", return_value=2),
             patch(
-                "hermes_cli.config.check_config_version",
+                "hermes_agent.hermes_cli.config.check_config_version",
                 return_value=(latest_version, latest_version),
             ),
-            patch("hermes_cli.config.read_raw_config", return_value={}),
-            patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
-            patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
-            patch("hermes_cli.config.get_missing_skill_config_vars", return_value=[]),
+            patch("hermes_agent.hermes_cli.config.read_raw_config", return_value={}),
+            patch("hermes_agent.hermes_cli.config.get_missing_env_vars", return_value=[]),
+            patch("hermes_agent.hermes_cli.config.get_missing_config_fields", return_value=[]),
+            patch("hermes_agent.hermes_cli.config.get_missing_skill_config_vars", return_value=[]),
         ):
             migrate_config(interactive=False)
 
@@ -723,7 +723,7 @@ class TestOptionalEnvVarsRegistry:
         via config.yaml; HERMES_MAX_ITERATIONS remains a read-only backward-compat
         fallback in the gateway/CLI, never a promoted write target.
         """
-        from hermes_cli.config import OPTIONAL_ENV_VARS
+        from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS
         assert "HERMES_MAX_ITERATIONS" not in OPTIONAL_ENV_VARS
 
 
@@ -731,7 +731,7 @@ class TestOptionalEnvVarsRegistry:
 
 class TestConfigMigrationSecretPrompts:
     def test_required_secret_env_prompt_uses_masked_prompt(self, tmp_path, monkeypatch):
-        from hermes_cli import config as cfg_mod
+        from hermes_agent.hermes_cli import config as cfg_mod
 
         saved = {}
 
@@ -888,14 +888,14 @@ class TestConfigSupportFloor:
         assert results["warnings"]
 
     def test_floor_message_uses_display_hermes_home(self):
-        from hermes_cli.config_migrations import support_floor_message
+        from hermes_agent.hermes_cli.config_migrations import support_floor_message
         from hermes_constants import display_hermes_home
 
         msg = support_floor_message()
         assert f"{display_hermes_home()}/config.yaml" in msg
 
     def test_registry_has_no_targets_below_floor(self):
-        from hermes_cli.config_migrations import (
+        from hermes_agent.hermes_cli.config_migrations import (
             LEGACY_KEY_STEPS,
             MIGRATIONS,
             SUPPORT_FLOOR_VERSION,
@@ -1012,7 +1012,7 @@ class TestCustomProviderCompatibility:
 
     @staticmethod
     def _run_ladder(current_ver: int):
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
 
         results = {"env_added": [], "config_added": [], "warnings": []}
         run_migrations(current_ver, results, quiet=True)
@@ -1201,7 +1201,7 @@ class TestInterimAssistantMessageConfig:
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
             loaded = load_config()
 
-        from hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
         assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         # The user's explicit non-default value is preserved on disk.
         assert raw["display"]["tool_progress"] == "off"
@@ -1244,7 +1244,7 @@ class TestDiscordChannelPromptsConfig:
         )
 
         results = {"env_added": [], "config_added": [], "warnings": []}
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             # Drive the ladder directly: migrate_config() refuses sub-v12
             # configs since the support floor, but the write-invariant this
@@ -1279,7 +1279,7 @@ class TestEnvWriteDenylist:
     attacker who steals the token could plant
     ``LD_PRELOAD=/tmp/evil.so`` in ``.env`` and own the next Hermes
     process on next startup via the dotenv → ``os.environ`` chain in
-    ``hermes_cli/env_loader.py``.
+    ``hermes_agent/hermes_cli/env_loader.py``.
 
     Regression test for the dashboard pentest finding filed alongside
     the ``web-pentest`` skill (PR #32265 / issue #32267).
@@ -1387,7 +1387,7 @@ class TestEnvWriteDenylist:
     def test_windows_policy_denies_mixed_case_exec_names(self, protected_key, monkeypatch):
         """Windows env names are case-insensitive, so the writer must refuse the mixed-case
         spelling of a denied exec-influence name too."""
-        import hermes_cli.config as config_mod
+        import hermes_agent.hermes_cli.config as config_mod
 
         monkeypatch.setattr(config_mod, "_IS_WINDOWS", True)
         with pytest.raises(ValueError, match="denylist"):
@@ -1395,7 +1395,7 @@ class TestEnvWriteDenylist:
 
     def test_preexisting_optional_mcps_override_still_loads(self, tmp_path):
         """The writer gate must not migrate or ignore operator-owned .env state."""
-        from hermes_cli.config import invalidate_env_cache
+        from hermes_agent.hermes_cli.config import invalidate_env_cache
 
         catalog = tmp_path / "custom-mcp-catalog"
         (tmp_path / ".env").write_text(
@@ -1417,18 +1417,18 @@ class TestEnvWriteDenylist:
         ],
     )
     def test_windows_policy_names_are_case_insensitive(self, key, expected):
-        from hermes_cli.config import _env_var_policy_name
+        from hermes_agent.hermes_cli.config import _env_var_policy_name
 
         assert _env_var_policy_name(key, is_windows=True) == expected
 
     def test_posix_policy_names_remain_case_sensitive(self):
-        from hermes_cli.config import _env_var_policy_name
+        from hermes_agent.hermes_cli.config import _env_var_policy_name
 
         assert _env_var_policy_name("Path", is_windows=False) == "Path"
 
     @pytest.mark.parametrize("prefix", ["", "export "])
     def test_windows_env_assignment_matching_is_case_insensitive(self, prefix):
-        from hermes_cli.config import _env_line_defines_key
+        from hermes_agent.hermes_cli.config import _env_line_defines_key
 
         line = f"{prefix}Path=C:\\Windows\\System32\n"
         assert _env_line_defines_key(line, "PATH", is_windows=True)
@@ -1599,7 +1599,7 @@ feishu:
 
 
     def test_persist_migration_writes_full_read_raw_config(self, tmp_path):
-        from hermes_cli.config import _persist_migration
+        from hermes_agent.hermes_cli.config import _persist_migration
 
         body = """_config_version: 30
 model:
@@ -1824,10 +1824,10 @@ class TestProviderEnabledRuntimeGate:
         config_path.write_text(yaml.safe_dump(cfg))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Bust the in-process config cache so the override picks up.
-        from hermes_cli import config as cfg_mod
+        from hermes_agent.hermes_cli import config as cfg_mod
         cfg_mod._cached_config = None  # type: ignore[attr-defined]
 
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         with pytest.raises(ValueError, match="disabled"):
             resolve_runtime_provider(requested="my-fork")
 
@@ -1852,7 +1852,7 @@ def test_default_config_kanban_block_not_dropped_by_duplicate_key():
 def test_default_config_has_no_duplicate_top_level_keys():
     """Guard against any duplicate key silently shadowing a default."""
     import ast
-    import hermes_cli.config as cfg_mod
+    import hermes_agent.hermes_cli.config as cfg_mod
 
     src = open(cfg_mod.__file__, encoding="utf-8").read()
     tree = ast.parse(src)
@@ -1877,7 +1877,7 @@ class TestConfigCommandFailClosedSurface:
         return ns
 
     def test_config_command_set_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
-        from hermes_cli.config import config_command
+        from hermes_agent.hermes_cli.config import config_command
 
         config_path = tmp_path / "config.yaml"
         original = "model:\n  default: keep\nbroken: [unterminated\n"
@@ -1896,7 +1896,7 @@ class TestConfigCommandFailClosedSurface:
         assert config_path.read_text(encoding="utf-8") == original
 
     def test_config_command_unset_exits_cleanly_on_broken_yaml(self, tmp_path, capsys):
-        from hermes_cli.config import config_command
+        from hermes_agent.hermes_cli.config import config_command
 
         config_path = tmp_path / "config.yaml"
         original = "model:\n  default: keep\nbroken: [unterminated\n"
@@ -1914,8 +1914,8 @@ class TestConfigCommandFailClosedSurface:
 def test_gateway_multiplex_keys_are_recognized_config_keys():
     """``hermes config set gateway.multiplex_profiles true`` used to warn 'not a recognized config
     key' although hermes_agent/gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
-    from hermes_cli.config import _validate_config_key
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import _validate_config_key
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
     assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
     assert _validate_config_key("gateway.profile_routes") == (True, None)
@@ -1929,8 +1929,8 @@ def test_empty_dict_default_sections_are_open_containers():
     """``compression.model_thresholds.<model>`` / ``terminal.docker_env.<VAR>`` are free-form
     mappings declared as ``{}`` in DEFAULT_CONFIG: their user-chosen keys must not be refused as
     typos, while a real typo under a populated sibling section still gets a suggestion."""
-    from hermes_cli.config import _validate_config_key
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import _validate_config_key
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     assert DEFAULT_CONFIG["compression"]["model_thresholds"] == {}
     assert DEFAULT_CONFIG["terminal"]["docker_env"] == {}
     assert _validate_config_key("compression.model_thresholds.gpt-5") == (True, None)
@@ -1945,7 +1945,7 @@ def test_empty_dict_default_sections_are_open_containers():
 def test_lsp_root_policy_keys_are_recognized_and_off_by_default():
     """``lsp.warmup_timeout`` / ``broken_retry_seconds`` / ``exclude_roots`` (#116446) must be settable via
     ``hermes config set`` and must default to today's behaviour (no grace, lifetime broken set, no exclusion)."""
-    from hermes_cli.config import _validate_config_key
+    from hermes_agent.hermes_cli.config import _validate_config_key
     for key in ("lsp.warmup_timeout", "lsp.broken_retry_seconds", "lsp.exclude_roots"):
         assert _validate_config_key(key) == (True, None)
 
@@ -1986,7 +1986,7 @@ class TestSaveConfigExplicitPathAuthority:
         config_path.write_text(yaml.safe_dump(chosen), encoding="utf-8")
 
         with (patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
-              patch("hermes_cli.config.read_raw_config", return_value={})):
+              patch("hermes_agent.hermes_cli.config.read_raw_config", return_value={})):
             save_config(load_config())
 
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -1997,23 +1997,23 @@ class TestCompatibleProvidersMalformedLegacyKey:
     """A non-list ``custom_providers`` must not wipe the merged view (#114605)."""
 
     def test_string_custom_providers_keeps_providers_view_and_warns(self, caplog):
-        from hermes_cli.config_providers import get_compatible_custom_providers
+        from hermes_agent.hermes_cli.config_providers import get_compatible_custom_providers
 
         config = {
             "custom_providers": "- name: broken",
             "providers": {"exl3": {"api": "http://127.0.0.1:8290/v1", "default_model": "m"}},
         }
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.config"):
             names = [e.get("name") for e in get_compatible_custom_providers(config)]
 
         assert names == ["exl3"]
         assert any("custom_providers is a str" in r.getMessage() for r in caplog.records)
 
     def test_list_custom_providers_is_silent(self, caplog):
-        from hermes_cli.config_providers import get_compatible_custom_providers
+        from hermes_agent.hermes_cli.config_providers import get_compatible_custom_providers
 
         config = {"custom_providers": [{"name": "legacy", "base_url": "http://h/v1"}], "providers": {}}
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.config"):
             names = [e.get("name") for e in get_compatible_custom_providers(config)]
 
         assert names == ["legacy"]

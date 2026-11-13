@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from hermes_cli.plugins import get_bundled_plugins_dir
+from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
 from hermes_agent.providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ _PLUGIN_DIR_MTIME_TICK_NS = 2_000_000_000
 def _add_old_folder() -> None:
     """The folder's old place at the checkout root: a provider file dropped there still loads, and
     ``import providers.<name>`` finds it before any discovery pass, as it did before the move."""
-    from hermes_cli._startup_fast import project_root_str
+    from hermes_agent.hermes_cli._startup_fast import project_root_str
 
     _old_folder = os.path.join(project_root_str(), "providers")
     if os.path.isdir(_old_folder) and _old_folder not in __path__:
@@ -113,7 +113,7 @@ _HOME_LAYERS: dict[str, _HomeLayer] = {}
 _HOME_LAYERS_LOCK = threading.Lock()
 # The layer a ``$HERMES_HOME`` plugin import registers into. A ContextVar, not a module global:
 # two turn threads scanning two profile homes at once must not cross-register. Never a lock held
-# across the import itself — a thread mid-``import hermes_cli.auth`` (whose import calls
+# across the import itself — a thread mid-``import hermes_agent.hermes_cli.auth`` (whose import calls
 # ``list_providers()``) would block on it while the scanning thread waits on that module's import lock.
 _REGISTRATION_TARGET: ContextVar[_HomeLayer | None] = ContextVar("_provider_registration_target", default=None)
 # Set by :func:`bundled_profiles`: registrations made in this context are collected, nothing else.
@@ -129,7 +129,7 @@ _BUNDLED_PLUGINS_DIR = get_bundled_plugins_dir() / "model-providers"
 def _sync_auth_registry() -> None:
     """Mirror profiles into the ``hermes_cli`` snapshots (auth registry, picker catalog) that are loaded.
 
-    ``hermes_cli.auth`` takes its own snapshot of ``list_providers()`` when it is imported. If a
+    ``hermes_agent.hermes_cli.auth`` takes its own snapshot of ``list_providers()`` when it is imported. If a
     plugin's imports pull that module in while :func:`_discover_providers` is still running, the
     snapshot is partial and later plugins never reach the auth registry ("Unknown provider",
     #102123). Calling back into auth once discovery is complete closes that window. Looked up via
@@ -187,7 +187,7 @@ def provider_source(name: str) -> str | None:
     """Discovery source of the profile currently registered under *name* (see ``_SOURCES``), or None.
 
     ``"user"`` is what lets a ``$HERMES_HOME`` plugin re-registering a bundled name win in
-    ``hermes_cli.auth.PROVIDER_REGISTRY`` too — a bundled profile never rewrites a built-in row.
+    ``hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY`` too — a bundled profile never rewrites a built-in row.
     """
     layer = _home_layer()
     canonical = layer.aliases.get(name) or _ALIASES.get(name, name)
@@ -210,7 +210,7 @@ _NAMED_CUSTOM_MEMO_NO_SIG = object()
 
 def _has_named_custom_provider(name: str, home: Path | None, hkey: str) -> bool:
     """``has_named_custom_provider`` memoized on the home's config cache version."""
-    from hermes_cli.config_backend import config_cache_version
+    from hermes_agent.hermes_cli.config_backend import config_cache_version
 
     try:
         sig = config_cache_version(home / "config.yaml") if home is not None else None
@@ -223,7 +223,7 @@ def _has_named_custom_provider(name: str, home: Path | None, hkey: str) -> bool:
         _NAMED_CUSTOM_MEMO_SIG[hkey] = sig
     if name in memo:
         return memo[name]
-    from hermes_cli.runtime_provider_custom import has_named_custom_provider
+    from hermes_agent.hermes_cli.runtime_provider_custom import has_named_custom_provider
 
     memo[name] = has_named_custom_provider(name)
     return memo[name]
@@ -303,7 +303,7 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
     # Routing aggregators accept a ``vendor/model`` identifier while the request is sent
     # to the aggregator; the target provider can have stricter message-shape support than
     # the aggregator's generic OpenAI-compatible transport profile.
-    from hermes_cli.providers import is_routing_aggregator
+    from hermes_agent.hermes_cli.providers import is_routing_aggregator
     if not is_routing_aggregator(provider_name):
         return False
 
@@ -419,7 +419,7 @@ def unlisted_provider_names() -> set[str]:
 def bound_profile_resolver():
     """``resolve(name) -> (home plugin profile, process-wide profile)`` for the home bound now.
 
-    *name* may be an alias. For process-wide mirrors read per home (``hermes_cli.auth``'s
+    *name* may be an alias. For process-wide mirrors read per home (``hermes_agent.hermes_cli.auth``'s
     ``PROVIDER_REGISTRY``), so cheap enough per lookup: no discovery, no miss re-scan; only the
     periodic plugin-dir stamp check, skipped mid-scan so a plugin reading the mirror while it imports
     cannot re-enter its own scan.
@@ -503,7 +503,7 @@ def _skipped_plugin_enabled(layer: _HomeLayer) -> bool:
     """Whether ``plugins.disabled`` moved since a scan skipped a plugin; config is read only in that case."""
     if layer.disabled is None:
         return False
-    from hermes_cli.plugins_discovery import _get_disabled_plugins
+    from hermes_agent.hermes_cli.plugins_discovery import _get_disabled_plugins
 
     return frozenset(_get_disabled_plugins()) != layer.disabled
 
@@ -620,7 +620,7 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
 def _plugin_disabled(plugin_dir: Path) -> bool:
     """Whether ``plugins.disabled`` names this plugin, so its import-time code never runs (#137671).
     Names mirror ``gate_manifest``: the manifest name, the dir, and ``model-providers/<dir>``."""
-    from hermes_cli.plugins import _get_disabled_plugins
+    from hermes_agent.hermes_cli.plugins import _get_disabled_plugins
 
     disabled = _get_disabled_plugins()
     if not disabled:
@@ -650,7 +650,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         logger.debug("Skipping disabled provider plugin %s (plugins.disabled)", plugin_dir.name)
         return
     if source != "bundled":
-        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        from hermes_agent.hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
         if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
             _import_hosted_plugin_dir(plugin_dir, source, _user_module_name(plugin_dir, home_key))
             return
@@ -671,7 +671,7 @@ def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -
     boundary (e.g. it overrides ``create_client``) is imported in-process ALONE, with a warning,
     so it never takes its hosted siblings down with it."""
     global _current_source
-    from hermes_cli.plugin_host_profiles import load_hosted_profiles
+    from hermes_agent.hermes_cli.plugin_host_profiles import load_hosted_profiles
     layer = _REGISTRATION_TARGET.get()
     if layer is not None and module_name in layer.hosted:
         return  # already imported into this home's layer
@@ -786,7 +786,7 @@ def _discover_entry_point_providers() -> None:
     # Same opt-in gate as the general PluginManager: only entry points named
     # in ``plugins.enabled`` load, and ``plugins.disabled`` always wins.
     try:
-        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
+        from hermes_agent.hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
 
         enabled = _get_enabled_plugins()  # None = nothing enabled yet (opt-in default)
         disabled = _get_disabled_plugins()
@@ -813,7 +813,7 @@ def _discover_entry_point_providers() -> None:
                 "entry-point provider %r skipped: not enabled in config", ep.name
             )
             continue
-        from hermes_cli.plugin_isolation import in_process_import_refusal
+        from hermes_agent.hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"pip-installed model-provider plugin {ep.name!r}")
         if refusal:
             logger.warning("%s", refusal)
@@ -927,7 +927,7 @@ def _discover_providers() -> None:
         _run_discovery_steps()
     finally:
         _discovering = False
-        # hermes_cli.auth may have been imported by a plugin during discovery and snapshotted a
+        # hermes_agent.hermes_cli.auth may have been imported by a plugin during discovery and snapshotted a
         # partial profile list — hand it the complete one (no-op unless auth is already loaded).
         _sync_auth_registry()
 

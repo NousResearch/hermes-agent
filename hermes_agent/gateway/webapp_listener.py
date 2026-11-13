@@ -64,7 +64,7 @@ def _config_document(home: Path) -> dict:
     """*home*'s config: the merged one (managed overlay, ``${ENV}`` expansion) for this process's own
     home, which is always the case in the gateway; otherwise that home's file as written, which only
     ``hermes webapp`` reads, about the gateway it targets, before asking that gateway itself."""
-    from hermes_cli.config import load_config_readonly, read_user_config_raw
+    from hermes_agent.hermes_cli.config import load_config_readonly, read_user_config_raw
     from hermes_constants import get_hermes_home
     try:
         own = home.resolve() == Path(get_hermes_home()).resolve()
@@ -146,7 +146,7 @@ def _local_only(host: str) -> bool:
     """Whether the listener's sign-in gate leaves a bind to *host* open as local-only. It knows
     ``127.0.0.1``, ``::1`` and ``localhost``; any other address, another loopback one included,
     engages sign-in like a public bind."""
-    from hermes_cli.web_server_boundary import should_require_auth
+    from hermes_agent.hermes_cli.web_server_boundary import should_require_auth
 
     return not should_require_auth(host)
 
@@ -203,20 +203,20 @@ def listener_plan(home) -> tuple[str, int, WebappMount | None, str | None]:
     settings = webapp_settings(home)
     if not settings.enabled:
         return (*settings.bind, None, settings.reason)
-    from hermes_cli.config import get_project_root
-    from hermes_cli.webapp import webapp_dist_dir
+    from hermes_agent.hermes_cli.config import get_project_root
+    from hermes_agent.hermes_cli.webapp import webapp_dist_dir
     mount = WebappMount(dist=webapp_dist_dir(get_project_root()), home=Path(home), public_url=settings.public_url)
     return (*settings.bind, mount, None)
 
 
 def use_own_sign_in(webapp: WebappMount):
     """Sign the Webapp's browsers in to Nous with the Portal client Web Access registered for it
-    (``hermes_cli.webapp_access.sign_in_client``), never the dashboard's
+    (``hermes_agent.hermes_cli.webapp_access.sign_in_client``), never the dashboard's
     ``HERMES_DASHBOARD_OAUTH_CLIENT_ID``, until the returned undo runs. None, changing nothing, when
     Web Access registered no client of its own (Nous sign-in set up by hand keeps the configured
     client) or the Nous sign-in plugin is not enabled."""
-    from hermes_cli.dashboard_auth import listener_client
-    from hermes_cli.webapp_access import sign_in_client
+    from hermes_agent.hermes_cli.dashboard_auth import listener_client
+    from hermes_agent.hermes_cli.webapp_access import sign_in_client
 
     client = sign_in_client(webapp.home)
     return None if client is None else listener_client.use(*client)
@@ -295,14 +295,14 @@ def _one_use_links_work(platform: str = sys.platform) -> bool:
 
 #: How every missing-bundle reason starts; ``hermes webapp --status`` asks for no restart after it.
 NOT_BUILT = "The Webapp is not built"
-#: Why a bundle ``hermes update`` could not rebuild is not served (``hermes_cli.webapp.mark_webapp_stale``).
+#: Why a bundle ``hermes update`` could not rebuild is not served (``hermes_agent.hermes_cli.webapp.mark_webapp_stale``).
 NOT_REBUILT = (f"{NOT_BUILT} for this version of Hermes: hermes update could not rebuild it. "
                "Run hermes webapp to rebuild it.")
 
 
 def bundle_stale_reason(dist) -> str | None:
     """:data:`NOT_REBUILT` while the bundle in *dist* is marked out of date, else None."""
-    from hermes_cli.webapp import webapp_bundle_stale
+    from hermes_agent.hermes_cli.webapp import webapp_bundle_stale
     return NOT_REBUILT if webapp_bundle_stale(dist) else None
 
 
@@ -370,7 +370,7 @@ def register_control_verbs(runner, home, server=None, *, links_checked: bool | N
     def webapp_launch(params, _peer):
         from urllib.parse import urlencode
 
-        from hermes_cli.web_routers.webapp import (
+        from hermes_agent.hermes_cli.web_routers.webapp import (
             LAUNCH_TICKET_TTL_SECONDS, mint_launch_ticket, mint_printed_launch_ticket)
         from hermes_constants import PROFILE_ID_RE
         profile = params.get("profile")
@@ -381,7 +381,7 @@ def register_control_verbs(runner, home, server=None, *, links_checked: bool | N
         missing = _bundle_missing(web)
         if missing:
             raise RuntimeError(f"The Webapp is unavailable: {missing}")
-        from hermes_cli.web_server_surface import private_launch
+        from hermes_agent.hermes_cli.web_server_surface import private_launch
         if not private_launch(web.app.state):
             # Behind the dashboard's sign-in the page asks for it; a launch link opens only a private Webapp.
             # Sign-in returns to a callback the provider must know and checks a state cookie set where it
@@ -389,7 +389,7 @@ def register_control_verbs(runner, home, server=None, *, links_checked: bool | N
             # listener's own public URL), else on the LAN the address Web Access registered Nous sign-in
             # for, else the loopback address (a password provider, or sign-in set up by hand for it).
             # Native clients keep the loopback address.
-            from hermes_cli.webapp_access import registered_lan_origin
+            from hermes_agent.hermes_cli.webapp_access import registered_lan_origin
             address = (getattr(web.app.state, "listener_public_url", "")
                        or registered_lan_origin(home, urlsplit(status["url"]).port) or status["url"])
             return {"url": f"{address}/{query}", "private": False, "expires_in_seconds": None, "sign_in": True}
@@ -403,7 +403,7 @@ def register_control_verbs(runner, home, server=None, *, links_checked: bool | N
                 "expires_in_seconds": LAUNCH_TICKET_TTL_SECONDS}
 
     def webapp_sign_out(_params, _peer):
-        from hermes_cli import browser_credential
+        from hermes_agent.hermes_cli import browser_credential
         if runner.webapp_status["state"] == "starting":
             # The starting listener may already hold the stored credential in memory, where replacing
             # the file never reaches it: the caller waits for the listener to settle.
@@ -416,7 +416,7 @@ def register_control_verbs(runner, home, server=None, *, links_checked: bool | N
         _, web = serving()
         # Every tab loses access at once: every grant made under the old credential ends, and the
         # sockets and media links it opened end now, not when each tab next reconnects. Behind the
-        # sign-in gate every login is bound to the credential (hermes_cli.webapp_sign_in), so those
+        # sign-in gate every login is bound to the credential (hermes_agent.hermes_cli.webapp_sign_in), so those
         # browsers are signed out and their sockets close too. Native clients never held it and stay
         # connected.
         ended = browser_credential.rotate(browser_session_token(home, rotate=True))

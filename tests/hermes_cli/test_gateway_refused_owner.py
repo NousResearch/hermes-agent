@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.gateway import runtime_bootstrap_windows as native
-from hermes_cli import gateway_runtime as runtime
-from hermes_cli.gateway_runtime_cli import ensure_exit_code
+from hermes_agent.hermes_cli import gateway_runtime as runtime
+from hermes_agent.hermes_cli.gateway_runtime_cli import ensure_exit_code
 
 # The owner stand-in is a stub ``hermes gateway run`` child that each test reaps itself.
 pytestmark = pytest.mark.spawns_gateway_lookalike
@@ -100,7 +100,7 @@ def test_discovery_routes_a_refused_control_channel_through_refused(monkeypatch,
     """The real discovery path: ``query_identify`` raising PermissionError is what Windows' pipe
     ``CreateFile`` err=5 / peer-identity refusal produces; it reaches ``_refused`` for this home.
     The Windows naming itself is ``_refused(home, windows=True)`` above."""
-    from hermes_cli import gateway_runtime_discovery as discovery
+    from hermes_agent.hermes_cli import gateway_runtime_discovery as discovery
     home = tmp_path / "home"
     home.mkdir()
     seen = []

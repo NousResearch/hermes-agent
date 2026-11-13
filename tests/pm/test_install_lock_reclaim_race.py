@@ -1,5 +1,5 @@
 """Reclaiming an orphan install state never leaves two holders of its install lock
-(``pm/install_states.py``, ``hermes_cli.runtime_state.runtime_lock``)."""
+(``pm/install_states.py``, ``hermes_agent.hermes_cli.runtime_state.runtime_lock``)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import pm.environments
 import pm.install_states
 import pytest
-from hermes_cli.runtime_state import runtime_lock
+from hermes_agent.hermes_cli.runtime_state import runtime_lock
 from pm.environments import install_key
 from pm.install_states import collect_orphan_install_states
 

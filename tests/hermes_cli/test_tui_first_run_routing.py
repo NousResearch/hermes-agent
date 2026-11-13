@@ -18,9 +18,9 @@ class _Launched(Exception):
 
 
 def _run_chat(monkeypatch, argv, *, provider_configured):
-    import hermes_cli.main as main_mod
-    from hermes_cli._parser import build_top_level_parser
-    import hermes_cli.observability.shared_metrics_consent as consent
+    import hermes_agent.hermes_cli.main as main_mod
+    from hermes_agent.hermes_cli._parser import build_top_level_parser
+    import hermes_agent.hermes_cli.observability.shared_metrics_consent as consent
 
     parser, _subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=main_mod.cmd_chat)
@@ -42,10 +42,10 @@ def _run_chat(monkeypatch, argv, *, provider_configured):
     monkeypatch.setattr(main_mod, "_start_chat_background_prefetch", lambda: None)
     monkeypatch.setattr(main_mod, "_confirm_startup_expensive_model_override", lambda _args: None)
     monkeypatch.setattr(main_mod, "_sync_bundled_skills_for_startup", lambda: None, raising=False)
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType("hermes_agent.cli")
     fake_cli.main = classic_main
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
-    from hermes_cli import gateway_chat
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
+    from hermes_agent.hermes_cli import gateway_chat
 
     # The classic CLI rides the gateway client: it must still front the guard and never reach
     # a session (no gateway, no admission) when no provider is configured.

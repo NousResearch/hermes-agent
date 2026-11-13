@@ -1,6 +1,6 @@
 """Custom-provider resolution: ``providers:`` / ``custom_providers:`` lookup, identity recovery,
 custom credential pools, and the named-custom runtime builder. Extracted from
-:mod:`hermes_cli.runtime_provider`; origin-internal collaborators
+:mod:`hermes_agent.hermes_cli.runtime_provider`; origin-internal collaborators
 (``load_config``, ``_get_model_config``, ``load_pool``, ``has_usable_secret``, …) are looked up on
 the origin module AT CALL TIME via :func:`_rp` so ``monkeypatch.setattr(runtime_provider, name, …)``
 keeps working for moved bodies."""
@@ -11,19 +11,19 @@ import logging
 import os
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
+from hermes_agent.hermes_cli.providers import custom_provider_aliases, custom_provider_slug
 from hermes_agent.agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool
 from hermes_agent.agent.secret_scope import get_secret_str
 from utils import base_url_hostname
 
-logger = logging.getLogger("hermes_cli.runtime_provider")
+logger = logging.getLogger("hermes_agent.hermes_cli.runtime_provider")
 
 _LLAMACPP_ALIASES = ("llamacpp", "llama.cpp", "llama-cpp")
 
 
 def _rp():
-    """Origin module, late-bound so test patches on ``hermes_cli.runtime_provider.*`` apply."""
-    import hermes_cli.runtime_provider as origin
+    """Origin module, late-bound so test patches on ``hermes_agent.hermes_cli.runtime_provider.*`` apply."""
+    import hermes_agent.hermes_cli.runtime_provider as origin
     return origin
 
 
@@ -37,7 +37,7 @@ def _normalize_base_url_for_match(value) -> str:
 
 def _route_key(value) -> str:
     """An endpoint compared for identity: scheme and host fold case, the path does not."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     return normalize_route_base_url(_clean(value))
 
 
@@ -155,7 +155,7 @@ def builtin_name_user_entry(name: str, providers: Any) -> Optional[str]:
     """Config key of the enabled ``providers:`` entry a bare built-in ``name`` routes to, else None.
     The one predicate the switch, the dashboard save and doctor read, so validation and the next
     turn agree: the entry wins when it declares its own base_url (#151775)."""
-    from hermes_cli.config import is_provider_enabled
+    from hermes_agent.hermes_cli.config import is_provider_enabled
     wanted = _normalize_custom_provider_name(str(name or ""))
     if not wanted or wanted == "auto" or not isinstance(providers, dict) or not _shadowed_by_builtin(wanted):
         return None
@@ -175,7 +175,7 @@ def _match_new_style_provider(
     requested_norm: str, providers: dict[str, Any], *, resolve_credentials: bool = True,
 ) -> Optional[tuple[dict[str, Any], Any]]:
     """Scan ``providers:`` (new-style, keyed) for ``requested_norm``; ``(entry, config key)``."""
-    from hermes_cli.config import is_provider_enabled
+    from hermes_agent.hermes_cli.config import is_provider_enabled
     rp = _rp()
     for ep_name, entry in providers.items():
         # ``providers.<name>.enabled: false`` entries stay in config but are invisible here.
@@ -293,7 +293,7 @@ def _select_named_custom_provider(
 def _compatible_entry_path(config: dict[str, Any], entry: dict[str, Any]) -> Optional[tuple]:
     """Where a ``get_compatible_custom_providers`` entry lives in *config*. The view keeps the first
     of identical legacy entries, so the first raw entry normalizing to it is its source."""
-    from hermes_cli.config_providers import _normalize_custom_provider_entry
+    from hermes_agent.hermes_cli.config_providers import _normalize_custom_provider_entry
     providers = config.get("providers")
     key = entry.get("provider_key")
     if key and isinstance(providers, dict):
@@ -337,7 +337,7 @@ def _find_custom_identity(matches: Callable[[dict[str, Any]], bool],
     holds (*prefer* when it is one of them), as its canonical ``custom:<name>`` slug. A legacy entry
     whose slug a ``providers:`` entry with an endpoint owns never matches: runtime resolution runs that one.
     *config* defaults to the active profile's."""
-    from hermes_cli.config import is_provider_enabled
+    from hermes_agent.hermes_cli.config import is_provider_enabled
     rp = _rp()
     try:
         config = rp.load_config() if config is None else config
@@ -428,7 +428,7 @@ def _endpoint_identity(base_url: str) -> Optional[str]:
         return identity
     # The managed server has no custom-provider config entry. Recover its menu key
     # from the ownership-checked endpoint, never from a model name or a fixed port.
-    from hermes_cli.local_runtime.endpoint import _state_endpoint
+    from hermes_agent.hermes_cli.local_runtime.endpoint import _state_endpoint
     endpoint = _state_endpoint()
     if endpoint and _route_key(base_url) == _route_key(endpoint["base_url"]):
         return "llamacpp"
@@ -519,7 +519,7 @@ def is_routable_provider(provider: Optional[str]) -> bool:
     if name.lower() == "custom":
         return False
     try:
-        from hermes_cli.providers import resolve_provider_full
+        from hermes_agent.hermes_cli.providers import resolve_provider_full
         rp = _rp()
         config = rp.load_config()
         return resolve_provider_full(name, config.get("providers"), rp.get_compatible_custom_providers(config)) is not None
@@ -658,7 +658,7 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
     message (server off → point at the switch; else the setup pane)."""
     rp = _rp()
     try:
-        from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+        from hermes_agent.hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
         endpoint = resolve_llamacpp_endpoint(config=rp.load_config())
     except Exception:
         endpoint = None
@@ -741,7 +741,7 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
     # opencode.ai) serve models behind different API surfaces per model — a static api_mode 503s for
     # /v1/responses-only models like grok-4.5 (#85589). Re-derive api_mode from the effective model and
     # normalize the /v1 suffix, exactly like the built-in opencode-zen/go paths do.
-    from hermes_cli.models import opencode_provider_family
+    from hermes_agent.hermes_cli.models import opencode_provider_family
     family = opencode_provider_family(requested_provider)
     if family is not None:
         return family
@@ -815,7 +815,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # api_mode from the model and normalize /v1 like the built-in paths.
     family = _opencode_family_for_custom(requested_provider, base_url)
     if family is not None and not custom_provider.get("api_mode"):
-        from hermes_cli.models import normalize_opencode_base_url, opencode_model_api_mode
+        from hermes_agent.hermes_cli.models import normalize_opencode_base_url, opencode_model_api_mode
         effective_model = str(target_model or custom_provider.get("model") or rp._get_model_config().get("default") or "").strip()
         if effective_model:
             result["api_mode"] = opencode_model_api_mode(family, effective_model)

@@ -24,7 +24,7 @@ if sys.platform == "win32":  # pragma: no cover
 import termios
 import tty as _tty
 
-from cli import _heal_cooked_mode_drift
+from hermes_agent.cli import _heal_cooked_mode_drift
 
 
 @pytest.fixture()

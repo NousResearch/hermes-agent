@@ -141,7 +141,7 @@ def test_deprecated_env_warning_truth_table(
     for key, value in proc_env.items():
         monkeypatch.setenv(key, value)
 
-    import hermes_cli.config as config_module
+    import hermes_agent.hermes_cli.config as config_module
 
     # load_env() memoises on (path, mtime, size); invalidate so this row's
     # freshly written file is what the scanner reads.

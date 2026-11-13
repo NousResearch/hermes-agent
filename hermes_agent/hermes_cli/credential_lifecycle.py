@@ -21,7 +21,7 @@ __all__ = [
 def _providers_for_env_var(env_var: str) -> list[str]:
     """Provider ids whose registered api_key_env_vars include ``env_var``."""
     try:
-        from hermes_cli.auth_plugin_providers import canonical_registry_rows
+        from hermes_agent.hermes_cli.auth_plugin_providers import canonical_registry_rows
         rows = canonical_registry_rows()
     except Exception:
         return []
@@ -54,7 +54,7 @@ def _prune_env_pool_entries(env_var: str) -> list[str]:
     Spans ALL providers (shared vars like GITHUB_TOKEN seed several). Entries with any other
     source (OAuth, device-code, manual, borrowed-CLI) are preserved verbatim.
     """
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 
     source = f"env:{env_var}"
     pruned: list[str] = []
@@ -87,10 +87,10 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> list[st
     ``.env`` is touched. ``new_value=None`` removes the field. Operates on the RAW user config
     so defaults are never baked into the user's file.
     """
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     if not old_value:
         return []
-    from hermes_cli.config import atomic_config_replace, get_config_path, read_user_config_raw
+    from hermes_agent.hermes_cli.config import atomic_config_replace, get_config_path, read_user_config_raw
 
     config_path = get_config_path()
     if not config_exists(config_path):
@@ -179,7 +179,7 @@ def save_provider_env_credential(env_var: str, value: str) -> dict[str, Any]:
     kept 401'ing until the user ran ``hermes auth add <provider> --type api-key`` separately. This makes the
     Desktop save's effect on disk match what ``hermes auth add`` does.
     """
-    from hermes_cli.config import load_env, require_env_writable, save_env_value
+    from hermes_agent.hermes_cli.config import load_env, require_env_writable, save_env_value
 
     # A locked key must fail here: save_env_value's refusal returns like a success, and the mirror
     # scrub below would still move the new value into config.yaml.
@@ -205,7 +205,7 @@ def save_provider_env_credential(env_var: str, value: str) -> dict[str, Any]:
 def remove_provider_env_credential(env_var: str) -> dict[str, Any]:
     """Remove a credential from EVERY store: ``.env`` (and process env), env-seeded
     ``credential_pool`` entries, model-cache rows, config.yaml mirrors of the same value."""
-    from hermes_cli.config import load_env, remove_env_value, require_env_writable
+    from hermes_agent.hermes_cli.config import load_env, remove_env_value, require_env_writable
 
     # Before the pool prune and mirror scrub: a refused remove must not strip the other stores.
     require_env_writable(env_var, "remove")

@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
-from hermes_cli.observability.shared_metrics_gateway import record_cron_missed
+from hermes_agent.hermes_cli.observability.shared_metrics_gateway import record_cron_missed
 from utils import atomic_replace, atomic_write_text, fsync_directory, mkstemp_beside
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
@@ -101,7 +101,7 @@ JOBS_FILE = CRON_DIR / "jobs.json"
 TICKER_HEARTBEAT_FILE = CRON_DIR / "ticker_heartbeat"
 TICKER_SUCCESS_FILE = CRON_DIR / "ticker_last_success"
 # Single source of truth for the ticker interval (scheduler_provider.py) and the staleness
-# threshold in `hermes cron status` (hermes_cli/cron.py), so they never drift apart.
+# threshold in `hermes cron status` (hermes_agent/hermes_cli/cron.py), so they never drift apart.
 TICKER_INTERVAL_SECONDS = 60
 
 # In-process lock for load_jobs→modify→save_jobs cycles; without it, parallel tick threads'
@@ -579,13 +579,13 @@ def _is_recoverable_error_job(job: dict[str, Any]) -> bool:
 def _secure_dir(path: Path):
     """Owner-only (0700) via the shared helper, so cron/ and cron/output honor the same managed/
     container/HERMES_HOME_MODE rules as the rest of HERMES_HOME (#10757)."""
-    from hermes_cli.config import _secure_dir as _shared_secure_dir
+    from hermes_agent.hermes_cli.config import _secure_dir as _shared_secure_dir
     _shared_secure_dir(path)
 
 
 def _secure_file(path: Path):
     """Owner-only (0600) via the shared helper (managed/container skip included)."""
-    from hermes_cli.config import _secure_file as _shared_secure_file
+    from hermes_agent.hermes_cli.config import _secure_file as _shared_secure_file
     _shared_secure_file(path)
 
 
@@ -1309,7 +1309,7 @@ def ticker_heartbeat_writer_alive() -> bool:
     bare-epoch stamp names no writer and is NOT proof of a live scheduler by itself."""
     fields = _read_marker_fields("ticker_heartbeat")
     try:
-        from hermes_cli._subprocess_compat import pid_exists_stdlib
+        from hermes_agent.hermes_cli._subprocess_compat import pid_exists_stdlib
         return len(fields) >= 2 and pid_exists_stdlib(int(fields[1]))
     except Exception:
         return False
@@ -2813,7 +2813,7 @@ COMPLETED_ONESHOT_RETENTION_DAYS = 7
 def _cron_config_number(key: str, default: Any, cast: Callable[[Any], Any]) -> Any:
     """Read ``cron.<key>`` from config as *cast*, falling back to *default* on any failure."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
         return cast(cron_cfg.get(key, default))
@@ -3317,7 +3317,7 @@ def _get_due_jobs_locked() -> list[dict[str, Any]]:
 
 # Per-run output files (`cron/output/<job>/<timestamp>.md`) are capped so a frequent job can't fill
 # the disk.
-# Unlike the quick-snapshot store (`hermes_cli.backup`, capped at 20) it had no retention, so a
+# Unlike the quick-snapshot store (`hermes_agent.hermes_cli.backup`, capped at 20) it had no retention, so a
 # frequently-scheduled job on a long-running deploy accumulated one file per run forever and could fill the
 # disk (#52383). Keep the most recent N files per job; a non-positive value disables pruning (opt-out).
 _CRON_OUTPUT_DEFAULT_KEEP = 50

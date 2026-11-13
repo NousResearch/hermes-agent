@@ -23,7 +23,7 @@ def _authorize(connection, ref, params):
         if name in params and not isinstance(params[name], str):
             raise RuntimeStoreError('invalid_params')
     if params.get('profile'):
-        from hermes_cli.profiles import profile_matches_home
+        from hermes_agent.hermes_cli.profiles import profile_matches_home
         if not profile_matches_home(params['profile'], Path(authority.profile_id)):
             raise RuntimeStoreError('profile_mismatch')
     if ref.session_id:
@@ -46,7 +46,7 @@ def mcp_revision(policy, cfg) -> str:
 def _client_config(cfg):
     # Native full-config consumers are presentation-only. Do not export provider,
     # MCP, plugin or terminal configuration (which can contain arbitrary secrets).
-    from hermes_cli.config import redact_config_value
+    from hermes_agent.hermes_cli.config import redact_config_value
     result = redact_config_value({key: cfg[key] for key in (
         'display', 'approvals', 'paste_collapse_threshold', 'paste_collapse_char_threshold') if key in cfg})
     if 'display' in result:
@@ -80,9 +80,9 @@ async def config_get(connection, ref, params):
 
     def read():
         from hermes_agent.gateway.run import _profile_runtime_scope
-        from hermes_cli.config import load_config
-        from hermes_cli.config_backend import config_version_or_none, version_token
-        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config_backend import config_version_or_none, version_token
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         from hermes_constants import DEFAULT_INDICATOR_STYLE
         from hermes_agent.tools.approval_context import _get_approval_mode
         home = Path(connection.authority.profile_id)
@@ -234,12 +234,12 @@ async def model_options(connection, ref, params):
 
     def discover():
         from hermes_agent.gateway.run import _profile_runtime_scope
-        from hermes_cli.inventory import load_picker_context, build_model_options_payload
+        from hermes_agent.hermes_cli.inventory import load_picker_context, build_model_options_payload
         with _profile_runtime_scope(Path(connection.authority.profile_id)):
             ctx = load_picker_context()
             selected = provider
             if selected == 'custom':
-                from hermes_cli.runtime_provider import canonical_custom_identity
+                from hermes_agent.hermes_cli.runtime_provider import canonical_custom_identity
                 selected = canonical_custom_identity(base_url=base_url, config_provider=ctx.current_provider, model=model,
                                                      requested=getattr(agent, 'requested_provider', None)) or selected
             return build_model_options_payload(ctx.with_overrides(current_provider=selected,

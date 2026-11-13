@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli._subprocess_compat import (
+from hermes_agent.hermes_cli._subprocess_compat import (
     FILTER_DISCOVERY_FAILED,
     NO_DRIVER_DIFF_FLAGS,
     harden_git_argv,
@@ -170,7 +170,7 @@ def test_working_diff_is_safe(malicious_repo):
 
 
 def test_web_git_diff_is_safe(malicious_repo):
-    from hermes_cli import web_git
+    from hermes_agent.hermes_cli import web_git
     repo, marker = malicious_repo
     web_git._git(str(repo), ["status", "--porcelain=v2", "-z"])
     web_git._git_out(str(repo), ["diff", "HEAD"])
@@ -199,8 +199,8 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     dirty probe (kanban teardown), and the three unattended branch deletions: the reclaim sweep,
     the orphaned-branch pass and the cleanup after a failed ``worktree add``. The reclaim sweep's
     ``ls-remote`` and the shallow-repo ``fetch --unshallow`` must not run a repo ``core.sshCommand``."""
-    from hermes_cli import kanban_db_workspace as kw
-    from hermes_cli import worktree_gc, worktree_ops
+    from hermes_agent.hermes_cli import kanban_db_workspace as kw
+    from hermes_agent.hermes_cli import worktree_gc, worktree_ops
     from hermes_agent.tools.async_delegation_recovery_hints import git_state_hint
     from hermes_agent.tui_gateway import server
     repo, marker = malicious_repo
@@ -310,8 +310,8 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
     ``gitdir:`` the ``.git/worktrees/<name>`` dir of ``worktree add``), so its filters are neutralized
     too. Discovery that cannot be trusted refuses the git call: an include nested in an include
     target, a huge filter inventory (argv/env E2BIG), or a config git cannot parse."""
-    from hermes_cli import kanban_db_workspace as kw
-    from hermes_cli import worktree_gc
+    from hermes_agent.hermes_cli import kanban_db_workspace as kw
+    from hermes_agent.hermes_cli import worktree_gc
     from hermes_agent.tools.async_delegation_recovery_hints import git_state_hint
     marker = (tmp_path / "FILTER").as_posix()
     repo = _make_filter_repo(tmp_path, attrs, config, marker)
@@ -339,7 +339,7 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
     assert sub is not None and (Path(sub["path"]) / "README").read_text() == "hi\n"
     # The subagent's automatic finalization and kanban teardown re-hash a touched file (status);
     # hermes -w checks out a worktree of its own.
-    from hermes_cli import worktree_ops
+    from hermes_agent.hermes_cli import worktree_ops
     from hermes_agent.tools.subagent_worktree import finalize_subagent_worktree
     for tree in (Path(sub["path"]), tmp_path / "wt"):
         os.utime(tree / "README", (time.time() + 120, time.time() + 120))

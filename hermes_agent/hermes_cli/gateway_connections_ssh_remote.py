@@ -8,7 +8,7 @@ backend only when its argv proves it is ours.
 
 The remote paths below (``~/.hermes/desktop-ssh/...``) are REMOTE path strings: the remote
 ``serve`` validates ``--ssh-session-token-file`` against ``$HOME/.hermes/desktop-ssh`` on its own
-host (``hermes_cli/main_dashboard.py::_read_ssh_session_token_file``).
+host (``hermes_agent/hermes_cli/main_dashboard.py::_read_ssh_session_token_file``).
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable
 
-from hermes_cli.gateway_connections_ssh_programs import REMOTE_MARKER_GATE_PY
-from hermes_cli.gateway_connections_ssh_transport import SshConnection, SshReachError, with_remote_timeout
+from hermes_agent.hermes_cli.gateway_connections_ssh_programs import REMOTE_MARKER_GATE_PY
+from hermes_agent.hermes_cli.gateway_connections_ssh_transport import SshConnection, SshReachError, with_remote_timeout
 
 LOCKFILE_SCHEMA_VERSION = 2
 # Bumped when the client<->serve reuse contract changes so an old serve is never reattached.

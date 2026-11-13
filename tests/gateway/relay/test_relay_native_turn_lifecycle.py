@@ -270,7 +270,7 @@ async def test_a_slash_command_keeps_its_single_adapter_lifecycle(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_pre_gateway_dispatch_still_fires_once_and_the_turn_is_acknowledged(tmp_path, monkeypatch):
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
     fired = []
 
     async def hook(event, **_kwargs):

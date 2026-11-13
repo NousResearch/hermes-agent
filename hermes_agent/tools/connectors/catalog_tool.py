@@ -159,8 +159,8 @@ def search(query: str, kind: Optional[str], *, installer: Any = None) -> dict[st
 
 
 def _plugin_rows(query: str) -> list[dict[str, Any]]:
-    from hermes_cli.plugin_catalog import filter_entries, load_catalog_live
-    from hermes_cli.plugins_cmd import PluginOperationError, _read_install_metadata
+    from hermes_agent.hermes_cli.plugin_catalog import filter_entries, load_catalog_live
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError, _read_install_metadata
     from hermes_agent.tools.connectors.catalog import _display
 
     try:

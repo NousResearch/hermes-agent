@@ -117,7 +117,7 @@ def _normalize_provider_alias(provider_name: str) -> str:
     if not raw:
         return raw
     try:
-        from hermes_cli.models import normalize_provider
+        from hermes_agent.hermes_cli.models import normalize_provider
 
         return normalize_provider(raw)
     except Exception:
@@ -175,7 +175,7 @@ def _repair_prefix_from_catalogue(model_name: str, provider: str) -> str:
     if "/" in model_name:
         return model_name
     try:
-        from hermes_cli.models import _PROVIDER_MODELS
+        from hermes_agent.hermes_cli.models import _PROVIDER_MODELS
     except Exception:
         return model_name
     # Compare against the catalogue's own suffix, tag included: a bare ``…:free`` id must resolve to
@@ -213,7 +213,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # OpenCode Zen / Go are flat-namespace resellers: /v1/models returns bare IDs and inference 401s
     # vendor-prefixed names, so strip ANY leading ``vendor/`` (commonly copied from aggregator slugs).
-    from hermes_cli.models import opencode_provider_family
+    from hermes_agent.hermes_cli.models import opencode_provider_family
 
     _oc_family = opencode_provider_family(provider)
     if _oc_family is not None:

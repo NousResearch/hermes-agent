@@ -308,7 +308,7 @@ def _existing_categories() -> list[str]:
 
 def _line_input(prompt: str) -> Optional[str]:
     """Stripped interactive line; None on EOF/Ctrl-C."""
-    from hermes_cli.cli_output import line_input
+    from hermes_agent.hermes_cli.cli_output import line_input
     try:
         return line_input(prompt).strip()
     except (EOFError, KeyboardInterrupt):
@@ -776,7 +776,7 @@ def _record_skill_install(identifier: str, bundle, outcome: str, attempt: Option
     stay anonymous, every other registry is the hub. ``attempt`` carries the failure class the
     failing exit named and the hub adapter id (``registry``); a raised ``error`` is classified by
     its type inside the metrics guard."""
-    from hermes_cli.observability.shared_metrics_events import record_extension_install
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_extension_install
     attempt = attempt or {}
     origin = getattr(bundle, "source", None) or attempt.get("origin") or (
         "official" if identifier.startswith("official/")
@@ -1538,7 +1538,7 @@ def _tap_cli(args) -> None:
 
 
 # `hermes skills <action>` -> handler(args). Lambdas late-bind the do_* names so
-# tests that patch("hermes_cli.skills_hub.do_install") still intercept.
+# tests that patch("hermes_agent.hermes_cli.skills_hub.do_install") still intercept.
 _CLI_ACTIONS = {
     "browse": lambda a: do_browse(page=a.page, page_size=a.size, source=a.source),
     "search": lambda a: do_search(a.query, source=a.source, limit=a.limit,
@@ -1568,7 +1568,7 @@ _CLI_ACTIONS = {
 
 
 def skills_command(args) -> Optional[int]:
-    """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
+    """Router for `hermes skills <subcommand>` — called from hermes_agent/hermes_cli/main.py."""
     handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
     if handler is None:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")

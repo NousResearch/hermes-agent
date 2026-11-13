@@ -1,6 +1,6 @@
 """Plugin hook / middleware / event-bus / system-prompt-section dispatch.
 
-Mixed into :class:`hermes_cli.plugins.PluginManager`. ``_resolve_hook_callback_timeout`` stays on
+Mixed into :class:`hermes_agent.hermes_cli.plugins.PluginManager`. ``_resolve_hook_callback_timeout`` stays on
 the origin (tests patch it there) and is looked up lazily.
 """
 
@@ -19,9 +19,9 @@ import types
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
-from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
+from hermes_agent.hermes_cli.middleware import OBSERVER_SCHEMA_VERSION
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 # Allowlist of agent-turn hot-path hooks bounded by plugins.hook_callback_timeout (fail-open:
 # abandon without join — joining reintroduced a shutdown hang). Unlisted hooks run synchronously.
@@ -74,14 +74,14 @@ def stream_held() -> bool:
     """True when a plugin loaded in the active profile registered ``transform_llm_output`` with
     ``hold_stream=True``: that profile's replies reach the user only as the rewritten final.
     Lazy-discovers first, like ``has_hook``."""
-    from hermes_cli.plugins import _delivery_manager
+    from hermes_agent.hermes_cli.plugins import _delivery_manager
 
     return _delivery_manager().holds_stream()
 
 
 def held_stream_transforms() -> tuple[Callable, ...]:
     """:meth:`PluginDispatchMixin.held_transforms` of the active profile's manager (lazy-discovers)."""
-    from hermes_cli.plugins import _delivery_manager
+    from hermes_agent.hermes_cli.plugins import _delivery_manager
 
     return _delivery_manager().held_transforms()
 
@@ -296,7 +296,7 @@ class PluginDispatchMixin:
                             failed: Optional[list] = None) -> list[Any]:
         """:meth:`invoke_hook`'s loop over ``callbacks``; each one that raised or timed out is
         appended to ``failed`` when given."""
-        from hermes_cli.plugins import _resolve_hook_callback_timeout
+        from hermes_agent.hermes_cli.plugins import _resolve_hook_callback_timeout
         results: list[Any] = []
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
@@ -568,7 +568,7 @@ class PluginDispatchMixin:
         """Register ``callback`` for ``hook_name`` on behalf of ``context`` (unknown names warn but are
         still stored). ``hold_stream=True`` on ``transform_llm_output`` declares the rewrite must reach
         the user first, so this profile's replies are not streamed (:meth:`holds_stream`)."""
-        from hermes_cli.plugins import VALID_HOOKS
+        from hermes_agent.hermes_cli.plugins import VALID_HOOKS
 
         handle = context._track_callback("hook", hook_name, callback, self._hooks, VALID_HOOKS)
         if hold_stream and hook_name != STREAM_HOLDING_HOOK:
@@ -621,7 +621,7 @@ class PluginDispatchMixin:
         run inline. Bounded hooks keep ``plugins.hook_callback_timeout`` via ``asyncio.wait_for``
         (the coroutine is cancelled, not abandoned); a timed-out ``pre_tool_call`` fails closed.
         """
-        from hermes_cli.plugins import _resolve_hook_callback_timeout
+        from hermes_agent.hermes_cli.plugins import _resolve_hook_callback_timeout
         if hook_name != "gateway_platform_event":
             kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         results: list[Any] = []
@@ -740,7 +740,7 @@ class PluginDispatchMixin:
         of ``original_<key>`` so an in-place edit cannot leak.
         """
         from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
-        from hermes_cli.middleware import _safe_copy
+        from hermes_agent.hermes_cli.middleware import _safe_copy
 
         if safe_worker_enabled():
             return []

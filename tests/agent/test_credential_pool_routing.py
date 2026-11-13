@@ -37,7 +37,7 @@ class TestCliTurnRoutePool:
             service_tier=None,
         )
 
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         bound = HermesCLI._resolve_turn_agent_config.__get__(shell)
         route = bound("test message")
 
@@ -324,7 +324,7 @@ class TestFailureAttribution:
         ):
             monkeypatch.delenv(env_var, raising=False)
         monkeypatch.setattr(
-            "hermes_cli.auth.is_provider_explicitly_configured",
+            "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured",
             lambda provider: False,
         )
         (hermes_home / "auth.json").write_text(

@@ -27,7 +27,7 @@ with SessionDB(db_path=path) as owner:
         owner._conn.execute("UPDATE sessions SET title='UNCOMMITTED_SENTINEL' WHERE id='committed-fixture'")
         try:
             for command in (['sessions','list'], ['sessions','stats'], ['sessions','pinned','--json'], ['insights']):
-                result = subprocess.run([sys.executable, '-m', 'hermes_cli.main', *command],
+                result = subprocess.run([sys.executable, '-m', 'hermes_agent.hermes_cli.main', *command],
                                         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
                 assert result.returncode == 0, result.stdout + result.stderr
                 assert 'Error:' not in result.stdout and 'Error generating' not in result.stdout, result.stdout

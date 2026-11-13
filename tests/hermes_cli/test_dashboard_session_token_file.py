@@ -6,7 +6,7 @@ import pytest
 
 
 def test_plain_env_token_is_used_verbatim(monkeypatch):
-    from hermes_cli import web_server_session_token as st
+    from hermes_agent.hermes_cli import web_server_session_token as st
 
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "raw-token")
 
@@ -14,7 +14,7 @@ def test_plain_env_token_is_used_verbatim(monkeypatch):
 
 
 def test_file_prefix_reads_and_strips(monkeypatch, tmp_path):
-    from hermes_cli import web_server_session_token as st
+    from hermes_agent.hermes_cli import web_server_session_token as st
 
     token_file = tmp_path / "token"
     token_file.write_text("  file-token  " + chr(13) + chr(10), encoding="utf-8")
@@ -24,7 +24,7 @@ def test_file_prefix_reads_and_strips(monkeypatch, tmp_path):
 
 
 def test_unreadable_token_file_fails_loudly(monkeypatch, tmp_path):
-    from hermes_cli import web_server_session_token as st
+    from hermes_agent.hermes_cli import web_server_session_token as st
 
     monkeypatch.setenv(
         "HERMES_DASHBOARD_SESSION_TOKEN", f"file:{tmp_path / 'absent'}"
@@ -35,7 +35,7 @@ def test_unreadable_token_file_fails_loudly(monkeypatch, tmp_path):
 
 
 def test_empty_token_file_fails_loudly(monkeypatch, tmp_path):
-    from hermes_cli import web_server_session_token as st
+    from hermes_agent.hermes_cli import web_server_session_token as st
 
     token_file = tmp_path / "token"
     token_file.write_text(chr(10), encoding="utf-8")
@@ -46,7 +46,7 @@ def test_empty_token_file_fails_loudly(monkeypatch, tmp_path):
 
 
 def test_malformed_token_file_fails_loudly(monkeypatch, tmp_path):
-    from hermes_cli import web_server_session_token as st
+    from hermes_agent.hermes_cli import web_server_session_token as st
 
     token_file = tmp_path / "token"
     token_file.write_bytes(b"\xff\xfe\x00not-utf8")
@@ -57,7 +57,7 @@ def test_malformed_token_file_fails_loudly(monkeypatch, tmp_path):
 
 
 def test_no_source_mints_a_token(monkeypatch):
-    from hermes_cli import web_server_session_token as st
+    from hermes_agent.hermes_cli import web_server_session_token as st
 
     monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
 
@@ -72,8 +72,8 @@ class TestSessionTokenInjection:
     """
 
     def test_honors_injected_token(self, monkeypatch):
-        import hermes_cli.web_server as ws
-        import hermes_cli.web_server_session_token as st
+        import hermes_agent.hermes_cli.web_server as ws
+        import hermes_agent.hermes_cli.web_server_session_token as st
 
         original_app = ws.app
         original_token = ws._SESSION_TOKEN

@@ -17,8 +17,8 @@ import hermes_constants
 pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")
 
-import hermes_cli.gateway as gateway_cli
-from hermes_cli.gateway_launchd import launchd_program_arguments
+import hermes_agent.hermes_cli.gateway as gateway_cli
+from hermes_agent.hermes_cli.gateway_launchd import launchd_program_arguments
 from hermes_agent.gateway import status
 from hermes_agent.gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
@@ -350,7 +350,7 @@ class TestGeneratedSystemdUnits:
         """The generated plist must carry SoftResourceLimits/NumberOfFiles so a
         plist rewrite by `hermes gateway start` cannot strip the FD floor and
         reintroduce EMFILE crashes (launchd default soft limit is 256)."""
-        from hermes_cli import resource_limits
+        from hermes_agent.hermes_cli import resource_limits
 
         monkeypatch.setattr(
             resource_limits, "configured_nofile_soft_limit", lambda config=None: 65536
@@ -365,7 +365,7 @@ class TestGeneratedSystemdUnits:
     def test_launchd_plist_omits_nofile_block_when_disabled(self, monkeypatch):
         """runtime.nofile_soft_limit: 0/false/null disables the adjustment; the
         plist must then not contain a SoftResourceLimits block at all."""
-        from hermes_cli import resource_limits
+        from hermes_agent.hermes_cli import resource_limits
 
         monkeypatch.setattr(
             resource_limits, "configured_nofile_soft_limit", lambda config=None: None
@@ -1999,7 +1999,7 @@ class TestDockerAwareGateway:
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
-        from hermes_cli.gateway_command_errors import SystemctlUnavailableError
+        from hermes_agent.hermes_cli.gateway_command_errors import SystemctlUnavailableError
 
         with pytest.raises(SystemctlUnavailableError):
             gateway_cli._run_systemctl(["start", "hermes-gateway"])
@@ -2127,7 +2127,7 @@ class TestLegacyHermesUnitDetection:
         """Older installs may have used different python invocations.
 
         ExecStart variants we've seen in the wild:
-          - python -m hermes_cli.main gateway run
+          - python -m hermes_agent.hermes_cli.main gateway run
           - python path/to/hermes_cli/main.py gateway run
           - hermes gateway run   (direct binary)
           - python path/to/gateway/run.py

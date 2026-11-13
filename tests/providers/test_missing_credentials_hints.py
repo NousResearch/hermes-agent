@@ -22,7 +22,7 @@ def hinted_provider(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("FAKE_HINTED_KEY", raising=False)
     from hermes_agent import providers
-    from hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, ProviderConfig
 
     def install(profile_cls):
         profile = profile_cls(name="fake-hinted", auth_type="api_key", env_vars=("FAKE_HINTED_KEY",),
@@ -39,8 +39,8 @@ def hinted_provider(tmp_path, monkeypatch):
 @pytest.mark.parametrize("profile_cls, suffix", [(_HintedProfile, f" {_HINT}"), (ProviderProfile, "")])
 def test_runtime_resolution_appends_the_profile_hint(hinted_provider, profile_cls, suffix):
     hinted_provider(profile_cls)
-    from hermes_cli.auth import AuthError
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     with pytest.raises(AuthError) as excinfo:
         resolve_runtime_provider(requested="fake-hinted")
@@ -50,7 +50,7 @@ def test_runtime_resolution_appends_the_profile_hint(hinted_provider, profile_cl
 @pytest.mark.parametrize("profile_cls, suffix", [(_HintedProfile, f" {_HINT}"), (ProviderProfile, "")])
 def test_readiness_check_appends_the_profile_hint(hinted_provider, profile_cls, suffix):
     hinted_provider(profile_cls)
-    from hermes_cli.runtime_readiness import check_runtime_readiness
+    from hermes_agent.hermes_cli.runtime_readiness import check_runtime_readiness
 
     verdict = check_runtime_readiness(
         "fake-hinted", resolve=lambda: ("m", {"provider": "fake-hinted", "api_key": "", "source": "none"}))
@@ -72,9 +72,9 @@ class _ListHintProfile(ProviderProfile):
 def test_a_broken_hint_keeps_the_auth_error_and_the_fallback_chain(hinted_provider, monkeypatch, caplog, profile_cls):
     hinted_provider(profile_cls)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-fake")
-    from hermes_cli import runtime_readiness
-    from hermes_cli.auth import AuthError
-    from hermes_cli.runtime_provider import resolve_runtime_provider, resolve_runtime_with_fallback
+    from hermes_agent.hermes_cli import runtime_readiness
+    from hermes_agent.hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider, resolve_runtime_with_fallback
 
     monkeypatch.setattr(runtime_readiness, "_HINT_FAILURES_LOGGED", set(), raising=False)
     for _ in range(2):

@@ -1,6 +1,6 @@
 """Ramp Router (router.com) provider profile: Responses-only LLM gateway (verified live).
 
-``api_mode="codex_responses"`` + the ``api.router.com`` host mandate in ``hermes_cli/providers.py``
+``api_mode="codex_responses"`` + the ``api.router.com`` host mandate in ``hermes_agent/hermes_cli/providers.py``
 keep every path on the native wire. The catalog is account-scoped, so no ``fallback_models``
 (picker uses ``fetch_models()``). Router 400s on ``reasoning.effort`` levels outside a model's
 published vocabulary and on any reasoning field for non-reasoning models, so the efforts map
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_agent.agent.reasoning_effort import EFFORT_LADDER
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 from hermes_agent.providers import register_provider
 from hermes_agent.providers.base import LazyHeaders, ProviderProfile, _profile_user_agent
 
@@ -66,7 +66,7 @@ def _state() -> Any:
 def _base_url() -> str:
     """Router base URL: profile ``.env`` first (scope-aware), plain os.environ as the fallback."""
     try:
-        from hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
+        from hermes_agent.hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
     except Exception:
         prefer_dotenv = None
     for resolve in filter(None, (prefer_dotenv, os.environ.get)):
@@ -83,7 +83,7 @@ def _resolve_api_key() -> str:
     """Router key (documented var, then alias), preferring dotenv; plain os.environ
     is the fallback when the dotenv resolver is unavailable or raises."""
     try:
-        from hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
+        from hermes_agent.hermes_cli.config import get_env_value_prefer_dotenv as prefer_dotenv
     except Exception:
         prefer_dotenv = None
     for resolve in filter(None, (prefer_dotenv, os.environ.get)):
@@ -192,7 +192,7 @@ def _fetch_catalog_items(*, api_key: str = "", base_url: str = "", timeout: floa
     """Fetch the raw ``/v1/models`` ``data`` array. None on any failure."""
     import urllib.request
 
-    from hermes_cli.urllib_security import open_credentialed_url
+    from hermes_agent.hermes_cli.urllib_security import open_credentialed_url
 
     req = urllib.request.Request((base_url or _base_url()).rstrip("/") + "/models")
     key = api_key or _resolve_api_key()

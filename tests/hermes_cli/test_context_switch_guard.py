@@ -1,11 +1,11 @@
-"""Tests for hermes_cli.context_switch_guard."""
+"""Tests for hermes_agent.hermes_cli.context_switch_guard."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from hermes_cli.context_switch_guard import merge_preflight_compression_warning
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.context_switch_guard import merge_preflight_compression_warning
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
 
 def _result(*, model: str = "small-model") -> ModelSwitchResult:
@@ -49,11 +49,11 @@ def _compressor(
 
 def test_merge_appends_to_existing_warning(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
+        "hermes_agent.hermes_cli.context_switch_guard._estimate_tokens",
         lambda *a, **k: 90_000,
     )
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard.resolve_display_context_length",
+        "hermes_agent.hermes_cli.context_switch_guard.resolve_display_context_length",
         lambda *a, **k: 32_000,
     )
     cc = _compressor(monkeypatch)
@@ -75,11 +75,11 @@ def test_cap_lowers_the_switch_warning_threshold_below_the_ratio(monkeypatch):
     500K (no warning at 300K in-flight), the cap says less — the guard must warn with the capped number."""
     cap = 256_000
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
+        "hermes_agent.hermes_cli.context_switch_guard._estimate_tokens",
         lambda *a, **k: 300_000,
     )
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard.resolve_display_context_length",
+        "hermes_agent.hermes_cli.context_switch_guard.resolve_display_context_length",
         lambda *a, **k: 1_000_000,
     )
     cc = _compressor(
@@ -129,7 +129,7 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
         lambda *a, **k: None,
     )
     monkeypatch.setattr(
-        "hermes_cli.context_switch_guard._estimate_tokens",
+        "hermes_agent.hermes_cli.context_switch_guard._estimate_tokens",
         lambda *a, **k: 147_053,
     )
     cc = _compressor(monkeypatch, context_length=1_000_000)
@@ -210,7 +210,7 @@ def test_custom_provider_context_avoids_false_shrink_warning(monkeypatch):
 
 def test_lifetime_prompt_counter_is_not_a_size_estimate():
     """``session_prompt_tokens`` sums every call; without a measured size the guard stays silent (#126343)."""
-    from hermes_cli.context_switch_guard import _estimate_tokens
+    from hermes_agent.hermes_cli.context_switch_guard import _estimate_tokens
 
     agent = SimpleNamespace(context_compressor=SimpleNamespace(last_prompt_tokens=0),
                             session_prompt_tokens=16_282_033)

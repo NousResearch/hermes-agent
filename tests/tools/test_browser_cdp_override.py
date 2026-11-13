@@ -104,7 +104,7 @@ class TestGetCdpOverride:
         response.raise_for_status.return_value = None
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
-        with patch("hermes_cli.config_effective.load_user_config_effective",
+        with patch("hermes_agent.hermes_cli.config_effective.load_user_config_effective",
                    return_value={"browser": {"cdp_url": "http://config-host:9222"}}), \
              patch("requests.get", return_value=response) as mock_get:
             resolved = browser_session_cdp.get_cdp_override()
@@ -120,7 +120,7 @@ class TestGetCdpOverride:
         response.raise_for_status.return_value = None
         response.json.return_value = {"webSocketDebuggerUrl": WS_URL}
 
-        with patch("hermes_cli.config_effective.load_user_config_effective", return_value={"browser": {"cdp_url": HTTP_URL}}), \
+        with patch("hermes_agent.hermes_cli.config_effective.load_user_config_effective", return_value={"browser": {"cdp_url": HTTP_URL}}), \
              patch("requests.get", return_value=response) as mock_get:
             resolved = browser_session_cdp.get_cdp_override()
 

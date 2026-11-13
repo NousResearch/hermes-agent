@@ -44,7 +44,7 @@ def grant_home_scope(grant):
 
 
 def _own_profile(value, profile_id, *, current=True):
-    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    from hermes_agent.hermes_cli.web_server_profiles import _resolve_profile_dir
 
     if value is None or (isinstance(value, str) and current
                          and (not value.strip() or value.strip().lower() == 'current')):
@@ -110,7 +110,7 @@ async def _check_profile_scope(request, profile_id):
                 raise PermissionError('profile_scope_mismatch')
 
 
-# ``/api/profiles/<suffix>`` collection routes, by method (hermes_cli/web_routers/profiles.py). Every
+# ``/api/profiles/<suffix>`` collection routes, by method (hermes_agent/hermes_cli/web_routers/profiles.py). Every
 # other method on these paths is the per-profile ``/api/profiles/{name}`` route of a profile NAMED
 # ``active``/``import``/``sessions``/…: valid profile names (PROFILE_ID_RE, not reserved).
 # Desktop mirror: apps/desktop/electron/profile-routes.ts.
@@ -255,7 +255,7 @@ def redeem_audio_ws(ws):
     grant in the same gateway subprotocol (``hermes_agent/gateway/run_api.py``), under the HTTP seam's
     peer/Origin/served-profile rules. The upgrade's ``profile`` selectors must name the grant's home.
     """
-    from hermes_cli.web_server_boundary import _gateway_ws_ticket_from_subprotocol
+    from hermes_agent.hermes_cli.web_server_boundary import _gateway_ws_ticket_from_subprotocol
     ticket, reason = _gateway_ws_ticket_from_subprotocol(ws)
     gate = _native_store(ws, [ticket]) if reason == 'ok' and ws.url.path in AUDIO_STREAM_PATHS else None
     if gate is None:

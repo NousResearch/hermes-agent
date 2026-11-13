@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profiles
+from hermes_agent.hermes_cli import profiles
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +76,7 @@ def test_an_unchanged_file_is_parsed_once_across_repeated_reads(profile_dir, mon
 
 def test_the_raw_config_reader_keeps_its_uncached_contract(profile_dir):
     """``read_user_config_raw`` feeds write-back round-trips, so it must NOT be memoised here."""
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
 
     config_path = profile_dir / "config.yaml"
     assert read_user_config_raw(config_path)["model"]["provider"] == "openai"
@@ -88,7 +88,7 @@ def test_the_raw_config_reader_keeps_its_uncached_contract(profile_dir):
 
 def test_config_model_cache_is_keyed_on_the_backend_version_not_the_local_file(profile_dir, monkeypatch):
     """The user layer changes through the config backend, which need not touch the local file."""
-    from hermes_cli import config_backend
+    from hermes_agent.hermes_cli import config_backend
 
     assert profiles._read_config_model(profile_dir) == ("gpt-4o", "openai")
     version = [("v2",)]

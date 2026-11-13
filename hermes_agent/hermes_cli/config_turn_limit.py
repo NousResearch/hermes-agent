@@ -1,6 +1,6 @@
 """Formatting for resolved foreground turn budgets."""
 
-from hermes_cli.config import TURN_LIMIT_UNLIMITED
+from hermes_agent.hermes_cli.config import TURN_LIMIT_UNLIMITED
 
 
 def turn_limit_label(limit: int) -> str:

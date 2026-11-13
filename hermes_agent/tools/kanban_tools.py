@@ -16,9 +16,9 @@ from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
 from hermes_agent.agent.redact import redact_sensitive_text
-from hermes_cli.goals import judge_goal
+from hermes_agent.hermes_cli.goals import judge_goal
 from hermes_agent.tools.registry import no_cache_check_fn, registry, tool_error
-from hermes_cli.config import cfg_get, load_config
+from hermes_agent.hermes_cli.config import cfg_get, load_config
 from hermes_agent.tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
@@ -50,7 +50,7 @@ def _profile_has_kanban_toolset() -> bool:
             return False
         # Offer-time skill discovery has no platform selection. A saved opt-in
         # makes the playbook relevant; actual schemas still use the scope above.
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools
 
         platforms = config.get("platform_toolsets") or {}
         return any(
@@ -139,13 +139,13 @@ _UNDECLARED_ARGS: dict[str, frozenset[str]] = {
 def _persisted_identity() -> str:
     """Profile name persisted into board records (comment author, task creator).
 
-    ``hermes_cli.profiles.current_profile_name`` resolves the profile this call runs FOR — the bound
+    ``hermes_agent.hermes_cli.profiles.current_profile_name`` resolves the profile this call runs FOR — the bound
     home override under a multiplexed tick or turn, else the dispatcher's ``HERMES_PROFILE`` pin,
     else the process home; the generic ``"worker"`` only when nothing names a profile. Never taken
     from tool args: board records are injected into future workers' prompts, so a caller-supplied
     identity could forge an authoritative-looking author (see #19713).
     """
-    from hermes_cli.profiles import current_profile_name
+    from hermes_agent.hermes_cli.profiles import current_profile_name
 
     return current_profile_name("worker") or "worker"
 
@@ -313,8 +313,8 @@ def _board(board: Optional[str], *, quiet_close: bool = False):
     """``with _board(slug) as (kb, conn)``; lazy import so the module loads in non-kanban
     contexts. ``board=None`` keeps the env/symlink resolution chain; an explicit slug
     overrides it per call. ``quiet_close`` swallows close() errors (best-effort bridges)."""
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect(board=board)
     try:
         yield kb, conn
@@ -551,7 +551,7 @@ def register_current_worker_from_env() -> bool:
     if run_id is None or _is_delegated_child_context():
         return True
     try:
-        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
         with _board(None, quiet_close=True) as (_kb, conn):
             return kbd.adopt_worker_pid(conn, tid, run_id, os.getpid())
     except Exception:
@@ -574,7 +574,7 @@ def heartbeat_current_worker_from_env() -> bool:
         return False
     _auto_heartbeat_last_attempt = now
     try:
-        from hermes_cli import kanban_db_dispatch as kbd
+        from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
         with _board(None, quiet_close=True) as (kb, conn):
             ops = ((kb.heartbeat_claim, {"claimer": os.environ.get("HERMES_KANBAN_CLAIM_LOCK")}),
                    (kbd.heartbeat_worker, {"note": None, "expected_run_id": _worker_run_id(tid)}))
@@ -889,7 +889,7 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     if reviewer:
-        from hermes_cli.profiles import list_profile_names, profile_exists
+        from hermes_agent.hermes_cli.profiles import list_profile_names, profile_exists
 
         # A non-profile reviewer would park the card in `review` on an assignee
         # the dispatcher can never spawn (#106163).
@@ -935,7 +935,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     Without the claim half, a worker blocked in one long tool call would still
     be reclaimed by ``release_stale_claims``."""
     tid = _worker_guard("kanban_heartbeat", args)
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
     with _board(args.get("board")) as (kb, conn):
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
         # claimer covers locally-driven workers that bypassed the dispatcher.
@@ -1042,7 +1042,7 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
 @_kanban_handler("kanban_attach_url")
 def _handle_attach_url(args: dict, **kw) -> str:
     """Attach a file fetched server-side from an http(s) URL (shared size cap)."""
-    from hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db as kb
     tid = _worker_guard("kanban_attach_url", args)
     url = str(_require_text(args, "url")).strip()
     filename = args.get("filename") or args.get("title")
@@ -1164,7 +1164,7 @@ def _live_tui_session_key(session_key: str, profile: Optional[str]) -> str:
     if profile and profile != "default":
         try:
             from pathlib import Path
-            from hermes_cli.profiles import get_profile_dir, profile_exists
+            from hermes_agent.hermes_cli.profiles import get_profile_dir, profile_exists
             if profile_exists(profile):
                 db_path = Path(get_profile_dir(profile)) / "state.db"
         except Exception:
@@ -1198,7 +1198,7 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
     message_id = env("HERMES_SESSION_MESSAGE_ID", "") or ""
     notifier_profile = env("HERMES_SESSION_PROFILE", "")
     if not notifier_profile:
-        from hermes_cli.profiles import current_profile_name
+        from hermes_agent.hermes_cli.profiles import current_profile_name
         notifier_profile = current_profile_name("default")
     if platform == "tui":
         # The inherited key can be stale after a compaction fork (#110068): bind the
@@ -1241,7 +1241,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
         target = _resolve_notify_target()
         if target is None:
             return False  # CLI / cron / test — no persistent channel
-        from hermes_cli import kanban_db_notify as _kbn
+        from hermes_agent.hermes_cli import kanban_db_notify as _kbn
         # Inheritance and explicit subscriptions already encode the delivery policy.
         # Auto-subscribe must not turn a passive destination into an agent wake.
         if any(sub["platform"] == target["platform"] and sub["chat_id"] == target["chat_id"]

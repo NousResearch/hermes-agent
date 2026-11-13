@@ -8,7 +8,7 @@ import pytest
 
 @pytest.fixture
 def web_server(monkeypatch):
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     return ws
@@ -34,8 +34,8 @@ def test_host_terminal_rejection_runs_through_websocket_route(
     from starlette.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
-    from hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket
-    from hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
+    from hermes_agent.hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket
+    from hermes_agent.hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
 
     monkeypatch.setattr(web_server.app.state, "ui_surface", surface, raising=False)
     monkeypatch.setattr(web_server.app.state, "bound_host", bound_host, raising=False)
@@ -55,7 +55,7 @@ def test_host_terminal_rejection_runs_through_websocket_route(
 def test_host_terminal_policy_rejects_dashboard_and_unauthenticated_public_bind(
     web_server, monkeypatch
 ):
-    from hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli import web_host_terminal
 
     app = web_server.app
     monkeypatch.setattr(app.state, "ui_surface", "dashboard", raising=False)
@@ -72,7 +72,7 @@ def test_host_terminal_policy_rejects_dashboard_and_unauthenticated_public_bind(
 
 
 def _assert_host_terminal_resolver_uses_real_host(tmp_path):
-    from hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli import web_host_terminal
     from hermes_constants import get_hermes_home
 
     argv, cwd, env, shell_name = web_host_terminal.resolve_argv(
@@ -91,7 +91,7 @@ def _assert_host_terminal_resolver_uses_real_host(tmp_path):
 def test_host_terminal_resolver_applies_selected_profile_home_and_config(
     tmp_path, monkeypatch
 ):
-    from hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli import web_host_terminal
 
     real_home = tmp_path / "real-home"
     current = tmp_path / "profiles" / "current"
@@ -119,7 +119,7 @@ def test_host_terminal_resolver_applies_selected_profile_home_and_config(
 @pytest.mark.platforms("posix")  # Windows Python upper-cases env names, so the two spellings meet
 def test_host_terminal_shell_inherits_no_package_manager_settings(tmp_path, monkeypatch):
     """`pnpm run` injects lowercase npm_*/pnpm_config_* names; a user's own NPM_CONFIG_* stays."""
-    from hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli import web_host_terminal
     from hermes_constants import get_hermes_home
 
     leaked = {"pnpm_config_store_dir": str(tmp_path / "store"), "npm_config_cache": str(tmp_path / "cache"),
@@ -144,7 +144,7 @@ def test_host_terminal_resolver_uses_real_linux_shell(tmp_path, monkeypatch):
 @pytest.mark.platforms("posix")
 def test_host_terminal_relative_shell_never_reaches_argv(tmp_path, monkeypatch):
     """The PTY chdirs into the workspace before exec, so the shell it runs is the one checked only if argv[0] is absolute."""
-    from hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli import web_host_terminal
     from hermes_constants import get_hermes_home
 
     server_cwd = tmp_path / "server"
@@ -169,7 +169,7 @@ def test_host_terminal_relative_shell_never_reaches_argv(tmp_path, monkeypatch):
 @pytest.mark.platforms("windows")
 def test_host_terminal_resolver_uses_real_windows_shell(tmp_path):
     _assert_host_terminal_resolver_uses_real_host(tmp_path)
-    from hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli import web_host_terminal
     argv, shell_name = web_host_terminal.shell_spec()
     assert shell_name.startswith(("pwsh", "powershell", "cmd"))
     assert argv[1:] == ([] if shell_name.startswith("cmd") else ["-NoLogo"])

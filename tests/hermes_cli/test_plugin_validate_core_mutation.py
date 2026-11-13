@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hermes_cli.plugin_validate_core_override import core_override_findings
+from hermes_agent.hermes_cli.plugin_validate_core_override import core_override_findings
 
 
 def _plugin(root: Path, init_py: str) -> Path:

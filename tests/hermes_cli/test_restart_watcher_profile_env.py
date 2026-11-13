@@ -28,14 +28,14 @@ def homes(tmp_path, monkeypatch):
     # The updater runs on the default profile: its .env is loaded into the process env.
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", _ROOT_TOKEN)
     # Which names a dotenv load put into os.environ is process-wide state: isolate it per test.
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     monkeypatch.setattr(env_loader, "_LOADED_DOTENV_KEYS", set())
     return root, api1
 
 
 def _watcher_env(monkeypatch, profile: str) -> dict:
     """Env of the restart watcher ``launch_detached_profile_gateway_restart`` spawns (recorded, not run)."""
-    from hermes_cli import gateway
+    from hermes_agent.hermes_cli import gateway
 
     spawned = []
 
@@ -59,7 +59,7 @@ def test_sibling_profile_without_a_token_never_gets_the_updaters(homes, monkeypa
 
     # The profile's own token still reaches it; the host restart still carries the root's.
     (api1 / ".env").write_text(f"TELEGRAM_BOT_TOKEN={_OWN_TOKEN}\n", encoding="utf-8")
-    from hermes_cli.env_loader import reset_secret_source_cache
+    from hermes_agent.hermes_cli.env_loader import reset_secret_source_cache
     reset_secret_source_cache()
     assert _watcher_env(monkeypatch, "api1").get("TELEGRAM_BOT_TOKEN") == _OWN_TOKEN
     assert _watcher_env(monkeypatch, "default").get("TELEGRAM_BOT_TOKEN") == _ROOT_TOKEN
@@ -83,7 +83,7 @@ def test_shell_exported_keys_reach_a_sibling_but_the_root_bot_token_does_not(hom
     lives only in the user's shell reached the sibling on its manual launch, so the update restart
     must keep it, or every turn fails until someone restarts the gateway by hand."""
     root, _api1 = homes
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN")
     monkeypatch.setenv("OPENROUTER_API_KEY", "shell-or-key")
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "shell-discord-token")
@@ -107,7 +107,7 @@ def test_a_unit_injected_root_token_never_follows_a_sibling(homes, monkeypatch):
 def test_the_root_dotenv_model_key_never_follows_a_sibling(homes, monkeypatch):
     """A key in the root's ``.env`` is the root's, not the shell's: a manual ``hermes -p api1`` never had it."""
     root, _api1 = homes
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     (root / ".env").write_text(f"TELEGRAM_BOT_TOKEN={_ROOT_TOKEN}\nOPENROUTER_API_KEY=root-or-key\n", encoding="utf-8")
     monkeypatch.setenv("OPENROUTER_API_KEY", "")  # recorded, so teardown also removes what the load sets
     load_hermes_dotenv(hermes_home=root)
@@ -119,7 +119,7 @@ def test_abort_recovery_restarts_a_sibling_without_the_updaters_token(homes, mon
     """An aborted restart phase relaunches every profile from a fresh interpreter that inherited the
     updater's env: the sibling's ``gateway restart`` child must get the same env as the normal path."""
     _root, api1 = homes
-    from hermes_cli import update_restart_recovery as recovery
+    from hermes_agent.hermes_cli import update_restart_recovery as recovery
 
     seen = []
 
@@ -145,8 +145,8 @@ def test_fresh_abort_recovery_withholds_what_the_updaters_secret_source_supplied
     import json
     import sys
     import textwrap
-    from hermes_cli import env_loader
-    from hermes_cli import update_abort_recovery as abort
+    from hermes_agent.hermes_cli import env_loader
+    from hermes_agent.hermes_cli import update_abort_recovery as abort
     monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", {"GITHUB_TOKEN"})
     monkeypatch.setenv("GITHUB_TOKEN", "root-source-key")
     monkeypatch.setenv("OPENAI_API_KEY", "shell-key")

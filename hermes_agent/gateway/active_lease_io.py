@@ -25,7 +25,7 @@ _pool_lock = threading.Lock()
 def release_soon(lease) -> None:
     """Retire *lease* from this process's registry view now and queue its durable release."""
     global _pool
-    from hermes_cli.active_sessions import mark_release_queued
+    from hermes_agent.hermes_cli.active_sessions import mark_release_queued
 
     mark_release_queued(lease)
     with _pool_lock:

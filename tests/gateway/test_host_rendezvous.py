@@ -536,7 +536,7 @@ def test_restart_cleanup_never_deletes_a_gateway_that_claimed_the_lock_mid_clean
     the host lock. A gateway holding the lock must always have its record and token on disk.
     """
     from hermes_agent.gateway.status import get_process_start_time
-    from hermes_cli.gateway_host_record import _discard_dead_host_record
+    from hermes_agent.hermes_cli.gateway_host_record import _discard_dead_host_record
 
     tree = _tree()
     sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])

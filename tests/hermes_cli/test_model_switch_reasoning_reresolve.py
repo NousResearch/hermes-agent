@@ -9,7 +9,7 @@ set reject that with a non-retryable HTTP 400 (#112921, #96012).
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
+from hermes_agent.hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
 
 _CFG = {
     "agent": {"reasoning_effort": "medium", "reasoning_overrides": {"glm-5.3-flash": "high"}},
@@ -33,7 +33,7 @@ def _result(model):
 
 
 def test_switch_and_session_restore_re_resolve_effort_before_the_agent_exists():
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     with patch.dict(cli_mod.CLI_CONFIG, _CFG):
         # /model glm-5.3-flash before the first message: per-model override wins.
@@ -56,8 +56,8 @@ def test_switch_and_session_restore_re_resolve_effort_before_the_agent_exists():
 
 
 def test_failed_swap_and_new_session_keep_the_effort_with_the_route():
-    import cli as cli_mod
-    from hermes_cli.cli_session_mixin import CLISessionMixin
+    import hermes_agent.cli as cli_mod
+    from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
 
     def _boom(**_kw):
         raise RuntimeError("boom")

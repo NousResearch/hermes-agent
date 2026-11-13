@@ -34,7 +34,7 @@ from unittest.mock import MagicMock
 
 def _make_cli():
     """Bare HermesCLI (no __init__) with just the two queues the drain touches."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._interrupt_queue = queue.Queue()

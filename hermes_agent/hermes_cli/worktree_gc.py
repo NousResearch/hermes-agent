@@ -73,7 +73,7 @@ def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess
     on nonzero, so a slow ``git cherry`` on a huge repo degrades to keep instead of aborting the
     audit mid-list. :func:`noninteractive_repo_git_env` because ``status`` executes the repo's
     ``core.fsmonitor`` and clean filters (GHSA-7x36-8jrh-v4pw)."""
-    from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
+    from hermes_agent.hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
     env = noninteractive_repo_git_env(cwd)
     if env is None:
         return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="",
@@ -89,7 +89,7 @@ def _tree_size_mb(path: Path, timeout: int = 30) -> Optional[int]:
     """Cheap directory size via ``du -sm`` — best-effort, None on failure or timeout. Not
     ``subprocess.run``: its post-kill ``wait()`` never returns for a ``du`` stuck in uninterruptible
     disk I/O, so the caller (a ``hermes -w`` launch, the cron prune thread) would hang with it."""
-    from hermes_cli._subprocess_compat import bounded_probe_run
+    from hermes_agent.hermes_cli._subprocess_compat import bounded_probe_run
 
     try:
         result = bounded_probe_run(["du", "-sm", str(path)], timeout=timeout)
@@ -107,7 +107,7 @@ def _dirty_split(path: str) -> tuple[bool, list[str]]:
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         untracked = [line[3:].strip() for line in lines if line.startswith("??")]
         if len(untracked) == len(lines):
-            from hermes_cli.worktree_retention import hidden_index_edits
+            from hermes_agent.hermes_cli.worktree_retention import hidden_index_edits
             if hidden_index_edits(path):  # skip-worktree / assume-unchanged edits
                 return True, []
         return len(untracked) != len(lines), untracked
@@ -251,7 +251,7 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True,
     ``older_than_days`` only ever RESTRICTS: a reapable tree younger than the threshold is kept
     ("too recent"). It never widens eligibility — age alone can't doom a tree carrying unmerged work.
     """
-    from hermes_cli import worktree_ops as _ops
+    from hermes_agent.hermes_cli import worktree_ops as _ops
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
         return []
@@ -343,7 +343,7 @@ def reclaim_worktrees(
 def audit_branches(repo_root: str) -> list[BranchRecord]:
     """Classify EVERY local branch: deletable when fully merged OR every commit is patch-equivalent
     upstream (``git cherry``) and not checked out. The gate is content reachability, not name."""
-    from hermes_cli import worktree_ops as _ops
+    from hermes_agent.hermes_cli import worktree_ops as _ops
     if _ops._repo_is_shallow(repo_root):
         _ops._deepen_shallow_repo(repo_root)
 

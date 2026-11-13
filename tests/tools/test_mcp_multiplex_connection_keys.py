@@ -123,7 +123,7 @@ def test_same_named_server_with_other_credentials_is_a_separate_connection(two_p
     # adopter gets its own connection running in its own home.
     import sys
     from hermes_agent.agent import secret_scope
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
     monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {"FIXTURE_TOKEN": "op"})
     for profile in ("a", "b"):

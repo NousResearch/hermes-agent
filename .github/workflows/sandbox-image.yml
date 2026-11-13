@@ -180,7 +180,7 @@ jobs:
         env:
           # Stable Release's run-name is "Stable release rc.<N>-v<version>" (claim_run_title in
           # scripts/releases/stable.py; the tag grammar is _ATTEMPT_REF_RE in
-          # scripts/releases/versioning.py + STABLE_TAG_RE in hermes_cli/update_channel.py);
+          # scripts/releases/versioning.py + STABLE_TAG_RE in hermes_agent/hermes_cli/update_channel.py);
           # the release is v<version>.
           RUN_TITLE: ${{ github.event.workflow_run.display_title }}
         run: |

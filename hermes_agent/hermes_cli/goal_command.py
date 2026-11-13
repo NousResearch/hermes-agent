@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 import logging
 from typing import Callable
 
-from hermes_cli import goals
+from hermes_agent.hermes_cli import goals
 
 logger = logging.getLogger(__name__)
 

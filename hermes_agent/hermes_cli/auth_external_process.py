@@ -52,6 +52,6 @@ def external_process_launch_env_names() -> frozenset[str]:
 def env_writer_launch_denylist() -> frozenset[str]:
     """:func:`external_process_launch_env_names` plus every left-core row's ``launch_env``: a plugin that is
     not loaded (absent, disabled, failed, quarantined) registers no profile to declare them."""
-    from hermes_cli.left_core_migration import launch_env_names
+    from hermes_agent.hermes_cli.left_core_migration import launch_env_names
 
     return external_process_launch_env_names() | launch_env_names()

@@ -4,9 +4,9 @@ from fastapi.testclient import TestClient
 
 
 def test_retirement_reserves_admission_until_cancel_or_permanent_commit(monkeypatch):
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
     from hermes_agent.tui_gateway import server
-    from hermes_cli import backend_retirement
+    from hermes_agent.hermes_cli import backend_retirement
 
     monkeypatch.setattr(backend_retirement, "retirement", backend_retirement.RetirementFence())
     monkeypatch.setattr(web_server, "_SESSION_TOKEN", "retirement-test-token")
@@ -49,8 +49,8 @@ def test_retirement_reserves_admission_until_cancel_or_permanent_commit(monkeypa
 
 
 def test_only_uncommitted_permits_expire_and_unreadable_work_never_grants(monkeypatch):
-    from hermes_cli.backend_retirement import RetirementFence
-    from hermes_cli import web_server_idle_proof
+    from hermes_agent.hermes_cli.backend_retirement import RetirementFence
+    from hermes_agent.hermes_cli import web_server_idle_proof
 
     fence = RetirementFence()
     now = [100.0]

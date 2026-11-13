@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pm
 import pytest
 
-from hermes_cli.tools_config_post_setup import _run_post_setup
+from hermes_agent.hermes_cli.tools_config_post_setup import _run_post_setup
 
 
 @pytest.mark.platforms('linux')
@@ -24,8 +24,8 @@ def test_browser_setup_respects_provider_and_native_owner(monkeypatch, capsys, t
     found = iter([None, None if docker_image else '/pm/chromium/chrome'])
     with (
         patch('hermes_agent.tools.browser_use_cli._find_cli', return_value=['harness']) as install,
-        patch('hermes_cli.browser_runtime.BAKED_EXECUTABLE_FILE', baked),
-        patch('hermes_cli.browser_runtime.chromium_executable', side_effect=lambda **_kw: next(found)) as chromium,
+        patch('hermes_agent.hermes_cli.browser_runtime.BAKED_EXECUTABLE_FILE', baked),
+        patch('hermes_agent.hermes_cli.browser_runtime.chromium_executable', side_effect=lambda **_kw: next(found)) as chromium,
         patch('hermes_constants.is_termux', return_value=False),
         patch('hermes_platform.host.runtime.is_termux', return_value=False),
         patch('importlib.util.find_spec', return_value=object() if playwright else None),
@@ -59,11 +59,11 @@ def test_browser_setup_respects_provider_and_native_owner(monkeypatch, capsys, t
     (True, '/pm/chromium/chrome', True), (True, None, False), (False, '/pm/chromium/chrome', False),
 ])
 def test_local_browser_row_ready_only_when_setup_would_be_a_noop(harness, chromium, ready):
-    from hermes_cli.tools_config_post_setup import _POST_SETUP_READY
+    from hermes_agent.hermes_cli.tools_config_post_setup import _POST_SETUP_READY
 
     with (
         patch('hermes_agent.tools.browser_use_cli._find_cli', return_value=['harness'] if harness else None),
-        patch('hermes_cli.browser_runtime.chromium_executable', return_value=chromium),
+        patch('hermes_agent.hermes_cli.browser_runtime.chromium_executable', return_value=chromium),
     ):
         assert _POST_SETUP_READY['chromium']() is ready
         # Cloud rows need only browser_exec's engine: the vendor hosts Chromium.

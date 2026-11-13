@@ -29,26 +29,26 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Uni
 from hermes_constants import get_hermes_home, get_process_hermes_home, hermes_home_key
 from hermes_agent.registration_lifecycle import replacement_coordinator
 from utils import env_var_enabled
-from hermes_cli.config import load_config_readonly
-from hermes_cli.middleware import VALID_MIDDLEWARE
-from hermes_cli.plugin_capabilities import plugin_capability_granted
-from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
+from hermes_agent.hermes_cli.config import load_config_readonly
+from hermes_agent.hermes_cli.middleware import VALID_MIDDLEWARE
+from hermes_agent.hermes_cli.plugin_capabilities import plugin_capability_granted
+from hermes_agent.hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_relay_plugin_keys
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
-from hermes_cli.plugins_manifest import (
+from hermes_agent.hermes_cli.plugins_manifest import (
     _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_data_namespace,
     manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
     validate_config_schema,
 )
-from hermes_cli.plugins_discovery import (
+from hermes_agent.hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
     discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
     scan_directory,
 )
-from hermes_cli.plugins_loader import (
+from hermes_agent.hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
     _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
 )
-from hermes_cli.plugins_dispatch import (
+from hermes_agent.hermes_cli.plugins_dispatch import (
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
     MAX_SYSTEM_PROMPT_SECTIONS_TOTAL_CHARS, PLUGIN_SECTIONS_END, PLUGIN_SECTIONS_START,
     SYSTEM_PROMPT_SECTION_POSITIONS, _EVENT_EMIT_DEPTH_CAP, _EVENT_PENDING_CAP,
@@ -57,16 +57,16 @@ from hermes_cli.plugins_dispatch import (
     RenderedPluginSystemPromptSection, _EventSubscription, format_system_prompt_sections,
     is_valid_system_prompt_section_id, resolve_plugin_command_result,
 )
-from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
-from hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
-from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
-from hermes_cli.plugins_state import (
+from hermes_agent.hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_agent.hermes_cli.plugins_ledger import PluginLedgerMixin, PluginRegistration
+from hermes_agent.hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
+from hermes_agent.hermes_cli.plugins_state import (
     PluginState, _locked_plugin_state, _nested_plugin_mapping, _nested_plugin_value,
     _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting,
 )
 # PluginContext lives in plugins_context.py; this facade stays its public import path.
-from hermes_cli.plugins_context import PluginContext, _UNSET, _ignore_after_abandoned_load
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.plugins_context import PluginContext, _UNSET, _ignore_after_abandoned_load
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -162,7 +162,7 @@ VALID_HOOKS: set[str] = {
     # provider, model, language, prompt, source. Return None or a dict mutating prompt/language/
     # model (registration order, last-writer-wins; file_path is read-only).
     "pre_transcription",
-    # Kanban task observers (hermes_cli.kanban_db), fired AFTER the DB commit so a slow plugin never
+    # Kanban task observers (hermes_agent.hermes_cli.kanban_db), fired AFTER the DB commit so a slow plugin never
     # holds the SQLite write lock; returns ignored. claimed fires in the DISPATCHER right before
     # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,
     # board, assignee, run_id, profile_name; completed adds summary, blocked adds reason.
@@ -189,7 +189,7 @@ VALID_HOOKS: set[str] = {
     # single-writer dispatch lock has been released (the #56066 original fired inside the lock — the #64231
     # disposition mandates the post-lock re-port), so a slow subscriber can never extend the writer critical
     # section. Kwargs: board: str | None, profile_name: str, dry_run: bool, outcome: "ok" | "skipped_locked"
-    # | "idle", result: hermes_cli.kanban_db.DispatchResult (spawned, reclaimed, promoted,
+    # | "idle", result: hermes_agent.hermes_cli.kanban_db.DispatchResult (spawned, reclaimed, promoted,
     # reconciled_orphans, crashed, stale, timed_out, auto_blocked, rate_limited, auto_assigned_default,
     # respawn_guarded, skipped_per_profile_capped, skipped_unassigned, skipped_nonspawnable,
     # skipped_locked). Privacy: result carries task ids, assignees, and workspace paths.
@@ -458,14 +458,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         activation), reset the cache and re-apply. Fail-open: never raises into discover_and_load."""
         try:
             from hermes_agent.agent.secret_sources.registry import list_plugin_sources
-            from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+            from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
             plugin_sources = list_plugin_sources()
         except Exception:
             return
         enabled_names: list[str] = []
         if plugin_sources:
             try:
-                from hermes_cli.config import load_config
+                from hermes_agent.hermes_cli.config import load_config
                 secrets = (load_config() or {}).get("secrets") or {}
             except Exception:
                 secrets = {}
@@ -568,7 +568,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def register_approval_transport(self, name: str, present_fn: Callable, *, plugin_id: str) -> None:
         """Manager-level registration (public API kept for out-of-tree plugins); the PluginContext
         method is the tracked path plugins normally use. Same validation, no unload tracking."""
-        from hermes_cli.approval_transport import RegisteredApprovalTransport
+        from hermes_agent.hermes_cli.approval_transport import RegisteredApprovalTransport
         clean = str(name).strip().lower()
         if clean == "builtin":
             raise ValueError("approval transport name 'builtin' is reserved")
@@ -616,7 +616,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             if not manifest.portable or names & disabled or not names & enabled:
                 continue
             try:  # lazy: this is a startup probe, keep agent_plugins unimported unless needed
-                from hermes_cli.agent_plugins import _discover_mcp
+                from hermes_agent.hermes_cli.agent_plugins import _discover_mcp
                 if _discover_mcp(Path(manifest.path), get_hermes_home() / "plugin-data"
                                  / (manifest.data_namespace or lookup_key), [], create_data=False):
                     return True
@@ -864,7 +864,7 @@ def _reset_plugin_managers_for_tests() -> None:
     # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
     # reset must clear that process-global registry explicitly or a test's provider leaks.
     try:
-        from hermes_cli.dashboard_auth.registry import clear_providers
+        from hermes_agent.hermes_cli.dashboard_auth.registry import clear_providers
         clear_providers()
     except Exception:
         logger.debug("dashboard-auth registry clear failed", exc_info=True)
@@ -1140,7 +1140,7 @@ def _get_pre_tool_call_directive_details(
     if allowed is not None and tool_name not in allowed:
         fmt = getattr(_thread_tool_whitelist, "fmt", "Tool '{tool_name}' denied")
         return _PreToolCallDirective(action="block", message=fmt.format(tool_name=tool_name))
-    from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
+    from hermes_agent.hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
     hook_results = invoke_lifecycle_hook(
         "pre_tool_call", tool_name=tool_name, args=args if isinstance(args, dict) else {},
         task_id=task_id, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,

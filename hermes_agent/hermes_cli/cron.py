@@ -8,13 +8,13 @@ from datetime import timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 PROJECT_ROOT = Path(project_root_str())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.colors import Colors, color
 
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[list[str]]:
@@ -61,7 +61,7 @@ def _builtin_gateway_liveness() -> Optional[bool]:
             from hermes_agent.gateway.status import is_gateway_runtime_lock_active
             if is_gateway_runtime_lock_active():
                 return True
-        from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
+        from hermes_agent.hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
         if find_gateway_pids():
             return True
         from hermes_agent.cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
@@ -80,7 +80,7 @@ def _warn_if_gateway_not_running() -> None:
     """Warn at create/list time when the scheduler is not ready; stay silent on an unknown probe result."""
     if _builtin_gateway_liveness() is not False:
         return
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     # Name the inspected profile: the shared gateway may well be running and ticking ANOTHER
     # profile's jobs, so a bare "not running" reads as a system claim it cannot make (#99579).
     print(color(f"  ⚠  Scheduler is not ready for profile '{get_active_profile_name()}': "
@@ -189,7 +189,7 @@ def cron_list(show_all: bool = False):
             if job.get("enabled", True) or effective_job_state(job) == "paused"
         ]
 
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     if not jobs:
         print(color(f"No scheduled jobs in profile '{get_active_profile_name()}'.\n"
                     "Create one with 'hermes cron create ...' or the /cron command in chat.", Colors.DIM))
@@ -321,7 +321,7 @@ def cron_tick():
     No gateway runs here by definition, and none is started: agent jobs are skipped with a logged
     reason until the gateway is up (headless surfaces refuse rather than spawn)."""
     from hermes_agent.cron.scheduler import CronTickYielded, tick
-    from hermes_cli.observability.shared_metrics_process import begin_process
+    from hermes_agent.hermes_cli.observability.shared_metrics_process import begin_process
 
     begin_process("cron")
     try:
@@ -519,8 +519,8 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
 
 def cron_status():
     """Show cron execution status."""
-    from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     print()
 
     store_report, active_jobs = _probe_then_list_jobs(include_disabled=False)
@@ -580,7 +580,7 @@ def cron_status():
             # process. On a standalone fleet that is this profile itself, not default (#120871).
             owner = None
             with contextlib.suppress(Exception):
-                from hermes_cli.gateway import host_multiplexer_serving
+                from hermes_agent.hermes_cli.gateway import host_multiplexer_serving
                 owner = host_multiplexer_serving(active)
             host_profile = owner.profile_label if owner is not None else "default"
             _print_ticker_health([host.pid], restart_command=f"hermes --profile {host_profile} gateway restart")

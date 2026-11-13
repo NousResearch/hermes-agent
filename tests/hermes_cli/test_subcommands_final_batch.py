@@ -13,8 +13,8 @@ from __future__ import annotations
 import argparse
 
 
-from hermes_cli.subcommands.computer_use import build_computer_use_parser
-from hermes_cli.subcommands.worktree import build_worktree_parser
+from hermes_agent.hermes_cli.subcommands.computer_use import build_computer_use_parser
+from hermes_agent.hermes_cli.subcommands.worktree import build_worktree_parser
 
 
 def _tree():
@@ -30,7 +30,7 @@ def test_worktree_aliases_normalize_to_list(monkeypatch):
     parser, sub = _tree()
     build_worktree_parser(sub)
     seen = {}
-    monkeypatch.setattr("hermes_cli.worktree_cmd.cmd_worktree", lambda a: seen.setdefault("action", a.worktree_action))
+    monkeypatch.setattr("hermes_agent.hermes_cli.worktree_cmd.cmd_worktree", lambda a: seen.setdefault("action", a.worktree_action))
     ns = parser.parse_args(["worktree", "audit"])
     ns.func(ns)
     assert seen["action"] == "list"

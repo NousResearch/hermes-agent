@@ -55,9 +55,9 @@ def oidc():
 
 
 def connection(authority, session, monkeypatch):
-    from hermes_cli import web_server as web
-    from hermes_cli.dashboard_auth.routes import api_auth_ws_ticket
-    from hermes_cli.web_server_chat import _ws_auth_reason
+    from hermes_agent.hermes_cli import web_server as web
+    from hermes_agent.hermes_cli.dashboard_auth.routes import api_auth_ws_ticket
+    from hermes_agent.hermes_cli.web_server_chat import _ws_auth_reason
     from hermes_agent.gateway.session_controls import AuthorityConnection
     # Exercise the production ticket endpoint and upgrade stamp, not a made-up SessionActor.
     monkeypatch.setattr(web.app.state, 'auth_required', True, raising=False)
@@ -74,7 +74,7 @@ async def test_every_bundled_sign_in_acts_as_the_owner_and_keeps_durable_receipt
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.gateway.session_contract import SessionActor
-    from hermes_cli.web_server_sessions import _session_mutation_context
+    from hermes_agent.hermes_cli.web_server_sessions import _session_mutation_context
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from plugins.dashboard_auth.basic import BasicAuthProvider, hash_password
 

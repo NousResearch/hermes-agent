@@ -62,7 +62,7 @@ Model:      Hermes-4-70B    # 或 Hermes-4.3-36B、Hermes-4-405B
 hermes proxy providers
 ```
 
-当前已内置：`nous`（Nous Portal）。更多 OAuth 提供商可通过在 `hermes_cli/proxy/adapters/` 中实现 `UpstreamAdapter` 接口来添加。
+当前已内置：`nous`（Nous Portal）。更多 OAuth 提供商可通过在 `hermes_agent/hermes_cli/proxy/adapters/` 中实现 `UpstreamAdapter` 接口来添加。
 
 ## 检查状态
 

@@ -146,7 +146,7 @@ def _collects(home: Path) -> bool:
 
     token = set_hermes_home_override(str(home))
     try:
-        from hermes_cli.config import read_raw_config_readonly
+        from hermes_agent.hermes_cli.config import read_raw_config_readonly
 
         config: Any = read_raw_config_readonly() or {}
     except Exception:

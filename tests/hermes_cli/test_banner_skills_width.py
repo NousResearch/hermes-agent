@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from rich.console import Console
 
-from hermes_cli import banner
+from hermes_agent.hermes_cli import banner
 from hermes_agent import model_tools
 import hermes_agent.tools.mcp_tool_discovery
 

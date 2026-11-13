@@ -25,7 +25,7 @@ def _assert_private_dacl(path):
     import ntsecuritycon
     import win32security
 
-    from hermes_cli import windows_ssh_runtime as wsr
+    from hermes_agent.hermes_cli import windows_ssh_runtime as wsr
 
     descriptor = win32security.GetFileSecurity(
         str(path), win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION)

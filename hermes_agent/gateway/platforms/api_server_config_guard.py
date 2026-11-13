@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from hermes_cli.config_backend import ConfigBackendUnavailable
+from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
 
 
 @web.middleware

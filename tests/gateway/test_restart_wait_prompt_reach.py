@@ -15,8 +15,8 @@ from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_e
 @pytest.mark.platforms("linux")
 def test_ensure_hands_out_the_restart_wait_owner_as_draining_with_its_endpoint(tmp_path):
     from tests.hermes_cli.test_gateway_runtime import control_peer
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
-    from hermes_cli.gateway_runtime_cli import ensure_exit_code
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime_cli import ensure_exit_code
 
     async def probe():
         home = tmp_path / "profile"
@@ -48,8 +48,8 @@ def test_update_fence_hands_out_only_the_draining_owners_restart_wait(tmp_path):
     import os
     import time
     from tests.hermes_cli.test_gateway_runtime import control_peer
-    from hermes_cli.gateway_runtime import ensure_gateway_runtime
-    from hermes_cli.update_lock import MARKER_NAME, process_create_time
+    from hermes_agent.hermes_cli.gateway_runtime import ensure_gateway_runtime
+    from hermes_agent.hermes_cli.update_lock import MARKER_NAME, process_create_time
 
     home = tmp_path / "profile"
     identity = str(home.resolve())
@@ -231,7 +231,7 @@ async def test_restart_wait_queues_only_interactive_input(tmp_path, monkeypatch)
 def test_update_drain_hint_names_the_draining_profile(tmp_path, monkeypatch):
     """The updater's hint opens the profile whose gateway holds the parked turn: a bare
     ``hermes --tui`` opens the default profile, where that session isn't listed (#139041)."""
-    from hermes_cli.update_cmd_drain_report import format_drain_report
+    from hermes_agent.hermes_cli.update_cmd_drain_report import format_drain_report
 
     root = tmp_path / ".hermes"
     (root / "profiles" / "work").mkdir(parents=True)
@@ -252,8 +252,8 @@ async def test_restart_wait_cuts_sockets_opened_before_it(tmp_path, monkeypatch,
 
     from hermes_agent.gateway.run_api import GatewayRuntimeAPI
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
-    from hermes_cli import web_server as web
-    from hermes_cli import web_server_chat
+    from hermes_agent.hermes_cli import web_server as web
+    from hermes_agent.hermes_cli import web_server_chat
 
     tickets = TicketStore("owner", [str(tmp_path)])
     ticket = tickets.mint(profile_id=str(tmp_path), subject="human", purpose="interactive")

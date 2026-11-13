@@ -111,7 +111,7 @@ class ReasoningParamsMixin:
         # Live-catalog metadata first (OpenRouter /v1/models supported_parameters) — the static prefix
         # allowlist repeatedly went stale one vendor at a time. Unknown falls back to the static list.
         try:
-            from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
+            from hermes_agent.hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities, warm_openrouter_reasoning_caps_async
             caps = openrouter_model_reasoning_capabilities(self.model)
             if caps is None:
                 warm_openrouter_reasoning_caps_async()  # cache cold — warm in the background, never block
@@ -125,7 +125,7 @@ class ReasoningParamsMixin:
     def _lmstudio_reasoning_options_cached(self) -> list[str]:
         """LM Studio's published reasoning ``allowed_options`` (gate + clamp so toggle models don't 400 on ``high``)."""
         try:
-            from hermes_cli.models_local import lmstudio_model_reasoning_options
+            from hermes_agent.hermes_cli.models_local import lmstudio_model_reasoning_options
         except Exception:
             return []
         return _cached_probe(self, "_lm_reasoning_opts_cache", lmstudio_model_reasoning_options, [], bool)
@@ -133,7 +133,7 @@ class ReasoningParamsMixin:
     def _ollama_supports_thinking_cached(self) -> bool:
         """True only if Ollama's ``/api/show`` declares the ``thinking`` capability."""
         try:
-            from hermes_cli.models_local import ollama_model_supports_thinking
+            from hermes_agent.hermes_cli.models_local import ollama_model_supports_thinking
         except Exception:
             return False
         return bool(_cached_probe(self, "_ollama_thinking_cache", ollama_model_supports_thinking, None, lambda v: v is not None))
@@ -209,7 +209,7 @@ class ReasoningParamsMixin:
     def _read_reasoning_echo_from_config() -> bool:
         """Read ``model.reasoning_echo`` from config; False on any error."""
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
         except Exception as exc:  # health: allow BLE001 -- a config failure must fall back, not fail init
             # Log the class, never the config value or exception traceback.

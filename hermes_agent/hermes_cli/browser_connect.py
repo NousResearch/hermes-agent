@@ -408,7 +408,7 @@ def _secure_snapshot(path: str, *, contents: bool = False) -> None:
     0644 and sqlite backups land umask-wide, so cookies were world-readable under the
     ``HERMES_HOME_MODE`` hatch. Best-effort; never blocks a launch."""
     try:
-        from hermes_cli.config import _secure_dir, _secure_file
+        from hermes_agent.hermes_cli.config import _secure_dir, _secure_file
         if not contents:
             _secure_dir(path)
             return
@@ -541,7 +541,7 @@ def _browser_setting(key: str):
     """``browser.<key>`` from the effective user config (managed overlay, ``${VAR}`` expanded); None when
     unset/unreadable."""
     try:
-        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         browser_cfg = load_user_config_effective().get("browser", {})
         return browser_cfg.get(key) if isinstance(browser_cfg, dict) else None
     except Exception as e:
@@ -841,12 +841,12 @@ def _managed_install() -> bool:
     """True when a package manager (NixOS) owns this install's modes.
 
     Read once per creation so the *creation* mode honours the same carve-out
-    ``hermes_cli.config._secure_dir`` applies to reconciliation. Import is
+    ``hermes_agent.hermes_cli.config._secure_dir`` applies to reconciliation. Import is
     local and failure means "not managed": an unimportable config module is
     the single-user source-install case, where 0700 is the right default.
     """
     try:
-        from hermes_cli.config import is_managed
+        from hermes_agent.hermes_cli.config import is_managed
 
         return bool(is_managed())
     except Exception:  # pragma: no cover - defensive
@@ -866,7 +866,7 @@ def _ensure_chrome_debug_data_dir(data_dir: str) -> None:
 
     The mode is passed to ``os.makedirs`` so it is set *at creation* — no
     window where the profile sits world-readable before a follow-up chmod.
-    Policy is then reconciled by ``hermes_cli.config._secure_dir``, the house
+    Policy is then reconciled by ``hermes_agent.hermes_cli.config._secure_dir``, the house
     helper, rather than a hand-rolled chmod: it skips managed/NixOS installs,
     honours ``HERMES_HOME_MODE``, and applies ``HERMES_UID``/``HERMES_GID``
     ownership so a root-created dir does not lock out uid-mapped Docker
@@ -899,7 +899,7 @@ def _ensure_chrome_debug_data_dir(data_dir: str) -> None:
         return
     os.makedirs(data_dir, mode=0o700, exist_ok=True)
     try:
-        from hermes_cli.config import _secure_dir
+        from hermes_agent.hermes_cli.config import _secure_dir
 
         _secure_dir(data_dir)
     except Exception as exc:  # pragma: no cover - defensive
@@ -924,7 +924,7 @@ def _open_launch_stderr_log(path: str):
       file it actually creates, so the inode keeps whatever it had. An older
       Hermes left this file at 0644 on disk, so creation-time hardening alone
       would leave every *upgrading* install exposed at the one path in this
-      change with a guessable name. ``hermes_cli.config._secure_file``
+      change with a guessable name. ``hermes_agent.hermes_cli.config._secure_file``
       reconciles it, for the same reason ``_ensure_chrome_debug_data_dir``
       delegates to ``_secure_dir``: that helper is the single owner of the
       owner-only file policy — it skips managed/NixOS installs and containers
@@ -958,7 +958,7 @@ def _open_launch_stderr_log(path: str):
         handle = os.fdopen(fd, "wb")
     if not managed:
         try:
-            from hermes_cli.config import _secure_file
+            from hermes_agent.hermes_cli.config import _secure_file
 
             _secure_file(path)
         except Exception as exc:  # pragma: no cover - defensive

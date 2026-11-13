@@ -1,4 +1,4 @@
-"""Behaviour of the machine-level install probe (``hermes_cli.install_state``)."""
+"""Behaviour of the machine-level install probe (``hermes_agent.hermes_cli.install_state``)."""
 
 import json
 import sqlite3
@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import install_state
-from hermes_cli.install_state import Evidence, Places
+from hermes_agent.hermes_cli import install_state
+from hermes_agent.hermes_cli.install_state import Evidence, Places
 
 
 @pytest.fixture
@@ -123,7 +123,7 @@ def test_a_launcher_in_a_protected_folder_names_its_folder_without_being_opened(
     from types import SimpleNamespace
 
     import hermes_platform.resolver
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
     from hermes_platform.resolver import known_dirs
 
     protected = tmp_path / "Documents"
@@ -167,7 +167,7 @@ def test_a_gateway_started_by_a_scheduled_task_or_the_startup_fallback_names_its
     writes both launchers as UTF-16 with a BOM, which discovery must read like the UTF-8 ones it wrote before."""
     import sys
 
-    from hermes_cli import gateway_windows
+    from hermes_agent.hermes_cli import gateway_windows
     from hermes_platform.resolver import known_dirs
 
     def launcher(home: Path) -> Path:  # the .cmd wrapper _write_task_script leaves in the home, gateway.vbs beside it

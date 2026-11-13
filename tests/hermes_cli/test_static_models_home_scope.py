@@ -32,8 +32,8 @@ def _plugin(models: tuple) -> str:
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
     import hermes_agent.providers as providers  # noqa: PLR0402
-    from hermes_cli import auth_plugin_providers as app
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli import auth_plugin_providers as app
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     found = {}
     for name, models in (("f", ("acme-f-only",)), ("g", ("acme-g-small", "acme-g-large")), ("a", None)):
@@ -66,8 +66,8 @@ def _bound(home: Path, fn):
 
 
 def _view():
-    from hermes_cli import models
-    from hermes_cli.models_catalog_static import sync_plugin_provider_catalog
+    from hermes_agent.hermes_cli import models
+    from hermes_agent.hermes_cli.models_catalog_static import sync_plugin_provider_catalog
 
     sync_plugin_provider_catalog()  # what every registration in this home runs
     return (models.get_default_model_for_provider(SLUG), models.static_catalog(SLUG),

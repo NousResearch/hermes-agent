@@ -168,7 +168,7 @@ def test_profiles_list_names_every_profile_on_disk_and_its_install(tmp_path, mon
             connection = AuthorityConnection(authority, object(), {'user_id': 'reader'})
             return await connection.dispatch({'id': 'r', 'method': 'profiles.list', 'params': {}})
         result = asyncio.run(probe())['result']
-    from hermes_cli.install_identity import get_install_id
+    from hermes_agent.hermes_cli.install_identity import get_install_id
     assert result['install_id'] and result['install_id'] == get_install_id()
     rows = {row['name']: row for row in result['profiles']}
     assert list(rows) == ['default', 'helper', 'writer'], rows
@@ -271,7 +271,7 @@ def test_profiles_list_reuses_its_disk_scan_until_a_profile_changes(tmp_path, mo
     cache; a new profile or an edited profile.yaml is picked up on the next call."""
     import os
 
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     import hermes_yaml
     home = _roster_home(tmp_path, monkeypatch)
     scans, parses = [], []

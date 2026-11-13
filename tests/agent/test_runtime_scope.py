@@ -441,7 +441,7 @@ def test_a_bind_hydrates_the_target_profile_under_its_own_home(two_profiles, mon
     """Secret sources are hydrated from the TARGET profile's ``secrets:`` config: hydration reads it
     through ``get_hermes_home()``, so the bind moves the home first, as main's per-turn loader did.
     Entering profile B from inside A must never hydrate B from A's configuration."""
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
 
     a, b = two_profiles
     (a / "config.yaml").write_text("secrets:\n  command:\n    enabled: false\nterminal:\n  backend: local\n")
@@ -480,7 +480,7 @@ def test_a_managed_reference_in_the_terminal_policy_resolves_against_the_target_
     """A managed ``${VAR}`` in ``terminal:`` reads the profile being bound, as a standalone load of
     that profile reads its own environment: entering B from inside A's bind must not freeze A's
     value into B's policy, and an unbound entry must not take the launch environment's."""
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     managed = tmp_path / "managed"
     managed.mkdir()

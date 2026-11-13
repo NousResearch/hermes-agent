@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from hermes_cli import config, update_cmd
+from hermes_agent.hermes_cli import config, update_cmd
 
 
 @pytest.mark.parametrize('case,expected', [
@@ -81,7 +81,7 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
 @pytest.mark.parametrize('named', [False, True])
 def test_update_copies_bundled_skill_bytes_to_default_active_and_sibling(tmp_path, monkeypatch, named):
     from pathlib import Path
-    from hermes_cli import update_cmd_maint
+    from hermes_agent.hermes_cli import update_cmd_maint
 
     home = tmp_path / '.hermes'
     homes = [home, home / 'profiles/active', home / 'profiles/sibling'] if named else [home]
@@ -103,7 +103,7 @@ def test_active_config_write_failure_still_migrates_siblings_and_restores_snapsh
     import json
     from pathlib import Path
 
-    from hermes_cli import backup, update_cmd_config
+    from hermes_agent.hermes_cli import backup, update_cmd_config
 
     root = tmp_path / '.hermes'
     sibling = root / 'profiles' / 'sibling'
@@ -140,7 +140,7 @@ def test_owed_reasons_from_the_active_write_and_a_sibling_are_all_kept(monkeypat
     """A failed active write and a sibling that advanced then stopped both reach the receipt:
     one RuntimeError names each reason, chained to the write error, and the sibling that only
     got part of the way is not reported with a success mark."""
-    from hermes_cli import update_cmd_config
+    from hermes_agent.hermes_cli import update_cmd_config
 
     disk_full = OSError("disk full")
 
@@ -174,7 +174,7 @@ def test_partial_config_migration_stays_owed_after_update(monkeypatch, capsys, n
     config_migration follow-up and must not say the configuration was fully updated.
     The post-commit caller catches the raise and records the owed step in the update receipt.
     """
-    from hermes_cli import update_cmd_config
+    from hermes_agent.hermes_cli import update_cmd_config
 
     monkeypatch.setattr(config, "check_config_version", lambda **_: (20, 53))
     monkeypatch.setattr(config, "get_missing_env_vars", lambda **_: [])
@@ -214,7 +214,7 @@ def test_a_sibling_migration_that_stopped_stays_owed_after_update(tmp_path, monk
     from pathlib import Path
 
     import hermes_yaml as yaml
-    from hermes_cli import update_cmd_config
+    from hermes_agent.hermes_cli import update_cmd_config
 
     root = tmp_path / '.hermes'
     sibling = root / 'profiles' / 'sibling'

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
-from hermes_cli.web_routers.models import set_moa_models
+from hermes_agent.hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
+from hermes_agent.hermes_cli.web_routers.models import set_moa_models
 
 
 def _base_payload(**overrides) -> MoaConfigPayload:
@@ -67,9 +67,9 @@ class TestSetMoaModelsPreservesUndeclaredKeys:
         payload = _base_payload()
 
         with (
-            patch("hermes_cli.config.require_readable_config_before_write", side_effect=fake_readable_config),
-            patch("hermes_cli.config.save_config", side_effect=fake_save_config),
-            patch("hermes_cli.web_server_profiles._profile_scope"),
+            patch("hermes_agent.hermes_cli.config.require_readable_config_before_write", side_effect=fake_readable_config),
+            patch("hermes_agent.hermes_cli.config.save_config", side_effect=fake_save_config),
+            patch("hermes_agent.hermes_cli.web_server_profiles._profile_scope"),
         ):
             set_moa_models(payload)
 
@@ -92,7 +92,7 @@ def test_moa_save_writes_only_the_moa_section(tmp_path, monkeypatch):
     temp HERMES_HOME.
     """
     import hermes_yaml as yaml
-    from hermes_cli.config import get_config_path, load_config, read_raw_config
+    from hermes_agent.hermes_cli.config import get_config_path, load_config, read_raw_config
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -106,8 +106,8 @@ def test_moa_save_writes_only_the_moa_section(tmp_path, monkeypatch):
     get_config_path().write_text(yaml.safe_dump(raw), encoding="utf-8")
 
     with (
-        patch("hermes_cli.config.load_config", return_value=stale),
-        patch("hermes_cli.web_server_profiles._profile_scope"),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value=stale),
+        patch("hermes_agent.hermes_cli.web_server_profiles._profile_scope"),
     ):
         set_moa_models(_base_payload())
 

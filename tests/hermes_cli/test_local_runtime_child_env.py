@@ -12,8 +12,8 @@ import os
 import subprocess
 from types import SimpleNamespace
 
-from hermes_cli.local_runtime import supervisor
-from hermes_cli.local_runtime.processes import server_child_env, spawn_server
+from hermes_agent.hermes_cli.local_runtime import supervisor
+from hermes_agent.hermes_cli.local_runtime.processes import server_child_env, spawn_server
 
 
 def test_supervisor_spawns_llama_server_without_credentials_but_keeps_runtime_env(tmp_path, monkeypatch):

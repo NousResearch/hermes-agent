@@ -47,7 +47,7 @@ def _install(**params):
 @pytest.fixture
 def moved_repo(tmp_path, monkeypatch):
     """``(home, reviewed_sha, tip_sha, repo)``: a repo the dialog inspected at ``reviewed`` whose branch then moved."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     repo = tmp_path / "demo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
@@ -77,7 +77,7 @@ def test_install_refuses_a_branch_that_moved_since_the_dialog_inspected_it(moved
 def test_a_clone_failure_echoing_the_refusal_text_carries_no_marker(moved_repo, monkeypatch):
     """A git server controls its clone error's text, so that text can say anything; only the backend's
     own comparison of commits tags the refusal."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     _home, reviewed, _tip, _repo = moved_repo
 
     def hostile(*_args, **_kwargs):

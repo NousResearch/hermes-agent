@@ -210,7 +210,7 @@ async def test_a_pre_gateway_dispatch_rewrite_does_not_hide_an_accepted_stop(mon
     still reach the event the adapter dispatched, or an accepted /stop never cancels the turn."""
     async def rewrite(name, **kwargs):
         return [{"action": "rewrite", "text": kwargs["event"].text}] if name == "pre_gateway_dispatch" else []
-    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", rewrite)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.ainvoke_hook", rewrite)
     runner, event, _reply = await _runner_busy_stop("222")
     runner._interrupt_and_clear_session.assert_awaited_once()
     assert getattr(event, "_interrupt_accepted", False) is True

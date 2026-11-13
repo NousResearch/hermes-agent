@@ -26,7 +26,7 @@ def _hook_calls(mock_invoke_hook):
     ]
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("hermes_agent.hermes_cli.plugins.invoke_hook")
 def test_interrupt_running_turn_fires_agent_loop_stopped(mock_invoke_hook):
     from hermes_agent.tui_gateway import server
 
@@ -44,7 +44,7 @@ def test_interrupt_running_turn_fires_agent_loop_stopped(mock_invoke_hook):
     }
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("hermes_agent.hermes_cli.plugins.invoke_hook")
 def test_interrupt_idle_session_does_not_fire_hook(mock_invoke_hook):
     """No live turn -> nothing for a plugin to cancel -> no hook noise."""
     from hermes_agent.tui_gateway import server
@@ -56,7 +56,7 @@ def test_interrupt_idle_session_does_not_fire_hook(mock_invoke_hook):
     assert _hook_calls(mock_invoke_hook) == []
 
 
-@patch("hermes_cli.plugins.invoke_hook")
+@patch("hermes_agent.hermes_cli.plugins.invoke_hook")
 def test_hook_failure_does_not_break_interrupt(mock_invoke_hook):
     """A misbehaving plugin must never prevent the interrupt itself."""
     mock_invoke_hook.side_effect = RuntimeError("plugin exploded")
@@ -97,7 +97,7 @@ def test_interrupt_hook_observer_sees_the_sessions_profile_a_b_a(tmp_path, monke
         for profile_home in (None, routed, None):
             session = _make_session(running=True)
             session["profile_home"] = str(profile_home) if profile_home else None
-            with patch("hermes_cli.plugins.invoke_hook", side_effect=observer), patch.object(server, "_clear_pending"):
+            with patch("hermes_agent.hermes_cli.plugins.invoke_hook", side_effect=observer), patch.object(server, "_clear_pending"):
                 server._interrupt_session_turn("s1", session)
             assert get_hermes_home_override() is None
     finally:

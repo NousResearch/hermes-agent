@@ -1,7 +1,7 @@
 """A default ensure waits out a slow cold start whose owner keeps burning CPU, never a stalled one."""
 import pytest
 
-from hermes_cli import gateway_runtime_progress as progress
+from hermes_agent.hermes_cli import gateway_runtime_progress as progress
 
 
 class _Clock:

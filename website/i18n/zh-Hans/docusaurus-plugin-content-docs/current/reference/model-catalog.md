@@ -93,7 +93,7 @@ model_catalog:
 维护者操作：
 
 ```bash
-# 从仓库内硬编码列表重新生成（在编辑 hermes_cli/models.py 中的
+# 从仓库内硬编码列表重新生成（在编辑 hermes_agent/hermes_cli/models.py 中的
 # OPENROUTER_MODELS 或 _PROVIDER_MODELS["nous"] 后保持清单同步）。
 python scripts/build_model_catalog.py
 ```

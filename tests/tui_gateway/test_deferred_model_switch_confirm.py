@@ -142,7 +142,7 @@ class TestGuardFailureIsNotFatal:
             raise RuntimeError("guard table is broken")
 
         monkeypatch.setattr(
-            "hermes_cli.model_selection_guards.combined_selection_warning", _boom
+            "hermes_agent.hermes_cli.model_selection_guards.combined_selection_warning", _boom
         )
 
         result = _config_set_model(GUARDED_MODEL)["result"]
@@ -152,7 +152,7 @@ class TestGuardFailureIsNotFatal:
 
 @pytest.fixture
 def threshold():
-    from hermes_cli.model_selection_guards import _context_cache_threshold
+    from hermes_agent.hermes_cli.model_selection_guards import _context_cache_threshold
 
     return _context_cache_threshold()
 
@@ -209,7 +209,7 @@ class TestLargeContextPickAsksBeforeStashing:
 def test_bare_pick_is_guarded_against_the_live_provider(running_session, monkeypatch):
     """A pick without --provider resolves against the live provider at turn start, so a
     provider-keyed price check must see that provider at pick time or it drops the pick later."""
-    from hermes_cli import model_cost_guard
+    from hermes_agent.hermes_cli import model_cost_guard
 
     monkeypatch.setattr(model_cost_guard, "expensive_model_warning", lambda model, provider=None, **_kw: (
         types.SimpleNamespace(message="pricey") if provider == "openai-api" else None))

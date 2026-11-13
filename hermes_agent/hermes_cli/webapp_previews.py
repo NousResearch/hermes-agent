@@ -3,7 +3,7 @@
 from fastapi import Depends, FastAPI
 from fastapi.responses import HTMLResponse, Response
 
-from hermes_cli.web_server_surface import route_on
+from hermes_agent.hermes_cli.web_server_surface import route_on
 
 # Previews keep the freedom they have under no policy at all (any http(s) library, image,
 # fetch, worker or embed); their isolation is the opaque sandbox, not a source list.

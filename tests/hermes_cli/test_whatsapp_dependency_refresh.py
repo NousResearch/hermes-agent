@@ -14,7 +14,7 @@ import pytest
 ])
 def test_setup_refreshes_stale_dependencies_but_keeps_matching_install(
         tmp_path, monkeypatch, installed_version, installed_hash, mirror, refresh):
-    from hermes_cli import main_platform_setup as setup
+    from hermes_agent.hermes_cli import main_platform_setup as setup
     import hermes_constants
 
     dependency = "node_modules/@whiskeysockets/baileys"

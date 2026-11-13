@@ -32,8 +32,8 @@ def plane(tmp_path, monkeypatch):
 
 
 def test_set_equal_to_inherited_value_is_stored_and_survives_an_upper_change(plane):
-    from hermes_cli.config import set_config_value
-    from hermes_cli.config_backend import read_config_doc
+    from hermes_agent.hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config_backend import read_config_doc
 
     plane.upper = {"display": {"skin": "ares"}}
 

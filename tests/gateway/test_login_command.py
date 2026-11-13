@@ -10,8 +10,8 @@ import pytest
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import AsyncSessionStore, SessionSource, SessionStore
-from hermes_cli import anon_auth
-from hermes_cli.commands import resolve_command
+from hermes_agent.hermes_cli import anon_auth
+from hermes_agent.hermes_cli.commands import resolve_command
 
 
 def _source(*, chat_type="dm", chat_id="chat-1", user_id="user-1", platform=Platform.TELEGRAM):

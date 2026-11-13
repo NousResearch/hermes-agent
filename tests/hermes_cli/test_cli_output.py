@@ -1,4 +1,4 @@
-from hermes_cli import cli_output
+from hermes_agent.hermes_cli import cli_output
 
 
 class _TTY:

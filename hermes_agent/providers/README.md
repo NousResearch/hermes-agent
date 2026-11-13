@@ -31,18 +31,18 @@ consumer calls `get_provider_profile()` or `list_providers()`. See
 The registry is populated on first access. After that, every downstream
 layer reads from it:
 
-- `hermes_cli/auth_plugin_providers.py` mirrors every profile it sees into
+- `hermes_agent/hermes_cli/auth_plugin_providers.py` mirrors every profile it sees into
   `PROVIDER_REGISTRY` under its `registry_auth_type` (default `auth_type`),
   placed after `registry_after` when set (skipping `kimi-coding`,
   `kimi-coding-cn`, `zai`, `openrouter`, `custom` — those need bespoke token
   resolution).
-- `hermes_cli/models.py` extends `CANONICAL_PROVIDERS` and calls
+- `hermes_agent/hermes_cli/models.py` extends `CANONICAL_PROVIDERS` and calls
   `profile.fetch_models()` inside `provider_model_ids()`.
-- `hermes_cli/doctor.py` adds a `/models` health check for each
+- `hermes_agent/hermes_cli/doctor.py` adds a `/models` health check for each
   `auth_type="api_key"` profile.
-- `hermes_cli/config.py` injects every `env_var` into
+- `hermes_agent/hermes_cli/config.py` injects every `env_var` into
   `OPTIONAL_ENV_VARS` so the setup wizard knows about it.
-- `hermes_cli/runtime_provider.py` reads `profile.api_mode` as a fallback
+- `hermes_agent/hermes_cli/runtime_provider.py` reads `profile.api_mode` as a fallback
   when URL detection finds nothing.
 - `hermes_agent/agent/model_metadata.py` maps hostname → provider via
   `profile.get_hostname()`.

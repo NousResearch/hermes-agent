@@ -29,18 +29,18 @@ from pydantic import BaseModel
 
 from starlette.concurrency import run_in_threadpool
 
-from hermes_cli import config as config_mod, web_deps
-from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-from hermes_cli.web_routers._common import _config_profile_scope
-from hermes_cli.local_runtime import (
+from hermes_agent.hermes_cli import config as config_mod, web_deps
+from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_agent.hermes_cli.web_routers._common import _config_profile_scope
+from hermes_agent.hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
 )
 from hermes_agent.agent.memory_provider import spawn_context_thread
 from pm.downloader import Download, DownloadPaused, Source
 
-from hermes_cli.local_runtime.endpoint import _state_endpoint, child_query
-from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, split_parts
+from hermes_agent.hermes_cli.local_runtime.endpoint import _state_endpoint, child_query
+from hermes_agent.hermes_cli.local_runtime.gguf import SPLIT_PART_RE, split_parts
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +394,7 @@ def _ensure_server(job: dict[str, Any], config: dict, model_id: str, *, fail_det
 def _assign_default(job: dict[str, Any], model_id: str) -> None:
     """Make ``model_id`` the main model via the same machinery as /api/model/set."""
     _step(job, "setting-default", "Making it your default")
-    web_deps.late("_apply_model_assignment_sync", "hermes_cli.web_server_config")("main", "llamacpp", model_id, "", "", "")
+    web_deps.late("_apply_model_assignment_sync", "hermes_agent.hermes_cli.web_server_config")("main", "llamacpp", model_id, "", "", "")
 
 
 # ── downloads: ranged parallel streams ───────────────────────
@@ -904,7 +904,7 @@ def local_models_quickstart(body: QuickstartBody, profile: Optional[str] = None)
 # ── server lifecycle: turn the engine on/off ─────────────────
 def _terminate_state_pid() -> None:
     """Explicit recovery, never raw-PID termination of another live owner."""
-    from hermes_cli.local_runtime.recovery import stop_recorded_orphan
+    from hermes_agent.hermes_cli.local_runtime.recovery import stop_recorded_orphan
 
     if not stop_recorded_orphan():
         raise HTTPException(status_code=409, detail=(

@@ -38,7 +38,7 @@ def _make_task(kb, *, assignee: str = "w"):
 
 
 def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
 
@@ -66,7 +66,7 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
 
-    from hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db as kb
 
     workspace = tmp_path / "ws"
     workspace.mkdir()

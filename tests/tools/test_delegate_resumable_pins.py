@@ -59,7 +59,7 @@ def _backdate(*paths):
 
 
 def test_a_running_continuation_pins_the_tree_it_moved_to_not_only_where_it_last_stopped(tmp_path):
-    from hermes_cli.worktree_sweep import run_sweep, sweep_settings
+    from hermes_agent.hermes_cli.worktree_sweep import run_sweep, sweep_settings
     from hermes_agent.tools import delegate_tool_resumable as r
     parent = _parent()
     repo = _repo(tmp_path / "repo")

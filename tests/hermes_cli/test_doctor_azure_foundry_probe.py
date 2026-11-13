@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 
-from hermes_cli import doctor_connectivity as dc
+from hermes_agent.hermes_cli import doctor_connectivity as dc
 
 _AZURE_BASE = "https://res.services.ai.azure.com/anthropic"
 

@@ -1,6 +1,6 @@
 """Steward detection reads the install stamp beside the code, not markers.
 
-``hermes_cli.steward`` decides whether a steward owns this tree (and
+``hermes_agent.hermes_cli.steward`` decides whether a steward owns this tree (and
 therefore whether ``hermes update`` and the uninstaller must refuse code
 mutation). That is a fact about the INSTALL, so it comes from the two
 facts the tree itself carries: ``.git`` (a checkout we own) and the
@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from hermes_cli.steward import (
+from hermes_agent.hermes_cli.steward import (
     STEWARD_DESKTOP,
     STEWARD_DOCKER,
     STEWARD_NIX,
@@ -80,7 +80,7 @@ class TestStampDrivenDetection:
         """A Nix package bakes the stamp outside the store's package dir; its wrapper
         carries HERMES_INSTALL_ROOT. The executing tree must classify as nix (not
         "unknown"), the way version_info already reports it."""
-        from hermes_cli.version_info import _resolve_stamp_file
+        from hermes_agent.hermes_cli.version_info import _resolve_stamp_file
 
         package = tmp_path / "store" / "lib" / "hermes-agent"
         package.mkdir(parents=True)
@@ -110,12 +110,12 @@ class TestUpdateAdmission:
 
     @pytest.fixture(autouse=True)
     def _no_image_marker(self, tmp_path, monkeypatch):
-        import hermes_cli.image_provenance as ip
+        import hermes_agent.hermes_cli.image_provenance as ip
 
         monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
 
     def test_desktop_app_stamp_refuses_update(self, tmp_path, monkeypatch):
-        from hermes_cli.update_contract import evaluate_update_admission
+        from hermes_agent.hermes_cli.update_contract import evaluate_update_admission
 
         root = tmp_path / "payload"
         _stamp(root, mechanism="electron-updater", distribution=STEWARD_DESKTOP)
@@ -125,7 +125,7 @@ class TestUpdateAdmission:
         assert "desktop app" in refusal.message
 
     def test_nix_stamp_refuses_update(self, tmp_path):
-        from hermes_cli.update_contract import evaluate_update_admission
+        from hermes_agent.hermes_cli.update_contract import evaluate_update_admission
 
         root = tmp_path / "store-tree"
         _stamp(root, mechanism="external", distribution=STEWARD_NIX)
@@ -135,7 +135,7 @@ class TestUpdateAdmission:
         assert "Nix store" in refusal.message
 
     def test_docker_stamp_refuses_with_docker_message(self, tmp_path):
-        from hermes_cli.update_contract import evaluate_update_admission
+        from hermes_agent.hermes_cli.update_contract import evaluate_update_admission
 
         root = tmp_path / "image-tree"
         _stamp(root, mechanism="external", distribution=STEWARD_DOCKER)
@@ -145,13 +145,13 @@ class TestUpdateAdmission:
         assert "docker pull" in refusal.update_command
 
     def test_git_checkout_is_admitted(self, tmp_path, monkeypatch):
-        from hermes_cli.update_contract import evaluate_update_admission
+        from hermes_agent.hermes_cli.update_contract import evaluate_update_admission
 
         root = tmp_path / "checkout"
         root.mkdir()
         (root / ".git").mkdir()
         monkeypatch.setattr(
-            "hermes_cli.config.detect_install_method", lambda *a, **k: "git"
+            "hermes_agent.hermes_cli.config.detect_install_method", lambda *a, **k: "git"
         )
         assert evaluate_update_admission(root) is None
 
@@ -159,11 +159,11 @@ class TestUpdateAdmission:
         """A stampless gitless tree is not refused by the steward rung —
         the pre-existing heuristics keep the final say (an unknown tree used
         to be admitted, and stays admitted)."""
-        from hermes_cli.update_contract import evaluate_update_admission
+        from hermes_agent.hermes_cli.update_contract import evaluate_update_admission
 
         root = tmp_path / "bare"
         root.mkdir()
         monkeypatch.setattr(
-            "hermes_cli.config.detect_install_method", lambda *a, **k: "unknown"
+            "hermes_agent.hermes_cli.config.detect_install_method", lambda *a, **k: "unknown"
         )
         assert evaluate_update_admission(root) is None

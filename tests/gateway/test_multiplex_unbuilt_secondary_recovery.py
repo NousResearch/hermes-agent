@@ -190,7 +190,7 @@ class TestSecondaryAdapterUnavailableRecovery:
 
     @pytest.mark.asyncio
     async def test_plugin_load_rearm_is_capped_and_off_loop(self, monkeypatch):
-        import hermes_cli.plugins as plugins_mod
+        import hermes_agent.hermes_cli.plugins as plugins_mod
 
         runner = _secondary_recovery_runner()
         _install_plugin_platform_context(
@@ -221,7 +221,7 @@ class TestSecondaryAdapterUnavailableRecovery:
         secondary's scope."""
         import contextvars
 
-        import hermes_cli.plugins as plugins_mod
+        import hermes_agent.hermes_cli.plugins as plugins_mod
         from hermes_agent.gateway.platform_registry import platform_registry
 
         scope = contextvars.ContextVar("probe_scope", default="launch")

@@ -173,7 +173,7 @@ def _assert_worker_holds_lock(repo):
 def test_sync_discovers_profile_members_after_worker_acquires_lock(client, tmp_path, monkeypatch, isolated_python, explicit):
     from concurrent.futures import ThreadPoolExecutor
     import time
-    from hermes_cli.runtime_state import runtime_lock
+    from hermes_agent.hermes_cli.runtime_state import runtime_lock
     from tests.pm._fixtures import worker_toolchain
 
     sibling = tmp_path / "home/profiles/sibling/plugins/dependency"

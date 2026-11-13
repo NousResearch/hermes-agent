@@ -7,7 +7,7 @@ fallback chain does not keep two routes to the same backend (which shifts the
 chain by one slot and lets an alias slip past the same-backend skip).
 """
 
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_agent.hermes_cli.fallback_config import get_fallback_chain
 
 
 def _entry(provider, model, base_url=""):

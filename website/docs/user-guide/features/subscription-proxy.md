@@ -74,7 +74,7 @@ hermes proxy providers
 
 Currently shipped: `nous` (Nous Portal) and `xai` (xAI / Grok). More
 OAuth providers can be added by implementing the `UpstreamAdapter`
-interface in `hermes_cli/proxy/adapters/`.
+interface in `hermes_agent/hermes_cli/proxy/adapters/`.
 
 ## Check status
 

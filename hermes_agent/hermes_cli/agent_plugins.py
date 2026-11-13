@@ -543,6 +543,6 @@ def read_agent_plugin_manifest(plugin_root: Path) -> tuple[dict, tuple[AgentPlug
 
 def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
     """Import-compatible wrapper for the shared PluginManager MCP probe; directory scanning lives
-    in :mod:`hermes_cli.plugins` so startup gating and full plugin discovery cannot drift apart."""
-    from hermes_cli.plugins import has_enabled_agent_plugin_mcp as _probe
+    in :mod:`hermes_agent.hermes_cli.plugins` so startup gating and full plugin discovery cannot drift apart."""
+    from hermes_agent.hermes_cli.plugins import has_enabled_agent_plugin_mcp as _probe
     return _probe(raw_config)

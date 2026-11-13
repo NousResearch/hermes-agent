@@ -56,7 +56,7 @@ def load_image_gen_config(sub: Optional[str] = None) -> dict[str, Any]:
     """Read ``image_gen`` (or ``image_gen.<sub>``) from config.yaml; ``{}`` on any failure."""
     label = "image_gen" if sub is None else f"image_gen.{sub}"
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         cfg = load_config()
         section = cfg.get("image_gen") if isinstance(cfg, dict) else None

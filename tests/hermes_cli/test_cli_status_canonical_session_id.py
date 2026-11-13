@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 
-from hermes_cli.cli_session_mixin import CLISessionMixin
+from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_keys import local_identity
 
@@ -44,7 +44,7 @@ def test_status_prints_the_full_canonical_id_that_resume_accepts(tmp_path, monke
 
     # The printed id is what `hermes --resume <id>` takes, unshortened and unchanged.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_cli import main as hermes_main
+    from hermes_agent.hermes_cli import main as hermes_main
 
     monkeypatch.setattr(hermes_main, "get_hermes_home", lambda: tmp_path, raising=False)
     assert hermes_main._resolve_session_by_name_or_id(line.split(": ", 1)[1]) == sid

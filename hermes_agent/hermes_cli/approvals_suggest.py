@@ -92,7 +92,7 @@ def default_db_path() -> Path:
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
     from hermes_agent.hermes_state_holders import read_only_db_uri
     return connect_tracked(read_only_db_uri(db_path), uri=True, tracking_path=db_path)
 
@@ -374,7 +374,7 @@ def approvals_command(args) -> int:
     if sub == "suggest":
         return suggest_command(args)
     if sub == "test":
-        from hermes_cli.approvals_test import approvals_test_command
+        from hermes_agent.hermes_cli.approvals_test import approvals_test_command
         return approvals_test_command(args)
     print(
         "usage: hermes approvals <subcommand>\n"

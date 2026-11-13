@@ -55,7 +55,7 @@ async def test_launch_options_reach_the_owner_frozen_and_hooks_consented(tmp_pat
     from hermes_agent.gateway.session_policy import restore_policy
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.agent import shell_hooks
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
     home = tmp_path / 'home'
     (home / 'skills' / 'launch-fixture').mkdir(parents=True)
@@ -185,7 +185,7 @@ def test_provider_pick_over_auto_template_sends_its_key_to_its_own_endpoint(tmp_
     Google AI Studio pick resolved provider=gemini against openrouter.ai, so the Google key went
     to OpenRouter (401). The frozen route must resolve to Google's own endpoint."""
     from hermes_agent.gateway.session_policy import build_policy
-    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
     monkeypatch.setenv('GOOGLE_API_KEY', 'sk-google')
     monkeypatch.setenv('OPENROUTER_API_KEY', 'sk-openrouter')
     cfg = {'model': {'default': 'anthropic/claude-opus-4.6', 'provider': 'auto',
@@ -202,7 +202,7 @@ def test_provider_alias_pick_keeps_the_profiles_endpoint(tmp_path, monkeypatch):
     """`--provider vllm` over `provider: custom` + a local base_url is the same provider under an
     alias: the pick must keep the configured endpoint and key, not fail with no endpoint."""
     from hermes_agent.gateway.session_policy import build_policy
-    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
     for var in ('CUSTOM_BASE_URL', 'OPENAI_BASE_URL'):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv('LOCAL_LLM_KEY', 'sk-local')
@@ -220,7 +220,7 @@ def test_custom_pick_over_unrecorded_or_auto_profile_keeps_its_endpoint(tmp_path
     `custom` at that URL, so a `custom` pick is the same route: it must keep the endpoint and
     key pointer instead of dropping them and failing with no endpoint configured."""
     from hermes_agent.gateway.session_policy import build_policy
-    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
     for var in ('CUSTOM_BASE_URL', 'OPENAI_BASE_URL'):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv('LOCAL_KEY', 'sk-local')
@@ -238,7 +238,7 @@ def test_provider_alias_spelling_and_auto_pick_keep_the_profiles_route(tmp_path,
     """`deepinfra` and `deep-infra` are one provider, and an explicit `auto` pick (the thin-client
     sentinel) means "the profile's route": neither drops the configured proxy and wire mode."""
     from hermes_agent.gateway.session_policy import build_policy
-    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider
     for var in ('CUSTOM_BASE_URL', 'OPENAI_BASE_URL'):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv('DEEPINFRA_API_KEY', 'sk-deepinfra')
@@ -288,7 +288,7 @@ def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     import argparse
     import sys
     from hermes_agent.gateway.session_policy import build_policy
-    from hermes_cli.gateway_chat import _launch_flags, _requested_policy
+    from hermes_agent.hermes_cli.gateway_chat import _launch_flags, _requested_policy
     cfg = {'agent': {'max_turns': 8}}
     for spelling in (0, -1, 'none', 'unlimited', '0'):
         assert build_policy(dict(cwd=str(tmp_path), max_turns=spelling), cfg).max_turns == sys.maxsize, spelling
@@ -366,7 +366,7 @@ def test_frozen_route_keeps_its_endpoint_after_live_config_edit(tmp_path, monkey
     from types import SimpleNamespace
     from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
     from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     home = tmp_path / 'home'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -394,7 +394,7 @@ def test_frozen_bare_custom_route_keeps_its_endpoint_pool_and_launch_key_wins(tm
     from types import SimpleNamespace
     from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
     from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     home = tmp_path / 'home'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -402,7 +402,7 @@ def test_frozen_bare_custom_route_keeps_its_endpoint_pool_and_launch_key_wins(tm
     (home / 'config.yaml').write_text(json.dumps(
         {'model': {'provider': 'custom', 'base_url': url, 'api_key': 'sk-frozen-config', 'default': 'm'}}))
     pool = object()
-    monkeypatch.setattr('hermes_cli.runtime_provider._try_resolve_from_custom_pool', lambda base_url, *a, **k: {
+    monkeypatch.setattr('hermes_agent.hermes_cli.runtime_provider._try_resolve_from_custom_pool', lambda base_url, *a, **k: {
         'provider': 'custom', 'api_mode': 'chat_completions', 'base_url': base_url, 'api_key': 'sk-pooled',
         'source': 'pool:custom', 'credential_pool': pool} if base_url.rstrip('/') == url else None)
     authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=None)
@@ -426,7 +426,7 @@ def _frozen_fixture_routes(tmp_path, monkeypatch, *launches):
     from types import SimpleNamespace
     from hermes_agent.gateway.session_policy import build_policy, bind_launch_key
     from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     home = tmp_path / 'home'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -477,7 +477,7 @@ def test_lazy_info_reports_the_free_tier_pinned_model(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from hermes_agent.gateway.session_local import _lazy_model
     from hermes_agent.gateway.session_policy import build_policy
-    from hermes_cli import anon_auth
+    from hermes_agent.hermes_cli import anon_auth
     authority = SimpleNamespace(runner=None, profile_id='fixture')
     monkeypatch.setattr(anon_auth, 'free_tier_route', lambda: True)
     configured = replace(build_policy({'cwd': str(tmp_path)}, {'model': {'default': 'cfg-model'}}), model='cfg-model')

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def _decode(value):
         if set(value) == {"__state__"}:
             return value["__state__"]
         if set(value) == {"__gate__"}:
-            from hermes_cli.goals import GoalGate
+            from hermes_agent.hermes_cli.goals import GoalGate
             return GoalGate.from_dict(value["__gate__"])
         return {k: _decode(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -74,18 +74,18 @@ class _Remote:
 
 
 class GatewayGoalManager(_Remote):
-    """``hermes_cli.goals.GoalManager`` over the gateway (same method names and returns)."""
+    """``hermes_agent.hermes_cli.goals.GoalManager`` over the gateway (same method names and returns)."""
 
     kind = "goal"
 
     def __init__(self, session_id, connection, *, default_max_turns=None, load=True):
-        from hermes_cli.goals import GoalState
+        from hermes_agent.hermes_cli.goals import GoalState
         self._state_cls = GoalState
         self.default_max_turns = default_max_turns
         super().__init__(session_id, connection, load=load)
 
     # Main's pure reads, on the mirrored state (``GoalManager`` methods bound to this object).
-    from hermes_cli.goals import GoalManager as _Local
+    from hermes_agent.hermes_cli.goals import GoalManager as _Local
     is_active = _Local.is_active
     has_goal = _Local.has_goal
     has_contract = _Local.has_contract
@@ -155,7 +155,7 @@ class GatewayGoalManager(_Remote):
 
     def command(self, arg, last_user_message=None):
         """The whole ``/goal <arg>`` run by the gateway (``/goal draft``: its contract drafter is a model call)."""
-        from hermes_cli.goal_command import GoalCommandResult
+        from hermes_agent.hermes_cli.goal_command import GoalCommandResult
         result = self._rpc("command", arg, last_user_message)
         if not isinstance(result, dict):
             return GoalCommandResult("Goal unavailable: the gateway did not answer.", error=True)
@@ -173,16 +173,16 @@ class GatewayGoalManager(_Remote):
 
 
 class GatewayLoopManager(_Remote):
-    """``hermes_cli.loops.LoopManager`` over the gateway."""
+    """``hermes_agent.hermes_cli.loops.LoopManager`` over the gateway."""
 
     kind = "loop"
 
     def __init__(self, session_id, connection, *, load=True):
-        from hermes_cli.loops import LoopState
+        from hermes_agent.hermes_cli.loops import LoopState
         self._state_cls = LoopState
         super().__init__(session_id, connection, load=load)
 
-    from hermes_cli.loops import LoopManager as _Local
+    from hermes_agent.hermes_cli.loops import LoopManager as _Local
     is_active = _Local.is_active
     has_loop = _Local.has_loop
     status_line = _Local.status_line
@@ -217,16 +217,16 @@ class GatewayLoopManager(_Remote):
 
 
 class GatewayHeartbeatManager(_Remote):
-    """``hermes_cli.heartbeat.HeartbeatManager`` over the gateway."""
+    """``hermes_agent.hermes_cli.heartbeat.HeartbeatManager`` over the gateway."""
 
     kind = "heartbeat"
 
     def __init__(self, session_id, connection, *, load=True):
-        from hermes_cli.heartbeat import HeartbeatState
+        from hermes_agent.hermes_cli.heartbeat import HeartbeatState
         self._state_cls = HeartbeatState
         super().__init__(session_id, connection, load=load)
 
-    from hermes_cli.heartbeat import HeartbeatManager as _Local
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatManager as _Local
     has_heartbeat = _Local.has_heartbeat
     is_active = _Local.is_active
     status_line = _Local.status_line
@@ -258,7 +258,7 @@ def dispatch_goal_command(mgr, arg, *, authorize_gate, last_user_message=None, p
     """``goal_command.dispatch_goal_command`` for the classic CLI: on a gateway manager ``/goal draft``
     (its contract drafter is an auxiliary-model call) runs whole on the gateway; every other form is
     main's dispatcher over the proxy, so its output strings stay main's."""
-    from hermes_cli import goal_command
+    from hermes_agent.hermes_cli import goal_command
     if isinstance(mgr, GatewayGoalManager) and (arg or "").split(None, 1)[:1] == ["draft"]:
         if progress is not None:
             progress("Drafting completion contract…")
@@ -270,7 +270,7 @@ def dispatch_goal_command(mgr, arg, *, authorize_gate, last_user_message=None, p
 def gateway_connection(cli):
     """The CLI's gateway connection when its session store is the gateway's, else None (main's local
     managers: tests and the TUI slash worker's shadow CLI)."""
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
     store = getattr(cli, "_session_db", None)
     if isinstance(store, GatewaySessionStore) and getattr(cli, "_gateway_session_open", False):
         return store.connection

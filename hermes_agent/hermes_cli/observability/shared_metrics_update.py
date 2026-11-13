@@ -325,7 +325,7 @@ def _unmarked_failed_stage(run: dict[str, str], stages: list[dict[str, Any]]) ->
 
 def _collection_on() -> bool:
     """Cheap pre-gate so a disabled install never loads the Relay runtime; `_emit` re-checks."""
-    from hermes_cli.config import read_raw_config_readonly
+    from hermes_agent.hermes_cli.config import read_raw_config_readonly
 
     config: Any = read_raw_config_readonly() or {}
     for key in ("telemetry", "shared_metrics"):

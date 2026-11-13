@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.auth import (
     PROVIDER_REGISTRY,
     resolve_provider,
     get_api_key_provider_status,
@@ -41,14 +41,14 @@ class TestTencentTokenhubAliases:
         assert resolve_provider(alias) == "tencent-tokenhub"
 
     def test_normalize_provider_models_py(self):
-        from hermes_cli.models import normalize_provider
+        from hermes_agent.hermes_cli.models import normalize_provider
         assert normalize_provider("tencent") == "tencent-tokenhub"
         assert normalize_provider("tokenhub") == "tencent-tokenhub"
         assert normalize_provider("tencent-cloud") == "tencent-tokenhub"
         assert normalize_provider("tencentmaas") == "tencent-tokenhub"
 
     def test_normalize_provider_providers_py(self):
-        from hermes_cli.providers import normalize_provider
+        from hermes_agent.hermes_cli.providers import normalize_provider
         assert normalize_provider("tencent") == "tencent-tokenhub"
         assert normalize_provider("tokenhub") == "tencent-tokenhub"
         assert normalize_provider("tencent-cloud") == "tencent-tokenhub"
@@ -103,7 +103,7 @@ class TestTencentTokenhubNormalization:
     @pytest.mark.parametrize("empty_input", ["", None, "   "])
     def test_normalize_empty_and_none(self, empty_input):
         """None, empty, and whitespace-only inputs return empty string."""
-        from hermes_cli.model_normalize import normalize_model_for_provider
+        from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
         result = normalize_model_for_provider(empty_input, "tencent-tokenhub")
         assert result == "" or result.strip() == ""
 
@@ -167,7 +167,7 @@ class TestTencentTokenhubApiMode:
     """Verify determine_api_mode routes tencent-tokenhub correctly."""
 
     def test_determine_api_mode_via_alias(self):
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.hermes_cli.providers import determine_api_mode
         mode = determine_api_mode("tencent")
         assert mode == "chat_completions"
 

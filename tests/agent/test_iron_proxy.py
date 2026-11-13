@@ -468,7 +468,7 @@ def test_docker_egress_node_options_uses_sentinel(hermes_home, monkeypatch):
     append-merge with the operator's existing NODE_OPTIONS."""
 
     from hermes_agent.tools.environments.docker import _egress_proxy_args_for_docker
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     state = ip._proxy_state_dir()
     ca = state / "ca.crt"

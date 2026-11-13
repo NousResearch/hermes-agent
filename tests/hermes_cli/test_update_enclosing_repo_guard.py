@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli import main as cli_main
+from hermes_agent.hermes_cli import main as cli_main
 from tests.hermes_cli.test_update_target_identity import git, update_tree
 
 
@@ -48,7 +48,7 @@ def test_update_refuses_to_operate_on_the_repo_enclosing_a_damaged_checkout(upda
 
 
 def test_plugin_pull_refuses_a_plugin_dir_git_resolves_to_an_enclosing_repo(tmp_path, monkeypatch):
-    import hermes_cli.plugins_cmd as pc
+    import hermes_agent.hermes_cli.plugins_cmd as pc
 
     monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(tmp_path / 'git-config'))
     monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
@@ -79,7 +79,7 @@ def test_plugin_pull_refuses_a_plugin_dir_git_resolves_to_an_enclosing_repo(tmp_
 
 def test_update_git_ignores_an_inherited_git_dir(tmp_path, monkeypatch):
     """A GIT_DIR from the user's shell (a dotfiles alias, a git hook) must not retarget the updater."""
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_custody import run_git
 
     home, checkout = tmp_path / 'home', tmp_path / 'checkout'
     for repo in (home, checkout):
@@ -94,7 +94,7 @@ def test_update_git_ignores_an_inherited_git_dir(tmp_path, monkeypatch):
 
 
 def test_pinned_feed_update_refuses_a_plugin_dir_git_resolves_to_an_enclosing_repo(tmp_path):
-    from hermes_cli.plugins_cmd_git import _foreign_checkout_error
+    from hermes_agent.hermes_cli.plugins_cmd_git import _foreign_checkout_error
 
     home = tmp_path / 'home'
     plugin = home / 'plugins' / 'demo'
@@ -113,9 +113,9 @@ def test_update_plugin_to_a_feed_commit_refuses_a_plugin_dir_git_resolves_to_an_
     .git that is the git-managed home, so update_plugin must stop before touching it."""
     import json
 
-    import hermes_cli.plugins_updates as updates
-    from hermes_cli.plugins_cmd import PluginOperationError
-    from hermes_cli.plugins_transaction import update_plugin
+    import hermes_agent.hermes_cli.plugins_updates as updates
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_agent.hermes_cli.plugins_transaction import update_plugin
 
     home = tmp_path / 'home'
     plugin = home / 'plugins' / 'demo'
@@ -144,7 +144,7 @@ def test_update_plugin_to_a_feed_commit_refuses_a_plugin_dir_git_resolves_to_an_
 
 def test_plugin_guard_ignores_an_inherited_git_dir(tmp_path, monkeypatch):
     """GIT_DIR disables discovery, so the toplevel would be the plugin dir even when git acts on another repo."""
-    from hermes_cli.plugins_cmd_git import _foreign_checkout_error
+    from hermes_agent.hermes_cli.plugins_cmd_git import _foreign_checkout_error
 
     home = tmp_path / 'home'
     plugin = home / 'plugins' / 'demo'

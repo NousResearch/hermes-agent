@@ -352,8 +352,8 @@ def test_whitespace_username_resolves_through_the_backend(tmp_path, _schema, mon
 
     # Consent on; the snapshot copy dir IS the seeded Chrome profile (Default/Login Data present).
     monkeypatch.setattr("hermes_agent.agent.vault_backends.base._browser_profile_enabled", lambda: True)
-    monkeypatch.setattr("hermes_cli.browser_connect.detect_default_chromium", lambda: "chrome")
-    monkeypatch.setattr("hermes_cli.browser_connect.real_profile_copy_dir", lambda browser: str(root))
+    monkeypatch.setattr("hermes_agent.hermes_cli.browser_connect.detect_default_chromium", lambda: "chrome")
+    monkeypatch.setattr("hermes_agent.hermes_cli.browser_connect.real_profile_copy_dir", lambda browser: str(root))
 
     with _PageServer(port, _FORM_STD):
         proc, ws_url = _launch_chrome(root)

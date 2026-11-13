@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import shlex
 
-from hermes_cli.cli_commands_session_tools import _lines, _t
+from hermes_agent.hermes_cli.cli_commands_session_tools import _lines, _t
 
 
 def _cron(**kwargs) -> dict:
     # Looked up on the mixin module at call time so tests that patch `cli_commands_mixin._cron_api` still apply.
-    from hermes_cli import cli_commands_mixin
+    from hermes_agent.hermes_cli import cli_commands_mixin
     return cli_commands_mixin._cron_api(**kwargs)
 
 
@@ -27,7 +27,7 @@ def cron_overview_lines() -> list[str]:
     jobs = result.get("jobs", []) if result.get("success") else []
     if not jobs:
         return [*out, f"  {_t('cron.no_jobs_hint')}", ""]
-    from hermes_cli.cron import _next_run_row
+    from hermes_agent.hermes_cli.cron import _next_run_row
     out += [f"  {_t('cron.current_jobs')}", "  " + "-" * 63]
     for job in jobs:
         out.append(f"    {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', '?'):<8}")
@@ -48,7 +48,7 @@ def cron_list_lines(*, include_disabled: bool = False) -> list[str]:
     jobs = result.get("jobs", []) if result.get("success") else []
     if not jobs:
         return [_t("cron.no_jobs")]
-    from hermes_cli.cron import _next_run_row
+    from hermes_agent.hermes_cli.cron import _next_run_row
     out = ["", _t("cron.list_header"), "-" * 80]
     for job in jobs:
         out += [f"  {_t('cron.id', job_id=job['job_id'])}", f"  {_t('cron.name', name=job['name'])}",
@@ -195,7 +195,7 @@ def _job_action_lines(subcommand: str, opts: dict) -> list[str]:
     if action == "resume":
         out.append(f"  {_t('cron.next_run', value=job.get('next_run_at'))}")
     elif action == "run":
-        from hermes_cli.cron import _run_outcome
+        from hermes_agent.hermes_cli.cron import _run_outcome
         out.append(f"  {_run_outcome(job)}")
     return out
 

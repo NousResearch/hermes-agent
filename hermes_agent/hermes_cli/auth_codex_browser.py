@@ -23,12 +23,12 @@ import webbrowser
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 
-from hermes_cli.auth_constants import AuthError, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL, _codex_err
-from hermes_cli.auth_device_flow import (
+from hermes_agent.hermes_cli.auth_constants import AuthError, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL, _codex_err
+from hermes_agent.hermes_cli.auth_device_flow import (
     _bind_loopback_callback_server, _can_open_graphical_browser, _make_loopback_callback_handler,
     _pkce_code_challenge, _pkce_code_verifier, _print_loopback_ssh_hint, _serve_loopback_callback)
 
-logger = logging.getLogger("hermes_cli.auth")
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 CODEX_OAUTH_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
 CODEX_OAUTH_BROWSER_SCOPE = "openid profile email offline_access"
@@ -49,7 +49,7 @@ def _codex_login_flow(args: Any) -> str:
     """``browser`` only when the user asked for it: ``--browser`` or ``auth.codex_login_flow``."""
     if getattr(args, "browser", False):
         return "browser"
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     auth_cfg = (load_config_readonly() or {}).get("auth")
     flow = str((auth_cfg or {}).get("codex_login_flow", "device_code") if isinstance(auth_cfg, dict) else "device_code")
     flow = flow.strip().lower() or "device_code"
@@ -61,7 +61,7 @@ def _codex_login_flow(args: Any) -> str:
 
 def codex_oauth_login(args: Any) -> dict[str, Any]:
     """Run the Codex OAuth flow selected by *args*/config; port-busy browser attempts fall back."""
-    from hermes_cli import auth as auth_mod  # late: ``hermes_cli.auth.<name>`` patches must intercept
+    from hermes_agent.hermes_cli import auth as auth_mod  # late: ``hermes_agent.hermes_cli.auth.<name>`` patches must intercept
     if _codex_login_flow(args) == "browser":
         try:
             return _codex_browser_login(
@@ -87,7 +87,7 @@ def _codex_browser_authorize_url(*, redirect_uri: str, state: str, code_challeng
 
 def _codex_browser_exchange_code(code: str, *, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
     """Swap the authorization code for tokens at the token endpoint the device flow also uses."""
-    from hermes_cli.auth_codex import _codex_login_post, _codex_login_rate_limited_error
+    from hermes_agent.hermes_cli.auth_codex import _codex_login_post, _codex_login_rate_limited_error
     token_resp = _codex_login_post(
         CODEX_OAUTH_TOKEN_URL,
         data={
@@ -114,8 +114,8 @@ def _codex_browser_login(
     Raises ``AuthError(code=CODEX_BROWSER_PORT_BUSY_CODE)`` when :1455 cannot be bound so the caller
     can fall back to the device-code flow instead of failing the login.
     """
-    from hermes_cli.auth import _utc_now_z
-    from hermes_cli.auth_codex import _codex_base_url
+    from hermes_agent.hermes_cli.auth import _utc_now_z
+    from hermes_agent.hermes_cli.auth_codex import _codex_base_url
     code_verifier = _pkce_code_verifier()
     state = secrets.token_urlsafe(32)
     handler_cls, result = _make_loopback_callback_handler(CODEX_BROWSER_CALLBACK_PATH, display_name="OpenAI Codex")

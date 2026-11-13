@@ -1,4 +1,4 @@
-"""The per-profile derived-value cache behind ``list_profiles`` (``hermes_cli.profiles``)."""
+"""The per-profile derived-value cache behind ``list_profiles`` (``hermes_agent.hermes_cli.profiles``)."""
 
 import json
 from pathlib import Path

@@ -29,14 +29,14 @@ def scoped_profile(tmp_path, monkeypatch):
 
 
 def test_provider_config_key_env_resolves_through_secret_scope(scoped_profile):
-    from hermes_cli.models_local import _api_key_from_provider_config
+    from hermes_agent.hermes_cli.models_local import _api_key_from_provider_config
 
     entry = {"base_url": "https://ollama.internal/v1", "key_env": "EXAMPLE_PROVIDER_API_KEY"}
     assert _api_key_from_provider_config(entry, "key_env", "api_key_env") == "sk-from-profile-dotenv"
 
 
 def test_named_custom_flow_probes_with_scoped_key_env(scoped_profile):
-    from hermes_cli.model_setup_flows import _model_flow_named_custom
+    from hermes_agent.hermes_cli.model_setup_flows import _model_flow_named_custom
 
     provider_info = {
         "name": "Example Provider",
@@ -45,8 +45,8 @@ def test_named_custom_flow_probes_with_scoped_key_env(scoped_profile):
         "key_env": "EXAMPLE_PROVIDER_API_KEY",
         "model": "qwen3.6-35b-fast",
     }
-    with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
-         patch("hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
+    with patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
+         patch("hermes_agent.hermes_cli.curses_ui.curses_radiolist", side_effect=ImportError), \
          patch("builtins.input", return_value="1"), \
          patch("builtins.print"):
         _model_flow_named_custom({}, provider_info)

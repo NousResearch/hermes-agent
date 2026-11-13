@@ -24,7 +24,7 @@ def _verdict_payload(result) -> dict:
     # The code THIS client (and any gateway it starts) runs, resolved exactly like the owner's
     # ``endpoint.code_sha``: a client that sees them differ is attached to a gateway that
     # outlived ``hermes update`` and must restart it rather than re-attach.
-    from hermes_cli.version_info import get_code_identity
+    from hermes_agent.hermes_cli.version_info import get_code_identity
     payload["client_code_sha"] = get_code_identity().get("sha")
     return payload
 
@@ -36,7 +36,7 @@ def _emit(payload, code) -> None:
 
 def cmd_gateway_ensure(args) -> None:
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+    from hermes_agent.hermes_cli.gateway_runtime import ensure_gateway_runtime
 
     try:
         # Legacy imported utilities can print; protocol stdout belongs only to us.
@@ -53,9 +53,9 @@ def cmd_gateway_attach(args) -> None:
     the dial ``protocols`` and one single-use ``ticket`` for this profile. A refusal adds the
     ``message`` Ink's bootstrap shows (``gateway <state>: <reason>`` lines) and exits like ensure."""
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, gateway_ws_target
-    from hermes_cli.gateway_runtime import GatewayDiscovery
-    from hermes_cli.gateway_runtime_attach import (GatewayAttach, TicketUnavailable, attach_gateway,
+    from hermes_agent.hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, gateway_ws_target
+    from hermes_agent.hermes_cli.gateway_runtime import GatewayDiscovery
+    from hermes_agent.hermes_cli.gateway_runtime_attach import (GatewayAttach, TicketUnavailable, attach_gateway,
                                                    failure_message, scrub_client_launch_env)
 
     try:

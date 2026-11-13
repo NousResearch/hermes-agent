@@ -12,27 +12,27 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from hermes_cli.web_deps import late
-from hermes_cli.web_server_profiles import _plugin_terminal_backend_rows
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.web_server_profiles import _plugin_terminal_backend_rows
 from starlette.concurrency import run_in_threadpool
-from hermes_cli.web_models import (
+from hermes_agent.hermes_cli.web_models import (
     TerminalBackendSelect, ToolsetEnvUpdate, ToolsetModelSelect, ToolsetPostSetup,
     ToolsetProviderSelect, ToolsetToggle)
-from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-from hermes_cli.web_routers._common import (
+from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_agent.hermes_cli.web_routers._common import (
     _profile_cli_args, _profile_scope, _spawn_hermes_action,
     config_write_scope, log as _log, scoped_to_thread, spawn_profile_action)
 
 router = APIRouter()
 
-load_config = late("load_config", "hermes_cli.config")
-save_config = late("save_config", "hermes_cli.config")
+load_config = late("load_config", "hermes_agent.hermes_cli.config")
+save_config = late("save_config", "hermes_agent.hermes_cli.config")
 
 
 def _env_value(name: str) -> str:
     """``get_env_value`` that never raises (empty string on any failure)."""
     try:
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
 
         return get_env_value(name) or ""
     except Exception:
@@ -50,7 +50,7 @@ def _terminal_cfg_value(terminal_cfg: dict, key: str, env_var: str) -> str:
 def _terminal_backend_rows() -> list[dict[str, str]]:
     """Built-in picker rows plus plugin-registered backends, computed per request
     so a plugin installed after server start still shows up."""
-    from hermes_cli.web_server_profiles import _TERMINAL_BACKENDS
+    from hermes_agent.hermes_cli.web_server_profiles import _TERMINAL_BACKENDS
     return [*_TERMINAL_BACKENDS, *_plugin_terminal_backend_rows()]
 
 
@@ -166,7 +166,7 @@ def _resolve_toolset_model_plugin(ts_key: str, provider_row: dict) -> Optional[s
 def _toolset_model_catalog(ts_key: str, plugin_name: str, config: dict):
     """Return ``(catalog_dict, default_model)`` for a toolset's plugin backend or, for an image row's
     ``imagegen_backend`` (``fal``, the managed ``nous`` union), that backend's catalog."""
-    from hermes_cli.tools_config import IMAGEGEN_BACKENDS, _plugin_image_gen_catalog, _plugin_video_gen_catalog
+    from hermes_agent.hermes_cli.tools_config import IMAGEGEN_BACKENDS, _plugin_image_gen_catalog, _plugin_video_gen_catalog
 
     if ts_key == "image_gen":
         backend = IMAGEGEN_BACKENDS.get(plugin_name)
@@ -178,7 +178,7 @@ def _toolset_model_catalog(ts_key: str, plugin_name: str, config: dict):
 
 def _category_providers(ts_key: str, config: dict) -> list:
     """Visible provider rows for a toolset's category (fresh entitlement read)."""
-    from hermes_cli.tools_config import TOOL_CATEGORIES, _visible_providers
+    from hermes_agent.hermes_cli.tools_config import TOOL_CATEGORIES, _visible_providers
 
     cat = TOOL_CATEGORIES.get(ts_key)
     return _visible_providers(cat, config, force_fresh=True) if cat else []
@@ -187,7 +187,7 @@ def _category_providers(ts_key: str, config: dict) -> list:
 def _find_toolset_provider_row(
     ts_key: str, config: dict, provider: Optional[str]) -> Optional[dict]:
     """Resolve a provider picker row by name, or the active row when omitted."""
-    from hermes_cli.tools_config import _is_provider_active
+    from hermes_agent.hermes_cli.tools_config import _is_provider_active
 
     rows = _category_providers(ts_key, config)
     if provider:
@@ -198,7 +198,7 @@ def _find_toolset_provider_row(
 def _require_known_toolset(name: str) -> None:
     """400 for toolset keys outside the effective configurable set. Call it inside the target
     profile's scope, like ``GET /api/tools/toolsets``: plugin toolsets are registered per profile."""
-    from hermes_cli.tools_config import _get_effective_configurable_toolsets
+    from hermes_agent.hermes_cli.tools_config import _get_effective_configurable_toolsets
 
     if name not in {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}:
         raise _bad_request(f"Unknown toolset: {name}")
@@ -223,11 +223,11 @@ def _no_models(name: str) -> dict:
 
 @router.get("/api/tools/toolsets")
 async def get_toolsets(profile: Optional[str] = None):
-    from hermes_cli.tools_config import (
+    from hermes_agent.hermes_cli.tools_config import (
         _CONFIG_ONLY_TOOLSETS, _get_effective_configurable_toolsets, _get_platform_tools,
         _toolset_configuration_platform, _toolset_has_keys, get_nous_subscription_features,
         gui_toolset_label)
-    from hermes_cli.platforms import platform_label
+    from hermes_agent.hermes_cli.platforms import platform_label
     from hermes_agent.toolsets import resolve_toolset
     from utils import is_truthy_value
 
@@ -276,7 +276,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     """Enable/disable a configurable toolset for its configuration platform
     (``platform_toolsets.cli`` for most; platform-restricted toolsets target
     their own platform) via the same ``_save_platform_tools`` the CLI uses."""
-    from hermes_cli.tools_config import (
+    from hermes_agent.hermes_cli.tools_config import (
         _CONFIG_ONLY_TOOLSETS, _get_platform_tools, _save_platform_tools,
         _toolset_configuration_platform)
 
@@ -310,7 +310,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     post_setup_started: Optional[str] = None
     if body.enabled and name not in _CONFIG_ONLY_TOOLSETS:
         def _pending_install_key() -> Optional[str]:
-            from hermes_cli.tools_config import (
+            from hermes_agent.hermes_cli.tools_config import (
                 TOOL_CATEGORIES, _post_setup_already_installed, _visible_providers)
 
             cat = TOOL_CATEGORIES.get(name)
@@ -340,11 +340,11 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
 async def get_toolset_config(name: str, profile: Optional[str] = None):
     """Provider matrix + key status for a toolset's config panel (the CLI picker
     rows, each env var annotated ``is_set``); no category -> ``has_category: false``."""
-    from hermes_cli.tools_config import (
+    from hermes_agent.hermes_cli.tools_config import (
         TOOL_CATEGORIES, _is_provider_active, _visible_providers, provider_readiness_status,
         web_provider_capabilities)
-    from hermes_cli.config import get_env_value
-    from hermes_cli.nous_subscription import get_nous_subscription_features
+    from hermes_agent.hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.nous_subscription import get_nous_subscription_features
 
     def _read():
         with _profile_scope(profile):
@@ -506,8 +506,8 @@ async def select_toolset_provider(
     entitlement (``needs_nous_auth`` + ``feature``): the GUI has no inline
     login, so an unentitled selection would write config and never activate.
     """
-    from hermes_cli.tools_config import apply_provider_selection, web_provider_capabilities
-    from hermes_cli.nous_subscription import (
+    from hermes_agent.hermes_cli.tools_config import apply_provider_selection, web_provider_capabilities
+    from hermes_agent.hermes_cli.nous_subscription import (
         MANAGED_FEATURE_COVERAGE_CATEGORY, get_nous_subscription_features)
 
     if body.capability is not None:
@@ -584,7 +584,7 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
     """Persist API keys to ``.env`` via ``save_env_value``.  Keys are validated
     against the union of the category's visible-provider ``env_vars`` so this
     can't write arbitrary env vars; a blank value means "leave unchanged"."""
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
 
     def _run():
         with _profile_scope(body.profile or profile):
@@ -625,7 +625,7 @@ async def run_toolset_post_setup(
     """Spawn ``hermes tools post-setup <key>`` (long-running installs) as a
     background action tailed via ``GET /api/actions/tools-post-setup/status``;
     ``profile`` is threaded so hooks see the drawer's HERMES_HOME."""
-    from hermes_cli.tools_config import valid_post_setup_keys
+    from hermes_agent.hermes_cli.tools_config import valid_post_setup_keys
 
     scope_profile = body.profile or profile
 

@@ -204,14 +204,14 @@ class TestDefaults:
 class TestModelResolution:
 
     def test_no_config_falls_back_to_default(self, image_tool):
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value={}):
             mid, _meta = image_tool._resolve_fal_model()
         assert mid == image_tool.DEFAULT_MODEL
 
 
     def test_config_wins_over_env_var(self, image_tool, monkeypatch):
         monkeypatch.setenv("FAL_IMAGE_MODEL", "fal-ai/z-image/turbo")
-        with patch("hermes_cli.config.load_config",
+        with patch("hermes_agent.hermes_cli.config.load_config",
                    return_value={"image_gen": {"model": "fal-ai/nano-banana-pro"}}):
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/nano-banana-pro"
@@ -465,7 +465,7 @@ class TestManagedKreaRouting:
             "hermes_agent.agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+            "hermes_agent.hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
         )
 
         out = image_tool._maybe_route_managed_model("a cat", "portrait")
@@ -482,7 +482,7 @@ class TestManagedPortalRouting:
 
     def _fake_registry(self, monkeypatch, fake_provider):
         monkeypatch.setattr("hermes_agent.agent.image_gen_registry.get_provider", lambda name: fake_provider)
-        monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_agent.hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None)
 
     def test_routes_portal_model_to_nous_plugin(self, image_tool, monkeypatch):
         import json as _json
@@ -612,7 +612,7 @@ class TestUpscaleDispatchForwarding:
             "hermes_agent.agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+            "hermes_agent.hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
         )
 
         out = image_tool._dispatch_to_plugin_provider("a cat", "square", upscale=True)
@@ -630,7 +630,7 @@ class TestUpscaleDispatchForwarding:
             "hermes_agent.agent.image_gen_registry.get_provider", lambda name: fake_provider
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+            "hermes_agent.hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
         )
 
         image_tool._dispatch_to_plugin_provider("a cat", "square")

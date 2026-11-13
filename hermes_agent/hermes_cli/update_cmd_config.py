@@ -1,30 +1,30 @@
 """Post-``hermes update`` config-schema migration for the active profile and every sibling.
-Names are re-imported by ``update_cmd`` (``hermes_cli.update_cmd.<name>`` resolves/monkeypatches);
+Names are re-imported by ``update_cmd`` (``hermes_agent.hermes_cli.update_cmd.<name>`` resolves/monkeypatches);
 origin helpers are imported lazily."""
 
 import logging
 import sys
 from pathlib import Path
 
-from hermes_cli.update_cmd_common import _best_effort
+from hermes_agent.hermes_cli.update_cmd_common import _best_effort
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("hermes_cli.update_cmd")
+logger = logging.getLogger("hermes_agent.hermes_cli.update_cmd")
 
 
 def _reload_config_modules() -> None:
     """Historical updater hook; migration now belongs to fresh completion Python."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
     stop_for_relaunch(incomplete=True)
 
 
 def _run_config_check_fresh() -> tuple:
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
     stop_for_relaunch(incomplete=True)
 
 
 def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False) -> dict:
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
     stop_for_relaunch(incomplete=True)
 
 
@@ -46,12 +46,12 @@ def _migrate_sibling_profile_configs(notes: dict[str, list[str]] | None = None,
     ``_get_default_hermes_home()``, not under ``profiles/``, so a named-profile
     ``hermes update`` still migrates it.
     """
-    from hermes_cli.config import check_config_version, get_missing_config_fields, migrate_config
+    from hermes_agent.hermes_cli.config import check_config_version, get_missing_config_fields, migrate_config
     migrated: list[tuple[str, int, int]] = []
     with _best_effort('Sibling profile enumeration failed: %s'):
         from hermes_constants import (
             get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override)
-        from hermes_cli.backup import _sibling_profile_homes
+        from hermes_agent.hermes_cli.backup import _sibling_profile_homes
         active_home = Path(get_process_hermes_home())
         for name, profile_home in _sibling_profile_homes(active_home):
             if not (profile_home / "config.yaml").is_file():  # config-reader: ok — profile directory discovery marker
@@ -105,7 +105,7 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         # silently dropping every scheduled job (issue #34600). The desktop scheduler can also overwrite
         # with its own small set, causing partial loss (issue #52144). If the live file now has fewer jobs
         # than the pre-update snapshot, restore it and warn loudly.
-        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        from hermes_agent.hermes_cli.backup import restore_cron_jobs_if_emptied
         cron_restore = restore_cron_jobs_if_emptied(pre_update_snapshot_id)
         if cron_restore:
             print()
@@ -114,29 +114,29 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
         # Safety net: a writer in the update's mutation window replaced agent-job prompts
         # with the job NAME while the count stayed identical, so the count-based net above
         # passed it undetected (issue #82990). Restore only the degraded prompt fields.
-        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
+        from hermes_agent.hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_if_degraded
         prompt_restore = restore_cron_prompt_fields_if_degraded(pre_update_snapshot_id)
         if prompt_restore:
             print()
             print(f"  ⚠️  {_prompt_line(prompt_restore)}")
     with _best_effort("Config model-settings auto-restore check failed: %s"):
-        from hermes_cli.backup import restore_config_model_settings_if_rewritten
+        from hermes_agent.hermes_cli.backup import restore_config_model_settings_if_rewritten
         cfg_restore = restore_config_model_settings_if_rewritten(pre_update_snapshot_id)
         if cfg_restore:
             print()
             print(f"  ⚠️  {_cfg_line(cfg_restore)}")
     with _best_effort('Sibling cron auto-restore check failed: %s'):
-        from hermes_cli.backup import restore_cron_jobs_all_profiles
+        from hermes_agent.hermes_cli.backup import restore_cron_jobs_all_profiles
         for _restored in restore_cron_jobs_all_profiles(_LAST_SIBLING_SNAPSHOTS):
             print()
             print(f"  ⚠️  Profile '{_restored['profile']}': {_cron_line(_restored)}")
     with _best_effort('Sibling cron prompt-field auto-restore check failed: %s'):
-        from hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_all_profiles
+        from hermes_agent.hermes_cli.backup_cron_prompts import restore_cron_prompt_fields_all_profiles
         for _prompt_restored in restore_cron_prompt_fields_all_profiles(_LAST_SIBLING_SNAPSHOTS):
             print()
             print(f"  ⚠️  Profile '{_prompt_restored['profile']}': {_prompt_line(_prompt_restored)}")
     with _best_effort('Sibling config auto-restore check failed: %s'):
-        from hermes_cli.backup import restore_config_model_settings_all_profiles
+        from hermes_agent.hermes_cli.backup import restore_config_model_settings_all_profiles
         for _cfg_restored in restore_config_model_settings_all_profiles(_LAST_SIBLING_SNAPSHOTS):
             print()
             print(f"  ⚠️  Profile '{_cfg_restored['profile']}': {_cfg_line(_cfg_restored)}")
@@ -145,7 +145,7 @@ def _restore_snapshot_safety_nets(pre_update_snapshot_id) -> None:
 def _ask_configure_new_options(*, assume_yes: bool, gateway_mode: bool) -> str:
     """The yes/no answer for "configure new options now?": "y" under --yes, the messenger's reply in
     gateway mode, "auto" (safe migrations only) when non-interactive, else ``input()``."""
-    from hermes_cli.update_cmd import _gateway_prompt
+    from hermes_agent.hermes_cli.update_cmd import _gateway_prompt
     if assume_yes:
         print("  ℹ --yes: auto-applying config migration (skipping API-key prompts).")
         return "y"
@@ -175,14 +175,14 @@ def _check_and_apply_config_migration(
 
     See #91360.
     """
-    from hermes_cli.update_cmd import _migrate_sibling_profile_configs
-    from hermes_cli.config import check_config_version, migrate_config
+    from hermes_agent.hermes_cli.update_cmd import _migrate_sibling_profile_configs
+    from hermes_agent.hermes_cli.config import check_config_version, migrate_config
     print()
     print("→ Checking configuration for new options...")
-    from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
+    from hermes_agent.hermes_cli.config import get_missing_env_vars, get_missing_config_fields
     # A config-check failure must not break an otherwise-successful update.
     try:
-        from hermes_cli.config import get_missing_env_vars, get_missing_config_fields
+        from hermes_agent.hermes_cli.config import get_missing_env_vars, get_missing_config_fields
         # Log, point at the manual command, and return. See #91360.
         missing_env = get_missing_env_vars(required_only=True)
         missing_config = get_missing_config_fields()

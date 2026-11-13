@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.git_pack_tidy as tidy
+import hermes_agent.hermes_cli.git_pack_tidy as tidy
 
 _GIT_ENV = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 _OFFLINE = {**_GIT_ENV, "GIT_NO_LAZY_FETCH": "1"}
@@ -120,7 +120,7 @@ def test_merges_down_to_the_target_into_one_pack_whatever_the_size_limit(
     monkeypatch.setattr(tidy, "PACK_COUNT_TARGET", 1)
     # The merge writes the object store during `hermes update`: it is an updater git, so it runs in
     # the update's custody holding the checkout lock fd (a killed update's orphan keeps the lock).
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
 
     spawned, real_run = [], update_custody.run
     monkeypatch.setattr(update_custody, "run", lambda argv, *, inherit_lock=False, **kw: (
@@ -137,7 +137,7 @@ def test_merges_down_to_the_target_into_one_pack_whatever_the_size_limit(
 _KILLED_MID_ERASE = """
 import os, sys
 from pathlib import Path
-import hermes_cli.git_pack_tidy as tidy
+import hermes_agent.hermes_cli.git_pack_tidy as tidy
 real = Path.unlink
 def unlink(self, missing_ok=False):
     real(self, missing_ok=missing_ok)

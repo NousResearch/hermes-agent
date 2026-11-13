@@ -95,14 +95,14 @@ _warned = False
 
 @functools.cache
 def _failure_classes() -> frozenset[str]:
-    from hermes_cli.observability.shared_metrics_contract import COMPRESSION_FAILURE_CLASSES
+    from hermes_agent.hermes_cli.observability.shared_metrics_contract import COMPRESSION_FAILURE_CLASSES
 
     return COMPRESSION_FAILURE_CLASSES | _EXTRA_FAILURE_CLASSES
 
 
 @functools.cache
 def _skip_classes() -> frozenset[str]:
-    from hermes_cli.observability.shared_metrics_contract import COMPRESSION_SKIP_CLASSES
+    from hermes_agent.hermes_cli.observability.shared_metrics_contract import COMPRESSION_SKIP_CLASSES
 
     return COMPRESSION_SKIP_CLASSES
 
@@ -241,7 +241,7 @@ def fire_post_compaction(
     before_tokens: int | None, after_tokens: int | None, messages_removed: int | None,
 ) -> None:
     """The ``post_compaction`` plugin hook, gated on a listener. Callbacks are isolated by the dispatcher."""
-    from hermes_cli.lifecycle import has_hook, invoke_hook
+    from hermes_agent.hermes_cli.lifecycle import has_hook, invoke_hook
 
     if has_hook("post_compaction"):
         invoke_hook(
@@ -275,7 +275,7 @@ def _publish(
             from hermes_agent.agent.relay_compaction import compaction_target_available
 
             relay = compaction_target_available(require_target_session_id, turn_session_id=turn_session_id)
-        from hermes_cli.lifecycle import has_hook
+        from hermes_agent.hermes_cli.lifecycle import has_hook
 
         hook = has_hook("post_compaction")
         if not (relay or hook):

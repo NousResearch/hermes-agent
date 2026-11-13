@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.bang_shell import (
+from hermes_agent.hermes_cli.bang_shell import (
     USAGE_HINT,
     bang_shell_enabled,
     is_bang_command,
@@ -132,7 +132,7 @@ class TestBangExecution:
             return real_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", block_sanitizer), \
-             patch("hermes_cli.bang_shell.subprocess.Popen") as popen:
+             patch("hermes_agent.hermes_cli.bang_shell.subprocess.Popen") as popen:
             code = run_bang_command("echo must-not-run", writer=lines.append)
 
         assert code == 127
@@ -143,7 +143,7 @@ class TestBangExecution:
 
 def _make_cli(history=None):
     """Build a HermesCLI shell with only what handle_bang_shell touches."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli.config = {}
@@ -172,7 +172,7 @@ class TestBangHandlerDispatch:
 
     def test_bare_bang_prints_usage_and_runs_nothing(self):
         cli = _make_cli()
-        with patch("hermes_cli.bang_shell.run_bang_command") as runner:
+        with patch("hermes_agent.hermes_cli.bang_shell.run_bang_command") as runner:
             assert cli.handle_bang_shell("!") is True
         runner.assert_not_called()
         assert any(USAGE_HINT in line for line in _printed(cli))
@@ -191,7 +191,7 @@ class TestBangHandlerDispatch:
         """Gateway sessions must not execute bang commands."""
         cli = _make_cli()
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-        with patch("hermes_cli.bang_shell.run_bang_command") as runner:
+        with patch("hermes_agent.hermes_cli.bang_shell.run_bang_command") as runner:
             assert cli.handle_bang_shell("!echo nope") is False
         runner.assert_not_called()
 
@@ -202,7 +202,7 @@ class TestBangApprovalGate:
         cli = _make_cli()
         gate = MagicMock(return_value={"approved": True, "message": None})
         with patch("hermes_agent.tools.terminal_tool._check_all_guards", gate), \
-             patch("hermes_cli.bang_shell.run_bang_command", return_value=0):
+             patch("hermes_agent.hermes_cli.bang_shell.run_bang_command", return_value=0):
             cli.handle_bang_shell("!rm -rf ./build")
 
         gate.assert_called_once()
@@ -212,7 +212,7 @@ class TestBangApprovalGate:
         cli = _make_cli()
         gate = MagicMock(return_value={"approved": True, "message": None})
         with patch("hermes_agent.tools.terminal_tool._check_all_guards", gate), \
-             patch("hermes_cli.bang_shell.run_bang_command", return_value=0):
+             patch("hermes_agent.hermes_cli.bang_shell.run_bang_command", return_value=0):
             cli.handle_bang_shell("!ls")
         gate.assert_called_once()
 
@@ -223,7 +223,7 @@ class TestBangApprovalGate:
             "message": "Command denied: recursive delete",
         })
         with patch("hermes_agent.tools.terminal_tool._check_all_guards", gate), \
-             patch("hermes_cli.bang_shell.run_bang_command") as runner:
+             patch("hermes_agent.hermes_cli.bang_shell.run_bang_command") as runner:
             assert cli.handle_bang_shell("!rm -rf /important") is True
 
         runner.assert_not_called()
@@ -232,7 +232,7 @@ class TestBangApprovalGate:
     def test_real_gate_blocks_a_hardline_command(self):
         """End-to-end through the real approval module — no execution."""
         cli = _make_cli()
-        with patch("hermes_cli.bang_shell.run_bang_command") as runner:
+        with patch("hermes_agent.hermes_cli.bang_shell.run_bang_command") as runner:
             assert cli.handle_bang_shell("!rm -rf /") is True
         runner.assert_not_called()
 

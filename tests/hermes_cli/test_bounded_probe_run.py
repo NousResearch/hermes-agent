@@ -26,7 +26,7 @@ import time
 
 import pytest
 
-from hermes_cli._subprocess_compat import bounded_git_probe, bounded_probe_run
+from hermes_agent.hermes_cli._subprocess_compat import bounded_git_probe, bounded_probe_run
 
 _PY = sys.executable
 

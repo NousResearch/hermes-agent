@@ -13,7 +13,7 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from hermes_agent.agent.i18n import t
 
 
@@ -398,7 +398,7 @@ class TestClarifyBellOnPrompt:
         cli = _make_cli_stub()
         cli.bell_on_prompt = bell_on_prompt
         out = io.StringIO()
-        with patch("cli.sys.stdout", out), patch(
+        with patch("hermes_agent.cli.sys.stdout", out), patch(
             "hermes_agent.tools.clarify_gateway.resolve_clarify_timeout", return_value=60
         ):
             thread = threading.Thread(

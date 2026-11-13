@@ -22,8 +22,8 @@ import re
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_connection import RESUME_REFUSALS, GatewayConnection
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ class GatewaySessionStore:
 
     def client_env(self):
         """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
-        from hermes_cli.gateway_chat import client_env_policy
+        from hermes_agent.hermes_cli.gateway_chat import client_env_policy
         if self._create_parameters is None:
             described = self.call("runtime.describe")
             contract = described.get("session_create") if isinstance(described, dict) else None
@@ -475,7 +475,7 @@ def session_label(session_id):
 def _creation_policy(launch):
     """The explicit launch flags as ``session.create`` policy (the thin client's own mapping);
     unset flags leave the gateway to resolve the profile default, as main's CLI did."""
-    from hermes_cli.gateway_chat import _requested_policy, env_launch_flags
+    from hermes_agent.hermes_cli.gateway_chat import _requested_policy, env_launch_flags
     fields = {key: launch.get(key) for key in _LAUNCH_POLICY}
     if isinstance(fields.get("toolsets"), (list, tuple)):
         fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
@@ -495,7 +495,7 @@ def _launch_cwd():
     (``terminal_uses_host_cwd``). A tree no longer selected (a later /resume moved away) never decides.
     ``hermes -w`` records the tree in the imported ``cli`` module, ``python cli.py -w`` in ``__main__``."""
     terminal_cwd = os.getenv("TERMINAL_CWD")
-    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("cli", "__main__"))
+    trees = (getattr(sys.modules.get(name), "_active_worktree", None) for name in ("hermes_agent.cli", "__main__"))
     recorded = {os.path.realpath(tree["path"]) for tree in trees if tree and tree.get("path")}
     if terminal_cwd and os.path.realpath(terminal_cwd) in recorded:
         return os.path.realpath(terminal_cwd)
@@ -520,7 +520,7 @@ _RESUME_CHECKED = _LAUNCH_POLICY
 def _check_resume_launch(launch, snapshot):
     """Explicit launch flags on ``--resume`` / ``-c`` against the session's frozen route, as the thin
     client checks them: the same flags again are fine, a different value is refused, never dropped."""
-    from hermes_cli.gateway_chat import check_resume_policy, resume_policy_error
+    from hermes_agent.hermes_cli.gateway_chat import check_resume_policy, resume_policy_error
     fields = {key: launch.get(key) for key in _RESUME_CHECKED}
     if isinstance(fields.get("toolsets"), (list, tuple)):
         fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
@@ -538,11 +538,11 @@ def move_cli_workspace(cli, wt_info):
     quit removes it when clean and a resume recreates it (N8). Then this process's cwd and TERMINAL_CWD
     follow, so a later /new creates its session from the tree; a chdir OSError leaves both where they
     were (the gateway session has moved by then)."""
-    from hermes_cli.gateway_automation import gateway_connection
+    from hermes_agent.hermes_cli.gateway_automation import gateway_connection
     cwd = wt_info["path"]
     if gateway_connection(cli) is not None:
         cli._session_db._mutate(cli.session_id, "workspace", {"cwd": cwd})
-        from hermes_cli.tui_worktree_resume import record_tui_worktree
+        from hermes_agent.hermes_cli.tui_worktree_resume import record_tui_worktree
         record_tui_worktree(wt_info)
     os.chdir(cwd)
     os.environ["TERMINAL_CWD"] = cwd
@@ -560,7 +560,7 @@ def create_titled_session(title):
     "could not be created" copy)."""
     params = _creation_policy({})
     params["cwd"] = _launch_cwd()
-    params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
+    params["source"] = "cli"  # main's titled row is `cli` (hermes_agent.hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:
         store = session_store()

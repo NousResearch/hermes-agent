@@ -18,7 +18,7 @@ import time
 from xml.parsers.expat import ExpatError
 
 from hermes_agent.gateway.runtime_contract import RuntimeState
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 
 
 class RuntimeStartError(RuntimeError):
@@ -44,13 +44,13 @@ def remaining(deadline: float) -> float:
 def service_suffix(home: Path) -> str:
     """Host-service suffix for the REQUESTED home, never the initiating client's env.
 
-    Same rule as ``hermes_cli.gateway._profile_suffix``: only the platform-native
+    Same rule as ``hermes_agent.hermes_cli.gateway._profile_suffix``: only the platform-native
     default home owns the bare unit name; ``<root>/profiles/<name>`` yields the
     profile name; any other root (Docker, a temp harness) yields a path hash so a
     custom root can never resolve to the production ``hermes-gateway`` unit.
     """
     from hermes_constants import account_default_hermes_home
-    from hermes_cli.gateway import _profile_name_from_home
+    from hermes_agent.hermes_cli.gateway import _profile_name_from_home
     default = account_default_hermes_home().resolve()
     home = home.resolve()
     if home == default:
@@ -106,9 +106,9 @@ def _exists(path: Path) -> bool:
 
 
 def _systemd(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli import gateway as gw
-    from hermes_cli.service_manager import _s6_running
-    from hermes_cli.gateway_runtime_service_identity import ForeignRoot, SYSTEMD_IDENTITY_PROPERTIES, verify_systemd
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli.service_manager import _s6_running
+    from hermes_agent.hermes_cli.gateway_runtime_service_identity import ForeignRoot, SYSTEMD_IDENTITY_PROPERTIES, verify_systemd
     if _s6_running():
         raise RuntimeStartError("external_supervisor")
     suffix = service_suffix(home)
@@ -173,8 +173,8 @@ def _s6(home: Path, deadline: float) -> ExistingService | None:
     They must request that s6 starts the registered slot, rather than falling
     through the Linux systemd probe and treating s6 as inaccessible.
     """
-    from hermes_cli.service_manager import S6ServiceManager
-    from hermes_cli.gateway_runtime_multiplex import implied_host_root
+    from hermes_agent.hermes_cli.service_manager import S6ServiceManager
+    from hermes_agent.hermes_cli.gateway_runtime_multiplex import implied_host_root
 
     # with-contenv is also the service run script's authority. The initiating
     # client may have selected a named profile or a different install root.
@@ -208,7 +208,7 @@ def _launchd(home: Path, deadline: float) -> ExistingService | None:
     account = pwd.getpwuid(os.getuid())  # windows-footgun: ok — native launchd only
     account_home = Path(account.pw_dir)
     plist = account_home / "Library/LaunchAgents" / f"{label}.plist"
-    from hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded, verify_launchd_plist, read_definition
+    from hermes_agent.hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded, verify_launchd_plist, read_definition
     installed = _exists(plist)
     domains = [f"gui/{os.getuid()}", f"user/{os.getuid()}"]  # windows-footgun: ok — native launchd only
     found = []
@@ -247,14 +247,14 @@ def refresh_ready_owner_launcher(home: Path, observed) -> None:
     interpreter: started by ``hermes gateway start``, or the old payload removed once it outlived it."""
     if observed.state != "ready" or sys.platform != "win32":
         return
-    from hermes_cli.gateway_runtime import control_home_for
-    from hermes_cli.gateway_windows import refresh_dead_launcher
+    from hermes_agent.hermes_cli.gateway_runtime import control_home_for
+    from hermes_agent.hermes_cli.gateway_windows import refresh_dead_launcher
     owner = control_home_for(home, observed.endpoint)
     refresh_dead_launcher(owner, _windows_task_name(owner))
 
 
 def _windows(home: Path, deadline: float) -> ExistingService | None:
-    from hermes_cli.gateway_windows import _decode_schtasks_output, refresh_dead_launcher
+    from hermes_agent.hermes_cli.gateway_windows import _decode_schtasks_output, refresh_dead_launcher
     name = _windows_task_name(home)
     # Before the task runs it, and for the next logon: a Store update deletes the launcher's interpreter.
     refresh_dead_launcher(home, name)
@@ -272,7 +272,7 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
     # Orphaned TaskCache entries print localized one-field diagnostics among the rows (#142140). Only a
     # well-formed row can name our task, so skipping the rest can only fall through to the unmanaged path.
     if any(len(row) == 3 and row[0].lstrip("\\") == name for row in rows):
-        from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+        from hermes_agent.hermes_cli.gateway_runtime_service_identity import verify_windows_task
         unverified = "service_identity_unverified"
         definition = query(unverified, "schtasks.exe", "/Query", "/TN", name, "/XML")
         accounts = list(csv.reader(io.StringIO(query(unverified, "whoami.exe", "/USER", "/FO", "CSV", "/NH"))))
@@ -298,7 +298,7 @@ def _no_supervisor(home: Path, deadline: float) -> None:
 
 
 def discover_existing_gateway_service(home: Path, *, deadline: float) -> ExistingService | None:
-    from hermes_cli.service_manager import _s6_running
+    from hermes_agent.hermes_cli.service_manager import _s6_running
 
     backend = _s6 if _s6_running() else {"linux": _systemd, "darwin": _launchd, "win32": _windows,
                                          "android": _no_supervisor}.get(sys.platform)
@@ -317,7 +317,7 @@ def start_existing_gateway_service(service: ExistingService, *, deadline: float)
     if service.running:
         return
     if service.backend == "s6":
-        from hermes_cli.service_manager import S6ServiceManager
+        from hermes_agent.hermes_cli.service_manager import S6ServiceManager
         try:
             S6ServiceManager().start(service.start_argv[0])
         except subprocess.TimeoutExpired:

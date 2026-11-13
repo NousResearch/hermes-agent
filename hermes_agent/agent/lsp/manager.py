@@ -192,9 +192,9 @@ class LSPService:
 
     @classmethod
     def create_from_config(cls) -> Optional[LSPService]:
-        """Build a service from ``hermes_cli.config``; ``None`` if config can't load."""
+        """Build a service from ``hermes_agent.hermes_cli.config``; ``None`` if config can't load."""
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             cfg = load_config_readonly()
         except Exception as e:
             logger.debug("LSP config load failed: %s", e)

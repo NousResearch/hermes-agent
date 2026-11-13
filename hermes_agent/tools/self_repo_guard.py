@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 from hermes_agent.tools.approval_detection import (
     _bash_exec_payload, _deobfuscate_shell_word_for_detection, _iter_shell_command_starts,
     _is_shell_comment_start, _read_shell_word, _scan_shell)

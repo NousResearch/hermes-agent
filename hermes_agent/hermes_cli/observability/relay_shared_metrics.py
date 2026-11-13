@@ -16,7 +16,7 @@ from typing import Any, Callable, Iterator
 from hermes_agent.agent import relay_runtime
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.agent.portal_tags import get_conversation_context
-from hermes_cli.version_info import get_version_info
+from hermes_agent.hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
@@ -1304,7 +1304,7 @@ class _Runtime:
                 self._send_thread.start()
 
     def _run_send_pass(self, endpoint: str) -> None:
-        from hermes_cli.observability.shared_metrics_sender import SharedMetricsSender
+        from hermes_agent.hermes_cli.observability.shared_metrics_sender import SharedMetricsSender
 
         def still_consented() -> bool:
             """Re-read consent so revoking `send` stops an in-flight pass."""
@@ -1335,27 +1335,27 @@ class _Runtime:
 
 
 def _raw_config() -> dict[str, Any]:
-    """Read-only config snapshot (lazy import: tests patch ``hermes_cli.config``).
+    """Read-only config snapshot (lazy import: tests patch ``hermes_agent.hermes_cli.config``).
 
     Collection consent is profile-owned: managed overlays cannot opt a profile in or out.
     The read-only path matters because this gate runs 2-3x per agent turn and the mutable
     read_raw_config() paid a full config deepcopy on every call.
     """
-    from hermes_cli.config import read_raw_config_readonly
+    from hermes_agent.hermes_cli.config import read_raw_config_readonly
 
     return read_raw_config_readonly() or {}
 
 
 def _resolved_send_config():
     """Resolve the opt-in send policy from the read-only config snapshot."""
-    from hermes_cli.observability.shared_metrics_send_config import resolve_send_config
+    from hermes_agent.hermes_cli.observability.shared_metrics_send_config import resolve_send_config
 
     return resolve_send_config(_raw_config())
 
 
 def _reconcile_store_consent(store: SharedMetricsStore, send_enabled: bool) -> None:
-    from hermes_cli.observability.shared_metrics_sender import reconcile_send_consent
-    from hermes_cli.sqlite_util import write_txn
+    from hermes_agent.hermes_cli.observability.shared_metrics_sender import reconcile_send_consent
+    from hermes_agent.hermes_cli.sqlite_util import write_txn
 
     with store._connection() as connection:
         with write_txn(connection):
@@ -1404,7 +1404,7 @@ def _reconcile_send_consent_once() -> None:
     _consent_reconcile_done = True
     try:
         # Lazy: tests patch ``shared_metrics.SharedMetricsStore`` at its origin.
-        from hermes_cli.observability.shared_metrics import SharedMetricsStore
+        from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
         from hermes_constants import get_hermes_home
 
         resolved = _resolved_send_config()

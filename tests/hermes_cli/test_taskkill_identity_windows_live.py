@@ -9,7 +9,7 @@ Class under test (#98814 / #89614):
 - ``hermes_agent.gateway.status.terminate_pid(force=True)`` requires a matching
   ``expected_start_time`` and must refuse (never taskkill) on a missing or
   mismatched identity.
-- ``hermes_cli._subprocess_compat.pid_is_hermes`` fails closed on foreign
+- ``hermes_agent.hermes_cli._subprocess_compat.pid_is_hermes`` fails closed on foreign
   processes and identity mismatches.
 """
 import subprocess
@@ -110,7 +110,7 @@ class TestPidIsHermesLive:
     def test_foreign_real_process_is_refused(self):
         """A live non-Hermes process (bare python sleeper in a temp-ish argv)
         must never be judged safe for taskkill."""
-        from hermes_cli._subprocess_compat import pid_is_hermes
+        from hermes_agent.hermes_cli._subprocess_compat import pid_is_hermes
 
         proc = _spawn_sleeper()
         try:
@@ -125,7 +125,7 @@ class TestPidIsHermesLive:
 
     def test_stale_fingerprint_is_refused_even_for_hermes_argv(self):
         from hermes_agent.gateway.status import get_process_start_time
-        from hermes_cli._subprocess_compat import pid_is_hermes
+        from hermes_agent.hermes_cli._subprocess_compat import pid_is_hermes
 
         proc = _spawn_sleeper()
         try:
@@ -138,6 +138,6 @@ class TestPidIsHermesLive:
             _cleanup(proc)
 
     def test_nonexistent_pid_is_refused(self):
-        from hermes_cli._subprocess_compat import pid_is_hermes
+        from hermes_agent.hermes_cli._subprocess_compat import pid_is_hermes
 
         assert pid_is_hermes(2**24) is False

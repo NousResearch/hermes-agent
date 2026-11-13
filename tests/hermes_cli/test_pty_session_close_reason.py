@@ -11,7 +11,7 @@ from tests.waiting import async_wait_until
 
 @pytest.mark.asyncio
 async def test_eof_close_says_the_process_exited():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
     s = PtySession("k", FakeBridge([b"logout", None]), buffer_cap=1024, read_timeout=0.01)
     await s.start()
     ws = FakeWS()
@@ -23,7 +23,7 @@ async def test_eof_close_says_the_process_exited():
 
 @pytest.mark.asyncio
 async def test_attaching_to_a_shell_that_exited_while_detached_says_it_exited():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
     s = PtySession("k", FakeBridge([b"logout", None]), buffer_cap=1024, read_timeout=0.01)
     await s.start()
     await async_wait_until(lambda: not s.alive, timeout=2.0)
@@ -36,7 +36,7 @@ async def test_attaching_to_a_shell_that_exited_while_detached_says_it_exited():
 
 @pytest.mark.asyncio
 async def test_a_server_close_keeps_4410_without_the_exit_reason():
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
     s = PtySession("k", FakeBridge([]), buffer_cap=1024, read_timeout=0.01)
     await s.start()
     ws = FakeWS()
@@ -55,8 +55,8 @@ async def test_a_shell_reaped_while_its_redial_is_validated_closes_the_redial_as
     import threading
     from types import SimpleNamespace
 
-    from hermes_cli import pty_session, web_host_terminal_sessions
-    from hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry, TerminalExited
+    from hermes_agent.hermes_cli import pty_session, web_host_terminal_sessions
+    from hermes_agent.hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry, TerminalExited
 
     home = tmp_path / "home"
     home.mkdir()

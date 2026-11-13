@@ -8,7 +8,7 @@ tests/tui_gateway/test_custom_provider_session_persistence.py for the
 end-to-end persist/resume round-trip.
 """
 
-import hermes_cli.runtime_provider as rp
+import hermes_agent.hermes_cli.runtime_provider as rp
 
 
 def test_matches_legacy_custom_providers_list(monkeypatch):

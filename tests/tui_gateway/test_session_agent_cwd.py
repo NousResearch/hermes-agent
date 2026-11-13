@@ -41,7 +41,7 @@ class _CwdRecordingProvider(MemoryProvider):
 @pytest.fixture
 def workspace_runtime(monkeypatch, tmp_path):
     # server imports start a background GitHub update check; disable it before import.
-    monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.banner.prefetch_update_check", lambda: None)
     from hermes_agent.tui_gateway import server
 
     old, new, other = (tmp_path / name for name in ("old-repo", "new-repo", "other-repo"))
@@ -59,7 +59,7 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
     monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", lambda *a, **k: {})
     monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", MagicMock())
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"memory": {"provider": "cwd-recording"}})
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: {"memory": {"provider": "cwd-recording"}})
     providers, agents, starts, network_attempts = [], [], [], []
 
     def load_provider(*a, **k):

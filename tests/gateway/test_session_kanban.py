@@ -7,8 +7,8 @@ import pytest
 
 
 def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
@@ -16,7 +16,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
     monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
-    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
+    monkeypatch.setattr('hermes_agent.hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     (workspace / 'pyproject.toml').write_text('[project]\nname = "task"\n')  # a code worktree
@@ -80,8 +80,8 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
 
 def test_late_launcher_cannot_stamp_replacement_claim(tmp_path, monkeypatch):
     from contextlib import closing
-    from hermes_cli import kanban_db as kb, kanban_db_dispatch as dispatch
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_dispatch as dispatch
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
@@ -103,8 +103,8 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     transaction is refused: no owner_admitted row, no resume, no submit."""
     import asyncio
     from contextlib import closing
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
@@ -112,7 +112,7 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
     monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
-    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
+    monkeypatch.setattr('hermes_agent.hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)

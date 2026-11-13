@@ -1,13 +1,13 @@
 """The one way to create a profile: ``provision_profile(ProfileCreateRequest) -> ProvisionResult``.
 
-``hermes_cli.profiles.create_profile`` does the core directory work; this module runs every step
+``hermes_agent.hermes_cli.profiles.create_profile`` does the core directory work; this module runs every step
 after it in a fixed order. Post-create steps are best-effort: a failing step is listed in
 ``warnings`` (credential mirroring reports per item in ``mirrored``) and never undoes the create.
 
 Defaults are the Desktop bot page's "Share keys & accounts with the main profile" (ticked): the
 launch profile's provider/tool keys (bot tokens and allowlists stripped) and its model unless one is
 picked, so a profile made on any surface answers its first chat. Logins are shared by NOT copying
-``auth.json``: a profile without one reads the default root's (``hermes_cli.auth`` fallback). That only
+``auth.json``: a profile without one reads the default root's (``hermes_agent.hermes_cli.auth`` fallback). That only
 shares the launch profile's logins when the launch profile IS the root, so a named launch profile's
 ``auth.json`` is copied instead. Opt-outs: ``share_auth=False`` (auth copied once, single-use OAuth
 grants dropped) and ``mirror_credentials=False`` (no keys, logins or model copied; the root's logins
@@ -36,7 +36,7 @@ _CREATE_LOCKS_GUARD = threading.Lock()
 
 
 def _create_lock(name: str) -> threading.Lock:
-    from hermes_cli.profiles import normalize_profile_name
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name
     try:
         key = normalize_profile_name(name)
     except ValueError:
@@ -69,7 +69,7 @@ class ProfileCreateRequest:
     model: str = ""                    # explicit model pin (with provider)
     provider: str = ""
     model_validate_in: Optional[Path] = None  # home whose catalog vouches for the pick (default: the profile)
-    mcp_servers: tuple = ()            # hermes_cli.web_models.MCPServerCreate entries
+    mcp_servers: tuple = ()            # hermes_agent.hermes_cli.web_models.MCPServerCreate entries
     keep_skills: tuple[str, ...] = ()  # non-empty: disable every installed skill not listed
 
     @property
@@ -126,8 +126,8 @@ class ProfileCreateReceipt:
     @classmethod
     def of(cls, request: ProfileCreateRequest, result: ProvisionResult) -> ProfileCreateReceipt:
         """Every read is best-effort: the profile exists whatever a read says, so this never raises."""
-        from hermes_cli import profiles
-        from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+        from hermes_agent.hermes_cli import profiles
+        from hermes_agent.hermes_cli.gateway_multiplex_served import recorded_served_profiles
         from hermes_constants import display_hermes_home
         path = result.path
         launch = _try("launch label", profiles.get_active_profile_name, "default")
@@ -135,12 +135,12 @@ class ProfileCreateReceipt:
         plugins, memory, left_behind, shared = [], None, [], []
         if not request.fresh:
             if not request.clone_all:
-                from hermes_cli.profile_memory_config import cloned_memory_provider
+                from hermes_agent.hermes_cli.profile_memory_config import cloned_memory_provider
                 plugins = _try("cloned plugins", lambda: profiles.cloned_plugin_names(path), [])
                 memory = _try("cloned memory provider", lambda: cloned_memory_provider(path), None)
             source_dir = _try("source profile", lambda: profiles.get_profile_dir(source), None)
             if source_dir is not None and source_dir.is_dir():
-                from hermes_cli.profile_channels import channel_platforms_configured, shared_channel_credentials
+                from hermes_agent.hermes_cli.profile_channels import channel_platforms_configured, shared_channel_credentials
                 if request.clone_channels:
                     shared = _try("shared channels", lambda: shared_channel_credentials(path, source_dir), [])
                 else:
@@ -193,7 +193,7 @@ def refusal(exc: BaseException) -> tuple[str, dict]:
     parse error can quote a line of the source's config/.env); ``data`` names the nearest
     :data:`CREATE_REFUSALS` type (none: not a refusal) and repeats the text in the short parts
     ``gateway_client`` keeps in ``error.data`` (it drops longer strings whole)."""
-    from hermes_cli.gateway_client import ERROR_DATA_ITEMS, ERROR_DATA_TEXT
+    from hermes_agent.hermes_cli.gateway_client import ERROR_DATA_ITEMS, ERROR_DATA_TEXT
     text = redact_create_text(exc)
     kind = next((k for k in CREATE_REFUSALS if isinstance(exc, k)), None)
     kept = ERROR_DATA_TEXT * ERROR_DATA_ITEMS
@@ -225,7 +225,7 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     Raises what ``create_profile`` raises (``ValueError`` / ``FileExistsError`` /
     ``FileNotFoundError`` for a bad request); nothing after the core create raises.
     """
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     with _create_lock(request.name):
         path = profiles.create_profile(
@@ -250,13 +250,13 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
             path, quiet=request.quiet, problems=problems))
         if request.quiet:  # nothing printed them: the caller (a gateway's client) shows them
             result.warnings.extend(line.strip().removeprefix("⚠ ") for line in problems if line.strip())
-        from hermes_cli.default_plugins import spawn_install
+        from hermes_agent.hermes_cli.default_plugins import spawn_install
         step("default plugins", lambda: spawn_install(path))  # detached: a create never waits on git
     if request.alias:
         result.alias_path, result.alias_collision = step(
             "alias wrapper", lambda: write_alias(request.name), default=(None, None))
     if request.mirror_credentials:
-        from hermes_cli.auth import _global_auth_file_path
+        from hermes_agent.hermes_cli.auth import _global_auth_file_path
         kept_root = step("launch credentials", lambda: mirror_launch_credentials(
             path, result.mirrored, share_auth=request.share_auth, clone_channels=request.clone_channels), default=())
         if kept_root and _global_auth_file_path() is not None:
@@ -285,7 +285,7 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
 def write_alias(name: str) -> tuple[Optional[Path], Optional[str]]:
     """``(wrapper path, collision)`` for the ``~/.local/bin/<name>`` wrapper: written on this machine,
     with this process's PATH and ``hermes``. Exactly one is set unless the write itself failed."""
-    from hermes_cli.profiles import check_alias_collision, create_wrapper_script
+    from hermes_agent.hermes_cli.profiles import check_alias_collision, create_wrapper_script
     collision = check_alias_collision(name)
     if collision:
         return None, collision
@@ -293,7 +293,7 @@ def write_alias(name: str) -> tuple[Optional[Path], Optional[str]]:
 
 
 def _pin_model(path: Path, request: ProfileCreateRequest, result: ProvisionResult) -> bool:
-    from hermes_cli.model_assignment import ModelAssignmentRejected
+    from hermes_agent.hermes_cli.model_assignment import ModelAssignmentRejected
     try:
         write_profile_model(path, request.provider, request.model, validate_in=request.model_validate_in)
     except ModelAssignmentRejected as exc:
@@ -304,9 +304,9 @@ def _pin_model(path: Path, request: ProfileCreateRequest, result: ProvisionResul
 
 def disable_unselected_skills(profile_dir: Path, keep: tuple[str, ...]) -> int:
     """Disable every installed skill in ``profile_dir`` not in ``keep``; returns how many were newly disabled."""
-    from hermes_cli.config import load_config
-    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+    from hermes_agent.hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
     from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     keep_set = {s.strip() for s in keep if s and s.strip()}
     with profile_config_scope(profile_dir), CONFIG_MUTATION_LOCK:
@@ -332,14 +332,14 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
     and a just-created profile has no credentials yet. Both spans bind a secret scope: without one
     ``switch_model``'s key probe fails closed and reports the provider unconnected (#114676).
     ``base_url`` binds a bare ``custom``/``local`` pick; other providers ignore it. A rejected pick
-    raises :class:`hermes_cli.model_assignment.ModelAssignmentRejected`."""
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, refusing_locked_omissions
-    from hermes_cli.model_assignment import (
+    raises :class:`hermes_agent.hermes_cli.model_assignment.ModelAssignmentRejected`."""
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK, refusing_locked_omissions
+    from hermes_agent.hermes_cli.model_assignment import (
         apply_main_model_assignment, normalize_main_model_assignment, validated_main_model_selection,
     )
     from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import get_process_hermes_home
     from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     validate_home = validate_in or profile_dir
@@ -364,15 +364,15 @@ def write_profile_model(profile_dir: Path, provider: str, model: str, validate_i
 
 
 def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
-    """Write ``hermes_cli.web_models.MCPServerCreate`` entries into ``profile_dir``'s config.yaml.
+    """Write ``hermes_agent.hermes_cli.web_models.MCPServerCreate`` entries into ``profile_dir``'s config.yaml.
 
     Mirrors the per-server shape ``POST /api/mcp/servers`` builds, batched so the whole
     profile-create write is one config save. Returns the number of servers written.
     """
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.mcp_config import _save_bearer_auth_token
-    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-    from hermes_cli.web_server_mcp import normalize_mcp_server_create
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.mcp_config import _save_bearer_auth_token
+    from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+    from hermes_agent.hermes_cli.web_server_mcp import normalize_mcp_server_create
     from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     written = 0
     with profile_config_scope(profile_dir), CONFIG_MUTATION_LOCK:
@@ -384,7 +384,7 @@ def write_profile_mcp_servers(profile_dir: Path, servers: list) -> int:
             except ValueError as exc:
                 display_name = (server.name or "").strip() or "<unnamed>"
                 # The dashboard's logger: hermes_logging routes it to gui.log / `hermes logs --component gui`.
-                logging.getLogger("hermes_cli.web_server").warning(
+                logging.getLogger("hermes_agent.hermes_cli.web_server").warning(
                     "Profile-create: skipping MCP server '%s': %s", display_name, exc)
                 continue
             if bearer_token is not None:
@@ -424,8 +424,8 @@ def _env_over_stub(src: Path, dst: Path) -> bool:
 
 
 def _mirror_voice_sections(path: Path) -> bool:
-    from hermes_cli.config import read_user_config_raw, save_config
-    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+    from hermes_agent.hermes_cli.config import read_user_config_raw, save_config
+    from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK
     from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     # RAW reads: the launch side keeps its ${VAR} refs (never its secrets), and load_config() on the
     # profile side would merge DEFAULT_CONFIG so every section would look present.
@@ -443,11 +443,11 @@ def _mirror_voice_sections(path: Path) -> bool:
 
 def inherit_launch_model(path: Path) -> bool:
     """Copy the launch model seed without revalidating it; keep an existing explicit pin."""
-    from hermes_cli.config import load_config_readonly, read_user_config_raw, save_config
-    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, refusing_locked_omissions
-    from hermes_cli.config_model_section import _normalize_root_model_keys
-    from hermes_cli.model_assignment import apply_inherited_model_assignment, normalize_main_model_assignment
-    from hermes_cli.profile_model_seed import merge_endpoint_seed, prepare_inherited_endpoint_seed
+    from hermes_agent.hermes_cli.config import load_config_readonly, read_user_config_raw, save_config
+    from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK, refusing_locked_omissions
+    from hermes_agent.hermes_cli.config_model_section import _normalize_root_model_keys
+    from hermes_agent.hermes_cli.model_assignment import apply_inherited_model_assignment, normalize_main_model_assignment
+    from hermes_agent.hermes_cli.profile_model_seed import merge_endpoint_seed, prepare_inherited_endpoint_seed
     from hermes_agent.tui_gateway.launch_profile_policy import profile_config_scope
     with CONFIG_MUTATION_LOCK:
         with profile_config_scope(path):
@@ -485,7 +485,7 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
     profile is the root: the new profile then reads the root's auth.json, i.e. the launch logins. From a
     named launch profile that fallback would pair its keys with the root's logins, so its auth is copied.
     Returns the providers whose single-use logins were left out of a copy (read from the root instead)."""
-    from hermes_cli.auth import _global_auth_file_path
+    from hermes_agent.hermes_cli.auth import _global_auth_file_path
     from hermes_constants import get_hermes_home
     launch_home = get_hermes_home()
     # Same test as the auth fallback that makes sharing work: share only when it reads the launch store.
@@ -495,7 +495,7 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
     if mirrored["env"] and not clone_channels:
         # Keep provider/tool keys; the launch bot's tokens would make the new bot collide with it.
         def _strip_channels():
-            from hermes_cli.profile_channels import strip_channel_env_file
+            from hermes_agent.hermes_cli.profile_channels import strip_channel_env_file
             strip_channel_env_file(path / ".env")
         _try("channel strip", _strip_channels, None)
     if not share_auth:  # a copied auth.json forks token state: a refresh in either store strands the other
@@ -504,7 +504,7 @@ def mirror_launch_credentials(path: Path, mirrored: dict[str, Any], *, share_aut
         if mirrored["auth"]:
             # Single-use OAuth grants stay in the root store; the profile reads them via the pool fallback.
             def _strip_grants():
-                from hermes_cli.auth import strip_cloned_single_use_oauth_grants
+                from hermes_agent.hermes_cli.auth import strip_cloned_single_use_oauth_grants
                 stripped = strip_cloned_single_use_oauth_grants(path)
                 return tuple(sorted({*stripped["pool"], *stripped["providers"]}))
             kept_root = _try("OAuth grant strip", _strip_grants, ()) or ()

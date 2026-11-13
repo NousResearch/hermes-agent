@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from hermes_cli.web_server_skew_exit import _run_retirement_watchdog
+from hermes_agent.hermes_cli.web_server_skew_exit import _run_retirement_watchdog
 
 DEFAULT_OWNER_POLL_S = 15.0
 
@@ -28,7 +28,7 @@ def should_retire_superseded(*, lock: Optional[dict], my_nonce: str, age_s: floa
     """Retire only when a valid lock provably names another spawn of this ownership slot. A young
     process may still see the previous spawn's lock, so it must first outlive the same settle window
     the orphan reaper gives the Desktop to write the lock."""
-    from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
+    from hermes_agent.hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
 
     return lock is not None and lock["spawnNonce"] != my_nonce and age_s >= _REAP_MIN_AGE_SECONDS
 
@@ -41,7 +41,7 @@ def start_owner_watchdog(server, *, lock_path: Path, nonce: str,
     """Daemon thread that sets ``server.should_exit`` once this backend is provably superseded and
     provably idle. ``max_polls`` bounds the loop for tests only."""
     if read_lock is None:
-        from hermes_cli.dashboard_procs import read_valid_backend_lock
+        from hermes_agent.hermes_cli.dashboard_procs import read_valid_backend_lock
 
         read_lock = read_valid_backend_lock
     reader: Callable[[Path], Optional[dict]] = read_lock

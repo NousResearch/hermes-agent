@@ -45,7 +45,7 @@ def record_tui_worktree(wt_info: dict) -> None:
     """Remember a tree the ``-w`` / ``--tui -w`` launcher created, or a classic ``/worktree new``
     moved its gateway session into. Never raises."""
     try:
-        from hermes_cli.auth import _file_lock
+        from hermes_agent.hermes_cli.auth import _file_lock
         from utils import atomic_json_write
 
         path = _record_path()
@@ -83,7 +83,7 @@ def _recorded_tree_for(cwd: str) -> Optional[dict]:
 
 
 def _branch_exists(repo_root: str, branch: str) -> bool:
-    from hermes_cli.worktree_ops import _git
+    from hermes_agent.hermes_cli.worktree_ops import _git
     result = _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], repo_root)
     return result.returncode == 0
 
@@ -99,8 +99,8 @@ def recreate_tui_worktree(cwd: str, session_id: str) -> Optional[str]:
     entry = _recorded_tree_for(cwd)
     if entry is None:
         return None
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
-    from hermes_cli.worktree_ops import (
+    from hermes_agent.hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from hermes_agent.hermes_cli.worktree_ops import (
         _copy_worktree_includes,
         _git,
         _git_quiet,

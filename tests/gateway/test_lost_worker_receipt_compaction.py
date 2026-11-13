@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import psutil
 
-from hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.process_identity import worker_birth
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import (
     admit_session_input, begin_runtime_epoch, claim_session_input, mutate_worker_execution,

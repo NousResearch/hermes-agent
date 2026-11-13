@@ -61,7 +61,7 @@ def make_agent(monkeypatch):
 def test_config_failure_warns_without_exposing_values_and_preserves_defaults(
     make_agent, monkeypatch, caplog, failure_at, reader,
 ):
-    from hermes_cli import config
+    from hermes_agent.hermes_cli import config
     from hermes_constants import get_hermes_home
     import sys
 

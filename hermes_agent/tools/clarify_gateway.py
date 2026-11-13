@@ -313,7 +313,7 @@ def get_clarify_timeout() -> int:
     """Clarify timeout from config.yaml; 0/negative = unlimited. Default 90: an unanswered
     question frees the turn quickly; a reply typed instead of an answer cancels it at once."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         return resolve_clarify_timeout(load_config() or {})
     except Exception:
         return 90

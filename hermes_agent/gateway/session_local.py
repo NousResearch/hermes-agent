@@ -178,7 +178,7 @@ def _bypass_policy(params, *, private_secrets, client_local=False):
     block or shape the session; there is no default model to inherit, so one must be explicit."""
     import copy
     from hermes_agent.gateway.session_policy import build_policy
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     if not params.get('model'):
         raise RuntimeStoreError('invalid_params', field='model',
                                 detail='a bypass launch has no profile to inherit a model from')
@@ -314,7 +314,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
                 sort_keys=True))
         marks = {LOCAL_DESKTOP_CHAT: True} if desktop_local and policy.source == 'gui' else {}
         if policy.model is None:
-            from hermes_cli.anon_auth import GUEST_MODEL
+            from hermes_agent.hermes_cli.anon_auth import GUEST_MODEL
             policy = replace(policy, model=_resolve_gateway_model(policy.config()) or None)
             if policy.model == GUEST_MODEL:
                 # Follows its profile, so the provider the user connects later replaces the trial model.
@@ -404,7 +404,7 @@ def _lazy_model(authority, policy):
             or str(policy.provider or '').strip().lower() not in {'', 'auto'}):
         return model
     from hermes_agent.gateway.session_authorities import owner_scope
-    from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
+    from hermes_agent.hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
     with owner_scope(authority):
         return GUEST_MODEL if free_tier_route() else model
 
@@ -435,7 +435,7 @@ def effort_fields(config, tier, model, provider, base_url, api_mode=None):
     """Session-info ``reasoning_effort`` / ``_wire`` / ``service_tier`` / ``fast`` for one resolved route."""
     from hermes_agent.agent.fast_mode import STATIC_TIERS
     from hermes_agent.agent.reasoning_effort import clamp_effort, route_supported_efforts
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from hermes_agent.hermes_cli.models import resolve_fast_mode_overrides
     tier = tier or ''
     effort = ''
     if isinstance(config, dict):

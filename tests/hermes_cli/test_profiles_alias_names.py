@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli.profiles import check_alias_collision
+from hermes_agent.hermes_cli.profiles import check_alias_collision
 
 
 @pytest.mark.parametrize("name", ["dashboard", "serve", "webapp"])

@@ -1,6 +1,6 @@
 """Managed scope — IT-pushed, user-immutable config & env layer.
 
-DISTINCT from ``hermes_cli.config.is_managed()`` / ``HERMES_MANAGED`` (a coarse package-manager
+DISTINCT from ``hermes_agent.hermes_cli.config.is_managed()`` / ``HERMES_MANAGED`` (a coarse package-manager
 write-lock that blocks all mutation); this layer injects specific immutable values. The two are
 independent and may coexist. v1 enforcement is filesystem permissions only (see
 ``docs/design/managed-scope.md`` §7); ``get_managed_dir()`` is the single seam for adding
@@ -18,8 +18,8 @@ from typing import Dict, Optional
 
 # Stale-module bridge: this module binds ``utils`` names at import time, so a fresh
 # import in a post-pull updater process (pre-handoff purge keeps root modules cached) dies
-# unless the stale ``utils`` is dropped first. See hermes_cli.stale_modules.
-from hermes_cli.stale_modules import drop_stale_root_modules
+# unless the stale ``utils`` is dropped first. See hermes_agent.hermes_cli.stale_modules.
+from hermes_agent.hermes_cli.stale_modules import drop_stale_root_modules
 
 drop_stale_root_modules()
 
@@ -107,7 +107,7 @@ def _load_managed_file(name: str, cache: dict[str, tuple], parse) -> dict:
 def load_managed_config() -> dict:
     """Parsed managed config.yaml, or {} when absent/malformed (fail-open). Always {} under a config
     backend that takes config and locks from elsewhere (remote mode, D18; boot warns about the file)."""
-    from hermes_cli.config_backend import get_config_backend
+    from hermes_agent.hermes_cli.config_backend import get_config_backend
 
     if not get_config_backend().honors_managed_config():
         return {}
@@ -140,7 +140,7 @@ def apply_managed_overlay(config: dict) -> dict:
         if not managed:
             return config
         # Imported lazily to avoid an import cycle (config imports managed_scope).
-        from hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _deep_merge, _expand_env_vars, _normalize_root_model_keys
         managed_expanded = _normalize_root_model_keys(_expand_env_vars(managed))
         # _normalize_root_model_keys only promotes the string when root provider/base_url
         # keys exist to migrate; handle the bare case here (matches cli.py) so _deep_merge

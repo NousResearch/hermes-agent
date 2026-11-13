@@ -18,8 +18,8 @@ import subprocess
 
 import pytest
 
-from hermes_cli import update_cmd, update_cmd_git, update_cmd_stash
-from hermes_cli import update_pause_record as pause_record
+from hermes_agent.hermes_cli import update_cmd, update_cmd_git, update_cmd_stash
+from hermes_agent.hermes_cli import update_pause_record as pause_record
 
 pytestmark = pytest.mark.platforms("posix")
 

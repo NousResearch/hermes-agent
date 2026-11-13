@@ -38,7 +38,7 @@ def _results_path() -> Path:
 def snapshot_installs(plugins_dir: Path) -> dict:
     """The install records an update check is about to compare against. Take it BEFORE the check runs:
     a record read afterwards may already include an update that finished during the check."""
-    from hermes_cli.plugins_provenance import read_sidecar_rows
+    from hermes_agent.hermes_cli.plugins_provenance import read_sidecar_rows
 
     return read_sidecar_rows(plugins_dir)
 
@@ -125,7 +125,7 @@ def auto_apply_enabled(config_get: Callable | None = None) -> bool:
 
 def _default_config_get(section: str, key: str):
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly
+        from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly
 
         return cfg_get(load_config_readonly(), section, key, default=None)
     except Exception:
@@ -194,9 +194,9 @@ def _auto_apply(updates: list, checked_installs: dict, apply_updates_fn: Callabl
     """Apply each update row the opt-in tick may move. A catalog install held with ``--ref`` is left
     where the user put it. A widened catalog pin is a pending review, not a failure: one line naming
     the command that walks it, no traceback every tick; other refusals are one line too."""
-    from hermes_cli.plugins_auto_update import HELD_WITH_REF, HeldWithRef, held_with_ref
-    from hermes_cli.plugins_cmd import PluginOperationError
-    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+    from hermes_agent.hermes_cli.plugins_auto_update import HELD_WITH_REF, HeldWithRef, held_with_ref
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import RepinConsentRequired
 
     for r in updates:
         if getattr(r, "klass", "") not in ("git", "catalog"):
@@ -313,7 +313,7 @@ def maybe_run_gateway_check(
     costs one warning and a stamped marker — never an apply.
     """
     if plugins_dir is None:
-        from hermes_cli import plugins_cmd
+        from hermes_agent.hermes_cli import plugins_cmd
 
         plugins_dir = plugins_cmd._plugins_dir()
     if run_checks_fn is None:
@@ -321,12 +321,12 @@ def maybe_run_gateway_check(
         # owns default_fetch / default_ls_remote / _default_pypi_latest;
         # the manual `hermes plugins check-updates` passes the same
         # defaults. No boilerplate re-derivation here.
-        from hermes_cli.plugins_updates import run_checks
+        from hermes_agent.hermes_cli.plugins_updates import run_checks
 
         run_checks_fn = run_checks
     if apply_updates_fn is None:
         # update_one with no terminal, refusals raised (cmd_update would turn them into an exit)
-        from hermes_cli import plugins_auto_update
+        from hermes_agent.hermes_cli import plugins_auto_update
 
         apply_updates_fn = plugins_auto_update.apply_unattended
     return run_scheduled_check(

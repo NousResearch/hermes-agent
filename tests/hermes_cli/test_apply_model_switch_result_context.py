@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
 
 class _FakeModelInfo:
@@ -33,7 +33,7 @@ class _StubCLI:
     """Minimum attrs ``_apply_model_switch_result`` reads on ``self``."""
     def _stage_and_swap_model(self, result, old_model):
         # Staging + in-place swap lives in a helper; run the real one on this stub.
-        import cli as _cli_mod
+        import hermes_agent.cli as _cli_mod
         return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
 
     agent = None
@@ -49,7 +49,7 @@ class _StubCLI:
 
 
 def _run_display(monkeypatch, result):
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     captured: list[str] = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: captured.append(str(s)))
@@ -126,9 +126,9 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
 
 
 def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     import hermes_yaml as yaml
-    from hermes_cli.config import get_config_path, read_user_config_raw
+    from hermes_agent.hermes_cli.config import get_config_path, read_user_config_raw
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)
     cli = _StubCLI()

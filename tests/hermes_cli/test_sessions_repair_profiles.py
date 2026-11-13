@@ -29,7 +29,7 @@ def homes(tmp_path, monkeypatch):
     root = tmp_path / ".hermes"
     root.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(root))
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
     for name in ("acme", "beta"):
         create_profile(name, no_alias=True, no_skills=True)
     return {"default": root, "acme": root / "profiles" / "acme", "beta": root / "profiles" / "beta"}
@@ -103,7 +103,7 @@ def _dump(path: Path) -> dict:
 
 
 def _run(**kw) -> int:
-    from hermes_cli.sessions_cmd import cmd_sessions
+    from hermes_agent.hermes_cli.sessions_cmd import cmd_sessions
     args = Namespace(sessions_action="repair-profiles", apply=False, json=False, yes=True, legacy_main="report")
     for k, v in kw.items():
         setattr(args, k, v)
@@ -157,7 +157,7 @@ def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
 def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkeypatch, capsys):
     _seed_crossings(homes)
     snapshots = []
-    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot",
+    monkeypatch.setattr("hermes_agent.hermes_cli.sessions_cmd_repair_profiles.default_snapshot",
                         lambda store: snapshots.append(store.profile) or f"snap-{store.profile}")
 
     assert _run(apply=True) == 0
@@ -209,7 +209,7 @@ def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkey
 
 def test_apply_refuses_while_a_gateway_owns_a_store(homes, monkeypatch, capsys):
     _seed_crossings(homes)
-    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.live_gateway_homes",
+    monkeypatch.setattr("hermes_agent.hermes_cli.sessions_cmd_repair_profiles.live_gateway_homes",
                         lambda stores: [("default", 4242)])
     before = _dump(homes["default"] / "state.db")
 
@@ -223,7 +223,7 @@ def test_legacy_main_rekey_adopts_a_standalone_gateways_history(homes, monkeypat
     """The #113884 incident: multiplexing switched on, every existing key of the named profile's own
     gateway stopped resolving. ``--legacy-main rekey`` gives them the namespace the multiplexer reads."""
     _seed_crossings(homes)
-    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    monkeypatch.setattr("hermes_agent.hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
 
     assert _run(apply=True, legacy_main="rekey") == 0
 
@@ -242,7 +242,7 @@ def test_move_into_a_store_that_already_holds_the_title(homes, monkeypatch):
     batch, and leave the rows copied before it in both stores, on every run. The clash is the
     FIRST row of the batch and its title is at the length cap, so the suffix must still fit."""
     title = "G" * SessionDB.MAX_TITLE_LENGTH
-    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    monkeypatch.setattr("hermes_agent.hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
     root = SessionDB(homes["default"] / "state.db")
     acme = SessionDB(homes["acme"] / "state.db")
     try:
@@ -281,7 +281,7 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
     moves, the batch is not re-run per finding, and the failed row's lineage stays linked so the
     next run moves it whole. The failure is at import (the shape a unique-index clash takes)."""
     stage = "import"
-    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    monkeypatch.setattr("hermes_agent.hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
     root = SessionDB(homes["default"] / "state.db")
     try:
         _session(root, "gp", "agent:acme:telegram:dm:220", profile="acme")
@@ -355,7 +355,7 @@ def test_a_ledgered_stray_is_reported_never_copied(homes, monkeypatch, status):
     The move used to copy such a row into the target and then fail the source delete on the FK,
     leaving the conversation in BOTH stores on every run. A row with ledger history (settled or
     live) is report-only, together with the stray lineage linked to it; unrelated strays move."""
-    monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
+    monkeypatch.setattr("hermes_agent.hermes_cli.sessions_cmd_repair_profiles.default_snapshot", lambda store: "snap")
     root = SessionDB(homes["default"] / "state.db")
     try:
         _session(root, "led", "agent:acme:telegram:dm:230", profile="acme")
@@ -387,7 +387,7 @@ def test_a_ledgered_stray_is_reported_never_copied(homes, monkeypatch, status):
 def test_ledger_rows_that_appear_after_the_scan_still_block_the_copy(homes, monkeypatch):
     """The fence is re-checked at export: a scan that predates the row's first admission must
     not copy it (the source delete would then fail and strand a duplicate)."""
-    from hermes_cli.sessions_repair_profiles import scan_stores
+    from hermes_agent.hermes_cli.sessions_repair_profiles import scan_stores
     root = SessionDB(homes["default"] / "state.db")
     try:
         _session(root, "late", "agent:acme:telegram:dm:240", profile="acme")

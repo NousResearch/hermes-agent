@@ -27,9 +27,9 @@ from starlette import status
 from starlette._utils import get_route_path
 from starlette.websockets import WebSocket
 
-from hermes_cli.config import get_process_hermes_home
+from hermes_agent.hermes_cli.config import get_process_hermes_home
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 # Valid for every served profile, so a profile's plugin code must never receive them.
 _GATEWAY_CREDENTIAL_HEADERS = frozenset({
@@ -69,9 +69,9 @@ def _scan_profile_plugins(home: Path) -> list:
     """The profile at ``home``'s dashboard plugins, read from disk: its own ``plugins/``, then the
     root's (as a standalone ``hermes --profile <name> serve`` scanned them; the profile's own copy
     wins a same-name conflict), then the bundled ones."""
-    from hermes_cli.plugins import get_bundled_plugins_dir
-    from hermes_cli.profiles import _get_default_hermes_home
-    from hermes_cli.web_server_dashboard import _discover_dashboard_plugins
+    from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_agent.hermes_cli.profiles import _get_default_hermes_home
+    from hermes_agent.hermes_cli.web_server_dashboard import _discover_dashboard_plugins
     bundled, own = get_bundled_plugins_dir(), Path(home) / "plugins"
     dirs = [own] + [r for r in [_get_default_hermes_home() / "plugins"]
                     if r.resolve(strict=False) != own.resolve(strict=False)]
@@ -143,8 +143,8 @@ def _in_process_api_file(name: str) -> Optional[Path]:
     mounted (a hosted forward route has none here), else the copy the first request would mount,
     the launch profile's discovery entry."""
     import sys
-    from hermes_cli.web_server import _get_dashboard_plugins, app
-    from hermes_cli.web_server_dashboard import _launch_profile_scope, _plugin_api_mounted
+    from hermes_agent.hermes_cli.web_server import _get_dashboard_plugins, app
+    from hermes_agent.hermes_cli.web_server_dashboard import _launch_profile_scope, _plugin_api_mounted
     if _plugin_api_mounted(app, name):
         file = getattr(sys.modules.get(f"hermes_dashboard_plugin_{name}"), "__file__", None)
         return Path(file).resolve() if file else None
@@ -185,7 +185,7 @@ def plugin_request_scope(scope) -> Iterator[None]:
     dependency binds it again for the handler). An unknown profile binds nothing: the route
     dependency answers it as for any other route."""
     from fastapi import HTTPException
-    from hermes_cli.web_server_profiles import _config_profile_scope, _is_current_profile
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope, _is_current_profile
     profile = dict(parse_qsl(scope.get("query_string", b"").decode("latin-1"))).get("profile")
     with ExitStack() as stack:
         if not _is_current_profile(profile):
@@ -246,11 +246,11 @@ async def forward_secondary_plugin_request(request, name: str) -> Optional[Respo
                        if k not in _GATEWAY_QUERY_KEYS])
     headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _GATEWAY_CREDENTIAL_HEADERS]
     body = await request.body()
-    from hermes_cli.plugin_host_http_auth import admitted_for_sensitive_route
+    from hermes_agent.hermes_cli.plugin_host_http_auth import admitted_for_sensitive_route
     authenticated = admitted_for_sensitive_route(request)
 
     def call(timeout: float) -> dict[str, Any]:
-        from hermes_cli.plugins import get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import get_plugin_manager
         host = get_plugin_manager()._plugin_host()  # the active (secondary) profile's own host
         return host.asgi_request(name, str(plugin["_dir"]), str(plugin["_api_file"]), request.method, path,
                                  query, headers, body, timeout=timeout, authenticated=authenticated)
@@ -269,7 +269,7 @@ async def refuse_secondary_plugin_socket(scope, receive, send, name: str) -> boo
     accept, so Desktop's reconnect budget counts it); any other gets the plain policy close."""
     if _secondary_hosted_plugin(name) is None:
         return False
-    from hermes_cli.web_server_chat import _ws_auth_ok
+    from hermes_agent.hermes_cli.web_server_chat import _ws_auth_ok
     socket = WebSocket(scope, receive, send)
     if not ((scope.get("state") or {}).get("native_http_principal") or _ws_auth_ok(socket)):
         await send({"type": "websocket.close", "code": status.WS_1008_POLICY_VIOLATION})

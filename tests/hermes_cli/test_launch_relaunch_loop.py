@@ -94,7 +94,7 @@ def test_backed_off_failed_sync_boots_on_the_previous_dependencies(tmp_path, mon
     (or past the cap) has run no repair, so relaunching it would re-enter the same decision and
     exec again forever; it must boot on the previous dependencies, and `hermes update` (the
     remedy every backed-off launch names) still tries the repair; its report-only `--check` does not."""
-    from hermes_cli import venv_sync
+    from hermes_agent.hermes_cli import venv_sync
 
     root = tmp_path / "checkout"
     root.mkdir()
@@ -122,7 +122,7 @@ def test_backed_off_failed_sync_boots_on_the_previous_dependencies(tmp_path, mon
 
 
 def _committed_checkout(tmp_path: Path) -> Path:
-    from hermes_cli.source_stamp import write_source_stamp
+    from hermes_agent.hermes_cli.source_stamp import write_source_stamp
 
     root = tmp_path / "checkout"
     root.mkdir()

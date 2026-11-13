@@ -78,7 +78,7 @@ def test_the_stand_in_parent_runs_on_the_sessions_own_tier_not_the_runners_last_
     runner, built = _runner(), []
     runner._service_tier = "priority"
     factory, start = _start(runner, model, built)
-    with patch("hermes_cli.models.resolve_fast_mode_overrides", return_value={"service_tier": "priority"}), \
+    with patch("hermes_agent.hermes_cli.models.resolve_fast_mode_overrides", return_value={"service_tier": "priority"}), \
             patch("hermes_agent.run_agent.AIAgent", side_effect=factory):
         assert tick(start, capacity=3) == [sid]
     assert built[0].get("service_tier") is None and "service_tier" not in (built[0]["request_overrides"] or {})

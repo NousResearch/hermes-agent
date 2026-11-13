@@ -19,7 +19,7 @@ import urllib.request
 from hermes_agent.agent import anthropic_credentials as ac
 from hermes_agent.agent import credential_sources
 from hermes_agent.agent.credential_pool import load_pool
-from hermes_cli.auth_commands import auth_list_command
+from hermes_agent.hermes_cli.auth_commands import auth_list_command
 
 
 def _write_config(hermes_home, adopt):

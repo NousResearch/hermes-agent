@@ -7,7 +7,7 @@ import sys
 import pytest
 
 import hermes_yaml as yaml
-from hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
 
 
 _SEED = (
@@ -107,7 +107,7 @@ def test_failed_route_publication_leaves_original_bytes(profile_config, monkeypa
 
 def test_setting_saved_while_route_is_decided_survives(profile_config, monkeypatch):
     """Another process saving a setting during the (I/O-capable) route decision is not erased."""
-    from hermes_cli import model_switch, route_identity
+    from hermes_agent.hermes_cli import model_switch, route_identity
 
     decide = route_identity.should_clear_context_pin
     writer = (

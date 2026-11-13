@@ -358,15 +358,15 @@ def test_side_call_fires_no_post_llm_call(provider, issued):
     parent = _make_parent()
     _run_parent_turn(parent, provider, tool_round=False)
     fired: list = []
-    real_invoke = __import__("hermes_cli.plugins", fromlist=["invoke_hook"]).invoke_hook
+    real_invoke = __import__("hermes_agent.hermes_cli.plugins", fromlist=["invoke_hook"]).invoke_hook
 
     def _spy(name, **kwargs):
         fired.append(name)
         return real_invoke(name, **kwargs)
 
     provider.replies.append(_response("Ask: why 42?", usage=_usage()))
-    with patch("hermes_cli.plugins.invoke_hook", side_effect=_spy), \
-            patch("hermes_cli.lifecycle.invoke_hook", side_effect=_spy, create=True):
+    with patch("hermes_agent.hermes_cli.plugins.invoke_hook", side_effect=_spy), \
+            patch("hermes_agent.hermes_cli.lifecycle.invoke_hook", side_effect=_spy, create=True):
         assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt") == "Ask: why 42?"
     assert "post_llm_call" not in fired and "transform_llm_output" not in fired
 

@@ -21,7 +21,7 @@ from hermes_agent.gateway.session_contract import (
 from hermes_agent.gateway.session_events import SessionEvents
 from hermes_agent.gateway.session_pending_controls import PendingControls
 from hermes_agent.gateway.session_producer_lifecycle import drop_producer_turn, mark_producer_admission
-from hermes_cli.observability.shared_metrics_busy import busy_row_settled
+from hermes_agent.hermes_cli.observability.shared_metrics_busy import busy_row_settled
 from hermes_agent.hermes_state_runtime import (
     STEERING, RuntimeStoreError, admit_session_input, begin_runtime_epoch,
     cancel_session_input, claim_session_input, get_session_admission,

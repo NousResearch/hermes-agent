@@ -1,7 +1,7 @@
 """Streaming output, reasoning preview, tool progress callbacks, and busy-command spinner for the interactive CLI
 
 Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO. cli.py-internal
-symbols are imported LAZILY inside each method (``from cli import ...``) — the mixin
+symbols are imported LAZILY inside each method (``from hermes_agent.cli import ...``) — the mixin
 never imports ``cli`` at module load time (import cycle).
 """
 
@@ -94,7 +94,7 @@ class CLIStreamMixin:
     def _flush_credit_notices(self) -> None:
         """Print queued credit notices as level-colored lines at turn end (after
         run_conversation) where _cprint paints cleanly above the prompt."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         try:
             pending = getattr(self, "_pending_credit_notices", None)
             if not pending:
@@ -121,7 +121,7 @@ class CLIStreamMixin:
 
     def _emit_reasoning_preview(self, reasoning_text: str) -> None:
         """Render a buffered reasoning preview as a single [thinking] block."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
@@ -180,12 +180,12 @@ class CLIStreamMixin:
 
     def _format_submitted_user_message_preview(self, user_input: str) -> str:
         """Format the submitted user-message scrollback preview."""
-        from cli import _accent_hex, datetime
+        from hermes_agent.cli import _accent_hex, datetime
         ts_suffix = (
             f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
             if getattr(self, "show_timestamps", False) else "")
         lines = user_input.split("\n")
-        from hermes_cli.cli_modern_layout import is_modern, prompt_glyph
+        from hermes_agent.hermes_cli.cli_modern_layout import is_modern, prompt_glyph
         mark = _escape(prompt_glyph()) if is_modern(self) else "●"
         if len(lines) <= 1:
             return f"[bold {_accent_hex()}]{mark}[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
@@ -210,7 +210,7 @@ class CLIStreamMixin:
 
     def _expand_paste_references(self, text: str | None) -> str:
         """Expand [Pasted text #N -> file] placeholders into file contents."""
-        from cli import logger
+        from hermes_agent.cli import logger
         if not isinstance(text, str) or "[Pasted text #" not in text:
             return text or ""
         paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
@@ -230,7 +230,7 @@ class CLIStreamMixin:
 
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
-        from cli import ChatConsole, _accent_hex, _cprint
+        from hermes_agent.cli import ChatConsole, _accent_hex, _cprint
         from hermes_agent.tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
             from hermes_agent.gateway.warning_notifications import render_notification
@@ -239,7 +239,7 @@ class CLIStreamMixin:
             return
         modern = getattr(self, "_modern_layout", False)
         if modern:
-            from hermes_cli.cli_modern_layout import separator
+            from hermes_agent.hermes_cli.cli_modern_layout import separator
             _cprint("\n" + separator(True))
         else:
             ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
@@ -248,12 +248,12 @@ class CLIStreamMixin:
             # soft_wrap in the glyph layout: the terminal wraps a long prompt, so a resize re-flows it.
             ChatConsole().print(self._format_submitted_user_message_preview(text), soft_wrap=modern)
         elif modern:
-            from hermes_cli.cli_modern_layout import user_echo_markup
+            from hermes_agent.hermes_cli.cli_modern_layout import user_echo_markup
             ChatConsole().print(user_echo_markup(text, _accent_hex()), soft_wrap=True)
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
         if modern:
-            from hermes_cli.cli_modern_layout import closing_separator
+            from hermes_agent.hermes_cli.cli_modern_layout import closing_separator
             _cprint(closing_separator(True))
 
     def _stream_reasoning_delta(self, text: str) -> None:
@@ -263,14 +263,14 @@ class CLIStreamMixin:
         response box is open further reasoning is suppressed — a late thinking block (e.g. after
         an interrupt) would otherwise draw a reasoning box inside the response box.
         """
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         if not text:
             return
         self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):
             return
         if getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import reasoning_text_line, separator
+            from hermes_agent.hermes_cli.cli_modern_layout import reasoning_text_line, separator
             if not getattr(self, "_reasoning_box_opened", False):
                 self._reasoning_box_opened, self._reasoning_started_at = True, time.monotonic()
                 self._reasoning_buf = ""
@@ -306,7 +306,7 @@ class CLIStreamMixin:
         background-process notices, spinner ``print_above`` text) arrive from other threads at any moment. While
         a response or reasoning box is being streamed they are HELD and released at the box footer, so a line
         never lands between two paragraphs of the reply. Outside a box they print immediately."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         text = kwargs.get("sep", " ").join(str(a) for a in args)
         if getattr(self, "_stream_box_live", False) or getattr(self, "_reasoning_box_opened", False):
             self._held_status_lines = getattr(self, "_held_status_lines", []) + [text]
@@ -315,18 +315,18 @@ class CLIStreamMixin:
 
     def _release_held_status_lines(self) -> None:
         """Print status lines held while a box was open (called right after a box footer)."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         held, self._held_status_lines = getattr(self, "_held_status_lines", []), []
         for line in held:
             _cprint(line)
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open (renders the buffered reasoning tail)."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         if not getattr(self, "_reasoning_box_opened", False):
             return
         if getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import closing_separator, reasoning_text_line, thought_line
+            from hermes_agent.hermes_cli.cli_modern_layout import closing_separator, reasoning_text_line, thought_line
             if getattr(self, "_reasoning_buf", ""):
                 _cprint(reasoning_text_line(self._reasoning_buf))
             started = getattr(self, "_reasoning_started_at", 0.0)
@@ -436,7 +436,7 @@ class CLIStreamMixin:
 
     def _emit_stream_line(self, printed_line: str) -> None:
         """Print one response line with the skin's true-color text escape (if any)."""
-        from cli import _RST, _STREAM_PAD, _cprint
+        from hermes_agent.cli import _RST, _STREAM_PAD, _cprint
         _tc = getattr(self, "_stream_text_ansi", "")
         _cprint(
             f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
@@ -444,7 +444,7 @@ class CLIStreamMixin:
     def _flush_stream_table_buf(self) -> None:
         """Emit the held table block re-aligned as a whole. Cell-level markdown is stripped FIRST
         so the realigner pads to the final visible width, not the marker-decorated width."""
-        from cli import (
+        from hermes_agent.cli import (
             _strip_markdown_syntax, _terminal_width_for_streaming, realign_markdown_tables)
         buf = self._stream_table_buf
         self._stream_table_buf = []
@@ -461,7 +461,7 @@ class CLIStreamMixin:
     def _emit_stream_text(self, text: str) -> None:
         """Emit filtered text to the streaming display."""
         from hermes_agent.agent.markdown_tables import is_table_divider, looks_like_table_row
-        from cli import (
+        from hermes_agent.cli import (
             HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax, datetime)
         if not text:
             return
@@ -477,7 +477,7 @@ class CLIStreamMixin:
             self._stream_box_opened = True
             self._stream_box_live = True  # header drawn; cleared at the footer
             try:
-                from hermes_cli.skin_engine import get_active_skin
+                from hermes_agent.hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "☤ Hermes")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
@@ -492,7 +492,7 @@ class CLIStreamMixin:
             if self.show_timestamps:
                 label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
             if getattr(self, "_modern_layout", False):
-                from hermes_cli.cli_modern_layout import answer_label
+                from hermes_agent.hermes_cli.cli_modern_layout import answer_label
                 _cprint(answer_label(datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))
                                      if self.show_timestamps else ""))
             else:
@@ -542,7 +542,7 @@ class CLIStreamMixin:
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
         from hermes_agent.agent.markdown_tables import is_table_divider, looks_like_table_row
-        from cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
+        from hermes_agent.cli import _ACCENT, _RST, _cprint, _strip_markdown_syntax
         # Still inside a "reasoning block" at end-of-stream = false positive (the model
         # mentioned a tag in prose and never closed it): recover the buffer as regular text.
         if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
@@ -566,7 +566,7 @@ class CLIStreamMixin:
             self._stream_buf = ""
         if self._stream_box_opened and getattr(self, "_stream_box_live", False):
             if getattr(self, "_modern_layout", False):
-                from hermes_cli.cli_modern_layout import closing_separator
+                from hermes_agent.hermes_cli.cli_modern_layout import closing_separator
                 _cprint(closing_separator(True))
             else:
                 w = self._scrollback_box_width()
@@ -605,7 +605,7 @@ class CLIStreamMixin:
 
     def _command_spinner_frame(self) -> str:
         """Return the current spinner frame for slow slash commands."""
-        from cli import _COMMAND_SPINNER_FRAMES
+        from hermes_agent.cli import _COMMAND_SPINNER_FRAMES
         return _COMMAND_SPINNER_FRAMES[int(time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)]
 
     @contextmanager
@@ -615,7 +615,7 @@ class CLIStreamMixin:
         Most sync slash commands reserve the composer (their completion changes session state);
         manual compression is safe to draft through (queued input runs against compacted history).
         """
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         previous_blocks_input = getattr(self, "_command_blocks_input", False)
         self._command_running = True
         self._command_blocks_input = blocks_input
@@ -634,7 +634,7 @@ class CLIStreamMixin:
         """Describe attached images via the auxiliary vision model and prepend the descriptions
         to the user's text (works with non-vision models; same approach as the gateway). The
         local path is included so the agent can re-examine via ``vision_analyze``."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         import asyncio as _asyncio
         from hermes_agent.gateway.warning_notifications import render_notification
         from hermes_agent.tools.vision_tools import vision_analyze_tool
@@ -688,7 +688,7 @@ class CLIStreamMixin:
     def _console_print(self, *args, **kwargs):
         """Print through the active command-safe console (prompt_toolkit-safe Rich once the
         TUI is live, else the plain console)."""
-        from cli import ChatConsole
+        from hermes_agent.cli import ChatConsole
         console = ChatConsole() if getattr(self, "_app", None) else self.console
         console.print(*args, **kwargs)
 
@@ -699,7 +699,7 @@ class CLIStreamMixin:
         Fires once per tool CALL, so a batch of parallel calls to the same tool printed the same
         line N times (#10478); repeats within one generation batch are coalesced. The set is
         cleared when a tool actually starts (``tool.started``), i.e. on the next batch."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         if getattr(self, '_stream_box_opened', False):
             self._flush_stream()
             self._stream_box_opened = False
@@ -722,7 +722,7 @@ class CLIStreamMixin:
         Drives the TUI spinner (tool.started stamps the elapsed timer); in "all"/"new"/"verbose"
         progress modes tool.completed also commits a stacked scrollback line (tool history).
         """
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home
+        from hermes_agent.cli import CLI_CONFIG, _DIM, _RST, _cprint, _hermes_home
         # MoA reference outputs (display-only events from the MoA facade): render each answer
         # as a labelled thinking-style block BEFORE the aggregator acts.
         if event_type == "moa.reference":
@@ -786,7 +786,7 @@ class CLIStreamMixin:
                     return
                 self._last_scrollback_tool = function_name
                 try:
-                    from hermes_cli.cli_modern_layout import completed_tool_line
+                    from hermes_agent.hermes_cli.cli_modern_layout import completed_tool_line
                     _cprint(completed_tool_line(self, function_name, stored_args, duration, kwargs.get("result"),
                                                 kwargs.get("is_error", False)))
                 except Exception:
@@ -846,7 +846,7 @@ class CLIStreamMixin:
 
     def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
         """Capture local before-state for write-capable tools."""
-        from cli import logger
+        from hermes_agent.cli import logger
         try:
             from hermes_agent.agent.display import capture_local_edit_snapshot
             snapshot = capture_local_edit_snapshot(function_name, function_args)
@@ -858,13 +858,13 @@ class CLIStreamMixin:
     def _print_tool_image(self, function_name, args, result, is_error) -> None:
         """Show the local image a finished tool produced or looked at (``display.inline_images``)."""
         from hermes_agent.agent.terminal_image import tool_image_path
-        from hermes_cli.cli_inline_images import print_inline_images
+        from hermes_agent.hermes_cli.cli_inline_images import print_inline_images
         if path := tool_image_path(function_name, args, result, is_error=bool(is_error)):
             print_inline_images(self, [path])
 
     def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
         """Render file edits with inline diff after write-capable tools complete."""
-        from cli import _cprint, logger
+        from hermes_agent.cli import _cprint, logger
         # A background delegate_task re-enters as a fresh turn when done; say so once so the
         # idle prompt doesn't read as "nothing happened".
         if function_name == "delegate_task":
@@ -882,7 +882,7 @@ class CLIStreamMixin:
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
         try:
             from hermes_agent.agent.display import render_edit_diff_with_delta
-            from hermes_cli.cli_modern_layout import diff_printer
+            from hermes_agent.hermes_cli.cli_modern_layout import diff_printer
             render_edit_diff_with_delta(
                 function_name, function_result, function_args=function_args, snapshot=snapshot,
                 print_fn=diff_printer(_cprint))

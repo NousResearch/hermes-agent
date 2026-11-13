@@ -112,7 +112,7 @@ def _clean_route(provider_name: str, route: Any) -> dict[str, Any]:
 
 
 def _profile_home(name: Any) -> Path:
-    from hermes_cli.profiles import get_profile_dir, profile_exists
+    from hermes_agent.hermes_cli.profiles import get_profile_dir, profile_exists
     if not isinstance(name, str) or not name.strip() or not profile_exists(name):
         raise DelegationRouteError(f"Profile {name!r} does not exist (see `hermes profile list`).")
     return Path(get_profile_dir(name))
@@ -132,7 +132,7 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
         reset_multiplex_context, reset_secret_scope, set_multiplex_context, set_secret_scope,
     )
     from hermes_agent.gateway.hosted_room_execution_policy import bind_profile_routed, reset_profile_routed
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
@@ -165,7 +165,7 @@ def child_profile_scope(child: Any) -> contextlib.AbstractContextManager:
 def _profile_model_request(cfg: Mapping[str, Any]) -> dict[str, Any]:
     """``resolve_runtime_provider`` kwargs for a profile's primary model, decoded by the same owner CLI startup
     uses (``resolve_startup_model_route``): a ``model.default`` alias takes the alias's model, endpoint and key."""
-    from hermes_cli.model_switch import resolve_startup_model_route
+    from hermes_agent.hermes_cli.model_switch import resolve_startup_model_route
     model_cfg = cfg.get("model")
     if isinstance(model_cfg, dict):
         model = model_cfg.get("default") or model_cfg.get("model")
@@ -199,8 +199,8 @@ def _refuse_under_worker_snapshot(home: Path) -> None:
 def _profile_route(home: Path) -> TaskRoute:
     """The profile's own primary route, resolved inside its scope (its config.yaml + secrets). The
     child never borrows the launching profile's key, pool, fallback chain or reasoning level."""
-    from hermes_cli.config import load_config_readonly
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_constants import resolve_reasoning_config
     from hermes_agent.tools.delegate_tool_config import ResolvedReasoning, _credential_bundle, _require_pinned_command
     _refuse_under_worker_snapshot(home)

@@ -46,7 +46,7 @@ async def test_gateway_startup_restores_pending_delegation_completions(tmp_path,
 
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr("hermes_agent.agent.shell_hooks.register_from_config", lambda *a, **k: None)
     monkeypatch.setattr(process_registry, "recover_from_checkpoint", lambda: 0)
     event = {"type": "async_delegation", "delegation_id": "d-owner", "session_key": "OLD", "origin_ui_session_id": "",

@@ -280,7 +280,7 @@ def _reap_idle_sessions() -> None:
         logger.debug("idle reaper periodic trim deferred: a session is busy or attached")
         return
     try:
-        from hermes_cli.mem_trim import trim_memory_when_idle
+        from hermes_agent.hermes_cli.mem_trim import trim_memory_when_idle
         trim_memory_when_idle(reason="idle reaper periodic trim")
     except Exception as exc:  # debug, not warning — a persistent failure would repeat every scan.
         logger.debug("idle reaper memory trim failed: %s: %s", type(exc).__name__, exc)
@@ -323,7 +323,7 @@ def _reclaim_orphaned_leases() -> None:
     except Exception:
         logger.debug("stale deferred lease sweep failed", exc_info=True)
     try:
-        from hermes_cli.active_sessions import release_orphaned_leases
+        from hermes_agent.hermes_cli.active_sessions import release_orphaned_leases
         if dropped := release_orphaned_leases(_own_live_lease_ids()):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
     except Exception:
@@ -335,7 +335,7 @@ def _reclaim_orphaned_leases() -> None:
 # never a running / pending / mid-build / live-transport one (reopening re-resumes from the DB). 0/null disables.
 def _max_live_sessions() -> int:
     try:
-        from hermes_cli.active_sessions import coerce_max_concurrent_sessions
+        from hermes_agent.hermes_cli.active_sessions import coerce_max_concurrent_sessions
         cfg = _load_cfg() or {}
         raw = cfg.get("max_live_sessions")
         if raw is None and isinstance(gateway_cfg := cfg.get("gateway"), dict):

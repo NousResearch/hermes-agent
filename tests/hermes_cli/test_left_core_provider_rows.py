@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.left_core_migration as lcm
+import hermes_agent.hermes_cli.left_core_migration as lcm
 
 ACME = lcm.LeftCoreFeature(
     plugin="acme-llm", label="Acme LLM", unchanged="your ACME_KEY is unchanged",
@@ -27,7 +27,7 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
     for name in ("HERMES_INFERENCE_PROVIDER", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ACME_CLI_PATH"):
         monkeypatch.delenv(name, raising=False)
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     monkeypatch.setattr(mpm, "catalog_source", lambda name: name)  # never the network
 
 
@@ -166,9 +166,9 @@ def acme_row(monkeypatch, tmp_path):
 
 
 def test_unknown_left_core_provider_names_the_install_on_every_surface(acme_row):
-    from hermes_cli.auth import AuthError, resolve_provider
-    from hermes_cli.auth_commands import _unknown_provider_exit
-    from hermes_cli.model_switch import _unknown_provider_message
+    from hermes_agent.hermes_cli.auth import AuthError, resolve_provider
+    from hermes_agent.hermes_cli.auth_commands import _unknown_provider_exit
+    from hermes_agent.hermes_cli.model_switch import _unknown_provider_message
 
     with pytest.raises(AuthError) as err:
         resolve_provider("acme-acp")
@@ -214,7 +214,7 @@ def test_runtime_resolution_installs_the_plugin_first_for_a_home_using_it(acme_r
 
 @pytest.mark.parametrize("plugin_dir", [False, True])  # absent, or installed but not loaded (disabled/failed)
 def test_launch_env_is_refused_by_env_writers_while_no_profile_declares_it(acme_row, monkeypatch, plugin_dir):
-    from hermes_cli.config import validate_env_var_name_for_write
+    from hermes_agent.hermes_cli.config import validate_env_var_name_for_write
     from hermes_agent import providers
     monkeypatch.setattr(lcm, "LEFT_CORE", (replace(ACME, profile_env=("ACME_CLI_PATH", "ACME_BASE_URL"),
                                                    launch_env=("ACME_CLI_PATH",)),))
@@ -228,7 +228,7 @@ def test_launch_env_is_refused_by_env_writers_while_no_profile_declares_it(acme_
 
 @pytest.mark.parametrize("plugin_dir", [False, True])
 def test_copilot_launch_names_stay_refused_and_its_base_url_writable(tmp_path, monkeypatch, plugin_dir):
-    from hermes_cli.config import validate_env_var_name_for_write
+    from hermes_agent.hermes_cli.config import validate_env_var_name_for_write
     from hermes_agent import providers
     home = _home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -245,7 +245,7 @@ def test_models_dev_never_stands_in_for_a_provider_whose_plugin_left_core(acme_r
     """models.dev lists the vendor's endpoint under the same id: resolving it there would send the user's
     raw token to that endpoint through a generic client the plugin never was."""
     from types import SimpleNamespace
-    import hermes_cli.providers as hp
+    import hermes_agent.hermes_cli.providers as hp
     monkeypatch.setattr(hp, "_models_dev_info", lambda name, allow_network=True: SimpleNamespace(
         env=("ACME_TOKEN",), name="Acme", api="https://api.acme.test", doc="") if name == "acme" else None)
     assert hp.get_provider("acme") is None

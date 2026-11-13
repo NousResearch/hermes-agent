@@ -1,7 +1,7 @@
 """Single-query (``-q`` / one-shot) helpers: kanban goal loops, exit-code mapping, quiet single-query runner, image routing, signal handlers and the single-query mode orchestrator.
 
 Split out of ``cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
-cli-level names through ``from cli import ...`` at call time so facade monkeypatch seams hold.
+cli-level names through ``from hermes_agent.cli import ...`` at call time so facade monkeypatch seams hold.
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Any
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("cli")
+logger = logging.getLogger("hermes_agent.cli")
 
 if TYPE_CHECKING:
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
 
 def _int_or(value, default: int) -> int:
@@ -39,7 +39,7 @@ def _interrupt_agent_for_signal(agent, signum) -> None:
     The grace lets the agent thread kill the tool's setsid subprocess group before the
     main thread unwinds (else an orphan child). Never raises.
     """
-    from cli import _float_env
+    from hermes_agent.cli import _float_env
     try:
         if agent is not None:
             request_hard_interrupt(agent, f"received signal {signum}")
@@ -57,7 +57,7 @@ def _run_kanban_goal_loop_q(cli: HermesCLI, first_response: str, run_turn=None, 
     passes ``cli.chat`` so every follow-up turn keeps the tool activity feed that the Kanban
     worker log is made of. The caller swallows all errors: a broken loop must never wedge a worker.
     """
-    from cli import _int_or, _sync_cli_session_id_from_agent
+    from hermes_agent.cli import _int_or, _sync_cli_session_id_from_agent
     task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
     if not task_id:
         return
@@ -66,9 +66,9 @@ def _run_kanban_goal_loop_q(cli: HermesCLI, first_response: str, run_turn=None, 
     if raw_run_id and worker_run_id is None:
         logger.warning("invalid HERMES_KANBAN_RUN_ID=%r", raw_run_id)
 
-    from hermes_cli import kanban_db as _kb
-    from hermes_cli import kanban_db_connect as _kbc
-    from hermes_cli.goals import run_kanban_goal_loop as _run_loop, DEFAULT_MAX_TURNS as _DEF_TURNS
+    from hermes_agent.hermes_cli import kanban_db as _kb
+    from hermes_agent.hermes_cli import kanban_db_connect as _kbc
+    from hermes_agent.hermes_cli.goals import run_kanban_goal_loop as _run_loop, DEFAULT_MAX_TURNS as _DEF_TURNS
 
     # Goal text = title + body (the acceptance criteria the judge evaluates against).
     with _kbc.connect_closing() as conn:
@@ -114,7 +114,7 @@ def _run_kanban_goal_loop_chat(cli: HermesCLI, first_response: str) -> None:
     """``-q`` worker variant: follow-up turns go through ``cli.chat`` (tool feed stays on stdout,
     which is the Kanban worker log) and judge verdicts are printed there too, so a goal_mode card's
     log reads like any other worker's instead of staying blank until the final answer."""
-    from cli import _run_kanban_goal_loop_q
+    from hermes_agent.cli import _run_kanban_goal_loop_q
 
     def _log(msg: str) -> None:
         logger.info("%s", msg)
@@ -132,7 +132,7 @@ def _sync_cli_session_id_from_agent(cli) -> None:
 # ``failure_reason`` values that say nothing about the task itself: the provider is walled,
 # down or unreachable, or the account is out of credit, so a Kanban worker signals "try
 # later" instead of "I failed" and the dispatcher does not spend the task's retry budget on it.
-from hermes_cli.turn_exit import TRANSIENT_PROVIDER_REASONS as _TRANSIENT_PROVIDER_REASONS
+from hermes_agent.hermes_cli.turn_exit import TRANSIENT_PROVIDER_REASONS as _TRANSIENT_PROVIDER_REASONS
 
 
 # ``failure_reason`` values a retry can never heal: the credential was rejected, the model does
@@ -142,7 +142,7 @@ from hermes_cli.turn_exit import TRANSIENT_PROVIDER_REASONS as _TRANSIENT_PROVID
 # ``kanban.failure_limit`` is spent. ``billing`` stays transient: credit comes back.
 # ``upstream_blocked`` (a WAF/CDN refusing the SDK's User-Agent) is terminal too: only a
 # header change heals it, never a retry.
-from hermes_cli.turn_exit import TERMINAL_PROVIDER_REASONS as _TERMINAL_PROVIDER_REASONS
+from hermes_agent.hermes_cli.turn_exit import TERMINAL_PROVIDER_REASONS as _TERMINAL_PROVIDER_REASONS
 
 
 def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
@@ -167,10 +167,10 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     either — the exit mapping and the recovery gate must agree on what a worker is.
     """
     # Late-bound through the ``cli`` facade so a patched ``cli._*_PROVIDER_REASONS`` holds.
-    from cli import _TERMINAL_PROVIDER_REASONS as terminal_reasons
-    from cli import _TRANSIENT_PROVIDER_REASONS as transient_reasons
+    from hermes_agent.cli import _TERMINAL_PROVIDER_REASONS as terminal_reasons
+    from hermes_agent.cli import _TRANSIENT_PROVIDER_REASONS as transient_reasons
     from hermes_agent.agent.kanban_turn_recovery import kanban_task_id
-    from hermes_cli.turn_exit import turn_exit_code
+    from hermes_agent.hermes_cli.turn_exit import turn_exit_code
     return turn_exit_code(
         result, kanban_worker=kanban_task_id() is not None,
         credentials_rate_limited=credentials_rate_limited,
@@ -187,10 +187,10 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     Nested Bot Mode notifies bind this session's key (not the dispatcher's) and resume in-process
     before stdout is printed, so a teammate reply is the quiet run's final answer rather than a
     stranded receipt."""
-    from cli import _emit_interrupted_session_end, _run_kanban_goal_loop_q, _single_query_exit_code, _sync_cli_session_id_from_agent
+    from hermes_agent.cli import _emit_interrupted_session_end, _run_kanban_goal_loop_q, _single_query_exit_code, _sync_cli_session_id_from_agent
     from hermes_agent.agent.interrupt_compat import _accepts_keyword
     from hermes_agent.agent.turn_author import take_turn_author_from_env
-    from hermes_cli.quiet_single_query import (
+    from hermes_agent.hermes_cli.quiet_single_query import (
         bind_quiet_session_key, continue_quiet_notify_completions, exit_single_query, quiet_notify_linger_seconds, take_turn_report_path, write_turn_report,
     )
 
@@ -339,7 +339,7 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
     try:
         from hermes_agent.agent.image_routing import build_native_content_parts as _build_parts
         from hermes_agent.agent.image_routing import decide_image_input_mode
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         _img_mode = decide_image_input_mode(
             (cli.provider or "").strip(), (cli.model or "").strip(), load_config(),
@@ -377,8 +377,8 @@ def _collect_kanban_task_images(single_query_images):
     if not _kanban_task_id:
         return single_query_image_urls
     try:
-        from hermes_cli import kanban_db as _kb
-        from hermes_cli import kanban_db_connect as _kbc
+        from hermes_agent.hermes_cli import kanban_db as _kb
+        from hermes_agent.hermes_cli import kanban_db_connect as _kbc
         from hermes_agent.agent.image_routing import extract_image_refs as _extract_refs
 
         with _kbc.connect_closing() as _conn:
@@ -405,7 +405,7 @@ def _install_single_query_signal_handlers(cli):
     A plain KeyboardInterrupt only unwinds the main thread, so tool worker threads
     would orphan the setsid child; the interrupt + grace window lets them kill it.
     """
-    from cli import _arm_exit_watchdog_on_shutdown_signal, _flush_logging_and_stdio, _flush_one_shot_session_store, _interrupt_agent_for_signal
+    from hermes_agent.cli import _arm_exit_watchdog_on_shutdown_signal, _flush_logging_and_stdio, _flush_one_shot_session_store, _interrupt_agent_for_signal
     import signal as _signal
 
     def _kill_foreground_and_exit(*_):
@@ -444,7 +444,7 @@ def _install_single_query_signal_handlers(cli):
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
             # The one-shot exit's shared_metrics shutdown_runtimes is skipped too: bounded inside the deadman.
-            from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+            from hermes_agent.hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
             flush_before_hard_exit()
             _flush_logging_and_stdio()
             _kill_foreground_and_exit()
@@ -473,7 +473,7 @@ def _configure_quiet_agent(agent) -> None:
 def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
     ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
-    from cli import _SeededQueryMessage, _collect_kanban_task_images, _collect_query_images, _configure_quiet_agent, _finalize_single_query, _route_single_query_images, _run_kanban_goal_loop_chat, _run_quiet_single_query, _should_seed_interactive, _single_query_exit_code
+    from hermes_agent.cli import _SeededQueryMessage, _collect_kanban_task_images, _collect_query_images, _configure_quiet_agent, _finalize_single_query, _route_single_query_images, _run_kanban_goal_loop_chat, _run_quiet_single_query, _should_seed_interactive, _single_query_exit_code
     if _should_seed_interactive(query, image, quiet, oneshot):
         seeded_query, seeded_images = _collect_query_images(query, image)
         logger.info(
@@ -494,7 +494,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     # isn't engaged) and takes the deterministic approvals.single_query_mode path instead of waiting the
     # full timeout. See #86878.
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
-    from hermes_cli.quiet_single_query import exit_single_query
+    from hermes_agent.hermes_cli.quiet_single_query import exit_single_query
     if os.environ.get("HERMES_KANBAN_TASK"):
         from hermes_agent.tools.kanban_tools import register_current_worker_from_env
         if not register_current_worker_from_env():
@@ -506,7 +506,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     try:
         query, single_query_images = _collect_query_images(query, image)
         single_query_image_urls = _collect_kanban_task_images(single_query_images)
-        from hermes_cli.observability.shared_metrics_startup import record_cli_one_shot_ready
+        from hermes_agent.hermes_cli.observability.shared_metrics_startup import record_cli_one_shot_ready
         record_cli_one_shot_ready()
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
@@ -515,7 +515,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             if stream_json:
                 # Built BEFORE credentials/agent init so a failed start still closes the protocol
                 # (init + result) instead of exiting 1 with an empty stdout.
-                from hermes_cli.stream_json import StreamJsonEmitter
+                from hermes_agent.hermes_cli.stream_json import StreamJsonEmitter
                 emitter = StreamJsonEmitter(model=getattr(cli, "model", "") or "", session_id=cli.session_id or "")
             if cli._ensure_runtime_credentials():
                 effective_query: Any = _route_single_query_images(

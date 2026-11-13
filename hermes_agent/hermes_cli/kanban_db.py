@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
+from hermes_agent.hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from hermes_agent.toolsets import get_toolset_names
 from utils import unlink_files_older_than
 
@@ -156,7 +156,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
     run under the SQLite write lock, always see durable state); failures are
     swallowed so an observer can never break a transition."""
     try:
-        from hermes_cli.lifecycle import invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import invoke_hook
 
         invoke_hook(event, task_id=task_id, profile_name=_hook_profile_name(), **fields)
     except Exception as exc:  # pragma: no cover - defensive
@@ -173,7 +173,7 @@ def _fire_task_hook(event: str, task: Optional[Task], task_id: str, run_id: Opti
 
 def _hook_profile_name() -> str:
     """Active profile for hook payloads; ``"default"`` when it cannot be resolved."""
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
 
     try:
         return get_active_profile_name()
@@ -185,7 +185,7 @@ def _kanban_observer_consumed(event: str) -> bool:
     """Hot-path short-circuit: skip payload assembly when nothing subscribes.
     Inspection failure counts as unconsumed (dropping an observer is always safe)."""
     try:
-        from hermes_cli.lifecycle import has_hook
+        from hermes_agent.hermes_cli.lifecycle import has_hook
 
         return has_hook(event)
     except Exception:  # pragma: no cover - defensive
@@ -254,7 +254,7 @@ def _fire_dispatch_tick_hook(
     if not _kanban_observer_consumed("on_kanban_dispatch_tick"):
         return
     try:
-        from hermes_cli.lifecycle import invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import invoke_hook
 
         profile_name = _hook_profile_name()
         if board is None:
@@ -1023,7 +1023,7 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     """Lowercase-assignee normalization for Kanban rows (dashboard/CLI parity)."""
     if assignee is None:
         return None
-    from hermes_cli.profiles import normalize_profile_name
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name
 
     return normalize_profile_name(assignee)
 
@@ -1043,7 +1043,7 @@ def _resolve_project_link(
     project_id = (str(project_id).strip() or None) if project_id is not None else None
     if not project_id:
         return None, None, None, workspace_kind
-    from hermes_cli import projects_db as _pdb
+    from hermes_agent.hermes_cli import projects_db as _pdb
 
     project_repo: Optional[str] = None
     try:
@@ -1184,8 +1184,8 @@ def create_task(
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
     """
-    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
-    from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_agent.hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+    from hermes_agent.hermes_cli.kanban_pr_acceptance import validate_contract
 
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
@@ -1335,7 +1335,7 @@ def _board_meta_for(board: Optional[str]) -> dict:
 
 
 def _project_branch_name(project_obj: Any, task_id: str, title: Optional[str]) -> Optional[str]:
-    from hermes_cli import projects_db as _pdb
+    from hermes_agent.hermes_cli import projects_db as _pdb
 
     try:
         return _pdb.branch_name_for(project_obj, task_id, title=title or "")
@@ -2353,7 +2353,7 @@ def release_stale_claims(
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill, reclaim_error
+    from hermes_agent.hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill, reclaim_error
     for row in stale:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
@@ -2664,7 +2664,7 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
-    from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
+    from hermes_agent.hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(
@@ -3901,7 +3901,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     task = get_task(conn, task_id)
     if not task:
         raise ValueError(f"unknown task {task_id}")
-    from hermes_cli.kanban_db_context import (
+    from hermes_agent.hermes_cli.kanban_db_context import (
         _ctx_attachments, _ctx_comments, _ctx_header, _ctx_parent_results, _ctx_prior_attempts,
         _ctx_role_history,
     )
@@ -4074,7 +4074,7 @@ def read_worker_log(
 
 def list_profiles_on_disk() -> list[str]:
     """Profiles with a ``config.yaml`` plus the implicit ``default``; reads paths
-    directly to avoid importing ``hermes_cli.profiles`` at startup."""
+    directly to avoid importing ``hermes_agent.hermes_cli.profiles`` at startup."""
     try:
         from hermes_constants import get_default_hermes_root
         default_root = get_default_hermes_root()
@@ -4195,7 +4195,7 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
-from hermes_cli.kanban_db_boards import (
+from hermes_agent.hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,
     board_metadata_path,
@@ -4205,18 +4205,18 @@ from hermes_cli.kanban_db_boards import (
     remove_board,
     write_board_metadata,
 )
-from hermes_cli.kanban_db_connect import (
+from hermes_agent.hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
     write_txn,
 )
-from hermes_cli.kanban_db_workspace import (
+from hermes_agent.hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
 )
-from hermes_cli.kanban_db_dispatch import (
+from hermes_agent.hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,

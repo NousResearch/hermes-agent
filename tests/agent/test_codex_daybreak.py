@@ -194,8 +194,8 @@ def test_delegation_sees_the_owners_gateway_chat_with_the_switch_off(tmp_path, m
 
 
 def test_model_menu_capability_marks_only_listed_subscription_models(catalog, monkeypatch):
-    from hermes_cli import auth_codex
-    from hermes_cli.inventory import _apply_capabilities
+    from hermes_agent.hermes_cli import auth_codex
+    from hermes_agent.hermes_cli.inventory import _apply_capabilities
 
     monkeypatch.setattr(auth_codex, "resolve_codex_runtime_credentials", lambda **kw: {"api_key": token("A")})
 

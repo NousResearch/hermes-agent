@@ -1,4 +1,4 @@
-"""Tests for the startup security posture audit (hermes_cli.security_audit_startup)."""
+"""Tests for the startup security posture audit (hermes_agent.hermes_cli.security_audit_startup)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.security_audit_startup as audit
+import hermes_agent.hermes_cli.security_audit_startup as audit
 
 
 @pytest.fixture(autouse=True)

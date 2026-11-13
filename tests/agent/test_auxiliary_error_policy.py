@@ -233,7 +233,7 @@ def test_spent_parameter_rung(retry_errors, attempts, fell_back):
 def test_each_failed_request_is_classified_once(monkeypatch, is_async, stream):
     """The primary, its same-provider retry and the fallback candidate fail: one hook call per failed request."""
     seen = []
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
     with patch("hermes_agent.agent.auxiliary_client._aux_progress_active", return_value=stream):
         outcome = run_ladder([sdk(503, "down"), sdk(503, "down")], is_async=is_async,
                              fallback_error=[sdk(404, "model not found"), sdk(404, "model not found")])
@@ -245,7 +245,7 @@ def test_pool_recovery_reuses_the_failed_requests_verdict(monkeypatch, route_tag
     """Credential-pool recovery on an auto route sizes the bench from the verdict the ladder holds: one hook
     call per failed request, whatever label the client carries."""
     seen = []
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
     client = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="sk-primary")
     client._hermes_aux_effective_provider = route_tag
     client._hermes_aux_backend_provider = None
@@ -265,7 +265,7 @@ def test_opencode_go_upstream_throttle_keeps_the_key_on_an_unnamed_route(monkeyp
     from hermes_agent.agent import auxiliary_client as aux
 
     seen, real_pool_provider = [], aux._recoverable_pool_provider
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["error"]))
     go_url = "https://opencode.ai/zen/go/v1"
     client = MagicMock(base_url=go_url, api_key="sk-0", _hermes_aux_effective_provider=None,
                        _hermes_aux_backend_provider=None)
@@ -332,8 +332,8 @@ def test_a_custom_zen_endpoints_payment_error_benches_that_endpoint_not_go(is_as
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_observers_see_the_providers_own_error_when_its_stream_was_judged(monkeypatch, is_async):
     """A stream negotiation is classified where it failed; ``post_auxiliary_call`` still reports the provider's error."""
-    from hermes_cli import plugins
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from hermes_agent.hermes_cli import plugins
+    from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     manager = PluginManager()
     monkeypatch.setattr(plugins, "_plugin_manager", manager)
@@ -348,7 +348,7 @@ def test_observers_see_the_providers_own_error_when_its_stream_was_judged(monkey
 
 
 def test_plugin_verdict_steers_and_retryable_false_is_honoured(monkeypatch):
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     verdict = {"reason": FailoverReason.server_error, "retryable": False, "should_fallback": True}
     monkeypatch.setattr(plugins, "get_plugin_error_classification",
@@ -384,7 +384,7 @@ def test_streamed_certificate_failure_is_not_resent_non_streaming(is_async):
     ({"reason": FailoverReason.rate_limit, "retryable": False, "should_rotate_credential": True}, (1, True)),
 ], ids=["should-fallback-false", "rate-limit-retryable-false"])
 def test_plugin_hook_overrides_win_over_aux_defaults(monkeypatch, hook, expected):
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     monkeypatch.setattr(plugins, "get_plugin_error_classification", lambda **kw: hook)
     outcome = run_ladder(sdk(400, "plugin-owned failure"))
@@ -505,7 +505,7 @@ def test_refreshed_nous_client_under_auto_classifies_as_nous(monkeypatch, is_asy
     from hermes_agent.agent import auxiliary_client as aux
 
     seen = []
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["provider"]))
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["provider"]))
     with patch.object(aux, "_resolve_nous_runtime_api", return_value=("sk-fresh", "https://inference-api.nousresearch.com/v1")):
         client, _model = aux._refresh_nous_auxiliary_client(cache_provider="auto", model="m", async_mode=is_async)
     aux._classify_failure(sdk(500, "down"), "auto", client, "m")
@@ -675,7 +675,7 @@ def test_refreshed_candidates_bad_answer_is_not_a_stale_credential(body):
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_a_rebuilt_retrys_invalid_answer_is_classified_on_the_request_it_sent(monkeypatch, is_async):
     seen = []
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["model"]))
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_plugin_error_classification", lambda **kw: seen.append(kw["model"]))
     create = AsyncMock if is_async else MagicMock
     first = MagicMock(base_url="https://openrouter.ai/api/v1", api_key="k")
     first.chat.completions.create = create(side_effect=sdk(401, "invalid api key"))

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import uninstall
+from hermes_agent.hermes_cli import uninstall
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def layout(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
     monkeypatch.setattr(uninstall, "get_project_root", lambda: source)
     monkeypatch.setattr(uninstall, "get_hermes_home", lambda: home)
-    monkeypatch.setattr("hermes_cli.gui_uninstall.desktop_userdata_dir", lambda: userdata)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gui_uninstall.desktop_userdata_dir", lambda: userdata)
     return home, witnesses, data
 
 
@@ -95,7 +95,7 @@ def test_named_home_does_not_erase_siblings_or_desktop_data(layout, monkeypatch)
 
 
 def test_directory_replaced_with_a_link_does_not_expand_removal(layout, tmp_path):
-    from hermes_cli.data_cleanup import plan_data_removal, remove_data
+    from hermes_agent.hermes_cli.data_cleanup import plan_data_removal, remove_data
 
     home, _, _ = layout
     original = home / "workspace"
@@ -119,7 +119,7 @@ def test_directory_replaced_with_a_link_does_not_expand_removal(layout, tmp_path
 
 def test_data_only_preserves_the_containing_bundled_application(layout, monkeypatch):
     import json
-    from hermes_cli.bundled_app import PAYLOAD_DIR_NAME
+    from hermes_agent.hermes_cli.bundled_app import PAYLOAD_DIR_NAME
 
     home, _, data = layout
     app = home / "installed-app"

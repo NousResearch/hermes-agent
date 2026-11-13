@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import gateway, profiles
+from hermes_agent.hermes_cli import gateway, profiles
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -78,8 +78,8 @@ def test_rename_moves_the_s6_slot_to_the_new_name(profile_env, monkeypatch):
             self.slots.discard(name)
 
     s6 = _S6()
-    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "s6")
-    monkeypatch.setattr("hermes_cli.service_manager.get_service_manager", lambda: s6)
+    monkeypatch.setattr("hermes_agent.hermes_cli.service_manager.detect_service_manager", lambda: "s6")
+    monkeypatch.setattr("hermes_agent.hermes_cli.service_manager.get_service_manager", lambda: s6)
     profiles.create_profile("coder", no_alias=True)
 
     profiles.rename_profile("coder", "dev")

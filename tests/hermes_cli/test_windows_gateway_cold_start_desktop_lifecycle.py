@@ -22,12 +22,12 @@ import json
 
 import pytest
 
-from hermes_cli import gateway as hermes_gateway
-from hermes_cli import gateway_windows
-from hermes_cli import main as cli_main
-from hermes_cli import process_identity
-from hermes_cli import update_cmd
-from hermes_cli import update_cmd_windows
+from hermes_agent.hermes_cli import gateway as hermes_gateway
+from hermes_agent.hermes_cli import gateway_windows
+from hermes_agent.hermes_cli import main as cli_main
+from hermes_agent.hermes_cli import process_identity
+from hermes_agent.hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd_windows
 
 
 def _live_serve_ledger_entry() -> dict:
@@ -78,7 +78,7 @@ def test_ledger_live_serve_with_live_spawner_owns_lifecycle(monkeypatch):
         process_identity, "ledger_entries", lambda **_k: [_live_serve_ledger_entry()]
     )
     monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: False)
-    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", list)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_windows._detect_venv_python_processes", list)
 
     assert update_cmd._desktop_owns_gateway_lifecycle() is True
 
@@ -87,7 +87,7 @@ def test_orphaned_control_plane_does_not_own_lifecycle(monkeypatch):
         process_identity, "ledger_entries", lambda **_k: [_live_serve_ledger_entry()]
     )
     monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: True)
-    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", list)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_windows._detect_venv_python_processes", list)
 
     assert update_cmd._desktop_owns_gateway_lifecycle() is False
 
@@ -95,11 +95,11 @@ def test_orphaned_control_plane_does_not_own_lifecycle(monkeypatch):
 def _running_beta_pause_fixture(monkeypatch, tmp_path):
     """Windows update with ``beta`` (PID 777) running and the default profile home at ``tmp_path``."""
     from types import SimpleNamespace
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
 
     homes = {"default": tmp_path, "beta": tmp_path / "profiles" / "beta"}
     homes["beta"].mkdir(parents=True)
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
     beta = SimpleNamespace(pid=777, profile="beta")

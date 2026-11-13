@@ -128,7 +128,7 @@ def _connect() -> sqlite3.Connection:
 def open_state_db(path: Path, db_label: str) -> sqlite3.Connection:
     """A short-lived writer connection to a profile's ``state.db`` that never resurrects a removed named profile
     (#123265) and keeps the file and its sidecars owner-only (0600, as ``hermes_agent.hermes_state.SessionDB`` does)."""
-    from hermes_cli.sqlite_util import open_db
+    from hermes_agent.hermes_cli.sqlite_util import open_db
     from hermes_constants import mkdir_under_hermes_home
     from hermes_agent.hermes_state import _secure_state_db_files
 
@@ -158,7 +158,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 def _transaction():
-    from hermes_cli.sqlite_util import transaction
+    from hermes_agent.hermes_cli.sqlite_util import transaction
 
     return transaction(_connect())
 
@@ -936,7 +936,7 @@ def _batch_status(combined: dict[str, Any]) -> str:
 
 
 def _dispatch(**kwargs) -> dict[str, Any]:
-    from hermes_cli.backend_retirement import retirement
+    from hermes_agent.hermes_cli.backend_retirement import retirement
 
     with retirement.work() as admitted:
         if not admitted:
@@ -1018,7 +1018,7 @@ def _dispatch_admitted(
         finally:
             _finalize(delegation_id, result, status)
 
-    from hermes_cli.backend_retirement import retirement
+    from hermes_agent.hermes_cli.backend_retirement import retirement
 
     # The outer dispatch reservation prevents a freeze during this handoff. Retain a worker
     # reservation too: the stall monitor may finalize its registry record before it really exits.

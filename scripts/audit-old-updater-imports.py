@@ -42,11 +42,11 @@ are recorded. Unresolved expressions remain visible for manual review:
   This is the most dangerous load in the whole flow and it looks like
   nothing to an import walker. ``_UPDATE_RUNTIME_RELOAD_MODULES`` and
   ``_reload_config_modules`` reload ``hermes_constants``,
-  ``hermes_cli.config`` and friends by name. Treated as a whole-module
+  ``hermes_agent.hermes_cli.config`` and friends by name. Treated as a whole-module
   requirement.
 * ``getattr(module, "name")`` — a symbol requirement with no import
   statement. ``managed_uv._windows_runtime_holders`` looks up
-  ``_detect_venv_python_processes`` on ``hermes_cli.main`` this way, and
+  ``_detect_venv_python_processes`` on ``hermes_agent.hermes_cli.main`` this way, and
   silently refuses the update when it is absent.
 * ``importlib.import_module(x)`` with a non-literal argument — cannot be
   resolved statically. Reported as UNRESOLVED rather than ignored.
@@ -218,7 +218,7 @@ def _called_names(node: ast.AST) -> set[str]:
 
     Covers the three shapes this codebase uses: ``foo()``,
     ``module.foo()``, and ``_m().foo()`` — update_cmd's lazy
-    ``hermes_cli.main`` handle, which re-exports these same helpers.
+    ``hermes_agent.hermes_cli.main`` handle, which re-exports these same helpers.
     Attribute calls that are not ours simply find no match in the
     module's own function table.
     """
@@ -413,7 +413,7 @@ def _requirements_in(
 def _module_of(node: ast.AST) -> str | None:
     """Best-effort: which module a getattr target refers to.
 
-    Handles the one real shape — ``sys.modules.get("hermes_cli.main")``
+    Handles the one real shape — ``sys.modules.get("hermes_agent.hermes_cli.main")``
     stashed in a local and then getattr'd (managed_uv does exactly this).
     """
     if isinstance(node, ast.Call):
@@ -1085,7 +1085,7 @@ def resolve_in_tree(module: str, symbol: str | None, root: Path) -> tuple[bool, 
     if symbol is None:
         return True, ""
 
-    # `from hermes_cli import gateway_windows` names a SUBMODULE, not an
+    # `from hermes_agent.hermes_cli import gateway_windows` names a SUBMODULE, not an
     # attribute of the package body.
     submodule = root / rel / symbol
     if submodule.with_suffix(".py").is_file() or (submodule / "__init__.py").is_file():

@@ -1,6 +1,6 @@
 """Tests for shared user prompt input sanitization."""
 
-from hermes_cli.input_sanitize import (
+from hermes_agent.hermes_cli.input_sanitize import (
     collapse_repeated_input_artifacts,
     sanitize_user_prompt_text,
     strip_leaked_bracketed_paste_wrappers,

@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from hermes_agent.gateway.stream_consumer_fences import ensure_closed_code_fences
-from hermes_cli.observability.shared_metrics_gateway import stops_reply_clock
+from hermes_agent.hermes_cli.observability.shared_metrics_gateway import stops_reply_clock
 
 logger = logging.getLogger("hermes_agent.gateway.stream_consumer")
 

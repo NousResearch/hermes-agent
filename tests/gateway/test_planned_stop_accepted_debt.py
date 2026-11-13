@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.gateway import status
-from hermes_cli import update_pause_record as pause_record
+from hermes_agent.hermes_cli import update_pause_record as pause_record
 
 pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes stand in for Windows refusals"),

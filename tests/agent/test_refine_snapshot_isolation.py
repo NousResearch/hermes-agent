@@ -60,9 +60,9 @@ def _assert_isolated(live, snapshot):
 
 
 def test_cli_refine_snapshot_does_not_alias_live_history(monkeypatch):
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 
-    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda *a, **k: None, raising=False)
     agent = _agent_with_real_chokepoint()
     cli = object.__new__(CLICommandsMixin)
     cli.agent = agent
@@ -78,9 +78,9 @@ def test_cli_refine_snapshot_does_not_alias_live_history(monkeypatch):
 def test_cli_refine_reaches_spawn_as_explicit(monkeypatch):
     """The explicit /refine path must reach the spawn with ``explicit=True`` so the fork runs
     is marked attended and keeps the full memory operation set (#105921 review)."""
-    from hermes_cli.cli_commands_mixin import CLICommandsMixin
+    from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 
-    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda *a, **k: None, raising=False)
     agent = _agent_with_real_chokepoint()
     cli = object.__new__(CLICommandsMixin)
     cli.agent = agent

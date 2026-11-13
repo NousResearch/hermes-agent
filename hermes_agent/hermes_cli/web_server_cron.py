@@ -10,11 +10,11 @@ import re
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli.config import cfg_get
-from hermes_cli.web_models import CronJobCreate
+from hermes_agent.hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.web_models import CronJobCreate
 
 # Same logger the code used before extraction (record parity).
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 
 def _cron_optional_text(value: Any, *, strip_trailing_slash: bool = False) -> Optional[str]:
@@ -83,8 +83,8 @@ def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_nam
 def _cron_profile_dicts() -> list[dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""
-    from hermes_cli.web_server_profiles import _fallback_profile_dicts
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli.web_server_profiles import _fallback_profile_dicts
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     try:
         return [
             {"name": name, "path": str(home), "is_default": name == "default"}
@@ -103,7 +103,7 @@ def _cron_default_profile() -> str:
     profile-dir equivalent, so it keeps the legacy "default" fallback.
     """
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         name = get_active_profile_name()
     except Exception:
         return "default"
@@ -112,7 +112,7 @@ def _cron_default_profile() -> str:
 
 def _cron_profile_home(profile: Optional[str]) -> tuple[str, Path]:
     """Resolve a profile query value to (profile_name, HERMES_HOME)."""
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     raw = (profile or _cron_default_profile()).strip() or "default"
     try:
         canon = profiles_mod.normalize_profile_name(raw)
@@ -338,7 +338,7 @@ def _gateway_listener(profile: str, home: Path) -> tuple[bool, str, Path]:
     try:
         # The live default gateway's own record, else the explicit flag — never the merged default:
         # an unset gateway.multiplex_profiles is settled by the gateway at boot, not by this process.
-        from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+        from hermes_agent.hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
         multiplex = default_gateway_multiplexes()
     except Exception:  # health: allow BLE001 -- moved from _gateway_fire_endpoint; detection must never fail a request
         _log.debug("gateway api_server: multiplex detection failed; assuming single-profile", exc_info=True)
@@ -353,7 +353,7 @@ def _gateway_listener(profile: str, home: Path) -> tuple[bool, str, Path]:
 
 def _listener_api_server_extra(listener_home: Path) -> dict:
     """``platforms.api_server.extra`` of the listener profile's config ({} when unreadable)."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     try:
         # Profile-scoped read through the CANONICAL loader (managed-scope overlay, ${ENV_VAR}
         # expansion) — never a raw yaml.safe_load (tests/hermes_cli/test_config_read_guard.py).
@@ -391,7 +391,7 @@ def _gateway_api_target(profile: str, home: Path) -> tuple[str, str]:
     multiplex, listener_profile, listener_home = listener
     extra = _listener_api_server_extra(listener_home)
     base = _listener_base(profile, listener, extra)
-    from hermes_cli.auth import has_usable_secret
+    from hermes_agent.hermes_cli.auth import has_usable_secret
     if multiplex and profile != "default":
         # The secret mapping the gateway binds for this profile's requests (its .env plus external
         # secret sources and managed env), which ``_expected_api_key`` reads through get_secret.
@@ -415,7 +415,7 @@ def _listener_base(profile: str, listener: tuple[bool, str, Path], extra: dict) 
     (the adapter's own fallback), then 8642. Loopback is safe: dashboard and gateway share a
     network namespace in every supported deployment.
     """
-    from hermes_cli.auth import has_usable_secret
+    from hermes_agent.hermes_cli.auth import has_usable_secret
     multiplex, listener_profile, listener_home = listener
     try:
         configured = int(extra.get("port") or 0)

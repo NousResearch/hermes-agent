@@ -14,10 +14,10 @@ interpreter, or the restart phase of a pre-hand-off updater imports new code int
   tolerated; every first-party ``ImportError``/``NameError``/``AttributeError``/
   ``SyntaxError``/circular import fails.
 * **Stale graph** – the newest release whose updater still finished in the pre-pull
-  interpreter (no ``hermes_cli/update_handoff.py``) is extracted from git, its updater graph
+  interpreter (no ``hermes_agent/hermes_cli/update_handoff.py``) is extracted from git, its updater graph
   is imported, the checkout is swapped in place, the OLD release's own reload + purge run,
   and every module that updater imports after its purge must import from the new tree.
-* **Entrypoints** – ``python -m hermes_cli.main`` and every ``[project.scripts]`` console
+* **Entrypoints** – ``python -m hermes_agent.hermes_cli.main`` and every ``[project.scripts]`` console
   script run as real sandboxed processes (isolated HOME, only a loopback fake provider)
   with shared invariants: bounded termination, documented rc, no traceback, no
   service-manager calls, no model call unless the command is a turn. ``-z`` must persist
@@ -107,9 +107,9 @@ _PRELOAD = (
 )
 
 # Import sites the pre-hand-off updater (v2026.9.14 update_cmd_fleet/_maint) reaches AFTER
-# its purge in the pre-pull interpreter: the restart phase (``hermes_cli.gateway`` and what
+# its purge in the pre-pull interpreter: the restart phase (``hermes_agent.hermes_cli.gateway`` and what
 # it pulls), the maintenance/summary steps, and the atexit browser cleanup that re-imports
-# ``hermes_agent.tools.browser_tool`` -> ``hermes_cli.config`` (#112522). Entry points that only ever start
+# ``hermes_agent.tools.browser_tool`` -> ``hermes_agent.hermes_cli.config`` (#112522). Entry points that only ever start
 # in a NEW process (hermes_agent.gateway.run, hermes_agent.tui_gateway.entry, hermes_agent.cron.scheduler) are covered by the
 # fresh-interpreter smoke instead.
 _POST_PURGE_IMPORTS = (
@@ -189,7 +189,7 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
     ``__main__`` modules (executed, never imported). Files a parallel test drops at the repo
     root (``_test_*``) and untracked scratch files are not part of a release checkout.
     Directory plugins whose path is not a Python identifier (``plugins/model-providers/nous``)
-    are imported the way ``hermes_cli.plugins_loader`` imports them.
+    are imported the way ``hermes_agent.hermes_cli.plugins_loader`` imports them.
     """
     tracked = _tracked()
     roots = [n for n in _root_py_modules()
@@ -567,7 +567,7 @@ def _copy_tree(src: Path, dst: Path, names: list[str]) -> None:
 def test_pre_handoff_updater_stale_graph_imports_post_update_modules(tmp_path):
     """#114616 / #112522 shape: v2026.9.14's updater purges package prefixes only, keeps root
     modules (``utils``, ``hermes_constants``) cached, then imports new restart-phase code.
-    Retire this leg together with ``hermes_cli/stale_modules.py``."""
+    Retire this leg together with ``hermes_agent/hermes_cli/stale_modules.py``."""
     _sandbox_or_skip()
     found = _pre_handoff_tag()
     if found is None:
@@ -641,7 +641,7 @@ def _console_script(bin_dir: Path, name: str) -> Path:
 
 @dataclass(frozen=True)
 class Entry:
-    via: str                 # "module" (python -m hermes_cli.main) or a [project.scripts] name
+    via: str                 # "module" (python -m hermes_agent.hermes_cli.main) or a [project.scripts] name
     args: tuple[str, ...]
     rcs: frozenset[int]
     prints_version: bool = False
@@ -744,7 +744,7 @@ def test_entrypoint_in_a_fresh_process(case, tmp_path):
     assert not shim_log.exists() or not shim_log.read_text(encoding="utf-8").strip(), (
         f"{case} called a service manager: {shim_log.read_text(encoding='utf-8')}")
     if entry.prints_version:
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli.version_info import get_version_info
         commit = get_version_info().commit
         assert commit and commit[:7] in cp.stdout, describe(cp)
     db = hermes_home / "state.db"

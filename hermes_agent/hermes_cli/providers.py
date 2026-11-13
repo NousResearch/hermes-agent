@@ -133,7 +133,7 @@ _ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
     "lmstudio": ("lmstudio", "lm-studio", "lm_studio"),
     # Local OpenAI-compatible servers route through the generic "custom" provider,
-    # matching hermes_cli.auth and hermes_cli.models so every layer agrees. Issue #62213.
+    # matching hermes_agent.hermes_cli.auth and hermes_agent.hermes_cli.models so every layer agrees. Issue #62213.
     "custom": ("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),
 }
 ALIASES: dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.items() for alias in aliases}
@@ -195,13 +195,13 @@ def _is_static_canonical(key: str) -> bool:
     """Whether *key* is a built-in canonical id (static tables + the auth registry's built-in rows).
 
     Those never take a profile overlay's name, so ``normalize_provider`` answers them without
-    the per-home profile scan. Asked mid-``hermes_cli.auth`` import (plugin discovery), before its
+    the per-home profile scan. Asked mid-``hermes_agent.hermes_cli.auth`` import (plugin discovery), before its
     built-in set exists, only the local tables answer and nothing is cached.
     """
     global _STATIC_CANONICAL_IDS
     if not _STATIC_CANONICAL_IDS:
         try:
-            from hermes_cli.auth import BUILTIN_PROVIDER_IDS
+            from hermes_agent.hermes_cli.auth import BUILTIN_PROVIDER_IDS
         except ImportError:
             return key in HERMES_OVERLAYS or key in _ALIAS_GROUPS
         _STATIC_CANONICAL_IDS = BUILTIN_PROVIDER_IDS | frozenset(_ALIAS_GROUPS) | frozenset(HERMES_OVERLAYS)
@@ -262,7 +262,7 @@ def _plugin_alias_owner(canonical: str) -> str:
     A plugin alias that is also a models.dev provider id (``meta`` -> ``meta-ai``, ``azure`` ->
     ``azure-foundry``) otherwise resolved to the bare models.dev entry whenever the catalog
     loaded and to the plugin when it did not, so ``--provider meta`` persisted a different
-    provider depending on the network. ``hermes_cli.auth.resolve_provider`` already answers the
+    provider depending on the network. ``hermes_agent.hermes_cli.auth.resolve_provider`` already answers the
     plugin id. Built-in ids and overlay profiles keep what ``normalize_provider`` gave them.
     The owner comes from the registry's own lookup, so the bound home's plugin claiming the alias
     wins over a bundled one, exactly as ``get_provider_profile`` would pick it."""
@@ -283,7 +283,7 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     """Look up a built-in provider by id or alias: models.dev catalog merged with the Hermes overlay;
     Hermes-only overlay (nous, openai-codex, …); plugin provider profiles with a concrete endpoint."""
     canonical = _plugin_alias_owner(normalize_provider(name))
-    from hermes_cli.left_core_migration import provider_left_core
+    from hermes_agent.hermes_cli.left_core_migration import provider_left_core
     if provider_left_core(canonical):  # its plugin is not loaded: models.dev must not stand in for it
         return None
     mdev_info = _models_dev_info(canonical, allow_network)
@@ -452,7 +452,7 @@ def _nous_anthropic_wire() -> str:
     """``nous.anthropic_wire``: ``"chat"`` (default), ``"native"``, or ``"auto"`` (chat, then per-session
     promotion decided from the first response; see ``hermes_agent/agent/nous_wire.py``). Anything else reads as ``chat``."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         value = str(((load_config_readonly().get("nous") or {}).get("anthropic_wire")) or "chat").strip().lower()
     except Exception:
         return "chat"
@@ -579,7 +579,7 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
     single-entry rewrites (a Hermes id -> its models.dev id) are correct routing and keep resolving
     through the built-in chain so overlay transports apply."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY as _AUTH_PROVIDER_REGISTRY
         _pcfg = _AUTH_PROVIDER_REGISTRY.get(raw)
         if _pcfg is None:
             return None
@@ -598,7 +598,7 @@ def _lossy_alias_registry_pdef(raw: str, canonical: str) -> Optional[ProviderDef
 
 
 # The local llama.cpp runtime's provider id + aliases: ONE definition, shared by the resolver rung
-# below and the picker's Local row (``hermes_cli/inventory.py``) — the two drifting apart is what
+# below and the picker's Local row (``hermes_agent/hermes_cli/inventory.py``) — the two drifting apart is what
 # made the row's own id unresolvable.
 LLAMACPP_PROVIDER_ID = "llamacpp"
 LLAMACPP_ALIASES: tuple[str, ...] = (LLAMACPP_PROVIDER_ID, "llama.cpp", "llama-cpp")
@@ -608,7 +608,7 @@ def _has_staged_local_models() -> bool:
     """True when GGUFs are staged under the Hermes home's ``models/`` — the model the picker's Local
     row offers, which the runtime seam serves by booting/attaching a server on selection."""
     try:
-        from hermes_cli.local_runtime.bootstrap import staged_model_ids
+        from hermes_agent.hermes_cli.local_runtime.bootstrap import staged_model_ids
         return bool(staged_model_ids())
     except Exception:
         return False
@@ -622,8 +622,8 @@ def _llamacpp_pdef() -> Optional[ProviderDef]:
     made that row offer a provider the resolver rejected ("Unknown provider 'llamacpp'"). Without
     this rung model-switch rejected the very provider the Local Models 'Use' flow writes to config."""
     try:
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+        from hermes_agent.hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
         endpoint = resolve_llamacpp_endpoint(config=load_config_readonly(), wait_for_boot_s=0)
     except Exception:
         endpoint = None

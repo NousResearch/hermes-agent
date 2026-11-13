@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import plugin_catalog as pc_cat
-from hermes_cli import plugins_cmd as pc
-from hermes_cli import plugins_cmd_catalog as cat
+from hermes_agent.hermes_cli import plugin_catalog as pc_cat
+from hermes_agent.hermes_cli import plugins_cmd as pc
+from hermes_agent.hermes_cli import plugins_cmd_catalog as cat
 from tests.pm._fixtures import client, isolated_python  # pytest fixtures: PM-isolated HOME/HERMES_HOME
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
@@ -81,7 +81,7 @@ def world(request, tmp_path, monkeypatch):
     monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda *a, **k: None})())
 
     def publish_without_environment(*_args, plugins=None, **_kwargs):
-        from hermes_cli.runtime_state import finish_publication
+        from hermes_agent.hermes_cli.runtime_state import finish_publication
         from pm import paths
         from pm.plugin_inputs import StagedUpdate
         from pm.publication import PluginSelection, StagedPlugin
@@ -105,7 +105,7 @@ def world(request, tmp_path, monkeypatch):
 
     def load():
         from hermes_agent.agent import vault_backend_registry as registry
-        from hermes_cli.plugins import PluginManager
+        from hermes_agent.hermes_cli.plugins import PluginManager
 
         (home / "config.yaml").write_text("plugins:\n  enabled: [acme-vault]\nvault:\n  acme: {enabled: true}\n")
         manager = PluginManager(scope_key=str(home))
@@ -178,8 +178,8 @@ def test_verified_entry_installed_with_allow_removed_is_refused(world, caplog):
 def test_bundled_plugins_register_and_project_or_pip_plugins_do_not(tmp_path, source, accepted):
     from hermes_agent.agent import vault_backend_registry as registry
     from hermes_agent.agent.vault_backends.base import LoginBackend
-    from hermes_cli.plugins import PluginContext, PluginManager
-    from hermes_cli.plugins_manifest import PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager
+    from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
 
     class Backend(LoginBackend):
         name, prefix, display_name = "acme", "acme:", "Acme"

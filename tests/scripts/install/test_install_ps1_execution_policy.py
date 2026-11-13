@@ -16,7 +16,7 @@ import sys
 
 import pytest
 
-from hermes_cli._launchers import runtime_command
+from hermes_agent.hermes_cli._launchers import runtime_command
 
 pytestmark = pytest.mark.platforms("windows")
 INSTALLER = Path(__file__).resolve().parents[3] / "scripts" / "install.ps1"

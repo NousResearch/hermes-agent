@@ -2,7 +2,7 @@
 
 Fires once per curator pass, after the per-run report directory is fully
 written, with the ``run.json`` path in the payload. Goes through the
-standard lifecycle hook surface (``hermes_cli.lifecycle.invoke_hook``) so both
+standard lifecycle hook surface (``hermes_agent.hermes_cli.lifecycle.invoke_hook``) so both
 Python plugins and shell-script hooks (``hermes_agent/agent/shell_hooks.py``) receive
 it with no extra wiring. Observer-only: return values are ignored, and a
 failing callback must never break the curator.
@@ -20,14 +20,14 @@ import pytest
 
 
 def _plugins():
-    """Resolve hermes_cli.plugins at call time, not import time.
+    """Resolve hermes_agent.hermes_cli.plugins at call time, not import time.
 
     Some test files (e.g. tests/plugins/test_security_guidance_plugin.py)
-    delete ``hermes_cli.plugins`` from ``sys.modules`` and re-import it,
+    delete ``hermes_agent.hermes_cli.plugins`` from ``sys.modules`` and re-import it,
     which would leave a module-level binding here pointing at a stale
     module object whose PluginManager the curator never sees.
     """
-    return importlib.import_module("hermes_cli.plugins")
+    return importlib.import_module("hermes_agent.hermes_cli.plugins")
 
 
 @pytest.fixture
@@ -115,7 +115,7 @@ def test_a_pass_without_its_own_complete_report_fires_nothing(curator_env, monke
 def test_dry_run_pass_fires_flagged_with_the_hooks_test_payload_shape(curator_env):
     """A preview still announces its report, flagged so observers don't act on it; ``hermes hooks
     test post_curator_run`` sends the same keys a real pass does."""
-    from hermes_cli.hooks import _DEFAULT_PAYLOADS
+    from hermes_agent.hermes_cli.hooks import _DEFAULT_PAYLOADS
     curator = curator_env["curator"]
     received = []
     _plugins().get_plugin_manager()._hooks.setdefault("post_curator_run", []).append(

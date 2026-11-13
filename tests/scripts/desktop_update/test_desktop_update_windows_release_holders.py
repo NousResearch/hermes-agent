@@ -1,7 +1,7 @@
 """#101789 on the real Windows hand-off script: a Desktop swap blocked by a program outside Hermes.
 
 A real ``windows.ps1`` drives a published launcher whose ``hermes update`` is a scripted stand-in
-printing exactly what ``hermes_cli.desktop_release_holders`` prints when Windows refused the
+printing exactly what ``hermes_agent.hermes_cli.desktop_release_holders`` prints when Windows refused the
 promotion rename. The result the relaunched Desktop reads must name that program (message and a
 structured ``release_holders`` list), so the Desktop can offer to close exactly it, and the retry
 that click starts must run under the run id its consent is bound to.
@@ -18,7 +18,7 @@ import time
 import psutil
 import pytest
 
-from hermes_cli.desktop_release_holders import ReleaseHolder, take_consent
+from hermes_agent.hermes_cli.desktop_release_holders import ReleaseHolder, take_consent
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.windows_handoff_support import MARKER, POWERSHELL, _creation_time
 from tests.waiting import wait_until

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 def read_state() -> dict:
-    from hermes_cli.local_runtime.supervisor import state_path
+    from hermes_agent.hermes_cli.local_runtime.supervisor import state_path
 
     try:
         state = json.loads(state_path().read_text(encoding="utf-8-sig"))
@@ -107,8 +107,8 @@ def legacy_recorded_process(state: dict):
     and launch arguments together keep old records usable without adopting an unrelated process.
     """
     from urllib.parse import urlsplit
-    from hermes_cli.local_runtime.bootstrap import models_dir
-    from hermes_cli.local_runtime.supervisor import state_path
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.supervisor import state_path
 
     # A damaged new record must not fall back to weaker legacy evidence.
     if is_modern(state):
@@ -149,7 +149,7 @@ def legacy_recorded_process(state: dict):
 
 def _legacy_orphan_process(state: dict):
     """Windows-only legacy stop recovery after the process identity is established."""
-    from hermes_cli.local_runtime.supervisor import state_path
+    from hermes_agent.hermes_cli.local_runtime.supervisor import state_path
 
     if os.name != "nt":
         return None
@@ -169,7 +169,7 @@ def _legacy_orphan_process(state: dict):
 
 def stop_recorded_orphan() -> bool:
     """Explicit user stop only. Refuse uncertain identity or a living recorded owner."""
-    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor, state_path
+    from hermes_agent.hermes_cli.local_runtime.supervisor import LlamaServerSupervisor, state_path
 
     try:
         state = json.loads(state_path().read_text(encoding="utf-8-sig"))

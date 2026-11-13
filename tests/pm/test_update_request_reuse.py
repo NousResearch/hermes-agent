@@ -20,7 +20,7 @@ from tests.pm._range_server import RangeHandler, dl_server, url
 
 @pytest.fixture
 def upstream(dl_server, monkeypatch):
-    from hermes_cli import urllib_security
+    from hermes_agent.hermes_cli import urllib_security
 
     calls = []
     failures = {}

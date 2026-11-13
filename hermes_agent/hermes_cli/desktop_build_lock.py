@@ -62,7 +62,7 @@ class DesktopBuildLock:
         """Take (or, inside an update, join) the checkout lock before the build lock (C5)."""
         import time
 
-        from hermes_cli import update_lock
+        from hermes_agent.hermes_cli import update_lock
 
         held, wanted = update_lock._HELD, update_lock.checkout_lock_path(self.project_root)
         if held is not None and held["path"] != str(wanted):

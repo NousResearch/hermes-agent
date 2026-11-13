@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 
-from hermes_cli.web_server_idle_exit import busy_ledger
+from hermes_agent.hermes_cli.web_server_idle_exit import busy_ledger
 
 _log = logging.getLogger(__name__)
 

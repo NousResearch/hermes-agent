@@ -455,7 +455,7 @@ def _cmd_purge(args) -> int:
     entry, so even a purge is auditable and blob-recoverable."""
     import shutil
     import time
-    from hermes_cli.config import cfg_get, load_config
+    from hermes_agent.hermes_cli.config import cfg_get, load_config
     from hermes_agent.tools import skill_ledger, skill_usage
     ttl_days = getattr(args, "days", None)
     if ttl_days is None:
@@ -756,7 +756,7 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
 
 
 def cli_main(argv=None) -> int:
-    """Standalone entry (also usable by hermes_cli.main fallthrough)."""
+    """Standalone entry (also usable by hermes_agent.hermes_cli.main fallthrough)."""
     parser = argparse.ArgumentParser(prog="hermes curator")
     register_cli(parser)
     args = parser.parse_args(argv)

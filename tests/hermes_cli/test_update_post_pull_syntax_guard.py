@@ -1,22 +1,22 @@
 """Tests for the post-pull syntax guard in ``hermes update``.
 
 When a bad commit lands on ``main`` with a syntax error in a critical file
-(e.g. orphan merge-conflict markers in ``hermes_cli/config.py``), the CLI
+(e.g. orphan merge-conflict markers in ``hermes_agent/hermes_cli/config.py``), the CLI
 becomes unbootable — every ``hermes`` invocation imports those files at
 startup. The guard validates them after ``git pull`` and rolls back to the
 pre-pull SHA on failure so the user's install stays runnable.
 
 Reference incident: PR #28452 (May 18, 2026) shipped unresolved conflict
-markers in ``hermes_cli/config.py``; users who ran ``hermes update`` in
+markers in ``hermes_agent/hermes_cli/config.py``; users who ran ``hermes update`` in
 the 7-minute window before #28458 landed could not run any ``hermes``
 command afterward.
 """
 
 from __future__ import annotations
 
-from hermes_cli import update_cmd
-from hermes_cli import update_cmd_commit
-from hermes_cli import main
+from hermes_agent.hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd_commit
+from hermes_agent.hermes_cli import main
 import pytest
 import subprocess
 import sys
@@ -155,7 +155,7 @@ def test_a_python_bump_with_no_admitted_interpreter_is_still_syntax_checked(tmp_
     conflict-marker scan, so ``def broken(:`` (broken under every Python) passed preflight and the
     post-pull guard (review N15). With no installed interpreter the target admits, this one judges,
     and the refusal names the Python to install (real git object store, real worktree)."""
-    from hermes_cli import update_cmd_commit as commit
+    from hermes_agent.hermes_cli import update_cmd_commit as commit
 
     monkeypatch.setattr(commit, "_admitted_python", lambda spec: None)
     git, newer, same = _python_bump_repo(tmp_path, "def broken(:\n")
@@ -178,7 +178,7 @@ def test_a_python_bump_with_no_admitted_interpreter_is_still_syntax_checked(tmp_
 def test_a_python_bump_is_judged_by_an_interpreter_the_target_admits(tmp_path, monkeypatch, verdict):
     """Newer grammar this interpreter rejects is admitted when the target's own Python accepts it,
     and refused when that Python rejects it: its verdict, not this compile(), decides (N15)."""
-    from hermes_cli import update_cmd_commit as commit
+    from hermes_agent.hermes_cli import update_cmd_commit as commit
 
     target_python = tmp_path / "python3.99"
     target_python.write_text(f"#!/bin/sh\ncat > /dev/null\necho '{verdict}'\n", encoding="utf-8")
@@ -200,8 +200,8 @@ def test_the_critical_inventory_covers_every_module_the_entry_paths_import_first
     Derived from the real launcher text, ``hermes_bootstrap``'s imports and the recovery closure."""
     import ast
 
-    from hermes_cli import _launchers
-    from hermes_cli._early_recovery import RECOVERY_CLOSURE
+    from hermes_agent.hermes_cli import _launchers
+    from hermes_agent.hermes_cli._early_recovery import RECOVERY_CLOSURE
 
     root = Path(update_cmd.__file__).resolve().parents[1]
 
@@ -230,7 +230,7 @@ def test_the_critical_inventory_covers_every_module_the_entry_paths_import_first
 
 def test_a_malformed_bootstrap_is_refused_before_the_move(tmp_path):
     """The preflight reads the real inventory from the target commit: a broken bootstrap refuses."""
-    from hermes_cli import update_cmd_commit as commit
+    from hermes_agent.hermes_cli import update_cmd_commit as commit
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
@@ -248,7 +248,7 @@ def test_a_malformed_bootstrap_is_refused_before_the_move(tmp_path):
 
 def test_the_preflight_reads_every_critical_file_in_one_git_spawn(tmp_path, monkeypatch):
     """One ``git cat-file --batch`` for pyproject + the whole inventory, not a ``git show`` each."""
-    from hermes_cli import update_cmd_commit as commit
+    from hermes_agent.hermes_cli import update_cmd_commit as commit
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
@@ -273,8 +273,8 @@ def test_the_preflight_reads_every_critical_file_in_one_git_spawn(tmp_path, monk
 def test_the_tree_move_marker_records_the_absolute_git_the_repair_reruns(tmp_path, monkeypatch):
     """The next launch's repair cannot ask ``pm`` for the store git when the move tore a module ``pm``
     imports, so the marker carries the absolute git this run resolved (PATH or ``expose_pm_git``)."""
-    from hermes_cli import _early_recovery
-    from hermes_cli import update_cmd_commit as commit
+    from hermes_agent.hermes_cli import _early_recovery
+    from hermes_agent.hermes_cli import update_cmd_commit as commit
 
     (tmp_path / ".git").mkdir()
     fake = tmp_path / "store" / "git" / "cmd" / ("git.exe" if sys.platform == "win32" else "git")
@@ -296,7 +296,7 @@ def test_the_tree_move_marker_records_the_absolute_git_the_repair_reruns(tmp_pat
 def test_a_python_bump_never_admits_a_conflict_marker(tmp_path, monkeypatch):
     """A release that raises requires-python past this interpreter is excused only syntax a newer
     Python may parse: a merge-conflict marker breaks every Python, before and after the move (N15)."""
-    from hermes_cli import update_cmd_commit as commit
+    from hermes_agent.hermes_cli import update_cmd_commit as commit
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
@@ -325,7 +325,7 @@ def test_a_marker_arm_that_times_out_still_rolls_the_broken_pull_back(tmp_path, 
     """arm_tree_move's ``symbolic-ref`` can raise subprocess.TimeoutExpired; the rollback caught only
     OSError, so a timeout aborted it before any reset and left the broken release checked out
     (review C10). It must roll back unmarked, as for an unwritable marker."""
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True,

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
+from hermes_agent.hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
 from hermes_agent.tools.async_delegation import _new_delegation_id, record_unit_child
 from hermes_agent.tools.delegate_tool_child_run import _attach_child, _close_child, _detach_child, _fabricated_entry, _signal_child_stop
 from hermes_agent.tools.delegate_tool_progress import (

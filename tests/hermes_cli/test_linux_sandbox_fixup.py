@@ -21,7 +21,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from hermes_cli import main_desktop
+from hermes_agent.hermes_cli import main_desktop
 
 # Linux-only subject: run on the real Linux host instead of faking sys.platform.
 pytestmark = pytest.mark.platforms("linux")

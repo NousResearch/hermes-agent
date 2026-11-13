@@ -21,10 +21,10 @@ def turn_exit_code(
     """Preserve completion, interruption and retryable/terminal provider outcomes."""
     if not isinstance(result, dict):
         if credentials_rate_limited and kanban_worker:
-            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+            from hermes_agent.hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE
         if credentials_terminal and kanban_worker:
-            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            from hermes_agent.hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
             return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
         return 1
     if result.get("interrupted"):
@@ -34,10 +34,10 @@ def turn_exit_code(
     if kanban_worker:
         reason = result.get("failure_reason")
         if reason in transient_reasons:
-            from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+            from hermes_agent.hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE
         if reason in terminal_reasons:
-            from hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+            from hermes_agent.hermes_cli.kanban_db import KANBAN_TERMINAL_PROVIDER_EXIT_CODE
             return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
     return 1
 
@@ -48,7 +48,7 @@ def credential_failure_flags(exc) -> dict:
     Same predicates as the one-shot CLI's ``_ensure_runtime_credentials``: a quota/rate-limit
     ``AuthError`` is transient, only an explicit re-authentication requirement is terminal. The
     cause chain is walked because agent construction wraps the resolver's error."""
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_agent.hermes_cli.auth import AuthError, is_rate_limited_auth_error
     seen = set()
     while exc is not None and id(exc) not in seen:
         seen.add(id(exc))

@@ -16,7 +16,7 @@ when it has one, as for native Desktop's download) and the named profile homes i
 belongs to; the resource opener refuses it once one of those homes is missing or
 deleted (``hermes_constants.assert_named_profile_home_live``). A ticket minted for
 a request that presented the browser session token records that credential's
-generation (``hermes_cli.browser_credential``) and redeems only while it is
+generation (``hermes_agent.hermes_cli.browser_credential``) and redeems only while it is
 current, like a socket ticket, so signing out ends it even when the sign-out lands
 while the ticket is being minted; signing out also drops it from the store. A
 ticket minted with any other credential outlives a sign-out. In-memory only:
@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
-from hermes_cli import browser_credential
+from hermes_agent.hermes_cli import browser_credential
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -79,7 +79,7 @@ class _Ticket:
     uses_left: int | None
     authority: FileAuthority
     #: Generation of the browser credential the minting request presented
-    #: (``hermes_cli.browser_credential``; None for any other credential): the ticket redeems only
+    #: (``hermes_agent.hermes_cli.browser_credential``; None for any other credential): the ticket redeems only
     #: while it is current, so a sign-out that lands between the request's admission and the mint
     #: still ends it.
     generation: str | None = None
@@ -96,7 +96,7 @@ def _scope(route_path: str, query: Iterable[tuple[str, str]]) -> _Scope:
 def session_token_of(request: Request) -> str | None:
     """The browser session token *request* was admitted with on the loopback gate, or None when it
     came with any other credential (a sign-in, a native client's grant, a service token)."""
-    from hermes_cli.web_server import _SESSION_HEADER_NAME
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME
 
     if (getattr(request.app.state, "auth_required", False)
             or getattr(request.state, "native_http_principal", None)

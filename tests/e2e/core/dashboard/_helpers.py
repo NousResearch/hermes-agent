@@ -1,6 +1,6 @@
 """Lane-private harness for the dashboard (``hermes dashboard``) E2E suite.
 
-Every scenario drives the REAL web server as a child process: ``python -m hermes_cli.main dashboard
+Every scenario drives the REAL web server as a child process: ``python -m hermes_agent.hermes_cli.main dashboard
 --no-open --skip-build --port 0`` with HOME=<tmp>/home and HERMES_HOME=<tmp>/home/.hermes (profiles
 resolve under $HOME, never the real install), every credential env var stripped, the LLM vendor
 replaced by ``tests.fakes.fake_llm_provider.FakeLLMServer``. The client side speaks only what the SPA
@@ -232,7 +232,7 @@ def make_sandbox(root: Path, names: tuple[str, ...] = ("default",),
 def _assert_profiles_root_under(sb: Sandbox) -> None:
     """The profile root is HOME-anchored: prove it resolves inside the sandbox before any write."""
     probe = subprocess.run(
-        [sys.executable, "-c", "from hermes_cli.profiles import _get_profiles_root as r; print(r())"],
+        [sys.executable, "-c", "from hermes_agent.hermes_cli.profiles import _get_profiles_root as r; print(r())"],
         env=sb.env(), cwd=str(sb.home), capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
         check=False,
     )

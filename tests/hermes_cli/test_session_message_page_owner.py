@@ -29,7 +29,7 @@ def test_message_pages_identify_the_serving_profile(tmp_path, monkeypatch, servi
         finally:
             db.close()
 
-    from hermes_cli.web_routers.sessions import manage_router
+    from hermes_agent.hermes_cli.web_routers.sessions import manage_router
 
     app = FastAPI()
     app.include_router(manage_router)
@@ -74,7 +74,7 @@ def test_message_pages_type_untyped_failed_turn_rows(tmp_path, monkeypatch):
     finally:
         db.close()
 
-    from hermes_cli.web_routers.sessions import manage_router
+    from hermes_agent.hermes_cli.web_routers.sessions import manage_router
 
     app = FastAPI()
     app.include_router(manage_router)

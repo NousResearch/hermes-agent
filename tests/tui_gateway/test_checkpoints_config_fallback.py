@@ -102,7 +102,7 @@ class TestMakeAgentCheckpointsFallback:
             lambda: {**cfg, "model": {"default": "gpt-5.5", "provider": "openai-codex"}},
         )
         monkeypatch.setattr(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda requested=None, target_model=None: {
                 "provider": "openai-codex",
                 "base_url": "https://chatgpt.com/backend-api/codex",

@@ -6,7 +6,7 @@ Keys match exactly except ``details_mode.<section>`` (prefix) and ``_DISPLAY_TOG
 
 import os
 
-from hermes_cli.config_backend import ConfigWriteError
+from hermes_agent.hermes_cli.config_backend import ConfigWriteError
 from hermes_constants import INDICATOR_STYLES
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -26,8 +26,8 @@ class ManagedKeyError(ConfigWriteError):
 def _refuse_managed_keys(*key_paths: str) -> None:
     """Refuse the whole write when the managed scope pins any of these exact dotted leaves, with
     the refusal ``hermes config set`` prints for the same key."""
-    from hermes_cli import managed_scope
-    from hermes_cli.config import _managed_source
+    from hermes_agent.hermes_cli import managed_scope
+    from hermes_agent.hermes_cli.config import _managed_source
     for key_path in key_paths:
         if managed_scope.is_key_managed(key_path):
             raise ManagedKeyError(
@@ -41,14 +41,14 @@ def _refuse_managed_model_pick(reasoning_effort: str = "", result=None) -> None:
     changed), plus agent.reasoning_effort when ``--reasoning`` parses: refused whole before anything
     is switched or persisted. Without ``result`` (before resolution, or a pick queued mid-turn): the
     always-written keys. With the resolved ``result``: its exact plan, conditional clears included."""
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
     from hermes_constants import parse_reasoning_effort
     if not managed_scope.managed_config_keys():
         return
     plan = ["default", "provider", "base_url", "api_mode"]
     if result is not None:
-        from hermes_cli.config import read_user_config_raw
-        from hermes_cli.model_switch import model_selection_config_updates
+        from hermes_agent.hermes_cli.config import read_user_config_raw
+        from hermes_agent.hermes_cli.model_switch import model_selection_config_updates
         plan = list(model_selection_config_updates(result, read_user_config_raw().get("model")))
     effort_key = ("agent.reasoning_effort",) if parse_reasoning_effort(reasoning_effort or None) else ()
     _refuse_managed_keys(*(f"model.{key}" for key in plan), *effort_key)
@@ -58,7 +58,7 @@ def _write_display_sections(*, sections=None, drop_sections=(), **display_fields
     """Persist ``display.<field>`` + ``display.sections`` edits via the raw (uncached) write-back.
     Without a config file (remote backend) they are explicit keyed edits, refused as a whole when
     any key is locked (never the bulk save's silent omission of the locked part)."""
-    from hermes_cli.config_backend import supports_file_tooling
+    from hermes_agent.hermes_cli.config_backend import supports_file_tooling
     _refuse_managed_keys(*(f"display.{field}" for field in display_fields),
                          *(f"display.sections.{name}" for name in (*(sections or {}), *drop_sections)))
     if not supports_file_tooling():
@@ -122,7 +122,7 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     reads every iteration): stash the pick for the NEXT turn start. Selection guards run HERE (the
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
     start) — on a warning nothing is stashed."""
-    from hermes_cli.model_switch import resolve_persist_behavior
+    from hermes_agent.hermes_cli.model_switch import resolve_persist_behavior
     # A persisting pick that writes a pinned key is refused NOW, not acked and dropped at turn start.
     # resolve_persist_behavior, not --global alone: persist_switch_by_default counts. Only the keys it
     # always writes: a conditional clear depends on the route resolved at turn start, where
@@ -158,7 +158,7 @@ def _cfgset_guarded(fn):
     """Setter whose uncaught exception becomes ``_err(rid, 5001, str(e))``. A config backend's
     refusal (locked key, refused value) passes through to ``config.set``'s 4002 answer, like the
     unguarded setters'."""
-    from hermes_cli.config_backend import ConfigWriteError
+    from hermes_agent.hermes_cli.config_backend import ConfigWriteError
 
     def setter(rid, params, key, value, session):
         try:
@@ -179,7 +179,7 @@ def _set_model(rid, params, key, value, session):
         return _err(rid, 4002, "model value required")
     confirmed = bool(params.get("confirm_expensive_model", False))
     if session:
-        from hermes_cli.model_switch import parse_model_switch_args
+        from hermes_agent.hermes_cli.model_switch import parse_model_switch_args
         sid = params.get("session_id", "")
         parsed_flags = parse_model_switch_args(value)
         # Compute-host sessions ALWAYS defer, busy or idle. Their live agent is in
@@ -218,7 +218,7 @@ def _set_model(rid, params, key, value, session):
         # --once keeps its specific 5001; other sessionless model sets 4001 so
         # --global cannot persist profile defaults before session.create (#106397:
         # an older Desktop client sent a fresh-draft pick this way).
-        from hermes_cli.model_switch import parse_model_switch_args
+        from hermes_agent.hermes_cli.model_switch import parse_model_switch_args
         if parse_model_switch_args(str(value)).is_once:
             result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
         else:
@@ -253,7 +253,7 @@ def _set_fast(rid, params, key, value, session):
         return _err(rid, 4002, f"unknown fast mode: {value}")
     overrides = None
     if nv in ("fast", "ultrafast"):
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_agent.hermes_cli.models import resolve_fast_mode_overrides
         if agent is not None:
             target_model = getattr(agent, "model", None)
         else:  # a pre-build session may carry a picked model (desktop draft): validate against THAT
@@ -313,7 +313,7 @@ def _set_verbose(rid, params, key, value, session):
 
 def _set_focus(rid, params, key, value, session):
     # /focus: enabling stashes the configured tool_progress mode and pins it "off"; disabling restores.
-    from hermes_cli.focus_view import FOCUS_TOOL_PROGRESS_MODE, normalize_tool_progress_mode, resolve_focus_arg
+    from hermes_agent.hermes_cli.focus_view import FOCUS_TOOL_PROGRESS_MODE, normalize_tool_progress_mode, resolve_focus_arg
     d_f = _display_cfg()
     cur_focus = bool(d_f.get("focus_view", False))
     action, target = resolve_focus_arg(str(value or ""), cur_focus)
@@ -515,7 +515,7 @@ def _set_cwd(rid, params, key, value, session):
 
 @_cfgset_guarded
 def _set_prompt(rid, params, key, value, session):
-    from hermes_cli.config_backend import supports_file_tooling
+    from hermes_agent.hermes_cli.config_backend import supports_file_tooling
     _refuse_managed_keys("custom_prompt")
     if not supports_file_tooling():  # one explicit key: refused when locked, never silently dropped
         _write_config_changes({}, ("custom_prompt",)) if value == "clear" else _write_config_changes({"custom_prompt": value})
@@ -533,8 +533,8 @@ def _set_prompt(rid, params, key, value, session):
 def _set_personality(rid, params, key, value, session):
     _refuse_managed_keys("display.personality")  # persist_personality writes it without this check
     pname, new_prompt = _validate_personality(str(value or ""), _load_cfg_raw())
-    # Persists via hermes_cli.personality (single owner), never the user-owned system prompt.
-    from hermes_cli.personality import persist_personality
+    # Persists via hermes_agent.hermes_cli.personality (single owner), never the user-owned system prompt.
+    from hermes_agent.hermes_cli.personality import persist_personality
     persist_personality(pname)
     history_reset, info = _apply_personality_to_session(params.get("session_id", ""), session, new_prompt, pname)
     return _kv(rid, key, str(value or "none"), history_reset=history_reset,
@@ -601,7 +601,7 @@ def _(rid, params: dict) -> dict:
         handler = _set_display_toggle
     if handler is None:
         return _err(rid, 4002, f"unknown config key: {key}")
-    from hermes_cli.config_backend import ConfigWriteError
+    from hermes_agent.hermes_cli.config_backend import ConfigWriteError
     try:
         return handler(rid, params, key, value, session)
     except ManagedKeyError as exc:  # administrator-pinned (`hermes config set` refuses it too): nothing saved

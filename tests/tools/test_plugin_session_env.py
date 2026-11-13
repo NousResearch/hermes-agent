@@ -3,8 +3,8 @@
 import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-from hermes_cli import plugins_session_env
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli import plugins_session_env
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 _PLUGIN = """
 PANES = {}
@@ -138,7 +138,7 @@ def _home(root, plugins, isolation="in_process"):
 def test_a_second_plugin_cannot_take_a_declared_name(tmp_path, monkeypatch, isolation):
     """One value per name: the later plugin is refused, naming the holder, instead of a silent last-wins.
     The holder reloads, and its unload frees the name."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
     monkeypatch.setattr(plugins_session_env, "_DECLARED", {})
@@ -178,7 +178,7 @@ def register(ctx):
 def test_one_plugin_declaring_a_name_twice_keeps_the_later_value(tmp_path, monkeypatch, isolation, disposed):
     """Only another plugin is refused: one plugin's overlapping registrations load, the later one's value
     wins, and disposing either one leaves the other's value."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     monkeypatch.setattr(plugins_session_env, "_REGISTRATIONS", {})
     monkeypatch.setattr(plugins_session_env, "_DECLARED", {})

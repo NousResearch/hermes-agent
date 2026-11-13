@@ -98,7 +98,7 @@ def _doctor_runtime(plugin_path: Path):
         stack.close()
         raise
 
-    from hermes_cli.plugins import PluginManager
+    from hermes_agent.hermes_cli.plugins import PluginManager
     from hermes_agent.tools.registry import registry
     entries_before = {entry.name: entry for entry in registry._snapshot_entries()}
     policy_before = dict(registry._plugin_override_policy)
@@ -256,7 +256,7 @@ _STAGING_SKIPPED_DIRS = (".git", "__pycache__", ".pytest_cache")
 
 def _candidate_dirs(path: Path) -> list[Path]:
     """Subdirectories of *path* that could be plugins: not skipped by discovery or the staging copy."""
-    from hermes_cli.plugins_discovery import is_skipped_plugin_dir
+    from hermes_agent.hermes_cli.plugins_discovery import is_skipped_plugin_dir
 
     try:
         return sorted(
@@ -307,7 +307,7 @@ def resolve_plugin_path(target: str | os.PathLike[str] | None = None) -> Path:
     if _is_plugin_id(raw):
         candidates.append(get_hermes_home() / "plugins" / raw)
         try:
-            from hermes_cli.plugins import get_bundled_plugins_dir
+            from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
             bundled = get_bundled_plugins_dir()
             candidates += [bundled / raw, bundled / "platforms" / raw, bundled / "model-providers" / raw]
         except Exception:
@@ -341,7 +341,7 @@ def _check_manifest_v2(report: DoctorReport, manifest: Any) -> None:
     """Manifest v2 checks: versions, deps, pip declarations, config schema."""
     import importlib.metadata
     import re as _re
-    from hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
+    from hermes_agent.hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
     mv = getattr(manifest, "manifest_version", 1)
     if mv > SUPPORTED_MANIFEST_VERSION:
         report.warning(
@@ -390,7 +390,7 @@ def _check_manifest_v2(report: DoctorReport, manifest: Any) -> None:
 
     schema = getattr(manifest, "config_schema", {}) or {}
     if schema:
-        from hermes_cli.plugins import _CONFIG_SCHEMA_TYPES
+        from hermes_agent.hermes_cli.plugins import _CONFIG_SCHEMA_TYPES
         for skey, spec in schema.items():
             stype = spec.get("type") if isinstance(spec, dict) else None
             if stype is not None and str(stype).lower() not in _CONFIG_SCHEMA_TYPES:
@@ -404,7 +404,7 @@ def _check_desktop_half_copy(report: DoctorReport, path: Path) -> None:
     THAT copy, so editing the package in place changes nothing on screen until the copy is refreshed.
     The copy carries a ``.hermes-package.json`` marker whose ``source`` names the folder it came from.
     """
-    from hermes_cli.desktop_plugin_halves import desktop_source
+    from hermes_agent.hermes_cli.desktop_plugin_halves import desktop_source
 
     source_dir = desktop_source(path)
     if source_dir is None:
@@ -452,7 +452,7 @@ def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
             report.registered_hooks = host.registered_hooks
             report.registered_providers = host.registered_providers
 
-            from hermes_cli.plugins import VALID_HOOKS
+            from hermes_agent.hermes_cli.plugins import VALID_HOOKS
 
             declared_hooks = host.manifest.provides_hooks
             declared_tools = host.manifest.provides_tools

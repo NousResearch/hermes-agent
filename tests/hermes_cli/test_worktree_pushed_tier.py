@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import worktree_ops
+from hermes_agent.hermes_cli import worktree_ops
 
 
 def _run(args, cwd):
@@ -94,7 +94,7 @@ def _branch_exists(repo, branch):
 
 class TestFetchRemoteBranchHeads:
     def test_lists_pushed_branches(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         _mk_worktree(repo, "hermes-a", "hermes/hermes-a", push=True)
         heads = worktree_ops._fetch_remote_branch_heads(str(repo))
@@ -103,7 +103,7 @@ class TestFetchRemoteBranchHeads:
         assert "hermes/hermes-a" in heads
 
     def test_unreachable_remote_returns_none(self, tmp_path):
-        import cli
+        from hermes_agent import cli
         repo = tmp_path / "r"
         repo.mkdir()
         _run(["git", "init"], repo)
@@ -113,14 +113,14 @@ class TestFetchRemoteBranchHeads:
 
 class TestBranchPushedExact:
     def test_exact_match_true(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-x", "hermes/hermes-x", push=True)
         heads = worktree_ops._fetch_remote_branch_heads(str(repo))
         assert worktree_ops._worktree_branch_pushed_exact(str(wt), heads) is True
 
     def test_local_ahead_of_push_false(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(
             repo, "hermes-y", "hermes/hermes-y",
@@ -130,14 +130,14 @@ class TestBranchPushedExact:
         assert worktree_ops._worktree_branch_pushed_exact(str(wt), heads) is False
 
     def test_never_pushed_false(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-z", "hermes/hermes-z", push=False)
         heads = worktree_ops._fetch_remote_branch_heads(str(repo))
         assert worktree_ops._worktree_branch_pushed_exact(str(wt), heads) is False
 
     def test_none_heads_false(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-n", "hermes/hermes-n", push=True)
         assert worktree_ops._worktree_branch_pushed_exact(str(wt), None) is False
@@ -148,7 +148,7 @@ class TestStartupPrunerPushedTier:
     """cli._prune_stale_worktrees against the real repo fixture."""
 
     def test_pushed_lane_tree_reaped_branch_kept(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-pushed", "hermes/hermes-pushed", push=True)
 
@@ -162,7 +162,7 @@ class TestStartupPrunerPushedTier:
         )
 
     def test_unpushed_lane_still_preserved(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-unpushed", "hermes/hermes-unp", push=False)
 
@@ -171,7 +171,7 @@ class TestStartupPrunerPushedTier:
         assert wt.exists(), "never-pushed unique work must survive, any age"
 
     def test_ahead_of_pushed_lane_preserved(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(
             repo, "hermes-ahead", "hermes/hermes-ahead",
@@ -185,7 +185,7 @@ class TestStartupPrunerPushedTier:
         )
 
     def test_pushed_but_dirty_preserved(self, repo_with_bare_origin):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-pdirty", "hermes/hermes-pdirty", push=True)
         (wt / "uncommitted.txt").write_text("in-flight\n")
@@ -196,7 +196,7 @@ class TestStartupPrunerPushedTier:
         assert wt.exists(), "dirty guard outranks the pushed tier"
 
     def test_offline_remote_preserves(self, repo_with_bare_origin, tmp_path):
-        import cli
+        from hermes_agent import cli
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "hermes-off", "hermes/hermes-off", push=True)
         # Sever the remote AFTER pushing: ls-remote now fails -> None ->
@@ -212,8 +212,8 @@ class TestAttendedGcPushedTier:
     """worktree_gc audit/reclaim behavior for the pushed tier."""
 
     def test_audit_verdict_and_reclaim_keeps_branch(self, repo_with_bare_origin):
-        import cli
-        from hermes_cli import worktree_gc
+        from hermes_agent import cli
+        from hermes_agent.hermes_cli import worktree_gc
 
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "salv-lane", "salv/pushed-lane", push=True)
@@ -229,8 +229,8 @@ class TestAttendedGcPushedTier:
         assert _branch_exists(repo, "salv/pushed-lane")
 
     def test_audit_never_pushed_keeps(self, repo_with_bare_origin):
-        import cli
-        from hermes_cli import worktree_gc
+        from hermes_agent import cli
+        from hermes_agent.hermes_cli import worktree_gc
 
         repo = repo_with_bare_origin
         wt = _mk_worktree(repo, "salv-keep", "salv/never-pushed", push=False)

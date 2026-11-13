@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import hermes_yaml as yaml
 
 from hermes_agent.agent.vault_store import VaultStore
-from hermes_cli.vault import _cmd_sources, vault_command
+from hermes_agent.hermes_cli.vault import _cmd_sources, vault_command
 
 
 def _corrupt_vault(home):

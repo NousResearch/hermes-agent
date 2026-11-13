@@ -20,10 +20,10 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from hermes_cli import web_server
-from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth.request_utils import is_safe_next_path
-from hermes_cli.dashboard_auth.routes import (
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_agent.hermes_cli.dashboard_auth.request_utils import is_safe_next_path
+from hermes_agent.hermes_cli.dashboard_auth.routes import (
     _reset_password_rate_limit,
     _validate_post_login_target,
 )
@@ -100,12 +100,12 @@ class TestExternalizedTargetIsValidatedComposed:
 
     @pytest.mark.parametrize("prefix", ["/\\evil.example", "/\tx", "\\evil.example"])
     def test_authority_moving_prefix_is_dropped(self, prefix: str):
-        from hermes_cli.dashboard_auth.routes import _externalize_post_login_target
+        from hermes_agent.hermes_cli.dashboard_auth.routes import _externalize_post_login_target
 
         assert _externalize_post_login_target("/sessions", prefix) == "/sessions"
 
     def test_ordinary_prefix_still_applies(self):
-        from hermes_cli.dashboard_auth.routes import _externalize_post_login_target
+        from hermes_agent.hermes_cli.dashboard_auth.routes import _externalize_post_login_target
 
         assert _externalize_post_login_target("/sessions", "/hermes") == "/hermes/sessions"
 

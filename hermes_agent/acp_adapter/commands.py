@@ -97,7 +97,7 @@ class SlashCommandsMixin:
 
         if cmd not in self._COMMANDS:
             return None
-        from hermes_cli.observability.shared_metrics_events import record_slash_command
+        from hermes_agent.hermes_cli.observability.shared_metrics_events import record_slash_command
         record_slash_command(command=cmd, surface="acp")
         mutating = cmd in _MID_TURN_BLOCKED_COMMANDS
         if mutating:
@@ -145,7 +145,7 @@ class SlashCommandsMixin:
         current_provider, target_provider, new_model = self._switch_model(state, args)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider or "openrouter"
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
-        from hermes_cli.model_picker_usage import large_model_notice
+        from hermes_agent.hermes_cli.model_picker_usage import large_model_notice
         notice = large_model_notice(new_model, target_provider or "", lang="en")  # window plans only; cache-only read; ACP text is English
         return f"Model switched to: {new_model}\nProvider: {provider_label}" + (f"\n⚠ {notice}" if notice else "")
 
@@ -309,6 +309,6 @@ class SlashCommandsMixin:
         return f"Queued for the next turn. ({_queue_prompt(state, queued_text)} queued)"
 
     def _cmd_version(self, args: str, state: SessionState) -> str:
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli.version_info import get_version_info
 
         return f"Hermes Agent v{get_version_info().derived_version}"

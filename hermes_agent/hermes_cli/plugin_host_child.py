@@ -1,6 +1,6 @@
 """The plugin host process: imports third-party plugins and serves their callbacks to Hermes.
 
-Started by :class:`hermes_cli.plugin_host.PluginHost` as ``python -m hermes_cli.plugin_host_child``
+Started by :class:`hermes_agent.hermes_cli.plugin_host.PluginHost` as ``python -m hermes_agent.hermes_cli.plugin_host_child``
 (optionally under ``plugins.host.launcher``, e.g. a sandbox runner) with the profile's environment.
 Plugins get a :class:`RemotePluginContext` that looks like ``PluginContext``: registrations and
 queries are forwarded to Hermes, callables and provider objects stay here and are invoked by
@@ -29,12 +29,12 @@ import types
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_cli.plugin_host_wire import (
+from hermes_agent.hermes_cli.plugin_host_wire import (
     Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, declared_member, decode,
     describe_signature, encode, is_async_callable, restore_arguments, serving_request,
 )
 
-logger = logging.getLogger("hermes_cli.plugin_host_child")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugin_host_child")
 
 _ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
@@ -103,7 +103,7 @@ class RemotePluginContext:
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
-        from hermes_cli.plugin_isolation import (
+        from hermes_agent.hermes_cli.plugin_isolation import (
             HOST_REMOTE_FACADES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
         )
         if name in HOST_UNSUPPORTED_CTX_METHODS:
@@ -208,7 +208,7 @@ class HostRuntime:
         return decode(self.channel.call(method, payload), self.resolve_from_parent)
 
     def ctx_call(self, plugin_key: str, method: str, *args: Any, **kwargs: Any) -> Any:
-        from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+        from hermes_agent.hermes_cli.plugin_isolation import HOST_OBJECT_BASES
         return self._send_call("ctx", plugin_key, {"method": method, "args": args, "kwargs": kwargs},
                                allow_objects=method in HOST_OBJECT_BASES)
 
@@ -347,7 +347,7 @@ class HostRuntime:
 
         async def request() -> dict[str, Any]:
             import httpx
-            from hermes_cli.plugin_host_http_auth import with_hosted_admission
+            from hermes_agent.hermes_cli.plugin_host_http_auth import with_hosted_admission
             transport = httpx.ASGITransport(app=with_hosted_admission(app, params.get("authenticated")))
             async with httpx.AsyncClient(transport=transport, base_url="http://plugin-host") as client:
                 response = await client.request(
@@ -480,7 +480,7 @@ def _provider_base(value: Any) -> Optional[type]:
     can match: a plugin object subclassing it imported it."""
     from hermes_agent.compat.finder import current_name
     from hermes_agent.compat.moves import MOVES
-    from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+    from hermes_agent.hermes_cli.plugin_isolation import HOST_OBJECT_BASES
     for ref in HOST_OBJECT_BASES.values():
         module, attr = ref.split(":")
         for name in (module, current_name(module, MOVES)):
@@ -629,7 +629,7 @@ def main() -> int:
     stderr_handler.setFormatter(DisplayNameFormatter("%(levelname)s %(name)s: %(message)s"))
     logging.basicConfig(handlers=[stderr_handler], level=os.environ.get("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING"))
     runtime = HostRuntime(reader, writer)
-    from hermes_cli import plugin_events
+    from hermes_agent.hermes_cli import plugin_events
     plugin_events._session_event_forwarder = runtime.session_event
     runtime.channel.start()
     runtime.stopped.wait()

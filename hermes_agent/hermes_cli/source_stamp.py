@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from hermes_cli.version_info import _git_version_info, _reset_version_info_cache
+from hermes_agent.hermes_cli.version_info import _git_version_info, _reset_version_info_cache
 
 
 def write_source_stamp(root: Path, *, adopted: bool = False) -> dict | None:

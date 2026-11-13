@@ -62,10 +62,10 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated", *, settle=F
     with cron_jobs.use_cron_store(tmp_path), \
          patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
          patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
-         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+         patch("hermes_agent.hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_agent.hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+         patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={
                    "api_key": "test-key",
                    "base_url": "https://example.invalid/v1",
@@ -360,7 +360,7 @@ def test_best_effort_incident_store_failure_returns_false(monkeypatch, tmp_path)
 
 
 def test_cli_list_and_ack(monkeypatch, tmp_path, capsys):
-    from hermes_cli.cron import cron_incidents
+    from hermes_agent.hermes_cli.cron import cron_incidents
 
     inc = _point_db(monkeypatch, tmp_path)
     inc_id, _ = inc.upsert_incident("job-1", "provider timeout boom")

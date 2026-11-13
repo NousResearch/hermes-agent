@@ -1,4 +1,4 @@
-"""Environment for the detached gateway-restart watcher (``hermes_cli.gateway._spawn_gateway_restart_watcher``).
+"""Environment for the detached gateway-restart watcher (``hermes_agent.hermes_cli.gateway._spawn_gateway_restart_watcher``).
 
 The watcher hands its own ``os.environ`` to the gateway it respawns, so its env IS that gateway's env.
 The updater that spawns it has already loaded its OWN profile's ``.env`` into ``os.environ``: a
@@ -30,7 +30,7 @@ def _argv_profile_home(run_argv: list[str]) -> Optional[str]:
         elif part.startswith("--profile="):
             name = part.split("=", 1)[1]
         if name:
-            from hermes_cli.profiles import get_profile_dir
+            from hermes_agent.hermes_cli.profiles import get_profile_dir
             return str(get_profile_dir(name))
     return None
 
@@ -41,7 +41,7 @@ def _launch_bot_token_names() -> set[str]:
     follow a sibling (#135792). A provider key, a proxy, or a token the user's SHELL exported is not
     the launch profile's: a manual ``hermes -p X gateway run`` from that shell has it too, so it stays."""
     from hermes_agent.agent.secret_scope import load_env_file
-    from hermes_cli.env_loader import launch_dotenv_keys, source_supplied_names
+    from hermes_agent.hermes_cli.env_loader import launch_dotenv_keys, source_supplied_names
     from hermes_constants import get_routing_process_hermes_home
     from hermes_agent.tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _home_adapter_secret_env
     from hermes_agent.gateway.restart import is_supervised_gateway_launch
@@ -87,7 +87,7 @@ def restart_watcher_env(run_argv: list[str], *, host: bool, home: Optional[str])
     """The watcher's ``env=``. Every respawn sheds the supervisor markers, the launcher's own profile
     included: an update armed under a systemd unit carries its ``INVOCATION_ID``, and a respawn holding
     it believes the unit launched it and skips the supervised-gateway guard (#73480)."""
-    from hermes_cli.gateway_runtime_start import strip_supervisor_markers
+    from hermes_agent.hermes_cli.gateway_runtime_start import strip_supervisor_markers
     if host:
         env = _host_gateway_watcher_env()
     else:

@@ -295,7 +295,7 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     due instead of being silently consumed.
     """
     try:
-        from hermes_cli.heartbeat import HeartbeatManager
+        from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
     except Exception:
         return
     if not (sid_key := session.get("session_key") or ""):
@@ -338,8 +338,8 @@ def _session_owns_live_wakeup_schedule(session: dict) -> bool:
     if not (sid_key := session.get("session_key") or ""):
         return False
     try:
-        from hermes_cli.heartbeat import HeartbeatManager
-        from hermes_cli.loops import LoopManager
+        from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
+        from hermes_agent.hermes_cli.loops import LoopManager
         with _session_profile_runtime_scope(session, hydrate_secrets=False):
             loop = LoopManager(session_id=sid_key)
             if loop.is_active() and not _loop_route_is_gateway_chat(loop.state):
@@ -377,7 +377,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
     try:
-        from hermes_cli.loops import LoopManager, goal_blocks_loop_tick
+        from hermes_agent.hermes_cli.loops import LoopManager, goal_blocks_loop_tick
     except Exception:
         return
     if not (sid_key := session.get("session_key") or ""):
@@ -483,7 +483,7 @@ def _kb_reclaim_stray_subs(_kbn, slug: str, session_key: str, stray: tuple) -> b
     """Re-key ``tui`` subscriptions bound to this session's own subagents back onto it. True when the board is
     clean afterwards (nothing to move, or moved); False on a DB error so the caller retries next poll."""
     import sqlite3
-    from hermes_cli import kanban_db_connect as _kbc
+    from hermes_agent.hermes_cli import kanban_db_connect as _kbc
     try:
         if not any(_kbn.count_notify_subs(board=slug, platform="tui", chat_id=k) for k in stray):
             return True
@@ -499,8 +499,8 @@ def _kb_poll_board(_kb, slug: str, session_key: str, stray: tuple = (), unreclai
     """Claim + format this session's unseen events on one board. One poller per live session: the board is not opened
     writable unless it has a subscription owned by this exact session (a failed read-only probe — locked/corrupt DB —
     falls through so delivery is preserved). A board whose stray-subscription reclaim failed lands in ``unreclaimed``."""
-    from hermes_cli import kanban_db_connect as _kbc
-    from hermes_cli import kanban_db_notify as _kbn
+    from hermes_agent.hermes_cli import kanban_db_connect as _kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as _kbn
     if stray and not _kb_reclaim_stray_subs(_kbn, slug, session_key, stray) and unreclaimed is not None:
         unreclaimed.append(slug)
     with contextlib.suppress(Exception):
@@ -550,7 +550,7 @@ def _collect_kanban_notifications(session: dict) -> list:
     if not session_key or session.get("_finalized"):
         return []
     try:
-        from hermes_cli import kanban_db as _kb
+        from hermes_agent.hermes_cli import kanban_db as _kb
     except Exception:
         return []
     try:

@@ -10,7 +10,7 @@ import threading
 
 import pytest
 
-from hermes_cli import update_lock
+from hermes_agent.hermes_cli import update_lock
 
 
 @pytest.mark.platforms("posix")

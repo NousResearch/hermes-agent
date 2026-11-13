@@ -1,13 +1,13 @@
 """``/model <name> --reasoning <level>`` — one request carries a model pick AND its effort.
 
-The parser is the single owner (hermes_cli.model_switch.parse_model_switch_args); the CLI and
+The parser is the single owner (hermes_agent.hermes_cli.model_switch.parse_model_switch_args); the CLI and
 TUI-gateway commit steps apply the effort AFTER the agent swap, because ``agent.switch_model``
 re-resolves ``reasoning_config`` from config.yaml and would clobber an earlier write.
 """
 
 from types import SimpleNamespace
 
-from hermes_cli.model_switch import (
+from hermes_agent.hermes_cli.model_switch import (
     MODEL_SWITCH_ERR_BAD_REASONING,
     ModelSwitchResult,
     parse_model_switch_args,
@@ -31,8 +31,8 @@ def test_reasoning_flag_rides_with_the_pick_and_validates():
 def test_cli_commit_applies_effort_after_the_agent_swap(monkeypatch):
     """The agent's switch_model resets reasoning_config from config; the ride-along effort must
     win over that reset, on both the CLI and the live agent."""
-    import cli as cli_mod
-    from hermes_cli import cli_model_switch_mixin as mixin
+    import hermes_agent.cli as cli_mod
+    from hermes_agent.hermes_cli import cli_model_switch_mixin as mixin
 
     class _Agent:
         reasoning_config = {"enabled": True, "effort": "medium"}

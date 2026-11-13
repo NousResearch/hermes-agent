@@ -21,7 +21,7 @@ def _dispatcher():
 
 
 def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkeypatch, tmp_path):
-    import hermes_cli
+    from hermes_agent import hermes_cli
 
     (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=launch-profile-key\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -34,7 +34,7 @@ def test_auto_decompose_tick_reads_launch_profile_secrets_under_multiplex(monkey
         return SimpleNamespace(ok=True, fanout=False, child_ids=None, reason=None)
 
     fake = SimpleNamespace(list_triage_ids=lambda: ["t1"], decompose_task=fake_decompose)
-    monkeypatch.setitem(sys.modules, "hermes_cli.kanban_decompose", fake)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.kanban_decompose", fake)
     monkeypatch.setattr(hermes_cli, "kanban_decompose", fake, raising=False)
 
     ss.set_multiplex_active(True)
@@ -54,8 +54,8 @@ def test_auto_decompose_board_pin_stays_inside_the_tick(monkeypatch, tmp_path):
     in the gateway (turns, kanban tools, spawned subprocesses) must keep resolving its own board."""
     import threading
 
-    import hermes_cli
-    from hermes_cli import kanban_db as kb
+    from hermes_agent import hermes_cli
+    from hermes_agent.hermes_cli import kanban_db as kb
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
@@ -74,7 +74,7 @@ def test_auto_decompose_board_pin_stays_inside_the_tick(monkeypatch, tmp_path):
         return SimpleNamespace(ok=True, fanout=False, child_ids=None, reason=None)
 
     fake = SimpleNamespace(list_triage_ids=lambda: ["t1"], decompose_task=fake_decompose)
-    monkeypatch.setitem(sys.modules, "hermes_cli.kanban_decompose", fake)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.kanban_decompose", fake)
     monkeypatch.setattr(hermes_cli, "kanban_decompose", fake, raising=False)
 
     assert asyncio.run(_to_thread_process_service(_dispatcher().auto_decompose_tick, 5)) == 1

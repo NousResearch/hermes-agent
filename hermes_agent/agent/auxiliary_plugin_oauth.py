@@ -14,8 +14,8 @@ from typing import Any
 def _configured_endpoint(provider: str) -> str:
     """The endpoint the main runtime would use: ``model.base_url`` when ``model.provider`` is this
     provider (a relay / proxy override), else the registered profile's own."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
     pconfig = PROVIDER_REGISTRY.get(provider)
     return _config_base_url_for_provider(_get_model_config(), provider) or (pconfig.inference_base_url if pconfig else "")
 

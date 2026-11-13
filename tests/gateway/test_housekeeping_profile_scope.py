@@ -69,7 +69,7 @@ def two_homes(tmp_path, monkeypatch):
 def _record_credential_chores(monkeypatch):
     """Replace the credential-reading chores with recorders of (home, Nous override) they see."""
     from hermes_agent.agent import curator
-    from hermes_cli.auth_nous import _nous_inference_env_override
+    from hermes_agent.hermes_cli.auth_nous import _nous_inference_env_override
     from hermes_constants import get_hermes_home
 
     seen: dict = {"curator": []}
@@ -122,7 +122,7 @@ def test_multiplexed_auto_archive_tick_sweeps_every_served_profile_store(two_hom
     monkeypatch.setattr(
         SessionDB, "maybe_auto_archive", lambda self, **kw: swept.append(Path(self.db_path)))
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda *args, **kwargs: {"sessions": {"auto_archive": True, "min_interval_hours": 0}})
 
     set_multiplex_active(True)
@@ -200,7 +200,7 @@ def test_a_failing_profile_does_not_strand_the_profiles_after_it(two_homes, monk
     monkeypatch.setattr(
         SessionDB, "maybe_auto_archive", lambda self, **kw: swept.append(Path(self.db_path)))
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda *args, **kwargs: {"sessions": {"auto_archive": True, "min_interval_hours": 0}})
 
     set_multiplex_active(True)
@@ -229,8 +229,8 @@ def test_profile_scope_setup_failure_restores_the_callers_home(two_homes, monkey
     def _boom(home):
         raise OSError(f"cannot read {home}/.env")
 
-    import hermes_cli.env_loader
-    monkeypatch.setattr(hermes_cli.env_loader, "hydrate_profile_secret_sources", _boom)
+    import hermes_agent.hermes_cli.env_loader
+    monkeypatch.setattr(hermes_agent.hermes_cli.env_loader, "hydrate_profile_secret_sources", _boom)
 
     with pytest.raises(OSError):
         with gateway_run._profile_runtime_scope(b):
@@ -295,7 +295,7 @@ def test_multiplexed_plugin_update_check_visits_every_served_profiles_plugins(tw
     and marker, under that profile's ``plugins:`` config. Unscoped it checked the launch home's
     plugins only, so B's plugins were never checked and B's ``plugins.auto_apply`` was ignored."""
     from hermes_agent.agent.secret_scope import set_multiplex_active
-    from hermes_cli import plugins_cadence
+    from hermes_agent.hermes_cli import plugins_cadence
 
     a, b = two_homes
     (a / "config.yaml").write_text("plugins:\n  auto_update_check_hours: 1\n", encoding="utf-8")
@@ -307,7 +307,7 @@ def test_multiplexed_plugin_update_check_visits_every_served_profiles_plugins(tw
         checked.append((plugins_dir, plugins_cadence.auto_apply_enabled()))
         return []
 
-    import hermes_cli.plugins_updates as updates
+    import hermes_agent.hermes_cli.plugins_updates as updates
     monkeypatch.setattr(updates, "run_checks", _run_checks)
 
     set_multiplex_active(True)

@@ -1,6 +1,6 @@
 """Output contract shared by the top-level ``hermes -z`` one-shot run.
 
-The run itself goes through the gateway (``hermes_cli.gateway_chat_startup.launch_gateway_chat``);
+The run itself goes through the gateway (``hermes_agent.hermes_cli.gateway_chat_startup.launch_gateway_chat``);
 this module keeps the pieces that path and the gateway's CLI turns reuse: the exit-code mapping, the
 ``--usage-file`` ledger (with its auxiliary-usage delta) and ``--toolsets`` flag normalization.
 """
@@ -12,10 +12,10 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-# Not used here: re-exported only so ``hermes_cli.oneshot.get_fallback_chain`` stays importable and
+# Not used here: re-exported only so ``hermes_agent.hermes_cli.oneshot.get_fallback_chain`` stays importable and
 # patchable as on main (external operator scripts set it). The ``-z`` run reads the fallback chain
-# through the gateway from ``hermes_cli.fallback_config``, so patching this name does not change it.
-from hermes_cli.fallback_config import get_fallback_chain
+# through the gateway from ``hermes_agent.hermes_cli.fallback_config``, so patching this name does not change it.
+from hermes_agent.hermes_cli.fallback_config import get_fallback_chain
 
 # Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
 # billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so

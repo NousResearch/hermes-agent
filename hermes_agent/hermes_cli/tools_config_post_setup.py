@@ -8,11 +8,11 @@ import shutil
 import sys
 from typing import Set
 
-from hermes_cli.cli_output import (
+from hermes_agent.hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,
     print_warning as _print_warning)
-from hermes_cli.config import get_env_value
-from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
+from hermes_agent.hermes_cli.config import get_env_value
+from hermes_agent.hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
 from hermes_agent.tools.transcription_common import DEFAULT_LOCAL_MODEL, STT_MODEL_CATALOG
 
 _LOCAL_STT_MODEL_SUMMARY = ", ".join(
@@ -57,7 +57,7 @@ def _post_setup_chromium() -> None:
     """Local Browser row: browser_exec launches pm's Chromium. Termux (system Chromium) and the Hermes
     Docker image (its baked build) own their payloads, so a miss there is a hint, never a download."""
     import pm
-    from hermes_cli.browser_runtime import BAKED_EXECUTABLE_FILE, chromium_executable, chromium_missing_hint
+    from hermes_agent.hermes_cli.browser_runtime import BAKED_EXECUTABLE_FILE, chromium_executable, chromium_missing_hint
     from hermes_constants import is_termux
 
     _ensure_browser_use_cli()
@@ -133,7 +133,7 @@ def _post_setup_xai_grok() -> None:
     …). Accepts a SuperGrok-tier OAuth token (preferred — billed to the existing subscription) or a raw
     XAI_API_KEY; the rows declare empty env_vars so the auth UX lives here."""
     try:
-        from hermes_cli.auth import get_xai_oauth_auth_status
+        from hermes_agent.hermes_cli.auth import get_xai_oauth_auth_status
         oauth_logged_in = bool(get_xai_oauth_auth_status().get("logged_in"))
     except Exception:
         oauth_logged_in = False
@@ -146,9 +146,9 @@ def _post_setup_xai_grok() -> None:
 
     _print_info("    xAI needs credentials. Choose one:")
     try:
-        from hermes_cli.setup import prompt_choice, prompt as _setup_prompt
-        from hermes_cli.setup_tts import _run_xai_oauth_login_from_setup
-        from hermes_cli.config import save_env_value
+        from hermes_agent.hermes_cli.setup import prompt_choice, prompt as _setup_prompt
+        from hermes_agent.hermes_cli.setup_tts import _run_xai_oauth_login_from_setup
+        from hermes_agent.hermes_cli.config import save_env_value
     except Exception as exc:
         _print_warning(f"    Could not load setup helpers: {exc}")
         _info_lines("Run later: hermes auth add xai-oauth   (or set XAI_API_KEY)")
@@ -178,7 +178,7 @@ def _post_setup_xai_grok() -> None:
 def _codex_credentials_present() -> bool:
     """Cheap offline check for Codex/ChatGPT OAuth credentials (auth store + pool only)."""
     try:
-        from hermes_cli.auth import get_codex_auth_status
+        from hermes_agent.hermes_cli.auth import get_codex_auth_status
         return bool(get_codex_auth_status().get("logged_in"))
     except Exception:
         return False
@@ -195,8 +195,8 @@ def _post_setup_openai_codex() -> None:
     relogin = "hermes auth add openai-codex"
     _print_info("    OpenAI (Codex auth) needs credentials.")
     try:
-        from hermes_cli.auth import _codex_device_code_login, _save_codex_tokens
-        from hermes_cli.setup import is_noninteractive, prompt_choice
+        from hermes_agent.hermes_cli.auth import _codex_device_code_login, _save_codex_tokens
+        from hermes_agent.hermes_cli.setup import is_noninteractive, prompt_choice
     except Exception as exc:
         _print_warning(f"    Could not load setup helpers: {exc}")
         _info_lines(f"Run later: {relogin}")
@@ -224,7 +224,7 @@ def _post_setup_openai_codex() -> None:
 
 
 def _xai_credentials_ready() -> bool:
-    from hermes_cli.tools_config import _xai_credentials_present  # facade binding: tests patch it there
+    from hermes_agent.hermes_cli.tools_config import _xai_credentials_present  # facade binding: tests patch it there
     return _xai_credentials_present()
 
 
@@ -258,7 +258,7 @@ def valid_post_setup_keys() -> set[str]:
     """Return the set of post-setup keys declared by any visible provider (``TOOL_CATEGORIES`` plus
     plugin-registered providers). This is the allowlist ``post-setup`` and the dashboard endpoint
     validate against, so a caller cannot drive ``_run_post_setup`` with an arbitrary key."""
-    from hermes_cli.tools_config import (
+    from hermes_agent.hermes_cli.tools_config import (
         TOOL_CATEGORIES, _plugin_browser_providers, _plugin_image_gen_providers,
         _plugin_video_gen_providers, _plugin_web_search_providers)
 
@@ -324,7 +324,7 @@ def _module_installed(module_name: str) -> bool:
 def _chromium_installed() -> bool:
     """Everything ``_run_post_setup("chromium")`` provides is present: browser-harness and a Chromium, so
     "Run setup" flips to installed only when re-running it would be a no-op."""
-    from hermes_cli.browser_runtime import chromium_executable
+    from hermes_agent.hermes_cli.browser_runtime import chromium_executable
 
     return _browser_harness_installed() and chromium_executable() is not None
 

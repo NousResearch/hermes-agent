@@ -16,7 +16,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from hermes_agent.agent import skill_commands
-from hermes_cli import plugins
+from hermes_agent.hermes_cli import plugins
 
 calls = []
 
@@ -65,13 +65,13 @@ COMPLETE = ('/probe', '/tools enable ', '/tools disable ')
 
 def main():
     mode, flags = sys.argv[1], sys.argv[2:]
-    from hermes_cli import main as hermes_main
+    from hermes_agent.hermes_cli import main as hermes_main
     args = hermes_main._light_chat_parser().parse_args(['chat', *flags])
     if mode == 'interactive':
         os.environ['HERMES_DEFER_AGENT_STARTUP'] = '1'
     else:
         hermes_main._prepare_agent_startup(args)
-    import cli
+    from hermes_agent import cli
     from prompt_toolkit.document import Document
     outputs, errors, completions = {}, [], {}
     with redirect_stdout(io.StringIO()) as out:
@@ -91,7 +91,7 @@ def main():
                 errors.append(f'{command}: {traceback.format_exc()}')
             outputs[command if command not in outputs else f'{command} #2'] = out.getvalue()[start:]
         try:
-            from hermes_cli.commands_completion import cli_slash_completer
+            from hermes_agent.hermes_cli.commands_completion import cli_slash_completer
             completer = cli_slash_completer(c)  # the prompt's own completer
             for text in COMPLETE:
                 completions[text] = sorted({x.text for x in completer.get_completions(Document(text), None)})

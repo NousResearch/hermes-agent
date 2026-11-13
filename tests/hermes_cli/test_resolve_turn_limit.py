@@ -1,4 +1,4 @@
-"""Tests for :func:`hermes_cli.config.resolve_turn_limit` and the
+"""Tests for :func:`hermes_agent.hermes_cli.config.resolve_turn_limit` and the
 ``TURN_LIMIT_UNLIMITED`` sentinel.
 
 Covers the full spelling table (int, float, numeric string, ``"none"``,
@@ -8,7 +8,7 @@ garbage) and the config→env bridge in the gateway and TUI resolvers.
 import os
 import pytest
 
-from hermes_cli.config import resolve_turn_limit, TURN_LIMIT_UNLIMITED
+from hermes_agent.hermes_cli.config import resolve_turn_limit, TURN_LIMIT_UNLIMITED
 
 
 class TestNumericValues:

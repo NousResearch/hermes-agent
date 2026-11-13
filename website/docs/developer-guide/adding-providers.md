@@ -20,15 +20,15 @@ If the provider is just "another OpenAI-compatible base URL and API key", a name
 
 A built-in provider has to line up across a few layers:
 
-1. `hermes_cli/auth.py` decides how credentials are found.
-2. `hermes_cli/runtime_provider.py` turns that into runtime data:
+1. `hermes_agent/hermes_cli/auth.py` decides how credentials are found.
+2. `hermes_agent/hermes_cli/runtime_provider.py` turns that into runtime data:
    - `provider`
    - `api_mode`
    - `base_url`
    - `api_key`
    - `source`
 3. `hermes_agent/run_agent.py` uses `api_mode` to decide how requests are built and sent.
-4. `hermes_cli/models.py` and `hermes_cli/main.py` make the provider show up in the CLI. (`hermes_cli/setup.py` delegates to `main.py` automatically — no changes needed there.)
+4. `hermes_agent/hermes_cli/models.py` and `hermes_agent/hermes_cli/main.py` make the provider show up in the CLI. (`hermes_agent/hermes_cli/setup.py` delegates to `main.py` automatically — no changes needed there.)
 5. `hermes_agent/agent/auxiliary_client.py` and `hermes_agent/agent/model_metadata.py` keep side tasks and token budgeting working.
 
 The important abstraction is `api_mode`.
@@ -79,17 +79,17 @@ This path includes everything from Path A plus:
 
 ### Required for every built-in provider
 
-1. `hermes_cli/auth.py`
-2. `hermes_cli/models.py`
-3. `hermes_cli/runtime_provider.py`
-4. `hermes_cli/main.py`
+1. `hermes_agent/hermes_cli/auth.py`
+2. `hermes_agent/hermes_cli/models.py`
+3. `hermes_agent/hermes_cli/runtime_provider.py`
+4. `hermes_agent/hermes_cli/main.py`
 5. `hermes_agent/agent/auxiliary_client.py`
 6. `hermes_agent/agent/model_metadata.py`
 7. tests
 8. user-facing docs under `website/docs/`
 
 :::tip
-`hermes_cli/setup.py` does **not** need changes. The setup wizard delegates provider/model selection to `select_provider_and_model()` in `main.py` — any provider added there is automatically available in `hermes setup`.
+`hermes_agent/hermes_cli/setup.py` does **not** need changes. The setup wizard delegates provider/model selection to `select_provider_and_model()` in `main.py` — any provider added there is automatically available in `hermes setup`.
 :::
 
 ### Additional for native / non-OpenAI providers
@@ -150,17 +150,17 @@ Examples from the repo:
 
 That same id should appear in:
 
-- `PROVIDER_REGISTRY` in `hermes_cli/auth.py`
-- `_PROVIDER_LABELS` in `hermes_cli/models_catalog_static.py` (re-exported by `hermes_cli/models.py`)
-- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models_catalog_static.py`
-- CLI `--provider` choices in `hermes_cli/main.py`
+- `PROVIDER_REGISTRY` in `hermes_agent/hermes_cli/auth.py`
+- `_PROVIDER_LABELS` in `hermes_agent/hermes_cli/models_catalog_static.py` (re-exported by `hermes_agent/hermes_cli/models.py`)
+- `_PROVIDER_ALIASES` in both `hermes_agent/hermes_cli/auth.py` and `hermes_agent/hermes_cli/models_catalog_static.py`
+- CLI `--provider` choices in `hermes_agent/hermes_cli/main.py`
 - setup / model selection branches
 - auxiliary-model defaults
 - tests
 
 If the id differs between those files, the provider will feel half-wired: auth may work while `/model`, setup, or runtime resolution silently misses it.
 
-## Step 2: Add auth metadata in `hermes_cli/auth.py`
+## Step 2: Add auth metadata in `hermes_agent/hermes_cli/auth.py`
 
 For API-key providers, add a `ProviderConfig` entry to `PROVIDER_REGISTRY` with:
 
@@ -189,7 +189,7 @@ Questions to answer here:
 
 If the provider needs something more than "look up an API key", add a dedicated credential resolver instead of shoving logic into unrelated branches.
 
-## Step 3: Add model catalog and aliases in `hermes_cli/models.py`
+## Step 3: Add model catalog and aliases in `hermes_agent/hermes_cli/models.py`
 
 Update the provider catalog so the provider works in menus and in `provider:model` syntax.
 
@@ -212,7 +212,7 @@ kimi:model-name
 
 If aliases are missing here, the provider may authenticate correctly but still fail in `/model` parsing.
 
-## Step 4: Resolve runtime data in `hermes_cli/runtime_provider.py`
+## Step 4: Resolve runtime data in `hermes_agent/hermes_cli/runtime_provider.py`
 
 `resolve_runtime_provider()` is the shared path used by CLI, gateway, cron, ACP, and helper clients.
 
@@ -233,11 +233,11 @@ If the provider is OpenAI-compatible, `api_mode` should usually stay `chat_compl
 
 Be careful with API-key precedence. Hermes already contains logic to avoid leaking an OpenRouter key to unrelated endpoints. A new provider should be equally explicit about which key goes to which base URL.
 
-## Step 5: Wire the CLI in `hermes_cli/main.py`
+## Step 5: Wire the CLI in `hermes_agent/hermes_cli/main.py`
 
 A provider is not discoverable until it shows up in the interactive `hermes model` flow.
 
-Update these in `hermes_cli/main.py`:
+Update these in `hermes_agent/hermes_cli/main.py`:
 
 - `provider_labels` dict
 - `providers` list in `select_provider_and_model()`
@@ -247,7 +247,7 @@ Update these in `hermes_cli/main.py`:
 - a `_model_flow_<provider>()` function, or reuse `_model_flow_api_key_provider()` if it fits
 
 :::tip
-`hermes_cli/setup.py` does not need changes — it calls `select_provider_and_model()` from `main.py`, so your new provider appears in both `hermes model` and `hermes setup` automatically.
+`hermes_agent/hermes_cli/setup.py` does not need changes — it calls `select_provider_and_model()` from `main.py`, so your new provider appears in both `hermes model` and `hermes setup` automatically.
 :::
 
 ## Step 6: Keep auxiliary calls working
@@ -390,11 +390,11 @@ A developer can wire the provider perfectly and still leave users unable to disc
 
 Use this if the provider is standard chat completions.
 
-- [ ] `ProviderConfig` added in `hermes_cli/auth.py`
-- [ ] aliases added in `hermes_cli/auth.py` and `hermes_cli/models.py`
-- [ ] model catalog added in `hermes_cli/models.py`
-- [ ] runtime branch added in `hermes_cli/runtime_provider.py`
-- [ ] CLI wiring added in `hermes_cli/main.py` (setup.py inherits automatically)
+- [ ] `ProviderConfig` added in `hermes_agent/hermes_cli/auth.py`
+- [ ] aliases added in `hermes_agent/hermes_cli/auth.py` and `hermes_agent/hermes_cli/models.py`
+- [ ] model catalog added in `hermes_agent/hermes_cli/models.py`
+- [ ] runtime branch added in `hermes_agent/hermes_cli/runtime_provider.py`
+- [ ] CLI wiring added in `hermes_agent/hermes_cli/main.py` (setup.py inherits automatically)
 - [ ] aux model added in `hermes_agent/agent/auxiliary_client.py`
 - [ ] context lengths added in `hermes_agent/agent/model_metadata.py`
 - [ ] runtime / CLI tests updated

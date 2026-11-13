@@ -394,7 +394,7 @@ regardless of the saved preference. To opt in explicitly later, run `hermes gate
 the choice is recorded only after successful installation. To be asked again during setup,
 reset the choice with `hermes config set gateway.service_install_choice null`.
 
-Setup orchestration lives in `hermes_cli/gateway_setup_service.py`. Its
+Setup orchestration lives in `hermes_agent/hermes_cli/gateway_setup_service.py`. Its
 `ensure_gateway_service` helper is not a general runtime discovery or auto-start API:
 ordinary calls never reinstall a missing service based only on stored preference.
 
@@ -582,7 +582,7 @@ pairs a client in any language can replay, run against the gateway by
 ## `hermes gateway attach`
 
 `hermes gateway attach --json` is the public attach step for a local client that has its own UI
-and dials the gateway itself. It runs `hermes_cli/gateway_runtime_attach.py::attach_gateway`, the
+and dials the gateway itself. It runs `hermes_agent/hermes_cli/gateway_runtime_attach.py::attach_gateway`, the
 same function behind the Ink TUI's `ui-tui/scripts/gateway_bootstrap.py`, so both clients get the
 same discovery, start, recovery and verdicts.
 
@@ -724,7 +724,7 @@ Pairing state is persisted in `hermes_agent/gateway/pairing.py` and survives res
 
 All slash commands in the gateway flow through the same resolution pipeline:
 
-1. `resolve_command()` from `hermes_cli/commands.py` maps input to canonical name (handles aliases, prefix matching)
+1. `resolve_command()` from `hermes_agent/hermes_cli/commands.py` maps input to canonical name (handles aliases, prefix matching)
 2. The canonical name is checked against `GATEWAY_KNOWN_COMMANDS`
 3. `_handle_message()` (`hermes_agent/gateway/run_inbound.py`) looks the handler up by name — `_handle_<name>_command` on the `hermes_agent/gateway/slash_commands_*.py` mixins — via `_command_handler_table` over `_IDLE_COMMANDS` / `_PLAIN_COMMANDS` in `hermes_agent/gateway/run_busy.py`; there is no `if canonical == ...` chain
 4. Some commands are gated on config (`gateway_config_gate` on `CommandDef`)
@@ -783,7 +783,7 @@ hermes_agent/gateway/platforms/                  # core base + HTTP ingress adap
 └── api_server.py        # REST API server adapter
 ```
 
-**Deferred loading:** Bundled `kind: platform` plugins register cheap `register_deferred` loaders in `hermes_agent/gateway/platform_registry.py` (via `hermes_cli/plugins.py`) so platform SDKs import only when the gateway starts, delivers, or runs setup/status — not on plain `hermes chat`. Resolution loads one adapter on lookup; full enumeration runs pending loaders only on paths that need every platform.
+**Deferred loading:** Bundled `kind: platform` plugins register cheap `register_deferred` loaders in `hermes_agent/gateway/platform_registry.py` (via `hermes_agent/hermes_cli/plugins.py`) so platform SDKs import only when the gateway starts, delivers, or runs setup/status — not on plain `hermes chat`. Resolution loads one adapter on lookup; full enumeration runs pending loaders only on paths that need every platform.
 
 Experimental connector-backed platforms use the generic relay adapter in `hermes_agent/gateway/relay/` instead of a direct platform module. When `GATEWAY_RELAY_URL` or `gateway.relay_url` is configured, the gateway registers the `relay` platform, dials the connector over an outbound WebSocket, and receives `descriptor`, `inbound`, and `interrupt_inbound` frames on that same socket. The connector advertises a `CapabilityDescriptor`; Hermes can send normal outbound replies, token-less `follow_up` operations, and interrupt frames back through the relay. The source-grounded wire contract lives in [Relay ↔ Connector contract](relay-connector-contract.md).
 
@@ -920,7 +920,7 @@ briefs are labelled user turns appended at a turn boundary, preserving role alte
 
 ## `/login` (off-turn, paired DM only)
 
-`/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and
+`/login` is registered in `hermes_agent/hermes_cli/commands.py` with `busy_policy="dispatch"` and
 `desktop="settings"`, listed in `run_busy.py::_PLAIN_COMMANDS`, and handled by
 `GatewayLoginCommandsMixin` (`hermes_agent/gateway/slash_commands_login.py`). It refuses outside a paired DM:
 `chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
@@ -952,7 +952,7 @@ an expiring access token that nothing refreshes.
 
 ## Multiplexed profiles
 
-With `gateway.multiplex_profiles: true` one process serves the default profile plus every live directory under `profiles/` (`hermes_cli/profiles.py::profiles_to_serve(multiplex=True)`). `os.environ` and module globals hold the **launch** profile's values, so every activity for a secondary binds its scope explicitly — a profile is home + secret scope + terminal scope together:
+With `gateway.multiplex_profiles: true` one process serves the default profile plus every live directory under `profiles/` (`hermes_agent/hermes_cli/profiles.py::profiles_to_serve(multiplex=True)`). `os.environ` and module globals hold the **launch** profile's values, so every activity for a secondary binds its scope explicitly — a profile is home + secret scope + terminal scope together:
 
 | Activity | Binding |
 |---|---|

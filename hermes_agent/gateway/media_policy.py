@@ -71,7 +71,7 @@ def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
     if not get_hermes_home_override():
         return None
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
 
         gateway_cfg = load_config_readonly().get("gateway")
     except Exception:
@@ -117,7 +117,7 @@ def media_delivery_trust_recent_seconds() -> str:
 def _load_gateway_cfg(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     if config is None:
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
 
             config = load_config() or {}
         except Exception:

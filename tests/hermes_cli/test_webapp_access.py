@@ -1,4 +1,4 @@
-"""Remote Webapp access (``hermes_cli.webapp_access``, ``/api/webapp-access/*``).
+"""Remote Webapp access (``hermes_agent.hermes_cli.webapp_access``, ``/api/webapp-access/*``).
 
 Contracts: Web Access writes only the ``webapp:`` block (the own-URL mode's URL in
 ``webapp.public_url``), LAN access registers the LAN callback on a Nous Portal client of Web Access's
@@ -26,7 +26,7 @@ def client(monkeypatch):
 @pytest.fixture()
 def restarts(monkeypatch):
     """Capture the gateway restart that applies the config instead of spawning it."""
-    import hermes_cli.web_server_gateway as gw
+    import hermes_agent.hermes_cli.web_server_gateway as gw
 
     calls: list[str] = []
 
@@ -41,7 +41,7 @@ def restarts(monkeypatch):
 @pytest.fixture()
 def nous(monkeypatch):
     """A signed-in Nous account; portal registration is captured (no network)."""
-    from hermes_cli import webapp_access
+    from hermes_agent.hermes_cli import webapp_access
 
     callbacks: list[str] = []
     monkeypatch.setattr(webapp_access, "nous_signed_in", lambda: True)
@@ -52,9 +52,9 @@ def nous(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def builds(monkeypatch):
-    """Capture the Webapp bundle builds (``hermes_cli.webapp.prepare_webapp_renderer``) instead of
+    """Capture the Webapp bundle builds (``hermes_agent.hermes_cli.webapp.prepare_webapp_renderer``) instead of
     compiling the renderer."""
-    from hermes_cli import webapp
+    from hermes_agent.hermes_cli import webapp
 
     roots: list = []
 
@@ -67,14 +67,14 @@ def builds(monkeypatch):
 
 
 def _config() -> dict:
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     return load_config()
 
 
 def _dashboard_setup() -> tuple[object, object]:
     """The standalone dashboard's own public URL, in config.yaml and in .env, as Web Access found it."""
-    from hermes_cli.config import load_env, read_raw_config
+    from hermes_agent.hermes_cli.config import load_env, read_raw_config
 
     return read_raw_config().get("dashboard", {}).get("public_url"), load_env().get("HERMES_DASHBOARD_PUBLIC_URL")
 
@@ -84,7 +84,7 @@ def test_web_access_keeps_its_url_in_the_webapp_block_and_leaves_the_dashboard_a
     drops it (its callback follows each request), and the standalone dashboard's
     ``dashboard.public_url`` and ``.env`` pin, which a tunnelled dashboard needs after a restart,
     stay exactly as the user set them."""
-    from hermes_cli.config import save_config, save_env_value
+    from hermes_agent.hermes_cli.config import save_config, save_env_value
 
     save_config({**_config(), "dashboard": {"public_url": "https://dashboard.example.test"}})
     save_env_value("HERMES_DASHBOARD_PUBLIC_URL", "https://dashboard.example.test")
@@ -111,7 +111,7 @@ def test_web_access_keeps_its_url_in_the_webapp_block_and_leaves_the_dashboard_a
 
 
 def test_start_without_a_nous_account_writes_and_restarts_nothing(client, restarts, nous, monkeypatch):
-    from hermes_cli import webapp_access
+    from hermes_agent.hermes_cli import webapp_access
 
     monkeypatch.setattr(webapp_access, "nous_signed_in", lambda: False)
 
@@ -132,7 +132,7 @@ def test_status_names_the_mode_the_config_serves(client, webapp, mode):
     """The pane's mode follows the config: the documented loopback setup (``webapp.enabled: true``)
     serves this computer only, a wildcard host serves the network, and ``webapp.public_url`` serves
     the user's own URL. A loopback Webapp is never shown as "My own URL" with no address."""
-    from hermes_cli.config import save_config
+    from hermes_agent.hermes_cli.config import save_config
 
     save_config({**_config(), "webapp": webapp})
 
@@ -144,7 +144,7 @@ def test_status_names_the_mode_the_config_serves(client, webapp, mode):
 def test_start_keeps_a_custom_port_and_builds_the_addresses_on_it(client, restarts, nous):
     """A ``webapp.port`` the user chose (a second gateway on this machine needs its own) survives
     every start and stop, and the status and the LAN callback use it, even while Web Access is off."""
-    from hermes_cli.config import save_config
+    from hermes_agent.hermes_cli.config import save_config
 
     save_config({**_config(), "webapp": {"enabled": False, "port": 9333}})
     assert client.get("/api/webapp-access/status").json()["port"] == 9333
@@ -171,7 +171,7 @@ def test_status_never_shows_a_public_url_the_gateway_refuses(client, public_url,
     """The pane shows the ``webapp:`` block as the gateway reads it, with the gateway's own reader: a
     ``webapp.public_url`` the gateway refuses shows as none, whether the Webapp is on or off, and
     the port the user chose still shows."""
-    from hermes_cli.config import save_config
+    from hermes_agent.hermes_cli.config import save_config
 
     save_config({**_config(), "webapp": {"enabled": enabled, "port": 9333, "public_url": public_url}})
 
@@ -209,9 +209,9 @@ def lan_browser(monkeypatch):
     """The gateway's Webapp on all interfaces behind password sign-in, and a browser on the LAN
     signed in with a cookie session."""
     import plugins.dashboard_auth.basic as basic_plugin
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth import clear_providers, register_provider
-    from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_agent.hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
 
     monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
     for key, value in (("bound_host", "0.0.0.0"), ("bound_port", 9120), ("auth_required", True),
@@ -249,7 +249,7 @@ def webapp_tab(monkeypatch):
     """A tab of the default Webapp (loopback, no sign-in gate), which may be a browser on another
     machine through ``ssh -L 9120:127.0.0.1:9120``: it holds the browser credential, which on this
     listener is the loopback session token."""
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     for key, value in (("ui_surface", "webapp"), ("auth_required", False), ("bound_host", "127.0.0.1"),
                        ("trusted_public_hosts", frozenset())):
@@ -279,7 +279,7 @@ def test_a_webapp_tab_cannot_use_web_access(webapp_tab, restarts, nous):
 def test_native_desktop_uses_web_access_on_the_webapps_own_listener(client, monkeypatch):
     """With the Webapp on, native Desktop dials the gateway's listener that serves it, and its Web
     Access pane keeps working there."""
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     monkeypatch.setattr(web_server.app.state, "ui_surface", "webapp", raising=False)
 
@@ -290,7 +290,7 @@ def test_start_builds_the_webapp_bundle_before_turning_it_on(client, restarts, n
     """Start builds the bundle the gateway serves (``apps/desktop/dist-webapp``) with the function
     ``hermes webapp`` uses, reusing it when current, so it never reports a Webapp with nothing to
     serve as running."""
-    from hermes_cli.config import get_project_root
+    from hermes_agent.hermes_cli.config import get_project_root
 
     assert client.post("/api/webapp-access/start", json={"mode": "lan"}).status_code == 200
     assert builds == [get_project_root()]
@@ -300,7 +300,7 @@ def test_start_builds_the_webapp_bundle_before_turning_it_on(client, restarts, n
 def test_a_failed_build_turns_nothing_on_and_says_how_to_build(client, restarts, nous, monkeypatch):
     """When the bundle cannot be built, Start registers nothing with the Portal, writes nothing and
     restarts nothing, and its error names the command that builds the bundle."""
-    from hermes_cli import webapp
+    from hermes_agent.hermes_cli import webapp
 
     def fail(_project_root, **_options):
         raise webapp.WebappBuildError("Browser-hosted Desktop build failed: npm exited 1")
@@ -323,7 +323,7 @@ def test_other_requests_answer_while_start_builds_and_registers(client, restarts
     the callback (a network round trip), a config request answers at once."""
     import threading
 
-    from hermes_cli import webapp, webapp_access
+    from hermes_agent.hermes_cli import webapp, webapp_access
 
     answered_during_step: list[list[int]] = []
 
@@ -353,7 +353,7 @@ def test_restart_applies_the_saved_config_and_does_nothing_else(client, restarts
     """The pane's "Restart gateway" (a saved change the gateway has not applied yet) restarts the
     gateway serving the profile and nothing else: no Portal registration, no build, no config
     write."""
-    from hermes_cli.config import read_raw_config, save_config
+    from hermes_agent.hermes_cli.config import read_raw_config, save_config
 
     save_config({**_config(), "webapp": {"enabled": True, "host": "0.0.0.0"}})
     saved = read_raw_config()
@@ -371,7 +371,7 @@ def test_restart_applies_the_saved_config_and_does_nothing_else(client, restarts
 def test_a_restart_refused_by_a_running_chat_is_reported_as_busy(client, nous, monkeypatch):
     """When a running chat refuses the gateway restart, the change stays saved and the answer says
     so in a field the pane can word plainly (``restart_busy``), beside the CLI's own refusal text."""
-    import hermes_cli.web_server_gateway as gw
+    import hermes_agent.hermes_cli.web_server_gateway as gw
 
     refusal = ("Refusing to restart the gateway: 1 live session(s) would be interrupted.\n"
                "    POST /api/gateway/restart?interrupt=true   # interrupts 1 live session(s)")
@@ -397,7 +397,7 @@ def portal(monkeypatch):
     standalone dashboard's client (``agent:dashboard``)."""
     from types import SimpleNamespace
 
-    from hermes_cli import auth, dashboard_register, webapp_access
+    from hermes_agent.hermes_cli import auth, dashboard_register, webapp_access
 
     clients = {DASHBOARD_CLIENT: DASHBOARD_CALLBACK}
     requests: list[dict] = []
@@ -419,7 +419,7 @@ def portal(monkeypatch):
 
 
 def _env_bytes() -> bytes:
-    from hermes_cli.config import get_env_path
+    from hermes_agent.hermes_cli.config import get_env_path
 
     path = get_env_path()
     return path.read_bytes() if path.exists() else b""
@@ -432,8 +432,8 @@ def test_start_registers_a_portal_client_of_its_own_and_never_the_dashboards(cli
     writes nothing to ``.env``; a second Start with the same callback asks the Portal nothing; a moved
     callback updates Web Access's own client. The dashboard's client keeps its redirect URI and
     ``.env`` stays exactly as it was."""
-    from hermes_cli import webapp_access
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli import webapp_access
+    from hermes_agent.hermes_cli.config import save_env_value
 
     save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", DASHBOARD_CLIENT)
     env = _env_bytes()
@@ -463,8 +463,8 @@ def test_web_access_keeps_its_client_id_under_the_gateway_home_not_in_env(portal
     did not register itself."""
     import json
 
-    from hermes_cli import webapp_access
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli import webapp_access
+    from hermes_agent.hermes_cli.config import load_env
     from hermes_constants import get_hermes_home
 
     webapp_access.register(LAN_CALLBACK)
@@ -480,7 +480,7 @@ def test_web_access_keeps_its_client_id_under_the_gateway_home_not_in_env(portal
 def test_web_access_keeps_its_client_record_user_only(portal):
     import stat
 
-    from hermes_cli import webapp_access
+    from hermes_agent.hermes_cli import webapp_access
     from hermes_constants import get_hermes_home
 
     webapp_access.register(LAN_CALLBACK)
@@ -496,8 +496,8 @@ def test_a_home_registered_on_the_dashboards_client_gets_its_own_at_the_next_sta
     client of Web Access's own, so the Webapp keeps signing in with the configured one."""
     import json
 
-    from hermes_cli import webapp_access
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli import webapp_access
+    from hermes_agent.hermes_cli.config import save_env_value
     from hermes_constants import get_hermes_home
 
     save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", DASHBOARD_CLIENT)
@@ -524,8 +524,8 @@ def test_dashboard_register_leaves_web_access_and_its_client_alone(portal):
     untouched."""
     import argparse
 
-    from hermes_cli import dashboard_register, webapp_access
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli import dashboard_register, webapp_access
+    from hermes_agent.hermes_cli.config import save_env_value
     from hermes_constants import get_hermes_home
 
     save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", DASHBOARD_CLIENT)
@@ -584,9 +584,9 @@ def gateway_listeners(tmp_path, monkeypatch):
 
     from hermes_agent.gateway.run_api import GatewayDashboardMount
     from hermes_agent.gateway.webapp_listener import WebappMount
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth import clear_providers, listener_client
-    from hermes_cli.dashboard_auth.registry import register_global_provider
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth import clear_providers, listener_client
+    from hermes_agent.hermes_cli.dashboard_auth.registry import register_global_provider
     from hermes_constants import get_hermes_home
 
     for key in ("bound_host", "bound_port", "auth_required", "trusted_public_hosts"):
@@ -618,8 +618,8 @@ def test_the_webapps_nous_sign_in_uses_its_own_client_and_the_dashboards_keeps_i
     reads the same setting), or offers no Nous sign-in when that is unset."""
     import asyncio
 
-    from hermes_cli import webapp_access
-    from hermes_cli.dashboard_auth import get_provider
+    from hermes_agent.hermes_cli import webapp_access
+    from hermes_agent.hermes_cli.dashboard_auth import get_provider
 
     webapp_access.register(LAN_CALLBACK)
     if dashboard_client:
@@ -651,7 +651,7 @@ def test_a_plugin_reload_while_the_webapp_serves_keeps_its_own_client(portal, ga
     is rebuilt on Web Access's client, not on ``HERMES_DASHBOARD_OAUTH_CLIENT_ID``."""
     import asyncio
 
-    from hermes_cli import webapp_access
+    from hermes_agent.hermes_cli import webapp_access
 
     webapp_access.register(LAN_CALLBACK)
     monkeypatch.setenv("HERMES_DASHBOARD_OAUTH_CLIENT_ID", DASHBOARD_CLIENT)
@@ -674,8 +674,8 @@ def test_a_disabled_nous_plugin_keeps_nous_sign_in_off_the_webapp(portal, gatewa
     ``plugins.disabled`` keeps that plugin from loading (discovery never registered it), the Webapp
     gets no Nous sign-in from Web Access either."""
     from hermes_agent.gateway.webapp_listener import WebappMount, use_own_sign_in
-    from hermes_cli import webapp_access
-    from hermes_cli.dashboard_auth import get_provider
+    from hermes_agent.hermes_cli import webapp_access
+    from hermes_agent.hermes_cli.dashboard_auth import get_provider
     from hermes_constants import get_hermes_home
 
     webapp_access.register(LAN_CALLBACK)
@@ -726,9 +726,9 @@ def test_the_gateway_restart_and_status_run_outside_the_config_lock(client, nous
     """Start and Stop write the config under the config lock every config, skills and tools request
     takes, then restart the gateway and read its status outside that lock: the restart spawn and the
     status query (a control-socket round trip of up to 5 seconds) hold no other request up."""
-    import hermes_cli.web_server_gateway as gw
-    from hermes_cli import webapp_access
-    from hermes_cli.config_backend import CONFIG_MUTATION_LOCK as lock
+    import hermes_agent.hermes_cli.web_server_gateway as gw
+    from hermes_agent.hermes_cli import webapp_access
+    from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK as lock
     free_during: dict[str, bool] = {}
 
     def restart(_profile, *, what, label):
@@ -759,8 +759,8 @@ def test_web_access_changes_run_one_at_a_time(client, restarts, nous, monkeypatc
     serve, nor the Webapp on the network after the user stopped it."""
     import threading
 
-    from hermes_cli import webapp, webapp_access
-    from hermes_cli.web_routers import webapp_access as routes
+    from hermes_agent.hermes_cli import webapp, webapp_access
+    from hermes_agent.hermes_cli.web_routers import webapp_access as routes
 
     class WatchedLock:
         """The routes' change lock, noting when a change found it held."""
@@ -829,7 +829,7 @@ def test_a_gateway_older_than_the_webapp_reads_as_serving_none_until_it_restarts
     Restart gateway), never ``unavailable``, which the pane's restart wait takes as the final answer."""
     from pathlib import Path
 
-    from hermes_cli import webapp_access, webapp_launcher
+    from hermes_agent.hermes_cli import webapp_access, webapp_launcher
 
     answer = {"ok": False, "error": "unknown verb: 'webapp-status'", "protocol": 1,
               "supported_verbs": ["identify", "session-ticket", "status"]}

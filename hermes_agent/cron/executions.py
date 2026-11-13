@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from hermes_agent.cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
-from hermes_cli.observability.shared_metrics_gateway import record_cron_finish
+from hermes_agent.hermes_cli.observability.shared_metrics_gateway import record_cron_finish
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +49,10 @@ _PROCESS_ID = uuid.uuid4().hex
 
 def _connect() -> sqlite3.Connection:
     # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``hermes_agent.cron.jobs`` cached, so new names must be resolved at call time,
+    # ``hermes_agent.hermes_cli.sqlite_util`` / ``hermes_agent.cron.jobs`` cached, so new names must be resolved at call time,
     # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
     from hermes_agent.cron.jobs import _ensure_cron_dir
-    from hermes_cli.sqlite_util import open_db
+    from hermes_agent.hermes_cli.sqlite_util import open_db
 
     path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
     _ensure_cron_dir(path.parent)
@@ -60,7 +60,7 @@ def _connect() -> sqlite3.Connection:
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_cli.sqlite_util import add_column_if_missing
+    from hermes_agent.hermes_cli.sqlite_util import add_column_if_missing
 
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS executions (
@@ -135,7 +135,7 @@ def _widen_status_check(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    from hermes_cli.sqlite_util import transaction
+    from hermes_agent.hermes_cli.sqlite_util import transaction
 
     with _lock, transaction(_connect()) as conn:
         yield conn

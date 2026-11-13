@@ -1,5 +1,5 @@
 """Text-to-speech provider setup (provider picker, API-key prompts, local engine installs, xAI OAuth).
-setup.py names are resolved through the module object so test patches on ``hermes_cli.setup.<name>``
+setup.py names are resolved through the module object so test patches on ``hermes_agent.hermes_cli.setup.<name>``
 take effect; setup.py re-exports the public entry points."""
 
 import logging
@@ -8,7 +8,7 @@ import subprocess
 import sys
 from hermes_agent.tools import tool_backend_helpers
 
-logger = logging.getLogger("hermes_cli.setup")
+logger = logging.getLogger("hermes_agent.hermes_cli.setup")
 
 
 def _install_tts_extra(extra: str) -> bool:
@@ -72,7 +72,7 @@ def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are stored locally, so TTS/STT setup can skip the
     API-key prompt for users who logged in via ``hermes model`` -> xAI Grok OAuth."""
     try:
-        from hermes_cli.auth import get_xai_oauth_auth_status
+        from hermes_agent.hermes_cli.auth import get_xai_oauth_auth_status
         return bool(get_xai_oauth_auth_status().get("logged_in"))
     except Exception:
         return False
@@ -83,7 +83,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
     only — does **not** switch the active provider or rewrite ``model.provider`` (callers only need
     credentials for side tools). False on any failure (caller falls back)."""
     try:
-        from hermes_cli.auth import (
+        from hermes_agent.hermes_cli.auth import (
             _is_remote_session, _save_xai_oauth_tokens, _xai_oauth_device_code_login,
             unsuppress_credential_source)
     except Exception as exc:
@@ -238,7 +238,7 @@ def _tts_xai_step(config: dict) -> str:
 
 def _setup_tts_provider(config: dict):
     """Interactive TTS provider selection with install flow for local engines."""
-    from hermes_cli import nous_subscription
+    from hermes_agent.hermes_cli import nous_subscription
     current_provider = config.get("tts", {}).get("provider", "edge")
     current_label = _TTS_PROVIDER_LABELS.get(current_provider, current_provider)
     print()
@@ -294,4 +294,4 @@ def setup_tts(config: dict):
     _setup_tts_provider(config)
 
 
-import hermes_cli.setup as _setup
+import hermes_agent.hermes_cli.setup as _setup

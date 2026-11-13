@@ -1,8 +1,8 @@
 """Custom-provider entry normalization and per-route lookups (TLS, headers, context length, capabilities).
 
-Split out of ``hermes_cli/config.py``; every name is re-imported there, so
-``hermes_cli.config.<name>`` keeps resolving (and monkeypatching) as before. Functions that call
-``get_compatible_custom_providers`` / ``load_config*`` import them lazily from ``hermes_cli.config``
+Split out of ``hermes_agent/hermes_cli/config.py``; every name is re-imported there, so
+``hermes_agent.hermes_cli.config.<name>`` keeps resolving (and monkeypatching) as before. Functions that call
+``get_compatible_custom_providers`` / ``load_config*`` import them lazily from ``hermes_agent.hermes_cli.config``
 so tests patching that module still intercept the call.
 """
 
@@ -11,10 +11,10 @@ import re
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from hermes_cli.route_identity import normalize_route_base_url
+from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("hermes_cli.config")
+logger = logging.getLogger("hermes_agent.hermes_cli.config")
 
 
 # ``_normalize_custom_provider_entry`` runs on every ``load_picker_context()`` call, so a warning
@@ -324,7 +324,7 @@ def get_compatible_custom_providers(
 
     Never materialised back into config.yaml (it would duplicate entries in UIs).
     """
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     if config is None:
         config = load_config()
 
@@ -374,7 +374,7 @@ def _entries_for_route(
 
     None *custom_providers* → ``get_compatible_custom_providers(config)`` (failure → none).
     """
-    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers
     if custom_providers is None:
         try:
             custom_providers = get_compatible_custom_providers(config)
@@ -539,7 +539,7 @@ def get_custom_provider_context_length(
     Before this helper existed, the lookup was duplicated in ``hermes_agent/run_agent.py``'s startup path only; every
     other path (notably ``/model`` switch) fell back to the 128K default. See #15779.
     """
-    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config_readonly
     if not model or not base_url:
         return None
     if custom_providers is None:
@@ -582,7 +582,7 @@ def get_custom_provider_model_capability(
     config: Optional[dict[str, Any]] = None) -> Optional[bool]:
     """Explicit boolean capability for one custom-provider model, or ``None``. Scoped to the
     normalized route + exact runtime model id so aliases can declare capabilities."""
-    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config_readonly
     if not model or not base_url or not capability:
         return None
     if custom_providers is None:

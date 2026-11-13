@@ -131,7 +131,7 @@ def apply_migration(
     Unless ``backup=False`` a copy goes to ``backups/config/`` (reason ``pre-migrate-xai``).
     """
     from ruamel.yaml import YAML  # local import — avoid hard dep at module load
-    from hermes_cli.config_backend import require_file_tooling
+    from hermes_agent.hermes_cli.config_backend import require_file_tooling
     # A type-literal-preserving rewrite of the file itself; a non-file backend has no file.
     require_file_tooling("The xAI model migration")
     config_path = Path(config_path)
@@ -165,10 +165,10 @@ def apply_migration(
 
     backup_path: Optional[Path] = None
     if backup:
-        from hermes_cli.config_backups import backup_config
+        from hermes_agent.hermes_cli.config_backups import backup_config
         backup_path = backup_config(config_path, "pre-migrate-xai")
 
-    from hermes_cli.config import require_readable_config_before_write
+    from hermes_agent.hermes_cli.config import require_readable_config_before_write
     from utils import atomic_write_text
     require_readable_config_before_write(config_path)
     # Dump to a buffer, then atomic-write: ``open(path, "w")`` truncates before the dump runs, so a

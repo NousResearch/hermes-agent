@@ -29,7 +29,7 @@ class TestHostHeaderValidator:
         """0.0.0.0 means operator explicitly opted into all-interfaces
         (requires --insecure). No Host-layer defence is possible — rely
         on operator network controls."""
-        from hermes_cli.web_server import _is_accepted_host
+        from hermes_agent.hermes_cli.web_server import _is_accepted_host
 
         for host in ("10.0.0.5", "evil.example", "my-server.corp.net"):
             assert _is_accepted_host(host, "0.0.0.0")
@@ -38,7 +38,7 @@ class TestHostHeaderValidator:
     def test_explicit_non_loopback_bind_requires_exact_match(self):
         """If the operator bound to a specific non-loopback hostname,
         the Host header must match exactly."""
-        from hermes_cli.web_server import _is_accepted_host
+        from hermes_agent.hermes_cli.web_server import _is_accepted_host
 
         assert _is_accepted_host("my-server.corp.net", "my-server.corp.net")
         assert _is_accepted_host("my-server.corp.net:9119", "my-server.corp.net")
@@ -50,7 +50,7 @@ class TestHostHeaderValidator:
 
     def test_trusted_public_host_is_exact_match_only(self):
         """A declared proxy host is accepted without weakening rebinding checks."""
-        from hermes_cli.web_server import _is_accepted_host
+        from hermes_agent.hermes_cli.web_server import _is_accepted_host
 
         trusted = frozenset({"dashboard.example.test"})
         assert _is_accepted_host(
@@ -63,7 +63,7 @@ class TestHostHeaderValidator:
 
     def test_malformed_host_authorities_fail_closed(self):
         """Ports, IPv6 brackets, and authority syntax must be unambiguous."""
-        from hermes_cli.web_server import _is_accepted_host
+        from hermes_agent.hermes_cli.web_server import _is_accepted_host
 
         trusted = frozenset({"dashboard.example.test"})
         for malformed in (
@@ -83,7 +83,7 @@ class TestHostHeaderMiddleware:
 
     def test_rebinding_request_rejected(self):
         from fastapi.testclient import TestClient
-        from hermes_cli.web_server import app
+        from hermes_agent.hermes_cli.web_server import app
 
         # Simulate start_server having set the bound_host
         app.state.bound_host = "127.0.0.1"
@@ -105,7 +105,7 @@ class TestHostHeaderMiddleware:
     def test_trusted_public_host_request_accepted(self):
         """A loopback backend may accept its declared reverse-proxy host."""
         from fastapi.testclient import TestClient
-        from hermes_cli.web_server import app
+        from hermes_agent.hermes_cli.web_server import app
 
         app.state.bound_host = "127.0.0.1"
         app.state.trusted_public_hosts = frozenset({"dashboard.example.test"})
@@ -125,7 +125,7 @@ class TestHostHeaderMiddleware:
         infra without calling start_server), middleware must pass through
         rather than crash."""
         from fastapi.testclient import TestClient
-        from hermes_cli.web_server import app
+        from hermes_agent.hermes_cli.web_server import app
 
         # Make sure bound_host isn't set
         if hasattr(app.state, "bound_host"):
@@ -144,7 +144,7 @@ class TestWebSocketHostOriginGuard:
         from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
-        import hermes_cli.web_server as ws
+        import hermes_agent.hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
         monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
@@ -168,7 +168,7 @@ class TestWebSocketHostOriginGuard:
     def test_loopback_websocket_host_and_origin_are_accepted(self, monkeypatch):
         from fastapi.testclient import TestClient
 
-        import hermes_cli.web_server as ws
+        import hermes_agent.hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
         monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
@@ -189,7 +189,7 @@ class TestWebSocketHostOriginGuard:
     def test_trusted_public_websocket_host_and_origin_are_accepted(self, monkeypatch):
         from fastapi.testclient import TestClient
 
-        import hermes_cli.web_server as ws
+        import hermes_agent.hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
         monkeypatch.setattr(
@@ -216,7 +216,7 @@ class TestWebSocketHostOriginGuard:
         from fastapi.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
-        import hermes_cli.web_server as ws
+        import hermes_agent.hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
         monkeypatch.setattr(
@@ -274,7 +274,7 @@ def test_other_local_ports_can_neither_read_nor_open_a_socket(
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     if dev_server:
         monkeypatch.setenv("HERMES_DESKTOP_DEV_SERVER", dev_server)
@@ -322,7 +322,7 @@ def test_dashboard_vite_dev_proxy_needs_no_trusted_dev_port(monkeypatch, origin,
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
     monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
@@ -358,7 +358,7 @@ def test_a_port_forwarded_dashboard_page_opens_its_own_sockets(monkeypatch, host
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
     monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
@@ -395,7 +395,7 @@ def test_plugin_websockets_run_the_core_host_origin_gate(monkeypatch, host, orig
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     assert "/api/plugins/kanban/events" in {getattr(r, "path", "") for r in ws.app.routes}
     monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
@@ -424,8 +424,8 @@ def test_every_mounted_plugin_websocket_gets_the_gate(tmp_path, monkeypatch, pat
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
-    import hermes_cli.web_server as ws
-    import hermes_cli.web_server_dashboard as dashboard
+    import hermes_agent.hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server_dashboard as dashboard
 
     api_dir = tmp_path / "wsprobe" / "dashboard"
     api_dir.mkdir(parents=True)
@@ -480,7 +480,7 @@ def test_token_page_and_route_map_are_not_cors_readable_from_another_local_port(
     still does, so the check is not vacuous."""
     from fastapi.testclient import TestClient
 
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
     monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
@@ -506,7 +506,7 @@ def test_all_interfaces_binds_keep_the_loopback_port_check(bound_host, host, ori
     port check applies there too."""
     import types
 
-    from hermes_cli.web_server_boundary import ws_host_origin_reason
+    from hermes_agent.hermes_cli.web_server_boundary import ws_host_origin_reason
 
     state = types.SimpleNamespace(bound_host=bound_host, bound_port=9119, auth_required=True)
     sock = types.SimpleNamespace(headers={"host": host, "origin": origin})
@@ -536,8 +536,8 @@ def test_a_loopback_public_url_behind_a_host_rewriting_proxy(
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
-    from hermes_cli.dashboard_auth import prefix
-    import hermes_cli.web_server as ws
+    from hermes_agent.hermes_cli.dashboard_auth import prefix
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
     monkeypatch.setattr(prefix, "resolve_public_url", lambda *a, **k: dashboard_url or "")

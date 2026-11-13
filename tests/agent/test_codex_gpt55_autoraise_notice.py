@@ -51,7 +51,7 @@ def _config(*, show_notice: bool) -> dict:
 
 def _make_codex_agent(monkeypatch, tmp_path: Path, *, show_notice: bool):
     """Construct a real Codex gpt-5.5 agent under an isolated config."""
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     monkeypatch.setattr(config_mod, "load_config", lambda: _config(show_notice=show_notice))
 

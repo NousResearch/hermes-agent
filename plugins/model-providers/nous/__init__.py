@@ -14,7 +14,7 @@ class NousProfile(ProviderProfile):
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Portal's tier-aware ``/api/nous/recommended-models`` pick (cached, offline-safe)."""
         try:
-            from hermes_cli.models import get_nous_recommended_aux_model
+            from hermes_agent.hermes_cli.models import get_nous_recommended_aux_model
 
             return get_nous_recommended_aux_model(vision=vision) or ""
         except Exception:
@@ -42,7 +42,7 @@ class NousProfile(ProviderProfile):
         """True when ``reasoning: {enabled: false}`` would 400 on *model*. Cache-only catalog
         lookup; unknown/cold (warmer kicked) and no-reasoning routes both answer True (omit > 400)."""
         try:
-            from hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities, warm_nous_reasoning_caps_async
+            from hermes_agent.hermes_cli.models_reasoning_caps import nous_model_reasoning_capabilities, warm_nous_reasoning_caps_async
 
             caps = nous_model_reasoning_capabilities(model)
             if caps is None:

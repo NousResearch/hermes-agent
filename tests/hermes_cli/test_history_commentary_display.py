@@ -1,6 +1,6 @@
 """Public Codex commentary is a display projection, never a replay mutation."""
 
-from hermes_cli.web_routers.sessions import _project_for_display
+from hermes_agent.hermes_cli.web_routers.sessions import _project_for_display
 from hermes_agent.tui_gateway.server import _history_to_messages
 from hermes_agent.agent.history_commentary import visible_commentary
 from hermes_constants import get_hermes_home_override
@@ -99,7 +99,7 @@ def test_history_applies_live_stripping_and_redaction_without_changing_raw_items
     ],
 )
 def test_owner_profile_settings_apply_to_rest_and_rpc(monkeypatch, tmp_path, disabled):
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     enabled_home, disabled_home = tmp_path / "enabled", tmp_path / "disabled"
     observed = []
@@ -129,8 +129,8 @@ def test_owner_profile_settings_apply_to_rest_and_rpc(monkeypatch, tmp_path, dis
 def test_rest_pages_bind_the_history_owner_for_messages_and_around(
     monkeypatch, tmp_path
 ):
-    from hermes_cli import config as config_mod
-    from hermes_cli.web_routers import sessions
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli.web_routers import sessions
     from hermes_agent import hermes_state_timeline
 
     row = _row()
@@ -193,8 +193,8 @@ def test_rest_pages_bind_the_history_owner_for_messages_and_around(
 
 
 def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp_path):
-    from hermes_cli import config as config_mod
-    from hermes_cli.web_routers import sessions
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli.web_routers import sessions
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent import hermes_state_timeline
 
@@ -259,7 +259,7 @@ def test_unscoped_rest_history_uses_custom_home_of_its_database(monkeypatch, tmp
 
 
 def test_cold_resume_uses_the_resumed_session_home(monkeypatch, tmp_path):
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
     from hermes_agent.tui_gateway.server import _Resume
 
     home = tmp_path / "disabled"
@@ -289,7 +289,7 @@ def test_joined_canonical_commentary_uses_sanitized_display_copy(monkeypatch):
     assert visible["display_reasoning"] == "Private summary."
 
     from hermes_agent.agent.history_commentary import project_history_commentary
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     monkeypatch.setattr(
         config_mod, "load_config", lambda: {"display": {"show_commentary": False}}
@@ -330,7 +330,7 @@ def test_mixed_canonical_content_is_sanitized_without_truncating_possible_final(
         assert projected["display_content"] == visible_commentary(row["content"])
         assert raw not in projected["display_reasoning"]
 
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     monkeypatch.setattr(
         config_mod, "load_config", lambda: {"display": {"show_commentary": False}}
@@ -347,7 +347,7 @@ def test_stream_recovered_final_without_final_sidecar_is_authoritative(
 ):
     from types import SimpleNamespace
     from hermes_agent.agent.turn_finalizer import _close_transcript_tail
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     row = _row("Checking.")
     agent = SimpleNamespace(_db_flush_scan_prefix=None)
@@ -376,7 +376,7 @@ def test_stream_recovered_final_without_final_sidecar_is_authoritative(
 def test_canonical_content_matching_final_item_is_never_stripped(
     monkeypatch, final, phase
 ):
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     row = _row("Checking.")
     row["content"] = final
@@ -408,7 +408,7 @@ def test_canonical_content_matching_final_item_is_never_stripped(
 
 
 def test_mixed_canonical_preserves_final_repetition_of_a_commentary_phrase(monkeypatch):
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     row = _row("Checking")
     row["content"] = "Checking\n\nFinal: Checking completed."
@@ -461,7 +461,7 @@ def test_legacy_newline_and_ambiguous_repeats_do_not_leak_public_text_into_think
 def test_overlapping_public_items_do_not_leave_partial_text_in_final_or_thinking(
     monkeypatch,
 ):
-    from hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config as config_mod
 
     row = _row("Start")
     row["codex_message_items"].insert(

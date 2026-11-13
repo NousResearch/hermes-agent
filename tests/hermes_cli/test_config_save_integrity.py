@@ -7,8 +7,8 @@ import shutil
 import pytest
 import hermes_yaml as yaml
 
-import hermes_cli.config as config_mod
-from hermes_cli.config import DEFAULT_CONFIG, load_config, migrate_config, read_raw_config, save_config
+import hermes_agent.hermes_cli.config as config_mod
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, load_config, migrate_config, read_raw_config, save_config
 
 _CONFIG = """# hand-tuned
 model:
@@ -89,7 +89,7 @@ def _tui_config_set():
 
 def _dashboard_put():
     from starlette.testclient import TestClient
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     client = TestClient(app, raise_server_exceptions=False)
     r = client.put("/api/config", json={"config": {"display": {"skin": "ares"}}},
                    headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
@@ -136,8 +136,8 @@ def test_transient_read_error_is_not_recorded_as_a_corrupt_config(read, home, mo
     """One EMFILE on an intact file must not leave the process treating config.yaml as corrupt: the
     provider auto-resolution refusal (`corrupt_config`) keyed on the file signature would otherwise
     fire until the file is next edited, and the good file would be copied away as `.corrupt`."""
-    from hermes_cli.auth import _refuse_env_adoption_if_config_corrupt
-    from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED, get_active_config_parse_failure
+    from hermes_agent.hermes_cli.auth import _refuse_env_adoption_if_config_corrupt
+    from hermes_agent.hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED, get_active_config_parse_failure
     path = home / "config.yaml"
     _fresh_process(home, _CONFIG)
     _CONFIG_PARSE_WARNED.clear()
@@ -159,8 +159,8 @@ def test_unreadable_config_serves_one_cached_fallback_until_it_reads(home, monke
     once, not per call: ~250x slower loads before), and the first load once the file opens again
     reads the real file even though its signature never changed."""
     import builtins
-    from hermes_cli import config_backend, config_backups
-    from hermes_cli.config_read_errors import FailedConfigRead
+    from hermes_agent.hermes_cli import config_backend, config_backups
+    from hermes_agent.hermes_cli.config_read_errors import FailedConfigRead
     path = home / "config.yaml"
     _fresh_process(home, _CONFIG)
     load_config()  # leaves the `good` backup a fresh process falls back to
@@ -195,7 +195,7 @@ def test_save_refusal_for_bad_yaml_asks_for_an_edit_not_a_retry(home):
 
 @pytest.mark.parametrize("operation", ["save", "partial_save", "migrate"])
 def test_authored_nulls_survive_config_writes(tmp_path, monkeypatch, operation):
-    from hermes_cli.resource_limits import configured_nofile_soft_limit
+    from hermes_agent.hermes_cli.resource_limits import configured_nofile_soft_limit
     from hermes_agent.agent.agent_runtime_helpers import prompt_caching_disabled_from_config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

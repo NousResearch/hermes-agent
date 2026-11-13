@@ -7,7 +7,7 @@ import logging
 import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-from hermes_cli.config import get_config_path
+from hermes_agent.hermes_cli.config import get_config_path
 from hermes_agent.tools.connectors.gateway.client import ConnectorClient
 from hermes_agent.tools.managed_gateway_identity import CallRef, connector_headers, user_agent
 

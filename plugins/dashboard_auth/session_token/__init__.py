@@ -26,7 +26,7 @@ import os
 import time
 from typing import Optional
 
-from hermes_cli.dashboard_auth import (
+from hermes_agent.hermes_cli.dashboard_auth import (
     DashboardAuthProvider, RefreshExpiredError, Session)
 from plugins.dashboard_auth._shared import (
     NonInteractiveMixin, SkipRegistration, load_config_section, register_provider)
@@ -47,7 +47,7 @@ def _resolve_provisioned_token() -> str:
     ``file:``-prefixed path (BOM-tolerant, same reader). Raises ``SystemExit`` for an
     unreadable/empty token file — ``register`` maps that to a skip so plugin discovery
     never dies for a sibling provider's misconfiguration."""
-    from hermes_cli.web_server_session_token import resolve_session_token
+    from hermes_agent.hermes_cli.web_server_session_token import resolve_session_token
 
     return resolve_session_token()
 

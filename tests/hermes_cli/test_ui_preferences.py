@@ -15,7 +15,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import ui_preferences, web_server
+from hermes_agent.hermes_cli import ui_preferences, web_server
 
 
 def test_a_profile_home_and_the_root_home_resolve_the_same_store(monkeypatch, tmp_path):

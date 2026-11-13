@@ -4,7 +4,7 @@ Each migrated wrapper keeps its caller-facing contract (signature, all
 failures swallowed, ``None`` return) while routing the actual tree
 termination through :func:`hermes_agent.agent.deadline.kill_process_tree`:
 
-* ``hermes_cli._subprocess_compat.kill_process_tree(proc)`` — also consumed
+* ``hermes_agent.hermes_cli._subprocess_compat.kill_process_tree(proc)`` — also consumed
   by ``hermes_agent.agent.shell_hooks`` by name; falls back to
   ``_legacy_kill_process_tree`` when delegation fails.
 * ``hermes_agent.tools.code_execution_tool._kill_process_group(proc, escalate=...)`` —
@@ -37,7 +37,7 @@ class _FakeProc:
 
 
 # ---------------------------------------------------------------------------
-# (1) hermes_cli._subprocess_compat.kill_process_tree
+# (1) hermes_agent.hermes_cli._subprocess_compat.kill_process_tree
 # ---------------------------------------------------------------------------
 
 
@@ -106,7 +106,7 @@ def test_e2e_setsid_grandchild_killed_via_compat_wrapper(tmp_path):
     pytest.importorskip("psutil")
     import psutil
 
-    from hermes_cli._subprocess_compat import kill_process_tree
+    from hermes_agent.hermes_cli._subprocess_compat import kill_process_tree
 
     started = tmp_path / "grandchild_started"
     marker = tmp_path / "grandchild_survived"

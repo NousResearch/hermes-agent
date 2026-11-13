@@ -1,9 +1,9 @@
 """Frozen compat surface for releases that finish `hermes update` via the post-swap hand-off.
 
-Releases from 2026-09-16 (94ced1a2b2) lazily import ``hermes_cli.update_handoff``
+Releases from 2026-09-16 (94ced1a2b2) lazily import ``hermes_agent.hermes_cli.update_handoff``
 from the NEW tree after the checkout swap. Like every other retired updater
 hook, this module keeps that import working by routing into the historical
-takeover (``hermes_cli._old_updater`` → ``_update_takeover.py``) instead of
+takeover (``hermes_agent.hermes_cli._old_updater`` → ``_update_takeover.py``) instead of
 re-executing ``hermes update --post-swap``; the pulled tree is never imported
 into the pre-pull interpreter.
 
@@ -54,7 +54,7 @@ def post_swap_python() -> Path:
     running interpreter."""
     if sys.platform != "win32":
         return Path(sys.executable)
-    from hermes_cli._launchers import _is_windows
+    from hermes_agent.hermes_cli._launchers import _is_windows
     from hermes_constants import project_venv_dir
     from pm.environments import venv_python
 
@@ -67,7 +67,7 @@ def post_swap_python() -> Path:
 
 
 def post_swap_command(handoff_path: Path, argv_tail: list[str]) -> list[str]:
-    """``python -m hermes_cli.main update <original flags> --post-swap <file>``.
+    """``python -m hermes_agent.hermes_cli.main update <original flags> --post-swap <file>``.
 
     Historical command shape; kept so a printed manual-continuation line reads
     exactly as older releases expect. The takeover child this tree actually
@@ -81,7 +81,7 @@ def post_swap_child_env() -> dict[str, str]:
     """Environment for the child. ``HERMES_UPDATE_REEXEC`` marks it as already off the Windows
     shim (no second re-exec at the sync boundary). The lock hand-off pid is only claimed when
     nobody upstream (Tauri/Electron updater) already named theirs."""
-    from hermes_cli.update_lock import HANDOFF_PID_ENV
+    from hermes_agent.hermes_cli.update_lock import HANDOFF_PID_ENV
 
     env = {**os.environ, POST_SWAP_ENV: "1", "HERMES_UPDATE_REEXEC": "1"}
     env.setdefault(HANDOFF_PID_ENV, str(os.getpid()))
@@ -118,7 +118,7 @@ def _continue_legacy_post_swap(handoff_path: str | Path, *, argv_tail: list[str]
         Path(handoff_path).unlink()
     except OSError:
         pass
-    from hermes_cli._old_updater import _run_child
+    from hermes_agent.hermes_cli._old_updater import _run_child
 
     code, _completed = _run_child(_takeover_request(payload, argv_tail))
     return int(code)
@@ -135,7 +135,7 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
     mirror the historical hand-off: wait for the child's cleanup instead of
     subprocess.run's kill-on-interrupt.
     """
-    from hermes_cli._old_updater import _run_child
+    from hermes_agent.hermes_cli._old_updater import _run_child
 
     handoff_path = write_handoff(payload)
     request = _takeover_request(payload, argv_tail)

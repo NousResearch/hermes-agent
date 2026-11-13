@@ -69,7 +69,7 @@ def _agent(provider_url, db):
 def _blocked_session(provider_url, db):
     """Run one vetoed turn on ``s-block``; return its result."""
     verdicts = [{"context": "IGNORED-ON-BLOCK"}, {"action": "block", "message": BLOCK_MSG}]
-    with patch("hermes_cli.plugins.invoke_hook",
+    with patch("hermes_agent.hermes_cli.plugins.invoke_hook",
                side_effect=lambda hook, **kw: list(verdicts) if hook == "pre_llm_call" else []):
         return _agent(provider_url, db).run_conversation(f"look up {SECRET}", conversation_history=[], task_id="t")
 
@@ -156,7 +156,7 @@ def test_retry_and_undo_after_a_block_resubmit_the_typed_text(provider_url, tmp_
             assert outcome.live_text == typed and outcome.prefix == []
             dlp = lambda hook, **kw: ([{"action": "block", "message": BLOCK_MSG}] if hook == "pre_llm_call"
                                       and SECRET in kw["user_message"] else [])
-            with patch("hermes_cli.plugins.invoke_hook", side_effect=dlp):
+            with patch("hermes_agent.hermes_cli.plugins.invoke_hook", side_effect=dlp):
                 again = _agent(provider_url, db).run_conversation(outcome.live_text, conversation_history=[], task_id="t")
             assert again["turn_exit_reason"] == PRE_LLM_BLOCK_EXIT_REASON and _Provider.chat_requests == []
         finally:

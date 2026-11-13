@@ -58,7 +58,7 @@ def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_
 
 
 def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
-    from hermes_cli.fs_utils import rmtree_force
+    from hermes_agent.hermes_cli.fs_utils import rmtree_force
 
     target, backup, metadata = (Path(row[key]) for key in ("target", "backup", "metadata"))
     home = dependency_home_root().resolve()

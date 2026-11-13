@@ -1,8 +1,8 @@
 """Status dashboard routes: health, /api/status, system stats, curator, learning graph,
 portal and diagnostics actions.
 
-Extracted from ``hermes_cli.web_server``; app state and helpers are late-bound through
-:mod:`hermes_cli.web_deps` (cycle-safe, monkeypatch-friendly).
+Extracted from ``hermes_agent.hermes_cli.web_server``; app state and helpers are late-bound through
+:mod:`hermes_agent.hermes_cli.web_deps` (cycle-safe, monkeypatch-friendly).
 """
 
 import concurrent.futures
@@ -14,8 +14,8 @@ import os
 import sys
 import time
 from fastapi import APIRouter
-from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_server_gateway import _display_system_platform
+from hermes_agent.hermes_cli.web_deps import LateState, late
+from hermes_agent.hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from hermes_agent.gateway.status import (
@@ -24,44 +24,44 @@ from hermes_agent.gateway.status import (
     retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_agent.gateway.status_served import local_liveness_pid
-from hermes_cli import __release_date__
-from hermes_cli.config import get_config_path, get_env_path
-from hermes_cli.isolated_scope import isolated_launch_profile, scope_to_launch_profile
-from hermes_cli.version_info import get_version_info
+from hermes_agent.hermes_cli import __release_date__
+from hermes_agent.hermes_cli.config import get_config_path, get_env_path
+from hermes_agent.hermes_cli.isolated_scope import isolated_launch_profile, scope_to_launch_profile
+from hermes_agent.hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
-from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
-from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
-from hermes_cli.web_routers.status_public import redact_status_for_unverified
+from hermes_agent.hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
+from hermes_agent.hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
+from hermes_agent.hermes_cli.web_routers.status_public import redact_status_for_unverified
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 # Mounted separately by web_server so /api/logs keeps its original route-table position.
 logs_router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_collect_profile_gateway_topology_cached = late("_collect_profile_gateway_topology_cached", "hermes_cli.web_server_gateway")
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
-_dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
-_load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_cli.web_server_gateway")
-_probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
+_collect_profile_gateway_topology_cached = late("_collect_profile_gateway_topology_cached", "hermes_agent.hermes_cli.web_server_gateway")
+_config_profile_scope = late("_config_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
+_dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_agent.hermes_cli.web_server_files")
+_load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_agent.hermes_cli.web_server_gateway")
+_probe_gateway_health = late("_probe_gateway_health", "hermes_agent.hermes_cli.web_server_gateway")
 _require_token = late("_require_token")
-_resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_resolve_restart_drain_timeout = late("_resolve_restart_drain_timeout", "hermes_cli.web_server_lifecycle")
-_spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
+_resolve_profile_dir = late("_resolve_profile_dir", "hermes_agent.hermes_cli.web_server_profiles")
+_resolve_restart_drain_timeout = late("_resolve_restart_drain_timeout", "hermes_agent.hermes_cli.web_server_lifecycle")
+_spawn_hermes_action = late("_spawn_hermes_action", "hermes_agent.hermes_cli.web_server_gateway")
 _ssh_runtime_intact = late("_ssh_runtime_intact")
 app = LateState("app")  # the FastAPI instance (app.state.*)
-check_config_version = late("check_config_version", "hermes_cli.config")
-get_hermes_home = late("get_hermes_home", "hermes_cli.config")
-_profile_cli_args = late("_profile_cli_args", "hermes_cli.web_server_profiles")
+check_config_version = late("check_config_version", "hermes_agent.hermes_cli.config")
+get_hermes_home = late("get_hermes_home", "hermes_agent.hermes_cli.config")
+_profile_cli_args = late("_profile_cli_args", "hermes_agent.hermes_cli.web_server_profiles")
 get_install_id = late("get_install_id")
 get_running_pid_cached = late("get_running_pid_cached", "hermes_agent.gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "hermes_agent.gateway.status")
 served_profile_runtime = late("served_profile_runtime", "hermes_agent.gateway.status_served")
-load_config = late("load_config", "hermes_cli.config")
+load_config = late("load_config", "hermes_agent.hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "hermes_agent.gateway.status")
-_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_agent.hermes_cli.web_server_sessions")
 
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
@@ -110,7 +110,7 @@ async def _status_active_sessions() -> int:
 
 @router.get("/api/ssh/ownership")
 async def get_ssh_ownership(request: Request):
-    from hermes_cli.web_server import _SSH_OWNER_NONCE
+    from hermes_agent.hermes_cli.web_server import _SSH_OWNER_NONCE
     _require_token(request)
     if not _SSH_OWNER_NONCE:
         raise HTTPException(status_code=404, detail="SSH ownership is not active")
@@ -164,7 +164,7 @@ def _mounted_on_gateway(request: Request) -> bool:
 @router.get("/api/health/idle")
 async def get_health_idle(request: Request):
     """Token-gated diagnostic snapshot; never a retirement permit. None means cannot prove idle."""
-    from hermes_cli.web_server_idle_proof import idle_proof
+    from hermes_agent.hermes_cli.web_server_idle_proof import idle_proof
     _require_token(request)
     if _mounted_on_gateway(request):
         return {"ok": True, "idle": False, "reason": _GATEWAY_OWNS_LIFECYCLE}
@@ -173,7 +173,7 @@ async def get_health_idle(request: Request):
 
 @router.post("/api/health/retirement")
 async def post_health_retirement(request: Request):
-    from hermes_cli.backend_retirement import retirement
+    from hermes_agent.hermes_cli.backend_retirement import retirement
 
     _require_token(request)
     if _mounted_on_gateway(request):
@@ -193,7 +193,7 @@ async def post_health_retirement(request: Request):
     return getattr(retirement, action)(token)
 
 
-# Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE. Platform segment mirrors the
+# Profile segment mirrors hermes_agent.hermes_cli.profiles._PROFILE_ID_RE. Platform segment mirrors the
 # Platform enum's normalized values: built-in members plus plugin directory names
 # (lowercased), which allow hyphens as well as underscores (e.g. ``reviewer:foo-bar``).
 _PROFILE_PLATFORM_STATUS_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}:[a-z0-9][a-z0-9_-]{0,63}$")
@@ -237,7 +237,7 @@ def _merge_profile_gateway_platforms(gateway_platforms: dict, profile_platforms:
     reads unless folded in under the validated ``<profile>:<platform>`` grammar. The active
     profile's own map is skipped (already present); existing keys are never overwritten."""
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         active = get_active_profile_name()
     except Exception:
         active = "default"
@@ -410,10 +410,10 @@ def _auth_gate_status() -> dict[str, Any]:
     auth_flows: list[str] = []
     peer_access = 0
     try:
-        from hermes_cli.dashboard_auth import (
+        from hermes_agent.hermes_cli.dashboard_auth import (
             list_interactive_providers as _list_interactive_providers,
             list_providers as _list_providers)
-        from hermes_cli.dashboard_auth.peer_pass import peer_access_contract
+        from hermes_agent.hermes_cli.dashboard_auth.peer_pass import peer_access_contract
         auth_providers = [p.name for p in _list_providers()]
         peer_access = peer_access_contract()
         if auth_required:
@@ -433,7 +433,7 @@ def _nous_session_validity() -> str:
     fails, and this is the ONLY signal that surfaces it (local auth-store state, no token
     needed). Best-effort: never let auth classification break the probe."""
     try:
-        from hermes_cli.auth import get_nous_session_validity
+        from hermes_agent.hermes_cli.auth import get_nous_session_validity
         return get_nous_session_validity()
     except Exception:
         return "unknown"
@@ -443,7 +443,7 @@ async def _component_health(gateway: dict[str, Any]) -> dict[str, Any]:
     """Component-level health rollup: counts and status enums only (public payload — no
     messages, paths or other detail that could carry secrets). The storage probe reuses the
     gateway readiness state_db check (read-only, 1s-bounded) off-loop."""
-    from hermes_cli.web_server import DASHBOARD_HEALTH
+    from hermes_agent.hermes_cli.web_server import DASHBOARD_HEALTH
     gateway_running, gateway_state = gateway["gateway_running"], gateway["gateway_state"]
     gateway_platforms = gateway["gateway_platforms"]
     components: dict[str, Any] = {
@@ -533,11 +533,11 @@ async def _status_caller_verified(request: Request) -> bool:
     """True when the caller carries a credential the auth gate would accept on a gated route
     (session cookie/bearer, native principal, or the loopback session token). ``/api/status`` is
     public, so the gate never verified one. ``None`` is an in-process caller, not a network one."""
-    from hermes_cli.web_server import _require_token
+    from hermes_agent.hermes_cli.web_server import _require_token
     if request is None:
         return True
     if getattr(request.app.state, "auth_required", False) and getattr(request.state, "session", None) is None:
-        from hermes_cli.dashboard_auth.middleware import peek_session
+        from hermes_agent.hermes_cli.dashboard_auth.middleware import peek_session
         request.state.session = await run_in_threadpool(peek_session, request)
     try:
         _require_token(request)
@@ -548,7 +548,7 @@ async def _status_caller_verified(request: Request) -> bool:
 
 def _webapp_caller_signed_out(request: Request, verified: bool) -> bool:
     """True when this request reached the gateway's Webapp behind its sign-in gate unverified."""
-    from hermes_cli.web_server_surface import surface
+    from hermes_agent.hermes_cli.web_server_surface import surface
     return (not verified and surface(request.app.state) == "webapp"
             and bool(getattr(request.app.state, "auth_required", False)))
 
@@ -563,7 +563,7 @@ async def get_status(profile: Optional[str] = None,
     _profile_scope: this handler awaits the remote health probe, and _profile_scope swaps
     process-global skills-module attributes a concurrent request would cross-restore.
     """
-    from hermes_cli.web_server import _GATEWAY_HEALTH_URL
+    from hermes_agent.hermes_cli.web_server import _GATEWAY_HEALTH_URL
     verified = await _status_caller_verified(request)
     signed_out = _webapp_caller_signed_out(request, verified)
     status_scope = None
@@ -594,7 +594,7 @@ async def get_status(profile: Optional[str] = None,
         # count + liveness via hermes_agent.gateway.status. Liveness keys off gateway_running, NEVER
         # gateway_updated_at — a stale heartbeat is reported separately, not treated as death.
         active_agents = parse_active_agents((gateway["runtime"] or {}).get("active_agents", 0))
-        # Off-loop: on a cold Windows install the first import of hermes_cli.gateway blocks
+        # Off-loop: on a cold Windows install the first import of hermes_agent.hermes_cli.gateway blocks
         # 15-30s (.pyc compilation + Defender), exceeding the desktop handshake's 15s timeout.
         restart_drain_timeout = await run_in_threadpool(_resolve_restart_drain_timeout)
         auth = _auth_gate_status()
@@ -628,7 +628,7 @@ async def get_status(profile: Optional[str] = None,
             status["install_id"] = install_id
 
         # Advisory only. Expose no paths or process identities on this public probe.
-        from hermes_cli.shared_profile_warning import shared_profile_warning
+        from hermes_agent.hermes_cli.shared_profile_warning import shared_profile_warning
         status["shared_profile_warning"] = bool(await run_in_threadpool(shared_profile_warning))
 
         components = await _component_health(gateway)
@@ -641,7 +641,7 @@ async def get_status(profile: Optional[str] = None,
         # renders the profile list over a gated bind) so they survive the auth gate; the
         # per-gateway ``gateways[]`` carries host ports and stays gated below.
         # An operator's `-p <name> serve --isolated` lists only <name>: a listing choice, not a
-        # boundary (hermes_cli/isolated_scope.py).
+        # boundary (hermes_agent/hermes_cli/isolated_scope.py).
         status["profiles"] = scope_to_launch_profile(topology["profiles"])
         status["parked_profiles"] = scope_to_launch_profile(topology.get("parked_profiles", []))
         status["isolated_profile"] = isolated_launch_profile()
@@ -850,7 +850,7 @@ def _get_portal_status_sync():
     cfg = load_config() or {}
     auth: dict[str, Any] = {}
     try:
-        from hermes_cli.auth import get_nous_auth_status_local
+        from hermes_agent.hermes_cli.auth import get_nous_auth_status_local
         # Refresh-free snapshot so polling never performs an OAuth refresh.
         auth = get_nous_auth_status_local() or {}
     except Exception:
@@ -858,7 +858,7 @@ def _get_portal_status_sync():
 
     features = []
     try:
-        from hermes_cli.nous_subscription import get_nous_subscription_features
+        from hermes_agent.hermes_cli.nous_subscription import get_nous_subscription_features
         feats = get_nous_subscription_features(cfg)
         if feats is not None:
             features = [{"label": getattr(feat, "label", ""), "state": _feature_state(feat)}
@@ -903,8 +903,8 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
     the body carries ``consent: true`` from a user confirmation. Synchronous,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
-    from hermes_cli.debug import build_debug_share
-    from hermes_cli.debug_redaction import redact_debug_support_text
+    from hermes_agent.hermes_cli.debug import build_debug_share
+    from hermes_agent.hermes_cli.debug_redaction import redact_debug_support_text
     req = body or DebugShareRequest()
     if not req.consent:
         raise HTTPException(status_code=400,
@@ -932,7 +932,7 @@ async def get_logs(
     file: str = "agent", lines: int = 100, level: Optional[str] = None,
     component: Optional[str] = None, search: Optional[str] = None,
     profile: Optional[str] = None):
-    from hermes_cli.logs import _read_tail, LOG_FILES
+    from hermes_agent.hermes_cli.logs import _read_tail, LOG_FILES
     log_name = LOG_FILES.get(file)
     if not log_name:
         raise HTTPException(status_code=400, detail=f"Unknown log file: {file}")

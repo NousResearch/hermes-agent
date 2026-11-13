@@ -63,7 +63,7 @@ class _Open:
         self.started, self.ahead = True, None  # a session reopened nonstop never chains finished deliveries
         while self.unsettled:
             await asyncio.wait(set(self.unsettled))
-        from hermes_cli.lifecycle import hook_known_unused
+        from hermes_agent.hermes_cli.lifecycle import hook_known_unused
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(self.ref.profile_id)
         try:  # the owning profile's loaded plugins, read without discovery or config: no consumer, no thread
@@ -78,8 +78,8 @@ class _Open:
         from hermes_agent.gateway.run import _profile_runtime_scope
         from hermes_agent.gateway.session_context import scoped_session_key
         from hermes_agent.gateway.session_policy import SURFACES
-        from hermes_cli.lifecycle import has_hook, invoke_hook
-        from hermes_cli.plugins import _resolve_hook_callback_timeout
+        from hermes_agent.hermes_cli.lifecycle import has_hook, invoke_hook
+        from hermes_agent.hermes_cli.plugins import _resolve_hook_callback_timeout
         sid = self.ref.session_id
         try:
             with _profile_runtime_scope(Path(self.ref.profile_id)), scoped_session_key(route):

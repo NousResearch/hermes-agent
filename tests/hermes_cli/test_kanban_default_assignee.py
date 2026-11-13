@@ -19,7 +19,7 @@ def isolated_kanban_home(tmp_path, monkeypatch):
     test_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(test_home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    from hermes_cli import kanban_db
+    from hermes_agent.hermes_cli import kanban_db
     yield kanban_db, test_home
 
 
@@ -35,8 +35,8 @@ def test_unassigned_task_auto_assigned_with_default_assignee(isolated_kanban_hom
     task gets the assignment applied and dispatched on the same tick. The
     DB row is mutated (assignee column + an 'assigned' event)."""
     kb, _home = isolated_kanban_home
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         task_id = kb.create_task(conn, title="t1", assignee=None)
@@ -76,8 +76,8 @@ def test_explicitly_assigned_task_untouched_by_default_assignee(isolated_kanban_
     default_assignee logic — that fallback only applies to genuinely
     unassigned rows."""
     kb, _home = isolated_kanban_home
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
     with kbc.connect_closing() as conn:
         kb.create_board(slug="default", name="Test")
         task_id = kb.create_task(conn, title="t1", assignee="default")

@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def clear_fetch_backoff() -> None:
 def _load_catalog_config() -> dict[str, Any]:
     """Load the ``model_catalog`` config block with defaults filled in."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config() or {}
     except Exception:
         cfg = {}
@@ -299,9 +299,9 @@ def refresh_catalogs() -> bool:
     catalog = get_catalog(force_refresh=True)
     try:
         from hermes_agent.agent.secret_scope import get_secret
-        from hermes_cli.anon_auth import current_nous_state, is_guest_state
-        from hermes_cli.auth import read_credential_pool
-        from hermes_cli.models import _resolve_nous_portal_url, fetch_nous_recommended_models, fetch_openrouter_models
+        from hermes_agent.hermes_cli.anon_auth import current_nous_state, is_guest_state
+        from hermes_agent.hermes_cli.auth import read_credential_pool
+        from hermes_agent.hermes_cli.models import _resolve_nous_portal_url, fetch_nous_recommended_models, fetch_openrouter_models
 
         fetch_openrouter_models(force_refresh=True)
         logins = [current_nous_state(), *read_credential_pool("nous")]

@@ -35,7 +35,7 @@ def legacy_env(request, tmp_path, monkeypatch):
     lock.save()
     # verify() runs `llama-server --version`; the fixture binary is not executable.
     monkeypatch.setattr(type(package), "verify", lambda self, entry, target: "")
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
 
     monkeypatch.setattr(binaries, "_LEFT_IN_PLACE", set())
     return home, store, package, target, backend, list(PINNED[:len(urls)])
@@ -60,7 +60,7 @@ def legacy_install(home, package, target, backend, tag, digests, *, verified=Tru
 
 
 def test_matching_legacy_engine_moves_into_the_store_as_current(legacy_env):
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
 
     home, store, package, target, backend, pinned = legacy_env
     legacy = legacy_digests(package, target, pinned)
@@ -79,7 +79,7 @@ def test_matching_legacy_engine_moves_into_the_store_as_current(legacy_env):
 
 
 def test_older_legacy_engine_counts_as_installed_but_outdated(legacy_env):
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
 
     home, _, package, target, backend, pinned = legacy_env
     legacy_install(home, package, target, backend, "b10679",
@@ -91,7 +91,7 @@ def test_older_legacy_engine_counts_as_installed_but_outdated(legacy_env):
 
 
 def test_newest_legacy_engine_wins_and_older_stays(legacy_env):
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
 
     home, _, package, target, backend, pinned = legacy_env
     old = legacy_install(home, package, target, backend, "b10679",
@@ -104,7 +104,7 @@ def test_newest_legacy_engine_wins_and_older_stays(legacy_env):
 
 @pytest.mark.parametrize("damage", ["unverified", "missing_digest", "wrong_backend", "tag_mismatch"])
 def test_unverified_or_damaged_legacy_engine_is_left_alone(legacy_env, damage):
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
 
     home, store, package, target, backend, pinned = legacy_env
     legacy = legacy_digests(package, target, pinned)
@@ -124,7 +124,7 @@ def test_unverified_or_damaged_legacy_engine_is_left_alone(legacy_env, damage):
 
 
 def test_engine_that_fails_verification_stays_and_is_not_retried(legacy_env, monkeypatch):
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
 
     home, _, package, target, backend, pinned = legacy_env
     install = legacy_install(home, package, target, backend, "b10964", legacy_digests(package, target, pinned))
@@ -141,7 +141,7 @@ def test_engine_that_fails_verification_stays_and_is_not_retried(legacy_env, mon
 
 
 def test_existing_pm_engine_is_never_replaced(legacy_env):
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
     from pm.store import tree_digest
 
     home, store, package, target, backend, pinned = legacy_env
@@ -157,7 +157,7 @@ def test_existing_pm_engine_is_never_replaced(legacy_env):
 
 
 def test_busy_store_leaves_the_engine_for_a_later_call(legacy_env):
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
     from pm.filesystem import lock_fd
 
     home, store, package, target, backend, pinned = legacy_env
@@ -188,7 +188,7 @@ def test_busy_store_leaves_the_engine_for_a_later_call(legacy_env):
 
 
 def test_status_route_reports_the_moved_engine(legacy_env, monkeypatch):
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     home, _, package, target, backend, pinned = legacy_env
     legacy = legacy_digests(package, target, pinned)

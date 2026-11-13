@@ -3,7 +3,7 @@ autostash cannot sweep the live state.db (#110648).
 
 On a flat install (checkout root == $HERMES_HOME) the profile's runtime files
 live inside the repo as untracked paths. ``git stash push --include-untracked``
-(hermes_cli/update_cmd_stash.py) moves the whole untracked set into the stash and
+(hermes_agent/hermes_cli/update_cmd_stash.py) moves the whole untracked set into the stash and
 unlinks it from the working tree under the running gateway, silently stranding
 every transcript when the restore is declined or fails its health check. The
 tracked .gitignore must cover the runtime state set, mirroring the
@@ -31,7 +31,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "state.db.retired-wal-20260914T000000Z-1234/manifest.json",
     # Dot-suffixed `<db>.db.*` runtime artifacts (#112974): cross-process lock
     # files from hermes_state_dbfile / hermes_state_repair / hermes_state_common /
-    # hermes_cli/kanban_db_*, the repair-attempts ledger and malformed backups.
+    # hermes_agent/hermes_cli/kanban_db_*, the repair-attempts ledger and malformed backups.
     "state.db.quarantine.lock",
     "state.db.repair.lock",
     "state.db.fts_rebuild.lock",
@@ -169,7 +169,7 @@ def test_untracked_autostash_leaves_open_wal_database_readable(flat_install_repo
     base file ignored but its sidecars swept, the next ``hermes_agent.cron.executions._connect()``
     finds a database whose WAL vanished under a live writer and fails with
     ``disk I/O error`` (the review repro on #111175)."""
-    from hermes_cli.update_cmd_stash import _stash_local_changes_if_needed
+    from hermes_agent.hermes_cli.update_cmd_stash import _stash_local_changes_if_needed
 
     db_path = flat_install_repo / "cron" / "executions.db"
     db_path.unlink()  # the fixture's placeholder is not a database
@@ -201,7 +201,7 @@ def test_untracked_autostash_cannot_split_live_database_lock_inode(flat_install_
     exclusive lock would succeed while the first holder is still live."""
     import fcntl
 
-    from hermes_cli.update_cmd_stash import _stash_local_changes_if_needed
+    from hermes_agent.hermes_cli.update_cmd_stash import _stash_local_changes_if_needed
 
     lock_path = flat_install_repo / "state.db.quarantine.lock"
     with lock_path.open("a+b") as first:

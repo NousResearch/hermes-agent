@@ -683,7 +683,7 @@ async def test_a_deferred_model_pick_that_was_refused_is_no_pick_when_an_open_ad
     import asyncio
     from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
     from hermes_agent.gateway.session_contract import Submission
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     from tests.waiting import async_wait_until
     monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
         success=False, new_model='', target_provider=''))

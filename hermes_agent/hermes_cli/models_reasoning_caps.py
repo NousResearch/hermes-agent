@@ -1,9 +1,9 @@
 """Per-model reasoning capabilities from OpenRouter-schema ``/v1/models`` catalogs.
 
-Split out of ``hermes_cli.models``. OpenRouter and
+Split out of ``hermes_agent.hermes_cli.models``. OpenRouter and
 Nous Portal share one implementation parametrized by :class:`_CapsSource`; the per-source module
 globals (``_openrouter_reasoning_caps_cache``, ``_nous_caps_disk_checked``, ...) stay defined on
-``hermes_cli.models`` — tests reset them there — and are read/written by attribute name.
+``hermes_agent.hermes_cli.models`` — tests reset them there — and are read/written by attribute name.
 
 Tri-state contract for callers deciding whether to emit reasoning controls: a dict with
 ``supports_reasoning: True`` (+ ``supported_efforts``, ``mandatory``) — the route advertises
@@ -26,13 +26,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 
-logger = logging.getLogger("hermes_cli.models")
+logger = logging.getLogger("hermes_agent.hermes_cli.models")
 
 Caps = dict[str, Optional[dict[str, Any]]]
 
 
 def _origin():
-    from hermes_cli import models
+    from hermes_agent.hermes_cli import models
     return models
 
 
@@ -76,7 +76,7 @@ def _reasoning_caps_disk_path() -> Path:
 
 
 def _read_reasoning_caps_disk() -> dict[str, Any]:
-    from hermes_cli.models import _read_json_cache
+    from hermes_agent.hermes_cli.models import _read_json_cache
     return _read_json_cache(_reasoning_caps_disk_path()) or {}
 
 
@@ -95,7 +95,7 @@ def _load_reasoning_caps_disk(url: str) -> tuple[Optional[Caps], float]:
 
 def _save_reasoning_caps_disk(url: str, caps: Caps) -> None:
     """Merge *url*'s catalog into the shared disk mirror, atomically."""
-    from hermes_cli.models import _write_json_cache
+    from hermes_agent.hermes_cli.models import _write_json_cache
     try:
         data = _read_reasoning_caps_disk()
         data[url] = {"ts": time.time(), "caps": caps}
@@ -146,7 +146,7 @@ def _seed_reasoning_caps(url: str, items: Any) -> Optional[Caps]:
 def _fetch_reasoning_caps_catalog(url: str, timeout: float) -> Optional[Caps]:
     """Fetch one OpenRouter-shaped ``/v1/models`` catalog → per-model caps; None when unreachable or
     empty so callers remember the failure. Sends a User-Agent: the Portal 403s anonymous reads."""
-    from hermes_cli.version_info import hermes_user_agent
+    from hermes_agent.hermes_cli.version_info import hermes_user_agent
     m = _origin()
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": hermes_user_agent()})
@@ -161,7 +161,7 @@ def _fetch_reasoning_caps_catalog(url: str, timeout: float) -> Optional[Caps]:
 
 @dataclass(frozen=True)
 class _CapsSource:
-    """One catalog's cache slots on ``hermes_cli.models`` plus how to name its URL.
+    """One catalog's cache slots on ``hermes_agent.hermes_cli.models`` plus how to name its URL.
 
     ``cache``: model id → parsed caps from one full-catalog fetch, kept for the process lifetime.
     ``failed_at``: monotonic timestamp of the last FAILED fetch; suppresses re-fetch storms from
@@ -181,14 +181,14 @@ class _CapsSource:
     def get(self, slot: str):
         if not self.per_profile:
             return getattr(_origin(), getattr(self, slot))
-        from hermes_cli.models_profile_cache import profile_slot_get
+        from hermes_agent.hermes_cli.models_profile_cache import profile_slot_get
         return profile_slot_get(_origin(), getattr(self, slot), False if slot in ("disk_checked", "warm_started") else None)
 
     def set(self, slot: str, value) -> None:
         if not self.per_profile:
             setattr(_origin(), getattr(self, slot), value)
             return
-        from hermes_cli.models_profile_cache import profile_slot_set
+        from hermes_agent.hermes_cli.models_profile_cache import profile_slot_set
         profile_slot_set(_origin(), getattr(self, slot), value)
 
 
@@ -271,7 +271,7 @@ _NOUS_CAPS = _CapsSource(
 def nous_catalog_url() -> str:
     """The Portal ``/v1/models`` URL for the endpoint we actually talk to (``NOUS_INFERENCE_BASE_URL``
     → resolved credential base → prod), so a staging profile reads staging's capabilities."""
-    from hermes_cli.models_pricing import _resolve_nous_pricing_credentials
+    from hermes_agent.hermes_cli.models_pricing import _resolve_nous_pricing_credentials
     return f"{_resolve_nous_pricing_credentials()[1]}/v1/models"
 
 

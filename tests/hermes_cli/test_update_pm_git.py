@@ -5,7 +5,7 @@ import pm
 import pm.paths
 import pytest
 
-from hermes_cli import _subprocess_compat as compat
+from hermes_agent.hermes_cli import _subprocess_compat as compat
 from pm.package import Runner
 
 

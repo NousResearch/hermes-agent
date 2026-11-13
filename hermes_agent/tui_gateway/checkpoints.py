@@ -25,7 +25,7 @@ def _load_checkpoints_enabled(cfg: dict | None = None) -> bool:
         cp_cfg = {"enabled": cp_cfg}
     elif not isinstance(cp_cfg, dict):
         cp_cfg = {}
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
     return bool(cp_cfg.get("enabled", DEFAULT_CONFIG["checkpoints"]["enabled"]))
 
 

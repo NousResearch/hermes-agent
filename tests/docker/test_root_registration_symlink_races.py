@@ -16,7 +16,7 @@ STAGING = "/run/.hermes-service.staging"
 # swap every half-built slot it can reach (in the scandir and in root's staging dir).
 _SWAP_DURING_REGISTRATION = f"""
 import os, subprocess
-from hermes_cli import service_manager as sm
+from hermes_agent.hermes_cli import service_manager as sm
 assert os.geteuid() == 0
 os.umask(0o077)
 os.mkdir('/opt/victim', 0o700)
@@ -64,7 +64,7 @@ def test_root_lifecycle_control_does_not_follow_control_symlink(
     """s6-svc as root would write its command byte through a hermes-planted control symlink."""
     start_container(built_image, container_name)
     registered = docker_exec(container_name, "python3", "-c", (
-        "from hermes_cli.service_manager import S6ServiceManager; "
+        "from hermes_agent.hermes_cli.service_manager import S6ServiceManager; "
         "S6ServiceManager().register_profile_gateway('ctl', start_now=False)"
     ), user="root", extra_docker_args=("-e", "HERMES_DOCKER_EXEC_AS_ROOT=1"))
     assert registered.returncode == 0, registered.stderr
@@ -80,7 +80,7 @@ def test_root_lifecycle_control_does_not_follow_control_symlink(
     ))
     assert planted.returncode == 0, planted.stderr
     control = docker_exec(container_name, "python3", "-c", (
-        "from hermes_cli.service_manager import S6ServiceManager, S6CommandError\n"
+        "from hermes_agent.hermes_cli.service_manager import S6ServiceManager, S6CommandError\n"
         "try:\n"
         "    S6ServiceManager().restart('gateway-ctl')\n"
         "except S6CommandError as exc:\n"
@@ -98,7 +98,7 @@ def test_root_slot_parking_does_not_follow_marker_or_event_symlinks(
     """Multiplex migration parks slots as root: ``down`` and ``event/`` are hermes-controlled."""
     start_container(built_image, container_name)
     registered = docker_exec(container_name, "python3", "-c", (
-        "from hermes_cli.service_manager import S6ServiceManager; "
+        "from hermes_agent.hermes_cli.service_manager import S6ServiceManager; "
         "S6ServiceManager().register_profile_gateway('park', start_now=False)"
     ), user="root", extra_docker_args=("-e", "HERMES_DOCKER_EXEC_AS_ROOT=1"))
     assert registered.returncode == 0, registered.stderr
@@ -116,7 +116,7 @@ def test_root_slot_parking_does_not_follow_marker_or_event_symlinks(
     ))
     assert planted.returncode == 0, planted.stderr
     parked = docker_exec(container_name, "python3", "-c", (
-        "from hermes_cli import gateway_multiplex_s6 as s6\n"
+        "from hermes_agent.hermes_cli import gateway_multiplex_s6 as s6\n"
         "s6._wait_down(s6._manager().scandir / 'gateway-park', timeout_ms=500)\n"
         "s6.park_named_slot('park')\n"
     ), user="root", extra_docker_args=("-e", "HERMES_DOCKER_EXEC_AS_ROOT=1"))

@@ -8,9 +8,9 @@ import pytest
 def test_refused_notice_prints_the_users_text_and_discard_line_as_written(monkeypatch, mode):
     """The notice is Hermes's copy, not a model answer: the markdown display modes must neither
     rewrite the quoted prompt nor merge the ``/discard`` line into the paragraph around it."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     from rich.console import Console
-    from hermes_cli.gateway_chat_view import pending_lines
+    from hermes_agent.hermes_cli.gateway_chat_view import pending_lines
 
     text = "fix the *bug* in __init__.py and `run` it"
     notice = "Your message was not sent.\n" + "\n".join(pending_lines([
@@ -31,7 +31,7 @@ def test_refused_notice_prints_the_users_text_and_discard_line_as_written(monkey
 
 
 def test_discard_says_when_another_lost_turn_still_blocks_the_chat(monkeypatch):
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     class Connection:
         pending = [{"admission_id": a, "status": "unknown", "execution_generation": 4} for a in ("a1", "a2")]
@@ -46,7 +46,7 @@ def test_discard_says_when_another_lost_turn_still_blocks_the_chat(monkeypatch):
     monkeypatch.setattr(cli_mod, "_cprint", lambda line: printed.append(line))
     stub = SimpleNamespace(session_id="s")
     connection = Connection()
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda _cli: connection)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda _cli: connection)
 
     cli_mod.HermesCLI._handle_discard_command(stub, "/discard a1")
     cli_mod.HermesCLI._handle_discard_command(stub, "/discard a2")

@@ -1,6 +1,6 @@
 """``kanban.default_assignee`` fill-in for unassigned ready cards during a dispatch tick.
 
-Split out of ``hermes_cli.kanban_db_dispatch``; origin-resident helpers are
+Split out of ``hermes_agent.hermes_cli.kanban_db_dispatch``; origin-resident helpers are
 reached late-bound via ``_kb`` (import-cycle breaking).
 """
 
@@ -11,10 +11,10 @@ import sqlite3
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from hermes_cli.kanban_db_dispatch import DispatchResult
+    from hermes_agent.hermes_cli.kanban_db_dispatch import DispatchResult
 
 # The origin module's logger, so existing kanban log filters keep matching.
-_log = logging.getLogger("hermes_cli.kanban_db")
+_log = logging.getLogger("hermes_agent.hermes_cli.kanban_db")
 
 
 def apply_default_assignee(
@@ -75,4 +75,4 @@ def fill_default_assignee(
 
 
 # Late-bound origin namespace (see module docstring).
-from hermes_cli import kanban_db as _kb
+from hermes_agent.hermes_cli import kanban_db as _kb

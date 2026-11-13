@@ -1,6 +1,6 @@
 """User-facing copy for ``hermes gateway start/stop/restart`` failures on systemd hosts.
 
-``hermes_cli/gateway.py`` is a facade; this sibling owns the small exception -> guidance table so
+``hermes_agent/hermes_cli/gateway.py`` is a facade; this sibling owns the small exception -> guidance table so
 the most common Linux service failures (``systemctl`` exited non-zero, or there is no ``systemctl``
 at all) end as a next step instead of a traceback.
 """

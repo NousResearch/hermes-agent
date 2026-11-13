@@ -1,4 +1,4 @@
-"""Stage publishing into a watching desktop-update UI (hermes_cli.update_stage).
+"""Stage publishing into a watching desktop-update UI (hermes_agent.hermes_cli.update_stage).
 
 The desktop hand-off shim renders progress from a status JSON file. The
 regression: during an old→new checkout transition the OLD shim never exports
@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from hermes_cli import update_stage
+from hermes_agent.hermes_cli import update_stage
 
 
 @pytest.fixture

@@ -28,7 +28,7 @@ DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 MANAGED_OPENAI_TTS_MODELS = frozenset({"gpt-4o-mini-tts", "tts-1", "tts-1-hd"})
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-# DeepInfra base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
+# DeepInfra base URL is resolved via hermes_agent.hermes_cli.models.deepinfra_base_url (shared).
 DEFAULT_DEEPINFRA_TTS_VOICE = "default"
 
 
@@ -197,13 +197,13 @@ def _generate_openai_tts(
 
 
 def _generate_deepinfra_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
-    """Resolve DeepInfra credentials/model (live ``hermes_cli.models`` catalog, no hardcoded ids), then
+    """Resolve DeepInfra credentials/model (live ``hermes_agent.hermes_cli.models`` catalog, no hardcoded ids), then
     delegate to the OpenAI-compatible handler."""
     api_key = _origin()._resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra")
     if not api_key:
         raise ValueError("DEEPINFRA_API_KEY not set. Run `hermes setup` to configure, or set the env var directly.")
     di_config = _section(tts_config, "deepinfra")
-    from hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
+    from hermes_agent.hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
     model = di_config.get("model")
     if not isinstance(model, str) or not model.strip():
         candidates = deepinfra_model_ids("tts")

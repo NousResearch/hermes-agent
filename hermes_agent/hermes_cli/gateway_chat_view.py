@@ -5,7 +5,7 @@ import logging
 import sys
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ class GatewayChatView:
         # Set once with ``failure``: the interactive composer races its line read against it so a
         # dead owner ends the REPL immediately instead of on the next keypress.
         self.failed = asyncio.Event()
-        from hermes_cli.gateway_mutations import PreparedMutations
+        from hermes_agent.hermes_cli.gateway_mutations import PreparedMutations
         self.mutations = PreparedMutations()
         # The interactive composer (set by ``run``); None in one-shot / non-TTY runs, where a
         # guarded model switch stays a refusal instead of a prompt.
@@ -204,7 +204,7 @@ class GatewayChatView:
     async def _recover(self, admission, sid):
         """Queued: it lost nothing. Running: cut until its live completion. Unknown: its completion was the
         one lost, so an own turn settles as unknown now. Unlisted: it ended in the hole."""
-        from hermes_cli.gateway_replay_gap import pending_status, settled
+        from hermes_agent.hermes_cli.gateway_replay_gap import pending_status, settled
         status = pending_status(self.pending, admission)
         if status == "unknown" and admission in self.mine:
             self._complete(admission, {"outcome": "unknown", "text": _UNKNOWN_OUTCOME})
@@ -307,7 +307,7 @@ class GatewayChatView:
         streamed, cut = self.streams.pop(admission, ""), self.cut.pop(admission, None)
         self.mine.pop(admission, None)
         if cut is not None:
-            from hermes_cli.gateway_replay_gap import owed_reply
+            from hermes_agent.hermes_cli.gateway_replay_gap import owed_reply
             payload = {**payload, "replay_gap": True}
             if not self.quiet and text:
                 print(owed_reply(cut, text), flush=True)
@@ -388,7 +388,7 @@ class GatewayChatView:
                                   admission_id=lost["admission_id"], execution_generation=lost["execution_generation"])
             return True
         if command in {'/branch', '/model', '/compress'}:
-            from hermes_cli.gateway_mutations import slash_mutation
+            from hermes_agent.hermes_cli.gateway_mutations import slash_mutation
             operation, payload = slash_mutation(command, rest.strip())
             original = self.session_id
             confirm = self._confirm_model_switch if operation == 'model' and self._composer is not None else None
@@ -422,7 +422,7 @@ class GatewayChatView:
                                            **({"value": "1" if word == "on" else "0"} if word else {}))
             print(f"YOLO {'on' if result.get('value') == '1' else 'off'} for this session")
             return True
-        from hermes_cli import gateway_chat_commands
+        from hermes_agent.hermes_cli import gateway_chat_commands
         if command == "/help":
             print(gateway_chat_commands.help_text())
             return True
@@ -438,7 +438,7 @@ class GatewayChatView:
         if not self.finite:
             # Bare `hermes -c` in this terminal continues the session it is now on, as the
             # in-process CLI re-wrote its breadcrumb on every session switch.
-            from hermes_cli.terminal_breadcrumbs import write_breadcrumb
+            from hermes_agent.hermes_cli.terminal_breadcrumbs import write_breadcrumb
             await asyncio.to_thread(write_breadcrumb, self.session_id)
 
     async def _confirm_model_switch(self, refusal):
@@ -446,7 +446,7 @@ class GatewayChatView:
         the in-process CLI does (``_confirm_expensive_model_switch``: switch anyway once, or cancel)
         on this composer. Only an explicit yes applies; anything else keeps the current model."""
         from hermes_agent.agent.i18n import t
-        from hermes_cli.gateway_mutations import confirm_choice, confirmation_title
+        from hermes_agent.hermes_cli.gateway_mutations import confirm_choice, confirmation_title
         choices = [("once", t("cli.model.choice_switch_anyway"), t("cli.model.desc_switch_anyway")),
                    ("cancel", t("cli.model.choice_cancel"), t("cli.model.desc_keep_current_model"))]
         print(f"\n!!! {confirmation_title(refusal)} !!!\n{refusal['confirm_message']}\n")
@@ -527,7 +527,7 @@ class GatewayChatView:
 
     def _write_usage_file(self, result, outcome):
         """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote."""
-        from hermes_cli.oneshot import _write_usage_file
+        from hermes_agent.hermes_cli.oneshot import _write_usage_file
         result = {**result, "session_id": result.get("session_id") or self.session_id}
         failure = None if outcome in ("completed", "cancelled") else (result.get("error") or outcome or "failed")
         _write_usage_file(self.usage_file, result, failure=failure)
@@ -572,8 +572,8 @@ class GatewayChatView:
                 # The outcome only says failed/cancelled; a turn stopped by --max-turns settles
                 # 'completed' with ``completed: False`` in its committed result. Judge both with the
                 # in-process exit contracts: `-z` 0/2/130 (1 = no text), `chat -q`/`-Q` 0/1/130.
-                from hermes_cli.oneshot import _oneshot_exit_code
-                from hermes_cli.turn_exit import turn_exit_code
+                from hermes_agent.hermes_cli.oneshot import _oneshot_exit_code
+                from hermes_agent.hermes_cli.turn_exit import turn_exit_code
                 recovered = terminal.get("_receipt")
                 result = dict(recovered.get("result") or {}) if recovered else await self._settled_result(admission)
                 result.update(failed=bool(result.get("failed")) or outcome not in ("completed", "cancelled"),
@@ -596,7 +596,7 @@ class GatewayChatView:
                 return exit_code
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
-            from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
+            from hermes_agent.hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
             welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
             print(get_active_skin().get_branding("welcome", welcome), flush=True)
             # The classic status bar's leading segments: model, then the attached session.
@@ -644,7 +644,7 @@ def resume_footer(session_id):
     """The classic single-query exit block (``_print_exit_summary``): how to continue this session.
     A non-default profile needs ``-p`` because session ids are profile-scoped."""
     from hermes_agent.agent.i18n import t
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     profile = get_active_profile_name()
     flag = "" if profile in ("default", "custom") else f" -p {profile}"
     return f"\n{t('cli.session.exit_resume_hint')}\n  hermes --resume {session_id}{flag}"

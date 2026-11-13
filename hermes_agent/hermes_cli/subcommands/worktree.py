@@ -49,7 +49,7 @@ def build_worktree_parser(subparsers) -> None:
     worktree_restore.add_argument("--repo", help="Repo root (default: current repo)")
 
     def _dispatch_worktree(_args):
-        from hermes_cli.worktree_cmd import cmd_worktree
+        from hermes_agent.hermes_cli.worktree_cmd import cmd_worktree
 
         # argparse aliases set dest to the literal typed string ("ls"/"audit").
         action = getattr(_args, "worktree_action", None)

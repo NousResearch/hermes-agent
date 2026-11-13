@@ -24,9 +24,9 @@ def _auto_apply_on(_section, key):
 def test_hold_recorded_during_the_check_survives_the_unattended_apply(installed, monkeypatch, path):
     """The user finishes `install --force --ref <older>` after the check snapshotted the install records;
     neither Update all nor the auto-apply tick may then re-pin it to the catalog."""
-    from hermes_cli import plugin_catalog, plugins_cadence, plugins_updates
-    from hermes_cli.plugins_auto_update import apply_unattended, update_all_unattended
-    from hermes_cli.plugins_cmd_catalog import install_catalog_entry
+    from hermes_agent.hermes_cli import plugin_catalog, plugins_cadence, plugins_updates
+    from hermes_agent.hermes_cli.plugins_auto_update import apply_unattended, update_all_unattended
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import install_catalog_entry
 
     _root, _home, repo, target, state = installed
     first = state["sha"]
@@ -59,9 +59,9 @@ def test_unattended_git_update_that_adds_a_tool_waits_for_review(installed, monk
     """A tracked Git update that declares a new tool is a widened plugin: Update all reports it as
     needs_review and the tick logs a pending review, with the installed tree unchanged. A named update
     still moves it."""
-    from hermes_cli import plugins_cadence
-    from hermes_cli.plugins_auto_update import apply_unattended, update_all_unattended
-    from hermes_cli.plugins_cmd_update import dashboard_update_user_plugin
+    from hermes_agent.hermes_cli import plugins_cadence
+    from hermes_agent.hermes_cli.plugins_auto_update import apply_unattended, update_all_unattended
+    from hermes_agent.hermes_cli.plugins_cmd_update import dashboard_update_user_plugin
 
     _root, _home, repo, target, _state = installed
     old_head = _head(target)
@@ -84,14 +84,14 @@ def test_unattended_git_update_that_adds_a_tool_waits_for_review(installed, monk
 
 
 def _real_checks():
-    from hermes_cli.plugins_updates import run_checks
+    from hermes_agent.hermes_cli.plugins_updates import run_checks
     return run_checks
 
 
 def test_slash_update_with_an_argument_does_not_update_every_plugin(monkeypatch):
     """`/plugins update <name>` mirrors `hermes plugins update <name>`; it must not run Update all on every
     plugin (in the TUI it would also run inside the 45 s slash worker the batch was moved out of)."""
-    from hermes_cli import plugins_auto_update
+    from hermes_agent.hermes_cli import plugins_auto_update
 
     calls = []
     monkeypatch.setattr(plugins_auto_update, "update_all_unattended",
@@ -106,8 +106,8 @@ def test_slash_update_with_an_argument_does_not_update_every_plugin(monkeypatch)
 def test_cli_update_all_skips_a_catalog_install_held_with_ref(tmp_path, monkeypatch, capsys):
     """`hermes plugins update` (the command `hermes update` recommends) leaves a `--ref` hold where the user
     put it, like every other Update all; naming the plugin is what moves it."""
-    from hermes_cli import plugins_cmd, plugins_cmd_update, plugins_updates
-    from hermes_cli.plugins_cmd_update_all import cmd_update_all
+    from hermes_agent.hermes_cli import plugins_cmd, plugins_cmd_update, plugins_updates
+    from hermes_agent.hermes_cli.plugins_cmd_update_all import cmd_update_all
     from tests.hermes_cli.test_plugins_auto_update import _Row, _held_install_metadata
 
     home = tmp_path / "hermes-home"

@@ -101,8 +101,8 @@ def prepare_webapp_renderer(
     ``explicit`` (a requested build) may install dependencies even when lazy
     installs are disabled, like ``hermes desktop --build-only``.
     """
-    from hermes_cli.source_build import build_source_webapp, source_build_env, source_product_current
-    from hermes_cli.steward import is_bundled_payload
+    from hermes_agent.hermes_cli.source_build import build_source_webapp, source_build_env, source_product_current
+    from hermes_agent.hermes_cli.steward import is_bundled_payload
 
     project_root = project_root.resolve()
     dist = webapp_dist_dir(project_root)

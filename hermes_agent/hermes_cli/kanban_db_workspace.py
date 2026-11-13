@@ -1,6 +1,6 @@
 """Task workspace lifecycle: scratch/dir/worktree resolution (incl. git worktree creation), post-completion cleanup with containment guards, worker tmux teardown and the first-use scratch-workspace tip.
 
-Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
+Split out of ``hermes_agent.hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 ``kanban_db.<name>`` keeps working.
 """
@@ -18,10 +18,10 @@ from typing import Optional
 from typing import TYPE_CHECKING
 import contextlib
 
-from hermes_cli.worktree_ops import release_lsp_clients
+from hermes_agent.hermes_cli.worktree_ops import release_lsp_clients
 
 if TYPE_CHECKING:
-    from hermes_cli.kanban_db import Task
+    from hermes_agent.hermes_cli.kanban_db import Task
 
 _REMOVABLE_KINDS = ("scratch", "worktree")
 
@@ -58,7 +58,7 @@ def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProce
     :func:`noninteractive_repo_git_env` (GHSA-7x36-8jrh-v4pw): the dispatcher runs ``worktree add``
     unattended, which executes the repo's hooks, ``core.fsmonitor`` and smudge filters.
     """
-    from hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
+    from hermes_agent.hermes_cli._subprocess_compat import FILTER_DISCOVERY_FAILED, noninteractive_repo_git_env
     env = noninteractive_repo_git_env(repo_root)
     if env is None:
         return subprocess.CompletedProcess(["git", "-C", str(repo_root), *args], 1, "", FILTER_DISCOVERY_FAILED)
@@ -128,7 +128,7 @@ def _sibling_board_db_files(conn: sqlite3.Connection) -> list[Path]:
     default board at ``<home>/kanban.db`` and named boards at
     ``<home>/kanban/boards/<slug>/kanban.db``.
     """
-    from hermes_cli.kanban_db_connect import _main_db_file  # late: import cycle
+    from hermes_agent.hermes_cli.kanban_db_connect import _main_db_file  # late: import cycle
 
     current_file = _main_db_file(conn)
     current = Path(current_file).resolve() if current_file else None
@@ -433,7 +433,7 @@ def _cleanup_worktree_workspace(
     it. The auto-generated ``wt/<task-id>`` branch is deleted with it; custom
     branches are kept. Best-effort."""
     try:
-        from hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
+        from hermes_agent.hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
     except Exception:
         return  # CLI safety predicates unavailable — preserve
     try:
@@ -840,4 +840,4 @@ def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) ->
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb
+from hermes_agent.hermes_cli import kanban_db as _kb

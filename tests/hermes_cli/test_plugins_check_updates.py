@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.plugins_provenance import Provenance, ProvenanceClass
-from hermes_cli.plugins_updates import (
+from hermes_agent.hermes_cli.plugins_provenance import Provenance, ProvenanceClass
+from hermes_agent.hermes_cli.plugins_updates import (
     CheckResult,
     check_pip_plugins,
     check_provenanced,
@@ -297,8 +297,8 @@ def test_ls_remote_lifecycle_current_available_applied(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     run, head = _local_repo(repo, "-b", "main")
     sha1 = head()
-    from hermes_cli.plugins_updates import default_ls_remote
-    monkeypatch.setattr('hermes_cli.plugins_cmd._resolve_git_executable', _git_exe)
+    from hermes_agent.hermes_cli.plugins_updates import default_ls_remote
+    monkeypatch.setattr('hermes_agent.hermes_cli.plugins_cmd._resolve_git_executable', _git_exe)
     ls_remote = default_ls_remote
 
     plug = tmp_path / "plug"
@@ -373,8 +373,8 @@ def test_real_ls_remote_against_bare_repo(tmp_path, monkeypatch):
         [git, "init", "--bare", "-q", str(source)],
         check=True, capture_output=True, env=env,
     )
-    from hermes_cli.plugins_updates import default_ls_remote
-    monkeypatch.setattr('hermes_cli.plugins_cmd._resolve_git_executable', _git_exe)
+    from hermes_agent.hermes_cli.plugins_updates import default_ls_remote
+    monkeypatch.setattr('hermes_agent.hermes_cli.plugins_cmd._resolve_git_executable', _git_exe)
     assert default_ls_remote(str(source)) == ""
 
 
@@ -474,7 +474,7 @@ def test_default_fetch_refuses_non_https_feeds_before_any_request(monkeypatch, u
     """Rows saved before the https rule (or hand-edited) still reach the real fetcher from the
     gateway tick; the sink refuses them instead of opening the URL."""
     import urllib.request
-    from hermes_cli.plugins_updates import default_fetch
+    from hermes_agent.hermes_cli.plugins_updates import default_fetch
 
     def never(*a, **k):
         raise AssertionError("urlopen must not be reached")
@@ -531,7 +531,7 @@ def feed_redirect_server(monkeypatch):
 
 
 def test_default_fetch_refuses_intermediate_plaintext_redirect(feed_redirect_server):
-    from hermes_cli.plugins_updates import default_fetch
+    from hermes_agent.hermes_cli.plugins_updates import default_fetch
 
     base, visited = feed_redirect_server
     with pytest.raises(ValueError, match="https://"):
@@ -540,7 +540,7 @@ def test_default_fetch_refuses_intermediate_plaintext_redirect(feed_redirect_ser
 
 
 def test_default_fetch_follows_https_redirect(feed_redirect_server):
-    from hermes_cli.plugins_updates import default_fetch
+    from hermes_agent.hermes_cli.plugins_updates import default_fetch
 
     base, visited = feed_redirect_server
     assert default_fetch(base + "/secure") == "version: 1.2.0\n"

@@ -69,8 +69,8 @@ async def adopt_sessions(rows, *, report=print) -> tuple[int, Counter]:
     """Resume each row once over this host's native connection (the owner adopts it), then detach
     without ending it. ``(adopted, skipped-by-refusal)``; a row the owner refuses is skipped,
     never retried as another principal."""
-    from hermes_cli.gateway_client import GatewayRPCError, connect_gateway
-    from hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError, connect_gateway
+    from hermes_agent.hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES
 
     adopted, skipped = 0, Counter()
     # The owner answers a resume with the session's whole history; a long chat outgrows the default frame.
@@ -120,7 +120,7 @@ def _unreadable_store(exc: sqlite3.Error, store: str) -> str:
 def cmd_adopt(args) -> int:
     import asyncio
     from websockets.exceptions import WebSocketException
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
     from hermes_constants import display_hermes_home, get_hermes_home
 
     path = get_hermes_home() / 'state.db'

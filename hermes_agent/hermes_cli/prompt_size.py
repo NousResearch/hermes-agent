@@ -51,8 +51,8 @@ def _build_inspection_agent(platform: str) -> Any:
     the gateway does so the breakdown matches a real session.
     """
     from hermes_agent.run_agent import AIAgent
-    from hermes_cli.config import load_config
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools
     from hermes_agent.agent.skill_utils import parse_config_string_list
 
     cfg = load_config()

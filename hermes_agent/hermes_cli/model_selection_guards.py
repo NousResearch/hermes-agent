@@ -66,7 +66,7 @@ def _wrap(kind: str, title: str, warning, model_name: str, provider: Optional[st
 def _cost_guard(
     model_name: str, provider: Optional[str], base_url: Optional[str], api_key: Optional[str],
     model_info: Optional[ModelInfo], ctx: Optional[SelectionContext] = None) -> Optional[SelectionWarning]:
-    from hermes_cli.model_cost_guard import expensive_model_warning
+    from hermes_agent.hermes_cli.model_cost_guard import expensive_model_warning
 
     warning = expensive_model_warning(
         model_name, provider=provider, base_url=base_url, api_key=api_key, model_info=model_info)
@@ -76,7 +76,7 @@ def _cost_guard(
 def _data_policy_guard(
     model_name: str, provider: Optional[str], base_url: Optional[str], api_key: Optional[str],
     model_info: Optional[ModelInfo], ctx: Optional[SelectionContext] = None) -> Optional[SelectionWarning]:
-    from hermes_cli.model_data_policy_guard import data_training_warning
+    from hermes_agent.hermes_cli.model_data_policy_guard import data_training_warning
 
     warning = data_training_warning(model_name, provider=provider, base_url=base_url)
     return _wrap("data_policy", "Data-Training Tier Warning", warning, model_name, provider)
@@ -90,7 +90,7 @@ DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD = 100_000
 def _context_cache_threshold() -> int:
     """``model.switch_context_confirm_tokens`` from config.yaml (0 disables), else the default."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         model_cfg = (load_config() or {}).get("model", {})
         raw = model_cfg.get("switch_context_confirm_tokens") if isinstance(model_cfg, dict) else None

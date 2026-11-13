@@ -76,8 +76,8 @@ def flush_before_hard_exit(timeout_s: float = EXIT_FLUSH_TIMEOUT_S) -> bool:
     still in flight and a wedged one must not hold the exit. Never imports the runtime module:
     collection off (or never started) means nothing to flush and nothing created. Never raises; True
     when the flush finished in time."""
-    runtimes = sys.modules.get("hermes_cli.observability.relay_shared_metrics")
-    stores = sys.modules.get("hermes_cli.observability.shared_metrics")
+    runtimes = sys.modules.get("hermes_agent.hermes_cli.observability.relay_shared_metrics")
+    stores = sys.modules.get("hermes_agent.hermes_cli.observability.shared_metrics")
     if runtimes is None and stores is None:
         return True
     deadline = time.monotonic() + max(0.0, timeout_s)

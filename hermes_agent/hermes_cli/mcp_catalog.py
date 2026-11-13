@@ -17,12 +17,12 @@ from typing import Any, Dict, Iterator, List, Optional
 import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home, get_optional_mcps_dir
-from hermes_cli._subprocess_compat import noninteractive_git_env
-from hermes_cli.colors import Colors, color
-from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
-from hermes_cli.cli_output import prompt as _prompt_input
+from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.config import load_config, save_config, get_env_value, save_env_value
+from hermes_agent.hermes_cli.cli_output import prompt as _prompt_input
 from utils import rmtree_readonly
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 _MANIFEST_VERSION = 1
 
@@ -203,7 +203,7 @@ def _parse_auth(path: Path, raw: Any, name: str, http: bool) -> AuthSpec:
         # _build_server_config emits an Authorization header referencing ${MCP_<NAME>_API_KEY}, but
         # install_entry only persists the env vars DECLARED in auth.env. Enforce the naming contract
         # here, or a manifest declaring e.g. N8N_API_KEY would send a literal-placeholder header (401).
-        from hermes_cli.mcp_config import _env_key_for_server
+        from hermes_agent.hermes_cli.mcp_config import _env_key_for_server
 
         _required_key = _env_key_for_server(name)
         if all(spec.name != _required_key for spec in env_list):
@@ -389,7 +389,7 @@ def get_entry(name: str) -> Optional[CatalogEntry]:
 
 def installed_servers() -> dict[str, dict]:
     """Return current ``mcp_servers`` block from config.yaml."""
-    from hermes_cli.mcp_config import _get_mcp_servers
+    from hermes_agent.hermes_cli.mcp_config import _get_mcp_servers
 
     return _get_mcp_servers()
 
@@ -412,7 +412,7 @@ def is_enabled(name: str) -> bool:
 
 def remove_server(name: str) -> bool:
     """Drop ``mcp_servers.<name>`` from config.yaml (pruning an empty block). True if it existed."""
-    from hermes_cli.mcp_config import _remove_mcp_server
+    from hermes_agent.hermes_cli.mcp_config import _remove_mcp_server
 
     return _remove_mcp_server(name)
 
@@ -456,7 +456,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     # upfront so the fast path doesn't always fail noisily before the full-clone fallback.
     is_sha_ref = bool(re.fullmatch(r"[0-9a-f]{7,40}", install.ref))
     # Never hang on a credential prompt: installs run from CLI/dashboard flows nobody can answer.
-    from hermes_cli.git_credentials import run_git_with_credential_fallback
+    from hermes_agent.hermes_cli.git_credentials import run_git_with_credential_fallback
 
     def _git(*args: str) -> int:
         result = run_git_with_credential_fallback(
@@ -538,7 +538,7 @@ def _inline_non_secret_value(obj: Any, name: str, value: str) -> Any:
 
 
 def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> dict:
-    """Translate a manifest into the ``mcp_servers.<name>`` block format used by hermes_cli/mcp_config.py."""
+    """Translate a manifest into the ``mcp_servers.<name>`` block format used by hermes_agent/hermes_cli/mcp_config.py."""
     cfg: dict = {}
     t = entry.transport
     if t.type == "stdio":
@@ -554,7 +554,7 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
             if entry.auth.oauth:
                 cfg["oauth"] = dict(entry.auth.oauth)
         elif entry.auth.type == "api_key":
-            from hermes_cli.mcp_config import _bearer_auth_headers
+            from hermes_agent.hermes_cli.mcp_config import _bearer_auth_headers
 
             cfg["headers"] = _bearer_auth_headers(entry.name)
     return cfg
@@ -584,7 +584,7 @@ def _probe_tools(name: str) -> Optional[list[tuple]]:
     if not server_cfg:
         return None
     try:
-        from hermes_cli.mcp_config import _probe_single_server  # lazy: keep this module cheap
+        from hermes_agent.hermes_cli.mcp_config import _probe_single_server  # lazy: keep this module cheap
 
         tools = _probe_single_server(name, server_cfg)
         return list(tools) if tools is not None else []
@@ -696,7 +696,7 @@ def _apply_tool_selection(
     pre_indices = {i for i, n in enumerate(tool_names) if n in pre_set}
     _say(f"  Found {len(probed)} tool(s). Pre-checked: {len(pre_indices)}.")
 
-    from hermes_cli.curses_ui import curses_checklist
+    from hermes_agent.hermes_cli.curses_ui import curses_checklist
 
     labels = [f"{n}  —  {(d[:60] + '...') if len(d) > 60 else d}" for n, d in probed]
     chosen_indices = curses_checklist(
@@ -749,7 +749,7 @@ def record_mcp_install(source: str, name: Optional[str], outcome: str, *, failur
                        error: Optional[BaseException] = None) -> None:
     """One shared-metrics extension install for an MCP server (catalog entry name, or None when custom).
     A failed one names its ``failure_class`` or passes the raised ``error`` (classified by its type)."""
-    from hermes_cli.observability.shared_metrics_events import record_extension_install
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_extension_install
 
     record_extension_install(kind="mcp_server", source=source, name=name, outcome=outcome,
                              failure_class=failure_class, error=error)
@@ -827,7 +827,7 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
             server_cfg = _inline_non_secret_value(server_cfg, spec.name, env_values[spec.name])
     server_cfg["enabled"] = enable
 
-    from hermes_cli.mcp_config import _save_mcp_server
+    from hermes_agent.hermes_cli.mcp_config import _save_mcp_server
 
     if not _save_mcp_server(entry.name, server_cfg):
         raise CatalogError(f"catalog entry '{entry.name}' rejected: suspicious command/args configuration",

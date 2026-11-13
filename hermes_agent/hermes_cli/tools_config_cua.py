@@ -10,7 +10,7 @@ import sys
 import time
 from typing import Optional
 
-from hermes_cli.cli_output import (
+from hermes_agent.hermes_cli.cli_output import (
     print_info as _print_info, print_success as _print_success, print_warning as _print_warning)
 
 
@@ -35,7 +35,7 @@ def _print_output_tail(result: subprocess.CompletedProcess, printer=None) -> Non
 
 def _post_setup_no_window_flags(*, streams_to_console: bool = False) -> int:
     """Hide Windows children unless their output is going to a real console."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
     flags = windows_hide_flags()
     try:
         if flags and streams_to_console and sys.stdout is not None and sys.stdout.isatty():
@@ -200,7 +200,7 @@ def _cua_autostart_opt_in() -> bool:
     install/enable time — needed when driving Windows over SSH (Session 0 has no interactive
     desktop). Unreadable config fails closed to the on-demand default."""
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         return bool(((load_config() or {}).get("computer_use") or {}).get("autostart", False))
     return False
 

@@ -1,9 +1,9 @@
 """Copy the model and its selected custom endpoint into a new profile, and merge that endpoint
 over same-identity entries the new profile already has."""
 
-from hermes_cli.config import _expand_env_vars
-from hermes_cli.providers import custom_provider_aliases
-from hermes_cli.runtime_provider_custom import (
+from hermes_agent.hermes_cli.config import _expand_env_vars
+from hermes_agent.hermes_cli.providers import custom_provider_aliases
+from hermes_agent.hermes_cli.runtime_provider_custom import (
     _get_named_custom_provider,
     _normalize_custom_provider_name,
     _shadowed_by_builtin,

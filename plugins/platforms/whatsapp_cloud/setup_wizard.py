@@ -6,7 +6,7 @@ Intentionally does NOT smoke-test the webhook: the gateway and the tunnel both r
 processes the user starts AFTER this wizard exits, so any in-wizard probe would fail."""
 
 from __future__ import annotations
-from hermes_cli.cli_output import line_input
+from hermes_agent.hermes_cli.cli_output import line_input
 
 import re
 import secrets
@@ -145,7 +145,7 @@ def _persist(env_var: str, value: Optional[str], current: Optional[str],
              saved: str = "  ✓ Saved: {v}", kept: str = "  ✓ Keeping existing: {v}") -> Optional[str]:
     """Save ``value`` to .env, else keep ``current``; prints the matching line. Returns the effective
     value (None when neither exists). ``{v}`` in ``saved``/``kept`` is the value."""
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.config import save_env_value
     if value:
         save_env_value(env_var, value)
         print(saved.format(v=value))
@@ -213,7 +213,7 @@ _OPTIONAL_ID_STEPS = (
 
 def _credential_step(step) -> bool:
     """Run one _CREDENTIAL_STEPS entry. Returns True when the wizard must abort."""
-    from hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.config import get_env_value
     title, env_var, label, validator, secret, preview, saved, kept, missing, required, help_text = step
     _header(title)
     current = get_env_value(env_var) or None
@@ -229,7 +229,7 @@ def _credential_step(step) -> bool:
 
 def _step_optional_ids() -> dict:
     """STEP 4: optional App ID / WABA ID. Returns {env var: effective value or None}."""
-    from hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.config import get_env_value
     _header("STEP 4 — App ID & WABA ID (optional; WABA ID binds inbound webhooks)")
     ids = {}
     for label, env_var, validator, help_text in _OPTIONAL_ID_STEPS:
@@ -242,7 +242,7 @@ def _step_optional_ids() -> dict:
 
 def _step_verify_token() -> str:
     """STEP 5: generate (or keep) the webhook verify token; returns the effective token."""
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
     _header("STEP 5 — Verify Token (auto-generated)")
     verify_token = get_env_value("WHATSAPP_CLOUD_VERIFY_TOKEN") or None
     regen = "y"
@@ -266,7 +266,7 @@ def _step_verify_token() -> str:
 
 def _step_allowlist() -> None:
     """STEP 6: recipient allowlist (spaces/dashes/'+' stripped from each entry)."""
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
     _header("STEP 6 — Recipient Allowlist")
     _lines(
         "", "  Who is allowed to message the bot? (Comma-separated phone",

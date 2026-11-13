@@ -16,7 +16,7 @@ real git failure, and then judges the next real launch from the files the update
   launch must put the parked tree back.
 * ``kill_mid_zip_swap``: the ZIP swap is SIGKILLed between renames. The next launch must finish or
   roll back the swap, leaving no ``*.hermes-update-staging``/``-old`` sibling to wedge a retry.
-* ``kill_mid_zip_swap_with_hermes_cli_moved_aside``: the swap renamed ``hermes_cli/`` (the recovery
+* ``kill_mid_zip_swap_with_hermes_cli_moved_aside``: the swap renamed ``hermes_agent/hermes_cli/`` (the recovery
   code itself) aside and died before its replacement landed. The next launch must still restore.
 * ``syntax_error_target``: a release whose startup module does not compile is refused BEFORE
   HEAD moves (no fast-forward in the reflog), not merely rolled back afterwards.
@@ -256,7 +256,7 @@ def test_kill_mid_zip_swap_is_settled_by_the_next_launch(world):
 
 
 def test_kill_mid_zip_swap_with_hermes_cli_moved_aside_reaches_recovery(world):
-    """The one window where the recovery code itself is gone: the swap renamed ``hermes_cli/`` aside
+    """The one window where the recovery code itself is gone: the swap renamed ``hermes_agent/hermes_cli/`` aside
     and died before the replacement landed. The next launch must still reach the journal-driven
     restore (from the moved-aside copy) and run, not die on ``No module named 'hermes_cli'``."""
     sb = world["sb"]

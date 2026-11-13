@@ -170,7 +170,7 @@ def route_supported_efforts(
     if (provider or "").strip().lower() == "openai-codex":
         supported = codex_supported_efforts(model)
         return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
-    from hermes_cli.local_runtime.capabilities import managed_reasoning_efforts
+    from hermes_agent.hermes_cli.local_runtime.capabilities import managed_reasoning_efforts
     local = managed_reasoning_efforts(provider or "", base_url or "", model or "")
     # llama-server turns thinking off for ``none`` itself, so a chat template never sees that level.
     return ("none", *local) if local else OPENAI_COMPAT_WIRE_EFFORTS

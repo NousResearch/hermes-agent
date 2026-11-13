@@ -260,7 +260,7 @@ class TestRunJobTerminalCwd:
         monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_mod)
 
         # Bypass the real provider resolver — it reads ~/.hermes and credentials.
-        from hermes_cli import runtime_provider as _rtp
+        from hermes_agent.hermes_cli import runtime_provider as _rtp
         monkeypatch.setattr(
             _rtp,
             "resolve_runtime_provider",

@@ -21,7 +21,7 @@ import pytest
 
 from hermes_agent.agent.lsp import client as lsp_client
 from hermes_agent.agent.lsp.client import LSPClient
-from hermes_cli import process_identity
+from hermes_agent.hermes_cli import process_identity
 from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("posix")

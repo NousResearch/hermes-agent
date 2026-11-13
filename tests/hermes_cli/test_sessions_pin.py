@@ -47,7 +47,7 @@ class _FakeDB:
         self.closed = True
 
 def _run(monkeypatch, capsys, argv_tail, db):
-    import hermes_cli.main as main_mod
+    import hermes_agent.hermes_cli.main as main_mod
     from hermes_agent import hermes_state
 
     def open_db(**kwargs):

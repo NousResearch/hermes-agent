@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, List, Optional, Sequence, Set, Tuple, Union
 
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.colors import Colors, color
 
 # Rich radiolist rows: (text, style). style is None | "yellow" | "dim" | "green" | "red". Plain ``str`` works too.
 RadioItem = str | Sequence[tuple[str, str | None]]
@@ -92,7 +92,7 @@ def _read_numbered_input(prompt_text: str) -> str | _NumberedNavigation:
     from prompt_toolkit.keys import Keys
 
     # Setup may run without the classic CLI, which normally installs CSI-u aliases at startup.
-    from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
+    from hermes_agent.hermes_cli.pt_input_extras import install_modify_other_keys_aliases
     install_modify_other_keys_aliases()
     bindings = KeyBindings()
 

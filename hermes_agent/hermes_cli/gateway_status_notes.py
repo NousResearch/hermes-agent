@@ -1,13 +1,13 @@
 """Notes `hermes gateway status` prints beside the running/not-running verdict."""
 from __future__ import annotations
 
-from hermes_cli.config import get_hermes_home
+from hermes_agent.hermes_cli.config import get_hermes_home
 
 
 def _incompatible_owner_verdict() -> str | None:
     """``incompatible: <reason>`` when the gateway answering for this home is one this Hermes's clients
     (TUI, Desktop, chat) refuse, e.g. an older Hermes's daemon left running across an upgrade."""
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
     try:
         observed = discover_gateway_endpoint(get_hermes_home(), timeout=1.5)
     except (OSError, ValueError):  # discovery reports peers as verdicts; only a bad home lands here
@@ -34,7 +34,7 @@ def report_incompatible_owner(pids) -> bool:
 def print_standalone_by_config() -> None:
     """Default-profile status: name the profiles that opted out of the host multiplexer by config,
     so the served set the host gateway reports is not mistaken for the installed roster."""
-    from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name, profiles_to_serve
     if (get_active_profile_name() or "default") != "default":
         return
     roster = {name for name, _home in profiles_to_serve(True, include_standalone=True)}

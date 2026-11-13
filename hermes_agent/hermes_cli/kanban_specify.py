@@ -4,7 +4,7 @@
 tightened title + concrete body for a Triage task, then flips it
 ``triage -> todo`` via ``kanban_db.specify_triage_task``.
 
-Mirrors ``hermes_cli/goals.py``: same aux-client pattern, same "empty config
+Mirrors ``hermes_agent/hermes_cli/goals.py``: same aux-client pattern, same "empty config
 => skip, don't crash" tolerance. One shot, no retry loop. JSON mode is not
 requested (works on providers without it); the parse is lenient and falls
 back to "whole reply is the body" so a malformed reply never strands a task.
@@ -19,8 +19,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
 from utils import env_int
 
@@ -117,9 +117,9 @@ def _title_body(parsed: dict) -> tuple[Optional[str], Optional[str]]:
 
 
 def _profile_author(default: str = "specifier") -> str:
-    """Same identity contract as ``hermes_cli.kanban._profile_author``; ``$USER`` as the last
+    """Same identity contract as ``hermes_agent.hermes_cli.kanban._profile_author``; ``$USER`` as the last
     resort for a human running the CLI outside any profile."""
-    from hermes_cli.profiles import current_profile_name
+    from hermes_agent.hermes_cli.profiles import current_profile_name
     return current_profile_name() or os.environ.get("USER") or default
 
 

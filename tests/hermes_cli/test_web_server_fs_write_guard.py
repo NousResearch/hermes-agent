@@ -9,9 +9,9 @@ import os
 
 import pytest
 
-from hermes_cli import web_server
-from hermes_cli.ssh_workspace_fs import SshWorkspaceFs
-from hermes_cli.web_routers import files as file_routes
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.ssh_workspace_fs import SshWorkspaceFs
+from hermes_agent.hermes_cli.web_routers import files as file_routes
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient

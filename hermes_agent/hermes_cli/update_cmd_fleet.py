@@ -1,7 +1,7 @@
 """Gateway fleet restart + post-update verification for ``hermes update``.
 
-Split out of ``hermes_cli/update_cmd.py``; every name is re-imported there so
-``hermes_cli.update_cmd.<name>`` keeps resolving/monkeypatching. Origin helpers are
+Split out of ``hermes_agent/hermes_cli/update_cmd.py``; every name is re-imported there so
+``hermes_agent.hermes_cli.update_cmd.<name>`` keeps resolving/monkeypatching. Origin helpers are
 imported lazily inside each function (no import cycle; test patches stay effective).
 """
 
@@ -16,12 +16,12 @@ import time as _time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hermes_cli.update_cmd_common import _best_effort
-from hermes_cli.update_host_obligation import PROFILE_MARKER_NAME
-from hermes_cli.update_inventory import _gateway_service_matches_profile
+from hermes_agent.hermes_cli.update_cmd_common import _best_effort
+from hermes_agent.hermes_cli.update_host_obligation import PROFILE_MARKER_NAME
+from hermes_agent.hermes_cli.update_inventory import _gateway_service_matches_profile
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("hermes_cli.update_cmd")
+logger = logging.getLogger("hermes_agent.hermes_cli.update_cmd")
 
 # Under HERMES_HOME (not next to the venv): records the fleet-restart obligation
 # after a pull advanced HEAD; cleared only when the restart completes or nothing ran.
@@ -39,8 +39,8 @@ _LIST_GATEWAY_UNITS = [
 
 
 def _write_gateway_update_exit_code(ok: bool) -> None:
-    from hermes_cli.update_cmd import get_hermes_home
-    from hermes_cli.update_receipt import committed_success
+    from hermes_agent.hermes_cli.update_cmd import get_hermes_home
+    from hermes_agent.hermes_cli.update_receipt import committed_success
     from pm.filesystem import durable_write_bytes
 
     # A run whose receipt already closed as a success is never reported failed (C3, review
@@ -56,10 +56,10 @@ def _fleet_restart_pending_marker_path() -> Path:
     """LEGACY per-``HERMES_HOME`` breadcrumb. Read-compat only — nothing writes it any more.
 
     One host runs one multiplexing gateway, so the pull→restart obligation is host-scoped
-    (``hermes_cli/update_host_obligation.py``). An obligation armed by the old per-profile code
+    (``hermes_agent/hermes_cli/update_host_obligation.py``). An obligation armed by the old per-profile code
     is still read and cleared here so an in-flight update is discharged after the upgrade.
     """
-    from hermes_cli.update_cmd import get_hermes_home
+    from hermes_agent.hermes_cli.update_cmd import get_hermes_home
     return get_hermes_home() / _FLEET_RESTART_PENDING_NAME
 
 
@@ -75,8 +75,8 @@ def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: lis
         # gateway services). Arming the marker here leaves a breadcrumb nothing can discharge:
         # a no-gateway host would then fail every later ``hermes update`` (#115311).
         return True
-    from hermes_cli.update_cmd import _m
-    from hermes_cli.update_host_obligation import arm_host_obligation
+    from hermes_agent.hermes_cli.update_cmd import _m
+    from hermes_agent.hermes_cli.update_host_obligation import arm_host_obligation
     if _m()._pytest_owns_live_checkout(_fleet_restart_pending_marker_path().parent):
         logger.debug("Skipping fleet-restart-pending obligation under pytest (live checkout)")
         return True
@@ -87,7 +87,7 @@ def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: lis
 def _current_profile_name() -> str:
     """Profile whose CLI armed the obligation (diagnostics only — the record is host-scoped)."""
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         return get_active_profile_name() or "default"
     except Exception:
         return ""
@@ -95,15 +95,15 @@ def _current_profile_name() -> str:
 
 def _clear_fleet_restart_pending_marker() -> None:
     """Discharge the obligation for the whole host (legacy per-home marker included). Never raises."""
-    from hermes_cli.update_cmd import _m
-    from hermes_cli.update_host_obligation import clear_host_obligation
+    from hermes_agent.hermes_cli.update_cmd import _m
+    from hermes_agent.hermes_cli.update_host_obligation import clear_host_obligation
     clear_host_obligation()
     _m()._clear_marker_file(_fleet_restart_pending_marker_path(), label="fleet-restart-pending")
 
 
 def _fleet_restart_obligation_armed() -> bool:
     """True when this HOST owes a fleet restart — from any profile's CLI."""
-    from hermes_cli.update_host_obligation import host_obligation_present
+    from hermes_agent.hermes_cli.update_host_obligation import host_obligation_present
     if host_obligation_present():
         return True
     with suppress(OSError):
@@ -116,7 +116,7 @@ def _obligation_fields() -> dict[str, str] | None:
 
     ``None`` means nothing armed OR a malformed record; both must leave the obligation standing.
     """
-    from hermes_cli.update_host_obligation import host_obligation_present, obligation_fields
+    from hermes_agent.hermes_cli.update_host_obligation import host_obligation_present, obligation_fields
     fields = obligation_fields()
     if fields is not None:
         return fields
@@ -139,9 +139,9 @@ def _obligation_fields() -> dict[str, str] | None:
 
 def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
-    from hermes_cli.update_cmd import _capture_head_sha, _m
+    from hermes_agent.hermes_cli.update_cmd import _capture_head_sha, _m
     try:
-        from hermes_cli.version_info import read_checkout_sha
+        from hermes_agent.hermes_cli.version_info import read_checkout_sha
         return read_checkout_sha()
     except Exception:
         return _capture_head_sha(["git"], _m().PROJECT_ROOT)
@@ -177,7 +177,7 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
 
     See #95294.
     """
-    from hermes_cli.update_cmd import _current_checkout_sha
+    from hermes_agent.hermes_cli.update_cmd import _current_checkout_sha
     if not isinstance(receipt, dict):
         return False
     expected_sha = expected_sha or _current_checkout_sha()
@@ -187,7 +187,7 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
 
-    from hermes_cli.update_receipt import row_is_external
+    from hermes_agent.hermes_cli.update_receipt import row_is_external
 
     fleet = receipt.get("fleet")
     if isinstance(fleet, list) and fleet:
@@ -273,7 +273,7 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
     """Require a successor at the expected SHA for every owed gateway identity."""
     if not expected_sha:
         return False
-    from hermes_cli.update_receipt import collect_fleet_versions, row_is_external
+    from hermes_agent.hermes_cli.update_receipt import collect_fleet_versions, row_is_external
 
     try:
         if owed is None:
@@ -304,7 +304,7 @@ def _marker_owed_gateways(inventory: object) -> set[tuple[str, str]] | None:
 
     Raises ValueError for a malformed or unsupported inventory, which keeps the marker.
     """
-    from hermes_cli.update_cmd_fleet_gatewayless import runtime_outside_gateway_evidence
+    from hermes_agent.hermes_cli.update_cmd_fleet_gatewayless import runtime_outside_gateway_evidence
 
     if inventory is None:
         return None
@@ -335,8 +335,8 @@ def _discharge_gatewayless_marker(checkout_sha: str, expected_sha: str) -> bool:
     Only when the host itself shows nothing the update could still owe a restart to, and HEAD
     still holds the code it pulled.
     """
-    from hermes_cli.update_cmd_fleet_checkout import checkout_contains
-    from hermes_cli.update_cmd_fleet_gatewayless import host_owes_no_gateway_restart
+    from hermes_agent.hermes_cli.update_cmd_fleet_checkout import checkout_contains
+    from hermes_agent.hermes_cli.update_cmd_fleet_gatewayless import host_owes_no_gateway_restart
 
     try:
         gatewayless = (checkout_sha == expected_sha or checkout_contains(expected_sha)) and host_owes_no_gateway_restart()
@@ -377,7 +377,7 @@ def _marker_only_restart_obsolete() -> bool:
     ``update_inventory.report_unaccounted_runtimes``, which prints it and records an owed restart when the restart
     phase never touched it — this marker only stops re-warning about it on every later startup.
     """
-    from hermes_cli.update_cmd_fleet_checkout import checkout_contains
+    from hermes_agent.hermes_cli.update_cmd_fleet_checkout import checkout_contains
 
     try:
         fields = _obligation_fields()
@@ -405,7 +405,7 @@ def _marker_only_restart_obsolete() -> bool:
     if not target_sha:
         return False
     try:
-        from hermes_cli.update_receipt import collect_fleet_versions, row_is_external
+        from hermes_agent.hermes_cli.update_receipt import collect_fleet_versions, row_is_external
         fleet = collect_fleet_versions()
     except Exception as exc:
         logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
@@ -452,9 +452,9 @@ def _receipt_restart_phase_completed(receipt: dict) -> str | None:
 
 def _pending_fleet_restart_needed(*, receipt: dict | None = None, pending_manual: list[dict] | None = None) -> bool:
     """Require identity-matched gateways at checkout HEAD for update catch-up."""
-    from hermes_cli.update_cmd import _current_checkout_sha
-    from hermes_cli.update_receipt import read_latest_receipt
-    from hermes_cli.update_serve_obligations import retain_receipt_manual_serves
+    from hermes_agent.hermes_cli.update_cmd import _current_checkout_sha
+    from hermes_agent.hermes_cli.update_receipt import read_latest_receipt
+    from hermes_agent.hermes_cli.update_serve_obligations import retain_receipt_manual_serves
 
     if receipt is None:
         receipt = read_latest_receipt() or {}
@@ -471,9 +471,9 @@ def _pending_fleet_restart_needed(*, receipt: dict | None = None, pending_manual
 
 def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: list[dict] | None = None) -> bool:
     """Hold a completed restart to the code it pulled, not a later checkout HEAD."""
-    from hermes_cli.update_cmd import _current_checkout_sha
-    from hermes_cli.update_receipt import read_latest_receipt
-    from hermes_cli.update_serve_obligations import retain_receipt_manual_serves
+    from hermes_agent.hermes_cli.update_cmd import _current_checkout_sha
+    from hermes_agent.hermes_cli.update_receipt import read_latest_receipt
+    from hermes_agent.hermes_cli.update_serve_obligations import retain_receipt_manual_serves
 
     if receipt is None:
         receipt = read_latest_receipt() or {}
@@ -504,8 +504,8 @@ def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
 
 def _warn_pending_fleet_restart_on_startup() -> None:
     """Cheap CLI-startup hint. Never restarts; never raises."""
-    from hermes_cli.update_receipt import read_latest_receipt
-    from hermes_cli.update_serve_obligations import retain_receipt_manual_serves, warn_pending_manual_serves
+    from hermes_agent.hermes_cli.update_receipt import read_latest_receipt
+    from hermes_agent.hermes_cli.update_serve_obligations import retain_receipt_manual_serves, warn_pending_manual_serves
 
     receipt = read_latest_receipt() or {}
     pending_manual = None
@@ -571,7 +571,7 @@ def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
     by one update. Units that share a live main PID are collapsed to one representative and the
     others are named as LEGACY units to migrate, never silently dropped.
     """
-    from hermes_cli.update_host_obligation import collapse_units_to_host_processes
+    from hermes_agent.hermes_cli.update_host_obligation import collapse_units_to_host_processes
 
     answered = set()
     targets: dict[str, tuple[str, list, str]] = {}  # "<scope>/<unit>" -> (scope, scope_cmd, unit)
@@ -625,7 +625,7 @@ def _live_fleet_current_rows() -> list[dict] | None:
     if not checkout_sha:
         return None
     try:
-        from hermes_cli.update_receipt import collect_fleet_versions
+        from hermes_agent.hermes_cli.update_receipt import collect_fleet_versions
         fleet = collect_fleet_versions()
     except Exception as exc:
         logger.debug("Pending fleet restart: fleet probe failed: %s", exc)
@@ -653,7 +653,7 @@ def _restart_identity_sha() -> str:
     if sha:
         return sha
     with suppress(Exception):
-        from hermes_cli.update_receipt import read_latest_receipt
+        from hermes_agent.hermes_cli.update_receipt import read_latest_receipt
         post_update = (read_latest_receipt() or {}).get("post_update")
         if isinstance(post_update, dict):
             return str(post_update.get("sha") or "")
@@ -673,7 +673,7 @@ def _fleet_restart_skip_reason(plan) -> str | None:
     lists gateways, so a planned ``serve`` still on pre-update code (or any runtime without a
     stamped identity) keeps the restart — the reconciliation there is what surfaces it.
     """
-    from hermes_cli.update_host_obligation import host_restart_already_completed
+    from hermes_agent.hermes_cli.update_host_obligation import host_restart_already_completed
     checkout_sha = _restart_identity_sha()
     if host_restart_already_completed(checkout_sha):
         return "this host's gateway was already restarted for this update"
@@ -686,7 +686,7 @@ def _fleet_restart_skip_reason(plan) -> str | None:
 
 def _run_pending_fleet_restart() -> bool:
     """Historical retry hook; new retries use the ordinary completion owner."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
     stop_for_relaunch(incomplete=True)
 
 
@@ -700,7 +700,7 @@ def _systemctl_reset_and_restart(manage_cmd: list, svc_name: str, *, scope_cmd: 
     auto-restart can wedge a plain ``restart`` against RestartSec backoff and stay dead."""
     # Property reads need no manage-units privileges: narrow sudoers may permit
     # restart/reset-failed but deny show. Keep the same user/system manager scope.
-    from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, systemd_restart_timeout
+    from hermes_agent.hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, systemd_restart_timeout
     scope_cmd = scope_cmd if scope_cmd is not None else manage_cmd
     timeout = systemd_restart_timeout(scope_cmd, svc_name)
     _systemctl(manage_cmd + ["reset-failed", svc_name], timeout=10)
@@ -715,7 +715,7 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
     listed, not because it ran the updated code. Foreign or unreadable ownership prints a notice
     and leaves the unit alone; it is not a failed restart.
     """
-    from hermes_cli.update_fleet_scope import announce_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
+    from hermes_agent.hermes_cli.update_fleet_scope import announce_skipped_runtime, systemd_unit_hermes_home, home_in_update_scope
     home = systemd_unit_hermes_home(scope_cmd, svc_name)
     if home is not None and home_in_update_scope(home):
         return True
@@ -726,7 +726,7 @@ def _systemd_unit_owned_by_update(scope_cmd: list, svc_name: str) -> bool:
 def _scoped_manual_gateway_pids(pids, *, keep=(), quiet: bool = False) -> list[int]:
     """*pids* whose live home this update owns (plus *keep*, PIDs already mapped to this
     install's profile PID files); every other gateway process is named and left running."""
-    from hermes_cli.update_fleet_scope import announce_skipped_runtime, partition_gateway_pids_by_scope
+    from hermes_agent.hermes_cli.update_fleet_scope import announce_skipped_runtime, partition_gateway_pids_by_scope
     keep = set(keep)
     owned, foreign = partition_gateway_pids_by_scope([pid for pid in pids if pid not in keep])
     if not quiet:
@@ -797,7 +797,7 @@ def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
 
 def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     """Print an explicit incomplete-update warning for unrestarted units."""
-    from hermes_cli.gateway import is_macos
+    from hermes_agent.hermes_cli.gateway import is_macos
     if not failed_units:
         return
     ordered = list(dict.fromkeys(failed_units))  # de-dup, discovery order
@@ -844,7 +844,7 @@ def _restart_launchd_gateway_after_update(
     still printed "Update complete!".
     See #88848.
     """
-    from hermes_cli.gateway import (
+    from hermes_agent.hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_restart, wait_for_launchd_gateway_supervision,
         _is_pid_ancestor_of_current_process, _launchctl_supervised_pid,
     )
@@ -920,7 +920,7 @@ def _restart_macos_launchd_gateways(
     drain → kickstart). ``subprocess.TimeoutExpired`` is isolated per label so one wedged launchctl call
     cannot leave the rest of the fleet on old code (#68523).
     """
-    from hermes_cli.gateway import (
+    from hermes_agent.hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_gateway_labels_for_install, legacy_launchd_labels_for_install,
         _graceful_restart_via_sigusr1, _launchd_kickstart,
         _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
@@ -930,7 +930,7 @@ def _restart_macos_launchd_gateways(
         if listing.returncode != 0:
             failed_or_stale_units.append("launchd (listing failed)")
             return
-    from hermes_cli.update_cmd_posix_pause import already_restarted
+    from hermes_agent.hermes_cli.update_cmd_posix_pause import already_restarted
     current_label = get_launchd_label()
     resumed = already_restarted()["labels"]  # paused for the update, restarted on the new code
     _restarted, _failed = ([], []) if current_label in resumed else _restart_launchd_gateway_after_update(
@@ -946,7 +946,7 @@ def _restart_macos_launchd_gateways(
     legacy_labels = legacy_launchd_labels_for_install(exclude=set(derived_labels) | {current_label})
     if legacy_labels:
         print(f"  ↻ legacy-labelled units of this install join the restart: {', '.join(legacy_labels)}")
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
+    from hermes_agent.hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
     for label in derived_labels + legacy_labels:
         if label == current_label or label in resumed:
             continue
@@ -966,7 +966,7 @@ def _restart_macos_launchd_gateways(
             graceful_ok = False
             if old_pid is not None and old_pid > 0:
                 print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
-                from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+                from hermes_agent.hermes_cli.update_cmd_drain_report import drain_progress_reporter
                 graceful_ok = _graceful_restart_via_sigusr1(
                     old_pid, drain_timeout=drain_budget,
                     on_progress=drain_progress_reporter(_gateway_home_for_pid(old_pid), budget_s=drain_budget))
@@ -1000,12 +1000,12 @@ def _restart_macos_launchd_gateways(
 def _surviving_gateway_pids_after_failed_restart():
     """Best-effort PIDs of gateways still running after the restart phase died.
 
-    ``None`` when undeterminable (notably ``hermes_cli.gateway`` no longer importing
+    ``None`` when undeterminable (notably ``hermes_agent.hermes_cli.gateway`` no longer importing
     under the replaced checkout). Callers treat ``None`` and non-empty as "assume
     stale"; only a positive empty result proves nothing needs restarting.
     """
     try:
-        from hermes_cli.gateway import find_gateway_pids
+        from hermes_agent.hermes_cli.gateway import find_gateway_pids
         return _scoped_manual_gateway_pids(find_gateway_pids(all_profiles=True), quiet=True)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not probe for surviving gateways after update: %s", exc)
@@ -1040,7 +1040,7 @@ _LAUNCHD_SERVE_SKIP_REASON = (
 def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) -> tuple[dict[str, str], list[dict]]:
     """Partition pre-update runtimes into fresh-restart candidates and skips.
 
-    Uses only the pre-checkout inventory: re-importing ``hermes_cli.gateway`` in the
+    Uses only the pre-checkout inventory: re-importing ``hermes_agent.hermes_cli.gateway`` in the
     failing interpreter is what raises the original ``ImportError``. Returns
     ``(candidates, skipped)``: profile → supervisor for supervised gateways the fresh
     process may restart; every other inventoried runtime with an explicit reason so
@@ -1066,7 +1066,7 @@ def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) 
                     continue
                 reason = _MANUAL_GATEWAY_SKIP_REASON
             elif kind in ("serve", "dashboard"):
-                from hermes_cli.update_inventory import CLIENT_OWNED_SERVE_SUPERVISORS
+                from hermes_agent.hermes_cli.update_inventory import CLIENT_OWNED_SERVE_SUPERVISORS
 
                 if supervisor in CLIENT_OWNED_SERVE_SUPERVISORS:
                     reason = _DESKTOP_SERVE_SKIP_REASON
@@ -1088,7 +1088,7 @@ def _warn_gateway_restart_phase_aborted(exc: BaseException, pids) -> None:
     modules and died on the next turn with an ImportError.
 
     Issue #78574: the gateway auto-restart phase was wrapped in a blanket ``except Exception`` that only
-    logged at debug level, so an early failure (e.g. importing ``hermes_cli.gateway`` from the freshly
+    logged at debug level, so an early failure (e.g. importing ``hermes_agent.hermes_cli.gateway`` from the freshly
     pulled checkout) erased every drain/restart line from the update output.
     """
     print()
@@ -1124,7 +1124,7 @@ def _drain_or_signal_gateway_for_update(
     return), so it is "actively waiting forever" and never marked wedged — the gateway burns the full
     force-drain cap (1800s) before killing its own updater's session. See #86684.
     """
-    from hermes_cli.gateway import (
+    from hermes_agent.hermes_cli.gateway import (
         GATEWAY_LOOP_WEDGED, _escalate_wedged_gateway, _graceful_restart_via_sigusr1,
         _is_pid_ancestor_of_current_process, _request_gateway_self_restart, probe_gateway_loop_liveness,
     )
@@ -1143,7 +1143,7 @@ def _drain_or_signal_gateway_for_update(
         _escalate_wedged_gateway(pid)
         return True
     print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
-    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    from hermes_agent.hermes_cli.update_cmd_drain_report import drain_progress_reporter
     return _graceful_restart_via_sigusr1(
         pid, drain_timeout=drain_budget,
         on_progress=drain_progress_reporter(_gateway_home_for_pid(pid), budget_s=drain_budget))
@@ -1152,7 +1152,7 @@ def _drain_or_signal_gateway_for_update(
 def _gateway_home_for_pid(pid: int):
     """HERMES_HOME of the gateway ``pid`` per the fleet inventory, else None (own profile's file)."""
     with suppress(Exception):
-        from hermes_cli.update_receipt import _profile_homes
+        from hermes_agent.hermes_cli.update_receipt import _profile_homes
         from hermes_agent.gateway.status import read_runtime_status
         for _profile, home in _profile_homes():
             record = read_runtime_status(home / "gateway_state.json") or {}
@@ -1203,7 +1203,7 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
     exit: a ``Restart=on-failure`` system unit restarted ~180x on a host-attach refusal while the
     regenerated user units parked (#118282). The gateway rewrites its USER unit at boot; a SYSTEM unit
     lives in /etc, so rewrite it here when we are root, else name the repair."""
-    from hermes_cli.gateway import (
+    from hermes_agent.hermes_cli.gateway import (
         _SYSTEM_UNIT_DIR, GATEWAY_FATAL_CONFIG_EXIT_CODE, get_service_name,
         refresh_systemd_unit_if_needed, user_systemd_unit_dir,
     )
@@ -1215,7 +1215,7 @@ def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
         return
     if parked:
         return
-    from hermes_cli.update_cmd_commit import past_commit_point
+    from hermes_agent.hermes_cli.update_cmd_commit import past_commit_point
     # Past the move the generator would load the new tree's plugins into this process; the hint stays.
     if system and not _needs_sudo(scope) and svc_name == get_service_name() and not past_commit_point():
         # The refresh adopts the unit's HERMES_HOME into os.environ (sudo strips it); the rest of the
@@ -1270,7 +1270,7 @@ def _restart_one_systemd_gateway_unit(
         _main_pid, drain_budget, svc_name, self_restart_pending=self_restart_pending)
 
     if _graceful_ok:
-        from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, service_restart_sec, systemd_restart_timeout
+        from hermes_agent.hermes_cli.update_cmd_fleet_unit_budget import run_unit_job, service_restart_sec, systemd_restart_timeout
         # ``Restart=always`` respawns only after RestartSec (60s in our unit; dead time for a
         # voluntary restart). ``reset-failed`` + ``start`` skips it (~1-3s); if RestartSec already
         # elapsed, ``start`` is a no-op and we fall through to the poll. Needs manage-units
@@ -1350,7 +1350,7 @@ def _restart_systemd_gateway_units(
     Settled units → ``restarted_services`` (bare) and ``restarted_scoped_units``
     (``scope/name``); failures → ``failed_or_stale_units``. Per-unit timeouts isolated.
     """
-    from hermes_cli.gateway import supports_systemd_services, _ensure_user_systemd_env
+    from hermes_agent.hermes_cli.gateway import supports_systemd_services, _ensure_user_systemd_env
     if not supports_systemd_services():
         return
     _manage_cmd_cache: dict = {}
@@ -1380,7 +1380,7 @@ def _restart_systemd_gateway_units(
     # all point at the SAME live MainPID on a multiplexed host, and restarting each in turn
     # is an N-fold outage from one update. Units sharing a live PID collapse to one restart;
     # the others are named as legacy units to migrate, never silently dropped.
-    from hermes_cli.update_host_obligation import collapse_units_to_host_processes
+    from hermes_agent.hermes_cli.update_host_obligation import collapse_units_to_host_processes
     targets: dict[str, tuple[str, list, str]] = {}  # "<scope>/<unit>" -> (scope, scope_cmd, unit)
     for scope, scope_cmd, result in _systemd_gateway_unit_listings(_on_list_timeout):
         _for_each_systemd_gateway_unit(
@@ -1402,7 +1402,7 @@ def _restart_systemd_gateway_units(
             "together with: hermes gateway migrate"
         )
 
-    from hermes_cli.update_cmd_posix_pause import already_restarted
+    from hermes_agent.hermes_cli.update_cmd_posix_pause import already_restarted
     for key in keys:
         scope, scope_cmd, svc_name = targets[key]
         if key in already_restarted()["units"]:  # paused for the update, restarted on the new code
@@ -1486,7 +1486,7 @@ class _GatewayRestartOutcome:
     def record_receipt(self, **extra) -> None:
         """Best-effort ``record_gateway_restart`` from the current bookkeeping."""
         with suppress(Exception):
-            from hermes_cli.update_receipt import record_gateway_restart
+            from hermes_agent.hermes_cli.update_receipt import record_gateway_restart
             record_gateway_restart(
                 restarted_services=self.restarted_services, relaunched_profiles=self.relaunched_profiles,
                 externally_supervised_profiles=self.externally_supervised_profiles,
@@ -1501,12 +1501,12 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     Mutates ``out`` in place; raises so the caller's abort recovery fires.
     """
     import signal as _signal
-    from hermes_cli.gateway import (
+    from hermes_agent.hermes_cli.gateway import (
         find_gateway_pids, find_profile_gateway_processes, _prepare_profile_gateway_update_restart, _get_service_pids,
         _wait_for_gateway_exit,
     )
     # Exclude just-restarted service PIDs so we don't kill what systemd/launchd spawned.
-    from hermes_cli.update_cmd_posix_pause import already_restarted
+    from hermes_agent.hermes_cli.update_cmd_posix_pause import already_restarted
     # Plus the gateways this update paused and already restarted on the new code.
     service_pids = _get_service_pids(all_profiles=True) | already_restarted()["pids"]
     manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
@@ -1583,7 +1583,7 @@ def _force_kill_stuck_gateways(killed_pids) -> None:
     exit, so the watcher never respawns and ImportErrors persist. Give graceful paths a
     moment, then SIGKILL remaining pre-update PIDs."""
     with _best_effort('Post-restart survivor sweep failed: %s'):
-        from hermes_cli.gateway import find_gateway_pids, _get_service_pids
+        from hermes_agent.hermes_cli.gateway import find_gateway_pids, _get_service_pids
         # --- Post-restart survivor sweep ----------------------------- Issue #17648: some gateways ignore
         # SIGTERM (stuck drain, blocked I/O, PID dead but zombie). The detached profile watchers wait 120s
         # for the old PID to exit — if it never does, no respawn happens and the user keeps hitting
@@ -1608,8 +1608,8 @@ def _recover_after_restart_phase_abort(
     e, _pre_update_plan, out: _GatewayRestartOutcome, *, gateway_mode, restarted_scoped_units
 ) -> None:
     """Phase-abort recovery: fresh-child restart + fail-closed verdict; updates ``out`` in place."""
-    from hermes_cli.update_abort_recovery import _owed_stale_serve_rows
-    from hermes_cli.update_cmd import (
+    from hermes_agent.hermes_cli.update_abort_recovery import _owed_stale_serve_rows
+    from hermes_agent.hermes_cli.update_cmd import (
         _abort_recovery_is_complete, _recover_gateway_restart_after_abort, _surviving_pre_update_serve_runtimes,
         _warn_stale_serve_runtimes,
     )
@@ -1681,7 +1681,7 @@ def _recover_after_restart_phase_abort(
 def _gateway_drain_budget() -> float:
     """Seconds a drain-first (SIGUSR1) restart may wait for a gateway to exit; 45s floor."""
     try:
-        from hermes_cli.gateway import _get_restart_exit_wait_budget
+        from hermes_agent.hermes_cli.gateway import _get_restart_exit_wait_budget
         return max(float(_get_restart_exit_wait_budget()), 45.0)
     except Exception:
         return 45.0
@@ -1693,8 +1693,8 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     Never raises: a phase abort runs fresh-child recovery and fails closed unless
     every planned gateway is verifiably covered.
     """
-    from hermes_cli.update_cmd import _m
-    from hermes_cli.update_stage import publish_stage
+    from hermes_agent.hermes_cli.update_cmd import _m
+    from hermes_agent.hermes_cli.update_stage import publish_stage
 
     publish_stage("Restarting Hermes services")  # also after a failed build: the code is committed
     # All bookkeeping is declared before the try so abort recovery and fleet reconciliation
@@ -1720,7 +1720,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     try:
         # Every gateway helper the phase needs is imported up front so a broken gateway
         # module aborts into recovery BEFORE any unit is touched.
-        from hermes_cli.gateway import (
+        from hermes_agent.hermes_cli.gateway import (
             is_macos,
             find_gateway_pids,
             find_profile_gateway_processes,
@@ -1771,7 +1771,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     if not out.incomplete:
         # Stamp the HOST obligation so every other profile's CLI knows this update's restart
         # already happened; without it each profile re-kills the one shared multiplexer.
-        from hermes_cli.update_host_obligation import mark_host_restart_completed
+        from hermes_agent.hermes_cli.update_host_obligation import mark_host_restart_completed
         mark_host_restart_completed(_restart_identity_sha())
     return out
 
@@ -1784,7 +1784,7 @@ def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:
     (``pre_restart_pids`` non-empty or None) now gone was stopped unverified.
 
     * ``surviving is None`` — the survivor probe could not determine state (typically the freshly-pulled
-    ``hermes_cli.gateway`` no longer imports, one of the ways the phase aborts). That is proof-of-safety
+    ``hermes_agent.hermes_cli.gateway`` no longer imports, one of the ways the phase aborts). That is proof-of-safety
     ONLY when nothing was running before we touched anything. If a gateway was discovered pre-restart
     (``pre_restart_pids`` non-empty, or ``None`` meaning the pre-state could not be read), it was stopped
     without a verified replacement, so we still fail closed (#78574).

@@ -606,7 +606,7 @@ class TestSweepOrphanedSessions:
         then deleted; a fresh one is left open (source survives as 'recovered')."""
         import sqlite3
 
-        from hermes_cli.session_recovery import _reconstruct_missing_sessions
+        from hermes_agent.hermes_cli.session_recovery import _reconstruct_missing_sessions
 
         stale = time.time() - 200 * 86400
         for sid in ("lost-old", "lost-fresh"):

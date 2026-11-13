@@ -1,10 +1,10 @@
-"""Migrate a new profile's copied config document (``hermes_cli.profiles`` creation helper)."""
+"""Migrate a new profile's copied config document (``hermes_agent.hermes_cli.profiles`` creation helper)."""
 
 from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from hermes_cli.config_backend import config_exists, supports_file_tooling
+from hermes_agent.hermes_cli.config_backend import config_exists, supports_file_tooling
 
 
 def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
@@ -18,7 +18,7 @@ def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
     # the detailed error in the target profile.
     with contextlib.suppress(Exception):
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import check_config_version, migrate_config
+        from hermes_agent.hermes_cli.config import check_config_version, migrate_config
         token = set_hermes_home_override(str(profile_dir))
         try:
             current_ver, latest_ver = check_config_version()

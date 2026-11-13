@@ -18,25 +18,25 @@ from starlette.requests import HTTPConnection
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_cli.config import cfg_get, get_process_hermes_home
+from hermes_agent.hermes_cli.config import cfg_get, get_process_hermes_home
 from utils import env_var_enabled
 
 # Serve assets with explicit MIME types: the host's map (on Windows the
 # registry can map .js -> text/plain) must not decide the Content-Type of
 # dashboard bundles (#28987). Runs before any StaticFiles/FileResponse below
 # serves a request, and is idempotent.
-from hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
+from hermes_agent.hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
 
 normalize_web_asset_mime_types()
 
 # Same logger the code used before extraction (record parity).
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value (single source of truth lives in
-    ``hermes_cli.dashboard_auth.prefix`` so gate, OAuth, cookies and SPA mount agree)."""
-    from hermes_cli.dashboard_auth.prefix import normalise_prefix
+    ``hermes_agent.hermes_cli.dashboard_auth.prefix`` so gate, OAuth, cookies and SPA mount agree)."""
+    from hermes_agent.hermes_cli.dashboard_auth.prefix import normalise_prefix
     return normalise_prefix(raw)
 
 
@@ -55,7 +55,7 @@ def _render_active_theme_bootstrap_css() -> str:
     references the variables rather than literals so runtime theme switches stay live:
     ``applyTheme()`` writes inline styles on ``documentElement`` which outrank this block.
     """
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     try:
         active = cfg_get(load_config(), "dashboard", "theme", default="default")
         if not active or not isinstance(active, str):
@@ -111,7 +111,7 @@ def _bundle_unavailable(request: Request, message: str, status_code: int) -> Res
     if "text/html" not in request.headers.get("accept", ""):
         return JSONResponse({"error": message}, status_code=status_code, headers=_NO_STORE)
     from html import escape
-    from hermes_cli.webapp_page_policy import page_headers
+    from hermes_agent.hermes_cli.webapp_page_policy import page_headers
     html = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -142,10 +142,10 @@ def mount_spa(application: FastAPI):
     another renderer (the Webapp's ``dist-webapp``) records it on ``application.state.web_dist``
     later.
     """
-    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED
-    from hermes_cli.web_deps import _server
-    from hermes_cli.web_server_surface import policy
-    from hermes_cli.web_server_static_assets import is_static_asset_path, public_font_file
+    from hermes_agent.hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED
+    from hermes_agent.hermes_cli.web_deps import _server
+    from hermes_agent.hermes_cli.web_server_surface import policy
+    from hermes_agent.hermes_cli.web_server_static_assets import is_static_asset_path, public_font_file
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
@@ -228,7 +228,7 @@ def mount_spa(application: FastAPI):
         # as the host serves more than one, and the switcher shows the same profile it writes. The
         # Webapp reads it as the profile its gateway socket and REST answer for when a request names
         # none, so a tab on any other profile names that profile on every request.
-        from hermes_cli.web_server_profiles import serving_profile_name as _serving_profile_name
+        from hermes_agent.hermes_cli.web_server_profiles import serving_profile_name as _serving_profile_name
         serving_profile_js = json.dumps(_serving_profile_name()).replace("</", "<\\/")
         bootstrap_script = (
             f"<script>{token_js}"
@@ -249,7 +249,7 @@ def mount_spa(application: FastAPI):
         if theme_bootstrap:
             html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)
         html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
-        from hermes_cli.webapp_page_policy import page_headers
+        from hermes_agent.hermes_cli.webapp_page_policy import page_headers
         return HTMLResponse(html, headers=page_headers(request, html, _NO_STORE))
 
     # Built CSS contains absolute ``url(/fonts/...)`` / ``url(/ds-assets/...)`` references that
@@ -289,7 +289,7 @@ def mount_spa(application: FastAPI):
             asset_files[directory] = _ImmutableAssetFiles(directory=directory, check_dir=False)
         await asset_files[directory](scope, receive, send)
 
-    from hermes_cli.webapp_previews import mount_preview_assets
+    from hermes_agent.hermes_cli.webapp_previews import mount_preview_assets
     mount_preview_assets(application)
     application.mount("/assets", serve_assets, name="assets")
 
@@ -562,7 +562,7 @@ def _dashboard_plugin_search_dirs() -> list[tuple]:
     The project source is gated on shared truthy semantics (``1``/``true``/``yes``/``on``):
     a bare non-empty check let ``=0``/``=false`` silently enable it (GHSA-5qr3-c538-wm9j).
     """
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
     from hermes_constants import get_default_hermes_root
 
     bundled_root = get_bundled_plugins_dir()
@@ -573,7 +573,7 @@ def _dashboard_plugin_search_dirs() -> list[tuple]:
     # the launch home is the profile directory, which has no ``plugins/`` — user plugins are installed in
     # the hermes root (``~/.hermes/plugins``). Scan the default root as well (``get_default_hermes_root()``
     # unwraps ``<root>/profiles/<name>`` → ``<root>`` and returns a custom ``HERMES_HOME`` unchanged when it
-    # *is* the root), mirroring how ``hermes_cli.plugins`` resolves plugin install locations. The
+    # *is* the root), mirroring how ``hermes_agent.hermes_cli.plugins`` resolves plugin install locations. The
     # ``seen_names`` dedupe below keeps profile-local plugins (if any) authoritative over same-named root
     # plugins.
     user_plugin_roots = [get_process_hermes_home() / "plugins"]
@@ -587,7 +587,7 @@ def _dashboard_plugin_search_dirs() -> list[tuple]:
     # correctly read as "disabled" — silently *enabled* the untrusted project source in the web server.
     # Combined with the absolute-path RCE primitive on the manifest's ``api`` field (now patched below),
     # this turned the opt-in into a sticky always-on switch. Use the shared truthy semantics (``1`` /
-    # ``true`` / ``yes`` / ``on``) so the gate matches ``hermes_cli/plugins.py`` and the documented user
+    # ``true`` / ``yes`` / ``on``) so the gate matches ``hermes_agent/hermes_cli/plugins.py`` and the documented user
     # contract.
     if env_var_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
         search_dirs.append((Path.cwd() / ".hermes" / "plugins", "project"))
@@ -637,7 +637,7 @@ def _dashboard_plugin_entry(data: dict[str, Any], name: str, dashboard_dir: Path
 
 def _discover_dashboard_plugins(search_dirs: Optional[list] = None) -> list:
     """Scan ``<plugins root>/*/dashboard/manifest.json`` across user, bundled and (opt-in)
-    project plugin sources — same three sources as ``hermes_cli.plugins`` — or ``search_dirs``."""
+    project plugin sources — same three sources as ``hermes_agent.hermes_cli.plugins`` — or ``search_dirs``."""
     plugins = []
     seen_names: set = set()
     for plugins_root, source in (_dashboard_plugin_search_dirs() if search_dirs is None else search_dirs):
@@ -721,7 +721,7 @@ def _schedule_check_fn_probe(fn) -> Optional[threading.Thread]:
 
 def _plugin_login_command(name: str) -> str:
     """A plugin that left core with its own login command (``hermes spotify login``), else ``hermes auth <name>``."""
-    from hermes_cli.left_core_migration import LEFT_CORE
+    from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE
     return next((f"hermes {f.cli} login" for f in LEFT_CORE if f.plugin == name and f.cli), f"hermes auth {name}")
 
 
@@ -760,9 +760,9 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
     event loop). Only cached availability is consumed and the payload is memoized briefly to
     collapse the dashboard's bursty duplicate fetches.
     """
-    from hermes_cli.web_server_memory import _discover_memory_provider_statuses, _normalize_memory_provider_name
-    from hermes_cli.web_server import _get_dashboard_plugins
-    from hermes_cli.config import get_hermes_home, load_config
+    from hermes_agent.hermes_cli.web_server_memory import _discover_memory_provider_statuses, _normalize_memory_provider_name
+    from hermes_agent.hermes_cli.web_server import _get_dashboard_plugins
+    from hermes_agent.hermes_cli.config import get_hermes_home, load_config
     from hermes_constants import hermes_home_key
 
     cache_key = hermes_home_key(get_hermes_home())
@@ -774,7 +774,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
                 return cached
 
     started_at = time.monotonic()
-    from hermes_cli.plugins_cmd import (
+    from hermes_agent.hermes_cli.plugins_cmd import (
         _category_active_names,
         _discover_all_plugins,
         _get_current_context_engine,
@@ -785,8 +785,8 @@ def _merged_plugins_hub(force_refresh: bool = False) -> dict[str, Any]:
         _plugin_status,
         _read_manifest as _read_plugin_manifest_at,
     )
-    from hermes_cli.plugins_cmd_catalog import removed_annotation
-    from hermes_cli.plugin_catalog import resolved_removed_entries
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import removed_annotation
+    from hermes_agent.hermes_cli.plugin_catalog import resolved_removed_entries
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -890,7 +890,7 @@ def _launch_profile_scope():
     secrets switch together, so the launch config's ``${VAR}`` refs (and its last-good copy) never
     expand through another profile's secrets."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from hermes_cli.web_server_profiles import _config_profile_scope
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope
     token = set_hermes_home_override(None)
     try:
         with _config_profile_scope(None):
@@ -902,7 +902,7 @@ def _launch_profile_scope():
 def _plugin_enable_sets_here() -> tuple[set, set]:
     """``(plugins.enabled, plugins.disabled)`` of the active profile scope from one cached read-only
     config read: the gates run on the event loop for every plugin request and upgrade."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     try:
         config = load_config_readonly()
     except Exception:  # health: allow BLE001 -- an unreadable config grants no consent (empty sets), as plugins_cmd reads it
@@ -916,7 +916,7 @@ def _plugin_consent_withheld(plugin: dict[str, Any]) -> bool:
     """Whether a request must not reach ``plugin``'s backend or assets (#46435, GHSA-mcfc-hp25-cjv7).
 
     ``plugin`` is the active scope's own copy (a secondary profile's plugins are discovered under
-    its home and run in its plugin host, :mod:`hermes_cli.web_server_plugin_profiles`), so the
+    its home and run in its plugin host, :mod:`hermes_agent.hermes_cli.web_server_plugin_profiles`), so the
     profile the request acts for decides alone: a native ticket's profile, a ``?profile=``
     selection, else the launch profile (#134889, PLG-3).
     """
@@ -937,8 +937,8 @@ async def _plugin_api_request_refused(name: str) -> bool:
     keeps its router mounted until restart, so every request is checked again. An unknown name
     counts as a user plugin (safe default: refused).
     """
-    from hermes_cli.web_server import _get_dashboard_plugins
-    from hermes_cli.web_server_plugin_profiles import rescanned_plugin, secondary_profile_home
+    from hermes_agent.hermes_cli.web_server import _get_dashboard_plugins
+    from hermes_agent.hermes_cli.web_server_plugin_profiles import rescanned_plugin, secondary_profile_home
     plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == name), None)
     home = secondary_profile_home()
     if plugin is None and home is not None:  # installed since the last scan (rate-limited per name)
@@ -969,8 +969,8 @@ class PluginApiWebSocketGate:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
-        from hermes_cli.web_server_chat import _ws_request_is_allowed
-        from hermes_cli.web_server_plugin_profiles import plugin_request_scope, refuse_secondary_plugin_socket
+        from hermes_agent.hermes_cli.web_server_chat import _ws_request_is_allowed
+        from hermes_agent.hermes_cli.web_server_plugin_profiles import plugin_request_scope, refuse_secondary_plugin_socket
         name = _plugin_api_name(scope) if scope["type"] == "websocket" else ""
         if not name:
             await self.app(scope, receive, send)
@@ -995,8 +995,8 @@ def _native_ws_scope(scope):
     same profile, so consent, home and ``get_secret`` all follow the grant, as on HTTP
     (``native_profile_scope``).
     """
-    from hermes_cli.dashboard_auth.native_http import HEADER, native_profile_scope, redeem_native_ws
-    from hermes_cli.web_server_profiles import _config_profile_scope
+    from hermes_agent.hermes_cli.dashboard_auth.native_http import HEADER, native_profile_scope, redeem_native_ws
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope
     conn = HTTPConnection(scope)
     if HEADER not in conn.headers:
         yield True
@@ -1024,8 +1024,8 @@ async def _plugin_route_secret_scope(conn: HTTPConnection, profile: Optional[str
     a sync yield-dependency's setup and teardown run on different threadpool threads, so the
     scope token would be reset in a foreign context; sync handlers still see the scope because
     ``run_in_threadpool`` copies the request context into the worker."""
-    from hermes_cli.web_server_plugin_profiles import in_process_router_refused
-    from hermes_cli.web_server_profiles import _config_profile_scope, _is_current_profile
+    from hermes_agent.hermes_cli.web_server_plugin_profiles import in_process_router_refused
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope, _is_current_profile
     name = _plugin_api_name(conn.scope)
     with _config_profile_scope(profile):
         # The plugin must not run on a profile that disabled it (#134889), and this router is the
@@ -1051,10 +1051,10 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
         if target is None:
             return JSONResponse({"detail": f"plugin {name!r} is not enabled in this profile"}, status_code=404)
         host, dashboard_dir, api_file = target
-        from hermes_cli.web_server_plugin_profiles import run_hosted_request
+        from hermes_agent.hermes_cli.web_server_plugin_profiles import run_hosted_request
         query, headers = request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"]
         body = await request.body()
-        from hermes_cli.plugin_host_http_auth import admitted_for_sensitive_route
+        from hermes_agent.hermes_cli.plugin_host_http_auth import admitted_for_sensitive_route
         authenticated = admitted_for_sensitive_route(request)
         return await run_hosted_request(host.home, name, lambda timeout: host.asgi_request(
             name, dashboard_dir, api_file, request.method, "/" + path, query, headers, body,
@@ -1069,8 +1069,8 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
 def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
     """``(plugin host, dashboard dir, api file)`` for plugin ``name`` in the active profile, or None
     when that profile has no enabled user copy of it."""
-    from hermes_cli.plugins import get_plugin_manager
-    from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
     for plugin in _discover_dashboard_plugins():
         if plugin.get("name") != name or not plugin.get("_api_file") or plugin.get("source") != "user":
             continue
@@ -1095,9 +1095,9 @@ def _mount_plugin_api_routes():
     plugin's Python code would execute at dashboard startup — a code execution vector that bypasses the
     user's intent. (#46435, GHSA-mcfc-hp25-cjv7)
     """
-    from hermes_cli.web_server import _get_dashboard_plugins, app
+    from hermes_agent.hermes_cli.web_server import _get_dashboard_plugins, app
     try:
-        from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
+        from hermes_agent.hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
         enabled_set = _get_enabled_set()
         disabled_set = _get_disabled_set()
     except Exception:
@@ -1125,9 +1125,9 @@ def _try_hot_mount_plugin_api(name: str) -> bool:
     """
     if not name or any(c in name for c in "/\\{}") or name == "..":
         return False
-    from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
-    from hermes_cli.web_server import _get_dashboard_plugins, app
-    from hermes_cli.web_server_plugin_profiles import plugin_api_path, secondary_plugin, secondary_profile_home
+    from hermes_agent.hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
+    from hermes_agent.hermes_cli.web_server import _get_dashboard_plugins, app
+    from hermes_agent.hermes_cli.web_server_plugin_profiles import plugin_api_path, secondary_plugin, secondary_profile_home
     # A secondary profile reaches this router only for its own bundled copy (Hermes code), and its
     # own lists decide that one (PLG-3).
     secondary, own, requester_sets = secondary_profile_home() is not None, secondary_plugin(name), _plugin_enable_sets_here()
@@ -1176,8 +1176,8 @@ class _PluginApiHotMount:
     """
 
     async def __call__(self, scope, receive, send) -> None:
-        from hermes_cli.web_server import app
-        from hermes_cli.web_server_plugin_profiles import plugin_request_scope
+        from hermes_agent.hermes_cli.web_server import app
+        from hermes_agent.hermes_cli.web_server_plugin_profiles import plugin_request_scope
         name = str(scope.get("path_params", {}).get("name", ""))
         with plugin_request_scope(scope):  # a ``?profile=`` selection decides its own cold mount (PLG-3)
             mounted = await asyncio.to_thread(_try_hot_mount_plugin_api, name)
@@ -1218,7 +1218,7 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         _log.debug("Plugin %s: skipping API mount (%s)", plugin.get("name", ""), skip)
         return False
     if plugin.get("source") not in ("bundled", "project"):
-        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        from hermes_agent.hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
         if isolation_mode() == ISOLATION_HOST:
             _mount_hosted_plugin_api(app, plugin, api_file_name)
             return True
@@ -1246,7 +1246,7 @@ def _mount_one_plugin_api(app, plugin: dict[str, Any], enabled_set: set, disable
         _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
         return False
     try:
-        from hermes_cli.plugin_isolation import import_user_code
+        from hermes_agent.hermes_cli.plugin_isolation import import_user_code
         # Registered in sys.modules while the body runs so pydantic/FastAPI can resolve
         # string annotations (``from __future__ import annotations``) by module name.
         mod = import_user_code(api_path, f"hermes_dashboard_plugin_{plugin['name']}")

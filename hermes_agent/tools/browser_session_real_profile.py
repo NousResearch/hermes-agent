@@ -38,7 +38,7 @@ def real_profile_fallback_note(err: str) -> str:
 def _unsupported_reason(browser) -> Optional[str]:
     """Why the default browser's profile can't be used, else None. A pre-release channel lives in a profile
     dir we don't resolve; normalizing it to the stable family would drive a DIFFERENT account."""
-    from hermes_cli.browser_connect import UNSUPPORTED_CHANNEL
+    from hermes_agent.hermes_cli.browser_connect import UNSUPPORTED_CHANNEL
     if browser is None:
         return (_RP + "your default browser is not a supported Chromium browser (Chrome, Edge, Brave, "
                 "Brave Origin, Chromium). Real-profile browsing requires a Chromium default; set one or turn the toggle off.")
@@ -51,7 +51,7 @@ def _unsupported_reason(browser) -> Optional[str]:
 
 def _snapshot_error(err: str) -> str:
     """A locked profile adds the approved-close command, which the agent must ASK the user about first."""
-    from hermes_cli.browser_connect import _PROFILE_LOCKED_PREFIX
+    from hermes_agent.hermes_cli.browser_connect import _PROFILE_LOCKED_PREFIX
     if err and err.startswith(_PROFILE_LOCKED_PREFIX):
         return (err[len(_PROFILE_LOCKED_PREFIX):] + " To close it (only after the user approves — it "
                 "quits their browser and loses unsaved tabs), run: `hermes browser close-profile`; the next "
@@ -83,7 +83,7 @@ def _consent_revoked() -> tuple[None, None]:
     revoking consent actually removes the credential copies."""
     terminate_real_profile_browser()
     try:
-        from hermes_cli.browser_connect import cleanup_real_profile_snapshots
+        from hermes_agent.hermes_cli.browser_connect import cleanup_real_profile_snapshots
         cleanup_real_profile_snapshots()
     except OSError as exc:
         logger.debug("real-profile cleanup-on-consent-off failed: %s", exc)
@@ -91,7 +91,7 @@ def _consent_revoked() -> tuple[None, None]:
 
 
 def _launch(browser_name: str) -> tuple[Optional[str], Optional[str]]:
-    from hermes_cli.browser_connect import chromium_executable, real_profile_copy_dir, snapshot_real_profile
+    from hermes_agent.hermes_cli.browser_connect import chromium_executable, real_profile_copy_dir, snapshot_real_profile
     from hermes_agent.tools.browser_launcher import launch_chromium
     from hermes_agent.tools.browser_session import ensure_screen_for_headed_chromium
     real_binary = chromium_executable(browser_name)
@@ -144,7 +144,7 @@ def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
         running = get_browser(real_profile_key())
         if running is not None:
             return running.cdp_url, None
-        from hermes_cli.browser_connect import detect_default_chromium
+        from hermes_agent.hermes_cli.browser_connect import detect_default_chromium
         browser_name = detect_default_chromium()
         unsupported = _unsupported_reason(browser_name)
         if unsupported:

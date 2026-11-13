@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from hermes_agent.agent.secret_sources import onepassword as op_src
-from hermes_cli._secrets_common import (
+from hermes_agent.hermes_cli._secrets_common import (
     arg,
     cfg_str,
     cli_version,
@@ -32,7 +32,7 @@ from hermes_cli._secrets_common import (
     section_cfg,
     yn,
 )
-from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
+from hermes_agent.hermes_cli.config import get_env_path, load_config, save_config, save_env_value
 
 _DEFAULT_TOKEN_ENV = "OP_SERVICE_ACCOUNT_TOKEN"
 _DOCS_URL = "https://developer.1password.com/docs/cli/get-started/"

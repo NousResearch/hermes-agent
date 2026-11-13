@@ -21,7 +21,7 @@ import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
 from utils import atomic_write_text, is_truthy_value
-from hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.config import cfg_get
 from hermes_agent.agent.skill_utils import (
     extract_skill_description,
     is_skill_description_truncated_for_prompt,
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 def _guard_agent_created_enabled() -> bool:
     """skills.guard_agent_created (default False): opt-in — terminal() runs the same code ungated."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         return is_truthy_value(cfg_get(load_config(), "skills", "guard_agent_created"), default=False)
     except Exception:
         return False

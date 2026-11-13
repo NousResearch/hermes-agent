@@ -4,7 +4,7 @@
 the published image. CI writes ``install-stamp.json`` before ``docker build``
 (scripts/write_install_stamp.py) and it is COPY'd to the canonical
 ``/opt/hermes/install-stamp.json``. ``hermes dump`` reads the
-commit from that stamp through ``hermes_cli.version_info``.
+commit from that stamp through ``hermes_agent.hermes_cli.version_info``.
 
 A local ``docker build`` (the ``built_image`` fixture in
 ``tests/docker/conftest.py``) has no CI stamp — only the Dockerfile's

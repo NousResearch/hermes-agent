@@ -8,8 +8,8 @@ from urllib.parse import parse_qs
 
 import pytest
 
-from hermes_cli import auth_commands
-from hermes_cli.auth import read_credential_pool, write_credential_pool
+from hermes_agent.hermes_cli import auth_commands
+from hermes_agent.hermes_cli.auth import read_credential_pool, write_credential_pool
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +31,7 @@ def _rows():
 
 @pytest.mark.parametrize("status", [200, 503, 401])
 def test_refresh_uses_target_grant_and_preserves_sibling(monkeypatch, status):
-    from hermes_cli import auth_codex
+    from hermes_agent.hermes_cli import auth_codex
     requests = []
 
     class Endpoint(BaseHTTPRequestHandler):

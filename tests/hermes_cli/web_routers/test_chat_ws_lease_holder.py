@@ -7,8 +7,8 @@ the stranded PTY holding that lease is never released.
 
 import os
 
-from hermes_cli.active_sessions import try_acquire_active_session
-from hermes_cli.web_routers.chat_ws import _lease_holder_pid
+from hermes_agent.hermes_cli.active_sessions import try_acquire_active_session
+from hermes_agent.hermes_cli.web_routers.chat_ws import _lease_holder_pid
 
 
 def _claim(home, session_id):

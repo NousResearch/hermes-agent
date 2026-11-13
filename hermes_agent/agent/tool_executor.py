@@ -64,7 +64,7 @@ from hermes_agent.tools.tool_result_storage import (
     extract_persisted_path,
 )
 from hermes_agent.tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
-from hermes_cli.observability.shared_metrics_efficiency import note_tool_result, record_tool_batch
+from hermes_agent.hermes_cli.observability.shared_metrics_efficiency import note_tool_result, record_tool_batch
 
 # A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
 # The commit only flags it: the string is still referenced by the publish frames here, so the
@@ -228,7 +228,7 @@ def _flush_session_db_after_tool_progress(agent, messages: list, *, stage: str) 
 def _image_generate_parallel_limit() -> int:
     """Configured image-generation parallelism cap (conservative: backend bursts hit rate limits)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         cfg = load_config() or {}
         image_gen = cfg.get("image_gen") if isinstance(cfg, dict) else None
@@ -663,7 +663,7 @@ def _pre_tool_block(agent, ref: _ToolCallRef):
     """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
     hook-modified args applied. Hook failures never block."""
     try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+        from hermes_agent.hermes_cli.plugins import _dispatch_pre_tool_call_hooks
 
         block_msg, modified_args = _dispatch_pre_tool_call_hooks(
             ref.name,
@@ -773,7 +773,7 @@ def _run_agent_tool_execution_middleware(
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
     from hermes_agent.agent import relay_tools
-    from hermes_cli.middleware import (
+    from hermes_agent.hermes_cli.middleware import (
         apply_tool_request_middleware,
         run_tool_execution_middleware,
     )
@@ -1103,7 +1103,7 @@ def _commit_tool_result(
     pre-persist content for UI previews) or ``None`` when the flush failed (stop the batch).
     """
     function_name, function_args, tool_call_id, effective_task_id = ref.name, ref.args, ref.call_id, ref.task_id
-    from hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
+    from hermes_agent.hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
 
     observe_tool_outcome(agent, function_name, is_error)
     if not (blocked or is_error):

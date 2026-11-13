@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_cli import model_switch
+from hermes_agent.hermes_cli import model_switch
 
 
 def test_startup_route_uses_configured_nous_provider(monkeypatch):
@@ -41,7 +41,7 @@ def test_startup_route_aggregator_native_slug_stays_on_aggregator(monkeypatch):
     """
     monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
     monkeypatch.setattr(
-        "hermes_cli.models._find_openrouter_slug",
+        "hermes_agent.hermes_cli.models._find_openrouter_slug",
         lambda name: "anthropic/claude-opus-4.6",
     )
     route = model_switch.resolve_startup_model_route(
@@ -134,7 +134,7 @@ def test_startup_route_explicit_provider_wins_over_alias_label(monkeypatch):
 
 def test_model_aliases_dict_entries_are_loaded(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {
             "model": {
                 "aliases": {
@@ -164,7 +164,7 @@ def _write_named_provider(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     return load_config()
 
 
@@ -194,10 +194,10 @@ def test_tui_qualified_model_never_reaches_default_provider(tmp_path, monkeypatc
     monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.models.detect_provider_for_model",
+        "hermes_agent.hermes_cli.models.detect_provider_for_model",
         lambda *_a, **_k: pytest.fail("auto-detection ran on a provider-qualified model"))
     monkeypatch.setattr(
-        "hermes_cli.models.detect_static_provider_for_model",
+        "hermes_agent.hermes_cli.models.detect_static_provider_for_model",
         lambda *_a, **_k: pytest.fail("auto-detection ran on a provider-qualified model"))
     monkeypatch.setenv("HERMES_INFERENCE_MODEL", "custom:jetson-vllm:nemotron-nano-30b")
     assert tui_server._resolve_startup_runtime() == ("nemotron-nano-30b", "custom:jetson-vllm")

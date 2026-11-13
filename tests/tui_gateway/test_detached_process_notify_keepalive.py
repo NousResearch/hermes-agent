@@ -25,7 +25,7 @@ def server(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    with patch.dict("sys.modules", {"hermes_cli.env_loader": MagicMock(), "hermes_cli.banner": MagicMock()}):
+    with patch.dict("sys.modules", {"hermes_agent.hermes_cli.env_loader": MagicMock(), "hermes_agent.hermes_cli.banner": MagicMock()}):
         mod = importlib.import_module("hermes_agent.tui_gateway.server")
         yield mod
         mod._sessions.clear()

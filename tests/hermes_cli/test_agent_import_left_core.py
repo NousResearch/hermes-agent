@@ -11,13 +11,13 @@ import sys
 
 import pytest
 
-import hermes_cli.left_core_migration as lcm
+import hermes_agent.hermes_cli.left_core_migration as lcm
 
 
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
 
 
@@ -27,7 +27,7 @@ def test_old_spelling_without_the_plugin_names_the_install(argv, tmp_path, monke
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(sys, "argv", ["hermes", *argv])
-    from hermes_cli.main import _build_cli_parser
+    from hermes_agent.hermes_cli.main import _build_cli_parser
 
     parser, _subparsers = _build_cli_parser()
     with pytest.raises(SystemExit) as exc:
@@ -89,7 +89,7 @@ def test_a_scheduled_sync_on_a_home_nothing_migrated_installs_the_plugin_and_run
             return {"ok": True}
         return install
     monkeypatch.setattr(lcm, "_install_into", install_into)
-    from hermes_cli.main import _build_cli_parser
+    from hermes_agent.hermes_cli.main import _build_cli_parser
 
     parser, _subparsers = _build_cli_parser()
     args = parser.parse_args(sys.argv[1:])

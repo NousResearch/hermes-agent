@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 # split_command_line, not shlex: shlex eats Windows path backslashes.
-from hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, split_command_line, windows_hide_flags
+from hermes_agent.hermes_cli._subprocess_compat import IS_WINDOWS, kill_process_tree, split_command_line, windows_hide_flags
 
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.
@@ -90,7 +90,7 @@ def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
         cwd = str(Path.cwd())
     except OSError:
         cwd = ""
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     from hermes_agent.agent.delegation_context import owned_kanban_task
     extra = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
     # Resolve in the firing execution before the descendant environment is scrubbed.
@@ -164,7 +164,7 @@ def register_from_config(cfg: Optional[dict[str, Any]], *, accept_hooks: bool = 
     specs, _complete = _hook_specs(cfg)
     if not specs:
         return []
-    from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
     manager, home_key = get_plugin_manager(), _home_key()
     with _registered_lock:  # an already-wired hook is never re-asked for (main checked this first)
         specs = [spec for spec in specs if _key(home_key, spec) not in _registered]
@@ -192,7 +192,7 @@ def sync_from_config(load_cfg: Callable[[], dict[str, Any]]) -> None:
     (a loader that failed open), a malformed ``hooks:`` entry or an unreadable allowlist must never
     disarm a ``fail_closed`` guard, so each adds but never removes. Config and allowlist are read
     under the same lock as the apply, so the last sync to run always applies the newest state."""
-    from hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager  # lazy: avoids import cycle
     with _sync_lock:
         cfg = load_cfg()
         specs, complete = _hook_specs(cfg)
@@ -350,7 +350,7 @@ def re_register_config_hooks() -> None:
     B's next registration call (#92682 review).
     """
     _forget_home_registrations(_registered, _registered_lock)
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     register_from_config(load_config())
 
 
@@ -374,7 +374,7 @@ def _parse_hooks_block(hooks_cfg: Any) -> list[ShellHookSpec]:
 def _parse_hooks(hooks_cfg: Any) -> tuple[list[ShellHookSpec], bool]:
     """``(specs, complete)``: ``complete`` is False when an entry was dropped as malformed (a typo
     must not read as a deliberate removal); an absent or empty ``hooks:`` is complete."""
-    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
+    from hermes_agent.hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
     if hooks_cfg is None:
         return [], True
     if not isinstance(hooks_cfg, dict):

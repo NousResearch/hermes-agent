@@ -260,7 +260,7 @@ async def test_mailbox_file_lock_held_elsewhere_never_stalls_the_owner_loop(bot)
     import threading
     import time
     from hermes_agent.gateway.session_bot import deliver
-    from hermes_cli.active_sessions import _FileLock
+    from hermes_agent.hermes_cli.active_sessions import _FileLock
     from hermes_agent.tools.bot_live_delivery import _locked, _root
     with _locked(bot.home):
         pass

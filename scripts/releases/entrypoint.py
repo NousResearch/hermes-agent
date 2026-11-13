@@ -431,7 +431,7 @@ def publish(version: str, *, repository: str, dispatch, inspect=None, head_versi
             repo: Path | None = None, remote: str | None = None) -> dict:
     """Request ordered publication through the one production sequencer."""
     tag = f"v{version}"
-    from hermes_cli.update_channel import STABLE_TAG_RE
+    from hermes_agent.hermes_cli.update_channel import STABLE_TAG_RE
 
     if not STABLE_TAG_RE.fullmatch(tag):
         raise ReleaseRefused(f"{version} is not a stable version")

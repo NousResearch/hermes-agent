@@ -1,6 +1,6 @@
 """OAuth provider dashboard routes: catalog/status, disconnect, and in-browser device-code login flows.
 
-Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
+Extracted from ``hermes_agent.hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are late-bound (cycle-safe).
 """
 
@@ -18,30 +18,30 @@ from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from hermes_cli.auth_constants import _codex_err
-from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_server_oauth import (
+from hermes_agent.hermes_cli.auth_constants import _codex_err
+from hermes_agent.hermes_cli.web_deps import LateState, late
+from hermes_agent.hermes_cli.web_server_oauth import (
     _external_process_cli_command, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token,
 )
-from hermes_cli.web_models import OAuthSubmitBody
-from hermes_cli.web_routers._common import config_scoped_to_thread, scoped_to_thread
+from hermes_agent.hermes_cli.web_models import OAuthSubmitBody
+from hermes_agent.hermes_cli.web_routers._common import config_scoped_to_thread, scoped_to_thread
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
+_profile_scope = late("_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
 _require_token = late("_require_token")
-_resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_OAUTH_PROVIDER_CATALOG = LateState("_OAUTH_PROVIDER_CATALOG", "hermes_cli.web_server_oauth")
+_resolve_profile_dir = late("_resolve_profile_dir", "hermes_agent.hermes_cli.web_server_profiles")
+_OAUTH_PROVIDER_CATALOG = LateState("_OAUTH_PROVIDER_CATALOG", "hermes_agent.hermes_cli.web_server_oauth")
 # Pollers are late-bound: they run on a background thread AFTER the route returns, so a
 # test's monkeypatch on web_server_oauth must win at spawn time, not router-import time.
 # A direct import here made those mocks no-ops — the real poller then hit the network
 # from the leaked thread and segfaulted a later test's collection (CI flake, 2026-09-09).
-_nous_sign_in_poller = late("_nous_sign_in_poller", "hermes_cli.web_server_oauth")
-_minimax_poller = late("_minimax_poller", "hermes_cli.web_server_oauth")
-_xai_device_poller = late("_xai_device_poller", "hermes_cli.web_server_oauth")
-_profile_device_poller = late("_profile_device_poller", "hermes_cli.web_server_oauth")
+_nous_sign_in_poller = late("_nous_sign_in_poller", "hermes_agent.hermes_cli.web_server_oauth")
+_minimax_poller = late("_minimax_poller", "hermes_agent.hermes_cli.web_server_oauth")
+_xai_device_poller = late("_xai_device_poller", "hermes_agent.hermes_cli.web_server_oauth")
+_profile_device_poller = late("_profile_device_poller", "hermes_agent.hermes_cli.web_server_oauth")
 
 _CODEX_ISSUER = "https://auth.openai.com"
 _JSON_HEADERS = {"Content-Type": "application/json"}
@@ -116,7 +116,7 @@ def _start_poller(target, sid: str, prefix: str = "oauth-poll") -> None:
         try:
             target(sid)
         finally:  # the session's status is final once its poller returns
-            from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
+            from hermes_agent.hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
             settle_oauth_setup(sess)
 
     # The poller saves credentials under ``_profile_scope(sess['profile'])``; an implicit
@@ -128,7 +128,7 @@ def _start_poller(target, sid: str, prefix: str = "oauth-poll") -> None:
 
 def _track_oauth_setup(flow, session_id: str) -> None:
     """Hand the setup flow to its session; settle it now if the poller already ended."""
-    from hermes_cli.observability.shared_metrics_setup import (
+    from hermes_agent.hermes_cli.observability.shared_metrics_setup import (
         attach_oauth_setup, finish_provider_setup, settle_oauth_setup,
     )
     with _oauth_sessions_lock:
@@ -187,7 +187,7 @@ def _codex_client(httpx) -> Any:
     The helpers take the ``httpx`` module as a parameter (tests inject a scripted one), so the
     dashboard builds its own client here and only shares the response hook, not the client factory.
     """
-    from hermes_cli.auth_codex import _cap_codex_response_body
+    from hermes_agent.hermes_cli.auth_codex import _cap_codex_response_body
 
     return httpx.Client(timeout=httpx.Timeout(15.0), event_hooks={"response": [_cap_codex_response_body]})
 
@@ -199,7 +199,7 @@ def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
     linear backoff before propagating: losing the token exchange to a single SSL EOF wastes a
     device-code approval the user already completed in the browser (#114610).
     """
-    from hermes_cli.auth_codex import _is_transient_transport_error
+    from hermes_agent.hermes_cli.auth_codex import _is_transient_transport_error
 
     attempt, attempts = 1, 3
     while True:
@@ -223,7 +223,7 @@ def _codex_http_error(status: int) -> Callable[[str], Exception]:
 
 def _codex_request_user_code(httpx) -> dict[str, Any]:
     """Step 1: request device code; returns device_data with ``interval`` clamped (>= 3s)."""
-    from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
+    from hermes_agent.hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
 
     resp = _codex_post(
         httpx, f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
@@ -240,7 +240,7 @@ def _codex_request_user_code(httpx) -> dict[str, Any]:
 
 def _codex_poll_authorization(httpx, sess: dict[str, Any], session_id: str) -> Any:
     """Step 2: poll until authorized. ``None`` = expired; ``_CANCELLED`` = user cancelled."""
-    from hermes_cli.auth_codex import _is_transient_transport_error
+    from hermes_agent.hermes_cli.auth_codex import _is_transient_transport_error
 
     deadline = time.monotonic() + sess["expires_in"]
     payload = {"device_auth_id": sess["device_auth_id"], "user_code": sess["user_code"]}
@@ -277,7 +277,7 @@ def _codex_poll_authorization(httpx, sess: dict[str, Any], session_id: str) -> A
 
 def _codex_exchange_tokens(httpx, code_resp: dict[str, Any]) -> dict[str, str]:
     """Step 3: exchange authorization_code for tokens."""
-    from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL
+    from hermes_agent.hermes_cli.auth import CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL
 
     authorization_code = code_resp.get("authorization_code", "")
     code_verifier = code_resp.get("code_verifier", "")
@@ -330,7 +330,7 @@ def _codex_full_login_worker(session_id: str) -> None:
             return
 
         tokens = _codex_exchange_tokens(httpx, code_resp)
-        from hermes_cli.auth import _save_codex_tokens
+        from hermes_agent.hermes_cli.auth import _save_codex_tokens
 
         # The cancellation check and the save are one atomic critical section
         # under the lock cancel_oauth_session() uses; otherwise DELETE could
@@ -345,7 +345,7 @@ def _codex_full_login_worker(session_id: str) -> None:
             sess["status"] = "approved"
         _log.info("oauth/device: openai-codex login completed (session=%s)", session_id)
     except Exception as e:
-        from hermes_cli.observability.shared_metrics_setup import note_oauth_failure
+        from hermes_agent.hermes_cli.observability.shared_metrics_setup import note_oauth_failure
         _log.warning("codex device-code worker failed (session=%s): %s", session_id, e)
         with _oauth_sessions_lock:
             s = _oauth_sessions.get(session_id)
@@ -408,7 +408,7 @@ def _resolve_provider_status(provider_id: str, status_fn) -> dict[str, Any]:
     try:
         if status_fn is not None:
             return status_fn()
-        from hermes_cli import auth as hauth
+        from hermes_agent.hermes_cli import auth as hauth
         entry = _PROVIDER_STATUS.get(provider_id)
         if entry is not None:
             getter, shape = entry
@@ -437,9 +437,9 @@ async def _start_nous_device_code(profile: Optional[str]) -> dict[str, Any]:
     This route creates the generator, pulls its first state (the device page link and code) and
     hands that to the UI, then the poller drains the rest. A free tier the account replaces hands
     its apps over after the save, inside the flow."""
-    from hermes_cli import anon_auth
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.web_server_profiles import _config_profile_scope
+    from hermes_agent.hermes_cli import anon_auth
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope
     pconfig = PROVIDER_REGISTRY["nous"]
     portal_base_url = (
         os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL") or pconfig.portal_base_url
@@ -515,7 +515,7 @@ async def _start_codex_device_code(profile: Optional[str]) -> dict[str, Any]:
     with _oauth_sessions_lock:
         s = _oauth_sessions.get(sid, {})
     if s.get("status") == "error":
-        from hermes_cli.observability.shared_metrics_setup import _OAUTH_FAILURE_KEY
+        from hermes_agent.hermes_cli.observability.shared_metrics_setup import _OAUTH_FAILURE_KEY
         err = HTTPException(status_code=500, detail=s.get("error_message") or "device-auth failed")
         err.setup_failure_class = s.get(_OAUTH_FAILURE_KEY) or "other"  # the worker's class, not "500"
         raise err
@@ -530,7 +530,7 @@ async def _start_codex_device_code(profile: Optional[str]) -> dict[str, Any]:
 async def _start_minimax_device_code(profile: Optional[str]) -> dict[str, Any]:
     # Device-code flow with a PKCE extension: verifier + challenge from
     # _minimax_pkce_pair bind the token exchange to the original session.
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_GLOBAL_BASE, _minimax_pkce_pair, _minimax_request_user_code,
     )
     verifier, challenge, state = _minimax_pkce_pair()
@@ -565,7 +565,7 @@ async def _start_minimax_device_code(profile: Optional[str]) -> dict[str, Any]:
 
 
 async def _start_xai_device_code(profile: Optional[str]) -> dict[str, Any]:
-    from hermes_cli.auth import _xai_oauth_request_device_code
+    from hermes_agent.hermes_cli.auth import _xai_oauth_request_device_code
     device_data = await _httpx_call(_xai_oauth_request_device_code, timeout=20.0)
     return _device_session_started(
         "xai-oauth", profile, _xai_device_poller,
@@ -683,7 +683,7 @@ def _build_oauth_catalog() -> list[dict[str, Any]]:
             seen.add(entry["id"])
             rows.append(dict(entry))
     try:
-        from hermes_cli.provider_catalog import provider_catalog
+        from hermes_agent.hermes_cli.provider_catalog import provider_catalog
         for d in provider_catalog():
             if d.slug in seen:
                 continue
@@ -755,7 +755,7 @@ def _clear_anthropic_auth() -> bool:
         _log.exception("disconnect anthropic OAuth file failed")
         raise
     try:
-        from hermes_cli.auth import clear_provider_auth
+        from hermes_agent.hermes_cli.auth import clear_provider_auth
         cleared = clear_provider_auth("anthropic") or cleared
     except Exception:
         _log.exception("disconnect anthropic auth store failed")
@@ -798,7 +798,7 @@ async def disconnect_oauth_provider(provider_id: str, request: Request, profile:
             _log.info("oauth/disconnect: %s", provider_id)
             return {"ok": True, "provider": provider_id}
         try:
-            from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
+            from hermes_agent.hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
             cleared = clear_provider_auth(provider_id)
             if provider_id == "nous":
                 invalidate_nous_auth_status_cache()
@@ -870,7 +870,7 @@ async def start_oauth_login(provider_id: str, request: Request, profile: Optiona
 async def _begin_oauth_setup_metric(provider_id: str, profile: Optional[str]):
     """Start the provider-setup metric off the event loop (a cold metrics runtime blocks); None when the
     owning profile does not collect. Never raises: the start route's own validation owns errors."""
-    from hermes_cli.observability.shared_metrics_setup import begin_oauth_setup, collection_enabled
+    from hermes_agent.hermes_cli.observability.shared_metrics_setup import begin_oauth_setup, collection_enabled
     try:
         profile_name = _oauth_profile_name(profile)
         home = _resolve_profile_dir(profile_name) if profile_name else None
@@ -884,7 +884,7 @@ async def _begin_oauth_setup_metric(provider_id: str, profile: Optional[str]):
 async def _end_oauth_setup_metric(flow, exc: Exception) -> None:
     if flow is None:
         return
-    from hermes_cli.observability.shared_metrics_setup import finish_provider_setup, setup_failure_class
+    from hermes_agent.hermes_cli.observability.shared_metrics_setup import finish_provider_setup, setup_failure_class
     with contextlib.suppress(Exception):
         # A 401/403 from the start route is the provider refusing this account/client; a 504 is the
         # provider not answering in time.
@@ -964,7 +964,7 @@ async def nous_handoff_status(
     profile_name = _validate_oauth_profile(profile)
 
     def _read() -> dict[str, Any]:
-        from hermes_cli.guest_handoff import handoff_status, wire_status
+        from hermes_agent.hermes_cli.guest_handoff import handoff_status, wire_status
         return wire_status(handoff_status())
 
     return await _long_poll(
@@ -993,6 +993,6 @@ async def cancel_oauth_session(session_id: str, request: Request, profile: Optio
     if sess is None:
         return {"ok": False, "message": "session not found"}
     # Recorded now, not when the poller next wakes: a Nous/xAI poll can block for the code's lifetime.
-    from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
+    from hermes_agent.hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
     await asyncio.to_thread(settle_oauth_setup, sess)
     return {"ok": True, "session_id": session_id}

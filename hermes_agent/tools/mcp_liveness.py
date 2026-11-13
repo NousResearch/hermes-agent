@@ -95,7 +95,7 @@ def parse_liveness(raw: Any) -> Liveness:
 def liveness_for(server_name: str) -> Liveness:
     """Return a server's registered liveness declaration, defaulting to static."""
     try:
-        from hermes_cli.agent_plugins import liveness_for as registered_liveness
+        from hermes_agent.hermes_cli.agent_plugins import liveness_for as registered_liveness
     except ImportError:
         return Liveness("static")
     raw = registered_liveness(server_name)

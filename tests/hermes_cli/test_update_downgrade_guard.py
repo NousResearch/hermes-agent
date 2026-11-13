@@ -13,7 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 import hermes_agent.hermes_state_runtime as rt
-from hermes_cli import update_downgrade_guard as guard
+from hermes_agent.hermes_cli import update_downgrade_guard as guard
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -57,12 +57,12 @@ def _pre_cutover_snapshot(home, snap_id):
 
 def test_a_pre_runtime_target_is_refused_before_the_move_with_the_snapshot_that_predates_it(
         repo, tmp_path, monkeypatch, capsys):
-    from hermes_cli import main as hermes_main
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import main as hermes_main
+    from hermes_agent.hermes_cli import update_cmd
 
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.backup._sibling_profile_homes", lambda h: [])
     monkeypatch.setattr(update_cmd._commit, "preflight_refusal", lambda *a, **k: None)
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", repo)
     _ledgered_store(home)
@@ -84,7 +84,7 @@ def test_a_pre_runtime_target_is_refused_before_the_move_with_the_snapshot_that_
 
 
 def test_forward_updates_and_stores_without_ledger_rows_are_never_refused(repo, tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.backup._sibling_profile_homes", lambda h: [])
     old = _git(repo, "rev-parse", "old-release")
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -105,11 +105,11 @@ def test_check_holds_a_release_that_update_would_refuse(repo, tmp_path, monkeypa
     refuses (#139099): one cut beside this checkout's history, or one it already contains."""
     from types import SimpleNamespace
 
-    from hermes_cli import source_releases, update_cmd_check
+    from hermes_agent.hermes_cli import source_releases, update_cmd_check
 
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_cli.backup._sibling_profile_homes", lambda h: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.backup._sibling_profile_homes", lambda h: [])
     release = _git(repo, "rev-parse", "old-release")
     if divergent:
         _git(repo, "checkout", "-q", "-b", "release-line", "old-release")
@@ -171,7 +171,7 @@ def test_the_runtime_schema_marker_is_still_in_this_trees_state_schema():
 @pytest.mark.parametrize("runtime", [False, True], ids=["pre-runtime", "runtime"])
 def test_present_commit_with_missing_schema_blobs_uses_remote_without_git_writes(
         repo, tmp_path, monkeypatch, remote_result, runtime):
-    from hermes_cli.source_check import source_git_env
+    from hermes_agent.hermes_cli.source_check import source_git_env
 
     # Release commits change the version, not the schema: pathspec history simplification must
     # not skip their inherited schema objects (Git 2.53 does; newer Git can mask the regression).

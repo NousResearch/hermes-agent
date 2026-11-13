@@ -12,14 +12,14 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway import host_attach, host_rendezvous as hr, status
-from hermes_cli import dashboard_procs, gateway as gw
+from hermes_agent.hermes_cli import dashboard_procs, gateway as gw
 
 HOST_PID = 4242
 
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     root = tmp_path / '.hermes'
     secondary = root / 'profiles' / 'worker'
     secondary.mkdir(parents=True)
@@ -62,7 +62,7 @@ def test_stop_refuses_the_serving_host_when_the_socket_does_not_answer(homes, mo
     # uninstall's per-profile kill reads the same gate.
     monkeypatch.setattr(gw, 'terminate_pid', lambda *a, **kw: pytest.fail('uninstall kill reached the host pid'))
     assert gw.kill_gateway_processes() == 0
-    from hermes_cli.gateway_profile_lifecycle import report_profile_stop_failure
+    from hermes_agent.hermes_cli.gateway_profile_lifecycle import report_profile_stop_failure
     with pytest.raises(SystemExit) as exc:
         report_profile_stop_failure()
     assert exc.value.code == 1

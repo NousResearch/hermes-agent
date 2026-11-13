@@ -13,8 +13,8 @@ from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from hermes_cli.observability.shared_metrics_sender import (
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability.shared_metrics_sender import (
     MAX_ATTEMPTS,
     MAX_PACKAGES_PER_PASS,
     MAX_SEND_ATTEMPTS,
@@ -22,7 +22,7 @@ from hermes_cli.observability.shared_metrics_sender import (
     SharedMetricsSender,
     reconcile_send_consent,
 )
-from hermes_cli.sqlite_util import write_txn
+from hermes_agent.hermes_cli.sqlite_util import write_txn
 
 INSTALL_ID = "12a73e97-4de9-4766-830d-9ca1192c0420"
 NOW = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
@@ -952,7 +952,7 @@ class TestCompression:
     def _captured_request(self, payload: bytes):
         import urllib.request
 
-        from hermes_cli.observability import shared_metrics_sender as mod
+        from hermes_agent.hermes_cli.observability import shared_metrics_sender as mod
 
         captured = {}
 

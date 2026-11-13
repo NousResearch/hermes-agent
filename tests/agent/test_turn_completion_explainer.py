@@ -38,7 +38,7 @@ def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("hermes_cli.config.load_config", return_value=config or {}),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value=config or {}),
         patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
@@ -155,7 +155,7 @@ def test_explanation_persistence_corrupt_cause_never_says_free_space():
 def test_explanation_persistence_corrupt_backups_dir_follows_hermes_home(monkeypatch, tmp_path):
     """Step 3 must name the backups dir under the ACTIVE home, not ~/.hermes (#104250).
 
-    Pre-update backups live at ``<hermes_root>/backups`` (``hermes_cli/backup.py``), so a
+    Pre-update backups live at ``<hermes_root>/backups`` (``hermes_agent/hermes_cli/backup.py``), so a
     custom-HERMES_HOME deployment told to restore from ``~/.hermes/backups/`` is misdirected
     mid data-loss incident: that directory may not exist at all, or may hold an unrelated
     install's backups.
@@ -457,7 +457,7 @@ def test_explainer_enabled_by_default():
     agent = _make_agent()
     with patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_TURN_COMPLETION_EXPLAINER", None)
-        with patch("hermes_cli.config.load_config", return_value={}):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value={}):
             assert agent._turn_completion_explainer_enabled() is True
 
 

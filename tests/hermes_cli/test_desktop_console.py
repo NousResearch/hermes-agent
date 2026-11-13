@@ -6,12 +6,12 @@ import sys
 
 import pytest
 
-from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
+from hermes_agent.hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
 
 
 @pytest.mark.platforms("windows")
 def test_packaged_console_output_drains_both_streams(caplog, monkeypatch):
-    caplog.set_level(logging.INFO, logger="hermes_cli.desktop")
+    caplog.set_level(logging.INFO, logger="hermes_agent.hermes_cli.desktop")
 
     def blocked_console(*args, **kwargs):
         raise AssertionError("packaged startup attempted a synchronous console write")
@@ -33,7 +33,7 @@ def test_packaged_console_output_drains_both_streams(caplog, monkeypatch):
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize("level", [logging.WARNING, logging.ERROR])
 def test_stderr_survives_logging_threshold(caplog, level):
-    caplog.set_level(level, logger="hermes_cli.desktop")
+    caplog.set_level(level, logger="hermes_agent.hermes_cli.desktop")
     with desktop_console_output(source_mode=False) as streams:
         result = subprocess.run(
             [sys.executable, "-c", "import sys; print('ordinary-output'); "
@@ -54,7 +54,7 @@ def test_complete_records_reach_redacted_logs(tmp_path, monkeypatch, caplog, str
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     hermes_logging._reset_queued_handlers()
     caplog.set_level(logging.INFO)
-    caplog.set_level(logging.INFO, logger="hermes_cli.desktop")
+    caplog.set_level(logging.INFO, logger="hermes_agent.hermes_cli.desktop")
     secret = "synthetic-boundary-credential"
     payload = (
         b" " * (8192 - len(b"API_KEY=")) + b"API_KEY=" + secret.encode() + b"\n"

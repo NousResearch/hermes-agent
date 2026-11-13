@@ -1,6 +1,6 @@
 """Content registrars on ``PluginContext``: plugin skills and Automation Blueprints.
 
-Bound into the class body (``from hermes_cli.plugins_content import ...``), so they are ordinary
+Bound into the class body (``from hermes_agent.hermes_cli.plugins_content import ...``), so they are ordinary
 ``ctx.register_*`` methods and get the same abandoned-load guard as every other registrar.
 """
 
@@ -10,11 +10,11 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from hermes_cli.plugins_ledger import PluginRegistration
-from hermes_cli.plugins_loader import _serialized_replacement
+from hermes_agent.hermes_cli.plugins_ledger import PluginRegistration
+from hermes_agent.hermes_cli.plugins_loader import _serialized_replacement
 
 # Same logger as the rest of the ctx surface, so plugin-load diagnostics stay in one place.
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 __all__ = ["register_automation_blueprint", "register_skill"]
 
@@ -38,7 +38,7 @@ def register_skill(
     is enabled. Not copied into ``~/.hermes/skills/``. Raises ``ValueError`` (``':'``/invalid
     chars) or ``FileNotFoundError``."""
     from hermes_agent.agent.skill_utils import _NAMESPACE_RE
-    from hermes_cli.plugins_manifest import _portable_slug
+    from hermes_agent.hermes_cli.plugins_manifest import _portable_slug
     if ":" in name:
         raise ValueError(f"Skill name '{name}' must not contain ':' (the namespace is derived from the "
                          f"plugin name '{self.manifest.name}' automatically).")

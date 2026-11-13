@@ -23,10 +23,10 @@ from starlette.status import WS_1008_POLICY_VIOLATION
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import plugins as plugins_mod
-from hermes_cli import web_server
-from hermes_cli.web_server_dashboard import PluginApiWebSocketGate
-from hermes_cli.web_server_profiles import _config_profile_scope
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.web_server_dashboard import PluginApiWebSocketGate
+from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope
 from tests.hermes_cli import test_plugin_api_consent_gate as consent_gate
 
 daemon = consent_gate.daemon  # the multiplexed daemon stand-in fixture

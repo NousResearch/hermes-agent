@@ -772,7 +772,7 @@ def _secure_dir_policy(cache_dir) -> None:
     frames whenever ``HERMES_HOME`` itself is traversable, which is exactly
     what the documented ``HERMES_HOME_MODE=0701`` web-server escape hatch
     arranges. Delegates to the same house policy as every Hermes secret dir —
-    ``hermes_cli.config._secure_dir`` — with the mode passed to ``mkdir`` so
+    ``hermes_agent.hermes_cli.config._secure_dir`` — with the mode passed to ``mkdir`` so
     there is no window between mkdir and chmod; managed/NixOS installs keep
     their group-share design (the mode is left to the configured umask/setgid
     because these lazily-created dirs are not covered by the module's
@@ -781,7 +781,7 @@ def _secure_dir_policy(cache_dir) -> None:
     try:
         managed = False
         try:
-            from hermes_cli.config import is_managed
+            from hermes_agent.hermes_cli.config import is_managed
 
             managed = bool(is_managed())
         except Exception:  # pragma: no cover - defensive
@@ -791,7 +791,7 @@ def _secure_dir_policy(cache_dir) -> None:
             return
         make_user_dir(cache_dir, parents=True, exist_ok=True, mode=0o700)
         try:
-            from hermes_cli.config import _secure_dir
+            from hermes_agent.hermes_cli.config import _secure_dir
 
             _secure_dir(cache_dir)
         except Exception as exc:  # pragma: no cover - defensive
@@ -896,7 +896,7 @@ def _should_route_through_aux_vision() -> bool:
     stage = "import"
     try:
         from hermes_agent.agent.auxiliary_client import _read_main_model, _read_main_provider
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         from hermes_agent.tools.vision_tools import _native_tool_result_images
         stage = "decision"
         provider, model = _read_main_provider() or "", _read_main_model() or ""
@@ -910,7 +910,7 @@ def _should_route_through_aux_vision() -> bool:
 def _capture_after_mode() -> str:
     """Mode for ``capture_after`` follow-ups. Default ``som`` (screenshot)."""
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         mode = str(((load_config() or {}).get("computer_use") or {}).get("capture_after_mode", "som") or "som")
         return mode if (mode := mode.strip().lower()) in {"som", "vision", "ax"} else "som"
     return "som"

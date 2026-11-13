@@ -8,8 +8,8 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
-from hermes_cli._startup_fast import project_root_str
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.colors import Colors, color
 
 def _logger(mark: str, col: str):
     return lambda msg: print(f"{color(mark, col)} {msg}")
@@ -78,7 +78,7 @@ def code_removal_refusal() -> str | None:
     trees; the text always points at ``hermes uninstall --data`` for the
     user-data cleanup that IS allowed everywhere.
     """
-    from hermes_cli.steward import sealed_steward, steward_uninstall_message
+    from hermes_agent.hermes_cli.steward import sealed_steward, steward_uninstall_message
 
     steward = sealed_steward(get_project_root())
     if steward is None:
@@ -246,7 +246,7 @@ def uninstall_gateway_service():
 
     # 1. Kill any standalone gateway processes (all platforms)
     try:
-        from hermes_cli.gateway import kill_gateway_processes, find_gateway_pids
+        from hermes_agent.hermes_cli.gateway import kill_gateway_processes, find_gateway_pids
         killed = kill_gateway_processes() if find_gateway_pids() else 0
         if killed:
             log_success(f"Killed {killed} running gateway process(es)")
@@ -270,7 +270,7 @@ def uninstall_gateway_service():
 
 def _remove_systemd_gateway() -> bool:
     """Linux: uninstall systemd services (both user and system scopes)."""
-    from hermes_cli.gateway import (
+    from hermes_agent.hermes_cli.gateway import (
         _systemctl_cmd, _systemd_unit_belongs_to_current_home, get_service_name, get_systemd_unit_path,
     )
     svc_name = get_service_name()
@@ -307,7 +307,7 @@ _LAUNCHD_GATEWAY_PLIST_PATTERNS = (
 
 def _launchd_gateway_plists() -> list[Path]:
     """Every gateway LaunchAgent plist on disk, under the real account home."""
-    from hermes_cli.gateway import get_launchd_plist_path
+    from hermes_agent.hermes_cli.gateway import get_launchd_plist_path
 
     launch_agents = get_launchd_plist_path().parent
     return sorted({p for pattern in _LAUNCHD_GATEWAY_PLIST_PATTERNS for p in launch_agents.glob(pattern)})
@@ -338,7 +338,7 @@ def _remove_launchd_gateway() -> bool:
 def _remove_windows_gateway() -> bool:
     """Windows: uninstall Scheduled Task + Startup-folder entry via ``gateway_windows`` (it owns
     schtasks /Delete, the .cmd unlink and stopping the detached pythonw gateway)."""
-    from hermes_cli import gateway_windows as gw
+    from hermes_agent.hermes_cli import gateway_windows as gw
     if not any(probe() for probe in (gw.is_installed, gw.is_task_registered, gw.is_startup_entry_installed)):
         return False
     try:
@@ -599,7 +599,7 @@ def _is_default_hermes_home(hermes_home: Path) -> bool:
 def _discover_named_profiles():
     """``ProfileInfo`` for every non-default profile; ``[]`` when profile support is unavailable."""
     try:
-        from hermes_cli.profiles import list_profiles
+        from hermes_agent.hermes_cli.profiles import list_profiles
     except Exception:
         return []
     try:
@@ -616,8 +616,8 @@ def _uninstall_profile(profile) -> None:
     name = profile.name
     log_info(f"Uninstalling profile '{name}'...")
 
-    # 1. Gateway service, via `python -m hermes_cli.main` (the `hermes` wrapper may be half-gone).
-    hermes_invocation = [sys.executable, "-P", "-m", "hermes_cli.main", "--profile", name]
+    # 1. Gateway service, via `python -m hermes_agent.hermes_cli.main` (the `hermes` wrapper may be half-gone).
+    hermes_invocation = [sys.executable, "-P", "-m", "hermes_agent.hermes_cli.main", "--profile", name]
     for subcmd in ("stop", "uninstall"):
         try:
             subprocess.run(
@@ -642,8 +642,8 @@ def _uninstall_profile(profile) -> None:
 
 def run_data_uninstall(args):
     """Erase this home's data, preserving installed runtimes and sibling profiles."""
-    from hermes_cli.data_cleanup import plan_data_removal, remove_data
-    from hermes_cli.gui_uninstall import desktop_userdata_dir
+    from hermes_agent.hermes_cli.data_cleanup import plan_data_removal, remove_data
+    from hermes_agent.hermes_cli.gui_uninstall import desktop_userdata_dir
 
     home = get_hermes_home()
     try:
@@ -668,7 +668,7 @@ def run_data_uninstall(args):
         return
     if not bool(getattr(args, "yes", False)) and not _confirm_yes("to remove this home's data"):
         return
-    from hermes_cli.data_cleanup_holders import quiescent_home
+    from hermes_agent.hermes_cli.data_cleanup_holders import quiescent_home
 
     try:
         with quiescent_home(plan.home):
@@ -694,7 +694,7 @@ def run_gui_uninstall(args):
     userData dir — nothing under ``$HERMES_HOME`` config/sessions/.env, and
     never the Python agent or its venv.
     """
-    from hermes_cli.gui_uninstall import (
+    from hermes_agent.hermes_cli.gui_uninstall import (
         agent_is_installed,
         desktop_install_record,
         gui_install_summary,
@@ -796,7 +796,7 @@ def run_uninstall(args):
     print(f"  Config:  {hermes_home / 'config.yaml'}")
     print(f"  Secrets: {hermes_home / '.env'}")
     print(f"  Data:    {hermes_home / 'cron/'}, {hermes_home / 'sessions/'}, {hermes_home / 'logs/'}")
-    from hermes_cli.gui_uninstall import desktop_userdata_dir
+    from hermes_agent.hermes_cli.gui_uninstall import desktop_userdata_dir
     if (desktop_userdata := desktop_userdata_dir()).exists():
         print(f"  Desktop: {desktop_userdata}  (app data - kept by 'Keep data', removed by 'Full uninstall')")
     print()
@@ -874,7 +874,7 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
     print(f"  • Code checkout: {project_root}")
-    from hermes_cli.gui_uninstall import desktop_userdata_dir
+    from hermes_agent.hermes_cli.gui_uninstall import desktop_userdata_dir
     userdata = desktop_userdata_dir()
     if not full_uninstall:
         print(f"  • Keep Hermes config/data: {hermes_home}")
@@ -945,7 +945,7 @@ def remove_dashboard_launchd_jobs() -> list[Path]:
 
     The gateway uninstall only reaches the gateway label, so a dashboard/serve
     LaunchAgent survives a full uninstall and launchd keeps respawning its backend.
-    Mirrors the enumeration ``hermes_cli.main_dashboard`` uses to find those jobs
+    Mirrors the enumeration ``hermes_agent.hermes_cli.main_dashboard`` uses to find those jobs
     (``_launchd_plist_dirs`` + ``_parse_dashboard_runtime``): read each plist, match the
     arguments, ``launchctl bootout`` the job's domains (launchd takes the process down;
     booting out an already-unloaded job is fine and never checked), then delete the
@@ -958,7 +958,7 @@ def remove_dashboard_launchd_jobs() -> list[Path]:
     import shlex
     from xml.parsers.expat import ExpatError
 
-    from hermes_cli.main_dashboard import _launchd_plist_dirs, _parse_dashboard_runtime
+    from hermes_agent.hermes_cli.main_dashboard import _launchd_plist_dirs, _parse_dashboard_runtime
 
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
     removed: list[Path] = []
@@ -1049,7 +1049,7 @@ def _perform_uninstall(
     #     state), so keep-data preserves it — only the full wipe removes it.
     log_info("Removing desktop Chat GUI artifacts...")
     try:
-        from hermes_cli.gui_uninstall import uninstall_gui
+        from hermes_agent.hermes_cli.gui_uninstall import uninstall_gui
         if not uninstall_gui(hermes_home, remove_userdata=full_uninstall):
             log_info("No desktop GUI artifacts found")
     except Exception as e:
@@ -1125,7 +1125,7 @@ def _perform_uninstall(
     if not full_uninstall:
         print(color("Your configuration and data have been preserved:", Colors.CYAN))
         print(f"  {hermes_home}/")
-        from hermes_cli.gui_uninstall import desktop_userdata_dir
+        from hermes_agent.hermes_cli.gui_uninstall import desktop_userdata_dir
         if (desktop_userdata := desktop_userdata_dir()).exists():
             print(f"  {desktop_userdata}  (desktop app data)")
         _, preserved = _xdg_leftover_paths(full_uninstall=False)
@@ -1167,14 +1167,14 @@ class _UninstallArgs:
 
 
 def main(argv=None) -> int:
-    """Module entrypoint: ``python -m hermes_cli.uninstall --mode <gui|lite|full|data>``.
+    """Module entrypoint: ``python -m hermes_agent.hermes_cli.uninstall --mode <gui|lite|full|data>``.
 
     Exists so the desktop app can run the uninstall under a Python interpreter
     OUTSIDE the venv being deleted. On Windows, ``lite``/``full`` rmtree the
     venv that contains the running ``python.exe`` — and a running .exe is
     mandatory-locked, so doing that from the venv's own interpreter half-fails.
     The desktop launches this with the system Python + ``PYTHONPATH=<agentRoot>``
-    so ``import hermes_cli`` resolves from source while the venv is torn down.
+    so ``from hermes_agent import hermes_cli`` resolves from source while the venv is torn down.
 
     ``data`` removes user data only (no code) and is the one mode allowed on
     steward-owned installs (Nix, the bundled desktop app, Docker); the

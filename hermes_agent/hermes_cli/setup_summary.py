@@ -1,10 +1,10 @@
 """Setup-completion summary (tool availability + "Setup Complete!" banner). setup.py names are
-resolved through the module object so test patches on ``hermes_cli.setup.<name>`` take effect."""
+resolved through the module object so test patches on ``hermes_agent.hermes_cli.setup.<name>`` take effect."""
 
 import logging
 from hermes_agent.tools import tool_backend_helpers
 
-logger = logging.getLogger("hermes_cli.setup")
+logger = logging.getLogger("hermes_agent.hermes_cli.setup")
 
 # provider -> (label, env vars: any one set means available; empty = always).
 # Local engines are (label, module, hint) and must be importable.
@@ -67,7 +67,7 @@ def _first_available_plugin_provider(registry: str, skip: str | None = None):
     available (fail-soft: any error means none), skipping ``skip``."""
     try:
         import importlib
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from hermes_agent.hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
         for provider in importlib.import_module(f"hermes_agent.agent.{registry}").list_providers():
             if provider.name == skip:
@@ -195,11 +195,11 @@ def _print_section_header(title):
 def _print_setup_summary(config: dict, hermes_home):
     """Print the setup completion summary."""
     from hermes_constants import display_hermes_home as _dhh
-    from hermes_cli import nous_subscription
+    from hermes_agent.hermes_cli import nous_subscription
     # Provider readiness — the one thing setup must produce. A user who cancelled the API-key
     # prompt mid-wizard used to exit "successfully" with NO working model; say so loudly.
     try:
-        from hermes_cli.auth import resolve_provider
+        from hermes_agent.hermes_cli.auth import resolve_provider
         resolve_provider()
     except Exception:
         print()
@@ -254,4 +254,4 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
 
 
-import hermes_cli.setup as _setup
+import hermes_agent.hermes_cli.setup as _setup

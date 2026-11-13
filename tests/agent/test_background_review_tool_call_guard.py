@@ -57,7 +57,7 @@ def _fake_parent(client, *, runtime=None) -> SimpleNamespace:
 def _run(agent, task_cfg=None):
     """Run the worker with AIAgent patched; return the AIAgent mock."""
     with (
-        patch("hermes_cli.config.load_config", return_value={}),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value={}),
         patch("hermes_agent.run_agent.AIAgent") as mock_aiagent,
         patch("hermes_agent.tools.terminal_tool.set_approval_callback"),
     ):

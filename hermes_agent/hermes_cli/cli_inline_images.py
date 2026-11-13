@@ -44,7 +44,7 @@ def _zero_width(seq: str) -> str:
 
 
 def _passthrough(seq: str) -> str:
-    from hermes_cli.cli_terminal_mixin import _tmux_passthrough
+    from hermes_agent.hermes_cli.cli_terminal_mixin import _tmux_passthrough
     return _tmux_passthrough(seq) if os.environ.get("TMUX") else seq
 
 
@@ -79,7 +79,7 @@ def vscode_images_hint(configured) -> bool:
 
 def print_inline_images(cli, paths: Iterable) -> None:
     """Print each image in *paths* under the current scrollback line, per ``display.inline_images``."""
-    from cli import _cprint, _terminal_columns
+    from hermes_agent.cli import _cprint, _terminal_columns
     stdout = sys.__stdout__
     if stdout is None or not stdout.isatty():
         return

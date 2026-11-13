@@ -1,6 +1,6 @@
 """MCP dashboard helpers: create-payload normalisation, env redaction/summary, dashboard-driven MCP OAuth worker.
 
-Wraps the same config layer the CLI uses (hermes_cli.mcp_config); stdio ``env``
+Wraps the same config layer the CLI uses (hermes_agent.hermes_cli.mcp_config); stdio ``env``
 secrets are redacted on read.
 """
 
@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
-from hermes_cli.config import redact_key
-from hermes_cli.web_models import MCPServerCreate
+from hermes_agent.hermes_cli.config import redact_key
+from hermes_agent.hermes_cli.web_models import MCPServerCreate
 
 
 def normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, dict[str, Any], Optional[str]]:
@@ -21,8 +21,8 @@ def normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, dict[str, A
     the shared Bearer helper once inside the intended profile scope. Shared by
     the MCP page and the Profile Builder so both enforce one transport/auth contract.
     """
-    from hermes_cli.mcp_config import _bearer_auth_headers, _strip_bearer_prefix
-    from hermes_cli.mcp_security import validate_mcp_server_entry
+    from hermes_agent.hermes_cli.mcp_config import _bearer_auth_headers, _strip_bearer_prefix
+    from hermes_agent.hermes_cli.mcp_security import validate_mcp_server_entry
 
     name = (body.name or "").strip()
     if not name:
@@ -118,7 +118,7 @@ def _mcp_oauth_transaction(flow) -> threading.Lock:
 
 def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
     """Run the normal MCP probe with dashboard redirect/callback handlers."""
-    from hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server, _save_mcp_server
+    from hermes_agent.hermes_cli.mcp_config import _oauth_tokens_present, _probe_single_server, _save_mcp_server
     try:
         from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override

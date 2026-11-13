@@ -16,8 +16,8 @@ from urllib.parse import unquote, urlsplit
 
 import pytest
 
-from hermes_cli import main as cli_main
-from hermes_cli import webapp_launcher as launcher
+from hermes_agent.hermes_cli import main as cli_main
+from hermes_agent.hermes_cli import webapp_launcher as launcher
 from tests.hermes_cli import test_webapp_launcher as launcher_tests
 
 LINK, _args = launcher_tests.LINK, launcher_tests._args

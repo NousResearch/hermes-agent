@@ -5,16 +5,16 @@ from contextlib import suppress
 import logging
 import os
 
-from hermes_cli.cli_commands_session_tools import _pr, _t
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_profile_lifecycle import ack_confirmed, ack_failure
+from hermes_agent.hermes_cli.cli_commands_session_tools import _pr, _t
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_profile_lifecycle import ack_confirmed, ack_failure
 
 logger = logging.getLogger(__name__)
 
 
 def restore_snapshot_command(cli, parts):
-    from hermes_cli.backup import list_quick_snapshots, quick_snapshot_dir, restore_quick_snapshot
-    from hermes_cli.gateway_tools_notify import gateway_store
+    from hermes_agent.hermes_cli.backup import list_quick_snapshots, quick_snapshot_dir, restore_quick_snapshot
+    from hermes_agent.hermes_cli.gateway_tools_notify import gateway_store
     if len(parts) < 3:
         print(f"  {_t('snapshot.usage_restore')}")
         snaps = list_quick_snapshots(limit=1)
@@ -63,8 +63,8 @@ def restore_snapshot_command(cli, parts):
 def _pause_owner(home, control_home, identity):
     """Hand the profile off; True when this restore parked a satellite and must serve it again."""
     from hermes_agent.gateway.control_socket import pause_gateway_for_update, request_unserve_profile
-    from hermes_cli.data_cleanup_holders import pause_acked
-    from hermes_cli.profiles import parked_marker_path
+    from hermes_agent.hermes_cli.data_cleanup_holders import pause_acked
+    from hermes_agent.hermes_cli.profiles import parked_marker_path
     satellite = control_home != home
     ours = False
     if satellite:
@@ -95,12 +95,12 @@ def _pause_owner(home, control_home, identity):
 
 def _restore_gateway_snapshot(cli, store, snap_id):
     from hermes_agent.gateway.control_socket import request_serve_profile_hot
-    from hermes_cli.backup import restore_quick_snapshot
-    from hermes_cli.data_cleanup_holders import manual_gateway_identity
-    from hermes_cli.gateway_connection import GatewayConnection
-    from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint
-    from hermes_cli.profiles import parked_marker_path
-    from hermes_cli.profiles_remove import wait_profile_unowned
+    from hermes_agent.hermes_cli.backup import restore_quick_snapshot
+    from hermes_agent.hermes_cli.data_cleanup_holders import manual_gateway_identity
+    from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
+    from hermes_agent.hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint
+    from hermes_agent.hermes_cli.profiles import parked_marker_path
+    from hermes_agent.hermes_cli.profiles_remove import wait_profile_unowned
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_registry import close_all_under
     home = get_hermes_home().resolve()
@@ -148,8 +148,8 @@ def _restore_gateway_snapshot(cli, store, snap_id):
 
 
 def _rejoin_cli(cli, store):
-    from hermes_cli.cli_init_mixin import _ROUTE_FLAGS, _gateway_launch, lease_handed_over
-    from hermes_cli.gateway_tools import bind_session
+    from hermes_agent.hermes_cli.cli_init_mixin import _ROUTE_FLAGS, _gateway_launch, lease_handed_over
+    from hermes_agent.hermes_cli.gateway_tools import bind_session
     # Same-id restores still replace the connection and invalidate the cached proxies.
     cli.agent = None
     for attr in ("_goal_manager", "_loop_manager", "_heartbeat_manager"):

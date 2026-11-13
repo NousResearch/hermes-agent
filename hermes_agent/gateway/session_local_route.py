@@ -15,7 +15,7 @@ def resolve_launch_route(params: dict, config: dict) -> dict:
     model = params.get('model')
     if not isinstance(model, str) or not model.strip() or 'base_url' in params or 'api_key' in params:
         return params
-    from hermes_cli.model_switch import resolve_startup_model_route
+    from hermes_agent.hermes_cli.model_switch import resolve_startup_model_route
     model_cfg = config.get('model')
     if not isinstance(model_cfg, dict):
         model_cfg = {}

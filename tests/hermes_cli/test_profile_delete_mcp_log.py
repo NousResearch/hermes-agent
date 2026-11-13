@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profiles
-from hermes_cli.mcp_config import _probe_single_server
+from hermes_agent.hermes_cli import profiles
+from hermes_agent.hermes_cli.mcp_config import _probe_single_server
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.tools import mcp_tool_config
 

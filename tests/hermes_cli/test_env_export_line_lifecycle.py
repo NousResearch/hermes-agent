@@ -14,7 +14,7 @@ Fake tokens are constructed at runtime — no key-shaped literals on disk.
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_agent.hermes_cli.web_server import _SESSION_TOKEN, app
 
 client = TestClient(app)
 HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
@@ -29,7 +29,7 @@ def hermes_home(monkeypatch, tmp_path):
     home = tmp_path / "pat_home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
 
     invalidate_env_cache()
     return home
@@ -37,7 +37,7 @@ def hermes_home(monkeypatch, tmp_path):
 
 def _write_env_raw(home, text):
     home.joinpath(".env").write_text(text, encoding="utf-8")
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
 
     invalidate_env_cache()
 
@@ -50,7 +50,7 @@ def test_classic_pat_save_via_endpoint_succeeds(hermes_home):
     )
     assert resp.status_code == 200, resp.text
 
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
 
     assert load_env()["GITHUB_TOKEN"] == NEW_PAT
 
@@ -70,7 +70,7 @@ def test_remove_export_prefixed_token(hermes_home):
     env_text = hermes_home.joinpath(".env").read_text(encoding="utf-8")
     assert OLD_PAT not in env_text
 
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
 
     assert "GITHUB_TOKEN" not in load_env()
 
@@ -91,14 +91,14 @@ def test_update_export_prefixed_token_does_not_duplicate(hermes_home):
         "export-prefixed one"
     )
 
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
 
     assert load_env()["GITHUB_TOKEN"] == NEW_PAT
 
 
 def test_plain_line_save_and_remove_still_work(hermes_home):
     """Sanity: the ordinary KEY= path is unchanged."""
-    from hermes_cli.config import load_env, remove_env_value, save_env_value
+    from hermes_agent.hermes_cli.config import load_env, remove_env_value, save_env_value
 
     save_env_value("GITHUB_TOKEN", OLD_PAT)
     assert load_env()["GITHUB_TOKEN"] == OLD_PAT
@@ -137,7 +137,7 @@ def test_remove_token_written_with_spaces_around_equals(hermes_home):
     """
     _write_env_raw(hermes_home, f"GITHUB_TOKEN = {OLD_PAT}\n")
 
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
 
     assert load_env()["GITHUB_TOKEN"] == OLD_PAT, "precondition: token is live"
 
@@ -167,7 +167,7 @@ def test_spaced_token_rotate_then_delete_does_not_resurrect(hermes_home):
     assert OLD_PAT not in env_text, "the rotated-away token must not survive"
     assert env_text.count("GITHUB_TOKEN") == 1
 
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
 
     assert load_env()["GITHUB_TOKEN"] == NEW_PAT
 
@@ -177,7 +177,7 @@ def test_spaced_token_rotate_then_delete_does_not_resurrect(hermes_home):
 
 def test_writer_matches_exactly_what_load_env_accepts(hermes_home):
     """Parity: the writers must recognise a line iff ``load_env()`` does."""
-    from hermes_cli.config import _env_line_defines_key, load_env
+    from hermes_agent.hermes_cli.config import _env_line_defines_key, load_env
 
     for line, expected in [
         (f"GITHUB_TOKEN={OLD_PAT}", True),

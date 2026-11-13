@@ -1,6 +1,6 @@
 """Bordered overlay panels (approval, clarify, sudo, pickers) for the classic CLI's live region."""
 
-from hermes_cli.cli_render import _append_blank_panel_line, _append_panel_line, _cells
+from hermes_agent.hermes_cli.cli_render import _append_blank_panel_line, _append_panel_line, _cells
 
 
 class _Panel:

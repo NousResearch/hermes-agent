@@ -199,7 +199,7 @@ class TestFastChoicePicker:
         # ``_resolve_session_agent_runtime``; with no session override that path
         # calls runtime provider resolution, so stub it (no real credentials in CI).
         monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", dict)
-        import hermes_cli.models as models_mod
+        import hermes_agent.hermes_cli.models as models_mod
         monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda m: True)
 
     @pytest.mark.asyncio

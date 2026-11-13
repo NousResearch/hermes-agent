@@ -18,7 +18,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_agent.hermes_cli.web_server import _SESSION_TOKEN, app
 from tests.waiting import wait_until
 
 client = TestClient(app)
@@ -175,8 +175,8 @@ def test_hermes_model_dispatch_and_effort_picker_consult_the_profile(acme, monke
     coder, events = acme
     monkeypatch.setenv("HERMES_HOME", str(coder))
     _rediscover()
-    from hermes_cli.main_provider_setup import _main_model_reasoning_efforts
-    from hermes_cli.model_setup_flows import _profile_model_setup_flow
+    from hermes_agent.hermes_cli.main_provider_setup import _main_model_reasoning_efforts
+    from hermes_agent.hermes_cli.model_setup_flows import _profile_model_setup_flow
 
     flow = _profile_model_setup_flow(NAME)
     assert flow is not None

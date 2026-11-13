@@ -7,7 +7,7 @@ import shutil
 import sys
 from typing import Optional, Sequence
 
-from hermes_cli._parser import (
+from hermes_agent.hermes_cli._parser import (
     PRE_ARGPARSE_INHERITED_FLAGS, build_top_level_parser
 )
 
@@ -61,12 +61,12 @@ def _extract_inherited_flags(argv: Sequence[str]) -> list[str]:
 
 def resolve_hermes_bin() -> Optional[str]:
     """Hermes entry point: ``sys.argv[0]`` if a real executable, else ``which hermes``, else ``None``
-    (caller falls back to ``python -m hermes_cli.main``).
+    (caller falls back to ``python -m hermes_agent.hermes_cli.main``).
 
     Python launchers are never returned: on Windows a ``.py`` can't be exec'd directly, and on
     POSIX the git installer runs the extensionless source launcher under the managed venv
     interpreter while its ``#!/usr/bin/env python3`` shebang would pick the system Python and
-    lose the venv. Falling through to ``sys.executable -m hermes_cli.main`` keeps the venv.
+    lose the venv. Falling through to ``sys.executable -m hermes_agent.hermes_cli.main`` keeps the venv.
     """
     argv0 = sys.argv[0]
     _is_windows = sys.platform == "win32"
@@ -79,7 +79,7 @@ def resolve_hermes_bin() -> Optional[str]:
             return _is_python_script(p)
         # A console script pinned to the running venv (``#!<venv>/bin/python``) keeps the venv and
         # stays exec-able; a shebang that resolves elsewhere (``env python3``) loses it.
-        from hermes_cli.linux_desktop_entry import _needs_interpreter
+        from hermes_agent.hermes_cli.linux_desktop_entry import _needs_interpreter
 
         return _needs_interpreter(pathlib.Path(p))
 
@@ -104,7 +104,7 @@ def build_relaunch_argv(
 ) -> list[str]:
     """Construct an argv list for replacing the current process with hermes."""
     bin_path = resolve_hermes_bin()
-    argv = [bin_path] if bin_path else [sys.executable, "-m", "hermes_cli.main"]
+    argv = [bin_path] if bin_path else [sys.executable, "-m", "hermes_agent.hermes_cli.main"]
     src = list(original_argv) if original_argv is not None else list(sys.argv[1:])
     if preserve_inherited:
         argv.extend(_extract_inherited_flags(src))
@@ -139,8 +139,8 @@ def relaunch(
             )
             sys.exit(1)
     else:
-        from hermes_cli.cpu_profile import write_cpu_profile
-        from hermes_cli.observability.shared_metrics_startup import mark_in_place_relaunch
+        from hermes_agent.hermes_cli.cpu_profile import write_cpu_profile
+        from hermes_agent.hermes_cli.observability.shared_metrics_startup import mark_in_place_relaunch
 
         mark_in_place_relaunch()
         write_cpu_profile()  # exec skips atexit

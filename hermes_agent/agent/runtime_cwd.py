@@ -13,7 +13,7 @@ from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
 
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 

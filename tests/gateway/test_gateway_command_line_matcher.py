@@ -67,7 +67,7 @@ def test_rejects_non_gateway_run(cmd):
 
 
 # ``python -c <src> <old_pid> <gateway argv…>`` — the detached restart watcher
-# (hermes_cli.gateway._spawn_gateway_restart_watcher). Its trailing argv is the command it will
+# (hermes_agent.hermes_cli.gateway._spawn_gateway_restart_watcher). Its trailing argv is the command it will
 # spawn LATER, so reading identity off it made the updater's post-relaunch liveness poll vouch for
 # the watcher instead of a gateway (#107002).
 INLINE_SOURCE_REJECT = [
@@ -78,7 +78,7 @@ INLINE_SOURCE_REJECT = [
     'python -uc "import os" 14980 hermes gateway run',
     # Options that take a SEPARATE operand must not end the option walk before ``-c`` (the operand
     # is not the start of the program's own argv). The repo itself spawns ``-I -S -B -X utf8 …``
-    # (hermes_cli/_old_updater.py, _update_takeover.py), so this shape is not hypothetical.
+    # (hermes_agent/hermes_cli/_old_updater.py, _update_takeover.py), so this shape is not hypothetical.
     'python -X utf8 -c "import os" 14980 python -m hermes_cli.main gateway run',
     'python -W ignore -c "import os" 14980 python -m hermes_cli.main gateway run',
     'python --check-hash-based-pycs always -c "import os" 14980 hermes gateway run',

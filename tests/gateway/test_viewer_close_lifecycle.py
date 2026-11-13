@@ -33,7 +33,7 @@ async def _owner(tmp_path, monkeypatch):
     async def housekeeping(func, *args):
         return func(*args)
 
-    monkeypatch.setattr('hermes_cli.lifecycle.invoke_hook', lambda name, **kwargs: calls.append((name, kwargs)))
+    monkeypatch.setattr('hermes_agent.hermes_cli.lifecycle.invoke_hook', lambda name, **kwargs: calls.append((name, kwargs)))
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None,
                              _evict_cached_agent_at_boundary=lambda key: calls.append(('commit', key)),

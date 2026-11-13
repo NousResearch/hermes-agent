@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server, web_server_file_tickets
+from hermes_agent.hermes_cli import web_server, web_server_file_tickets
 from tests.hermes_cli.test_web_server_file_ticket_generations import _ticket
 from tests.hermes_cli.test_web_server_files import forced_files_client as forced_files_client  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 

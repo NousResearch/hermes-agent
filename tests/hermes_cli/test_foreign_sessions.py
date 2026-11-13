@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.foreign_sessions — Claude Code / Codex CLI import.
+"""Tests for hermes_agent.hermes_cli.foreign_sessions — Claude Code / Codex CLI import.
 
 Fixture JSONL is synthesized inline (tmp_path); imports reach a gateway owner over a temp
 state.db, so nothing touches the real HERMES_HOME store.
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.foreign_sessions import (
+from hermes_agent.hermes_cli.foreign_sessions import (
     _list_sessions,
     gather_foreign_sessions,
     import_foreign_session,
@@ -100,7 +100,7 @@ def _write_codex_fixture(tmp_path, extra_lines=None):
 
 def _route_store(monkeypatch, mutate):
     """Answer the importer's gateway calls with *mutate* (``session.mutate`` params -> receipt)."""
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     calls = []
 
@@ -111,7 +111,7 @@ def _route_store(monkeypatch, mutate):
         except (RuntimeStoreError, ValueError) as exc:  # a refusal crosses the wire as a bounded code
             raise GatewayClientError(getattr(exc, "reason", "invalid_params")) from exc
 
-    monkeypatch.setattr("hermes_cli.gateway_session_store.session_store", lambda: SimpleNamespace(call=call))
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_session_store.session_store", lambda: SimpleNamespace(call=call))
     return calls
 
 

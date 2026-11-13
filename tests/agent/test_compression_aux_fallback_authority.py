@@ -57,7 +57,7 @@ def test_authoritative_task_strips_only_destination_fields():
     assert task == "compression"
     assert hash(task) == hash("compression")
 
-    with patch("hermes_cli.config.load_config_readonly", return_value=_config()):
+    with patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=_config()):
         effective = _get_auxiliary_task_config(task)
         resolved = _resolve_task_provider_model(
             task,
@@ -117,7 +117,7 @@ def test_truncated_aux_summary_retries_on_complete_main_route():
     assert "base_url" not in retry
     assert "api_mode" not in retry
 
-    with patch("hermes_cli.config.load_config_readonly", return_value=_config()):
+    with patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=_config()):
         assert _resolve_task_provider_model(
             retry["task"],
             provider=retry.get("provider"),
@@ -141,7 +141,7 @@ def test_main_retry_is_not_fast_lane_certified_by_the_failed_aux_reasoning():
     response = _response("ok")
     client.chat.completions.create.return_value = response
     with (
-        patch("hermes_cli.config.load_config_readonly", return_value=config),
+        patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=config),
         patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "main-model")),
         patch("hermes_agent.agent.auxiliary_client._validate_llm_response", return_value=response),
     ):

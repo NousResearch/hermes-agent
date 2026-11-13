@@ -1,6 +1,6 @@
 """Dashboard/serve support: managed-service restart (systemd/respawn), status/listening probes, SSH session token file, named-profile routing, web-dist resolution, update stdio hangup protection.
 
-Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
+Split out of ``hermes_agent/hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
 are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
@@ -14,9 +14,9 @@ import time
 
 from pathlib import Path
 from typing import NoReturn
-from hermes_cli.cli_output import line_input
-from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.cli_output import line_input
+from hermes_agent.hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 _PRE_BUILD_HINT = "  Pre-build first:  pnpm install --frozen-lockfile --filter web... && pnpm --dir web run build"
 
@@ -30,7 +30,7 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     ``--stop`` and the post-update cleanup pass their own home so another install's or
     profile's backend on the same machine is never a target (#113978).
     """
-    from hermes_cli.dashboard_procs import (
+    from hermes_agent.hermes_cli.dashboard_procs import (
         _caller_ancestor_pids,
         _is_caller_wrapper_shell,
         _pids_owned_by_hermes_home,
@@ -50,7 +50,7 @@ def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     The mode is the canonical holder subcommand, never an argv substring: this gates the launchd
     backend inventory (a kill + kickstart path) and ``--status`` (#121156).
     """
-    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_agent.hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     mode = _hermes_holder_subcommand(command)
     if mode not in ("dashboard", "serve"):
         return None
@@ -296,7 +296,7 @@ def _loaded_launchd_backend_jobs(
     import plistlib
     from xml.parsers.expat import ExpatError
 
-    from hermes_cli.gateway import _launchd_print_service_pid
+    from hermes_agent.hermes_cli.gateway import _launchd_print_service_pid
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
     jobs: list[tuple[str, str, list[str], int | None]] = []
     for kind, plist_dir in (plist_dirs if plist_dirs is not None else _launchd_plist_dirs()):
@@ -363,7 +363,7 @@ def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeou
     take that fresh process down), then require launchd to report a live PID other than *old_pid*
     within *timeout*. A kickstart that returns 0 only means "restart requested"; a job that is loaded
     but never comes back on a fresh PID is a failure the operator must hear about."""
-    from hermes_cli.gateway import _wait_for_launchd_service_pid
+    from hermes_agent.hermes_cli.gateway import _wait_for_launchd_service_pid
     try:
         if _run_probe(["launchctl", "kickstart", f"{domain}/{label}"], timeout=30).returncode != 0:
             return False
@@ -414,7 +414,7 @@ def _respawnable_command_for_current_install(argv: list[str]) -> list[str]:
     root = Path(project_root_str())
     if (len(argv) > 2 and os.path.basename(argv[0]).startswith("python")
             and os.path.basename(argv[1]) == "hermes" and Path(argv[1]) != root / "hermes"):
-        from hermes_cli._launchers import runtime_command
+        from hermes_agent.hermes_cli._launchers import runtime_command
         return runtime_command(root, argv[2:])
     return list(argv)
 
@@ -587,7 +587,7 @@ def _report_dashboard_status() -> int:
     augmentation in _scan_dashboard_processes, and the ledger's recorded bind replaces the argv port so
     ``--port 0`` backends are probed on the port the OS actually gave them. See #81564.
     """
-    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
+    from hermes_agent.hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
     from hermes_agent.gateway.status import _pid_exists
     binds = _ledger_serve_binds()
     live: list[tuple[int, str, str]] = []
@@ -639,14 +639,14 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
 
     try:
-        from hermes_cli.web_server import should_require_dashboard_auth
+        from hermes_agent.hermes_cli.web_server import should_require_dashboard_auth
         if not should_require_dashboard_auth(host):
             return
     except Exception:
         return  # if we can't tell, defer to start_server's own gate
 
     try:
-        from hermes_cli.dashboard_auth import list_providers
+        from hermes_agent.hermes_cli.dashboard_auth import list_providers
         if list_providers():
             return
     except Exception:
@@ -711,8 +711,8 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     secret = secrets.token_urlsafe(32)
 
     try:
-        from hermes_cli.config import load_config, save_config
-        from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
+        from hermes_agent.hermes_cli.config import load_config, save_config
+        from hermes_agent.hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
         cfg = load_config()
         basic = cfg.setdefault("dashboard", {}).setdefault("basic_auth", {})
         basic["username"] = username
@@ -731,7 +731,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 
     # Re-run plugin discovery so the provider registers before start_server's gate.
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins(force=True)
     except Exception as exc:
         print(f"  ⚠ Plugin re-discovery failed ({exc}); the gate may still "
@@ -746,7 +746,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
 def _read_ssh_session_token_file(path: str) -> str:
     """Read and unlink a Desktop SSH token from its private runtime directory."""
     if sys.platform == "win32":
-        from hermes_cli.windows_ssh_runtime import read_token
+        from hermes_agent.hermes_cli.windows_ssh_runtime import read_token
         return read_token(path)
 
     import stat as _stat
@@ -945,12 +945,12 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
     except Exception:
         profile = "default"
     wanted = getattr(args, "open_profile", "") or profile
-    from hermes_cli.url_utils import format_url_host
+    from hermes_agent.hermes_cli.url_utils import format_url_host
 
     url = f"http://{format_url_host(hr.dial_host(record))}:{record.port}/?profile={wanted}"
 
@@ -976,7 +976,7 @@ def _route_named_profile_dashboard(
     routing applies.
     """
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         _launch_profile = get_active_profile_name()
     except Exception:
         _launch_profile = "default"
@@ -994,7 +994,7 @@ def _route_named_profile_dashboard(
         f"preselected). Use --isolated for a dedicated per-profile server."
     )
     reexec_argv = [
-        sys.executable, "-m", "hermes_cli.main",
+        sys.executable, "-m", "hermes_agent.hermes_cli.main",
         "-p", "default",
         # Preserve the lean serve path so a named-profile `serve` doesn't
         # silently rebuild the UI as `dashboard`.
@@ -1030,7 +1030,7 @@ def _route_named_profile_dashboard(
         proc = subprocess.Popen(reexec_argv, env=env)
         sys.exit(proc.wait())
     else:
-        from hermes_cli.cpu_profile import write_cpu_profile
+        from hermes_agent.hermes_cli.cpu_profile import write_cpu_profile
 
         write_cpu_profile()  # exec skips atexit
         os.execvpe(sys.executable, reexec_argv, env)
@@ -1044,8 +1044,8 @@ def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:
     (else the server serves 404s). --skip-build on the default location gets ONE
     recovery build; a caller-managed HERMES_WEB_DIST can't be populated.
     """
-    from hermes_cli.main import PROJECT_ROOT
-    from hermes_cli.main_web_build import _build_web_ui
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.main_web_build import _build_web_ui
     skip_build = getattr(args, "skip_build", False)
     if _headless_backend:
         os.environ["HERMES_SERVE_HEADLESS"] = "1"  # set before web_server import
@@ -1107,7 +1107,7 @@ def _dashboard_validate_serve_args(args, headless_backend, token_file):
     # auto-detection can adopt unnamed .env credentials (issue #81952).
     # Same policy + escape hatch as _guard_noninteractive_user_config.
     if headless_backend:
-        from hermes_cli.config import (
+        from hermes_agent.hermes_cli.config import (
             InvalidUserConfigError,
             require_parseable_user_config,
         )

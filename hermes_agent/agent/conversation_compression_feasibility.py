@@ -39,13 +39,13 @@ def _route_identity() -> tuple:
     cfg = _get_auxiliary_task_config("compression")
     route = tuple(str(cfg.get(k) or "") for k in ("provider", "model", "base_url", "context_length"))
     provider = route[0].strip()
-    from hermes_cli.config import get_custom_provider_context_length
+    from hermes_agent.hermes_cli.config import get_custom_provider_context_length
     if route[2]:
         url, model, named = route[2], route[1], ()
     elif not provider or provider in ("auto", "main", "custom"):
         return route
     else:
-        from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+        from hermes_agent.hermes_cli.runtime_provider_custom import _get_named_custom_provider
         entry = _get_named_custom_provider(provider, resolve_credentials=False) or {}
         url, model = str(entry.get("base_url") or ""), route[1] or str(entry.get("model") or "")
         named = (url, str(entry.get("model") or ""))

@@ -223,7 +223,7 @@ def _cancel_manual_claim(conn, sid: str, *, state: str, note: str) -> bool:
 def _owes_any() -> bool:
     """With auto_resume off: does this profile's store hold a record still owed its one report? One read-only query
     per tick, so an idle disabled tick never writes (or creates) state.db."""
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
     from hermes_agent.hermes_state_holders import read_only_db_uri
     db = _db()
     if not db.exists():

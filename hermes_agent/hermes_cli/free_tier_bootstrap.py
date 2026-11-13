@@ -2,7 +2,7 @@
 
 It runs once per process on a daemon thread: at ``hermes serve`` boot, and on the gateway when the
 local Desktop first connects (``hermes_agent.tui_gateway.methods_onboarding.begin_local_desktop_boot``). It never
-creates an identity: the desktop's welcome-trial claim (``hermes_cli.welcome_trial``) and the first
+creates an identity: the desktop's welcome-trial claim (``hermes_agent.hermes_cli.welcome_trial``) and the first
 hosted connector action are the only creators. For the desktop's local backend it first records a
 fresh install's onboarding decision (``onboarding_run.latch_first_install``) and settles a claim cut
 off before its marker write (``welcome_trial.settle_interrupted_claim``). Then it inventories
@@ -19,7 +19,7 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger("hermes_cli.auth")
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 # The desktop's first ``setup.status`` waits this long for the record before falling back to a live probe.
 SETUP_READY_WAIT_SECONDS = 8.0
@@ -129,7 +129,7 @@ def reset_for_tests() -> None:
 
 
 def _config_stamp() -> tuple:
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.config import get_hermes_home
     from utils import file_cache_version
     home = get_hermes_home()
     stamp = []
@@ -153,7 +153,7 @@ def _inventory_other_providers() -> bool:
     seen by the next :func:`reconcile_record`.
     """
     global _inventory_stamp
-    from hermes_cli.auth import resolve_provider
+    from hermes_agent.hermes_cli.auth import resolve_provider
     _inventory_stamp = _config_stamp()
     try:
         return resolve_provider("auto", skip_free_tier=True) != "nous"
@@ -163,7 +163,7 @@ def _inventory_other_providers() -> bool:
 
 
 def _resolve_inference() -> str:
-    from hermes_cli.auth import resolve_provider
+    from hermes_agent.hermes_cli.auth import resolve_provider
     try:
         return str(resolve_provider("auto") or "")
     except Exception:
@@ -172,7 +172,7 @@ def _resolve_inference() -> str:
 
 def _build_record(*, other: bool) -> SetupRecord:
     """One inventory pass into a record. Reads only: no identity is created here."""
-    from hermes_cli import anon_auth
+    from hermes_agent.hermes_cli import anon_auth
 
     state: Optional[dict[str, Any]] = anon_auth.current_nous_state()
     failure: dict[str, Any] = {} if state else (anon_auth.last_mint_failure() or {})
@@ -217,15 +217,15 @@ def _settle_install() -> bool:
     logged: onboarding.state still answers live, and the record still says who carries inference."""
     settled = True
     try:
-        from hermes_cli import anon_auth
-        from hermes_cli.onboarding_run import latch_first_install
+        from hermes_agent.hermes_cli import anon_auth
+        from hermes_agent.hermes_cli.onboarding_run import latch_first_install
         if anon_auth.on_local_desktop_backend():
             latch_first_install()
     except Exception:
         settled = False
         logger.warning("onboarding: could not record the first-install decision", exc_info=True)
     try:
-        from hermes_cli.welcome_trial import settle_interrupted_claim
+        from hermes_agent.hermes_cli.welcome_trial import settle_interrupted_claim
         settle_interrupted_claim()
     except Exception:
         settled = False
@@ -267,7 +267,7 @@ def refresh_record(*, announce: bool = True) -> Optional[SetupRecord]:
 
 
 def _due_changed() -> None:
-    from hermes_cli import onboarding_due
+    from hermes_agent.hermes_cli import onboarding_due
 
     onboarding_due.invalidate()
 

@@ -6,12 +6,12 @@ description: "How hermes_cli is shaped: slash dispatch, config loaders, the skin
 
 # CLI Internals
 
-Companion to `hermes_cli/AGENTS.md` (the rules) — this page holds the longer explanations.
+Companion to `hermes_agent/hermes_cli/AGENTS.md` (the rules) — this page holds the longer explanations.
 
 ## Update pipeline
 
 User-facing behaviour (receipts, `--plan`, snapshot modes) is in
-[Updating](../getting-started/updating.md); `hermes_cli/AGENTS.md` carries the short form of the rules.
+[Updating](../getting-started/updating.md); `hermes_agent/hermes_cli/AGENTS.md` carries the short form of the rules.
 
 Fleet-update campaign #91277 (Aug 2026). A PR that weakens a stage must answer for the failure class
 it guards. `plan → snapshot → apply → restart-per-kind → verify → report`
@@ -45,7 +45,7 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   `profiles/<name>`), drain-first (SIGUSR1), with per-unit/per-label failure isolation. Restarting only the
   invoking profile's service leaves siblings on stale `sys.modules` until they crash — the largest dupe-PR
   cluster in the repo's history came from that bug. The fleet is bounded by HOME, not by namespace:
-  `hermes_cli/update_fleet_scope.py` judges every unit/label/process by the home it actually runs on
+  `hermes_agent/hermes_cli/update_fleet_scope.py` judges every unit/label/process by the home it actually runs on
   (live environ, unit `Environment=`, plist `HERMES_HOME`), and a runtime of another `HERMES_HOME` on the
   same account — a sibling install, the real `hermes-gateway.service` seen from a scratch home — is named and
   left alone, never restarted (#93349).
@@ -82,7 +82,7 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   See `website/docs/developer-guide/source-update-completion.md`. A begun-but-unwritten receipt is a bug.
 - **Nothing runs pulled code in the pre-pull interpreter.** This tree finishes updates through
   `update_completion.run_completion` / `_update_takeover.py`.
-  `hermes_cli/update_handoff.py` and `hermes_cli/update_serve_obligations.py` are the
+  `hermes_agent/hermes_cli/update_handoff.py` and `hermes_agent/hermes_cli/update_serve_obligations.py` are the
   FROZEN COMPAT SURFACE for releases that lazily import those module
   names from the NEW tree after the checkout swap.
   Keep their public names importable and behavior-preserving. They call into
@@ -151,7 +151,7 @@ are released; the handoff runner never settles.
 
 ### Guest handoff after a sign-in
 
-When any writer saves a Nous account over a free-tier identity, `hermes_cli/guest_handoff.py` hands
+When any writer saves a Nous account over a free-tier identity, `hermes_agent/hermes_cli/guest_handoff.py` hands
 that identity's connected apps to the account: `POST /api/anonymous/claim {"token": "<anon_...>"}`
 with the account's own Bearer token. Nothing asks the user first; the result is shown afterwards
 (`hermes auth status nous`; the desktop reads it from the sign-in poll's `handoff_status` and, while a
@@ -196,7 +196,7 @@ classifying a process by `"serve" in cmdline` or similar. `kanban --preserve-cac
 subcommand. Rules:
 
 - Use the canonical matchers: `hermes_agent.gateway.status.looks_like_gateway_command_line` (gateway run),
-  `hermes_cli.update_cmd._hermes_holder_subcommand` (top-level subcommand of any Hermes argv). Never
+  `hermes_agent.hermes_cli.update_cmd._hermes_holder_subcommand` (top-level subcommand of any Hermes argv). Never
   hand-roll token scans.
 - Flag sets must be DERIVED from the parser (`_holder_value_flags()` introspects
   `build_top_level_parser()`), never hand-written lists — they drift.
@@ -218,7 +218,7 @@ subcommand. Rules:
 | Tool output prefix / per-tool emojis | `tool_prefix`, `tool_emojis` | `display.py` → `get_tool_emoji()` |
 | Agent name / welcome / response label / prompt symbol | `branding.agent_name`, `welcome`, `response_label`, `prompt_symbol` | `banner.py`, `cli.py` |
 
-Built-in skins (`_BUILTIN_SKINS` in `hermes_cli/skin_engine.py`): `default` (classic gold/kawaii),
+Built-in skins (`_BUILTIN_SKINS` in `hermes_agent/hermes_cli/skin_engine.py`): `default` (classic gold/kawaii),
 `ares` (crimson/bronze with custom spinner wings), `mono` (grayscale), `slate` (cool blue). Add a
 built-in as a dict entry `{"name", "description", "colors", "spinner", "branding", "tool_prefix"}`.
 User skins are `~/.hermes/skins/<name>.yaml` with the same keys, activated with `/skin <name>` or
@@ -229,7 +229,7 @@ User skins are `~/.hermes/skins/<name>.yaml` with the same keys, activated with 
 
 Hermes supports profiles — fully isolated instances, each with its own `HERMES_HOME` (config, API
 keys, memory, sessions, skills, gateway). For single-profile commands (`hermes -p x <cmd>`),
-`_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module imports, so
+`_apply_profile_override()` in `hermes_agent/hermes_cli/main.py` sets `HERMES_HOME` before any module imports, so
 every `get_hermes_home()` reference scopes to the active profile. The multiplex gateway and the
 Desktop/dashboard `serve` backend serve several profiles from one process instead: the active
 profile is a contextvar override bound per activity, `os.environ["HERMES_HOME"]` stays the launch

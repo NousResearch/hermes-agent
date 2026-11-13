@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import gateway_connections as store
-from hermes_cli import web_server
-from hermes_cli.gateway_connections_normalize import (
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.gateway_connections_normalize import (
     merge_connection_input,
     normalize_connection_input,
     normalize_registry,

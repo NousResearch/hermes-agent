@@ -1,4 +1,4 @@
-"""Tests for the hermes_cli.nous_billing HTTP client's response handling.
+"""Tests for the hermes_agent.hermes_cli.nous_billing HTTP client's response handling.
 
 Focus: a 2xx response with a NON-JSON body (e.g. a reverse-proxy / SPA fallback
 HTML page when a route isn't actually serving the billing API) must surface as a
@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-from hermes_cli import nous_billing as nb
+from hermes_agent.hermes_cli import nous_billing as nb
 
 
 class _FakeResp(io.BytesIO):
@@ -169,7 +169,7 @@ def test_billing_token_cache_is_scoped_per_profile_home(monkeypatch, tmp_path):
     """The 30s (token, base) memo must not hand profile A's Portal bearer to profile B under a
     multiplex gateway, where the per-turn HERMES_HOME override selects the auth.json."""
     import hermes_constants
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
 
     monkeypatch.setattr(nb, "_token_cache", {}, raising=False)
     monkeypatch.setattr(auth, "get_provider_auth_state", lambda provider: {})

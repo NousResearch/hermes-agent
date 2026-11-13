@@ -1,8 +1,8 @@
 """Validate a requested ``/model`` value against the active provider's catalog.
 
-Split out of ``hermes_cli.models``. Catalog fetchers defined in ``hermes_cli.models`` are looked up
-there at call time (``_m.<name>``) so ``patch("hermes_cli.models.<name>")`` mocks keep intercepting;
-local-server probes are looked up on ``hermes_cli.models_local`` (``_ml.<name>``) the same way.
+Split out of ``hermes_agent.hermes_cli.models``. Catalog fetchers defined in ``hermes_agent.hermes_cli.models`` are looked up
+there at call time (``_m.<name>``) so ``patch("hermes_agent.hermes_cli.models.<name>")`` mocks keep intercepting;
+local-server probes are looked up on ``hermes_agent.hermes_cli.models_local`` (``_ml.<name>``) the same way.
 
 Every provider branch returns a verdict dict (see :func:`_verdict`) or ``None`` for "not decided
 here — keep walking the ladder". The ladder ORDER is behavior (see ``_LADDER``).
@@ -109,8 +109,8 @@ class _Request:
 
 def _validate_moa(req: _Request) -> dict[str, Any]:
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.moa_config import normalize_moa_config
 
         cfg = normalize_moa_config(load_config().get("moa") or {})
         if req.requested in cfg["presets"]:
@@ -145,7 +145,7 @@ def _is_self_hosted_provider(provider: Optional[str]) -> bool:
         return False
     if raw == "custom" or raw.startswith("custom:"):
         return True
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     normalized = _m.normalize_provider(raw)
     if normalized == "custom" or normalized.startswith("custom:"):
@@ -179,7 +179,7 @@ def _stock_host(provider: str) -> str:
     overlay when models.dev is cold). A foreign row is not this provider's stock
     endpoint — using it would exempt the real cloud host.
     """
-    from hermes_cli.providers import get_provider
+    from hermes_agent.hermes_cli.providers import get_provider
     from utils import base_url_hostname
 
     token = _provider_token(provider)
@@ -215,7 +215,7 @@ def provider_allows_model_whitespace(provider: Optional[str], base_url: Optional
     if _non_public_host(host):
         return True
     raw = _provider_token(provider)
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     normalized = _m.normalize_provider(raw) if raw else ""
     stock = _stock_host(normalized or raw)
@@ -280,8 +280,8 @@ def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:
 
 
 def _validate_lmstudio(req: _Request) -> dict[str, Any]:
-    from hermes_cli import models_local as _ml
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli import models_local as _ml
+    from hermes_agent.hermes_cli.auth import AuthError
 
     # probe_lmstudio_models distinguishes None (unreachable / malformed) from [] (reachable,
     # nothing chat-capable loaded); fetch_lmstudio_models collapses both to [].
@@ -303,9 +303,9 @@ def _ollama_probe_headers(req: _Request) -> dict[str, str]:
     """Headers for the Ollama native probe. Configured ``providers.ollama.extra_headers`` apply only
     when the probed endpoint is the configured one (never leak them to a different host). Caller
     headers win; a caller ``api_key`` becomes the Authorization header unless the caller sent one."""
-    from hermes_cli import models as _m
-    from hermes_cli import models_local as _ml
-    from hermes_cli.models_local import _configured_ollama_base_url, _drop_authorization
+    from hermes_agent.hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models_local as _ml
+    from hermes_agent.hermes_cli.models_local import _configured_ollama_base_url, _drop_authorization
 
     configured_base = _configured_ollama_base_url()
     configured_allowed = not configured_base or _ml._same_ollama_native_root(req.base_url or "", configured_base)
@@ -325,8 +325,8 @@ def _validate_ollama_native(req: _Request) -> Optional[dict[str, Any]]:
     """Runs for EVERY provider: the native ``/api/tags`` catalog is used whenever the endpoint
     looks like a local Ollama server. Also resolves ``base_url`` for the raw ``ollama`` provider,
     which later branches (custom) rely on."""
-    from hermes_cli import models as _m
-    from hermes_cli import models_local as _ml
+    from hermes_agent.hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models_local as _ml
 
     if str(req.provider or "").strip().lower() == "ollama" and not req.base_url:
         req.base_url = _m._get_ollama_base_url()
@@ -356,7 +356,7 @@ def _validate_ollama_native(req: _Request) -> Optional[dict[str, Any]]:
 
 
 def _validate_custom(req: _Request) -> dict[str, Any]:
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     # Probe with the auth shape the api_mode expects.
     anthropic_style = req.api_mode == "anthropic_messages"
@@ -394,7 +394,7 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
 
 
 def _static_catalog(normalized: str) -> list[str]:
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     try:
         return _m.provider_model_ids(normalized)
@@ -427,7 +427,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
     names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
     the provider's family that another native vendor's catalog lists — or any foreign-family name
     on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817)."""
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)
@@ -515,7 +515,7 @@ def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
     """Native Anthropic: /v1/models needs x-api-key (or OAuth Bearer) + anthropic-version, so the
     generic Bearer probe 401s — use the native fetcher. None (fall through) when no token is
     resolvable or the network failed."""
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     models = _m._fetch_anthropic_models(base_url=req.base_url or None, api_key=req.api_key or None)
     if models is None:
@@ -534,7 +534,7 @@ def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
     """Anthropic Messages transport: probe /v1/models and soft-accept either way, but say which
     happened — a proxy that never implemented the listing is a different situation from a reachable
     listing that simply doesn't name the slug (vendors alias ids: ``kimi-k3`` is served as ``k3``)."""
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     models = _m.fetch_api_models(req.api_key, req.base_url, api_mode=req.api_mode)
     if models is None:
@@ -555,7 +555,7 @@ def _validate_anthropic_messages(req: _Request) -> dict[str, Any]:
 
 def _nous_portal_recommended_names() -> set[str]:
     """Lower-cased ids from the Portal's live recommended-models feed (empty on any failure)."""
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     try:
         payload = _m.fetch_nous_recommended_models(_m._resolve_nous_portal_url())
@@ -578,7 +578,7 @@ def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
     (case-insensitive: typing matches the file name, the router registers the preset id);
     anything else falls through to the live listing, which stays authoritative for ids that
     were never downloaded here."""
-    from hermes_cli.local_runtime.bootstrap import staged_model_ids
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import staged_model_ids
 
     staged = {sid.lower() for sid in staged_model_ids()}
     if req.lookup.strip().lower() in staged:
@@ -620,7 +620,7 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     """Generic live /v1/models probe. Returns None when the API was unreachable (the caller then
     tries Bedrock discovery / the curated catalog). A profile that owns its catalog is validated
     against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     catalog, authoritative = _profile_catalog(req.normalized, req.base_url)
     if catalog:
@@ -657,7 +657,7 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     # proxies keep the fallback.
     listing_authoritative = False
     if req.normalized in ("openai", "openai-api"):
-        from hermes_cli.providers import is_official_openai_host
+        from hermes_agent.hermes_cli.providers import is_official_openai_host
 
         listing_authoritative = is_official_openai_host(req.base_url)
     if not listing_authoritative and _m._model_in_provider_catalog(
@@ -720,7 +720,7 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
     """/models unreachable: validate against the curated ``provider_model_ids()`` list so gateway
     /model switches keep working while a provider's endpoint is down (otherwise switch_model() would
     fail and the gateway never writes the session override). No catalog → accept with a warning."""
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     label = _m._PROVIDER_LABELS.get(req.normalized, req.normalized)
     catalog = _static_catalog(req.normalized)
@@ -790,7 +790,7 @@ def validate_requested_model(
     ``persist`` (safe to save to config), ``recognized`` (matched a known provider catalog),
     ``message`` (optional warning / guidance). The requested id is never rewritten: what the user
     selected is what the wire sees."""
-    from hermes_cli import models as _m
+    from hermes_agent.hermes_cli import models as _m
 
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)

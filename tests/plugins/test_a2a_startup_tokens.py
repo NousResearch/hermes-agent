@@ -90,7 +90,7 @@ def test_unusable_peer_tokens_preserve_shared_bearer_and_warn(monkeypatch, caplo
 
 def test_setup_refuses_to_save_peer_tokens_the_runtime_cannot_parse(monkeypatch):
     """The wizard must not persist a value that ``capture()`` turns into refuse-every-caller."""
-    import hermes_cli.setup as setup_mod
+    import hermes_agent.hermes_cli.setup as setup_mod
     from plugins.platforms import a2a
 
     for answer, expected in (("vibe_abc123", None), ("alice:tok-a", "alice:tok-a")):
@@ -110,7 +110,7 @@ def test_setup_refuses_to_save_peer_tokens_the_runtime_cannot_parse(monkeypatch)
 @pytest.mark.parametrize("stored", [{"A2A_PEER_TOKENS": "vibe_abc123"}, {"A2A_BEARER_TOKEN": "shared"}])
 def test_setup_rerun_does_not_claim_localhost_only_over_a_stored_token(monkeypatch, stored):
     """Enter at every prompt over a stored token: it stays in .env, so the wizard can't say localhost-only."""
-    import hermes_cli.setup as setup_mod
+    import hermes_agent.hermes_cli.setup as setup_mod
     from plugins.platforms import a2a
 
     warnings: list[str] = []

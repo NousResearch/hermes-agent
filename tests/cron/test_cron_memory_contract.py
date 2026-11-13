@@ -67,11 +67,11 @@ def _run_job_patches(tmp_path):
     base = [
         patch("hermes_agent.cron.scheduler._hermes_home", tmp_path),
         patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None),
-        patch("hermes_cli.env_loader.load_hermes_dotenv"),
-        patch("hermes_cli.env_loader.reset_secret_source_cache"),
+        patch("hermes_agent.hermes_cli.env_loader.load_hermes_dotenv"),
+        patch("hermes_agent.hermes_cli.env_loader.reset_secret_source_cache"),
         patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db),
         patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
             return_value={
                 "api_key": "test-key",
                 "base_url": "https://example.invalid/v1",

@@ -28,7 +28,7 @@ from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from hermes_cli.web_server_chat import _ws_request_is_allowed
+from hermes_agent.hermes_cli.web_server_chat import _ws_request_is_allowed
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -60,7 +60,7 @@ def _should_evict(held: dict, lease, viewer_id: str) -> bool:
 
 
 def _consume_display_ticket(ws: WebSocket) -> Optional[dict]:
-    from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
     ticket = ws.query_params.get("display_ticket", "")
     if not ticket:
         return None
@@ -99,8 +99,8 @@ def _signed_out(ws: WebSocket, info: dict) -> bool:
     browser credential generation is no longer current); otherwise the viewer is tracked with that
     tab's sockets, so signing out closes it too. A ticket a native client minted carries no browser
     credential and is left alone."""
-    from hermes_cli.browser_credential import is_current
-    from hermes_cli.web_session_sockets import track
+    from hermes_agent.hermes_cli.browser_credential import is_current
+    from hermes_agent.hermes_cli.web_session_sockets import track
     admitted = info.get("admitted_with")
     if admitted is None:
         return False

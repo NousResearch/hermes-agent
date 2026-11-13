@@ -19,7 +19,7 @@ class TestDeprecatedCwdWarning:
         monkeypatch.setenv("MESSAGING_CWD", "/process/message-path")
         monkeypatch.setenv("TERMINAL_CWD", "/process/terminal-path")
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.hermes_cli.config import warn_deprecated_cwd_env_vars
 
         warn_deprecated_cwd_env_vars()
 
@@ -36,7 +36,7 @@ class TestDeprecatedCwdWarning:
         monkeypatch.delenv("MESSAGING_CWD", raising=False)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.hermes_cli.config import warn_deprecated_cwd_env_vars
 
         warn_deprecated_cwd_env_vars()
 
@@ -56,7 +56,7 @@ class TestDeprecatedCwdWarning:
             "terminal:\n  cwd: /current/path\n", encoding="utf-8"
         )
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.hermes_cli.config import warn_deprecated_cwd_env_vars
 
         warn_deprecated_cwd_env_vars()
 
@@ -72,14 +72,14 @@ class TestDeprecatedCwdWarning:
         )
         monkeypatch.setenv("TERMINAL_CWD", "/process/bridge")
 
-        from hermes_cli.config import warn_deprecated_cwd_env_vars
+        from hermes_agent.hermes_cli.config import warn_deprecated_cwd_env_vars
 
         warn_deprecated_cwd_env_vars()
 
         assert capsys.readouterr().err == ""
 
     def test_dotenv_read_failure_is_silent(self, monkeypatch, capsys):
-        import hermes_cli.config as config_module
+        import hermes_agent.hermes_cli.config as config_module
 
         def raise_read_error():
             raise OSError("permission denied")

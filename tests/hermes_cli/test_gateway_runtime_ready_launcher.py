@@ -17,7 +17,7 @@ def test_ensure_repairs_a_ready_owners_launcher(store_update, monkeypatch):
     behind a gateway that outlived the update) while its logon launcher names the deleted interpreter.
     Ensure returns before discovery then, so it repairs the owner's launcher itself: here the root's,
     for a named profile the root multiplexer serves."""
-    from hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
 
     profile = store_update.home / "profiles" / "work"
     profile.mkdir(parents=True)

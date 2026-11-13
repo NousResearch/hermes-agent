@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from hermes_cli.update_contract import evaluate_update_admission
+from hermes_agent.hermes_cli.update_contract import evaluate_update_admission
 
 MESSAGE = "This build doesn't get updates. Ask the developer who gave it to you for a new build."
 
@@ -19,11 +19,11 @@ def commit_build(tmp_path, monkeypatch):
         "updateMechanism": "external", "commit": "a" * 40,
         "displayVersion": "1.2.3+gabcdef12", "baseVersion": "1.2.3", "channel": "canary",
     }))
-    monkeypatch.setattr("hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
-    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
+    monkeypatch.setattr("hermes_agent.hermes_cli.image_provenance.IMAGE_PROVENANCE_PATH", tmp_path / "absent")
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_project_root", lambda: root)
     monkeypatch.setattr("pm.paths.repo_root", lambda: root)
     monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
-    from hermes_cli.version_info import _reset_version_info_cache
+    from hermes_agent.hermes_cli.version_info import _reset_version_info_cache
     _reset_version_info_cache()
     yield root
     _reset_version_info_cache()
@@ -42,7 +42,7 @@ def test_commit_build_refuses_without_gui_advice(commit_build, git_present):
 
 @pytest.mark.parametrize("passive", [False, True])
 def test_commit_build_never_checks_upstream_or_reuses_source_cache(commit_build, monkeypatch, passive):
-    from hermes_cli import banner, source_check
+    from hermes_agent.hermes_cli import banner, source_check
 
     # Even a shared home's source-checkout cache and an embedded SHA cannot turn this into an update.
     monkeypatch.setenv("HERMES_REVISION", "b" * 40)
@@ -53,8 +53,8 @@ def test_commit_build_never_checks_upstream_or_reuses_source_cache(commit_build,
 
 
 def test_commit_version_banner_uses_stamp_not_shared_checkout(commit_build, monkeypatch):
-    from hermes_cli import banner, source_check
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli import banner, source_check
+    from hermes_agent.hermes_cli.version_info import get_version_info
 
     git = Mock(side_effect=AssertionError("version must not inspect another checkout"))
     monkeypatch.setattr(banner, "get_git_banner_state", git)
@@ -68,14 +68,14 @@ def test_commit_version_banner_uses_stamp_not_shared_checkout(commit_build, monk
 @pytest.mark.parametrize("managed", [False, True])
 def test_commit_backend_update_routes_refuse_before_checks_or_spawns(commit_build, monkeypatch, tmp_path, managed):
     from starlette.testclient import TestClient
-    import hermes_cli.web_server as server
-    import hermes_cli.web_server_gateway as gateway
-    from hermes_cli import banner, source_check
+    import hermes_agent.hermes_cli.web_server as server
+    import hermes_agent.hermes_cli.web_server_gateway as gateway
+    from hermes_agent.hermes_cli import banner, source_check
     from hermes_constants import get_hermes_home
 
     monkeypatch.setattr(server, "PROJECT_ROOT", commit_build)
     monkeypatch.setattr(gateway, "_ACTION_LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr("hermes_cli.web_server_files._dashboard_local_update_managed_externally", lambda: managed)
+    monkeypatch.setattr("hermes_agent.hermes_cli.web_server_files._dashboard_local_update_managed_externally", lambda: managed)
     spawn = Mock(side_effect=AssertionError("no updater process"))
     monkeypatch.setattr(gateway, "_spawn_hermes_action", spawn)
     check = Mock(side_effect=AssertionError("no update check"))

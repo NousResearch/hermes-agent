@@ -1004,7 +1004,7 @@ def _remote_backend_hint(backend: str) -> str:
 def _config_readonly(what: str) -> dict:
     """config.yaml as a dict, or {} when unreadable (logged at debug with *what* for context)."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         return load_config_readonly()
     except Exception as e:
         logger.debug("Could not read %s from config: %s", what, e)
@@ -1205,7 +1205,7 @@ def _plugin_skill_prompt_rows(
     or unloading a plugin removes its registry entries, so enablement gating is inherent."""
     rows: list[tuple[str, str]] = []
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()  # idempotent; joins an in-flight discovery (same call skills_list makes)
         for meta in get_plugin_manager().list_plugin_skill_metadata():
             name = str(meta.get("name") or "")
@@ -1534,7 +1534,7 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
     if safe_worker_enabled() or not host_feature_enabled("context_files"):
         return None
     try:
-        from hermes_cli.config import ensure_hermes_home
+        from hermes_agent.hermes_cli.config import ensure_hermes_home
         ensure_hermes_home()
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
@@ -1551,10 +1551,10 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
         if not content:
             return None
         # `hermes profile install <git-url>` / `profile update` plant a third-party SOUL.md into a
-        # distribution profile (hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
+        # distribution profile (hermes_agent/hermes_cli/profile_distribution.py, DEFAULT_DIST_OWNED) with no scan and no
         # approval gate, so it is NOT the user's own file: when distribution.yaml owns SOUL.md (a manifest
         # with no `distribution_owned` list owns the whole payload) a scanner hit keeps BLOCKING.
-        from hermes_cli.profile_distribution import read_manifest
+        from hermes_agent.hermes_cli.profile_distribution import read_manifest
         try:
             manifest = read_manifest(soul_path.parent)
             user_authored = manifest is None or (bool(manifest.distribution_owned)

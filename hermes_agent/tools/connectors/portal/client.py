@@ -8,7 +8,7 @@ from urllib.parse import quote
 import requests
 from pydantic import ValidationError
 
-from hermes_cli.nous_account import resolve_nous_portal_base_url
+from hermes_agent.hermes_cli.nous_account import resolve_nous_portal_base_url
 from hermes_agent.tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,

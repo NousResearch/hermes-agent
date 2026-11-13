@@ -111,7 +111,7 @@ def provider_setup_fields(*, surface: Any, provider: Any, event: Any, failure_cl
 def setup_failure_class(exc: BaseException) -> str:
     """Closed class for an exception that ended a setup flow; inert (type checks only). ``cancelled``
     and ``expired`` (the sign-in code ran out before approval) are recorded ``abandoned``."""
-    from hermes_cli.auth_error_copy import is_cancelled, is_device_code_expired, is_network_error
+    from hermes_agent.hermes_cli.auth_error_copy import is_cancelled, is_device_code_expired, is_network_error
 
     names = {cls.__name__ for cls in type(exc).__mro__}
     if isinstance(getattr(exc, "setup_failure_class", None), str):  # classified where it was raised
@@ -270,8 +270,8 @@ def provider_for_api_key_env(env_var: Any, *, connecting: bool = False) -> str |
     key save cannot tell connecting a provider from configuring a tool, so unless the caller says it is
     ``connecting`` one, ecosystem tokens and keys a tool's settings panel (TTS, STT, image...) also asks
     for are None too."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.tools_config import TOOL_CATEGORIES
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.tools_config import TOOL_CATEGORIES
 
     if env_var == "OPENROUTER_API_KEY":  # the aggregator is not a registry entry
         return "openrouter"
@@ -323,7 +323,7 @@ def note_sign_in_failure(exc: BaseException) -> None:
 
 
 def _model_route() -> tuple[Any, ...]:
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     model = load_config().get("model")
     if not isinstance(model, dict):
@@ -418,7 +418,7 @@ def cli_provider_setup(provider: Any) -> Iterator[None]:
 # ---- dashboard / Desktop OAuth sessions ------------------------------------------------------
 
 def web_setup_surface() -> str:
-    from hermes_cli.process_identity import is_desktop_owned_backend
+    from hermes_agent.hermes_cli.process_identity import is_desktop_owned_backend
 
     return "desktop" if is_desktop_owned_backend() else "dashboard"
 

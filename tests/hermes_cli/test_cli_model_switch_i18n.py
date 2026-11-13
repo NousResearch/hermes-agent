@@ -7,7 +7,7 @@ import shutil
 import pytest
 
 from hermes_agent.agent import i18n
-from hermes_cli import cli_model_switch_mixin as ms
+from hermes_agent.hermes_cli import cli_model_switch_mixin as ms
 
 
 @pytest.fixture
@@ -41,7 +41,7 @@ def test_picker_effort_rows_follow_language_at_call_time(overlay_locales, monkey
 
 def test_model_usage_block_lists_every_form_with_catalog_description(monkeypatch):
     """No authenticated providers → the usage block: one aligned row per /model form."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     printed: list[str] = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda line: printed.append(line))
 

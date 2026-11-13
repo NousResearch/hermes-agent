@@ -15,7 +15,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 
 requires_git = pytest.mark.skipif(
     shutil.which("git") is None, reason="git required"

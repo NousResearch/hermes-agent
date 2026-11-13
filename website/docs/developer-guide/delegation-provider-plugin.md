@@ -165,7 +165,7 @@ the plugin host. Core code calls `hermes_agent.agent.delegation_backends` direct
 | `set_global_backend(name, *, session_key="", apply_now=False)` | Write `delegation.backend` to the active profile's `config.yaml`. `apply_now=True` also rebuilds the tool list of the session `session_key` names at its next turn. Raises `PermissionError` on a package-manager-managed install, and `ValueError` with the reason for a backend that cannot run (or `apply_now` without a `session_key`); nothing is written then. |
 
 A plugin command that edits model routes can reuse the interactive model picker under its own heading:
-`hermes_cli.auth_model_picker.prompt_model_selection(model_ids, current_model="", title="Select the model for this route:")`
+`hermes_agent.hermes_cli.auth_model_picker.prompt_model_selection(model_ids, current_model="", title="Select the model for this route:")`
 returns the chosen model id, or `None` when cancelled.
 
 `session_key` is the `session_key` a plugin command handler receives. A session routes on the backend its

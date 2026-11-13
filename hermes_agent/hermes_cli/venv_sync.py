@@ -12,7 +12,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from hermes_cli.steward import UPDATE_MECHANISMS
+from hermes_agent.hermes_cli.steward import UPDATE_MECHANISMS
 
 
 def _project_root() -> Path:
@@ -22,17 +22,17 @@ def _project_root() -> Path:
 def _is_sealed(project_root: Path) -> bool:
     """A sealed tree ships its interpreter; only checkouts own a venv.
 
-    The stamp file is the authority (shared with hermes_cli.steward).
+    The stamp file is the authority (shared with hermes_agent.hermes_cli.steward).
     A tree with BOTH a stamp and .git is a dev tree — treat as checkout.
 
     A stamp without a valid ``updateMechanism`` is a build-lane bug and
     must not be silently read as "not sealed" (that is exactly the
     misclassification that made sealed trees look updatable) — same
-    guard as hermes_cli.version_info._stamp_version_info.
+    guard as hermes_agent.hermes_cli.version_info._stamp_version_info.
     """
     if (project_root / ".git").exists():
         return False
-    from hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli.steward import read_install_stamp
     from pm.paths import install_stamp_path
     stamp_path = install_stamp_path(project_root)
     data = read_install_stamp(project_root)
@@ -51,7 +51,7 @@ def _is_sealed(project_root: Path) -> bool:
 def check_runtime(project_root: Path) -> str | None:
     """One passive startup verdict; callers only choose stderr or logging."""
     import pm
-    from hermes_cli.steward import read_install_stamp, sealed_steward
+    from hermes_agent.hermes_cli.steward import read_install_stamp, sealed_steward
 
     if (Path(project_root) / ".git").exists() and read_install_stamp(project_root).get("updateMechanism") != "self":
         return None  # A developer's checkout does not owe managed products.
@@ -69,8 +69,8 @@ def publish_launchers(project_root: Path, *, create: bool = True) -> None:
     """Refresh durable commands; bootstrap repairs only existing PATH exposure."""
     import logging
 
-    from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, expose_cli, resolve_store_python
-    from hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, expose_cli, resolve_store_python
+    from hermes_agent.hermes_cli.steward import read_install_stamp
 
     root = Path(project_root)
     log = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ def publish_launchers(project_root: Path, *, create: bool = True) -> None:
 
 def sync(project_root: Path | None = None, *, check: bool = False) -> dict:
     """Report or sync dependencies. A malformed install stamp is a build error."""
-    from hermes_cli.update_stage import publish_stage
+    from hermes_agent.hermes_cli.update_stage import publish_stage
 
     root = Path(project_root) if project_root is not None else _project_root()
     if _is_sealed(root):
@@ -139,7 +139,7 @@ def collect_superseded_generations(project_root: Path) -> None:
     """
     import logging
 
-    from hermes_cli.runtime_state import collect_generations
+    from hermes_agent.hermes_cli.runtime_state import collect_generations
     from pm.environments import install_state_dir
     from pm.runtime import collect_runtime_generations
 
@@ -359,8 +359,8 @@ def _tree_matches_completed_stamp(root: Path) -> bool:
     or was killed) and is still owed. Boot-time adoption also stamps HEAD but builds
     nothing, so its stamp (``adoptedAt``) is not evidence; neither is a dirty tree.
     """
-    from hermes_cli.steward import read_install_stamp
-    from hermes_cli.version_info import _git_version_info
+    from hermes_agent.hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli.version_info import _git_version_info
 
     stamp = read_install_stamp(root)
     commit = stamp.get("commit")
@@ -446,8 +446,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     if _is_tail_script(root, sys.argv[0]):
         return None
 
-    from hermes_cli._parser import command_argv
-    from hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli._parser import command_argv
+    from hermes_agent.hermes_cli.steward import read_install_stamp
 
     command = command_argv(argv)
     if (command[:1] == ["pm"]
@@ -462,7 +462,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return None
     stamp = read_install_stamp(root)
     if not stamp:
-        from hermes_cli.post_update import step_adopt_blessed_checkout
+        from hermes_agent.hermes_cli.post_update import step_adopt_blessed_checkout
 
         step_adopt_blessed_checkout(root)
         stamp = read_install_stamp(root)
@@ -470,8 +470,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return None  # Developer checkouts and packaged runtimes retain their owner.
 
     import pm
-    from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.update_lock import UpdateLock, read_live_update
+    from hermes_agent.hermes_cli._launchers import resolve_store_python
+    from hermes_agent.hermes_cli.update_lock import UpdateLock, read_live_update
 
     current = pm.venv_is_current(project_root=root)
     from pm.environments import owning_home_root
@@ -550,8 +550,8 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     import os
     import sys
     import pm
-    from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.update_lock import UpdateLock
+    from hermes_agent.hermes_cli._launchers import resolve_store_python
+    from hermes_agent.hermes_cli.update_lock import UpdateLock
 
     if not current:
         lock = UpdateLock(install_root=root, checkout_first=False)  # R6, as in prepare_launch
@@ -574,7 +574,7 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
 def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     """Sync dependencies when they are stale, then run the tail the marker still owes."""
     import sys
-    from hermes_cli._early_recovery import _marker_owner_is_live
+    from hermes_agent.hermes_cli._early_recovery import _marker_owner_is_live
     from pm.environments import activation_environment
 
     if not current:
@@ -610,7 +610,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         print("hermes: finishing an interrupted source update...", file=sys.stderr, flush=True)
     # Sync commits the dependency generation, but a source update also owes
     # the product builds and the post-build maintenance -- the tail every
-    # install and finished update shares (hermes_cli/source_completion.py).
+    # install and finished update shares (hermes_agent/hermes_cli/source_completion.py).
     # Those builds need PM's selected interpreter with its dependencies
     # activated, so hand that file THIS interpreter and let it re-exec
     # itself, exactly as the installers do.
@@ -620,7 +620,7 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # The tail's progress lines go to stderr: this is an automatic repair in
     # front of whatever command the user ran, and that command may be
     # emitting machine-readable stdout (a JSON probe, a piped query).
-    from hermes_cli.update_custody import CustodyRefused, run
+    from hermes_agent.hermes_cli.update_custody import CustodyRefused, run
 
     # The completion child stays in this launch's checkout custody (POSIX: it inherits the lock
     # fd; Windows: created suspended and bound to the lock owner's kill-on-close job), so a

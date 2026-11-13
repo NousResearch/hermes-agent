@@ -10,7 +10,7 @@ import pytest
 @pytest.fixture
 def runtime(monkeypatch):
     from hermes_agent.tui_gateway import server
-    from hermes_cli import backend_retirement
+    from hermes_agent.hermes_cli import backend_retirement
 
     fence = backend_retirement.RetirementFence()
     monkeypatch.setattr(backend_retirement, "retirement", fence)
@@ -27,7 +27,7 @@ class Transport:
 
 
 def test_queued_and_running_rpc_hold_admission_until_the_response(runtime, monkeypatch):
-    from hermes_cli.web_server_idle_proof import idle_proof
+    from hermes_agent.hermes_cli.web_server_idle_proof import idle_proof
 
     server, fence = runtime
     release_pool, entered, release_handler = (threading.Event() for _ in range(3))

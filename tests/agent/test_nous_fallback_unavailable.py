@@ -51,7 +51,7 @@ class TestNousFallbackLocalAvailability:
             ]
         )
         with patch(
-            "hermes_cli.auth.get_provider_auth_state",
+            "hermes_agent.hermes_cli.auth.get_provider_auth_state",
             return_value={},
         ), patch(
             "hermes_agent.agent.auxiliary_client.resolve_provider_client",
@@ -71,7 +71,7 @@ class TestNousFallbackLocalAvailability:
             ]
         )
         with patch(
-            "hermes_cli.auth.get_provider_auth_state",
+            "hermes_agent.hermes_cli.auth.get_provider_auth_state",
             return_value={"access_token": "abc", "refresh_token": "xyz"},
         ), patch(
             "hermes_agent.agent.auxiliary_client.resolve_provider_client",

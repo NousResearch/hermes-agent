@@ -105,7 +105,7 @@ def _server_presence(decl: Any, liveness_raw: Any, title: str) -> Presence:
 
 def presence(entry: Any) -> Presence:
     """The app state of one catalog entry on this host. The worst server wins (missing, then not running)."""
-    from hermes_cli.agent_plugins import _server_declarations
+    from hermes_agent.hermes_cli.agent_plugins import _server_declarations
 
     manifest = _pinned_manifest(entry.repo, entry.sha, entry.subdir)
     if not manifest:
@@ -126,8 +126,8 @@ def presence(entry: Any) -> Presence:
 
 def _onboarding_catalog() -> list:
     """Catalog entries curated for onboarding (``onboarding: true``) that this OS can run."""
-    from hermes_cli.plugin_catalog import load_catalog_live
-    from hermes_cli.plugins_cmd_catalog import normalized_platforms
+    from hermes_agent.hermes_cli.plugin_catalog import load_catalog_live
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import normalized_platforms
     from hermes_platform.host.facts import os_family
 
     here = os_family()
@@ -163,8 +163,8 @@ def presence_for(names: list[str]) -> list[dict[str, Any]]:
     catalog description's disclosure. A name the live catalog does not carry (unknown or removed) is dropped."""
     from concurrent.futures import ThreadPoolExecutor
 
-    from hermes_cli.plugin_catalog import load_catalog_live
-    from hermes_cli.plugins_cmd_catalog import normalized_platforms
+    from hermes_agent.hermes_cli.plugin_catalog import load_catalog_live
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import normalized_platforms
     from hermes_platform.host.facts import os_family
 
     here = os_family()

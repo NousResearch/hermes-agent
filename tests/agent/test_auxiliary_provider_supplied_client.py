@@ -59,11 +59,11 @@ def _probe_profile(cls, name: str) -> ProviderProfile:
 def registered(monkeypatch):
     """Register provider profiles for one test on copies of both registries.
 
-    Mirrors the import-time synthesis ``hermes_cli.auth`` performs for plugin ``api_key``
+    Mirrors the import-time synthesis ``hermes_agent.hermes_cli.auth`` performs for plugin ``api_key``
     profiles, which is what routes them into ``_resolve_api_key_branch`` in the first place.
     """
-    import hermes_cli.auth as _auth
-    from hermes_cli.auth_plugin_providers import register_plugin_provider
+    import hermes_agent.hermes_cli.auth as _auth
+    from hermes_agent.hermes_cli.auth_plugin_providers import register_plugin_provider
     from hermes_agent.agent import secret_scope as _secret_scope
 
     _providers._discover_providers()

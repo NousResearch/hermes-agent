@@ -95,8 +95,8 @@ def test_platform_notice_honours_the_served_profiles_notice_delivery(served):
 def test_loop_completion_persists_into_the_served_profiles_store(served):
     """The post-turn /loop completion hop carries the profile contextvars: the completed tick lands
     in alpha's state.db, not the default profile's."""
-    from hermes_cli.goals import _get_session_db
-    from hermes_cli.loops import LoopManager
+    from hermes_agent.hermes_cli.goals import _get_session_db
+    from hermes_agent.hermes_cli.loops import LoopManager
 
     runner = served.runner
     entry = SimpleNamespace(session_id="sess-alpha-1", session_key="agent:alpha:telegram:dm:1001")

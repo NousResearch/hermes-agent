@@ -400,7 +400,7 @@ def _release_header_probes_under(root: Path) -> None:
     the inode is rescanned inside ``offline_file_access``, which blocks tracked opens through any
     spelling (a hard link too) until the close. An untracked ``sqlite3.connect`` that opens between
     the scan and the close is not covered."""
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    from hermes_agent.hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     from hermes_agent.hermes_state_dbfile import (
         close_header_probe_if_unchanged, header_probes_under, inodes_with_other_descriptors,
     )

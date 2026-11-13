@@ -54,7 +54,7 @@ def _candidate_homes(system: bool = False) -> list[Path]:
     (``sudo`` strips HERMES_HOME, so this process sees root's), this home's own gateway (a ``--force``
     standalone one included), then the live host owner that serves it. Only READS the unit: a foreign
     unit is skipped here and refused by the systemd verb before it adopts any home."""
-    from hermes_cli import gateway as gw, gateway_service_owner
+    from hermes_agent.hermes_cli import gateway as gw, gateway_service_owner
 
     homes = [gw.get_hermes_home()]
     if (gw.supports_systemd_services() and gw._select_systemd_scope(system)
@@ -79,7 +79,7 @@ def refusal_lines(verb: str, homes: list[Path], *, flag_hint: str = f"hermes gat
 
 
 def _work_lines(verb: str, home: Path, work: dict[str, Any], flag_hint: str) -> list[str]:
-    from hermes_cli.update_cmd_drain_report import describe_active_work_unit
+    from hermes_agent.hermes_cli.update_cmd_drain_report import describe_active_work_unit
 
     units = [u for u in work.get("active_work") or [] if isinstance(u, dict)]
     count = max(len(units), int(work.get("active_agents") or 0))
@@ -106,7 +106,7 @@ def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = N
         lines = refusal_lines(verb, _candidate_homes(getattr(args, "system", False)))
     if not lines:
         return
-    from hermes_cli.gateway import print_error, print_warning
+    from hermes_agent.hermes_cli.gateway import print_error, print_warning
 
     if getattr(args, "interrupt", False):
         print_warning(lines[0].replace(f"Refusing to {verb} the gateway", f"--yes: {verb} proceeds"))
@@ -114,7 +114,7 @@ def refuse_while_sessions_live(verb: str, args, *, host_home: Optional[Path] = N
             print(line)
         return
     if sys.stdin.isatty() and sys.stdout.isatty():
-        from hermes_cli.cli_output import prompt_yes_no
+        from hermes_agent.hermes_cli.cli_output import prompt_yes_no
 
         print_warning(lines[0].replace(f"Refusing to {verb} the gateway", f"{verb.capitalize()} the gateway"))
         for line in lines[1:-2]:

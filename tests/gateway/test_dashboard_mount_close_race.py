@@ -22,7 +22,7 @@ def test_close_during_lifespan_entry_unmounts_and_exits_the_lifespan(monkeypatch
     app = types.SimpleNamespace(state=types.SimpleNamespace(gateway_runner=None),
                                 router=types.SimpleNamespace(lifespan_context=lambda app: _Lifespan()))
     web = types.SimpleNamespace(app=app, _configure_auth_gate=lambda *a: None)
-    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", web)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.web_server", web)
     runner = types.SimpleNamespace(session_authority=object())
     mount = GatewayDashboardMount(runner, types.SimpleNamespace(bound_host="127.0.0.1", bound_port=1))
 

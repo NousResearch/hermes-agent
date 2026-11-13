@@ -149,7 +149,7 @@ def test_a_hosted_write_is_not_judged_by_this_hosts_skill_locks(provider, host_d
 
 def _capture_hook(tmp_path, monkeypatch, event="post_tool_call", matcher="memory"):
     from hermes_agent.agent import shell_hooks
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
     captured = tmp_path / f"{event}.json"
     script = tmp_path / "capture.py"
     script.write_text("import pathlib,sys\npathlib.Path(sys.argv[1]).write_text(sys.stdin.read())\n")
@@ -182,7 +182,7 @@ def test_shell_hook_cannot_write_refused_tool_payload_to_host(tmp_path, monkeypa
 def test_shell_hook_never_spawns_in_hosted_scope(tmp_path, monkeypatch):
     """The subprocess site itself refuses, whichever event or caller reaches it."""
     from hermes_agent.agent import shell_hooks
-    from hermes_cli.plugins import invoke_hook
+    from hermes_agent.hermes_cli.plugins import invoke_hook
     captured = _capture_hook(tmp_path, monkeypatch, event="on_session_start", matcher=None)
     spec = shell_hooks.ShellHookSpec(event="on_session_start", command=f"{shlex.quote(sys.executable)} -c pass")
     with bind_state(A):
@@ -194,7 +194,7 @@ def test_shell_hook_never_spawns_in_hosted_scope(tmp_path, monkeypatch):
 
 
 def test_middleware_never_sees_a_refused_hosted_call(tmp_path, monkeypatch):
-    from hermes_cli import middleware
+    from hermes_agent.hermes_cli import middleware
     seen = []
     monkeypatch.setattr(middleware, "apply_tool_request_middleware", lambda *a, **k: seen.append("request"))
     monkeypatch.setattr(middleware, "run_tool_execution_middleware", lambda *a, **k: seen.append("execution"))

@@ -38,7 +38,7 @@ def test_install_tree_not_writable_by_hermes(
     probe = docker_exec(container_name, "/opt/hermes/.venv/bin/python", "-c", """
 import os
 from pathlib import Path
-from hermes_cli.config import detect_install_method
+from hermes_agent.hermes_cli.config import detect_install_method
 assert os.geteuid() != 0
 code = Path('/opt/hermes/.install_method')
 home = Path('/opt/data/.install_method')

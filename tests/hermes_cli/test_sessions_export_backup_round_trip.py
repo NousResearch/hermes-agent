@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-import hermes_cli.main as main_mod
+import hermes_agent.hermes_cli.main as main_mod
 from hermes_agent.hermes_state import SessionDB
 
 SID = "20260929_120000_abcdef"
@@ -65,7 +65,7 @@ def test_jsonl_backup_refuses_a_session_over_max_export_messages(tmp_path, monke
     materializes, so a small live tail over a large archive cannot slip past it. ``limit-0``: a
     disabled guard writes the backup without the guard's own full-session scan (export_all's is
     the only one)."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     src = _seed_compacted_session()
     live = len(_shape(src))

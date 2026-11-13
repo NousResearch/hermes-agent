@@ -26,7 +26,7 @@ from hermes_agent.tui_gateway.transport import TeeTransport
 logger = logging.getLogger(__name__)
 
 # Discovery thread spawned by THIS module; None when delegated to the shared owner in
-# hermes_cli.mcp_startup (current path). The wait/in-flight/join helpers consult both.
+# hermes_agent.hermes_cli.mcp_startup (current path). The wait/in-flight/join helpers consult both.
 _mcp_discovery_thread = None
 # Set once MCP servers are found configured so wait_for_mcp_discovery can re-invoke the
 # idempotent spawn on later builds without a config re-probe.
@@ -104,10 +104,10 @@ def _shutdown_grace_seconds() -> float:
 
 
 def _mcp_startup_call(name: str, *args, default=None, log=None, **kwargs):
-    """Call ``hermes_cli.mcp_startup.<name>`` (lazy import); ``default`` on any failure,
+    """Call ``hermes_agent.hermes_cli.mcp_startup.<name>`` (lazy import); ``default`` on any failure,
     optionally logged as ``(level, message)``."""
     try:
-        from hermes_cli import mcp_startup
+        from hermes_agent.hermes_cli import mcp_startup
         return getattr(mcp_startup, name)(*args, **kwargs)
     except Exception:
         if log:
@@ -135,7 +135,7 @@ def _hard_exit() -> None:
     (TERM, wait, KILL) after it, so a SIGTERM-ignoring command is usually still alive here:
     SIGKILL its tree now or it outlives us, reparented to init."""
     with suppress(Exception):  # only armed by a termination signal (a requested stop); os._exit skips atexit
-        from hermes_cli.observability.shared_metrics_process import stamp_exit
+        from hermes_agent.hermes_cli.observability.shared_metrics_process import stamp_exit
         stamp_exit("clean")
     with suppress(Exception):
         from hermes_agent.tools.environments.base import kill_live_foreground_processes
@@ -217,7 +217,7 @@ def wait_for_mcp_discovery(timeout: float | None = None) -> None:
         return
     # Shared-owner path: re-invoke the idempotent spawn first so a zero-connected run gets
     # its retry instead of latching the process MCP-less (runs under the CALLER's profile).
-    # Discovery is spawned via the shared owner (ensure_mcp_discovery_started → hermes_cli.mcp_startup);
+    # Discovery is spawned via the shared owner (ensure_mcp_discovery_started → hermes_agent.hermes_cli.mcp_startup);
     # wait on it so the first agent build still catches fast servers. Re-invoke the idempotent spawn first:
     # if the previous run finished with zero connected servers, start_background_mcp_discovery's
     # retry-after-zero-connected allowance kicks off a fresh discovery run here instead of leaving the
@@ -239,7 +239,7 @@ def mcp_discovery_in_flight() -> bool:
     There are two independent discovery-thread owners by surface: the stdio ``hermes --tui`` path spawns ITS
     thread here (``_mcp_discovery_thread``), while the desktop app + dashboard WebSocket sidecar
     (``hermes_agent/tui_gateway/ws.py``) and ``hermes dashboard`` spawn theirs via
-    ``hermes_cli.mcp_startup.start_background_mcp_discovery``. The late-refresh scheduler imports this
+    ``hermes_agent.hermes_cli.mcp_startup.start_background_mcp_discovery``. The late-refresh scheduler imports this
     function regardless of surface, so it MUST consult both — checking only the entry thread left the
     desktop/dashboard surfaces with no late refresh, so a slow MCP server's tools never surfaced for the
     whole session (#51587).
@@ -255,7 +255,7 @@ def join_mcp_discovery(timeout: float | None = None) -> bool:
     (off-critical-path late-refresh waiter); ``timeout`` bounds EACH join, entry thread first.
 
     Joins both discovery-thread owners (see ``mcp_discovery_in_flight``): the entry thread first, then the
-    ``hermes_cli.mcp_startup`` thread used by the desktop/dashboard surfaces. See #51587.
+    ``hermes_agent.hermes_cli.mcp_startup`` thread used by the desktop/dashboard surfaces. See #51587.
     """
     entry_done = True
     thread = _mcp_discovery_thread
@@ -271,7 +271,7 @@ _recovery_times: list[float] = []
 
 def _has_configured_mcp_servers() -> bool:
     """Delegate to the shared native and portable MCP startup gate."""
-    from hermes_cli.mcp_startup import _has_configured_mcp_servers as configured
+    from hermes_agent.hermes_cli.mcp_startup import _has_configured_mcp_servers as configured
     return configured()
 
 
@@ -282,9 +282,9 @@ def ensure_mcp_discovery_started() -> None:
 
     WebSocket/Desktop entrypoints can accept sessions without running ``main()``, so the agent-build path
     (``server._start_agent_build``) also calls it AFTER binding the session profile's HERMES_HOME override —
-    the shared owner in ``hermes_cli.mcp_startup`` captures the caller's context-local override and
+    the shared owner in ``hermes_agent.hermes_cli.mcp_startup`` captures the caller's context-local override and
     propagates it into the discovery thread, so discovery reads the SELECTED profile's ``mcp_servers``, not
-    the launch profile's. The discovery slot in ``hermes_cli.mcp_startup`` is keyed by profile home, so
+    the launch profile's. The discovery slot in ``hermes_agent.hermes_cli.mcp_startup`` is keyed by profile home, so
     every profile a shared backend serves discovers its own ``mcp_servers`` (#67605).
     """
     global _mcp_discovery_enabled
@@ -339,10 +339,10 @@ def _serve():
         logger.warning("TUI message injector did not install", exc_info=True)
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
-    from hermes_cli.observability.shared_metrics_process import begin_process
+    from hermes_agent.hermes_cli.observability.shared_metrics_process import begin_process
 
     begin_process("tui")
-    from hermes_cli.observability.shared_metrics_disabled import set_process_surface
+    from hermes_agent.hermes_cli.observability.shared_metrics_disabled import set_process_surface
     set_process_surface("tui_gateway")
 
     # One TLS authority: trust the OS store process-wide before any
@@ -379,7 +379,7 @@ def _serve():
 
     # Warm the /model picker's provider-models cache in this idle window (fire-and-forget).
     try:
-        from hermes_cli.model_switch_providers import prewarm_picker_cache_async
+        from hermes_agent.hermes_cli.model_switch_providers import prewarm_picker_cache_async
         prewarm_picker_cache_async()
     except Exception:
         logger.debug("picker cache prewarm (tui) failed to start", exc_info=True)

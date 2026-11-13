@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 from hermes_dir_acl import make_user_dir
 
-logger = logging.getLogger("hermes_cli.update_cmd")
+logger = logging.getLogger("hermes_agent.hermes_cli.update_cmd")
 
 #: The record before it carried an install key, beside ``host-gateway.json`` / ``host-serve.json``.
 #: Still read, and cleared by a discharge that judged it, so a debt an older release armed survives
@@ -58,7 +58,7 @@ def host_obligation_path() -> Path:
     # Not ``hermes_agent.gateway.host_rendezvous.host_state_dir``: ``hermes_agent.gateway.status`` imports ``utils`` -> ruamel,
     # absent from the historical interpreter an old updater's takeover arms this record in; the
     # recovery module's stdlib copy of the rule is drift-tested against the gateway resolver.
-    from hermes_cli.update_restart_recovery import _host_state_dir
+    from hermes_agent.hermes_cli.update_restart_recovery import _host_state_dir
 
     install = os.path.normcase(str(Path(__file__).resolve().parents[1]))
     key = hashlib.sha256(install.encode("utf-8")).hexdigest()[:16]
@@ -274,11 +274,11 @@ def _marker_mutex():
     import importlib.util
     import sys
 
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     if hasattr(update_lock, "marker_mutex"):
         return update_lock.marker_mutex
-    name = "hermes_cli._update_lock_pulled"
+    name = "hermes_agent.hermes_cli._update_lock_pulled"
     pulled = sys.modules.get(name)
     if pulled is None:
         spec = importlib.util.spec_from_file_location(name, update_lock.__file__)

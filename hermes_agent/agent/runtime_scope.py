@@ -123,7 +123,7 @@ def bind_state(
         # name whichever profile is bound now. Only the home moves, for these reads alone.
         with push_state(home=home):
             if hydrate_secrets:
-                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
                 hydrate_profile_secret_sources(Path(home))
             secrets = owner_secret_scope(Path(home))
     kept = current_state()

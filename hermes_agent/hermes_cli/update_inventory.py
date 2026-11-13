@@ -70,7 +70,7 @@ def _detect_supervisor_for_pid(pid: int, service_pids: set, windows_service_pids
     if pid not in service_pids:
         return "manual"
     with suppress(Exception):
-        from hermes_cli.gateway import is_macos, supports_systemd_services
+        from hermes_agent.hermes_cli.gateway import is_macos, supports_systemd_services
 
         if supports_systemd_services():
             return "systemd"
@@ -145,7 +145,7 @@ def _probe(label: str):
 
 def _collect_install_shape(plan: UpdatePlan) -> None:
     with _probe("Install-method probe"):
-        from hermes_cli.config import detect_install_method, get_managed_system, recommended_update_command_for_method
+        from hermes_agent.hermes_cli.config import detect_install_method, get_managed_system, recommended_update_command_for_method
 
         method = detect_install_method()
         managed = get_managed_system()
@@ -156,7 +156,7 @@ def _collect_install_shape(plan: UpdatePlan) -> None:
         # Fail-closed: an invalid marker still flips the plan to not-updatable.
         with _probe("Image provenance probe"):
             # See #91277.
-            from hermes_cli.image_provenance import read_image_provenance
+            from hermes_agent.hermes_cli.image_provenance import read_image_provenance
 
             provenance = read_image_provenance()
             if provenance is not None:
@@ -170,7 +170,7 @@ def _supervisor_classifier() -> Callable[[int], str]:
     """``pid -> supervisor`` over the service-PID sets; each probe degrades to an empty set."""
     service_pids: set = set()
     with _probe("Service-PID probe"):
-        from hermes_cli.gateway import _get_service_pids
+        from hermes_agent.hermes_cli.gateway import _get_service_pids
 
         service_pids = _get_service_pids(all_profiles=True) or set()
     # Windows SCM services (no-op off Windows): the update's pause phase stops these via `sc.exe
@@ -180,7 +180,7 @@ def _supervisor_classifier() -> Callable[[int], str]:
     # service PIDs (no-op off Windows). See #91277.
     windows_service_pids: set = set()
     with _probe("Windows SCM service-ownership probe"):
-        from hermes_cli.gateway import find_windows_gateway_services
+        from hermes_agent.hermes_cli.gateway import find_windows_gateway_services
 
         windows_service_pids = {int(service.gateway_pid) for service in find_windows_gateway_services()}
     return lambda pid: _detect_supervisor_for_pid(pid, service_pids, windows_service_pids)
@@ -193,7 +193,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     supervisor = _supervisor_classifier()
     with _probe("Gateway-state inventory"):
         from hermes_agent.gateway.status import live_gateway_pid_for_home, read_runtime_status
-        from hermes_cli.update_receipt import _socket_identity
+        from hermes_agent.hermes_cli.update_receipt import _socket_identity
 
         for profile, home in profile_homes:
             sock = _socket_identity(home)
@@ -219,7 +219,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 sup = supervisor(pid)
             plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))
     with _probe("PID-file gateway inventory"):
-        from hermes_cli.gateway import find_profile_gateway_processes
+        from hermes_agent.hermes_cli.gateway import find_profile_gateway_processes
 
         for proc in find_profile_gateway_processes():
             if proc.pid not in seen:
@@ -234,7 +234,7 @@ def _loaded_backend_launchd_jobs() -> list:
     to ``[]`` — classification falls back to the spawner probe and never aborts the inventory.
     See #116503."""
     with suppress(Exception):
-        from hermes_cli import main_dashboard as _dash
+        from hermes_agent.hermes_cli import main_dashboard as _dash
 
         return _dash._loaded_launchd_backend_jobs()
     return []
@@ -248,8 +248,8 @@ def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> tuple[
     fights the job's own KeepAlive respawn. The loaded-job match (live PID, an ancestor, or the
     normalized ``ProgramArguments``) is the authoritative classification. See #116503."""
     with suppress(Exception):
-        from hermes_cli import main_dashboard as _dash
-        from hermes_cli.dashboard_procs import _process_ancestors
+        from hermes_agent.hermes_cli import main_dashboard as _dash
+        from hermes_agent.hermes_cli.dashboard_procs import _process_ancestors
 
         try:
             cmdline = shlex.split(str(entry.get("argv") or "")) or None
@@ -268,7 +268,7 @@ def _systemd_owner_for_ledger_pid(pid: int) -> tuple[str, str | None] | None:
     cgroup membership (a hand-started dashboard inside some unrelated unit's cgroup is still manual);
     ``None`` off Linux, when unreadable, or when no unit owns it."""
     with suppress(Exception):
-        from hermes_cli import main_dashboard as _dash
+        from hermes_agent.hermes_cli import main_dashboard as _dash
 
         return _dash._systemd_owner_for_pid(pid)
     return None
@@ -278,7 +278,7 @@ def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
     """Is this row the backend a (possibly remote) Desktop spawned over SSH? The canonical argv
     predicate also classifies rows written before the ledger carried ``isolated``, which is exactly
     the pre-update serve the first update after this change inventories."""
-    from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+    from hermes_agent.hermes_cli._startup_fast import is_desktop_ssh_backend_argv
 
     try:
         return is_desktop_ssh_backend_argv(shlex.split(str(entry.get("argv") or "")))
@@ -295,7 +295,7 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     detached argv respawn) — the spawner probe cannot see that (#116503); one that is a systemd
     unit's MainPID is ``systemd`` for the same reason (#141021)."""
     with _probe("Serve/dashboard ledger inventory"):
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+        from hermes_agent.hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
         launchd_jobs = _loaded_backend_launchd_jobs()
         for entry in ledger_entries():
@@ -335,14 +335,14 @@ def collect_runtime_inventory() -> UpdatePlan:
     plan = UpdatePlan()
     _collect_install_shape(plan)
     with _probe("Code-identity probe"):
-        from hermes_cli.version_info import get_code_identity
+        from hermes_agent.hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         plan.expected_sha = identity.get("sha")
         plan.expected_version = identity.get("version")
     profile_homes: list = []
     with _probe("Profile enumeration"):
-        from hermes_cli.update_receipt import _profile_homes
+        from hermes_agent.hermes_cli.update_receipt import _profile_homes
 
         profile_homes = _profile_homes()
         plan.profiles = [name for name, _ in profile_homes]
@@ -606,7 +606,7 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
     if any(o.get("kind") in _SERVE_KINDS for o in missed):
         # A serve/dashboard is not reachable by any `gateway restart` command: name the process, not the wrong verb.
         # See #100479.
-        from hermes_cli.main_dashboard import _systemd_restart_commands
+        from hermes_agent.hermes_cli.main_dashboard import _systemd_restart_commands
 
         for o in missed:
             if o.get("kind") in _SERVE_KINDS and o.get("systemd_unit"):
@@ -623,7 +623,7 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
 def record_plan_in_receipt(plan: UpdatePlan) -> None:
     """Attach the inventory to the active update receipt. Never raises."""
     try:
-        import hermes_cli.update_receipt as ur
+        import hermes_agent.hermes_cli.update_receipt as ur
 
         current = ur._current.get()
         if current is not None:

@@ -13,8 +13,8 @@ from contextlib import asynccontextmanager
 import pytest
 from websockets.exceptions import InvalidMessage
 
-from hermes_cli import gateway_client, kanban_worker_client
-from hermes_cli.gateway_runtime_discovery import DiscoveryError
+from hermes_agent.hermes_cli import gateway_client, kanban_worker_client
+from hermes_agent.hermes_cli.gateway_runtime_discovery import DiscoveryError
 
 GUE = gateway_client.GatewayUnavailableError
 
@@ -232,7 +232,7 @@ async def test_giving_up_on_a_refused_handshake_names_the_status(monkeypatch, _w
 async def test_discovery_hands_the_worker_its_reason(monkeypatch, _worker_env):
     """The real connect_gateway carries discovery's reason, which is what tells a restarting
     owner's reset control socket apart from a foreign one."""
-    from hermes_cli import gateway_runtime
+    from hermes_agent.hermes_cli import gateway_runtime
     monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", lambda *_, **__: gateway_runtime.GatewayDiscovery(
         "inaccessible", reason_code="incomplete_control_response"))
     with pytest.raises(gateway_client.GatewayUnavailableError) as raised:
@@ -245,7 +245,7 @@ async def test_discovery_hands_the_worker_its_reason(monkeypatch, _worker_env):
 async def test_a_refused_ticket_reads_like_a_refusing_owner(monkeypatch, _worker_env):
     """The ticket fetch's DiscoveryError reaches callers as the inaccessible verdict discovery gives."""
     from types import SimpleNamespace
-    from hermes_cli import gateway_runtime
+    from hermes_agent.hermes_cli import gateway_runtime
     monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", lambda *_, **__: SimpleNamespace(endpoint=None))
     monkeypatch.setattr(gateway_runtime, "attachable", lambda result: True)
 

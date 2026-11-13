@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.nous_billing as nb
-from hermes_cli.cli_billing_mixin import CLIBillingMixin
+import hermes_agent.hermes_cli.nous_billing as nb
+from hermes_agent.hermes_cli.cli_billing_mixin import CLIBillingMixin
 
 
 class _Cli(CLIBillingMixin):
@@ -97,7 +97,7 @@ def test_a_declined_step_up_sends_nothing_more(monkeypatch):
 def test_turning_on_updates_the_session_state_at_once(sent, monkeypatch):
     """The "turn on Keep going" line must not wait for the next reply: the agent's state takes the new
     value and the notice policy re-runs; the account snapshot refreshes in the background."""
-    import hermes_cli.nous_account as na
+    import hermes_agent.hermes_cli.nous_account as na
     from hermes_agent.agent.credits_tracker import CreditsState
     from hermes_agent.agent.usage_gauges import SCOPE_ALL, WindowGauge
     refreshed, emitted = [], []

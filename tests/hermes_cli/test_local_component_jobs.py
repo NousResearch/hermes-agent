@@ -22,7 +22,7 @@ class ArchiveEngine(LlamaCppCpu):
 
 @pytest.mark.parametrize("endpoint", ["runtime/install", "quickstart"])
 def test_component_job_pause_retains_pin_and_stops_sequence(client, monkeypatch, tmp_path, dl_server, endpoint):
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     package = ArchiveEngine()
     monkeypatch.setitem(registry._packages, package.name, package)

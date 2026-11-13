@@ -1,4 +1,4 @@
-"""Behaviour contracts for the gateway SSH attach path (hermes_cli/gateway_connections_ssh*.py).
+"""Behaviour contracts for the gateway SSH attach path (hermes_agent/hermes_cli/gateway_connections_ssh*.py).
 
 The remote-shell pieces are exercised by running them in a real local ``sh``/``dash`` against a
 temp ``HOME`` with a fake ``hermes`` executable, so the spawn command, lockfile publication and
@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import gateway_connections_ssh as facade
-from hermes_cli.gateway_connections_ssh_remote import (
+from hermes_agent.hermes_cli import gateway_connections_ssh as facade
+from hermes_agent.hermes_cli.gateway_connections_ssh_remote import (
     READY_RE,
     LockfileSkew,
     SpawnPlan,
@@ -33,7 +33,7 @@ from hermes_cli.gateway_connections_ssh_remote import (
     spawn_log_path,
     spawn_token_path,
 )
-from hermes_cli.gateway_connections_ssh_transport import (
+from hermes_agent.hermes_cli.gateway_connections_ssh_transport import (
     SshConnection,
     SshEndpoint,
     SshReachError,
@@ -354,7 +354,7 @@ class _LocalShell:
 @pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass  # the serve is setsid-detached by design; the test reaps its own child
 def test_a_quote_in_the_hermes_path_still_proves_ownership_of_our_serve(tmp_path):
-    from hermes_cli.gateway_connections_ssh_remote import pid_is_our_serve
+    from hermes_agent.hermes_cli.gateway_connections_ssh_remote import pid_is_our_serve
 
     home = tmp_path / "rhome"
     (home / ".hermes").mkdir(parents=True)

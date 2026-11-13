@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from . import r2 as r2_module
 from .semver import compare, is_release_version
-from hermes_cli.update_channel import canary_timestamp, is_canary_tag
+from hermes_agent.hermes_cli.update_channel import canary_timestamp, is_canary_tag
 
 ARCHES = ("arm64",)  # Apple Silicon only: no Intel macOS build ships
 _HASH_PATTERN = re.compile(r"^[A-Za-z0-9+/]{86}==$")

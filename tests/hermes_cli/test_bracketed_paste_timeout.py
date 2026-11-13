@@ -8,7 +8,7 @@ import importlib
 import time
 from unittest.mock import MagicMock
 
-from hermes_cli.cli_terminal_input import _apply_bracketed_paste_timeout_patch
+from hermes_agent.hermes_cli.cli_terminal_input import _apply_bracketed_paste_timeout_patch
 
 
 def _reset_and_apply_production_patch():

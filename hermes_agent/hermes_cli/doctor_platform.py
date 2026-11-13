@@ -1,5 +1,5 @@
 """Host-platform checks for hermes doctor: interpreter, SQLite, certificates, macOS TCC, gateway supervision, command install.
-Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
+Split out of ``hermes_agent/hermes_cli/doctor.py``, which re-exports every name so ``hermes_agent.hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
 
 from __future__ import annotations
 
@@ -9,19 +9,19 @@ import ssl
 import subprocess
 import sys
 from pathlib import Path
-from hermes_cli.colors import Colors, color
-from hermes_cli.config import is_nix_install_method, recommended_update_command_for_method
-from hermes_cli.doctor_report import (
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.config import is_nix_install_method, recommended_update_command_for_method
+from hermes_agent.hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
     warn_on_error,
 )
 from hermes_constants import is_termux as _is_termux
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 def _python_repair_hint() -> str:
-    from hermes_cli.config import detect_install_method
-    from hermes_cli.doctor import PROJECT_ROOT
+    from hermes_agent.hermes_cli.config import detect_install_method
+    from hermes_agent.hermes_cli.doctor import PROJECT_ROOT
 
     method = detect_install_method(PROJECT_ROOT)
     if is_nix_install_method(method):
@@ -38,8 +38,8 @@ def _system_package_install_cmd(pkg: str) -> str:
 
 def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
     """Return an actionable SQLite upgrade hint for this install layout."""
-    from hermes_cli.doctor import PROJECT_ROOT
-    from hermes_cli.config import detect_install_method
+    from hermes_agent.hermes_cli.doctor import PROJECT_ROOT
+    from hermes_agent.hermes_cli.config import detect_install_method
     method = install_method or detect_install_method(PROJECT_ROOT)
     cmd = recommended_update_command_for_method(method)
     action = cmd if is_nix_install_method(method) else {  # nix: prose guidance, not a shell command
@@ -49,7 +49,7 @@ def _sqlite_upgrade_hint(install_method: str | None = None) -> str:
 
 def _hermes_database_paths(hermes_home: Path) -> list[tuple[str, Path]]:
     """(display name, path) pairs for Hermes-managed SQLite databases: backup.py's per-profile store list + per-board kanban.db."""
-    from hermes_cli.backup import _QUICK_STATE_FILES
+    from hermes_agent.hermes_cli.backup import _QUICK_STATE_FILES
     entries = [(name, hermes_home / name) for name in _QUICK_STATE_FILES if name.endswith(".db")]
     for board_db in sorted((hermes_home / "kanban" / "boards").glob("*/kanban.db")):
         entries.append((str(board_db.relative_to(hermes_home)), board_db))
@@ -77,10 +77,10 @@ def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
 
     Opening through SQLite — even read-only — creates -wal/-shm sidecars, which a diagnostic must not do.
     ``read_header_bytes_preopen`` rather than a bare ``open()``: closing *any* descriptor cancels this
-    process's POSIX advisory locks (see ``hermes_cli.sqlite_safe_read``), and the dashboard console runs
+    process's POSIX advisory locks (see ``hermes_agent.hermes_cli.sqlite_safe_read``), and the dashboard console runs
     ``run_doctor`` in-process with live ``SessionDB`` connections — the helper refuses then (unreadable).
     """
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
+    from hermes_agent.hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
     header = read_header_bytes_preopen(db_path, length=20)
     if header is None:
         return None, "database is open in this process" if has_live_connection(db_path) else _unreadable_reason(db_path)
@@ -93,7 +93,7 @@ def _read_journal_mode(db_path: Path) -> tuple[str | None, str | None]:
 
 
 def _format_db_size(db_path: Path) -> str:
-    from hermes_cli.sizefmt import format_bytes as _format_size
+    from hermes_agent.hermes_cli.sizefmt import format_bytes as _format_size
     try:
         return _format_size(db_path.stat().st_size)
     except OSError:
@@ -124,7 +124,7 @@ def _report_database_holders(name: str, db_path: Path) -> None:
 def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
     """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a configured
     ``database.journal_mode: delete`` that never took effect."""
-    from hermes_cli.doctor import HERMES_HOME
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME
     from hermes_agent.hermes_state_wal import (
         _path_on_cross_vm_fs, _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable, resolve_journal_mode,
     )
@@ -185,7 +185,7 @@ def _check_s6_supervision(issues: list[str]) -> None:
     """Under our s6 /init, report static services and the ONE host gateway slot; no-op elsewhere.
     Counterpart to :func:`_check_gateway_service_linger` (systemd-on-host)."""
     try:
-        from hermes_cli.service_manager import (
+        from hermes_agent.hermes_cli.service_manager import (
             S6_STATIC_SCANDIR, S6ServiceManager, detect_service_manager, s6_service_up)
     except Exception:
         return
@@ -261,10 +261,10 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
     the check for every profile that does not own a service of its own.
     """
     try:
-        from hermes_cli.gateway import (
+        from hermes_agent.hermes_cli.gateway import (
             _SERVICE_BASE, get_systemd_linger_status, get_systemd_unit_path, is_linux,
             user_systemd_unit_dir)
-        from hermes_cli.service_manager import detect_service_manager
+        from hermes_agent.hermes_cli.service_manager import detect_service_manager
     except Exception as e:
         return check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
     if not is_linux() or detect_service_manager() == "s6":
@@ -345,7 +345,7 @@ def check_macos_tcc_anchor(should_fix: bool = False) -> None:
     See #95596.
     """
     with warn_on_error("macOS TCC anchor check failed"):
-        from hermes_cli import macos_tcc_anchor as tcc
+        from hermes_agent.hermes_cli import macos_tcc_anchor as tcc
         status, detail = tcc.tcc_anchor_state()
         if status == "skip":
             return
@@ -389,7 +389,7 @@ def check_macos_full_disk_access() -> None:
 @doctor_check("Security advisory check failed: {e}")
 def _check_security_advisories(should_fix: bool, f: Finding) -> None:
     """Compromised-package advisories, funnelled into manual issues; a bug here must never block the rest of doctor."""
-    from hermes_cli.security_advisories import detect_compromised, filter_unacked, full_remediation_text, get_acked_ids
+    from hermes_agent.hermes_cli.security_advisories import detect_compromised, filter_unacked, full_remediation_text, get_acked_ids
     all_hits = detect_compromised()
     fresh_hits = filter_unacked(all_hits)
     if not fresh_hits:
@@ -506,7 +506,7 @@ def _check_windows_gateway_autostart(should_fix: bool, f: Finding) -> None:
     Startup-folder entry side by side launch it twice (#80569)."""
     if sys.platform != "win32":
         return
-    from hermes_cli import gateway_windows
+    from hermes_agent.hermes_cli import gateway_windows
     redundant = gateway_windows.redundant_autostart_entries()
     if not redundant:
         return
@@ -538,12 +538,12 @@ def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
     from taking the doctor down with it; lazy installs stay off so the probe never mutates the
     environment it is diagnosing.
     """
-    from hermes_cli.doctor import PROJECT_ROOT
+    from hermes_agent.hermes_cli.doctor import PROJECT_ROOT
 
     env = dict(os.environ, HERMES_DISABLE_LAZY_INSTALLS="1")
     try:
         proc = subprocess.run(
-            [sys.executable, "-c", "import hermes_cli.web_server"],
+            [sys.executable, "-c", "import hermes_agent.hermes_cli.web_server"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -589,11 +589,11 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Check the install-owned launch contract without replacing custom commands."""
-    from hermes_cli.doctor import PROJECT_ROOT
+    from hermes_agent.hermes_cli.doctor import PROJECT_ROOT
     if sys.platform == "win32":
         return
     _section("Command Installation")
-    from hermes_cli.config import detect_install_method
+    from hermes_agent.hermes_cli.config import detect_install_method
 
     method = detect_install_method(PROJECT_ROOT)
     if is_nix_install_method(method) or method in ("docker", "apt"):
@@ -604,7 +604,7 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
             check_warn(f"Hermes command not on PATH ({method}-managed)")
             f.manual_issues.append(_python_repair_hint())
         return
-    from hermes_cli._launchers import resolve_store_python
+    from hermes_agent.hermes_cli._launchers import resolve_store_python
     from pm.environments import base_venv, selected_venv
 
     try:
@@ -643,7 +643,7 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         link_dir.mkdir(parents=True, exist_ok=True)
         verb = "Created"
     if pm_launcher:
-        from hermes_cli._launchers import stage_launcher
+        from hermes_agent.hermes_cli._launchers import stage_launcher
 
         if stage_launcher("hermes", PROJECT_ROOT, link_dir) is None:
             check_fail("Could not publish Hermes launcher")

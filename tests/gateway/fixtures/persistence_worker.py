@@ -6,7 +6,7 @@ import sys
 
 import psutil
 
-from hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.process_identity import worker_birth
 
 
 def writable_fds(home):

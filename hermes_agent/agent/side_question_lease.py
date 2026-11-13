@@ -46,8 +46,8 @@ _lock = threading.Lock()
 
 def _consented_plugin_loaded() -> bool:
     """True when a loaded, enabled plugin declares ``llm.side_question`` AND it is granted."""
-    from hermes_cli.plugin_capabilities import plugin_capability_granted
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugin_capabilities import plugin_capability_granted
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
     return any(
         loaded.enabled

@@ -1,9 +1,9 @@
 """The Webapp's forwarding proxy: ``/api/relay/<connection id>/<path>`` carries a signed-in browser's
 REST calls and sockets to a gateway saved in this machine's connection list
-(``hermes_cli.gateway_connections``), keyed by the same registry id native Desktop uses.
+(``hermes_agent.hermes_cli.gateway_connections``), keyed by the same registry id native Desktop uses.
 
 HTTP. The browser's request is sent on as ``<connection url>/<path>`` with the credential saved for
-that connection, the way Desktop sends it (``hermes_cli.webapp_relay_target``), body and response
+that connection, the way Desktop sends it (``hermes_agent.hermes_cli.webapp_relay_target``), body and response
 streamed both ways. Cookies, the browser's own credentials and forwarding headers never cross. Only
 headers that describe the body come back, under a sandboxing content policy, and a redirect only
 within the gateway: what it serves never acts on this gateway's origin. A 401 from the gateway means
@@ -32,7 +32,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
-from hermes_cli import webapp_relay_target as reach
+from hermes_agent.hermes_cli import webapp_relay_target as reach
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,7 +89,7 @@ def relay_client(state):
 
 def _available(state) -> bool:
     """Saved connections are reached from the Webapp only (the surface that serves their list)."""
-    from hermes_cli.web_server_surface import policy
+    from hermes_agent.hermes_cli.web_server_surface import policy
     return policy(state).gateway_connections
 
 
@@ -188,7 +188,7 @@ def _refusal(error: str, connection_id: str, detail: str, status: int) -> JSONRe
 
 @router.api_route(_PREFIX + "{connection_id}/{path:path}", methods=_METHODS)
 async def relay_http(request: Request, connection_id: str, path: str):
-    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+    from hermes_agent.hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     state = request.app.state
     _signed_in(request)
@@ -267,9 +267,9 @@ def _sendable(code: Optional[int]) -> int:
 
 def _admit_browser(ws: WebSocket) -> Optional[str]:
     """The browser credential generation the tab's relay ticket was minted under, or None."""
-    from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
-    from hermes_cli.web_server_boundary import ws_host_origin_reason
-    from hermes_cli.web_session_sockets import RELAY_SOCKET, admitted_with, ticket_refusal
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
+    from hermes_agent.hermes_cli.web_server_boundary import ws_host_origin_reason
+    from hermes_agent.hermes_cli.web_session_sockets import RELAY_SOCKET, admitted_with, ticket_refusal
 
     state = ws.app.state
     if not ws.headers.get("origin") or ws_host_origin_reason(ws, state) is not None:
@@ -296,8 +296,8 @@ async def relay_ws(ws: WebSocket, connection_id: str, path: str) -> None:
     from websockets.exceptions import WebSocketException
     from websockets.typing import Origin, Subprotocol
 
-    from hermes_cli.web_session_sockets import track
-    from hermes_cli.web_host_terminal_ssh import serve_ssh_terminal
+    from hermes_agent.hermes_cli.web_session_sockets import track
+    from hermes_agent.hermes_cli.web_host_terminal_ssh import serve_ssh_terminal
 
     admitted = _admit_browser(ws)
     try:

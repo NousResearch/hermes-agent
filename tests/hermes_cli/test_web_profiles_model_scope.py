@@ -34,8 +34,8 @@ def homes(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("ACME_RELAY_KEY", "dashboard-home-key")
-    from hermes_cli import profiles as profiles_mod
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
 
     demo = profiles_mod.get_profile_dir("demo")
     demo.mkdir(parents=True, exist_ok=True)
@@ -56,14 +56,14 @@ def probe(monkeypatch):
         captured["api_key"] = api_key
         return {"accepted": True, "persist": True, "recognized": True, "message": ""}
 
-    import hermes_cli.models_validate as mv
+    import hermes_agent.hermes_cli.models_validate as mv
     monkeypatch.setattr(mv, "validate_requested_model", _fake_validate)
     return captured
 
 
 @pytest.fixture()
 def client(homes):
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
         c.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
@@ -83,8 +83,8 @@ def test_model_pick_resolves_key_env_from_profile_scope(client, homes, probe):
     assert resp.status_code == 200, resp.text
     # The profile's key, not the dashboard home's value from the process env.
     assert probe["api_key"] == "profile-key"
-    from hermes_cli.config import load_config
-    from hermes_cli.web_server_profiles import _hermes_home_scope
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.web_server_profiles import _hermes_home_scope
     with _hermes_home_scope(homes[1]):
         assert (load_config().get("model") or {}).get("default") == "acme/mini"
 
@@ -95,10 +95,10 @@ def test_model_pick_for_default_from_named_profile_launch(homes, probe, monkeypa
     root, demo = homes
     monkeypatch.setenv("HERMES_HOME", str(demo))
     (root / ".env").write_text("ACME_RELAY_KEY=root-key\n", encoding="utf-8")
-    from hermes_cli.config import invalidate_env_cache, load_config
-    from hermes_cli.web_server_profiles import _hermes_home_scope
+    from hermes_agent.hermes_cli.config import invalidate_env_cache, load_config
+    from hermes_agent.hermes_cli.web_server_profiles import _hermes_home_scope
     invalidate_env_cache()
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as client:
         client.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
@@ -133,8 +133,8 @@ def test_model_set_without_a_profile_pins_to_the_launch_home(client, homes):
     )
 
     assert resp.status_code == 200, resp.text
-    from hermes_cli.config import load_config
-    from hermes_cli.web_server_profiles import _hermes_home_scope
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.web_server_profiles import _hermes_home_scope
 
     with _hermes_home_scope(root):
         assert (load_config().get("model") or {}).get("default") == "acme/mini"
@@ -148,9 +148,9 @@ def test_model_set_names_target_from_a_backend_launched_as_another_profile(homes
     root's) untouched; the follow-up for A lands on A only. This is the server half the
     Desktop relies on once every Settings request names the profile its page displays."""
     root, demo = homes
-    from hermes_cli import profiles as profiles_mod
-    from hermes_cli.config import invalidate_env_cache, load_config
-    from hermes_cli.web_server_profiles import _hermes_home_scope
+    from hermes_agent.hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli.config import invalidate_env_cache, load_config
+    from hermes_agent.hermes_cli.web_server_profiles import _hermes_home_scope
 
     other = profiles_mod.get_profile_dir("other")
     other.mkdir(parents=True, exist_ok=True)
@@ -158,7 +158,7 @@ def test_model_set_names_target_from_a_backend_launched_as_another_profile(homes
     (other / ".env").write_text("ACME_RELAY_KEY=other-key\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(demo))  # launched as A = demo
     invalidate_env_cache()
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     body = {"scope": "main", "provider": "acme", "model": "acme/mini", "confirm_expensive_model": True}
 
@@ -181,8 +181,8 @@ def test_model_set_names_target_from_a_backend_launched_as_another_profile(homes
 
 
 def test_a_rejected_model_pick_is_a_400_with_the_reason(client, monkeypatch):
-    from hermes_cli.model_switch import ModelSwitchResult
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model",
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model",
                         lambda **_kw: ModelSwitchResult(success=False, error_message="Unknown provider 'nope'."))
     resp = client.put("/api/profiles/demo/model", json={"provider": "nope", "model": "m"})
     assert (resp.status_code, resp.json()["detail"]) == (400, "Unknown provider 'nope'.")

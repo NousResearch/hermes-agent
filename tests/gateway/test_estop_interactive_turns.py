@@ -54,7 +54,7 @@ def test_pause_help_and_docs_say_interactive_turns_are_held_too():
     """The decided contract is documented where operators read it (`hermes pause --help`, the CLI
     reference): interactive CLI, TUI and Desktop turns are gateway turns and are held too."""
     import argparse
-    from hermes_cli.subcommands.pause import build_pause_parser
+    from hermes_agent.hermes_cli.subcommands.pause import build_pause_parser
     parser = argparse.ArgumentParser(prog='hermes')
     build_pause_parser(parser.add_subparsers())
     sub = parser._subparsers._group_actions[0].choices['pause']

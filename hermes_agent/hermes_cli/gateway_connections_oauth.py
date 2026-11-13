@@ -5,7 +5,7 @@ listener (``electron/native-oauth.ts`` + ``native-oauth-login.ts``). The Webapp 
 its own, so the gateway SERVING it takes that role: it holds the PKCE verifier, hands the browser
 the remote's ``/auth/native/authorize`` URL, and its own route
 ``/webapp/gateway-connections/oauth/callback`` is the loopback redirect. The remote needs no new
-code: it is the same native flow Desktop drives (``hermes_cli/dashboard_auth/routes.py``), which
+code: it is the same native flow Desktop drives (``hermes_agent/hermes_cli/dashboard_auth/routes.py``), which
 accepts only a loopback IP-literal redirect, so the callback is addressed to
 ``127.0.0.1:<serving port>``. A browser on another machine lands on its own loopback instead; it
 completes the same flight by pasting that address (:func:`complete_from_url`).
@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
-from hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections as store
 
 NATIVE_FLOW_ID = "native_pkce"
 CALLBACK_PATH = "/webapp/gateway-connections/oauth/callback"

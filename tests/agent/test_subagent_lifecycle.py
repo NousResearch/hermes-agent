@@ -139,7 +139,7 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
             "_child_cost_usd": 2.5,
         },
     )
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", hook)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.invoke_hook", hook)
 
     service = SubagentLifecycleService(lambda: parent)
     handle = service.launch(SubagentLaunchRequest(goal="aggregate me"))
@@ -215,7 +215,7 @@ def steer_lifecycle(monkeypatch):
 
 @pytest.mark.parametrize("wire", [False, True])
 def test_steer_queues_to_running_child_and_rejects_invalid_calls(steer_lifecycle, wire):
-    from hermes_cli.plugin_host_wire import decode, encode
+    from hermes_agent.hermes_cli.plugin_host_wire import decode, encode
 
     service, child, started, finish = steer_lifecycle
     request = SubagentLaunchRequest(goal="review", allowed_toolsets=("file",))
@@ -261,7 +261,7 @@ def routing_lifecycle(lifecycle, monkeypatch):
     })
     monkeypatch.setattr("hermes_agent.tools.delegate_tool._build_child_agent", build)
     monkeypatch.setattr("hermes_agent.tools.delegate_tool._load_config", config)
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
     return lifecycle, build, config, resolve
 
 
@@ -287,7 +287,7 @@ def test_routing_delegation_provider_bundle(routing_lifecycle):
 
 @pytest.mark.parametrize("wire", [False, True])
 def test_routing_request_provider_wins_without_mixing_bundles(routing_lifecycle, wire):
-    from hermes_cli.plugin_host_wire import decode, encode
+    from hermes_agent.hermes_cli.plugin_host_wire import decode, encode
 
     service, build, config, resolve = routing_lifecycle
     config.return_value = {

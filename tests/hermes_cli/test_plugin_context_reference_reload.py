@@ -14,8 +14,8 @@ import hermes_yaml as yaml
 import pytest
 
 from hermes_agent.agent.context_references import _context_reference_providers, get_context_reference_providers
-from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins import PluginManager, _plugin_home_scope
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli.plugins import PluginManager, _plugin_home_scope
 
 _PROVIDER = '''
 from hermes_agent.agent.context_references import ContextReferenceProvider

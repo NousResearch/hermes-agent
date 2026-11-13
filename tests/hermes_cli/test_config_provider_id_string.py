@@ -9,7 +9,7 @@ load-path chokepoint (``_normalize_root_model_keys``) canonicalizes the value, s
 import os
 from unittest.mock import patch
 
-from hermes_cli.config import load_config
+from hermes_agent.hermes_cli.config import load_config
 
 
 def _load(tmp_path, model_section: str):

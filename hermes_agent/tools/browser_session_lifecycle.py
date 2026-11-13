@@ -79,7 +79,7 @@ def _session_owner_scope(cache_key: str):
         yield
         return
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
     home_token = set_hermes_home_override(owner_home)
     try:
         hydrate_profile_secret_sources(Path(owner_home))

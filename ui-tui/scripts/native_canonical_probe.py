@@ -171,7 +171,7 @@ def run():
                 # Exercise the actual parser and Python launcher, using the
                 # supported prebuilt path so shared dependencies stay read-only.
                 launch_env.update(HERMES_TUI_DIR=str(ROOT / 'ui-tui'), TMPDIR=str(base))
-                argv = [sys.executable, '-m', 'hermes_cli.main', '--tui', 'chat', '-q', 'WS_SHARED']
+                argv = [sys.executable, '-m', 'hermes_agent.hermes_cli.main', '--tui', 'chat', '-q', 'WS_SHARED']
             proc = subprocess.Popen(argv, cwd=ROOT,
                                     env=launch_env, stdin=slave, stdout=slave, stderr=slave,
                                     start_new_session=True)

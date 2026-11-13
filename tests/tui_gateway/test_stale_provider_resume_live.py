@@ -69,8 +69,8 @@ def live_home(monkeypatch):
         if var.endswith("_API_KEY") or var in ("OPENROUTER_KEY", "NOUS_KEY"):
             monkeypatch.delenv(var, raising=False)
 
-    import hermes_cli.config as hconfig
-    import hermes_cli.runtime_provider as rp
+    import hermes_agent.hermes_cli.config as hconfig
+    import hermes_agent.hermes_cli.runtime_provider as rp
 
     for mod in (hconfig, rp):
         for attr in ("_config_cache", "_cache", "_CONFIG_CACHE"):

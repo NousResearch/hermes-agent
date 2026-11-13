@@ -2,7 +2,7 @@
 read/write of per-board display metadata, board creation/discovery/archival, and the
 ``board.json``-as-identity-marker rule.
 
-Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
+Split out of ``hermes_agent.hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 ``kanban_db.<name>`` keeps working.
 """
@@ -197,4 +197,4 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb
+from hermes_agent.hermes_cli import kanban_db as _kb

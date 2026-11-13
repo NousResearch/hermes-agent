@@ -1,8 +1,8 @@
-"""Tests for hermes_cli.logs — log viewing and filtering."""
+"""Tests for hermes_agent.hermes_cli.logs — log viewing and filtering."""
 
 from datetime import datetime, timedelta
 
-from hermes_cli.logs import (
+from hermes_agent.hermes_cli.logs import (
     LOG_FILES,
     _extract_level,
     _extract_logger_name,
@@ -187,7 +187,7 @@ def _mcp_output_line() -> str:
 
 
 def _update_log_line() -> str:
-    """The update.log run banner hermes_cli.main_dashboard writes on every update."""
+    """The update.log run banner hermes_agent.hermes_cli.main_dashboard writes on every update."""
     import datetime as dt
 
     return f"\n=== hermes update started {dt.datetime.now().isoformat(timespec='seconds')} ===\n".lstrip()
@@ -210,7 +210,7 @@ def _log_file_samples() -> dict:
         "agent": _python_log_line("hermes_agent.run_agent"),
         "errors": _python_log_line("hermes_agent.run_agent"),
         "gateway": _python_log_line("hermes_agent.gateway.run"),
-        "gui": _python_log_line("hermes_cli.web_server"),
+        "gui": _python_log_line("hermes_agent.hermes_cli.web_server"),
         # Written by TypeScript; apps/desktop/electron/desktop-log-line.test.ts pins the same shape.
         "desktop": "2026-09-28 13:18:46,062 [hermes] [boot] ready",
         "mcp": _mcp_output_line(),
@@ -226,14 +226,14 @@ def test_every_log_file_writes_a_stamp_hermes_logs_since_can_read():
     for name, line in samples.items():
         assert _parse_line_timestamp(line) is not None, (name, line)
     # gateway.error.log (launchd stderr, not in LOG_FILES) uses the shared stamper.
-    from hermes_cli.stderr_timestamp import stamp_line
+    from hermes_agent.hermes_cli.stderr_timestamp import stamp_line
     assert _parse_line_timestamp(stamp_line("raw gateway stderr")) is not None
 
 
 def test_update_logs_are_read_from_the_root_home_under_a_profile(tmp_path, monkeypatch, capsys):
     # ``hermes update`` mirrors to <root>/logs/update.log and the hand-off scripts write the root
     # too; `hermes logs update` under a sticky profile read the profile's (absent) copy.
-    from hermes_cli.logs import list_logs, log_file_path, tail_log
+    from hermes_agent.hermes_cli.logs import list_logs, log_file_path, tail_log
 
     root = tmp_path / "root"
     profile = root / "profiles" / "coder"

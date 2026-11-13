@@ -12,10 +12,10 @@ from contextlib import asynccontextmanager
 import pytest
 from websockets.protocol import State
 
-from hermes_cli.cli_chat_error_copy import chat_error_response
-from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection, lost_before
+from hermes_agent.hermes_cli.cli_chat_error_copy import chat_error_response
+from hermes_agent.hermes_cli.gateway_agent import GatewayAgent
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_connection import GatewayConnection, lost_before
 
 SID = "local-abc"
 
@@ -201,7 +201,7 @@ def _resumes(life):
 
 @pytest.fixture
 def store(conn):
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
     db = GatewaySessionStore(conn)
     db.attach(SID)
     return db
@@ -288,7 +288,7 @@ async def test_a_cancelled_reconnect_cancels_its_session_resume():
     """The viewer closes while a reconnect's ``session.resume`` goes unanswered: cancelling the
     resubscribe cancels the request with it. One left pending on the client held a worker thread
     that process exit joins until the request timed out."""
-    from hermes_cli.gateway_client import GatewayClient
+    from hermes_agent.hermes_cli.gateway_client import GatewayClient
     conn = GatewayConnection()
     conn.state(SID).subscription_id = "sub-1"
     socket = _Unanswered()
@@ -307,7 +307,7 @@ def _cli(store):
 
 @pytest.fixture
 def tools(conn, monkeypatch):
-    from hermes_cli import gateway_tools
+    from hermes_agent.hermes_cli import gateway_tools
     monkeypatch.setattr(gateway_tools, "_view", None)
     gateway_tools.bind(types.SimpleNamespace(connection=conn, session_id=SID))
     return gateway_tools
@@ -324,7 +324,7 @@ def test_a_hung_up_store_stays_open_and_its_next_call_redials(gateway, conn, sto
 
 def test_bg_and_btw_after_a_hang_up_run_on_the_gateway_not_in_this_process(gateway, conn, store):
     """None here sends /bg down the in-process AIAgent path (a local ``bg_HHMMSS_xxxxxx`` task)."""
-    from hermes_cli import gateway_side
+    from hermes_agent.hermes_cli import gateway_side
     gateway.hang_up(conn)
     assert gateway_side.connection_for(_cli(store)) is conn
     task_id, _wait = gateway_side.start(conn, SID, "background", "later")
@@ -333,7 +333,7 @@ def test_bg_and_btw_after_a_hang_up_run_on_the_gateway_not_in_this_process(gatew
 
 def test_a_side_answer_lost_to_a_restart_fails_instead_of_waiting_forever(gateway, conn):
     """The task died with the old gateway; another thread's redial must not make the wait endless."""
-    from hermes_cli import gateway_side
+    from hermes_agent.hermes_cli import gateway_side
     _task, wait = gateway_side.start(conn, SID, "btw", "q")
     gateway.hang_up(conn)
     conn.call("status")
@@ -347,7 +347,7 @@ def test_a_side_answer_lost_to_a_restart_fails_instead_of_waiting_forever(gatewa
 def test_a_redial_between_admission_and_the_waiter_still_ends_the_wait(gateway, conn, monkeypatch):
     """Another caller redials after the old gateway admitted the task but before its waiter exists:
     the wait belongs to the admitting life, not to whatever epoch is current by then."""
-    from hermes_cli import gateway_side
+    from hermes_agent.hermes_cli import gateway_side
     register = conn.side_waiter
 
     def redial_first(task_id):
@@ -391,7 +391,7 @@ def test_new_after_a_hang_up_redials_and_detaches_with_the_end_reason(gateway, c
 
 
 def test_after_close_every_reader_reports_the_connection_gone(gateway, conn, store, tools, monkeypatch):
-    from hermes_cli import gateway_side
+    from hermes_agent.hermes_cli import gateway_side
     monkeypatch.setattr(GatewayConnection, "_shared", conn)
     gateway.hang_up(conn)
     conn.close()
@@ -450,7 +450,7 @@ def test_lost_before():
 def test_chat_q_says_why_a_turn_was_interrupted(capsys):
     """A restart drain settles a running `chat -q` turn interrupted with no reply text: exit 130
     as before, but no longer silently."""
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 
     class Client:
         def __init__(self):

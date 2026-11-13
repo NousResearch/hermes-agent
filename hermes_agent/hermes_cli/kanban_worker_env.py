@@ -1,6 +1,6 @@
 """The environment the kanban dispatcher hands its worker client: an allowlist, not a scrub.
 
-The client (``hermes_cli.kanban_worker_client``) only submits a claim to the assignee's gateway and
+The client (``hermes_agent.hermes_cli.kanban_worker_client``) only submits a claim to the assignee's gateway and
 waits for the receipt. When that gateway is not running, the client starts it, and the daemon is
 built from the client's own environment plus the assignee's secrets
 (``gateway_runtime_start`` -> ``served_profile_child_env``). Anything else the client carries
@@ -56,7 +56,7 @@ def worker_client_env(env: Mapping[str, str], assignee_home: str | Path) -> dict
     """*env* reduced to what the worker client for *assignee_home*, and a gateway it starts, may take
     from the host. The launch profile's ``.env`` / source residue goes first: an allowlisted name it
     defines (an ``HTTPS_PROXY`` with credentials in the URL) is that profile's, not the host's."""
-    from hermes_cli.config_backend import deployment_env_names
+    from hermes_agent.hermes_cli.config_backend import deployment_env_names
     from hermes_agent.tools.environments.local import strip_launch_profile_env
     host = strip_launch_profile_env(dict(env), assignee_home)
     # The config backend's deployment (which backend, plane and instance) is the instance's, not a

@@ -92,7 +92,7 @@ Optional mode argument after the receipt directory:
 - `approval` / `clarify`: detach both viewers with a pending card, restore and answer
   natively, then verify the owned effect / exact tool response on the model wire.
 - `startup`: absent owner → native Ink ensure → one fresh TUI-policy session and reply.
-- `launcher`: the same fresh path through `python -m hermes_cli.main --tui chat -q ...`,
+- `launcher`: the same fresh path through `python -m hermes_agent.hermes_cli.main --tui chat -q ...`,
   using the supported prebuilt `HERMES_TUI_DIR` path (no dependency install).
 - `stop` / `stop-control` / `stop-launcher`: hold the loopback inference stream before a harmless
   fixture-owned tool effect. `stop-launcher` starts the viewer through the Python

@@ -103,7 +103,7 @@ async def test_cli_undo_prefix_keeps_the_summary_after_a_rotated_compression(tmp
 
 @pytest.mark.asyncio
 async def test_undo_and_retry_choose_only_among_live_turns(tmp_path, monkeypatch):
-    from hermes_cli.gateway_chat_commands import _rewind_to
+    from hermes_agent.hermes_cli.gateway_chat_commands import _rewind_to
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     db = authority.db
     _append(db, physical, 'OLD_Q', 'OLD_A', 'TAIL_Q', 'TAIL_A')
@@ -137,7 +137,7 @@ async def test_an_undone_turn_stays_gone_after_a_rotated_compression(tmp_path, m
 @pytest.mark.asyncio
 async def test_a_micro_compaction_merge_shows_its_prompts_once(tmp_path, monkeypatch):
     """A merged prompt row (``model_only``) stays a live undo target but is not painted next to its originals."""
-    from hermes_cli.gateway_chat_commands import _rewind_to
+    from hermes_agent.hermes_cli.gateway_chat_commands import _rewind_to
     authority, actor, ref, physical = await _local_session(tmp_path, monkeypatch)
     db = authority.db
     _append(db, physical, 'Q1', 'A1', 'Q2', 'A2', 'Q3', 'A3')

@@ -1,7 +1,7 @@
 """Observed group chatter keeps the timestamp the observe path stamps on it.
 
 The Telegram observe path stamped ``datetime.now(tz=UTC).isoformat()`` onto the transcript row, but
-``hermes_cli.timefmt.coerce_epoch`` trusts only numbers, numeric strings and ``datetime``: every
+``hermes_agent.hermes_cli.timefmt.coerce_epoch`` trusts only numbers, numeric strings and ``datetime``: every
 observed row was persisted with a substituted time and logged ``Ignoring corrupt message
 timestamp`` (one WARNING per observed message).
 """
@@ -29,7 +29,7 @@ def test_observed_group_message_is_persisted_with_its_own_timestamp(tmp_path, ca
     event = MessageEvent(text="just group chatter", message_type=MessageType.TEXT, source=source,
                          user_id=source.user_id, user_name=source.user_name, message_id="991")
     try:
-        caplog.set_level(logging.WARNING, logger="hermes_cli.timefmt")
+        caplog.set_level(logging.WARNING, logger="hermes_agent.hermes_cli.timefmt")
         before = time.time()
         adapter._observe_unmentioned_group_message(
             SimpleNamespace(chat=SimpleNamespace(id=-100)), MessageType.TEXT, event=event)

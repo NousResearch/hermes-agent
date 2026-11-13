@@ -79,7 +79,7 @@ def test_runtime_command_survives_a_non_ascii_profile_path(tmp_path: Path, code_
     """Get-HermesRuntimeCommand returns the launcher's exact interpreter path.
 
     The launcher JSON is ASCII-escaped today, so this is the round-trip
-    contract for the boundary every other consumer (hermes_cli.windows_ssh_
+    contract for the boundary every other consumer (hermes_agent.hermes_cli.windows_ssh_
     runtime, the Electron updater, the Rust bootstrap) already decodes as
     UTF-8: the capture must return the path byte-exact and leave the caller's
     console encoding unchanged, whatever code page the console carries.

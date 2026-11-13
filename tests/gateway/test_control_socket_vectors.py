@@ -116,7 +116,7 @@ def test_a_resolved_endpoint_mints_one_single_use_ticket_over_the_real_socket(tm
     """The client sequence end to end: resolve-profile, then session-ticket with the answer's
     identity on the socket that answered, then the WebSocket admission's one redeem."""
     from hermes_agent.gateway.control_resolve import resolve_profile_handler
-    from hermes_cli.gateway_client import private_control_query
+    from hermes_agent.hermes_cli.gateway_client import private_control_query
 
     names = _layout(tmp_path)
     home = names["$HOME"]

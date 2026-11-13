@@ -24,12 +24,12 @@ import time
 from fastapi import HTTPException
 
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
-from hermes_cli.install_identity import get_install_id
-from hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.install_identity import get_install_id
+from hermes_agent.hermes_cli.web_deps import late
 
 
-_is_current_profile = late("_is_current_profile", "hermes_cli.web_server_profiles")
-_resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
+_is_current_profile = late("_is_current_profile", "hermes_agent.hermes_cli.web_server_profiles")
+_resolve_profile_dir = late("_resolve_profile_dir", "hermes_agent.hermes_cli.web_server_profiles")
 _UPLOADS_DIR = "uploads"
 _STAGED_PREFIX = "web-"
 _CHUNK_BYTES = 1024 * 1024

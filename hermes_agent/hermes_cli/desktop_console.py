@@ -7,7 +7,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-logger = logging.getLogger("hermes_cli.desktop")
+logger = logging.getLogger("hermes_agent.hermes_cli.desktop")
 
 
 def desktop_launch_notice(message: str, *, source_mode: bool = False) -> None:

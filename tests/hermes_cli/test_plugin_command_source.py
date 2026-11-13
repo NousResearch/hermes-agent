@@ -1,6 +1,6 @@
 """Plugin slash-command handlers receive only the calling-session context they declare."""
 
-from hermes_cli.plugin_command_dispatch import invoke_plugin_command
+from hermes_agent.hermes_cli.plugin_command_dispatch import invoke_plugin_command
 
 CONTEXT = {"source": "src", "session_id": "sid", "session_key": "key", "platform": "telegram"}
 

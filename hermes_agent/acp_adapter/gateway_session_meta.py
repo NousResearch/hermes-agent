@@ -102,8 +102,8 @@ def config_options(models: SessionModelState | None, info: dict, mode_id: str) -
 
 async def session_config_options(client, session_id, models, info, mode_id):
     """Project the owner's eligible speed choices alongside the existing ACP pickers."""
-    from hermes_cli.gateway_client import GatewayRPCError
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.models import model_supports_fast_mode
     options = config_options(models, info, mode_id)
     if not model_supports_fast_mode(info.get('model')):
         return options

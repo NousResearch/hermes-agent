@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from hermes_cli import web_server
-import hermes_cli.web_server_chat as _web_server_chat
+from hermes_agent.hermes_cli import web_server
+import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
 
 
 class FakeBridge:
@@ -125,8 +125,8 @@ async def test_a_takeover_during_input_leaves_the_chat_session_to_the_new_tab():
     waits on the PTY, that write is cancelled and the session stays alive for the new tab, which
     closes this one as superseded (4409), never as stalled input (1013). Only the attached tab's
     resize reaches the PTY."""
-    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
-    from hermes_cli.web_routers.chat_ws import _pump_keepalive_input
+    from hermes_agent.hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
+    from hermes_agent.hermes_cli.web_routers.chat_ws import _pump_keepalive_input
 
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -238,7 +238,7 @@ async def test_attach_token_reuses_default_chat_after_active_session_fallback(
 # --- #63553: pty_active_session_files must not grow without bound -----------
 
 def _pty_marker_dict():
-    from hermes_cli.web_server import _get_pty_active_session_files
+    from hermes_agent.hermes_cli.web_server import _get_pty_active_session_files
 
     return _get_pty_active_session_files(web_server.app)
 

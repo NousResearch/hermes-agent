@@ -3,10 +3,10 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
-from hermes_cli.main_tui_launch import _print_tui_exit_summary
+from hermes_agent.cli import HermesCLI
+from hermes_agent.hermes_cli.main_tui_launch import _print_tui_exit_summary
 
-import hermes_cli.main
+import hermes_agent.hermes_cli.main
 
 
 def _make_cli(session_id="20260524_000001_abc123"):
@@ -31,7 +31,7 @@ class TestExitSummaryResumeHint:
 
     def test_resume_hint_no_profile_flag_on_default(self, capsys):
         cli_obj = _make_cli()
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        with patch("hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="default"):
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
         # No `-p` for the default profile.
@@ -40,7 +40,7 @@ class TestExitSummaryResumeHint:
 
     def test_resume_hint_no_profile_flag_on_custom(self, capsys):
         cli_obj = _make_cli()
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="custom"):
+        with patch("hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="custom"):
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
         # "custom" is the standard HERMES_HOME indicator — no -p needed.
@@ -49,7 +49,7 @@ class TestExitSummaryResumeHint:
 
     def test_resume_hint_includes_profile_flag_for_named_profile(self, capsys):
         cli_obj = _make_cli()
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="dev"):
+        with patch("hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="dev"):
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
         assert "hermes --resume 20260524_000001_abc123 -p dev" in out
@@ -63,7 +63,7 @@ class TestExitSummaryResumeHint:
         fake_db.get_session_title.return_value = "My Cool Session"
         cli_obj._session_db = fake_db
 
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="dev"):
+        with patch("hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="dev"):
             cli_obj._print_exit_summary()
         out = capsys.readouterr().out
         assert 'hermes -c "My Cool Session" -p dev' in out
@@ -76,7 +76,7 @@ class TestExitSummaryResumeHint:
         """
         cli_obj = _make_cli()
         with patch(
-            "hermes_cli.profiles.get_active_profile_name",
+            "hermes_agent.hermes_cli.profiles.get_active_profile_name",
             side_effect=RuntimeError("profiles unavailable"),
         ):
             cli_obj._print_exit_summary()
@@ -94,12 +94,12 @@ def _tui_session_db(*_args, **_kwargs):
 
 
 class TestTuiExitSummaryResumeHint:
-    """``_print_tui_exit_summary`` (hermes_cli/main_tui_launch.py) is a separate entry
+    """``_print_tui_exit_summary`` (hermes_agent/hermes_cli/main_tui_launch.py) is a separate entry
     point from the classic CLI summary above and must carry the same ``-p`` flag (#125078)."""
 
     def test_tui_hints_include_profile_flag_for_named_profile(self, capsys):
         with patch("hermes_agent.hermes_state.SessionDB", _tui_session_db), patch(
-            "hermes_cli.profiles.get_active_profile_name", return_value="dev"
+            "hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="dev"
         ):
             _print_tui_exit_summary("20260524_000001_abc123")
         out = capsys.readouterr().out
@@ -108,7 +108,7 @@ class TestTuiExitSummaryResumeHint:
 
     def test_tui_hints_no_profile_flag_on_default(self, capsys):
         with patch("hermes_agent.hermes_state.SessionDB", _tui_session_db), patch(
-            "hermes_cli.profiles.get_active_profile_name", return_value="default"
+            "hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="default"
         ):
             _print_tui_exit_summary("20260524_000001_abc123")
         out = capsys.readouterr().out

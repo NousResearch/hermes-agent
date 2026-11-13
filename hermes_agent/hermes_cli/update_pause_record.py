@@ -77,7 +77,7 @@ def identity(pid: int | None = None) -> dict:
     The creation time comes from the probe :func:`identity_is_live` judges with
     (``update_lock.process_create_time``: psutil, else stdlib), so a host without psutil still
     writes a provable identity instead of ``ct=None``."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
     pid = os.getpid() if pid is None else int(pid)
     created = update_lock.process_create_time(pid)
     return {"pid": pid, "ct": None if created is None else f"ct:{created:.3f}"}
@@ -89,7 +89,7 @@ def identity_is_live(ident: dict | None) -> bool:
     Unprovable (alive, no readable creation time) counts as live: a record is never taken from, nor
     a paused process restarted over, a process that may still be the one recorded.
     """
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
     ident = ident or {}
     return update_lock.incarnation_live(ident.get("pid") or 0, ident.get("ct") or None) is not False
 
@@ -122,7 +122,7 @@ def _mutex(wait_s: float = _MUTEX_WAIT_S):
         finally:
             _mutex_held.depth -= 1
         return
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
     path = record_path().with_name(MUTEX_NAME)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
@@ -169,7 +169,7 @@ def _git_executable() -> str:
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess | None:
     """A read-only git query in the updater's custody (``update_custody.run_git``: job-bound on
     Windows inside an update, custody config in argv); ``None`` when git cannot run."""
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_custody import run_git
     try:
         return run_git([_git_executable(), "-C", str(root)], args, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=30, check=False)
@@ -347,7 +347,7 @@ def _deps_hold_resume(root: Path) -> bool:
             or not (root / ".git").exists() or not (root / "pyproject.toml").is_file()):
         return False  # prepare_launch skips the sync: waiting would never end
     try:
-        from hermes_cli.steward import read_install_stamp
+        from hermes_agent.hermes_cli.steward import read_install_stamp
         if read_install_stamp(root).get("updateMechanism") != "self":
             return False
         import pm
@@ -372,7 +372,7 @@ def _paused_on_unreadable_head(token: dict) -> bool:
 
 def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
     """May paused gateways start on this checkout now? ``(verdict, reason when not)``."""
-    from hermes_cli._early_recovery import interrupted_pull_marker
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker
     root = root or install_root()
     if (root / ".git").exists():
         if interrupted_pull_marker(root).exists():
@@ -560,7 +560,7 @@ def sync(token: dict) -> None:
 def _live_update_elsewhere() -> bool:
     """A live update other than the one this process belongs to. The update tree holding the
     checkout lock (this process plus the partner whose marker it adopted) is not "elsewhere"."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
     root = install_root()
     return not update_lock.holds_checkout_lock(root) and update_lock.update_in_progress(root)
 
@@ -935,7 +935,7 @@ def _has_work(token: dict) -> bool:
 def _resume_claimed(claim_path: Path, body: dict) -> None:
     """Resume under the checkout lock, so no update mutates the tree between the gate and the
     verified start; an update that took the checkout after our claim gets the set back untouched."""
-    from hermes_cli.update_lock import UpdateLock
+    from hermes_agent.hermes_cli.update_lock import UpdateLock
     fence = UpdateLock()
     if not fence.acquire_checkout(install_root()):
         with suppress(OSError), _mutex():
@@ -959,7 +959,7 @@ def _resume_fenced(claim_path: Path, body: dict) -> None:
     try:
         if _has_work(token):
             print("→ Restarting gateway(s) paused by an interrupted `hermes update`...", file=sys.stderr)
-            from hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
+            from hermes_agent.hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
             # Whatever command this launch runs owns stdout (``--json`` output, a Desktop pipe).
             with redirect_stdout(sys.stderr):
                 _resume_windows_gateways_after_update(token)
@@ -1039,7 +1039,7 @@ def _hand_back(claim_path: Path, body: dict, token: dict, draining: dict) -> Non
 
 def recover(argv: list[str] | None = None) -> None:
     """Start-of-run recovery: resume every orphaned pause. Never raises."""
-    from hermes_cli._parser import command_argv
+    from hermes_agent.hermes_cli._parser import command_argv
     command = command_argv(list(sys.argv[1:] if argv is None else argv))
     if command[:1] == ["update"] or command[:2] == ["gateway", "run"]:
         return  # the update adopts it itself; a booting gateway must not block on its siblings

@@ -21,7 +21,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
@@ -513,7 +513,7 @@ _DB_BOOTSTRAP_INFLIGHT: dict[str, threading.Event] = {}
 _DB_BOOTSTRAP_LOOP_WAIT_S = 0.25
 
 # The call that STARTS the bootstrap (cold cache) waits this long instead. A fresh state.db init
-# (schema DDL, FTS tables, first hermes_cli.config import) measures ~300ms warm and more on slow
+# (schema DDL, FTS tables, first hermes_agent.hermes_cli.config import) measures ~300ms warm and more on slow
 # CI — well past 0.25s, which used to drop the first /goal write ("Goal set" but nothing
 # persisted). Only the kick call pays this one-time stall; later calls keep the short window.
 _DB_BOOTSTRAP_INIT_WAIT_S = 1.5
@@ -754,7 +754,7 @@ def _goal_judge_setting(key: str, default, cast):
     """Resolve ``auxiliary.goal_judge.<key>``; non-positive/garbage falls back to ``default``
     rather than crashing the loop. ``load_config()`` is cached on (mtime, size) so this is cheap."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         value = cast((load_config().get("auxiliary") or {}).get("goal_judge", {}).get(key, default))
         if value > 0:

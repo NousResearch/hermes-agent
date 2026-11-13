@@ -18,7 +18,7 @@ import uuid
 
 import pytest
 
-from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
+from hermes_agent.hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
 
 from tests.gateway.test_normal_runtime_boot import control
 

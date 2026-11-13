@@ -37,7 +37,7 @@ _TEXT_EXTS = (".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".xml", ".html")
 def _load_retaindb_config() -> dict[str, Any]:
     """``memory.retaindb`` block from config.yaml (empty on error): Dashboard-persisted base_url/project; api_key stays in scoped secrets."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         block = load_config_readonly().get("memory", {}).get("retaindb", {})
     except Exception:
         block = None

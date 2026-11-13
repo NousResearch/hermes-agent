@@ -1,6 +1,6 @@
 """Dashboard theme/font and dashboard-plugin (discovery, hub, install/enable, asset serving) routes.
 
-Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
+Extracted from ``hermes_agent.hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are resolved late at call time (cycle-safe).
 """
 
@@ -12,32 +12,32 @@ from typing import Callable, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-from hermes_cli.web_deps import late
-from hermes_cli.config import cfg_get
-from hermes_cli.web_routers._common import config_scoped_to_thread
-from hermes_cli.web_server_dashboard import (
+from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.web_routers._common import config_scoped_to_thread
+from hermes_agent.hermes_cli.web_server_dashboard import (
     _BUILTIN_DASHBOARD_THEMES, _discover_user_themes, _invalidate_plugins_hub_cache, _merged_plugins_hub,
     _plugin_consent_withheld,
 )
-from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
-from hermes_cli.web_models import (
+from hermes_agent.hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
+from hermes_agent.hermes_cli.web_models import (
     FontSetBody, ThemeSetBody, _AgentPluginInstallBody, _PluginAutoUpdateBody, _PluginProvidersPutBody,
     _PluginVisibilityBody,
 )
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _get_dashboard_plugins = late("_get_dashboard_plugins")
 _require_token = late("_require_token")
-load_config = late("load_config", "hermes_cli.config")
-save_config = late("save_config", "hermes_cli.config")
+load_config = late("load_config", "hermes_agent.hermes_cli.config")
+save_config = late("save_config", "hermes_agent.hermes_cli.config")
 # Home + secret scope for one request. NOT ``_profile_scope``: the bodies below clone/pull over the
 # network and hold the scope for their whole duration, and ``_profile_scope`` also holds the
 # process-global skills lock.
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
+_config_profile_scope = late("_config_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
 
 
 def _set_dashboard_key(key: str, value, profile: Optional[str] = None) -> None:
@@ -164,9 +164,9 @@ async def get_plugins_catalog(request: Request):
     _require_token(request)
 
     def _run():
-        from hermes_cli.plugins_cmd import _discover_all_plugins, _get_disabled_set, _get_enabled_set
-        from hermes_cli.plugins_cmd_catalog import installed_catalog_state
-        from hermes_cli.web_server_dashboard import _plugin_runtime_status
+        from hermes_agent.hermes_cli.plugins_cmd import _discover_all_plugins, _get_disabled_set, _get_enabled_set
+        from hermes_agent.hermes_cli.plugins_cmd_catalog import installed_catalog_state
+        from hermes_agent.hermes_cli.web_server_dashboard import _plugin_runtime_status
         enabled, disabled = _get_enabled_set(), _get_disabled_set()
         installed = {}
         for name, _v, _d, _s, dir_str, key in _discover_all_plugins():
@@ -202,7 +202,7 @@ async def _plugin_mutation(fn: Callable[[], dict]) -> dict:
 @router.post("/api/dashboard/agent-plugins/install")
 async def post_agent_plugin_install(request: Request, body: _AgentPluginInstallBody):
     _require_token(request)
-    from hermes_cli.plugins_cmd import dashboard_install_plugin
+    from hermes_agent.hermes_cli.plugins_cmd import dashboard_install_plugin
 
     catalog_name = (body.catalog_name or "").strip()
     identifier = body.identifier.strip()
@@ -238,7 +238,7 @@ async def post_agent_plugins_update_all(request: Request):
     """Update every plugin with an update, unattended: a widened pin or a git update's caution scan comes back
     ``needs_review`` (nothing changed) for the plugin's own Update action to walk."""
     _require_token(request)
-    from hermes_cli.plugins_auto_update import update_all_unattended
+    from hermes_agent.hermes_cli.plugins_auto_update import update_all_unattended
 
     def _run() -> dict:
         outcome = update_all_unattended()
@@ -253,15 +253,15 @@ async def post_agent_plugins_update_all(request: Request):
 @router.get("/api/dashboard/plugins/auto-update")
 async def get_plugins_auto_update(request: Request):
     _require_token(request)
-    from hermes_cli.plugins_auto_update import auto_update_state
+    from hermes_agent.hermes_cli.plugins_auto_update import auto_update_state
     return await _plugin_mutation(auto_update_state)
 
 
 @router.put("/api/dashboard/plugins/auto-update")
 async def put_plugins_auto_update(request: Request, body: _PluginAutoUpdateBody):
     _require_token(request)
-    from hermes_cli.plugins_auto_update import set_auto_update
-    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_agent.hermes_cli.plugins_auto_update import set_auto_update
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError
     try:
         return await _plugin_mutation(lambda: set_auto_update(body.enabled))
     except PluginOperationError as exc:
@@ -270,21 +270,21 @@ async def put_plugins_auto_update(request: Request, body: _PluginAutoUpdateBody)
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/enable")
 async def post_agent_plugin_enable(request: Request, name: str):
-    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+    from hermes_agent.hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
     return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=True),
                                       "Enable failed.", rescan=False)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/disable")
 async def post_agent_plugin_disable(request: Request, name: str):
-    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+    from hermes_agent.hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
     return await _named_plugin_action(request, name, lambda n: dashboard_set_agent_plugin_enabled(n, enabled=False),
                                       "Disable failed.", rescan=False)
 
 
 @router.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
-    from hermes_cli.plugins_cmd import dashboard_update_user_plugin
+    from hermes_agent.hermes_cli.plugins_cmd import dashboard_update_user_plugin
     # Body is optional: ``{"accept_capabilities": true}`` applies a re-pin the user confirmed after a
     # ``consent_required`` answer; ``{"force": true}`` applies an update whose scan returned caution
     # after the user saw the ``scan_findings``.
@@ -301,7 +301,7 @@ async def post_agent_plugin_update(request: Request, name: str):
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")
 async def delete_agent_plugin(request: Request, name: str):
-    from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
+    from hermes_agent.hermes_cli.plugins_cmd import dashboard_remove_user_plugin
     return await _named_plugin_action(request, name, dashboard_remove_user_plugin, "Remove failed.", rescan=True)
 
 
@@ -309,7 +309,7 @@ async def delete_agent_plugin(request: Request, name: str):
 async def post_agent_plugin_activate(request: Request):
     """``hermes plugins install`` / ``enable`` in another process asks this backend to load the plugin
     for ``home`` and hand its MCP servers and skills to that profile's open chats
-    (``hermes_cli.plugins_activation.load_and_go_live``). ``home`` must be a profile this host serves."""
+    (``hermes_agent.hermes_cli.plugins_activation.load_and_go_live``). ``home`` must be a profile this host serves."""
     _require_token(request)
     try:
         body = await request.json()
@@ -321,7 +321,7 @@ async def post_agent_plugin_activate(request: Request):
     profile = profile_name_for_home(home) if str(home) not in ("", ".") else None
     if profile is None:
         raise HTTPException(status_code=400, detail="Not a Hermes profile home.")
-    from hermes_cli.plugins_activation import load_and_go_live
+    from hermes_agent.hermes_cli.plugins_activation import load_and_go_live
 
     def _run():
         with _config_profile_scope(None if profile == "default" else profile):
@@ -337,7 +337,7 @@ async def put_plugin_providers(request: Request, body: _PluginProvidersPutBody,
                                profile: Optional[str] = None):
     """Persist memory provider / context engine selection (writes config.yaml)."""
     _require_token(request)
-    from hermes_cli.plugins_cmd import _save_context_engine, _save_memory_provider
+    from hermes_agent.hermes_cli.plugins_cmd import _save_context_engine, _save_memory_provider
 
     def _run():
         # ``_save_memory_provider``/``_save_context_engine`` are functools.partial over

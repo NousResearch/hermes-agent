@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import post_update
-from hermes_cli.post_update import (
+from hermes_agent.hermes_cli import post_update
+from hermes_agent.hermes_cli.post_update import (
     HOME_STEPS,
     MACHINE_STEPS,
     run_steps,
@@ -63,7 +63,7 @@ def test_run_steps_isolates_failures():
 
 
 def test_migrate_config_noop_when_current(monkeypatch):
-    import hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config as cfg
 
     monkeypatch.setattr(cfg, "check_config_version", lambda: (34, 34))
     result = step_migrate_config()
@@ -73,8 +73,8 @@ def test_migrate_config_noop_when_current(monkeypatch):
 def test_migrate_config_restores_backup_when_version_does_not_advance(
     tmp_path, monkeypatch
 ):
-    import hermes_cli.config as cfg
-    import hermes_cli.config_migrations as mig
+    import hermes_agent.hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config_migrations as mig
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text("_config_version: 20\n", encoding="utf-8")
@@ -110,10 +110,10 @@ def test_boot_keeps_the_steps_before_a_failing_one_and_retries_it_each_start(
     import json
 
     import hermes_yaml as yaml
-    from hermes_cli import boot_bootstrap
-    from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.doctor_config import _drift_config_version
-    from hermes_cli.doctor_report import Finding
+    from hermes_agent.hermes_cli import boot_bootstrap
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.doctor_config import _drift_config_version
+    from hermes_agent.hermes_cli.doctor_report import Finding
 
     home = tmp_path / "home"
     home.mkdir()
@@ -157,8 +157,8 @@ def test_a_retry_that_raises_still_owes_the_step(tmp_path, monkeypatch):
     import json
 
     import hermes_yaml as yaml
-    from hermes_cli import boot_bootstrap
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli import boot_bootstrap
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
     home = tmp_path / "home"
     home.mkdir()

@@ -1,7 +1,7 @@
 """Post-update cron safety net for field-level loss: restore agent-job prompts an update
 collapsed to the job name while the job count stayed the same (issue #82990).
 
-Split out of ``hermes_cli.backup`` (which owns the quick snapshots this compares against and
+Split out of ``hermes_agent.hermes_cli.backup`` (which owns the quick snapshots this compares against and
 the count-based net); ``backup`` names are late-imported so its patch seams
 (``_sibling_profile_homes``) hold.
 """
@@ -14,7 +14,7 @@ from typing import Any, Optional
 from hermes_constants import get_hermes_home
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("hermes_cli.backup")
+logger = logging.getLogger("hermes_agent.hermes_cli.backup")
 
 
 def _load_cron_jobs_doc(path: Path) -> Optional[Any]:
@@ -149,7 +149,7 @@ def restore_cron_prompt_fields_if_degraded(
     if not snapshot_id:
         return None
 
-    from hermes_cli.backup import _CRON_JOBS_REL, _quick_snapshot_root
+    from hermes_agent.hermes_cli.backup import _CRON_JOBS_REL, _quick_snapshot_root
 
     home = hermes_home or get_hermes_home()
     live_path = home / _CRON_JOBS_REL
@@ -208,7 +208,7 @@ def restore_cron_prompt_fields_all_profiles(
     restored: list[dict[str, Any]] = []
     if not profile_snapshots:
         return restored
-    from hermes_cli.backup import _sibling_profile_homes
+    from hermes_agent.hermes_cli.backup import _sibling_profile_homes
 
     home = invoking_home or get_hermes_home()
     by_name = dict(_sibling_profile_homes(home))

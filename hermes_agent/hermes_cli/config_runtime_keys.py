@@ -7,7 +7,7 @@ Four owners supply them:
 * Core selection keys (``browser.cloud_provider``, ``<category>.use_gateway``, ``stt.provider``):
   :func:`hermes_agent.tools.tool_backend_helpers.selection_config_keys`, built from ``read_selection``'s tables.
 * Core-owned unseeded keys outside that table, each listed with its reader (:data:`CORE_RUNTIME_KEYS`).
-* MoA preset fields under any preset name (:func:`hermes_cli.moa_config.is_preset_field_path`). Only a
+* MoA preset fields under any preset name (:func:`hermes_agent.hermes_cli.moa_config.is_preset_field_path`). Only a
   preset's own fields and its aggregator slot fields qualify, not arbitrary descendants of ``moa.presets``.
 * ACTIVE plugins: a ``config_keys`` list in ``plugin.yaml`` (or ``extensions.com.nousresearch.hermes``
   in a portable ``plugin.json``) names core-section paths the plugin's code reads, e.g.
@@ -39,7 +39,7 @@ def _covered(key: str, paths: Iterable[str]) -> bool:
 
 
 def _in_default_config(path: str) -> bool:
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
     node = DEFAULT_CONFIG
     for segment in path.split("."):
@@ -52,8 +52,8 @@ def _in_default_config(path: str) -> bool:
 def _selected_memory_provider_manifest():
     """Manifest of the memory provider ``memory.provider`` selects. Memory providers are ``exclusive``
     plugins: the general gate never enables them, the selection does."""
-    from hermes_cli.config import cfg_get, load_config
-    from hermes_cli.plugins_manifest import parse_manifest_file
+    from hermes_agent.hermes_cli.config import cfg_get, load_config
+    from hermes_agent.hermes_cli.plugins_manifest import parse_manifest_file
 
     name = cfg_get(load_config(), "memory", "provider")
     if not isinstance(name, str) or not name.strip():
@@ -70,11 +70,11 @@ def _selected_memory_provider_manifest():
 
 def _active_manifests() -> Iterator:
     """Manifests of the plugins the loader would activate, by its own discovery, precedence and gate."""
-    from hermes_cli.plugins_discovery import (
+    from hermes_agent.hermes_cli.plugins_discovery import (
         _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests, discover_entrypoint_manifests,
         gate_manifest, resolve_manifest_winners,
     )
-    from hermes_cli.plugins_manifest import manifest_key, requires_hermes_error
+    from hermes_agent.hermes_cli.plugins_manifest import manifest_key, requires_hermes_error
 
     manifests = collect_directory_manifests()
     # Same merge as PluginManager._discover_and_load_inner: a directory install keeps its identity.
@@ -108,7 +108,7 @@ def is_runtime_read_key(parts: list[str]) -> bool:
 
     The MoA rule needs the segments (a preset name may contain a dot); the other owners match the
     dotted join."""
-    from hermes_cli.moa_config import is_preset_field_path
+    from hermes_agent.hermes_cli.moa_config import is_preset_field_path
     from hermes_agent.tools.tool_backend_helpers import selection_config_keys
 
     if is_preset_field_path(parts):

@@ -9,7 +9,7 @@ WITHOUT installing hermes-agent.
 NOTE: this script intentionally duplicates the schema rules instead of
 importing ``hermes_cli`` — the whole point is the no-install requirement for
 cheap cross-repo CI use. The runtime twin of this schema lives in
-``hermes_cli/plugin_catalog.py``; if the contract changes there, update the
+``hermes_agent/hermes_cli/plugin_catalog.py``; if the contract changes there, update the
 rules here in lockstep.
 
 Usage:

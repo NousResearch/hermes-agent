@@ -19,7 +19,7 @@ def _unit_stop_start_budgets(scope_cmd: list, svc_name: str) -> tuple[float, flo
     """``(TimeoutStopUSec, TimeoutStartUSec)`` in seconds. Unknown or infinite limits use
     systemd's usual 90s per phase so automation stays bounded."""
     from hermes_agent.gateway.shutdown_forensics import parse_systemd_duration_to_us
-    from hermes_cli.update_cmd_fleet import _systemctl
+    from hermes_agent.hermes_cli.update_cmd_fleet import _systemctl
 
     budgets = {"TimeoutStopUSec": 90.0, "TimeoutStartUSec": 90.0}
     try:
@@ -72,7 +72,7 @@ def unit_job_budget(scope_cmd: list, svc_name: str, verb: str) -> float:
 
 def unit_job_state(scope_cmd: list, svc_name: str) -> dict[str, str]:
     """``ActiveState``/``SubState``/``MainPID``/``Job`` of the unit; ``{}`` when unreadable."""
-    from hermes_cli.update_cmd_fleet import _systemctl
+    from hermes_agent.hermes_cli.update_cmd_fleet import _systemctl
 
     try:
         show = _systemctl(scope_cmd + ["show", svc_name, "--property=ActiveState,SubState,MainPID,Job"], timeout=10)
@@ -98,7 +98,7 @@ def run_unit_job(manage_cmd: list, scope_cmd: list, verb: str, svc_name: str, *,
     (``active`` for start/restart, stopped for stop), else ``UNIT_JOB_STILL_RUNNING`` while
     the job still runs, 1 when it settled elsewhere. A call that returns in time is untouched.
     """
-    from hermes_cli.update_cmd_fleet import _systemctl
+    from hermes_agent.hermes_cli.update_cmd_fleet import _systemctl
 
     started = time.monotonic()
     try:
@@ -127,7 +127,7 @@ _RESTART_SEC_UNITS = (("ms", 0.001), ("us", 0.000001), ("min", 60.0), ("s", 1.0)
 def service_restart_sec(scope_cmd_: list, svc_name_: str, default: float = 0.0) -> float:
     """Read the unit's ``RestartUSec`` in seconds. ``is-active`` pollers must wait
     >= RestartSec + slack or they give up *during* the cooldown and misreport."""
-    from hermes_cli.update_cmd_fleet import _systemctl
+    from hermes_agent.hermes_cli.update_cmd_fleet import _systemctl
 
     try:
         _show = _systemctl(scope_cmd_ + ["show", svc_name_, "--property=RestartUSec", "--value"], timeout=5)

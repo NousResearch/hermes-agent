@@ -1,6 +1,6 @@
 """ZIP-download fallback for ``hermes update`` (Windows with broken git): two-phase stage/commit swap, dirty-tree guard.
 
-Split out of ``update_cmd.py``; every name is re-imported there so ``hermes_cli.update_cmd.<name>`` keeps
+Split out of ``update_cmd.py``; every name is re-imported there so ``hermes_agent.hermes_cli.update_cmd.<name>`` keeps
 resolving/monkeypatching. Origin helpers are imported lazily per function (no cycle; test patches stay effective).
 """
 
@@ -14,13 +14,13 @@ import sys
 from pathlib import Path
 from typing import Collection, Optional
 
-from hermes_cli._early_recovery import _keep_aside
-from hermes_cli._early_recovery_zip import (
+from hermes_agent.hermes_cli._early_recovery import _keep_aside
+from hermes_agent.hermes_cli._early_recovery_zip import (
     ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap, write_zip_swap_journal, zip_entry_identity, zip_swap_owner_lock)
-from hermes_cli.update_cmd_common import _record_stop
+from hermes_agent.hermes_cli.update_cmd_common import _record_stop
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("hermes_cli.update_cmd")
+logger = logging.getLogger("hermes_agent.hermes_cli.update_cmd")
 
 _ZIP_STAGING_ARTIFACT_SUFFIXES = ".hermes-update-staging", ".hermes-update-old"
 # Hermes' own root breadcrumbs: the swap journal + its owner lock, and the update/refresh markers.
@@ -67,7 +67,7 @@ def _remove_path(path: str, *, ignore_errors: bool = False) -> None:
 def _atomic_replace_dir(src: str, dst: str) -> None:
     """Replace *dst* with *src* without a half-deleted window (naive ``rmtree; copytree`` loses the old
     tree when the copy fails partway — likely here, since the ZIP path only runs when file I/O is flaky).
-    Thin alias over the two-phase helpers; retained for the ``hermes_cli.main`` re-export surface.
+    Thin alias over the two-phase helpers; retained for the ``hermes_agent.hermes_cli.main`` re-export surface.
 
     The naive ``rmtree(dst); copytree(src, dst)`` has a destructive window: if the copy fails partway
     (common on the Windows ZIP-update path, which only runs because file I/O is already flaky on that
@@ -199,7 +199,7 @@ def _commit_staged_replacements(staged, *, on_committed=None, tag: str = "", on_
     hardlinks, a complete copy) and ``os.replace`` lands the new bytes over it; only directories move
     aside. The root modules every launcher imports first
     (``hermes_constants``, ``hermes_bootstrap``) therefore always import, and ``hermes_bootstrap`` runs the
-    journal-driven restore even while a killed swap left a directory (``hermes_cli/`` included) moved aside.
+    journal-driven restore even while a killed swap left a directory (``hermes_agent/hermes_cli/`` included) moved aside.
     """
     swapped: list[tuple[str, str]] = []  # (dst, backup) in swap order; "" = absent
     try:
@@ -254,7 +254,7 @@ def _zip_overlay_block_reason(
     """
     if not (root / ".git").exists():
         return None
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_custody import run_git
 
     git_cmd = ["git", "-c", "windows.appendAtomically=false"] if sys.platform == "win32" else ["git"]
     result = run_git(
@@ -334,7 +334,7 @@ def _abort_zip_update_if_dirty_tree() -> None:
 
     See #87304.
     """
-    from hermes_cli.update_cmd import _m
+    from hermes_agent.hermes_cli.update_cmd import _m
     # Settle an interrupted swap first: only its journal tells its staging/backup siblings apart from a
     # user's lookalike file, and once settled none are left to refuse the retry on.
     restore_interrupted_zip_swap(_m().PROJECT_ROOT)
@@ -470,8 +470,8 @@ def _drop_journal_if_clean(root: Path, entries: list[str], suffixes=(".hermes-up
 def _journaled_stage_and_swap(extracted: str, entries: list[str], root: Path, target_sha) -> list:
     """Stage + swap under the ZIP swap journal and its owner lock (``_early_recovery``), so a kill at
     any point is finished or rolled back by the next launch and no staging/backup sibling leaks."""
-    from hermes_cli import update_cmd_commit as _commit
-    from hermes_cli.update_cmd import _UPDATE_CRITICAL_FILES, _m
+    from hermes_agent.hermes_cli import update_cmd_commit as _commit
+    from hermes_agent.hermes_cli.update_cmd import _UPDATE_CRITICAL_FILES, _m
 
     # A previous run killed mid-swap: settle it before staging over its leftovers. A journal it could
     # not settle is that swap's only record: never overwrite it with this run's.
@@ -569,7 +569,7 @@ def _download_and_swap_zip(branch: str, zip_url: str, target_sha: str | None = N
     Two-phase: stage every entry (dirs AND top-level files) beside its target, then swap all in with
     same-filesystem renames, rolling back on failure — one-at-a-time replacement left a mixed, unbootable
     tree on interruption."""
-    from hermes_cli.update_cmd import _m
+    from hermes_agent.hermes_cli.update_cmd import _m
 
     import tempfile
     from urllib.request import urlretrieve
@@ -602,7 +602,7 @@ def _download_and_swap_zip(branch: str, zip_url: str, target_sha: str | None = N
         with suppress(Exception):
             restore_interrupted_zip_swap(_m().PROJECT_ROOT)
             if not (Path(_m().PROJECT_ROOT) / ZIP_SWAP_JOURNAL).exists():
-                from hermes_cli import update_cmd_commit as _commit
+                from hermes_agent.hermes_cli import update_cmd_commit as _commit
                 _commit.disarm_commit_obligations()  # the old tree is whole again: nothing is owed
         print(f"✗ ZIP update failed: {e}")
         # Two-phase replace commits all or rolls all back, so no mixed tree here — don't push a needless reinstall.
@@ -622,7 +622,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
 
     A supplied commit keeps the archive on the target selected before Git failed.
     """
-    from hermes_cli.update_cmd import _m, _complete_source_update
+    from hermes_agent.hermes_cli.update_cmd import _m, _complete_source_update
     # The static archive would silently ignore --branch — the exact silent-divergence bug it exists to
     # prevent. Refuse rather than lie.
     branch = _m()._resolve_update_branch(args)
@@ -639,7 +639,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False,
     _abort_zip_update_if_dirty_tree()
     # Older callers lack the snapshot/receipt/lifecycle handoff. Refuse before swap.
     if completion_request is None:
-        from hermes_cli._old_updater import stop_for_relaunch
+        from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
         stop_for_relaunch(incomplete=True)
     if target_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", target_sha):
         raise ValueError("ZIP update requires an exact full commit SHA")

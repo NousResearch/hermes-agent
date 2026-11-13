@@ -1,9 +1,9 @@
 """Value checks for single config sections (voice, timezone, web backends), run by
-``hermes_cli.config.validate_config_structure`` for doctor and the startup warnings."""
+``hermes_agent.hermes_cli.config.validate_config_structure`` for doctor and the startup warnings."""
 
 from typing import Any
 
-from hermes_cli.config_issues import ConfigIssue, _issue
+from hermes_agent.hermes_cli.config_issues import ConfigIssue, _issue
 
 
 def _validate_voice(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
@@ -78,7 +78,7 @@ def _validate_web_backends(config: dict[str, Any], issues: list[ConfigIssue]) ->
 def _container_slots() -> dict[str, str]:
     """Dotted key -> ``"list"``/``"mapping"`` for every slot the schema fixes to a container:
     ``DEFAULT_CONFIG`` (sections included) plus the known-container table for roots it omits."""
-    from hermes_cli.config import _KNOWN_CONTAINER_TYPES, DEFAULT_CONFIG  # late: the facade imports this module
+    from hermes_agent.hermes_cli.config import _KNOWN_CONTAINER_TYPES, DEFAULT_CONFIG  # late: the facade imports this module
     slots: dict[str, str] = {}
 
     def walk(node: dict[str, Any], prefix: str) -> None:
@@ -102,7 +102,7 @@ def _validate_quoted_containers(config: dict[str, Any], issues: list[ConfigIssue
     import shlex
 
     import hermes_yaml as yaml
-    from hermes_cli.config import _SCALAR_AS_ONE_ITEM_LIST_KEYS, _looks_structured_value, cfg_get
+    from hermes_agent.hermes_cli.config import _SCALAR_AS_ONE_ITEM_LIST_KEYS, _looks_structured_value, cfg_get
     for key, kind in _container_slots().items():
         # ``parse_config_string_list`` readers accept the quoted form; nothing is ignored there.
         if key in _SCALAR_AS_ONE_ITEM_LIST_KEYS:

@@ -3,7 +3,7 @@
 Independently-runnable sections: Model & Provider, Terminal Backend, Agent Settings, Messaging
 Platforms, Tools. Section bodies live in sibling setup_* modules and are re-exported here; they
 resolve shared prompt/config helpers lazily through this module so test patches on
-``hermes_cli.setup.<name>`` keep working.
+``hermes_agent.hermes_cli.setup.<name>`` keep working.
 """
 
 import importlib.util
@@ -17,20 +17,20 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable
 
-from hermes_cli.curses_ui import MenuNavigationEvent, MenuNavigationStart
+from hermes_agent.hermes_cli.curses_ui import MenuNavigationEvent, MenuNavigationStart
 # Config helpers are re-exported (tests patch them on this module). display_hermes_home is
 # imported lazily at call sites (stale-module safety during hermes update).
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     cfg_get, DEFAULT_CONFIG, get_hermes_home, get_config_path, get_env_path, load_config, save_config,
     save_env_value, remove_env_value, get_env_value, ensure_hermes_home,
 )
-from hermes_cli.colors import Colors, color
-from hermes_cli.cli_output import print_error, print_info, print_success, print_warning
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.cli_output import print_error, print_info, print_success, print_warning
+from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 PROJECT_ROOT = Path(project_root_str())
 
@@ -112,7 +112,7 @@ def prompt(question: str, default: str | None = None, password: bool = False) ->
         if password:
             value = masked_secret_prompt(display)
         else:
-            from hermes_cli.cli_output import line_input
+            from hermes_agent.hermes_cli.cli_output import line_input
             value = line_input(display)
         return _sanitize_pasted_input(value).strip() or default or ""
     except (KeyboardInterrupt, EOFError):
@@ -190,7 +190,7 @@ def _handle_setup_menu_navigation(event: MenuNavigationEvent, value: object = No
 @contextmanager
 def _setup_navigation_scope():
     """Install and reliably restore the setup menu navigation context."""
-    from hermes_cli.curses_ui import reset_menu_navigation_handler, set_menu_navigation_handler
+    from hermes_agent.hermes_cli.curses_ui import reset_menu_navigation_handler, set_menu_navigation_handler
     token = _SETUP_NAVIGATION.set(_SetupNavigationState())
     menu_token = set_menu_navigation_handler(_handle_setup_menu_navigation)
     try:
@@ -261,7 +261,7 @@ def run_setup_action_with_navigation(
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0, description: str | None = None) -> int:
     """Single-select menu using curses. Delegates to curses_radiolist."""
-    from hermes_cli.curses_ui import curses_radiolist
+    from hermes_agent.hermes_cli.curses_ui import curses_radiolist
     return curses_radiolist(question, choices, selected=default, cancel_returns=-1, description=description)
 
 
@@ -281,7 +281,7 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
 
 def is_noninteractive() -> bool:
     """True when no human is available to answer a prompt: the dashboard/desktop spawn CLI actions
-    with ``stdin=DEVNULL`` and ``HERMES_NONINTERACTIVE=1`` (``hermes_cli/web_server.py``), where a
+    with ``stdin=DEVNULL`` and ``HERMES_NONINTERACTIVE=1`` (``hermes_agent/hermes_cli/web_server.py``), where a
     prompt that aborts on EOF would kill the spawned action — callers fall back to their default."""
     return os.environ.get("HERMES_NONINTERACTIVE", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -318,7 +318,7 @@ def prompt_yes_no(question: str, default: bool = True, description: str | None =
 def prompt_checklist(title: str, items: list, pre_selected: list | None = None) -> list:
     """Multi-select checklist; returns the sorted indices of selected items. ``pre_selected``
     start checked; Space toggles, Enter confirms, cancel keeps the pre-selection."""
-    from hermes_cli.curses_ui import curses_checklist
+    from hermes_agent.hermes_cli.curses_ui import curses_checklist
     pre = set(pre_selected or [])
     return sorted(curses_checklist(title, items, pre, cancel_returns=pre))
 
@@ -380,12 +380,12 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     """Configure the inference provider and default model via the ``hermes model`` flow (one code
     path — any provider added there is available here). *quick* is accepted for the first-time
     quick setup caller; rotation, vision and TTS keep safe defaults either way."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     print_header("Inference Provider")
     _info("Choose how to connect to your main chat model.",
           f"   Guide: {_DOCS_BASE}/integrations/providers", None)
-    from hermes_cli.main import select_provider_and_model
-    from hermes_cli.observability.shared_metrics_setup import provider_setup_surface
+    from hermes_agent.hermes_cli.main import select_provider_and_model
+    from hermes_agent.hermes_cli.observability.shared_metrics_setup import provider_setup_surface
     try:
         with provider_setup_surface("cli_setup"):
             select_provider_and_model()
@@ -393,7 +393,7 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         _info(None, "Provider setup skipped.")
     except Exception as exc:
         logger.debug("select_provider_and_model error during setup: %s", exc)
-        from hermes_cli.auth_error_copy import provider_setup_failure_lines
+        from hermes_agent.hermes_cli.auth_error_copy import provider_setup_failure_lines
         lead, *rest = provider_setup_failure_lines(exc, retry_command="hermes model")
         print_warning(lead)
         for line in rest:
@@ -507,7 +507,7 @@ def setup_agent_settings(config: dict):
 def setup_tools(config: dict, first_install: bool = False):
     """`hermes setup tools` == `hermes tools`: platform selection → toolset toggles → provider keys.
     ``first_install`` selects the simplified flow (no platform menu, prompts for all missing keys)."""
-    from hermes_cli.tools_config import tools_command
+    from hermes_agent.hermes_cli.tools_config import tools_command
     tools_command(first_install=first_install, config=config)
 
 
@@ -547,7 +547,7 @@ def setup_telemetry(config: dict):
     _info(*_SEND_CONSENT_EXPLAINER)
     # The answer is written to config.yaml here, not by the caller's later save: that save strips
     # values equal to the defaults, so a "no" would vanish and every surface would ask again.
-    from hermes_cli.observability.shared_metrics_consent import save_consent
+    from hermes_agent.hermes_cli.observability.shared_metrics_consent import save_consent
 
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
     sharing = shared_metrics.get("enabled") is True and shared_metrics.get("send") is True
@@ -564,9 +564,9 @@ def _record_send_consent_change(*, enabled: bool) -> None:
     """Reconcile consent windows at the moment the user decides — same single writer as the relay
     and the sender, so wizard, relay and mid-pass callers cannot disagree."""
     try:
-        from hermes_cli.observability.shared_metrics import SharedMetricsStore
-        from hermes_cli.observability.shared_metrics_sender import reconcile_send_consent
-        from hermes_cli.sqlite_util import write_txn
+        from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+        from hermes_agent.hermes_cli.observability.shared_metrics_sender import reconcile_send_consent
+        from hermes_agent.hermes_cli.sqlite_util import write_txn
         with SharedMetricsStore()._connection() as connection, write_txn(connection):
             reconcile_send_consent(connection, enabled)
     except Exception:
@@ -575,15 +575,15 @@ def _record_send_consent_change(*, enabled: bool) -> None:
 
 
 # Extracted sections, re-exported so callers and test patches keep resolving through
-# hermes_cli.setup. They import this module lazily inside bodies, so this is cycle-free.
+# hermes_agent.hermes_cli.setup. They import this module lazily inside bodies, so this is cycle-free.
 
-from hermes_cli.setup_tts import setup_tts
-from hermes_cli.setup_terminal import setup_terminal_backend
-from hermes_cli.setup_platforms import setup_gateway
-from hermes_cli.setup_summary import _print_setup_summary
-from hermes_cli.setup_migration import _skip_configured_section
-from hermes_cli.setup_agent_import import offer_agent_import
-from hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup
+from hermes_agent.hermes_cli.setup_tts import setup_tts
+from hermes_agent.hermes_cli.setup_terminal import setup_terminal_backend
+from hermes_agent.hermes_cli.setup_platforms import setup_gateway
+from hermes_agent.hermes_cli.setup_summary import _print_setup_summary
+from hermes_agent.hermes_cli.setup_migration import _skip_configured_section
+from hermes_agent.hermes_cli.setup_agent_import import offer_agent_import
+from hermes_agent.hermes_cli.setup_quick import _run_portal_one_shot, _run_quick_setup
 
 
 # ── Main Wizard Orchestrator ──
@@ -648,7 +648,7 @@ def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, imported_fr
             setup_gateway(config)
             return
         # An import does not imply consent to install a persistent service.
-        from hermes_cli.gateway_setup_service import ensure_gateway_service
+        from hermes_agent.hermes_cli.gateway_setup_service import ensure_gateway_service
         ensure_gateway_service(context="setup", interactive=True, config=config)
 
     def _step(key: str, label: str, run) -> tuple:
@@ -673,14 +673,14 @@ _FIRST_TIME_MODES = (
 def _run_setup_wizard_impl(args):
     """Run the interactive setup wizard: full/quick (auto-detected), ``--portal``, or one
     ``hermes setup <section>`` from SETUP_SECTIONS."""
-    from hermes_cli.config import is_managed, managed_error
+    from hermes_agent.hermes_cli.config import is_managed, managed_error
     if is_managed():
         managed_error("run setup wizard")
         return
     ensure_hermes_home()
     # Back up BEFORE --reset: save_config below overwrites the very file we copy (#3522, #77299).
     config_path = get_config_path()
-    from hermes_cli.config_backups import backup_config
+    from hermes_agent.hermes_cli.config_backups import backup_config
     _backup_path = backup_config(config_path, "pre-setup")
     if getattr(args, "reset", False):
         save_config(copy.deepcopy(DEFAULT_CONFIG))
@@ -705,7 +705,7 @@ def _run_setup_wizard_impl(args):
         return
 
     # Existing installation == a provider is configured
-    from hermes_cli.auth import get_active_provider
+    from hermes_agent.hermes_cli.auth import get_active_provider
     is_existing = bool(get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
                        or get_active_provider() is not None)
     _print_banner("│             ☤ Hermes Agent Setup Wizard                │",
@@ -739,7 +739,7 @@ def _run_setup_wizard_impl(args):
         setup_mode = prompt_choice("How would you like to set up Hermes?", [label for label, _ in _FIRST_TIME_MODES], 0)
         label, runner = _FIRST_TIME_MODES[setup_mode]
         if runner is not None:
-            from hermes_cli import setup_quick
+            from hermes_agent.hermes_cli import setup_quick
             # Quick Setup offers to keep a model the import brought (Full setup acknowledges it below).
             run_args = (config, hermes_home, is_existing) + (
                 (imported_from,) if runner == "_run_first_time_quick_setup" else ())
@@ -761,9 +761,9 @@ def _run_setup_wizard_impl(args):
 def _record_setup_completed(config: dict) -> None:
     """Count a wizard run that finished. Every setup flow ends here, so the one-time
     shared-metrics offer runs first: a user who opts in now is counted; the API checks enablement."""
-    from hermes_cli.observability.shared_metrics_consent import offer_consent_if_undecided
+    from hermes_agent.hermes_cli.observability.shared_metrics_consent import offer_consent_if_undecided
 
     offer_consent_if_undecided(config)
-    from hermes_cli.observability.shared_metrics_events import record_setup_completed
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_setup_completed
     model = config.get("model")
     record_setup_completed(surface="cli", provider=model.get("provider") if isinstance(model, dict) else None)

@@ -39,7 +39,7 @@ class TestCloudProviderCachePolicy:
         )
 
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "profile-provider"}},
         )
         providers = {}
@@ -103,7 +103,7 @@ class TestCloudProviderCachePolicy:
         first = Provider("first")
         second = Provider("second")
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "cache-replacement"}},
         )
         monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
@@ -174,7 +174,7 @@ class TestCloudProviderCachePolicy:
             return resolved
 
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "cache-race"}},
         )
         monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
@@ -207,7 +207,7 @@ class TestCloudProviderCachePolicy:
     def test_explicit_local_caches_permanently(self, monkeypatch):
         """`cloud_provider: local` is a positive choice and must stick."""
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "local"}},
         )
 
@@ -216,7 +216,7 @@ class TestCloudProviderCachePolicy:
 
         # Even if config later changes, the cache stays.
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "browser-use"}},
         )
         assert bs_cloud.get_cloud_provider() is None
@@ -225,7 +225,7 @@ class TestCloudProviderCachePolicy:
     def test_no_credentials_yet_does_not_cache_none(self, monkeypatch):
         """Auto-detect path with no creds: must NOT poison the cache."""
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {}},
         )
 
@@ -262,7 +262,7 @@ class TestCloudProviderCachePolicy:
         monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
         monkeypatch.setattr("hermes_agent.agent.browser_registry.get_provider", exploding_factory)
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "browser-use"}},
         )
 

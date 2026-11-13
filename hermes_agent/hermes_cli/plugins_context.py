@@ -1,9 +1,9 @@
 """``PluginContext``: the ``ctx`` every plugin's ``register(ctx)`` receives.
 
-Import it from :mod:`hermes_cli.plugins` (the public path, re-exported there). Every name the method
-bodies read that ``hermes_cli.plugins`` also binds (functions, classes, constants, ``logger``,
+Import it from :mod:`hermes_agent.hermes_cli.plugins` (the public path, re-exported there). Every name the method
+bodies read that ``hermes_agent.hermes_cli.plugins`` also binds (functions, classes, constants, ``logger``,
 ``replacement_coordinator``, stdlib modules) is read from that facade at call time (``_facade()``), so
-a patch on ``hermes_cli.plugins.<name>`` reaches ctx methods as it did when the class lived there.
+a patch on ``hermes_agent.hermes_cli.plugins.<name>`` reaches ctx methods as it did when the class lived there.
 """
 
 from __future__ import annotations
@@ -13,23 +13,23 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional
 
-from hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
-from hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
-from hermes_cli.plugins_ledger import PluginRegistration
-from hermes_cli.plugins_loader import _serialized_replacement
-from hermes_cli.plugins_manifest import PluginManifest
-from hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
-from hermes_cli.plugins_state import PluginState
+from hermes_agent.hermes_cli.plugins_capability_ctx import PluginCapabilityCtxMixin
+from hermes_agent.hermes_cli.plugins_dispatch import DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS
+from hermes_agent.hermes_cli.plugins_ledger import PluginRegistration
+from hermes_agent.hermes_cli.plugins_loader import _serialized_replacement
+from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
+from hermes_agent.hermes_cli.plugins_registrars import register_scoped_provider, scoped_provider_registrar
+from hermes_agent.hermes_cli.plugins_state import PluginState
 
 if TYPE_CHECKING:
-    from hermes_cli.plugins import PluginManager
+    from hermes_agent.hermes_cli.plugins import PluginManager
 
 _UNSET = object()
 
 
 def _facade():
-    """``hermes_cli.plugins``, late-imported (it imports this module)."""
-    import hermes_cli.plugins as facade
+    """``hermes_agent.hermes_cli.plugins``, late-imported (it imports this module)."""
+    import hermes_agent.hermes_cli.plugins as facade
     return facade
 
 
@@ -97,7 +97,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         re-checks ``gateway.platform_actions`` (legacy ``plugins.entries.<id>.allow_platform_actions``,
         default OFF) and returns ``{"ok": bool, ...}`` — verbs never raise into hook dispatch; no adapter
         handles or raw SDK objects."""
-        from hermes_cli.platform_actions import PlatformActions
+        from hermes_agent.hermes_cli.platform_actions import PlatformActions
         return PlatformActions(self.plugin_id)
 
     def _wrong_type(self, obj: Any, base_class: type, label: str, article: str = "a") -> bool:
@@ -210,7 +210,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         derived from ``HERMES_HOME`` — not ``_cli_ref``, which is None outside the interactive CLI —
         so gateway and kanban workers get it too."""
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from hermes_agent.hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name()
         except Exception:
             return "default"
@@ -245,7 +245,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         """Register a human approval transport, inactive until ``security.approval.transport:
         <name>`` selects it. It receives a redacted ``ApprovalRequest`` and returns only a
         correlated decision; policy and persistence stay host-owned. ``present_fn`` may be async."""
-        from hermes_cli.approval_transport import RegisteredApprovalTransport
+        from hermes_agent.hermes_cli.approval_transport import RegisteredApprovalTransport
         transports = self._manager._approval_transports
         clean = str(name).strip().lower()
         if clean == "builtin":
@@ -365,7 +365,7 @@ class PluginContext(PluginCapabilityCtxMixin):
     def _mcp_allowlist(plugin_id: str) -> list[str]:
         """Operator-granted MCP server allowlist; missing/unreadable -> [] (default-deny)."""
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             cfg = load_config() or {}
         except Exception:
             return []
@@ -380,7 +380,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         if self.manifest.source == "bundled":
             return True
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             with _facade()._plugin_home_scope(self._manager.home_path):
                 cfg = load_config() or {}
         except Exception:
@@ -398,34 +398,34 @@ class PluginContext(PluginCapabilityCtxMixin):
     ) -> bool:
         """Queue *content* for a session (``session_key``) or a chat in this plugin's own profile
         (``origin``); ``True`` means a host accepted it. Contract: plugins_injection.py, plugin docs."""
-        from hermes_cli.plugins_injection import inject_plugin_message
+        from hermes_agent.hermes_cli.plugins_injection import inject_plugin_message
         return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
 
     def session_cwd(self) -> str:
         """The calling session's recorded cwd, never the gateway's own (``plugin_session``)."""
-        from hermes_cli.plugin_session import context_cwd
+        from hermes_agent.hermes_cli.plugin_session import context_cwd
         return context_cwd(self._manager)
 
     def session_surface(self) -> str:
         """The calling session's client (``cli``/``tui``/``desktop``/``acp``) or messaging platform."""
-        from hermes_cli.plugin_session import context_surface
+        from hermes_agent.hermes_cli.plugin_session import context_surface
         return context_surface(self._manager)
 
     def post_message(self, text: str) -> Any:
         """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
         place. Never raises (``ok=False`` + ``error`` with no conversation): ``plugin_messages.py``."""
-        from hermes_cli.plugin_messages import post
+        from hermes_agent.hermes_cli.plugin_messages import post
         return post(self, text)
 
     async def apost_message(self, text: str) -> Any:
         """``post_message`` for async code on the gateway loop (edit with ``await handle.aedit``)."""
-        from hermes_cli.plugin_messages import apost
+        from hermes_agent.hermes_cli.plugin_messages import apost
         return await apost(self, text)
 
     def ask_choice(self, question: str, choices: list) -> Optional[str]:
         """From a sync slash-command handler: ask its user to pick one of *choices* (``str`` or
         ``{value, label?, description?}``); the value, or None if unanswerable: ``plugin_choices.py``."""
-        from hermes_cli.plugin_choices import ask_choice
+        from hermes_agent.hermes_cli.plugin_choices import ask_choice
         return ask_choice(question, choices)
 
     def _gateway_injection_allowed(self) -> bool:
@@ -465,7 +465,7 @@ class PluginContext(PluginCapabilityCtxMixin):
             _facade().logger.warning("Plugin '%s' tried to register a command with an empty name.", self.manifest.name)
             return
         with _facade().suppress(Exception):  # reject if it conflicts with a built-in command
-            from hermes_cli.commands import resolve_command
+            from hermes_agent.hermes_cli.commands import resolve_command
             if resolve_command(clean) is not None:
                 _facade().logger.warning("Plugin '%s' tried to register command '/%s' which conflicts "
                                          "with a built-in command. Skipping.", self.manifest.name, clean)
@@ -541,11 +541,11 @@ class PluginContext(PluginCapabilityCtxMixin):
 
     @_serialized_replacement
     def register_dashboard_auth_provider(self, provider) -> Optional[PluginRegistration]:
-        """Register a :class:`hermes_cli.dashboard_auth.DashboardAuthProvider` for the dashboard
+        """Register a :class:`hermes_agent.hermes_cli.dashboard_auth.DashboardAuthProvider` for the dashboard
         auth gate (non-loopback bind without ``--insecure``). Wrong type / duplicate name warn and
         are ignored, never raised."""
-        from hermes_cli.dashboard_auth import DashboardAuthProvider
-        from hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
+        from hermes_agent.hermes_cli.dashboard_auth import DashboardAuthProvider
+        from hermes_agent.hermes_cli.dashboard_auth.registry import register_global_provider, unregister_global_provider
         if self._wrong_type(provider, DashboardAuthProvider, "dashboard-auth provider"):
             return
         launch_scope = _facade().hermes_home_key(_facade().get_process_hermes_home())
@@ -672,7 +672,7 @@ class PluginContext(PluginCapabilityCtxMixin):
         ``defaults``, then user config in ``auxiliary.<key>``). An unknown or self-referential
         ``inherit_from`` logs a warning and registers the task without inheritance.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
-        from hermes_cli.plugins_aux_tasks import build_auxiliary_task_entry
+        from hermes_agent.hermes_cli.plugins_aux_tasks import build_auxiliary_task_entry
         existing = self._manager._aux_tasks.get(key)
         entry = build_auxiliary_task_entry(
             self.manifest.name, self.plugin_id, key, display_name=display_name, description=description,
@@ -761,7 +761,7 @@ class PluginContext(PluginCapabilityCtxMixin):
 
     def register_session_env(self, names, resolver: Callable[[str], Any]) -> PluginRegistration:
         """Each session's tool subprocesses get ``resolver(session_id)``'s ``names``, resolved at spawn."""
-        from hermes_cli.plugins_session_env import register_session_env
+        from hermes_agent.hermes_cli.plugins_session_env import register_session_env
         release = register_session_env(self._manager.scope_key, names, resolver, owner=self.plugin_id)
         return self._track("session_env", getattr(resolver, "__qualname__", "resolver"), release)
 
@@ -834,8 +834,8 @@ class PluginContext(PluginCapabilityCtxMixin):
         self._manager._subscribe_event(self.plugin_id, event, callback)
         _facade().logger.debug("Plugin %s subscribed to event: %s", self.manifest.name, event)
 
-    from hermes_cli.plugins_content import register_automation_blueprint, register_skill
-    from hermes_cli.plugin_rpc import emit_to_session, register_rpc
+    from hermes_agent.hermes_cli.plugins_content import register_automation_blueprint, register_skill
+    from hermes_agent.hermes_cli.plugin_rpc import emit_to_session, register_rpc
 
     # -- scoped provider registrars ----------------------------------------------------------------
     # One method per row of plugins_registrars.py's table, which also holds each method's docstring.

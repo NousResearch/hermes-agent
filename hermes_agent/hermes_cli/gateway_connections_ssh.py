@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from hermes_cli.gateway_connections_ssh_remote import (
+from hermes_agent.hermes_cli.gateway_connections_ssh_remote import (
     DEFAULT_READY_TIMEOUT_S,
     ConnectDeps,
     Connected,
@@ -28,7 +28,7 @@ from hermes_cli.gateway_connections_ssh_remote import (
     connect,
     disconnect_remote,
 )
-from hermes_cli.gateway_connections_ssh_transport import (
+from hermes_agent.hermes_cli.gateway_connections_ssh_transport import (
     SshConnection,
     SshEndpoint,
     SshReachError,

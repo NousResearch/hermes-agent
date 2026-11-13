@@ -12,8 +12,8 @@ from unittest import mock
 
 import pytest
 
-from hermes_cli import onepassword_secrets_cli as op_cli
-from hermes_cli import secrets_cli as bw_cli
+from hermes_agent.hermes_cli import onepassword_secrets_cli as op_cli
+from hermes_agent.hermes_cli import secrets_cli as bw_cli
 
 
 # ---------------------------------------------------------------------------

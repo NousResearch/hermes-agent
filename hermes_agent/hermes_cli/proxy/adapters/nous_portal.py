@@ -6,8 +6,8 @@ import logging
 import threading
 from typing import Any, Dict, FrozenSet, Optional
 
-from hermes_cli.anon_challenge import background_caller
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.anon_challenge import background_caller
+from hermes_agent.hermes_cli.auth import (
     AuthError,
     DEFAULT_NOUS_INFERENCE_URL,
     _load_auth_store,
@@ -21,7 +21,7 @@ from hermes_cli.auth import (
     _write_shared_nous_state,
     resolve_nous_runtime_credentials,
 )
-from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_agent.hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ class NousPortalAdapter(UpstreamAdapter):
             ).rstrip("/")
             return UpstreamCredential(bearer=runtime_key, base_url=base_url, expires_at=refreshed.get("expires_at"))
 
-    # auth.json access — kept local so hermes_cli.auth's public surface does not grow.
+    # auth.json access — kept local so hermes_agent.hermes_cli.auth's public surface does not grow.
 
     def _read_state(self) -> Optional[dict[str, Any]]:
         try:

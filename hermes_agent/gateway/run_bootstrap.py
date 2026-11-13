@@ -149,10 +149,10 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
 
     def _security_audit() -> None:
         # Warn-on-load, never blocks: surfaces root / weak-SSH / unauthenticated-listener exposure.
-        from hermes_cli.security_audit_startup import log_startup_security_warnings
+        from hermes_agent.hermes_cli.security_audit_startup import log_startup_security_warnings
 
         def _raw_cfg():
-            from hermes_cli.config import read_raw_config
+            from hermes_agent.hermes_cli.config import read_raw_config
             return read_raw_config()
 
         log_startup_security_warnings(hermes_home=_hermes_home, config=_best_effort(_raw_cfg))
@@ -265,7 +265,7 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
-    from hermes_cli.gateway_multiplex_mode import publish_pending_multiplex_decision
+    from hermes_agent.hermes_cli.gateway_multiplex_mode import publish_pending_multiplex_decision
     publish_pending_multiplex_decision()
     _claim_host_gateway_role(force=force)
     return True
@@ -320,7 +320,7 @@ async def _start_gateway_start_control_socket(runner):
 
         def _pause_for_update_handler() -> dict:
             try:
-                from hermes_cli.gateway import _get_restart_drain_timeout
+                from hermes_agent.hermes_cli.gateway import _get_restart_drain_timeout
                 _drain = float(_get_restart_drain_timeout())
             except Exception:
                 _drain = 30.0
@@ -489,7 +489,7 @@ async def _start_gateway_shutdown_tail(
             logger.debug("Control socket stop failed (non-fatal)", exc_info=True)
 
     def _stop_keepalive() -> None:
-        from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
+        from hermes_agent.hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive
         stop_nous_auth_keepalive()
 
     _best_effort(_stop_keepalive)
@@ -541,9 +541,9 @@ def _launch_home_may_multiplex(config=None) -> bool:
     name = profile_name_for_home(get_hermes_home())
     if name in (None, "default"):
         return True
-    from hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
+    from hermes_agent.hermes_cli.gateway_multiplex_mode import explicit_multiplex_flag
     if config is not None and not explicit_multiplex_flag(get_hermes_home()):
-        from hermes_cli.gateway_multiplex_mode import MultiplexDecision, log_multiplex_decision
+        from hermes_agent.hermes_cli.gateway_multiplex_mode import MultiplexDecision, log_multiplex_decision
         decision = MultiplexDecision(
             False, "guard",
             f"profile {name!r} launched the gateway, and only the default profile runs the multiplexer "
@@ -638,7 +638,7 @@ def _start_gateway_reserve_profiles(profile_homes) -> bool:
         # verdict (gateway.multiplex_profiles), not a transient fault: exit EX_CONFIG so systemd's
         # RestartPreventExitStatus=78 parks the unit instead of restart-looping (#51228, #97120).
         # Any other same-user contender keeps the ordinary "already running" exit 1.
-        from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+        from hermes_agent.hermes_cli.gateway import named_profile_served_by_running_multiplexer
         if named_profile_served_by_running_multiplexer():
             from hermes_agent.gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
             from hermes_agent.gateway.run import _write_runtime_status_quiet
@@ -721,7 +721,7 @@ def _start_gateway_early_environment_probe() -> None:
     """Background-start the host toolchain probe the warm-up and first prompt read (idempotent;
     honours ``agent.environment_probe: false``). Never raises: the warm-up still runs it lazily."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         agent_cfg = load_config_readonly().get("agent")
         if isinstance(agent_cfg, dict) and not agent_cfg.get("environment_probe", True):
             return
@@ -765,11 +765,11 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     )
     # Set here (not at import) so incidental hermes_agent.gateway.run imports from CLI code don't poison it.
     os.environ["HERMES_EXEC_ASK"] = "1"
-    from hermes_cli.update_proxy_env import restore_user_proxy_env
+    from hermes_agent.hermes_cli.update_proxy_env import restore_user_proxy_env
     restore_user_proxy_env()  # a gateway an update restarted keeps the user's proxy env, not the update's
     _start_gateway_resolve_terminal_cwd()
 
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    from hermes_agent.hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
 
     # Snapshot the revision while sys.modules matches disk so a later `git pull` is detected safely.
@@ -902,7 +902,7 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
             return record_startup()
 
         def _start_keepalive() -> None:
-            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+            from hermes_agent.hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
             start_nous_auth_keepalive()
 
         _unclean_exit = _best_effort(_lifecycle_record_startup, "Lifecycle ledger startup record failed: %s")

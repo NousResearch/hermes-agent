@@ -31,7 +31,7 @@ def _plugin(home, name, *, dependencies=True):
 
 @pytest.mark.parametrize("active", [None, "default", "profile"])
 def test_candidate_member_dirs_preserves_proposed_home_order_and_extras(isolated_home, monkeypatch, active):
-    from hermes_cli import plugins_admission
+    from hermes_agent.hermes_cli import plugins_admission
 
     home = isolated_home
     profile = home / "profiles" / "coder"
@@ -50,8 +50,8 @@ def test_candidate_member_dirs_preserves_proposed_home_order_and_extras(isolated
     extra_existing = expected[0]
     before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
     # Discovery must use PM's independent manifest reader, not application config/UI.
-    monkeypatch.setitem(sys.modules, "hermes_cli.config", None)
-    monkeypatch.setitem(sys.modules, "hermes_cli.plugins_cmd", None)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.config", None)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.plugins_cmd", None)
     result = plugins_admission.candidate_member_dirs(
         iter(["new", "blocked", "plain", "new"]), iter(["blocked"]),
         active_plugins_dir=str(selected_home / "plugins") if active else None,
@@ -99,9 +99,9 @@ import sys
 sys.path.insert(0, sys.argv[1])
 # No selected application environment, no PM engine, and no CLI config/UI reader.
 # pm.environments/pm.paths are stdlib boot leaves the recovery owner may use.
-for module in ('pm.client', 'pm.install', 'pm.store', 'pm.workspace', 'hermes_cli.config', 'hermes_cli.plugins_cmd'):
+for module in ('pm.client', 'pm.install', 'pm.store', 'pm.workspace', 'hermes_agent.hermes_cli.config', 'hermes_agent.hermes_cli.plugins_cmd'):
     sys.modules[module] = None
-from hermes_cli import plugins_transaction
+from hermes_agent.hermes_cli import plugins_transaction
 row = json.loads(sys.stdin.read())
 plugins_transaction.recover_plugin_publication(
     project=Path(sys.argv[2]), row=row, journal=Path(sys.argv[3]),
@@ -135,7 +135,7 @@ def test_old_publication_recovers_in_stdlib_using_supplied_row_and_journal(publi
 
 
 def test_old_publication_rolls_back_a_first_install(publication):
-    from hermes_cli import plugins_transaction
+    from hermes_agent.hermes_cli import plugins_transaction
     import shutil
 
     project, row, journal, _ = publication
@@ -149,7 +149,7 @@ def test_old_publication_rolls_back_a_first_install(publication):
 
 @pytest.mark.parametrize("invalid", ["target", "backup", "metadata", "edited-metadata"])
 def test_old_publication_refuses_unsafe_or_changed_state_without_writes(publication, tmp_path, invalid):
-    from hermes_cli import plugins_transaction
+    from hermes_agent.hermes_cli import plugins_transaction
 
     project, row, journal, _ = publication
     if invalid == "edited-metadata":

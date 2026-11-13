@@ -83,7 +83,7 @@ def test_selected_plugin_receives_tool_calls_and_unselected_stays_dormant(tmp_pa
         calls = sys.modules["_hermes_user_computer_use.cu-beta"].CALLS
         assert ("start", "standard") in calls and ("click", 3) in calls
         assert "_hermes_user_computer_use.cu-alpha" not in sys.modules  # installed, not selected: never imported
-        from hermes_cli.tools_config_providers import _computer_use_provider_rows  # `hermes tools` / Desktop rows
+        from hermes_agent.hermes_cli.tools_config_providers import _computer_use_provider_rows  # `hermes tools` / Desktop rows
         assert [r["computer_use_backend"] for r in _computer_use_provider_rows()] == ["cu-alpha", "cu-beta"]
         assert "_hermes_user_computer_use.cu-alpha" not in sys.modules  # listing does not import either
     finally:

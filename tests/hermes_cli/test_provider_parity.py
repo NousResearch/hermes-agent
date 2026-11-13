@@ -13,9 +13,9 @@ can never silently drift again when a provider plugin is added.
 
 from fastapi.testclient import TestClient
 
-from hermes_cli.models import CANONICAL_PROVIDERS
-from hermes_cli.provider_catalog import provider_catalog
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_agent.hermes_cli.models import CANONICAL_PROVIDERS
+from hermes_agent.hermes_cli.provider_catalog import provider_catalog
+from hermes_agent.hermes_cli.web_server import _SESSION_TOKEN, app
 
 client = TestClient(app)
 HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
@@ -66,7 +66,7 @@ def _accounts_tab_providers() -> set[str]:
 def test_every_hermes_model_provider_is_configurable_in_desktop():
     """PARITY CONTRACT: GUI (keys ∪ accounts) == the `hermes model` universe (listed providers):
     every listed provider is configurable, and an unlisted pre-release one is on neither tab."""
-    from hermes_cli.models_catalog_static import listed_canonical_providers
+    from hermes_agent.hermes_cli.models_catalog_static import listed_canonical_providers
 
     gui = _keys_tab_providers() | _accounts_tab_providers()
     listed = {e.slug for e in listed_canonical_providers()}

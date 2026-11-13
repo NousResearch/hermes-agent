@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
 
 class _FakeAgent:
@@ -20,7 +20,7 @@ class _FakeAgent:
 class _StubCLI:
     def _stage_and_swap_model(self, result, old_model):
         # Staging + in-place swap lives in a helper; run the real one on this stub.
-        import cli as _cli_mod
+        import hermes_agent.cli as _cli_mod
         return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
 
     model = "old/model"
@@ -41,7 +41,7 @@ class _StubCLI:
     def _confirm_and_apply_cli_model_switch(
         self, result, persist_global, one_turn, custom_provs=None
     ):
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
 
         return cli_mod.HermesCLI._confirm_and_apply_cli_model_switch(
             self, result, persist_global, one_turn, custom_provs
@@ -49,7 +49,7 @@ class _StubCLI:
 
 
 def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     stub = _StubCLI()
     stub.agent = _FakeAgent()
@@ -59,7 +59,7 @@ def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: printed.append(str(s)))
     monkeypatch.setattr(cli_mod, "save_config_value", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not persist")))
     monkeypatch.setattr(
-        "hermes_cli.inventory.load_picker_context",
+        "hermes_agent.hermes_cli.inventory.load_picker_context",
         lambda: SimpleNamespace(
             user_providers=None,
             custom_providers=None,
@@ -67,7 +67,7 @@ def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "hermes_cli.model_switch.switch_model",
+        "hermes_agent.hermes_cli.model_switch.switch_model",
         lambda **_: ModelSwitchResult(
             success=True,
             new_model="claude-sonnet-4.6",
@@ -78,7 +78,7 @@ def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
             provider_label="Anthropic",
         ),
     )
-    monkeypatch.setattr("hermes_cli.model_switch.resolve_display_context_length", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.resolve_display_context_length", lambda *a, **k: None)
 
     cli_mod.HermesCLI._handle_model_switch(
         stub,
@@ -92,7 +92,7 @@ def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
 
 
 def test_cli_restore_model_runtime_snapshot_restores_agent():
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     stub = _StubCLI()
     stub.agent = _FakeAgent()
@@ -115,7 +115,7 @@ def test_cli_restore_model_runtime_snapshot_restores_agent():
 
 
 def test_cli_restore_model_runtime_prefers_primary_runtime():
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     class Agent(_FakeAgent):
         _primary_runtime = None

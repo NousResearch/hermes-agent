@@ -1,4 +1,4 @@
-"""``hermes sessions repair-profiles`` — the CLI face of :mod:`hermes_cli.sessions_repair_profiles`.
+"""``hermes sessions repair-profiles`` — the CLI face of :mod:`hermes_agent.hermes_cli.sessions_repair_profiles`.
 
 Runs pre-DB (``_PRE_DB_HANDLERS``): it opens every profile's store itself rather than the one
 ambient ``SessionDB()``. Report-only unless ``--apply``; ``--json`` for automation.
@@ -9,7 +9,7 @@ import json
 import sys
 from typing import Dict, List
 
-from hermes_cli.sessions_repair_profiles import (
+from hermes_agent.hermes_cli.sessions_repair_profiles import (
     Finding, default_snapshot, enumerate_stores, live_gateway_homes, scan_stores,
 )
 
@@ -88,7 +88,7 @@ def cmd_repair_profiles(args) -> int:
             return 0
 
         if not getattr(args, "yes", False) and not as_json:
-            from hermes_cli.sessions_cmd import _confirm_or_exit_code
+            from hermes_agent.hermes_cli.sessions_cmd import _confirm_or_exit_code
             refused = _confirm_or_exit_code(
                 f"\nApply {len(repairable)} repair(s)? A snapshot of every store is taken first. [y/N] ",
                 declined="Aborted — nothing was changed.")

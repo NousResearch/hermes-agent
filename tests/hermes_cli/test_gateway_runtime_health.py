@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone, UTC
 
-from hermes_cli.gateway import _runtime_health_lines
+from hermes_agent.hermes_cli.gateway import _runtime_health_lines
 
 
 def _iso_age(seconds_ago: float) -> str:

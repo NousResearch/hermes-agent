@@ -46,7 +46,7 @@ os._exit(17)
     recovery = '''
 from pathlib import Path
 import sys
-from hermes_cli.runtime_state import runtime_lock,recover_publication
+from hermes_agent.hermes_cli.runtime_state import runtime_lock,recover_publication
 project=Path(sys.argv[1])
 with runtime_lock(project):
     recover_publication(project)

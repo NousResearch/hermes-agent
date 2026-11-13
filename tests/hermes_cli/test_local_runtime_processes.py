@@ -95,7 +95,7 @@ def test_owner_exit_kills_router_tree_not_external(tmp_path, stop_mode, nested):
             for role in ('control', 'owner'):
                 cmd = [sys.executable, str(script), str(tmp_path), role]
                 if nested and role == 'owner':
-                    from hermes_cli.local_runtime.processes import spawn_server
+                    from hermes_agent.hermes_cli.local_runtime.processes import spawn_server
                     launcher, outer_job = spawn_server(cmd, env=env, stdout=log, stderr=log)
                 else:
                     launcher = subprocess.Popen(cmd, env=env, stdout=log, stderr=log)
@@ -145,7 +145,7 @@ def test_owner_exit_kills_router_tree_not_external(tmp_path, stop_mode, nested):
 def test_failed_setup_never_runs_child_and_releases_handles(tmp_path, monkeypatch, failure):
     import ctypes
     from ctypes import wintypes
-    from hermes_cli.local_runtime import processes
+    from hermes_agent.hermes_cli.local_runtime import processes
 
     marker = tmp_path / 'child executed'
     jobs, children, handles = [], [], []

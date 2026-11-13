@@ -106,7 +106,7 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
 def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
     """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
     try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
+        from hermes_agent.hermes_cli.nous_account import get_nous_portal_account_info
 
         if get_nous_portal_account_info(force_fresh=True).paid_service_access is not True:
             return False
@@ -345,7 +345,7 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     if _body_text:
         _plines(agent, f"   Response: {_body_text}")
     try:
-        from hermes_cli.anon_auth import is_anonymous_agent
+        from hermes_agent.hermes_cli.anon_auth import is_anonymous_agent
         if is_anonymous_agent(agent):
             # The free tier has no credits, no agent key and no auth.json to inspect: its session
             # ended and could not be replaced. The two doors are a sign-in or another provider.
@@ -761,7 +761,7 @@ def recover_after_classification(
         from hermes_agent.agent.error_classifier import is_reasoning_required_rejection
         agent._reasoning_floor_required = is_reasoning_required_rejection(str(api_error))
         try:
-            from hermes_cli.models_reasoning_caps import refresh_reasoning_caps_async
+            from hermes_agent.hermes_cli.models_reasoning_caps import refresh_reasoning_caps_async
             refresh_reasoning_caps_async(agent.provider)
         except Exception:
             pass
@@ -930,7 +930,7 @@ def _print_nonretryable_auth_guidance(
                     f"         Nous catalog model, or run `/model openrouter:{model}` to use OpenRouter.",
                 )
         return
-    from hermes_cli.auth_plugin_providers import plugin_refresh_hook
+    from hermes_agent.hermes_cli.auth_plugin_providers import plugin_refresh_hook
     if status_code == 401 and plugin_refresh_hook(str(provider or "")) is not None:
         # A plugin OAuth grant the pool could not refresh: the fix is a fresh sign-in, not a key.
         from hermes_agent.agent.turn_failure_copy import oauth_relogin_command
@@ -953,7 +953,7 @@ def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool, door: 
     refusal, route = ctx.get("welcome_refusal"), ctx.get("welcome_route")
     if not refusal and not route:
         return ""
-    from hermes_cli.anon_auth import welcome_refusal_copy, welcome_route_refusal_copy
+    from hermes_agent.hermes_cli.anon_auth import welcome_refusal_copy, welcome_route_refusal_copy
     if refusal:
         return welcome_refusal_copy(refusal, model=str(model or ""), in_chat=in_chat, door=door)
     return welcome_route_refusal_copy(str(route), in_chat=in_chat, door=door)
@@ -997,7 +997,7 @@ def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
     """On the Nous free tier, a transport / server failure that outlived every retry reads as one
     plain sentence (the free model is having trouble) rather than the technical summary. Empty
     for every other route and for rate limits / billing, which have their own copy."""
-    from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, on_free_model
+    from hermes_agent.hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, on_free_model
     # Not ``unknown``: that is the classifier's catch-all for status-less local failures, which
     # are not the free model's trouble.
     if on_free_model(agent, base_url) and classified.reason in (
@@ -1021,7 +1021,7 @@ def _missing_vendor_prefix_suggestion(api_error: Exception, provider: Any, model
     if getattr(api_error, "status_code", None) != 404:
         return None
     try:
-        from hermes_cli.model_normalize import suggest_prefixed_model_id
+        from hermes_agent.hermes_cli.model_normalize import suggest_prefixed_model_id
 
         return suggest_prefixed_model_id(str(provider or ""), str(model or ""))
     except Exception:
@@ -1062,7 +1062,7 @@ def nonretryable_client_error_result(
         )
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     _prefix_suggestion = _missing_vendor_prefix_suggestion(api_error, provider, model)
-    from hermes_cli.left_core_migration import host_install_hint
+    from hermes_agent.hermes_cli.left_core_migration import host_install_hint
     if _moved_hint := host_install_hint(base_url):  # a host whose plugin left core: install it first
         _vlines(agent, f"   💡 {_moved_hint}")
     if _welcome_hint:
@@ -1477,7 +1477,7 @@ def compute_error_backoff(
         LIVE_RETRY_WAIT_CAP_S, RETRY_AFTER_CAP_S, adaptive_rate_limit_backoff, jittered_backoff,
         provider_retry_after_seconds,
     )
-    from hermes_cli.anon_auth import on_free_model
+    from hermes_agent.hermes_cli.anon_auth import on_free_model
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
     # 5xx responses (e.g. Cloudflare 520/524) also carry the header or a structured
@@ -1538,7 +1538,7 @@ def free_tier_cooldown_ends_turn(agent: Any, api_error: Exception, base_url: Any
     ``fallback.min_switch_reset_seconds`` relies on that wait."""
     from hermes_agent.agent.retry_utils import LIVE_RETRY_WAIT_CAP_S, provider_retry_after_seconds
     from hermes_agent.agent.session_source import is_attended
-    from hermes_cli.anon_auth import on_free_model
+    from hermes_agent.hermes_cli.anon_auth import on_free_model
     if not (on_free_model(agent, base_url) and is_attended(agent)):
         return False
     cooldown = provider_retry_after_seconds(api_error)
@@ -1770,7 +1770,7 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
             is_genuine_nous_rate_limit, is_long_welcome_rate_limit, record_nous_rate_limit)
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
-        from hermes_cli.anon_auth import is_anonymous_agent
+        from hermes_agent.hermes_cli.anon_auth import is_anonymous_agent
         anonymous = is_anonymous_agent(agent)
         _classified_ctx = getattr(classified, "error_context", None) or {}
         # Only an anonymous request's fairshare body is an allowance verdict; named

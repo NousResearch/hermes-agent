@@ -33,7 +33,7 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
     otherwise it warns and continues. Only ImportError is swallowed — a broken config must
     fail visibly rather than silently disable enforcement."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         from hermes_agent.agent.proxy_sources import iron_proxy as ip
     except ImportError as exc:
         logger.debug("Egress proxy plumbing unavailable: %s", exc)
@@ -127,7 +127,7 @@ def _egress_reuse_fingerprint(
 def _egress_enforce_on_docker(default: bool = True) -> bool:
     """Read proxy.enforce_on_docker; any config failure fails safe to *default*."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         return bool((load_config().get("proxy") or {}).get("enforce_on_docker", default))
     except (ImportError, OSError):
         return default

@@ -19,15 +19,15 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-import hermes_cli.plugins as plugins_mod
+import hermes_agent.hermes_cli.plugins as plugins_mod
 from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config
-from hermes_cli.plugins import PluginManager
-from hermes_cli.web_server_config import (
+from hermes_agent.hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _apply_aux_assignment_sync, _apply_model_assignment_sync, _aux_task_slots,
     _stale_aux_pins,
 )
-from hermes_cli.web_server_profiles import _profile_scope
-from hermes_cli.web_routers.models import get_auxiliary_models
+from hermes_agent.hermes_cli.web_server_profiles import _profile_scope
+from hermes_agent.hermes_cli.web_routers.models import get_auxiliary_models
 
 
 def _write_plugin(home: Path, name: str, register_call: str) -> None:
@@ -118,7 +118,7 @@ def test_pin_persists_per_profile_and_is_honored_by_resolution(two_profile_homes
 
 def test_assignment_reset_and_stale_pins_cover_plugin_tasks(two_profile_homes, monkeypatch):
     saved: dict = {}
-    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
     cfg: dict = {"auxiliary": {}}
 
     out = _apply_aux_assignment_sync(cfg, "openrouter", "fast-model", "alpha_task", "", "")
@@ -148,7 +148,7 @@ def test_plugin_discovery_failure_leaves_builtins_working(two_profile_homes, mon
     def _boom():
         raise RuntimeError("plugin scan exploded")
 
-    # Patch where production reads: the resolver imports the name from hermes_cli.plugins at call time.
+    # Patch where production reads: the resolver imports the name from hermes_agent.hermes_cli.plugins at call time.
     monkeypatch.setattr(plugins_mod, "get_plugin_auxiliary_tasks", _boom)
     assert _aux_task_slots() == _AUX_TASK_SLOTS
     tasks = [row["task"] for row in get_auxiliary_models(profile=None)["tasks"]]

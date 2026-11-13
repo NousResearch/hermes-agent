@@ -14,7 +14,7 @@ from acp.schema import (
     SessionCapabilities, SessionForkCapabilities, SessionListCapabilities, SessionResumeCapabilities,
 )
 
-from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError, connect_gateway
 from hermes_constants import get_hermes_home
 from hermes_agent.acp_adapter.gateway_reply import GatewayReplyMixin, _text
 from hermes_agent.acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
@@ -35,7 +35,7 @@ def _slash_command(text):
     name = stripped.split(None, 1)[0][1:]
     if not name or '/' in name:
         return None
-    from hermes_cli.commands import resolve_command
+    from hermes_agent.hermes_cli.commands import resolve_command
     command = resolve_command(name)
     if command is not None:
         return command.name
@@ -71,7 +71,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._connection = None
         self._connect_lock = asyncio.Lock()
         # A per-task overlay HERMES_HOME attaches to the profile its symlinked lock names (#138949).
-        from hermes_cli.gateway_runtime import gateway_profile_home
+        from hermes_agent.hermes_cli.gateway_runtime import gateway_profile_home
         self._home = gateway_profile_home(get_hermes_home())
         self._snapshots = {}
         self._event_task = None
@@ -111,7 +111,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         # Editor-held compression-tip id -> logical session id (see ``_resume``).
         self._aliases = {}
         self._form_elicitation = False
-        from hermes_cli.gateway_mutations import PreparedMutations
+        from hermes_agent.hermes_cli.gateway_mutations import PreparedMutations
         self._mutations = PreparedMutations()
         # Session -> title the editor was last shown (``session_info_update`` fires on a change).
         self._titles = {}
@@ -138,7 +138,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             self._form_elicitation = client_supports_form_elicitation(message.get("params"))
 
     async def initialize(self, **kwargs):
-        from hermes_cli import __version__
+        from hermes_agent.hermes_cli import __version__
         from hermes_agent.acp_adapter.auth import build_auth_methods
         return InitializeResponse(protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=__version__),
@@ -182,7 +182,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         The fresh snapshot carries the new replay epoch/sequence and the authority's current
         pending rows (a turn lost in the restart is ``unknown`` there, never resubmitted); the
         editor's borrowed MCP servers are re-attached because a restarted owner has none."""
-        from hermes_cli.gateway_client import GatewayRPCError
+        from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
         for session_id in list(self._snapshots):
             params = {"editor": self._editor_mcp[session_id]} if session_id in self._editor_mcp else {}
             try:
@@ -274,7 +274,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if ("acp" not in descriptor.get("session_create", {}).get("sources", [])
                 or "acp-editor-policy-v1" not in descriptor.get("capabilities", [])):
             raise GatewayClientError("acp_policy_unavailable")
-        from hermes_cli.gateway_chat import env_launch_flags
+        from hermes_agent.hermes_cli.gateway_chat import env_launch_flags
         # `hermes acp --yolo` / `--safe-mode` / ... reach this process as their env equivalents; the
         # owner does not inherit them, so they freeze into this session's policy or not at all.
         flags = env_launch_flags()
@@ -335,7 +335,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _attach_info(self, client, session_id):
         """``session.info`` for a session to attach. A thread main's in-process server wrote has no
         gateway policy yet; ``session.resume`` is the verb that adopts it (``LEGACY_LOCAL_SOURCES``)."""
-        from hermes_cli.gateway_client import GatewayRPCError
+        from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
         try:
             return await client.rpc("session.info", session_id=session_id)
         except GatewayRPCError as exc:
@@ -348,7 +348,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
     async def _resume(self, cwd, held_id, mcp_servers):
         client = await self._client()
         from hermes_agent.acp_adapter.catalog import logical_session_id
-        from hermes_cli.gateway_client import GatewayRPCError
+        from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
         session_id = await asyncio.to_thread(logical_session_id, self._home / "state.db", held_id)
         # The latest load names the id this editor addresses the conversation by.
         self._aliases = {held: sid for held, sid in self._aliases.items() if sid != session_id}
@@ -481,7 +481,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         from acp.schema import SetSessionModelResponse
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
-        from hermes_cli.models import parse_model_input
+        from hermes_agent.hermes_cli.models import parse_model_input
         # Picker IDs include the provider, as on the in-process ACP switch path.
         provider, model = await asyncio.to_thread(parse_model_input, model_id, '')
         payload = {'model': model, **({'provider': provider} if provider else {})}
@@ -506,7 +506,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         the same selection once with the owner's token (as Ink/Desktop); no, or no editor, keeps the
         committed model, and the editor is told which outcome it got, never left on the promise."""
         from hermes_agent.acp_adapter.gateway_commands import _model_text, deferred_pick_text, refused_pick_text
-        from hermes_cli.gateway_mutations import model_refusal_text
+        from hermes_agent.hermes_cli.gateway_mutations import model_refusal_text
 
         async def say(text):
             if self._conn:
@@ -548,7 +548,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         async def confirm(refusal):
             from acp.schema import AllowedOutcome, PermissionOption
             from hermes_agent.agent.i18n import t
-            from hermes_cli.gateway_mutations import confirmation_title
+            from hermes_agent.hermes_cli.gateway_mutations import confirmation_title
             title = confirmation_title(refusal)
             tool_call = acp.update_tool_call(
                 f"model-confirm-{uuid.uuid4().hex[:12]}", title=f"{title}: {refusal.get('target_model', '')}",
@@ -686,7 +686,7 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             link, resumes = self._link, self._resumes.get(session_id, 0)
             receipt = await client.rpc("prompt.submit", session_id=session_id, input_id=input_id, **submit)
         except BaseException as exc:
-            from hermes_cli.gateway_client import GatewayRPCError
+            from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
             if not isinstance(exc, GatewayRPCError):
                 # Transport loss, timeout or cancel before the ack: the owner may hold this admission.
                 # Keep its identity for the editor's retry of the same prompt (latest 64 sessions).
@@ -814,14 +814,14 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                                          or self._failure is not None or self._link != link)
         if self._adopted.get(session_id, 0) > resumes:
             # Held behind a full queue, never dropped: a full queue parks the reader, not the link.
-            from hermes_cli.gateway_client import put_behind
+            from hermes_agent.hermes_cli.gateway_client import put_behind
             put_behind(self._gateway.events, (session_id, admission_id))
 
     async def _recover(self, session_id, admission_id):
         """Queued: it lost nothing. Running: cut until its live completion. Unknown: the waiter refuses it.
         Unlisted: it ended in the hole and its receipt settles it (unreadable: that prompt alone fails).
         Terminal evidence received, being delivered or already delivered always wins."""
-        from hermes_cli.gateway_replay_gap import pending_status, settled
+        from hermes_agent.hermes_cli.gateway_replay_gap import pending_status, settled
         status = pending_status(self._snapshots[session_id].get("pending"), admission_id)
         if status in ("queued", "unknown") or {admission_id} & (
                 self._terminals.keys() | self._settling | self._receipted.keys()):

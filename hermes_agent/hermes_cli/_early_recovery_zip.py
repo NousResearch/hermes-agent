@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from hermes_cli._early_recovery import (
+from hermes_agent.hermes_cli._early_recovery import (
     _CLAIM_HELD_ERRNOS, ZIP_SWAP_JOURNAL, _keep_aside, _lock_fd, _project_root, _pytest_owns_live_checkout,
     write_durable_text)
 

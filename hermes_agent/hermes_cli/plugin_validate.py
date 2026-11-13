@@ -24,12 +24,12 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli.plugin_validate_core_override import check_core_override
-from hermes_cli.plugin_validate_desktop import check_desktop_surface
-from hermes_cli.plugin_validate_private_imports import check_private_imports
-from hermes_cli.plugin_validate_locales import check_language_packs
-from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.plugin_validate_core_override import check_core_override
+from hermes_agent.hermes_cli.plugin_validate_desktop import check_desktop_surface
+from hermes_agent.hermes_cli.plugin_validate_private_imports import check_private_imports
+from hermes_agent.hermes_cli.plugin_validate_locales import check_language_packs
+from hermes_agent.hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 # Admission accepts exactly the ``config_schema`` types the loader type-checks at load time (and the
@@ -83,11 +83,11 @@ class ValidationReport:
 def _requires_hermes_spec_valid(spec: str) -> bool:
     """Strictly validate a ``requires_hermes`` spec.
 
-    Unlike :func:`hermes_cli.plugins_manifest.version_satisfies` (permissive at load
+    Unlike :func:`hermes_agent.hermes_cli.plugins_manifest.version_satisfies` (permissive at load
     time), validation REJECTS clauses whose version segment doesn't parse —
     a typo'd spec should fail admission, not silently gate nothing.
     """
-    from hermes_cli.plugins_manifest import _VERSION_COMPARATOR_RE, _version_tuple
+    from hermes_agent.hermes_cli.plugins_manifest import _VERSION_COMPARATOR_RE, _version_tuple
 
     for clause in spec.split(","):
         clause = clause.strip()
@@ -188,9 +188,9 @@ def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
 
 
 def _check_oauth(report: ValidationReport, manifest: dict, plugin_dir: Path) -> None:
-    """``oauth:`` clients (hermes_cli.plugin_oauth): shape, https and declared variables fail admission; a
+    """``oauth:`` clients (hermes_agent.hermes_cli.plugin_oauth): shape, https and declared variables fail admission; a
     host outside the IdP's domains and plugin code that names a token URL are reviewer warnings."""
-    from hermes_cli.plugin_oauth import oauth_admission_problems, oauth_admission_warnings
+    from hermes_agent.hermes_cli.plugin_oauth import oauth_admission_problems, oauth_admission_warnings
 
     if manifest.get("oauth") in (None, []):
         report.add("oauth", True, "not declared")
@@ -371,7 +371,7 @@ emit(recorded)
 
 
 def _probe_options(manifest: dict) -> dict:
-    from hermes_cli.plugins import PluginContext
+    from hermes_agent.hermes_cli.plugins import PluginContext
 
     public = [n for n in dir(PluginContext) if not n.startswith("_")]
     return {
@@ -603,7 +603,7 @@ def validate_plugin_dir(
     check_private_imports(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
     check_language_packs(report, manifest, plugin_dir)
-    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+    from hermes_agent.hermes_cli.plugin_isolation_audit import audit_plugin_dir
     report.isolation = audit_plugin_dir(plugin_dir, manifest).to_dict()
     return report
 
@@ -687,7 +687,7 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
     diagnostics (schema shape, name, supported subset).
     """
     try:
-        from hermes_cli.agent_plugins import load_agent_plugin
+        from hermes_agent.hermes_cli.agent_plugins import load_agent_plugin
         from hermes_platform.resolver.availability import availability
 
         with tempfile.TemporaryDirectory() as data_root:
@@ -710,7 +710,7 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
-    from hermes_cli.agent_plugins import manifest_config_schema
+    from hermes_agent.hermes_cli.agent_plugins import manifest_config_schema
     _check_config_spec(report, {"config_schema": manifest_config_schema(manifest)})
     for server_name, config in package.mcp_servers.items():
         if config.get("trust") == "untrusted":
@@ -732,6 +732,6 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         report.add(f"server availability: {server_name}", True, detail)
     _check_security_scan(report, plugin_dir)
     check_desktop_surface(report, plugin_dir)
-    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+    from hermes_agent.hermes_cli.plugin_isolation_audit import audit_plugin_dir
     report.isolation = audit_plugin_dir(plugin_dir, manifest).to_dict()
     return report

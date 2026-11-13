@@ -38,7 +38,7 @@ def _write_plugin(root: Path, marker: Path) -> Path:
 
 
 def test_doctor_runs_on_unload_during_teardown(tmp_path: Path) -> None:
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
 
     marker = tmp_path / "unloaded.marker"  # outside the temp HERMES_HOME
     plugin = _write_plugin(tmp_path, marker)

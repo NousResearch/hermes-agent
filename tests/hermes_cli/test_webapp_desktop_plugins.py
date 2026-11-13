@@ -12,8 +12,8 @@ import os
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
-from hermes_cli.web_routers import desktop_plugins
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.web_routers import desktop_plugins
 
 
 def _client(monkeypatch, surface):
@@ -223,8 +223,8 @@ def test_a_plugin_installed_through_the_backend_is_served_to_the_browser(webapp,
     # browser's loader reads exactly what the Webapp serves.
     import subprocess
 
-    from hermes_cli import plugins_cmd
-    from hermes_cli.desktop_plugin_install import install_desktop_plugin
+    from hermes_agent.hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli.desktop_plugin_install import install_desktop_plugin
 
     repo = _git_plugin_repo(tmp_path / "gizmo", {"plugin.js": "export default { id: 'gizmo' }\n",
                                                  "panel.js": "export const x = 1\n"})

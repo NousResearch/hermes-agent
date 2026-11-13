@@ -18,11 +18,11 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.agent import relay_runtime
-from hermes_cli.observability import relay_shared_metrics
-from hermes_cli.observability import shared_metrics as store_module
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability import shared_metrics_install_run as install_run
-from hermes_cli.observability import shared_metrics_process as process_metrics
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli.observability import shared_metrics as store_module
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability import shared_metrics_install_run as install_run
+from hermes_agent.hermes_cli.observability import shared_metrics_process as process_metrics
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = ROOT / "scripts" / "install.sh"
@@ -36,7 +36,7 @@ def marks(tmp_path, monkeypatch):
     policy = {"on": True}
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly",
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": policy["on"]}}},
     )
     monkeypatch.setattr(relay_shared_metrics, "enabled", lambda: policy["on"])
@@ -174,13 +174,13 @@ def test_receipt_is_recorded_only_on_a_day_the_sender_can_ever_send(marks, monke
     """The opt-in usually happens inside the install (setup asks), so the first start is the opt-in day,
     whose package CONSENT_GATE_SQL never passes (period_start < opened_at). The receipt waits for the
     first start on a later day, and the package carrying it then passes the real gate."""
-    from hermes_cli.observability.shared_metrics_sender import CONSENT_GATE_SQL, reconcile_send_consent
-    from hermes_cli.sqlite_util import write_txn
+    from hermes_agent.hermes_cli.observability.shared_metrics_sender import CONSENT_GATE_SQL, reconcile_send_consent
+    from hermes_agent.hermes_cli.sqlite_util import write_txn
 
     t0 = datetime(2026, 10, 6, tzinfo=UTC)
     clock = {"now": t0 + timedelta(hours=9)}
     monkeypatch.setattr(store_module, "_utc_now", lambda: clock["now"])
-    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly",
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.read_raw_config_readonly",
                         lambda: {"telemetry": {"shared_metrics": {"enabled": True, "send": True}}})
     store = store_module.SharedMetricsStore()
 
@@ -218,7 +218,7 @@ def test_receipt_is_recorded_only_on_a_day_the_sender_can_ever_send(marks, monke
 
 def test_receipt_waits_without_an_open_send_window_and_is_recorded_at_once_when_kept_local(marks, monkeypatch):
     config = {"enabled": True, "send": True}
-    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly",
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.read_raw_config_readonly",
                         lambda: {"telemetry": {"shared_metrics": config}})
     receipt = _park(marks.home, _receipt())
     install_run.report_pending_installs(marks.home)  # send on, no window recorded yet
@@ -255,11 +255,11 @@ def test_relay_instrumentation_off_keeps_the_receipt_instead_of_latching_it_unre
 def test_every_opt_out_answer_purges_pending_receipts(marks, monkeypatch):
     """A "No" from setup, the pre-chat offer, the dashboard banner or `hermes config` goes through
     save_consent; none of them starts a process that purges, so the answer itself must."""
-    from hermes_cli.observability import shared_metrics_consent as consent
-    from hermes_cli.observability import shared_metrics_update as update_metrics
+    from hermes_agent.hermes_cli.observability import shared_metrics_consent as consent
+    from hermes_agent.hermes_cli.observability import shared_metrics_update as update_metrics
 
-    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
-    monkeypatch.setattr("hermes_cli.setup._record_send_consent_change", lambda **_: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.setup._record_send_consent_change", lambda **_: None)
     install = _park(marks.home, _receipt())
     parked = update_metrics.pending_updates_dir(marks.home)
     parked.mkdir(parents=True)

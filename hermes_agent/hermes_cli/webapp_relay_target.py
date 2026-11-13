@@ -1,4 +1,4 @@
-"""The Webapp proxy's async view of :mod:`hermes_cli.gateway_connections_reach`.
+"""The Webapp proxy's async view of :mod:`hermes_agent.hermes_cli.gateway_connections_reach`.
 
 That module answers, per saved connection, where to dial and with which credentials, exactly as
 native Desktop sends them (session token, refreshed native bearer, SSH tunnel). It blocks for as
@@ -18,10 +18,10 @@ from typing import Optional
 
 import httpx
 
-from hermes_cli import gateway_connections as store
-from hermes_cli import gateway_connections_oauth as oauth
-from hermes_cli import gateway_connections_reach as reach
-from hermes_cli.gateway_connections_ssh_transport import SshReachError
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections_oauth as oauth
+from hermes_agent.hermes_cli import gateway_connections_reach as reach
+from hermes_agent.hermes_cli.gateway_connections_ssh_transport import SshReachError
 
 #: The socket that opens only with a ticket of its own (``web_session_sockets.HOST_TERMINAL_SOCKET``).
 _OWN_TICKET_PATHS = {"/api/host-terminal": "host-terminal"}

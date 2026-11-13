@@ -1,6 +1,6 @@
 """A user's named MoA presets are not schema-defaulted config options."""
 
-from hermes_cli import config as hermes_config
+from hermes_agent.hermes_cli import config as hermes_config
 
 
 def test_missing_config_fields_ignores_user_named_presets_but_checks_schema_options(monkeypatch):

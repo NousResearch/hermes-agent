@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 
 from hermes_constants import get_hermes_home
-from hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, resolve_source_target
+from hermes_agent.hermes_cli.source_releases import OFFICIAL_REPOSITORY, _GITHUB_ORIGIN, resolve_source_target
 
 logger = logging.getLogger(__name__)
 UPDATE_AVAILABLE_NO_COUNT = -1
@@ -41,7 +41,7 @@ def source_git_env() -> dict[str, str]:
     an upstream tip the clone never fetched would download its history, and the
     probe timeout kills only git itself, orphaning the fetch (see NO_LAZY_FETCH_ENV).
     """
-    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+    from hermes_agent.hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
 
     env = noninteractive_git_env()
     # Pathspec-mode overrides change how every probe's path arguments match
@@ -61,7 +61,7 @@ _GIT_TEXT_KW = {"text": True, "encoding": "utf-8", "errors": "replace"}
 def _git_run(args: list[str], *, cwd: Optional[Path] = None, timeout: int = 5, text: bool = True,
              git: str = "git"):
     """Read Git state without prompts, optional index writes, or inherited targeting."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 
     kwargs: dict = {"creationflags": windows_hide_flags(), "env": source_git_env(), "stdin": subprocess.DEVNULL}
     try:
@@ -113,13 +113,13 @@ def _github_compare_behind(current_rev: str, target_rev: str, repository: str = 
 
 
 def _request(url: str, accept: str = "application/vnd.github+json") -> str:
-    """GET an api.github.com resource with the credential ladder in hermes_cli.github_api.
+    """GET an api.github.com resource with the credential ladder in hermes_agent.hermes_cli.github_api.
 
     A token GitHub rejects drops this request to anonymous rather than failing the
     check on a stale credential: 401, or a 403 that is not a spent rate limit (a
     suspended or restricted account's token, still printed by ``gh auth token``, #134335).
     """
-    from hermes_cli.github_api import github_token
+    from hermes_agent.hermes_cli.github_api import github_token
 
     token = github_token()
     try:
@@ -154,7 +154,7 @@ def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
     # GitHub 404 can also mean a private repository: it must not heal a branch.
     failure = None
     if repository:
-        from hermes_cli.github_api import describe_github_failure, github_token
+        from hermes_agent.hermes_cli.github_api import describe_github_failure, github_token
         try:
             sha = _request(f"https://api.github.com/repos/{repository}/commits/{quote(branch, safe='')}",
                            "application/vnd.github.sha")
@@ -215,8 +215,8 @@ def _read_json(path: Path):
 
 def _unsupported_reason(stamp: dict, root: Path, *, explicit_root: bool, embedded: Optional[str]) -> Optional[dict]:
     """Fields explaining why this install cannot self-update from Git, or None when it can."""
-    from hermes_cli.config import detect_install_method
-    from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
+    from hermes_agent.hermes_cli.config import detect_install_method
+    from hermes_agent.hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE
 
     if stamp.get("source") == "commit-build":
         return {"reason": "commit-build", "message": COMMIT_BUILD_UPDATE_MESSAGE}
@@ -241,7 +241,7 @@ def _installed_git(git: str) -> str:
     """
     if git != "git" or shutil.which(git):
         return git
-    from hermes_cli.update_pause_record import _git_executable
+    from hermes_agent.hermes_cli.update_pause_record import _git_executable
 
     return _git_executable()
 
@@ -324,7 +324,7 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
     from queue import Empty, Queue
     from threading import Thread
 
-    from hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
+    from hermes_agent.hermes_cli.update_downgrade_guard import STATE_MODULES, defines_runtime
 
     deadline = time.monotonic() + _RUNTIME_LOOKUP_SECONDS
     replies: Queue[Optional[str]] = Queue()
@@ -410,7 +410,7 @@ def _update_refuses(co: _Checkout, target: str, home: Path) -> bool:
     """The updater's downgrade refusal, asked read-only. An embedded checkout has no git to ask."""
     if co.embedded:
         return False
-    from hermes_cli.update_downgrade_guard import would_refuse
+    from hermes_agent.hermes_cli.update_downgrade_guard import would_refuse
 
     def git(*args: str) -> int:
         result = _git_run(list(args), cwd=co.root, git=co.git, text=False, timeout=20)
@@ -553,10 +553,10 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     Only the default (running installation) may use HERMES_REVISION. An explicit
     target must never inherit the host process's embedded revision or stamp.
     """
-    from hermes_cli.config import get_project_root, require_readable_config_before_write
-    from hermes_cli.steward import read_install_stamp
-    from hermes_cli.update_channel import channel_record, install_id, resolve_update_channel, rides_default_channel
-    from hermes_cli.release_channels import validate_name
+    from hermes_agent.hermes_cli.config import get_project_root, require_readable_config_before_write
+    from hermes_agent.hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli.update_channel import channel_record, install_id, resolve_update_channel, rides_default_channel
+    from hermes_agent.hermes_cli.release_channels import validate_name
 
     embedded = (os.environ.get("HERMES_REVISION") or None) if install_root is None else None
     root = Path(install_root if install_root is not None else get_project_root()).resolve()
@@ -620,7 +620,7 @@ def main() -> None:
     parser.add_argument("--home", type=Path, required=True)
     parser.add_argument("--git", default="git")
     parser.add_argument("--branch")
-    from hermes_cli.release_channels import validate_name
+    from hermes_agent.hermes_cli.release_channels import validate_name
     parser.add_argument("--channel", type=validate_name)
     parser.add_argument("--cache-path", type=Path)
     parser.add_argument("--branch-config-path", type=Path)
@@ -631,7 +631,7 @@ def main() -> None:
     with contextlib.redirect_stdout(sys.stderr):
         if args.set_channel:
             from hermes_constants import set_hermes_home_override
-            from hermes_cli.update_channel import set_install_channel
+            from hermes_agent.hermes_cli.update_channel import set_install_channel
 
             # The record belongs in the --home profile's config.yaml, as the check reads it.
             set_hermes_home_override(args.home)

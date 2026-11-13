@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.left_core_migration as lcm
-from hermes_cli import default_plugins
-from hermes_cli.plugin_catalog import entry_from_mapping
+import hermes_agent.hermes_cli.left_core_migration as lcm
+from hermes_agent.hermes_cli import default_plugins
+from hermes_agent.hermes_cli.plugin_catalog import entry_from_mapping
 
 
 def _entry(name: str, tier: str = "official"):
@@ -112,7 +112,7 @@ def test_a_home_that_turned_lazy_installs_off_fetches_nothing(tmp_path, installs
 
 def test_an_owed_boot_step_stays_owed_until_it_succeeds(tmp_path, monkeypatch):
     """An owed step that raises on a retry is still owed; only a success clears it."""
-    from hermes_cli import boot_bootstrap, post_update
+    from hermes_agent.hermes_cli import boot_bootstrap, post_update
     monkeypatch.setattr(boot_bootstrap, "current_install_identity", lambda root: "a" * 40)
     script = iter([{"ok": True, "owed": True}, OSError("profiles dir unreadable"), {"ok": True}])
 
@@ -152,12 +152,12 @@ def test_a_new_home_or_a_failed_pass_unsettles_the_revision(tmp_path, monkeypatc
     """@BearHuddleston's review patch on #154858."""
     import subprocess
 
-    import hermes_cli.plugin_catalog
+    import hermes_agent.hermes_cli.plugin_catalog
     import pm.plugins_state
     monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
     monkeypatch.setattr(default_plugins, "_identity", lambda: "rev-1")
     live: list = [None]  # the live catalog is unreadable until the first pass
-    monkeypatch.setattr(hermes_cli.plugin_catalog, "fetch_live_catalog", lambda **kwargs: live[0])
+    monkeypatch.setattr(hermes_agent.hermes_cli.plugin_catalog, "fetch_live_catalog", lambda **kwargs: live[0])
     entries = [_entry("accent-picker")]
     monkeypatch.setattr(default_plugins, "default_entries", lambda: list(entries))
     homes = [tmp_path / "home"]
@@ -197,7 +197,7 @@ def test_a_new_home_or_a_failed_pass_unsettles_the_revision(tmp_path, monkeypatc
 def test_default_entries_keep_the_tier_and_platform_rules(monkeypatch):
     import dataclasses
 
-    import hermes_cli.plugin_catalog as catalog
+    import hermes_agent.hermes_cli.plugin_catalog as catalog
     from hermes_platform.host.facts import os_family
     elsewhere = "linux" if os_family() == "win32" else "windows"
     entries = [_entry("here"), dataclasses.replace(_entry("merged"), tier="community"),
@@ -253,7 +253,7 @@ def test_a_retry_that_removed_our_leftover_and_then_failed_stays_owed(tmp_path, 
         def install(name, discard=None):
             attempts.append(name)
             if discard is not None:  # the real remove path, as the installer runs it
-                from hermes_cli.plugins_cmd_remove import _remove_plugin_core
+                from hermes_agent.hermes_cli.plugins_cmd_remove import _remove_plugin_core
                 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
                 token = set_hermes_home_override(h)
                 try:

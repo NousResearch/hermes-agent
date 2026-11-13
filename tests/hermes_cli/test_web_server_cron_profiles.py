@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
-import hermes_cli.web_models as _web_models
-import hermes_cli.web_routers.cron as _rt_cron
-import hermes_cli.web_server_cron as _web_server_cron
+import hermes_agent.hermes_cli.web_models as _web_models
+import hermes_agent.hermes_cli.web_routers.cron as _rt_cron
+import hermes_agent.hermes_cli.web_server_cron as _web_server_cron
 
 
 @pytest.fixture()
 def isolated_profiles(tmp_path, monkeypatch):
     """Give profile discovery an isolated default home with one named profile."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = tmp_path / ".hermes"
     profiles_root = default_home / "profiles"

@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.anon_auth import WELCOME_CLAIM_FLAG
-from hermes_cli.auth import _save_auth_store
+from hermes_agent.hermes_cli.anon_auth import WELCOME_CLAIM_FLAG
+from hermes_agent.hermes_cli.auth import _save_auth_store
 from tests.hermes_cli.anon_portal import as_local_desktop_backend
 
 GUEST_STATE = {
@@ -40,8 +40,8 @@ def guest_home(monkeypatch, tmp_path):
 
     # No network from any lap: models.dev, the Portal catalog, and Ollama Cloud all stubbed.
     from hermes_agent.agent import models_dev
-    from hermes_cli import models as models_mod
-    from hermes_cli import model_switch_providers as msp
+    from hermes_agent.hermes_cli import models as models_mod
+    from hermes_agent.hermes_cli import model_switch_providers as msp
     monkeypatch.setattr(models_dev, "fetch_models_dev", lambda *a, **k: {})
     monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda *a, **k: ["anthropic/claude-x", "openai/gpt-y"])
     monkeypatch.setattr(models_mod, "fetch_ollama_cloud_models", lambda *a, **k: [])
@@ -51,7 +51,7 @@ def guest_home(monkeypatch, tmp_path):
 
 def _write_config(monkeypatch, home: Path, text: str) -> None:
     (home / "config.yaml").write_text(text)
-    from hermes_cli import config as cfg_mod
+    from hermes_agent.hermes_cli import config as cfg_mod
     for attr in ("_config_cache", "_cached_config"):
         if hasattr(cfg_mod, attr):
             monkeypatch.setattr(cfg_mod, attr, None, raising=False)
@@ -62,13 +62,13 @@ def _nous_rows(rows):
 
 
 def _cli_nous_rows(config):
-    from hermes_cli.main_provider_setup import _build_provider_picker_rows
+    from hermes_agent.hermes_cli.main_provider_setup import _build_provider_picker_rows
     ordered, _ = _build_provider_picker_rows(config, "nous", {}, {})
     return [(key, label) for key, label, _members in ordered if key == "nous"]
 
 
 def test_guest_identity_shows_free_tier_row_with_only_welcome_model(guest_home, monkeypatch):
-    from hermes_cli.model_switch_providers import list_picker_providers
+    from hermes_agent.hermes_cli.model_switch_providers import list_picker_providers
     rows = _nous_rows(list_picker_providers("nous", "", None, None, 50, "nous/welcome"))
     assert len(rows) == 1
     row = rows[0]
@@ -87,10 +87,10 @@ def test_guest_identity_shows_free_tier_row_with_only_welcome_model(guest_home, 
 
 def test_guest_identity_with_guest_off_hides_the_nous_row(guest_home, monkeypatch):
     _write_config(monkeypatch, guest_home, "nous:\n  guest: false\n")
-    from hermes_cli import anon_auth
+    from hermes_agent.hermes_cli import anon_auth
     assert anon_auth.has_guest() and not anon_auth.free_inference_active()
 
-    from hermes_cli.model_switch_providers import list_picker_providers
+    from hermes_agent.hermes_cli.model_switch_providers import list_picker_providers
     assert _nous_rows(list_picker_providers("nous", "", None, None, 50, "nous/welcome")) == []
     assert _cli_nous_rows({"nous": {"guest": False}}) == []
 
@@ -98,7 +98,7 @@ def test_guest_identity_with_guest_off_hides_the_nous_row(guest_home, monkeypatc
 def test_desktop_picker_payload_never_locks_the_free_tier_row(guest_home, monkeypatch):
     """``model.options`` (the desktop's path) prices rows from caches on a normal open; the free-tier
     row has no Portal pricing and no entitlement to read, so it must be left alone rather than locked."""
-    from hermes_cli import inventory
+    from hermes_agent.hermes_cli import inventory
     monkeypatch.setattr(inventory, "_prewarm_pricing_async", lambda *a, **k: None)
     payload = inventory.build_model_options_payload(inventory.load_picker_context())
     rows = _nous_rows(payload["providers"])

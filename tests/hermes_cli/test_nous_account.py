@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from hermes_cli.nous_account import (
+from hermes_agent.hermes_cli.nous_account import (
     NousPaidServiceAccessInfo,
     NousPortalAccountInfo,
     format_nous_portal_entitlement_message,
@@ -155,9 +155,9 @@ def _reset_cache():
 )
 def test_fresh_account_payload_normalization(monkeypatch, payload, expected_paid):
     token = _jwt({"sub": "user_123", "org_id": "org_123", "exp": int(time.time()) + 900})
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
-    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
+    monkeypatch.setattr("hermes_agent.hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
 
     info = get_nous_portal_account_info(force_fresh=True)
 
@@ -173,7 +173,7 @@ def test_fresh_account_payload_normalization(monkeypatch, payload, expected_paid
 
 
 def test_no_oauth_token_reports_inference_key_present(monkeypatch):
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.get_provider_auth_state", lambda provider: {})
 
     class _Entry:
         label = "manual-nous"
@@ -226,8 +226,8 @@ def test_pool_oauth_entry_force_fresh_uses_account_api(monkeypatch):
         subscription_credits=0,
         purchased_credits=3,
     )
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: {})
-    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.get_provider_auth_state", lambda provider: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
 
     class _Entry:
         label = "dashboard device_code"
@@ -285,9 +285,9 @@ def test_member_spend_cap_exceeded_message(monkeypatch):
         member_spend_cap_remaining_usd="0",
     )
     token = _jwt({"sub": "user_123", "org_id": "org_123", "exp": int(time.time()) + 900})
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
-    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
+    monkeypatch.setattr("hermes_agent.hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
 
     info = get_nous_portal_account_info(force_fresh=True)
 
@@ -320,9 +320,9 @@ def test_member_spend_cap_exceeded_without_amounts(monkeypatch):
         member_spend_cap_exceeded=True,
     )
     token = _jwt({"sub": "user_123", "org_id": "org_123", "exp": int(time.time()) + 900})
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
-    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
+    monkeypatch.setattr("hermes_agent.hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
 
     info = get_nous_portal_account_info(force_fresh=True)
     msg = format_nous_portal_entitlement_message(info, capability="Nous model access")
@@ -338,13 +338,13 @@ def test_member_spend_cap_exceeded_without_amounts(monkeypatch):
 
 def test_cached_snapshot_is_only_served_to_the_login_that_fetched_it(monkeypatch):
     """A profile/login switch must never read another account's cached snapshot, even ``any_age``."""
-    from hermes_cli.nous_account import cached_nous_portal_account_info
+    from hermes_agent.hermes_cli.nous_account import cached_nous_portal_account_info
 
     payload = _account_payload(allowed=True, subscription=None, subscription_credits=0, purchased_credits=5)
     auth_state = {"state": _state("token-a")}
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: auth_state["state"])
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: auth_state["state"]["access_token"])
-    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.get_provider_auth_state", lambda provider: auth_state["state"])
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.resolve_nous_access_token", lambda: auth_state["state"]["access_token"])
+    monkeypatch.setattr("hermes_agent.hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
 
     info = get_nous_portal_account_info(force_fresh=True)
     assert cached_nous_portal_account_info() is info
@@ -361,16 +361,16 @@ def test_cached_snapshot_is_only_served_to_the_login_that_fetched_it(monkeypatch
 def test_cached_snapshot_survives_a_token_refresh_but_not_an_account_or_org_switch(monkeypatch):
     """A refresh (new token, same user + org) between the fetch and a picker's read must not hide the
     snapshot: ``hermes model`` refreshes runtime credentials right after its account fetch."""
-    from hermes_cli.nous_account import cached_nous_portal_account_info
+    from hermes_agent.hermes_cli.nous_account import cached_nous_portal_account_info
 
     def token(sub: str, org: str, n: int) -> str:
         return _jwt({"sub": sub, "org_id": org, "exp": int(time.time()) + 900, "jti": f"t{n}"})
 
     payload = _account_payload(allowed=True, subscription=None, subscription_credits=0, purchased_credits=5)
     auth_state = {"state": _state(token("user_a", "org_a", 1))}
-    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: auth_state["state"])
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: auth_state["state"]["access_token"])
-    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.get_provider_auth_state", lambda provider: auth_state["state"])
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.resolve_nous_access_token", lambda: auth_state["state"]["access_token"])
+    monkeypatch.setattr("hermes_agent.hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
 
     info = get_nous_portal_account_info(force_fresh=True)
 

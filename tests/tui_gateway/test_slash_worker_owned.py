@@ -24,7 +24,7 @@ import psutil
 import pytest
 
 from tests.waiting import wait_until
-from hermes_cli import process_identity
+from hermes_agent.hermes_cli import process_identity
 from hermes_agent.tui_gateway import server, slash_worker
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -187,8 +187,8 @@ def test_main_arms_the_legacy_watchdog_then_imports_cli_before_runtime_prep(monk
             module.HermesCLI = FakeHermesCLI
 
     # setitem first so teardown also removes the stub module the import below inserts.
-    monkeypatch.setitem(sys.modules, "cli", None)
-    monkeypatch.delitem(sys.modules, "cli")
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", None)
+    monkeypatch.delitem(sys.modules, "hermes_agent.cli")
     monkeypatch.setattr(sys, "meta_path", [FakeCliFinder(), *sys.meta_path])
     monkeypatch.setattr(slash_worker, "_prepare_slash_worker_runtime", lambda: events.append(("runtime",)))
     monkeypatch.setattr(slash_worker, "_start_legacy_parent_watchdog", lambda pid: events.append(("watchdog", pid)))

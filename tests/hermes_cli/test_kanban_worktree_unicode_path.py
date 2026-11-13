@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db_workspace as kbw
+from hermes_agent.hermes_cli import kanban_db_workspace as kbw
 
 
 def _nfd(text: str) -> str:

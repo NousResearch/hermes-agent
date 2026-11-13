@@ -26,7 +26,7 @@ def _base_with_archives(tmp_path: Path, monkeypatch, names) -> Path:
 
 def test_undeletable_archive_exits_two_and_is_reported(tmp_path, monkeypatch, capsys):
     import hermes_agent.tools.checkpoint_manager as ckpt_mgr
-    from hermes_cli import checkpoints as checkpoints_cli
+    from hermes_agent.hermes_cli import checkpoints as checkpoints_cli
 
     base = _base_with_archives(tmp_path, monkeypatch, ["legacy-20200101-000000", "legacy-20200102-000000"])
     stuck = base / "legacy-20200101-000000"
@@ -49,7 +49,7 @@ def test_undeletable_archive_exits_two_and_is_reported(tmp_path, monkeypatch, ca
 
 
 def test_clean_sweep_keeps_exit_zero_and_success_line(tmp_path, monkeypatch, capsys):
-    from hermes_cli import checkpoints as checkpoints_cli
+    from hermes_agent.hermes_cli import checkpoints as checkpoints_cli
 
     base = _base_with_archives(tmp_path, monkeypatch, ["legacy-20200101-000000"])
 

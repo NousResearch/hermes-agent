@@ -28,7 +28,7 @@ _NO_PROXY_KEYS = ("NO_PROXY", "no_proxy")
 
 def restore_user_proxy_env(environ: MutableMapping[str, str] | None = None) -> None:
     """Drop the proxy variables the Desktop added and restore the user's own NO_PROXY."""
-    from hermes_cli.env_loader import dotenv_published_values
+    from hermes_agent.hermes_cli.env_loader import dotenv_published_values
 
     env = os.environ if environ is None else environ
 
@@ -56,7 +56,7 @@ def prefer_dotenv_proxy_env(environ: MutableMapping[str, str] | None = None) -> 
     variant, keeping the entries the Desktop added; a ``*`` in it bypasses every proxy.
     """
     from hermes_agent.agent.proxy_bypass import no_proxy_entries
-    from hermes_cli.env_loader import dotenv_published_values
+    from hermes_agent.hermes_cli.env_loader import dotenv_published_values
 
     env = os.environ if environ is None else environ
     if MARKER not in env:

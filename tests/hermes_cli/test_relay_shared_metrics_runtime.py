@@ -12,10 +12,10 @@ from typing import Any
 
 import pytest
 
-from hermes_cli import lifecycle, plugins
+from hermes_agent.hermes_cli import lifecycle, plugins
 from hermes_agent.agent import relay_runtime
-from hermes_cli.observability import relay_shared_metrics
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 
 class _Request:
@@ -232,7 +232,7 @@ def direct_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly",
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -254,7 +254,7 @@ def real_binding_runtime(tmp_path, monkeypatch):
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly",
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": True}}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -663,14 +663,14 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     )
     lifecycle.finalize_session(session_id=cancelled["session_id"])
 
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     _join_export_workers()
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     store = SharedMetricsStore(root / "metrics.sqlite3", root / "outbox")
     tomorrow = datetime.now(UTC) + timedelta(days=1)
     monkeypatch.setattr(
-        "hermes_cli.observability.shared_metrics._utc_now",
+        "hermes_agent.hermes_cli.observability.shared_metrics._utc_now",
         lambda: tomorrow,
     )
     assert len(store.create_and_export_package_if_due()) == 1
@@ -816,7 +816,7 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     tmp_path,
     monkeypatch,
 ):
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
     from hermes_agent.tools import approval
     from hermes_agent.tools import approval_prompt
     from hermes_agent.tools import approval_context
@@ -916,7 +916,7 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
     real_binding_runtime,
     tmp_path,
 ):
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     assert real_binding_runtime._native is not None
     base = {
@@ -1220,7 +1220,7 @@ def test_managed_config_cannot_override_shared_metrics_consent(
     profile_enabled,
     managed_enabled,
 ):
-    from hermes_cli import config, managed_scope
+    from hermes_agent.hermes_cli import config, managed_scope
     from hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
@@ -1268,7 +1268,7 @@ def test_managed_config_cannot_override_shared_metrics_consent(
 def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     tmp_path, monkeypatch
 ):
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     fake = _Relay()
     profile = tmp_path / "profile"
@@ -1276,7 +1276,7 @@ def test_disabling_shared_metrics_stops_collection_and_shutdown_export(
     monkeypatch.setenv("HERMES_HOME", str(profile))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: fake)
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly",
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": dict(policy)}},
     )
     relay_shared_metrics._reset_for_tests()
@@ -2462,7 +2462,7 @@ def test_failed_flush_keeps_daily_export_open_for_later_task(
 ):
     current_time = datetime(2026, 7, 28, 9, tzinfo=UTC)
     monkeypatch.setattr(
-        "hermes_cli.observability.shared_metrics._utc_now",
+        "hermes_agent.hermes_cli.observability.shared_metrics._utc_now",
         lambda: current_time,
     )
     original_flush = direct_runtime.subscribers.flush
@@ -2531,7 +2531,7 @@ def _finish_desktop_task(session_id: str, task_id: str) -> None:
 def parked_flush(direct_runtime, monkeypatch):
     """A flush that blocks like the real barrier does while another session's tool runs."""
     monkeypatch.setattr(
-        "hermes_cli.observability.shared_metrics._utc_now",
+        "hermes_agent.hermes_cli.observability.shared_metrics._utc_now",
         lambda: datetime(2026, 7, 28, 9, tzinfo=UTC),
     )
     state = SimpleNamespace(attempts=0, entered=threading.Event(), release=threading.Event())
@@ -2789,7 +2789,7 @@ def test_real_binding_concurrent_task_close_skips_pop_under_sibling_scope(
 
 
 def _stored_counters(tmp_path) -> dict[str, list[dict[str, Any]]]:
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     by_metric: dict[str, list[dict[str, Any]]] = {}
@@ -2838,7 +2838,7 @@ def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
     direct_runtime, tmp_path, monkeypatch,
 ):
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly",
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly",
         lambda: {
             "telemetry": {"shared_metrics": {"enabled": True}},
             "memory": {"provider": "acme-private-memory"},
@@ -2869,7 +2869,7 @@ def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
 
 
 def _stored_values(tmp_path, metric: str) -> list[tuple[dict[str, Any], int]]:
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     root = tmp_path / "hermes-home" / "telemetry" / "shared_metrics"
     return [
@@ -2903,8 +2903,8 @@ def test_sessions_summarize_on_close_and_milestones_latch_once_per_install(direc
 def test_user_named_providers_and_models_never_reach_counters(direct_runtime, tmp_path):
     """A custom endpoint's name (``custom:<key>``), its model id and loopback-server models read
     ``custom``; shipped providers and their public model ids stay readable."""
-    from hermes_cli.observability import shared_metrics_events as events
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability import shared_metrics_events as events
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     events.record_setup_completed(surface="cli", provider="custom:acme-secret-llm")
     events.record_model_switch(from_provider="custom:acme-secret-llm", to_provider="lmstudio", surface="cli")
@@ -2931,8 +2931,8 @@ def test_milestone_install_age_is_the_subscriber_profile_not_the_relay_thread(tm
     import sqlite3 as _sqlite3
     import time
 
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
-    from hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch, other = tmp_path / "A", tmp_path / "B"
@@ -2984,7 +2984,7 @@ def test_token_usage_is_summed_per_model_and_auxiliary_task(direct_runtime, tmp_
 
 
 def test_recovered_rows_report_saved_only_once_the_store_holds_them(real_binding_runtime, monkeypatch):
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     row = ("hermes.process.exit", {"crash_class": "none", "exit_kind": "killed", "process_kind": "gateway"})
     real_store_write = SharedMetricsStore.record_counter

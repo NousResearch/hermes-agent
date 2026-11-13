@@ -262,7 +262,7 @@ def test_concurrent_admits_respect_the_budget(clock):
 
 
 def test_load_settings_reads_config_yaml(monkeypatch):
-    import hermes_cli.config as hermes_config
+    import hermes_agent.hermes_cli.config as hermes_config
 
     monkeypatch.setattr(hermes_config, "load_config_readonly", lambda: {"gateway": {"bot_loop_guard": {"max_events": 3}}})
     assert load_settings().max_events == 3

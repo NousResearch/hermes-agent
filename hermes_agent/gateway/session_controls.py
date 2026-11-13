@@ -181,7 +181,7 @@ class AuthorityConnection:
         home. Only a host-scoped grant (the Desktop's shared-primary socket, the dashboard gate)
         reaches a sibling; a profile-bound ticket naming any other profile is a mismatch, exactly
         like a profile nobody here serves. Never a fallback, never a rewritten profile_id."""
-        from hermes_cli.profiles import profile_matches_home
+        from hermes_agent.hermes_cli.profiles import profile_matches_home
         if profile_matches_home(profile, Path(self.authority.profile_id)):
             return None
         if not self.host_scoped:
@@ -214,7 +214,7 @@ class AuthorityConnection:
         registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
         if not (self.host_scoped and isinstance(profile, str) and profile and registry is not None):
             return None
-        from hermes_cli.profiles import profile_matches_home
+        from hermes_agent.hermes_cli.profiles import profile_matches_home
         key = next((key for key in held if profile_matches_home(profile, Path(key))), None)
         return (key, None) if key is not None else registry.starting(profile)
 

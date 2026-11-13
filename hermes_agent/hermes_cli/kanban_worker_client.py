@@ -40,7 +40,7 @@ def admission_answer_budget():
     """Seconds to wait for ``kanban.run``'s answer: the longest the owner's admission write can
     wait on the board lock (``write_txn`` retries ``BEGIN IMMEDIATE`` ``_BUSY_MAX_RETRIES`` times,
     each under the busy timeout) plus ``ADMISSION_ANSWER_MARGIN_S``."""
-    from hermes_cli import kanban_db_connect
+    from hermes_agent.hermes_cli import kanban_db_connect
     lock_wait = (kanban_db_connect._BUSY_MAX_RETRIES + 1) * kanban_db_connect._resolve_busy_timeout_ms() / 1000
     return lock_wait + ADMISSION_ANSWER_MARGIN_S
 
@@ -58,7 +58,7 @@ class _Claim:
 
 async def run(params, board_db):
     from hermes_agent.agent.retry_utils import jittered_backoff
-    from hermes_cli.gateway_client import connect_gateway, GatewayClientError, outside_restart_wait
+    from hermes_agent.hermes_cli.gateway_client import connect_gateway, GatewayClientError, outside_restart_wait
     from websockets.exceptions import WebSocketException
     if os.environ.get('HERMES_TUI_GATEWAY_URL'):
         raise GatewayClientError('Kanban requires the assigned local profile owner')
@@ -105,7 +105,7 @@ async def run(params, board_db):
 
 def _restartable(exc):
     """False when *exc* is the owner's own final answer; True for a restarting owner or a lost transport."""
-    from hermes_cli.gateway_client import GatewayRPCError, GatewayUnavailableError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError, GatewayUnavailableError
     if isinstance(exc, GatewayRPCError):
         return str(exc) in _TRANSIENT_RPC_REASONS
     if isinstance(exc, GatewayUnavailableError):
@@ -145,7 +145,7 @@ async def _await_receipt(client, params, board_db, claim):
 
 
 def _exit_code(receipt, params, board_db):
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
     if receipt['status'] == 'unknown':
         raise GatewayClientError('Kanban execution unknown; retained by owner')
     from hermes_agent.gateway.session_kanban import worker_result
@@ -163,7 +163,7 @@ async def _receipt(client, claim):
 def main():
     # The dead-worker sweep books this process's exit from the trailer in its log (it never
     # reaps us), so every exit path writes it — the same contract as a quiet one-shot worker.
-    from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+    from hermes_agent.hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
     rc = 1
     try:
         rc = _submit()

@@ -286,7 +286,7 @@ class PlanUsageGauge(Result):
 
 
 class PlanUsage(Result):
-    """``hermes_cli/model_picker_usage.py::PickerUsage.to_payload`` — usage-window plan chrome."""
+    """``hermes_agent/hermes_cli/model_picker_usage.py::PickerUsage.to_payload`` — usage-window plan chrome."""
 
     kind: str
     plan: str | None = None

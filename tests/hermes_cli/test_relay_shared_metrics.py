@@ -20,9 +20,9 @@ from typing import Any
 
 import pytest
 from hermes_agent.agent import relay_runtime
-from hermes_cli.observability import shared_metrics as shared_metrics_module
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from hermes_cli.observability.shared_metrics_contract import (
+from hermes_agent.hermes_cli.observability import shared_metrics as shared_metrics_module
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability.shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
     CLIENT_ARCHITECTURES,
     CLIENT_INSTALL_METHODS,
@@ -537,9 +537,9 @@ def test_client_resource_classification_is_bounded():
 
 def test_microsoft_store_stamp_reports_its_own_install_method(tmp_path, monkeypatch):
     """The Store build's stamp is the only place it is named; ``detect_install_method`` has no word for it."""
-    from hermes_cli.observability.shared_metrics_install import detect_client_install_method
+    from hermes_agent.hermes_cli.observability.shared_metrics_install import detect_client_install_method
 
-    monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_project_root", lambda: tmp_path)
     stamp = tmp_path / "install-stamp.json"
     stamp.write_text(json.dumps({"updateMechanism": "microsoft-store"}), encoding="utf-8")
     assert detect_client_install_method() == "microsoft-store"
@@ -1153,7 +1153,7 @@ def test_v2_task_and_tool_rows_recorded_before_an_upgrade_still_package(tmp_path
 def test_failure_class_rows_validate_and_v3_rows_still_drain(tmp_path, monkeypatch):
     """v4 adds failure_class to compression and memory rows: a free-form compressor class collapses to
     a closed name before it is stored, and rows counted before the upgrade (v3 shape) still package."""
-    from hermes_cli.observability.shared_metrics_fields import compression_fields
+    from hermes_agent.hermes_cli.observability.shared_metrics_fields import compression_fields
 
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
     legacy = {
@@ -1173,7 +1173,7 @@ def test_failure_class_rows_validate_and_v3_rows_still_drain(tmp_path, monkeypat
         "acme_engine_reason": "other", None: "unknown",
     }
     # The skip/fail verdict reads the same normalized class that is stored, so they cannot disagree.
-    from hermes_cli.observability import shared_metrics_events as events
+    from hermes_agent.hermes_cli.observability import shared_metrics_events as events
 
     recorded = []
     monkeypatch.setattr(events, "record_compression", lambda **kw: recorded.append(kw))
@@ -1325,8 +1325,8 @@ def test_package_builder_buckets_values_that_drifted_out_of_the_catalog(tmp_path
     """A catalog-backed value that left the catalog between the recording and packaging
     processes re-buckets to ``custom`` instead of aborting the whole period's package, and
     every other metric in the period still exports (#133017)."""
-    from hermes_cli.observability import shared_metrics_catalog as catalog_module
-    from hermes_cli.observability.shared_metrics_contract import EXTENSION_INSTALL_METRIC
+    from hermes_agent.hermes_cli.observability import shared_metrics_catalog as catalog_module
+    from hermes_agent.hermes_cli.observability.shared_metrics_contract import EXTENSION_INSTALL_METRIC
 
     database_path = tmp_path / "metrics.sqlite3"
     outbox_directory = tmp_path / "outbox"
@@ -1359,7 +1359,7 @@ def test_package_builder_settles_rows_an_earlier_build_stored_with_retired_value
     """A built-in toolset or tool an earlier build shipped (Spotify, Home Assistant) is no longer in
     the contract: rows holding it re-bucket (merged with their siblings) or, when the field has no
     bucket, stay out, and the rest of the period still exports instead of wedging every package."""
-    from hermes_cli.observability.shared_metrics_contract import (
+    from hermes_agent.hermes_cli.observability.shared_metrics_contract import (
         TOOL_ENABLED_UNUSED_METRIC, TOOL_UNAVAILABLE_METRIC,
     )
 

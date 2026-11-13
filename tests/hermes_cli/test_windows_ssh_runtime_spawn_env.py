@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.windows_ssh_runtime import _spawn_env
+from hermes_agent.hermes_cli.windows_ssh_runtime import _spawn_env
 
 
 @pytest.mark.parametrize("payload, expected", [

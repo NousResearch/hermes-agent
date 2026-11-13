@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import auth
+from hermes_agent.hermes_cli import auth
 
 
 # --- helpers ---------------------------------------------------------------
@@ -140,7 +140,7 @@ class TestAuthStoreEncodingRoundTrip:
 
 # --- sibling readers of the same ~/.hermes/auth.json in other modules -------
 #
-# _load_auth_store lives in hermes_cli/auth.py, but several other modules read
+# _load_auth_store lives in hermes_agent/hermes_cli/auth.py, but several other modules read
 # the same ~/.hermes/auth.json directly. They had the same UTF-8-vs-cp1252
 # asymmetry on Windows — these tests pin the sibling reads too.
 
@@ -204,7 +204,7 @@ class TestAuthJsonSiblingReaders:
     def test_read_shared_nous_state_reads_non_ascii_store(
         self, tmp_path, monkeypatch, windows_default_encoding
     ):
-        """hermes_cli.auth._read_shared_nous_state must read a non-ASCII store.
+        """hermes_agent.hermes_cli.auth._read_shared_nous_state must read a non-ASCII store.
 
         The shared Nous store (``nous_auth.json``) is written as UTF-8. A
         non-ASCII field (e.g. an accented display name) must not cause the
@@ -235,7 +235,7 @@ class TestAuthJsonSiblingReaders:
     def test_has_any_provider_configured_reads_non_ascii_auth_store(
         self, hermes_home, monkeypatch, windows_default_encoding
     ):
-        """hermes_cli.main._has_any_provider_configured reads auth.json.
+        """hermes_agent.hermes_cli.main._has_any_provider_configured reads auth.json.
 
         When the active provider's auth.json store contains a non-ASCII
         label, the read must not raise under the Windows-default-encoding
@@ -255,8 +255,8 @@ class TestAuthJsonSiblingReaders:
         }
         _write_utf8(hermes_home / "auth.json", store)
 
-        import hermes_cli.auth as auth_mod
-        import hermes_cli.main as main_mod
+        import hermes_agent.hermes_cli.auth as auth_mod
+        import hermes_agent.hermes_cli.main as main_mod
 
         # No provider env vars, no .env, and PROVIDER_REGISTRY lookups report
         # not-logged-in — so the function reaches the auth.json branch and the
@@ -270,7 +270,7 @@ class TestAuthJsonSiblingReaders:
 
         monkeypatch.setattr(auth_mod, "get_auth_status", fake_status)
         # _has_any_provider_configured imports get_auth_status lazily from
-        # hermes_cli.auth; patch it on the source module so the local import
+        # hermes_agent.hermes_cli.auth; patch it on the source module so the local import
         # sees the fake.
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

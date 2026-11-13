@@ -17,7 +17,7 @@ import types
 
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.tui_gateway import entry, server
-from hermes_cli import model_switch_providers
+from hermes_agent.hermes_cli import model_switch_providers
 
 
 IDLE_S = 6 * 3600

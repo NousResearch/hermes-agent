@@ -3,7 +3,7 @@
 ``cmd_sessions`` routes ``args.sessions_action`` through ``_PRE_DB_HANDLERS`` (repair / recover /
 import — must run without opening ``SessionDB()``, which a malformed schema prevents) and
 ``_DB_HANDLERS`` (everything else, sharing one ``SessionDB``). ``get_hermes_home`` is resolved through
-``hermes_cli.main`` at call time so monkeypatches keep working. Picker: :mod:`hermes_cli.sessions_cmd_browse`.
+``hermes_agent.hermes_cli.main`` at call time so monkeypatches keep working. Picker: :mod:`hermes_agent.hermes_cli.sessions_cmd_browse`.
 """
 
 import json
@@ -14,13 +14,13 @@ import sys
 from functools import partial
 from pathlib import Path
 
-from hermes_cli.cli_output import print_truncated
-from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_agent.hermes_cli.cli_output import print_truncated
+from hermes_agent.hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
 from hermes_agent.hermes_state_errors import SessionActiveWriteGuardError
 
 
 def get_hermes_home():
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
     return main.get_hermes_home()
 
 
@@ -47,7 +47,7 @@ def _confirm_prompt(prompt: str) -> bool | None:
     except EOFError:
         print()
         # isatty() alone is True for Windows NUL; the console check keeps `< NUL` unattended (#113977).
-        from hermes_cli.gateway_windows import _stdin_console_mode_ok, _stdin_is_interactive
+        from hermes_agent.hermes_cli.gateway_windows import _stdin_console_mode_ok, _stdin_is_interactive
         return False if _stdin_is_interactive(isatty=sys.stdin.isatty(), console_mode_ok=_stdin_console_mode_ok()) else None
 
 
@@ -76,7 +76,7 @@ def _not_found(session_id) -> int:
 
 
 def _print_dry_run_preview(candidates, filters) -> None:
-    from hermes_cli.session_filters import describe_filters
+    from hermes_agent.hermes_cli.session_filters import describe_filters
     print(f"Would export {len(candidates)} session(s) ({describe_filters(filters)}).")
     for row in candidates[:100]:
         print(f"  {row.get('id')}  {row.get('source', '')}")
@@ -189,7 +189,7 @@ def _cmd_repair(args):
 def _cmd_recover(args):
     """Offline recovery: works on a disposable copy of the source; never touches the active database."""
     import sqlite3
-    from hermes_cli.session_recovery import (
+    from hermes_agent.hermes_cli.session_recovery import (
         SessionRecoveryError, inspect_session_database, recover_session_database, write_recovery_report,
     )
     source, output = args.source, getattr(args, "output", None)
@@ -293,7 +293,7 @@ def _print_recovery_verdict(report, output, allow_partial) -> int:
 
 
 def _cmd_import(args):
-    from hermes_cli.foreign_sessions import run_sessions_import
+    from hermes_agent.hermes_cli.foreign_sessions import run_sessions_import
     # Explicit path but nothing imported -> non-zero for scripts. Picker cancel (no path) -> exit 0.
     if run_sessions_import(args) is None and getattr(args, "path", None):
         return 1
@@ -308,7 +308,7 @@ def _default_exclude(args):
 
 def _surface_reader(db):
     """``--source cli`` also matches a gateway row stored as ``local`` with that created surface."""
-    from hermes_cli.gateway_session_store import SurfaceLabelReader
+    from hermes_agent.hermes_cli.gateway_session_store import SurfaceLabelReader
     return SurfaceLabelReader(db)
 
 
@@ -370,7 +370,7 @@ def _cmd_list(db, args):
 # -- export -----------------------------------------------------------------
 
 def _cmd_export(db, args):
-    from hermes_cli.session_filters import build_prune_filters
+    from hermes_agent.hermes_cli.session_filters import build_prune_filters
     filters = None
     if _any_filter_args(args):
         try:
@@ -387,10 +387,10 @@ def _cmd_export(db, args):
     def _redact(data):
         if not args.redact or data is None:
             return data
-        from hermes_cli.session_export_md import redact_session_data
+        from hermes_agent.hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
-    from hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS, export_projection
+    from hermes_agent.hermes_cli.session_export import SAVE_TRANSCRIPT_FORMATS, export_projection
     # --only is a transcript view too (md/jsonl of what the user saw); md/qmd without --only go to _export_markdown.
     shown = args.format in SAVE_TRANSCRIPT_FORMATS or bool(getattr(args, "only", None))
     projection = export_projection(shown)
@@ -451,7 +451,7 @@ def _cmd_export(db, args):
 
 def _render_only(args, sessions):
     """--only user-prompts: one prompt record per line (jsonl) or headed sections (md)."""
-    from hermes_cli.session_export import export_record_count, render_sessions_export
+    from hermes_agent.hermes_cli.session_export import export_record_count, render_sessions_export
     rendered = render_sessions_export(sessions, fmt="markdown" if args.format == "md" else "jsonl", only=args.only)
     count, noun = export_record_count(sessions, only=args.only)
     return rendered, f"Exported {count} {noun}{'' if count == 1 else 's'} to {args.output}"
@@ -459,7 +459,7 @@ def _render_only(args, sessions):
 
 def _render_html(args, sessions):
     """One self-contained file (single session, or multi-session with sidebar)."""
-    from hermes_cli.session_export_html import generate_html_export, generate_multi_session_html_export
+    from hermes_agent.hermes_cli.session_export_html import generate_html_export, generate_multi_session_html_export
     single = len(sessions) == 1
     content = generate_html_export(sessions[0]) if single else generate_multi_session_html_export(sessions)
     return content, f"Exported {len(sessions)} {'session' if single else 'sessions'} to {args.output} (HTML)"
@@ -490,7 +490,7 @@ def _export_flat(kind, args, collect):
     if isinstance(sessions, int):
         return sessions
     if sessions is not None:
-        from hermes_cli.session_export import default_save_filename
+        from hermes_agent.hermes_cli.session_export import default_save_filename
         name = (default_save_filename(sessions[0].get("id", ""), args.format) if len(sessions) == 1
                 else f"hermes_sessions.{args.format}")
         args.output = _output_file_in_dir(args.output, name)
@@ -556,7 +556,7 @@ def _export_trace(db, args, filters):
 
 def _export_markdown(db, args, filters, redact):
     """Markdown / QMD export: one file per session plus a manifest entry."""
-    from hermes_cli.session_export_md import append_manifest_entry, write_session_markdown
+    from hermes_agent.hermes_cli.session_export_md import append_manifest_entry, write_session_markdown
     if args.output == "-":
         print("Markdown/QMD export writes files; stdout (-) is only supported with --format jsonl.")
         return 1
@@ -607,7 +607,7 @@ def _export_markdown(db, args, filters, redact):
 
 def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical):
     """--session-id markdown export, optionally + verified delete of it and its delegates."""
-    from hermes_cli.session_export_md import verify_export_file
+    from hermes_agent.hermes_cli.session_export_md import verify_export_file
     resolved_session_id = db.resolve_session_id(args.session_id)
     delete_target_ids = (
         db.get_session_delete_targets(resolved_session_id) if args.delete_after_verified else [resolved_session_id]
@@ -703,7 +703,7 @@ def _prune_never_active_keyed(db, args):
     The population is dominated by escaped test fixtures (#82770), which the hermetic-isolation guard can
     only stop from being *created* — rows already written to a developer's state.db need a sweep to leave.
     """
-    from hermes_cli.session_filters import format_epoch, parse_duration_seconds
+    from hermes_agent.hermes_cli.session_filters import format_epoch, parse_duration_seconds
     older_than = getattr(args, "older_than", None)
     days = _NEVER_ACTIVE_DEFAULT_DAYS
     if older_than is not None:
@@ -733,8 +733,8 @@ def _prune_never_active_keyed(db, args):
         return refused
     owner = getattr(args, "owner_endpoint", None)
     if owner is not None:
-        from hermes_cli.gateway_client import GatewayClientError
-        from hermes_cli.sessions_owner import owner_prune, report_owner_failure
+        from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+        from hermes_agent.hermes_cli.sessions_owner import owner_prune, report_owner_failure
         try:
             result = owner_prune(owner, never_active_days=days)
         except (GatewayClientError, OSError, TimeoutError) as exc:
@@ -771,7 +771,7 @@ def _cmd_prune_or_archive(db, args, action):
     prune = action == "prune"
     if prune and getattr(args, "never_active", False):
         return _prune_never_active_keyed(db, args)
-    from hermes_cli.session_filters import build_prune_filters, describe_filters, format_epoch
+    from hermes_agent.hermes_cli.session_filters import build_prune_filters, describe_filters, format_epoch
     # Bare `prune` keeps the historical "older than 90 days" default. ANY filter — including --source —
     # suppresses the implicit cutoff (`prune --source cron` matches ALL cron sessions); the preview +
     # confirmation below is the safety net.
@@ -840,8 +840,8 @@ def _cmd_prune_or_archive(db, args, action):
         return refused
     if prune and getattr(args, "owner_endpoint", None) is not None:
         # The live gateway owns the store: it deletes, through the housekeeping retirement path.
-        from hermes_cli.gateway_client import GatewayClientError
-        from hermes_cli.sessions_owner import owner_prune, report_owner_failure
+        from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+        from hermes_agent.hermes_cli.sessions_owner import owner_prune, report_owner_failure
         try:
             print(f"Pruned {owner_prune(args.owner_endpoint, filters=filters)['deleted']} session(s).")
         except (GatewayClientError, OSError, TimeoutError) as exc:
@@ -971,7 +971,7 @@ def _cmd_browse(db, args):
         print("Cancelled.")
         return
     print(f"Resuming session: {selected_id}")
-    from hermes_cli.relaunch import relaunch
+    from hermes_agent.hermes_cli.relaunch import relaunch
     relaunch(["--resume", selected_id])  # won't return after execvp
 
 
@@ -1353,22 +1353,22 @@ def _cmd_stats(db, args):
 # -- dispatch -----------------------------------------------------------------
 
 def _cmd_repair_profiles(args):
-    from hermes_cli.sessions_cmd_repair_profiles import cmd_repair_profiles
+    from hermes_agent.hermes_cli.sessions_cmd_repair_profiles import cmd_repair_profiles
     return cmd_repair_profiles(args)
 
 
 def _cmd_set_journal_mode(args):
-    from hermes_cli.sessions_cmd_journal_mode import cmd_set_journal_mode
+    from hermes_agent.hermes_cli.sessions_cmd_journal_mode import cmd_set_journal_mode
     return cmd_set_journal_mode(args)
 
 
 def _cmd_discard(args):
-    from hermes_cli.sessions_discard import cmd_discard
+    from hermes_agent.hermes_cli.sessions_discard import cmd_discard
     return cmd_discard(args)
 
 
 def _cmd_adopt(args):
-    from hermes_cli.sessions_adopt import cmd_adopt
+    from hermes_agent.hermes_cli.sessions_adopt import cmd_adopt
     return cmd_adopt(args)
 
 
@@ -1423,7 +1423,7 @@ def cmd_sessions(args, sessions_parser=None):
     if action == "prune":
         # The always-on gateway owns the store: this process only reads the preview, the owner
         # deletes. No gateway: the local prune below, behind the holder scan, as before.
-        from hermes_cli.sessions_owner import live_owner
+        from hermes_agent.hermes_cli.sessions_owner import live_owner
         args.owner_endpoint = live_owner()
         observational = args.owner_endpoint is not None
     # A served-profile process has no single default home: pass the store path explicitly.

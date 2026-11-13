@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd
 
 
 @pytest.fixture(autouse=True)
@@ -13,7 +13,7 @@ def _isolate_venv_holders(monkeypatch):
     """The update flow's venv-holder guard sees the live gateway processes on
     a dev machine and aborts with SystemExit 2 before reaching the branch
     logic under test.  Isolate it so the test exercises the intended path."""
-    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", list)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_windows._detect_venv_python_processes", list)
 
 
 class TestGitTrampolineSelfHeal:
@@ -43,15 +43,15 @@ class TestGitTrampolineSelfHeal:
 
     @pytest.mark.platforms("windows")
     def test_healthy_git_command_unchanged(self):
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
         with (
             patch(
-                "hermes_cli.update_cmd.subprocess.run",
+                "hermes_agent.hermes_cli.update_cmd.subprocess.run",
                 side_effect=self._fake_run_healthy,
             ),
-            patch("hermes_cli.update_cmd._locate_real_git") as locate,
+            patch("hermes_agent.hermes_cli.update_cmd._locate_real_git") as locate,
         ):
             result = update_cmd._ensure_non_trampoline_git(git_cmd)
         assert result == git_cmd
@@ -61,17 +61,17 @@ class TestGitTrampolineSelfHeal:
     def test_trampoline_swaps_to_real_git(self, capsys):
         from pathlib import Path
 
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
         real = Path(r"C:\Program Files\Git\mingw64\libexec\git-core\git.exe")
         with (
             patch(
-                "hermes_cli.update_cmd.subprocess.run",
+                "hermes_agent.hermes_cli.update_cmd.subprocess.run",
                 side_effect=self._fake_run_trampoline,
             ),
             patch(
-                "hermes_cli.update_cmd._locate_real_git", return_value=real
+                "hermes_agent.hermes_cli.update_cmd._locate_real_git", return_value=real
             ),
         ):
             result = update_cmd._ensure_non_trampoline_git(git_cmd)
@@ -81,15 +81,15 @@ class TestGitTrampolineSelfHeal:
 
     @pytest.mark.platforms("windows")
     def test_trampoline_no_real_git_keeps_command(self, capsys):
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
         with (
             patch(
-                "hermes_cli.update_cmd.subprocess.run",
+                "hermes_agent.hermes_cli.update_cmd.subprocess.run",
                 side_effect=self._fake_run_trampoline,
             ),
-            patch("hermes_cli.update_cmd._locate_real_git", return_value=None),
+            patch("hermes_agent.hermes_cli.update_cmd._locate_real_git", return_value=None),
         ):
             result = update_cmd._ensure_non_trampoline_git(git_cmd)
         assert result == git_cmd
@@ -98,10 +98,10 @@ class TestGitTrampolineSelfHeal:
 
     @pytest.mark.platforms("not windows")
     def test_off_windows_noop(self):
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         git_cmd = ["git"]
-        with patch("hermes_cli.update_cmd.subprocess.run") as run:
+        with patch("hermes_agent.hermes_cli.update_cmd.subprocess.run") as run:
             result = update_cmd._ensure_non_trampoline_git(git_cmd)
         assert result == git_cmd
         run.assert_not_called()
@@ -112,7 +112,7 @@ class TestGitTrampolineSelfHeal:
         # #88136). The candidate list must check get_default_hermes_root()
         # before the profile home.
         import hermes_constants
-        from hermes_cli.update_cmd_git import _portable_git_candidates
+        from hermes_agent.hermes_cli.update_cmd_git import _portable_git_candidates
 
         root = tmp_path / "root"
         profile_home = root / "profiles" / "foo"

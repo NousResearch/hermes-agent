@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_agent.agent.model_metadata_http import resolve_verify
-from hermes_cli.models import _custom_provider_ssl_context
+from hermes_agent.hermes_cli.models import _custom_provider_ssl_context
 
 _BASE = "https://relay.example.invalid/v1"
 
@@ -29,7 +29,7 @@ def test_probe_policy_edges(clean_env, case, ambient):
     if case == "config-error":
         providers.side_effect = RuntimeError("config unavailable")
     url = "" if case == "no-url" else _BASE
-    with patch("hermes_cli.config.get_compatible_custom_providers", providers):
+    with patch("hermes_agent.hermes_cli.config.get_compatible_custom_providers", providers):
         verify = resolve_verify(url)
         context = _custom_provider_ssl_context(url)
         assert context is (verify if ambient else None)
@@ -49,7 +49,7 @@ def test_public_endpoint_calls_seam_without_ssl_context_kwarg(clean_env):
     must keep the original 2-arg call shape when no per-provider override
     applies, so a strict 2-arg mock still works.
     """
-    from hermes_cli import models
+    from hermes_agent.hermes_cli import models
 
     class _Resp:
         def __enter__(self):
@@ -68,7 +68,7 @@ def test_public_endpoint_calls_seam_without_ssl_context_kwarg(clean_env):
         return _Resp()
 
     with patch(
-        "hermes_cli.config.get_compatible_custom_providers",
+        "hermes_agent.hermes_cli.config.get_compatible_custom_providers",
         return_value=[],
     ), patch.object(
         models, "_urlopen_model_catalog_request", side_effect=_strict_two_arg

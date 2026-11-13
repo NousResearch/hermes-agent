@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 import hermes_agent.tui_gateway.server as srv
-from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
+from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
 from hermes_agent.tools import bot_relay
 
 
@@ -209,7 +209,7 @@ def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, monkey
     """A caller with no identity, or one holding the ``?internal=`` credential, keeps its sender fields.
 
     NOT the Desktop: it mints a ws-ticket carrying the signed-in ``{user_id, provider}`` on every
-    gateway that requires sign-in (``hermes_cli/dashboard_auth/routes.py``), so it is a login
+    gateway that requires sign-in (``hermes_agent/hermes_cli/dashboard_auth/routes.py``), so it is a login
     identity and takes the principal-author branch below."""
     from hermes_agent.tools import bot_live_delivery as live
     forwarded = []

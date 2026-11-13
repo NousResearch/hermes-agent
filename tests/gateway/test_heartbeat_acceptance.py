@@ -8,7 +8,7 @@ import pytest
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource, build_session_key
-from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState, save_heartbeat
+from hermes_agent.hermes_cli.heartbeat import HeartbeatManager, HeartbeatState, save_heartbeat
 from evals.heartbeat_idle_wire import WireAdapter
 
 

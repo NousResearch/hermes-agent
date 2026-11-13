@@ -2,7 +2,7 @@
 
 import queue
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):

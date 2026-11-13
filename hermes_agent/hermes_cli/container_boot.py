@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
 
-from hermes_cli.gateway_multiplex_s6 import AUTOSTART_STATES as _AUTOSTART_STATES, fold_named_slot_intent
+from hermes_agent.hermes_cli.gateway_multiplex_s6 import AUTOSTART_STATES as _AUTOSTART_STATES, fold_named_slot_intent
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ def reconcile_profile_gateways(
     """Recreate s6 service registrations for every persistent profile.
 
     Always registers a ``gateway-default`` slot for the root profile (the implicit profile at
-    the top of ``$HERMES_HOME``): ``hermes_cli.gateway`` maps an empty profile suffix to it,
+    the top of ``$HERMES_HOME``): ``hermes_agent.hermes_cli.gateway`` maps an empty profile suffix to it,
     so it is what ``hermes gateway start`` (no ``-p``) targets.
 
     Without it, bare ``hermes gateway start`` inside the container would land on ``s6-svc -u
@@ -107,11 +107,11 @@ def reconcile_profile_gateways(
     #
     # It used to be gated on `gateway.multiplex_profiles`, which made the UNSET default (on) boot
     # the slots anyway — the container shipped the opt-out topology by accident. The key is retired
-    # as a topology switch (hermes_cli/gateway_multiplex_mode.py), so there is nothing to read.
+    # as a topology switch (hermes_agent/hermes_cli/gateway_multiplex_mode.py), so there is nothing to read.
     named = [(name, entry, _read_desired_state(entry)) for name, entry in _named_profile_dirs(hermes_home)]
     # The exception is a `gateway.standalone` profile: the root multiplexer never serves it
     # (profiles_to_serve excludes it), so it boots its own slot from its own intent, beside the root.
-    from hermes_cli.profiles import profile_is_standalone
+    from hermes_agent.hermes_cli.profiles import profile_is_standalone
     standalone = {name for name, entry, _prior in named if profile_is_standalone(entry)}
 
     # A legacy `gateway run` container with no state yet seeds `running` (pre-s6 behavior).
@@ -289,7 +289,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     """
     import shutil
 
-    from hermes_cli.service_manager import (
+    from hermes_agent.hermes_cli.service_manager import (
         S6ServiceManager, _seed_supervise_skeleton, validate_profile_name)
 
     validate_profile_name(profile)
@@ -361,7 +361,7 @@ def main() -> int:
         print("reconcile: skipping (dashboard container — does not need per-profile gateways)")
         return 0
 
-    from hermes_cli.service_manager import S6_DYNAMIC_SCANDIR
+    from hermes_agent.hermes_cli.service_manager import S6_DYNAMIC_SCANDIR
 
     hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
     scandir = Path(os.environ.get("S6_PROFILE_GATEWAY_SCANDIR", str(S6_DYNAMIC_SCANDIR)))

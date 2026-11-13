@@ -4,7 +4,7 @@ The desktop keeps the backend alive during download, then stops it before
 requesting installation. Each invocation reports one final JSON result.
 Exit 0 means success, 2 means a check found updates, and 1 means failure.
 
-Run with the bundled payload python: ``python -P -m hermes_cli.windows_store_update``.
+Run with the bundled payload python: ``python -P -m hermes_agent.hermes_cli.windows_store_update``.
 """
 from __future__ import annotations
 

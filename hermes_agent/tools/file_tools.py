@@ -56,7 +56,7 @@ def _get_max_read_chars() -> int:
     cache: ``load_config_readonly`` is already mtime+path cached, and a process-lifetime slot
     would pin the launch profile's value under the multiplexed gateway."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         val = load_config_readonly().get("file_read_max_chars")
     except Exception:
         val = None
@@ -1343,7 +1343,7 @@ def _handle_write_file(args, **kw):
             f"write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
         )
-    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+    from hermes_agent.hermes_cli.observability.shared_metrics_harness import record_file_edit
 
     return record_file_edit("write_file", "whole_file", lambda: _owned(kw.get("session_id") or tid, write_file_tool,
         path=args["path"], content=args["content"], task_id=tid,
@@ -1361,7 +1361,7 @@ def _owned(owner: str, fn, **call_kwargs):
 
 
 def _handle_patch(args, **kw):
-    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+    from hermes_agent.hermes_cli.observability.shared_metrics_harness import record_file_edit
 
     tid = kw.get("task_id") or "default"
     mode = args.get("mode", "replace")

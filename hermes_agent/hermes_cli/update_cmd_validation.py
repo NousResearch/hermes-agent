@@ -3,7 +3,7 @@
 import json
 import subprocess
 from pathlib import Path
-from hermes_cli._launchers import runtime_command
+from hermes_agent.hermes_cli._launchers import runtime_command
 
 # Modules imported on every startup. Unlike _UPDATE_CRITICAL_FILES (only parsed) these are
 # *imported*, catching cross-module breakage (a name pulled from a sibling no longer exists).
@@ -19,13 +19,13 @@ def _critical_module_import_failures(
     keeps import side effects out of the updater's ``sys.modules``.
     Generic import-time exceptions are tolerated unless ``report_runtime_errors=True``.
     """
-    from hermes_cli.update_cmd import _UPDATE_CRITICAL_MODULES
+    from hermes_agent.hermes_cli.update_cmd import _UPDATE_CRITICAL_MODULES
     from hermes_constants import FIRST_PARTY_MODULE_ROOTS
     import secrets
     marker = f"__HERMES_IMPORT_HEALTH_{secrets.token_hex(16)}__"
     probe = (
         "import importlib, json, sys\n"
-        # Importing hermes_cli.main runs the startup dotenv load, which pulls external secret
+        # Importing hermes_agent.hermes_cli.main runs the startup dotenv load, which pulls external secret
         # sources (op/bws/command helpers, up to 120s each) unless argv says ``update``. The
         # probe only checks importability, so it inherits the updater's own argv contract.
         "sys.argv = ['hermes', 'update']\n"

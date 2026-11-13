@@ -24,7 +24,7 @@ def test_stale_model_options_refuses_instead_of_building(tmp_path, monkeypatch):
 
     monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
     builds = []
-    monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload",
+    monkeypatch.setattr("hermes_agent.hermes_cli.inventory.build_model_options_payload",
                         Mock(side_effect=lambda *a, **k: builds.append(1)))
 
     resp = _call("model.options")
@@ -58,7 +58,7 @@ def test_fresh_model_options_builds_payload_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_cfg_sig", None)
     monkeypatch.setattr(server, "_cfg_path", None)
     expected = {"providers": []}
-    monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload",
+    monkeypatch.setattr("hermes_agent.hermes_cli.inventory.build_model_options_payload",
                         Mock(return_value=expected))
 
     resp = _call("model.options")

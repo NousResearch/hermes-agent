@@ -14,7 +14,7 @@ from typing import Any
 
 
 def rebase_for_save(config: dict[str, Any], live_raw: dict[str, Any], merge_existing: bool) -> dict[str, Any]:
-    from hermes_cli import config as _config
+    from hermes_agent.hermes_cli import config as _config
 
     snapshot = _config._worker_config_snapshot()
     if snapshot is not None:
@@ -36,7 +36,7 @@ def _frozen_for_deletion(snapshot: dict[str, Any]) -> Any:
     policy = _current_policy()
     if policy is None or not policy.ignore_user_config:
         return snapshot
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
     return _schema_default_branch(snapshot, DEFAULT_CONFIG)
 

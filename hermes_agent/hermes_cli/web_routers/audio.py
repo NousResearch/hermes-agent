@@ -1,6 +1,6 @@
 """Audio dashboard routes: transcription upload + live transcribe-stream, voice config, ElevenLabs voices, TTS speak/lease and the speak-stream WebSocket.
 
-Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
+Extracted from ``hermes_agent.hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are late-bound (cycle-safe).
 """
 
@@ -17,15 +17,15 @@ import os
 import urllib.parse
 import urllib.request
 from fastapi import APIRouter
-from hermes_cli.dashboard_auth.native_http import grant_home_scope
-from hermes_cli.web_routers._common import client_error, http_failure
-from hermes_cli.web_deps import late
-from hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
-from hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
-from hermes_cli.web_server_surface import policy
-from hermes_cli.web_session_sockets import SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET
+from hermes_agent.hermes_cli.dashboard_auth.native_http import grant_home_scope
+from hermes_agent.hermes_cli.web_routers._common import client_error, http_failure
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.web_server_chat import _ws_auth_ok, _ws_request_is_allowed
+from hermes_agent.hermes_cli.web_server_gateway import _read_dashboard_json_response, _split_text_for_speak_stream
+from hermes_agent.hermes_cli.web_server_surface import policy
+from hermes_agent.hermes_cli.web_session_sockets import SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET
 from fastapi import HTTPException, Request, WebSocket, WebSocketDisconnect
-from hermes_cli.web_models import (
+from hermes_agent.hermes_cli.web_models import (
     AudioTranscriptionRequest,
     STTLeaseRequest,
     TTSSpeakRequest,
@@ -34,13 +34,13 @@ from hermes_cli.web_models import (
 )
 from typing import Any, Dict, Optional
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
+_config_profile_scope = late("_config_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
 _voice_list_error_logged_once = late("_voice_list_error_logged_once")
-load_env = late("load_env", "hermes_cli.config")
+load_env = late("load_env", "hermes_agent.hermes_cli.config")
 
 _AUDIO_MIME_EXTENSIONS: dict[str, str] = {
     "audio/aac": ".aac", "audio/flac": ".flac", "audio/m4a": ".m4a", "audio/mp3": ".mp3",

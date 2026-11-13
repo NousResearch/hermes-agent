@@ -1,7 +1,7 @@
 """Tests for the Remote-Spending gate denial contract (NAS PR #481).
 
 Behavior contracts: the HTTP→exception mapping in
-``hermes_cli.nous_billing._raise_for_error`` and the
+``hermes_agent.hermes_cli.nous_billing._raise_for_error`` and the
 ``hermes_agent.tui_gateway.server._serialize_billing_error`` envelope the TUI branches on.
 These assert the wire contract (CF-4) — error code, actor, recovery, retry —
 not specific copy.
@@ -9,7 +9,7 @@ not specific copy.
 
 import pytest
 
-from hermes_cli.nous_billing import (
+from hermes_agent.hermes_cli.nous_billing import (
     BillingError,
     BillingRateLimited,
     BillingRemoteSpendingRevoked,

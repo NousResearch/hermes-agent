@@ -5,9 +5,9 @@ from datetime import timedelta
 import pytest
 
 from hermes_agent.cron import executions, jobs
-from hermes_cli.observability import relay_shared_metrics as rsm
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability import shared_metrics_gateway as smg
+from hermes_agent.hermes_cli.observability import relay_shared_metrics as rsm
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability import shared_metrics_gateway as smg
 
 
 @pytest.fixture
@@ -65,7 +65,7 @@ def test_a_stopped_run_row_validates_against_the_package_schema(tmp_path):
     import json
     from pathlib import Path
 
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     jsonschema = pytest.importorskip("jsonschema")
     schema = Path(__file__).resolve().parents[2] / "hermes_cli/observability/schemas/hermes.shared_metrics.v4.schema.json"

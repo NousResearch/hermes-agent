@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from hermes_cli.subcommands._shared import add_json_flag, add_yes_flag
+from hermes_agent.hermes_cli.subcommands._shared import add_json_flag, add_yes_flag
 
 
 def _flag(parser, *names, help, **kw):
@@ -14,7 +14,7 @@ def _flag(parser, *names, help, **kw):
 
 def cmd_sessions_lazy(args, **kwargs):
     """``hermes sessions`` handler; sessions_cmd imports only when the subcommand runs."""
-    from hermes_cli.sessions_cmd import cmd_sessions
+    from hermes_agent.hermes_cli.sessions_cmd import cmd_sessions
 
     return cmd_sessions(args, **kwargs)
 
@@ -24,9 +24,9 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
         "rename", help="Set or change a session's title")
     sessions_rename.add_argument("session_id", help="Session ID to rename")
     sessions_rename.add_argument("title", nargs="+", help="New title for the session")
-    from hermes_cli.sessions_discard import add_discard_parser
+    from hermes_agent.hermes_cli.sessions_discard import add_discard_parser
     add_discard_parser(sessions_subparsers)
-    from hermes_cli.sessions_adopt import add_adopt_parser
+    from hermes_agent.hermes_cli.sessions_adopt import add_adopt_parser
     add_adopt_parser(sessions_subparsers)
 
 
@@ -342,7 +342,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         "path", nargs="?", help="Path to a specific session JSONL file (skips the picker)")
 
 
-    # cmd_sessions lives in hermes_cli/sessions_cmd.py; the parser is threaded
+    # cmd_sessions lives in hermes_agent/hermes_cli/sessions_cmd.py; the parser is threaded
     # in because the fallthrough branch calls sessions_parser.print_help().
     # main() injects a lazy indirection so sessions_cmd is only imported when
     # the subcommand runs.

@@ -23,7 +23,7 @@ DEPLOYMENT_TOKEN = "deployment-session-token-" + "d" * 32
 
 def _provision(monkeypatch, tmp_path, *, form="literal", enabled=True):
     """Provision the deployment token and run the plugin's own registration, as plugin discovery does."""
-    from hermes_cli.dashboard_auth import register_provider
+    from hermes_agent.hermes_cli.dashboard_auth import register_provider
 
     if form == "file":
         secret = tmp_path / "session-token"
@@ -68,8 +68,8 @@ def test_native_app_tokens_and_their_refresh_keep_mains_rules(gated, monkeypatch
 def test_the_refresh_route_refuses_the_deployment_token_before_asking_any_provider(gated, monkeypatch, tmp_path):
     """The deployment token has no refresh: the route answers main's 401 and audit reason without
     calling a provider, so an unreachable one cannot turn it into a 503."""
-    from hermes_cli.dashboard_auth import ProviderError, register_provider
-    from hermes_cli.dashboard_auth import routes
+    from hermes_agent.hermes_cli.dashboard_auth import ProviderError, register_provider
+    from hermes_agent.hermes_cli.dashboard_auth import routes
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
     calls, audits = [], []
@@ -92,7 +92,7 @@ def test_the_refresh_route_refuses_the_deployment_token_before_asking_any_provid
 def test_the_refresh_route_still_goes_through_token_works_alone(gated, monkeypatch):
     """The refresh route's check is ``webapp_sign_in.token_works_alone``, as on main, so patching it
     refuses even a native app's legitimate refresh."""
-    from hermes_cli import webapp_sign_in
+    from hermes_agent.hermes_cli import webapp_sign_in
 
     _access, refresh = _native_app_sign_in(gated)
     monkeypatch.setattr(webapp_sign_in, "token_works_alone", lambda request, token: False)

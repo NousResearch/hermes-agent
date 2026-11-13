@@ -137,15 +137,15 @@ def test_named_pipe_identify_status_and_fleet_consumer(live_server, monkeypatch)
     assert status["answering_pid"] == server_pid
 
     # Real fleet consumer prefers the pipe
-    import hermes_cli.update_receipt as ur
+    import hermes_agent.hermes_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_code_identity",
+        "hermes_agent.hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": ident.get("code_sha") or "X", "version": "t"},
     )
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home)
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
+        "hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
     )
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1, fleet
@@ -170,15 +170,15 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     # verifies the PID as this home's gateway via its live command line
     # (#110420). A real process wearing a `gateway run` argv stands in for
     # a gateway that lost its pipe.
-    import hermes_cli.update_receipt as ur
+    import hermes_agent.hermes_cli.update_receipt as ur
 
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_code_identity",
+        "hermes_agent.hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "NEW", "version": "t"},
     )
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home)
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
+        "hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: home / "no-profiles"
     )
 
     def _write_state(pid: int) -> None:

@@ -1,13 +1,13 @@
 """Provider setup wizard helpers: provider picker, custom-provider save/remove, auxiliary-model
 routing menu, API-key/reasoning prompts, Anthropic OAuth.
 
-Split out of ``hermes_cli/main.py``. Names that still live in main are imported lazily at call time.
+Split out of ``hermes_agent/hermes_cli/main.py``. Names that still live in main are imported lazily at call time.
 """
 
 import contextlib
 
 from typing import Optional
-from hermes_cli.model_setup_flows_common import _ask, _ensure_dict_section, _print_numbered, _radiolist, _say
+from hermes_agent.hermes_cli.model_setup_flows_common import _ask, _ensure_dict_section, _print_numbered, _radiolist, _say
 
 
 def _is_profile_api_key_provider(provider_id: str) -> bool:
@@ -36,7 +36,7 @@ def _short_url(url: str) -> str:
 def _clear_stale_openai_base_url():
     """Remove OPENAI_BASE_URL from ~/.hermes/.env unless the active provider is 'custom' — a
     leftover value routes provider:auto auxiliary clients to the old custom endpoint."""
-    from hermes_cli.config import get_env_value, save_env_value, load_config
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value, load_config
     model_cfg = load_config().get("model", {})
     provider = (model_cfg.get("provider") or "").strip().lower() if isinstance(model_cfg, dict) else ""
     if provider == "custom" or not provider:
@@ -78,11 +78,11 @@ _DELEGATION_TASK_DESC = "subagent model (delegate_task)"
 
 def _all_aux_tasks() -> list[tuple[str, str, str]]:
     """Built-in aux tasks (in order) followed by plugin-registered ones
-    (:meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`)."""
+    (:meth:`hermes_agent.hermes_cli.plugins.PluginContext.register_auxiliary_task`)."""
     tasks = list(_AUX_TASKS)
     # Plugin discovery failure must not break the aux config UI.
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from hermes_agent.hermes_cli.plugins import get_plugin_auxiliary_tasks
         for entry in get_plugin_auxiliary_tasks():
             tasks.append((entry["key"], entry["display_name"], entry["description"]))
     return tasks
@@ -138,7 +138,7 @@ def _aux_task_cfg_for_display(cfg: dict, task: str) -> dict:
     shows its resolved route (base included), so the menu never reports "auto" while the task
     actually runs on the base's provider; every other task shows exactly what is stored."""
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from hermes_agent.hermes_cli.plugins import get_plugin_auxiliary_tasks
         if any(e.get("key") == task and e.get("inherit_from") for e in get_plugin_auxiliary_tasks()):
             from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config
             return _get_auxiliary_task_config(task)
@@ -157,7 +157,7 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
     """Persist an aux task's four routing fields (timeout etc. untouched; main model config never
     modified). ``delegation`` writes the top-level section, with "auto" stored as an empty provider.
     ``reasoning_effort``: a level word or "" (provider default) to write; None leaves the key alone."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     cfg = load_config()
     if task == _DELEGATION_TASK_KEY:
         entry = _ensure_dict_section(cfg, "delegation")
@@ -167,7 +167,7 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
-    from hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
+    from hermes_agent.hermes_cli.config_secret_refs import aux_api_key_env, secret_ref_for
     entry["api_key"] = secret_ref_for(aux_api_key_env(task), api_key or "")
     if reasoning_effort is not None and _aux_task_takes_reasoning(task):
         entry["reasoning_effort"] = reasoning_effort
@@ -180,7 +180,7 @@ def _aux_task_takes_reasoning(task: str) -> bool:
     routes through delegation which reads ``delegation.reasoning_effort``, not its own block."""
     if task == _DELEGATION_TASK_KEY:
         return True
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     block = (DEFAULT_CONFIG.get("auxiliary") or {}).get(task)
     if isinstance(block, dict):
         return "reasoning_effort" in block
@@ -199,8 +199,8 @@ def _prompt_aux_reasoning_effort(task: str, current: str) -> Optional[str]:
 
 def _reset_aux_to_auto() -> int:
     """Reset every known aux task (built-in + plugin) back to auto/empty. Returns number reset."""
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     defaults = DEFAULT_CONFIG.get("auxiliary") or {}
 
     def _clear(entry: dict, auto: str, task: str = "") -> bool:
@@ -231,7 +231,7 @@ def _reset_aux_to_auto() -> int:
 
 def _aux_config_menu() -> None:
     """Top-level auxiliary-model picker; loops until the user picks "Back"."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     while True:
         cfg = load_config()
         _say("", "  Auxiliary models — side-task routing", "",
@@ -268,8 +268,8 @@ def _aux_config_menu() -> None:
 def _aux_select_for_task(task: str) -> None:
     """Pick a provider + model for one aux task and persist it. Rows come from
     ``build_aux_picker_rows()`` (shared substrate): only already-configured providers appear."""
-    from hermes_cli.config import load_config
-    from hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.inventory import build_aux_picker_rows, format_aux_picker_entries
     cfg = load_config()
     task_cfg = _aux_task_cfg(cfg, task)
     current_provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
@@ -314,8 +314,8 @@ def _aux_flow_provider_model(task: str, provider_slug: str, curated_models: list
                              current_model: str = "", current_effort: str = "") -> None:
     """Prompt for a model under an already-authenticated provider (then its reasoning effort),
     save to aux."""
-    from hermes_cli.auth import _prompt_model_selection
-    from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_agent.hermes_cli.auth import _prompt_model_selection
+    from hermes_agent.hermes_cli.models_pricing import get_pricing_for_provider
     display_name = _aux_task_display_name(task)
     try:
         pricing = get_pricing_for_provider(provider_slug) or {}
@@ -405,7 +405,7 @@ def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     """Provider menu with curses arrow keys; numbered-list fallback when curses is unavailable
     (piped stdin, non-TTY). Returns the selected index, or None if the user cancels."""
     with contextlib.suppress(Exception):
-        from hermes_cli.setup import _curses_prompt_choice
+        from hermes_agent.hermes_cli.setup import _curses_prompt_choice
         idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
             print()
@@ -437,7 +437,7 @@ _CUSTOM_API_MODE_ANSWERS = {answer: value for value, _, _, answers in _CUSTOM_AP
 
 def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:
     """Prompt for a custom provider API mode: an explicit mode string, or None for auto-detect."""
-    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+    from hermes_agent.hermes_cli.runtime_provider import _detect_api_mode_for_url
     detected_mode = _detect_api_mode_for_url(base_url)
     default_mode = str(current_api_mode or "").strip().lower() or detected_mode or ""
 
@@ -500,7 +500,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
 
     See #69449.
     """
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     cfg = load_config()
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
@@ -534,7 +534,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
     name = name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
     if api_key and not key_env:
-        from hermes_cli.config_secret_refs import endpoint_api_key_env, secret_key_env_for
+        from hermes_agent.hermes_cli.config_secret_refs import endpoint_api_key_env, secret_key_env_for
         key_env = secret_key_env_for(endpoint_api_key_env(base_url), api_key, base_url)
     if key_env:
         entry["key_env"] = key_env
@@ -555,7 +555,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
 
 def _remove_custom_provider(config):
     """Let the user remove a saved custom provider from config.yaml."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     cfg = load_config()
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list) or not providers:
@@ -648,7 +648,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort="", *, default_la
 
 def _model_choice_save_count() -> int:
     """Snapshot taken by ``select_provider_and_model`` before a flow runs (see below)."""
-    from hermes_cli.auth_model_picker import model_choice_save_count
+    from hermes_agent.hermes_cli.auth_model_picker import model_choice_save_count
     return model_choice_save_count()
 
 
@@ -658,7 +658,7 @@ def _offer_reasoning_after_pick(model_before: str, saves_before: int) -> None:
     ``model.default`` changed) offer the effort for the saved model + provider, including a
     provider switch that keeps the same model ID or a re-pick of the current model. Cancel /
     "No change." never prompts."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     model_cfg = load_config().get("model")
     if not isinstance(model_cfg, dict):
         return
@@ -673,8 +673,8 @@ def _prompt_main_reasoning_effort(model: str, provider: str) -> None:
     model's supported levels (a profile may declare a per-model set via ``setup_reasoning_efforts``;
     everything else gets the full ladder) and persist ``agent.reasoning_effort``. Skipped when the catalog says the route has
     no reasoning control; "Skip" leaves the current value alone."""
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.setup import _current_reasoning_effort, _set_reasoning_effort
     efforts = _main_model_reasoning_efforts(model, provider)
     if efforts is None:
         return
@@ -710,8 +710,8 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_
     """API-key entry for ``hermes setup`` / ``hermes model``: first-time entry, or [K]eep / [R]eplace /
     [C]lear when a key exists (a malformed paste is recoverable without editing ``.env``).
     Returns ``(resolved_key, abort)``; ``abort=True`` means the caller must ``return`` at once."""
-    from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
+    from hermes_agent.hermes_cli.config import save_env_value
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
     def _prompt_new_key(*, allow_lmstudio_default: bool) -> str:
@@ -740,7 +740,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_
         return new_key, False
 
     # Already configured — offer K / R / C
-    from hermes_cli.env_loader import format_secret_source_suffix
+    from hermes_agent.hermes_cli.env_loader import format_secret_source_suffix
     source_suffix = format_secret_source_suffix(key_env) if key_env else ""
     print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓{source_suffix}")
     if not key_env:
@@ -774,14 +774,14 @@ def _infer_stepfun_region(base_url: str) -> str:
 
 
 def _stepfun_base_url_for_region(region: str) -> str:
-    from hermes_cli.auth import STEPFUN_STEP_PLAN_CN_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL
+    from hermes_agent.hermes_cli.auth import STEPFUN_STEP_PLAN_CN_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL
     return STEPFUN_STEP_PLAN_CN_BASE_URL if region == "china" else STEPFUN_STEP_PLAN_INTL_BASE_URL
 
 
 def _run_anthropic_oauth_flow(save_env_value):
     """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
     from hermes_agent.agent.anthropic_credentials import run_oauth_setup_token, read_claude_code_credentials, is_claude_code_token_valid
-    from hermes_cli.config import save_anthropic_oauth_token, use_anthropic_claude_code_credentials
+    from hermes_agent.hermes_cli.config import save_anthropic_oauth_token, use_anthropic_claude_code_credentials
 
     def _activate_claude_code_credentials_if_available() -> bool:
         try:
@@ -845,8 +845,8 @@ def _run_anthropic_oauth_flow(save_env_value):
 
 def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
     """Saved custom providers keyed by slug, with raw ``${ENV}`` refs preserved."""
-    from hermes_cli.config import get_compatible_custom_providers, read_raw_config
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers, read_raw_config
+    from hermes_agent.hermes_cli.providers import custom_provider_slug
 
     # Raw (un-expanded) templates keyed by identity. ``get_compatible_custom_providers(
     # read_raw_config())`` is deliberately bypassed: its normalize step ``urlparse()``s
@@ -917,8 +917,8 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
     fold into display groups (PROVIDER_GROUPS): a group row's ``members`` drive a sub-picker, leaf
     rows have ``members == []``; saved custom providers and trailing actions stay flat. Honors
     ``model_catalog.excluded_providers`` (slug or alias, case-insensitive) like the gateway/TUI."""
-    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
-    from hermes_cli.models_catalog_static import group_providers, listed_canonical_providers, provider_group_for_slug
+    from hermes_agent.hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES
+    from hermes_agent.hermes_cli.models_catalog_static import group_providers, listed_canonical_providers, provider_group_for_slug
     canonical_descs = {p.slug: p.tui_desc for p in CANONICAL_PROVIDERS}
     listed = listed_canonical_providers()
     _cli_excluded = {
@@ -961,7 +961,7 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
             if slug == "nous":
                 # Same free-tier rule as the gateway/TUI pickers: relabel for a guest, hide
                 # when nous.guest is off, untouched for a real account.
-                from hermes_cli.model_switch_providers import _free_tier_nous_row
+                from hermes_agent.hermes_cli.model_switch_providers import _free_tier_nous_row
                 tier_row = _free_tier_nous_row({"name": label, "models": []})
                 if tier_row is None:
                     continue
@@ -974,8 +974,8 @@ def _build_provider_picker_rows(config: dict, active: str, provider_labels: dict
         _add(key, f"{provider_info['name']} ({_short_url(provider_info['base_url'])}){model_hint}", [],
              bool(active) and key == active)
 
-    from hermes_cli.model_setup_flows_local import local_models_available
-    from hermes_cli.providers import LLAMACPP_ALIASES
+    from hermes_agent.hermes_cli.model_setup_flows_local import local_models_available
+    from hermes_agent.hermes_cli.providers import LLAMACPP_ALIASES
     if not _cli_excluded & set(LLAMACPP_ALIASES) and local_models_available():
         _add("llamacpp", "Local models (run open models on this machine — no account or API key)", [],
              active == "llamacpp")

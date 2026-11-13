@@ -42,7 +42,7 @@ SECRET = "sk-route-secret-0123456789abcdef"
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     root = tmp_path / "hermes_home"
     work = root / "profiles" / "work"
@@ -75,7 +75,7 @@ def homes(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(homes):
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return c

@@ -1,4 +1,4 @@
-"""Per-profile view of ``hermes_cli.models``' module-level catalog slots.
+"""Per-profile view of ``hermes_agent.hermes_cli.models``' module-level catalog slots.
 
 Several caches on the facade (curated OpenRouter list, reasoning-capability catalogs and their
 once-per-process guards) hold values derived from ONE profile's config, ``.env`` and ``<home>/cache``

@@ -27,8 +27,8 @@ def server():
     import hermes_agent.tui_gateway.transport
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
-        "hermes_cli.env_loader": MagicMock(),
-        "hermes_cli.banner": MagicMock(),
+        "hermes_agent.hermes_cli.env_loader": MagicMock(),
+        "hermes_agent.hermes_cli.banner": MagicMock(),
         "hermes_agent.hermes_state": MagicMock(),
     }):
         import importlib

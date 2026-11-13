@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import backup
+from hermes_agent.hermes_cli import backup
 
 
 def _mk_profile(home: Path, jobs: int = 0) -> Path:
@@ -27,13 +27,13 @@ def profiles(monkeypatch, tmp_path):
     work = _mk_profile(tmp_path / "home" / "profiles" / "work", jobs=5)
     sparks = _mk_profile(tmp_path / "home" / "profiles" / "sparks", jobs=0)
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_default_hermes_home", lambda: default_home
+        "hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: default_home
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "home" / "profiles"
+        "hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "home" / "profiles"
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._PROFILE_ID_RE",
+        "hermes_agent.hermes_cli.profiles._PROFILE_ID_RE",
         re.compile(r"^[a-z0-9][a-z0-9_-]*$"),
         raising=False,
     )
@@ -53,7 +53,7 @@ class TestSiblingEnumeration:
         def _boom():
             raise RuntimeError("no profiles module")
 
-        monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", _boom)
+        monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_default_hermes_home", _boom)
         assert backup._sibling_profile_homes(tmp_path) == []
 
 

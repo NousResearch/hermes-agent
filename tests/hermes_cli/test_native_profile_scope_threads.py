@@ -5,7 +5,7 @@ from hermes_constants import get_hermes_home, reset_hermes_home_override, set_he
 
 
 def test_config_scoped_worker_keeps_the_request_home_override(tmp_path):
-    from hermes_cli.web_routers.audio import _run_config_scoped
+    from hermes_agent.hermes_cli.web_routers.audio import _run_config_scoped
 
     secondary = tmp_path / "profiles" / "secondary"
     secondary.mkdir(parents=True)
@@ -24,7 +24,7 @@ def test_config_scoped_worker_keeps_the_request_home_override(tmp_path):
 def test_oauth_poller_thread_keeps_the_request_home_override(tmp_path):
     import threading
 
-    from hermes_cli.web_routers import oauth
+    from hermes_agent.hermes_cli.web_routers import oauth
 
     secondary = tmp_path / "profiles" / "secondary"
     secondary.mkdir(parents=True)

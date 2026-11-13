@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_cmd, update_cmd_zip
+from hermes_agent.hermes_cli import update_cmd, update_cmd_zip
 from hermes_constants import venv_bin_dir, venv_python_path
 
 # ---------------------------------------------------------------------------
@@ -435,7 +435,7 @@ def test_root_files_never_go_missing_mid_swap(tmp_path, monkeypatch, hardlinks):
 _LOCK_ROLE = r'''
 import json, os, sys, time
 from pathlib import Path
-from hermes_cli import _early_recovery_zip as erz
+from hermes_agent.hermes_cli import _early_recovery_zip as erz
 role, work = sys.argv[1], Path(sys.argv[2])
 live, lock_path = work / "live", work / "live" / ".hermes-update-zip-swap.lock"
 def wait_for(name):
@@ -493,7 +493,7 @@ def test_zip_swap_lock_is_one_inode_across_a_release(tmp_path):
                     reason="POSIX permission bits; root ignores them")
 def test_zip_swap_lock_refuses_admission_without_a_lock(tmp_path):
     """A root where the lock file cannot be created grants nothing: no lock, no swap, and a named reason."""
-    from hermes_cli._early_recovery_zip import zip_swap_owner_lock
+    from hermes_agent.hermes_cli._early_recovery_zip import zip_swap_owner_lock
 
     live = tmp_path / "live"
     live.mkdir()
@@ -538,7 +538,7 @@ _POSIX_MODES = pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and
 def test_unreadable_source_file_leaves_no_partial_stage(tmp_path):
     """The copy of ``second`` dies on an unreadable file after copying the rest: that partial staging
     tree is the failing entry's and must be dropped like the finished ones (nothing live changes)."""
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     live, extracted, locked = _unreadable_release(tmp_path, read_only_dir=False)
     try:
@@ -557,7 +557,7 @@ def test_unreadable_source_file_leaves_no_partial_stage(tmp_path):
 def test_a_stage_cleanup_that_cannot_finish_keeps_the_journal_for_recovery(tmp_path):
     """When the updater cannot remove its partial stage, the journal is that stage's only record: it
     stays, and the next launch's recovery removes the stage, then the journal."""
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     live, extracted, locked = _unreadable_release(tmp_path, read_only_dir=True)
     try:
@@ -575,7 +575,7 @@ def test_a_stage_cleanup_that_cannot_finish_keeps_the_journal_for_recovery(tmp_p
 
 def _swap_or_recover(extracted: Path, entries: list[str], live: Path) -> None:
     """``_download_and_swap_zip``'s wiring: a failed swap is settled from its journal right after."""
-    from hermes_cli._early_recovery_zip import restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli._early_recovery_zip import restore_interrupted_zip_swap
 
     try:
         update_cmd_zip._journaled_stage_and_swap(str(extracted), entries, live, None)
@@ -587,7 +587,7 @@ def _swap_or_recover(extracted: Path, entries: list[str], live: Path) -> None:
 def test_a_stale_backup_never_stands_in_for_the_live_entry(tmp_path, monkeypatch):
     """A leftover ``<entry>.hermes-update-old`` this swap did not make (a pre-journal crash holding a
     read-only directory) must be removed or refuse the swap; it must never become the live entry."""
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     monkeypatch.setattr(update_cmd_commit, "arm_commit_obligations", lambda *a, **k: None)
     live, extracted = tmp_path / "live", tmp_path / "extracted"
@@ -613,7 +613,7 @@ def test_a_stale_backup_never_stands_in_for_the_live_entry(tmp_path, monkeypatch
 def test_a_failed_swap_keeps_a_file_the_user_made_at_a_never_installed_entry(tmp_path, monkeypatch):
     """The swap fails before ``brand_new`` is installed; a file the user created there meanwhile is
     theirs, and neither the rollback nor the journal recovery may delete it."""
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     live, extracted = tmp_path / "live", tmp_path / "extracted"
     for side, text in ((live, "old"), (extracted, "new")):
@@ -640,9 +640,9 @@ def test_a_failed_swap_keeps_a_file_the_user_made_at_a_never_installed_entry(tmp
 def test_a_journal_that_cannot_be_dropped_after_the_commit_never_fails_the_update(tmp_path, monkeypatch):
     """The swap committed: an AV scan holding the journal must not turn it into a reported failure
     that disarms the new tree's completion obligations (F19)."""
-    from hermes_cli import update_cmd_commit
-    from hermes_cli.update_host_obligation import read_host_obligation
-    from hermes_cli.venv_sync import completion_pending_path
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli.venv_sync import completion_pending_path
 
     live, extracted = tmp_path / "live", tmp_path / "extracted"
     _live_tree(live, {"payload": "old"})
@@ -668,7 +668,7 @@ def test_a_journal_that_cannot_be_dropped_after_the_commit_never_fails_the_updat
 _KILLED_BACKUP_COPY = r'''
 import os, shutil, sys
 from pathlib import Path
-from hermes_cli import update_cmd_commit, update_cmd_zip
+from hermes_agent.hermes_cli import update_cmd_commit, update_cmd_zip
 live, extracted = Path(sys.argv[1]), Path(sys.argv[2])
 update_cmd_commit.arm_commit_obligations = lambda *a, **k: None
 update_cmd_zip._hardlink_backup = lambda path, backup: False  # FAT32/exFAT/SMB: no hardlinks
@@ -691,7 +691,7 @@ def test_a_backup_copy_killed_before_its_rename_is_cleared_by_the_recovery(tmp_p
     import subprocess
     import sys
 
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     live, extracted = tmp_path / "live", tmp_path / "extracted"
     live.mkdir()
@@ -718,7 +718,7 @@ def test_a_file_at_the_backup_temp_name_that_is_not_the_killed_copy_is_kept(tmp_
     its backup copy existed leaves the name free, and a file there afterwards is not Hermes', even an
     empty one, a prefix or a full copy of the live file. Only the identity the swap journaled when it
     created the temp may delete it; anything else is kept aside, the journal still retiring (F78-R)."""
-    from hermes_cli._early_recovery_zip import (
+    from hermes_agent.hermes_cli._early_recovery_zip import (
         ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap, write_zip_swap_journal, zip_entry_identity)
 
     live = tmp_path / "live"
@@ -740,8 +740,8 @@ def test_a_file_at_the_backup_temp_name_that_is_not_the_killed_copy_is_kept(tmp_
 def _swap_killed(tmp_path, monkeypatch, *, live: dict, new: dict, install_first: bool) -> Path:
     """Run the real journaled stage+swap and kill it inside the swap: nothing renamed yet, or only the
     first staged entry renamed into place. The journal the real writer left is what recovery reads."""
-    from hermes_cli import update_cmd_commit
-    from hermes_cli._early_recovery import ZIP_SWAP_JOURNAL
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli._early_recovery import ZIP_SWAP_JOURNAL
 
     root, extracted = tmp_path / "live", tmp_path / "extracted"
     for d, files in ((root, live), (extracted, new)):
@@ -771,7 +771,7 @@ def test_recovery_never_installs_or_deletes_a_backup_suffix_created_after_the_ki
     path-only journal took it for the swap's backup: it overwrote the live cli.py with it, and the old
     bytes were gone (review Z1). Recovery now proves a backup is the entry it recorded before using or
     deleting it: the live file stays, the user's file is kept aside, byte for byte."""
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     root = _swap_killed(tmp_path, monkeypatch, live={"cli.py": "LIVE"}, new={"cli.py": "NEW"}, install_first=False)
     (root / "cli.py.hermes-update-old").write_text("USER LATER", encoding="utf-8")
@@ -788,7 +788,7 @@ def test_recovery_never_deletes_a_user_file_that_replaced_an_installed_entry(tmp
     """A new entry (notes.md) was renamed into place, then the swap was killed; the user then replaced
     notes.md with a file of their own. Recovery deleted whatever sat at the journaled name (review Z1);
     only the entry the swap installed (its recorded staging identity) may go."""
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     root = _swap_killed(tmp_path, monkeypatch, live={}, new={"notes.md": "NEW"}, install_first=True)
     (root / "notes.md").unlink()
@@ -803,7 +803,7 @@ def test_recovery_never_deletes_a_user_file_that_replaced_an_installed_entry(tmp
 def test_recovery_still_rolls_back_an_authentic_killed_swap(tmp_path, monkeypatch):
     """The control: a swap killed after installing its first entry rolls back to the old tree, and every
     staging copy and backup the swap itself made is deleted (provenance proven), with nothing kept aside."""
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     root = _swap_killed(tmp_path, monkeypatch, live={"a.py": "OLD_A", "b.py": "OLD_B"},
                         new={"a.py": "NEW_A", "b.py": "NEW_B", "c.py": "NEW_C"}, install_first=True)
@@ -819,7 +819,7 @@ def test_the_zip_gate_never_admits_a_conflict_marker_even_for_a_newer_python(tmp
     """A release whose requires-python excludes this interpreter skipped the ZIP pre-commit gate
     entirely, so a startup module with a merge-conflict marker (broken under EVERY Python) was
     swapped in (review C5). Its syntax may be a newer Python's, the marker never is."""
-    from hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli import update_cmd_commit
 
     armed = []
     monkeypatch.setattr(update_cmd_commit, "arm_commit_obligations", lambda *a, **k: armed.append(a))
@@ -858,8 +858,8 @@ def test_a_committed_swap_keeps_its_journal_until_the_backup_is_gone(tmp_path, m
     new tree, and the retry's dirty-tree gate is clean again."""
     import json
 
-    from hermes_cli import update_cmd_commit
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     monkeypatch.setattr(update_cmd_commit, "arm_commit_obligations", lambda *a, **k: None)
     live, extracted = tmp_path / "live", tmp_path / "extracted"
@@ -889,8 +889,8 @@ def test_a_suffix_path_that_appears_after_the_preflight_is_never_deleted(tmp_pat
     or at the backup suffix (created after the pre-swap recheck) is nothing this transaction made. The
     stage dropped the first unconditionally and the hardlink backup the second; both survive now, byte
     for byte, and the swap is refused with the live tree left old."""
-    from hermes_cli import update_cmd_commit
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     live, extracted = tmp_path / "live", tmp_path / "extracted"
     live.mkdir()
@@ -917,8 +917,8 @@ def test_a_stage_journals_each_directory_before_its_fill_and_not_every_file(tmp_
     right after staging still leaves every copy provably the update's: recovery drops them all."""
     import json
 
-    from hermes_cli import update_cmd_commit
-    from hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli._early_recovery_zip import ZIP_SWAP_JOURNAL, restore_interrupted_zip_swap
 
     live, extracted = tmp_path / "live", tmp_path / "extracted"
     _live_tree(live, {"agent": "old", "tools": "old"})

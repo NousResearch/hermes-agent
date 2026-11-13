@@ -535,47 +535,47 @@ class TestSpillover:
         assert not orphan.exists()
 
     def test_retention_hours_reads_session_retention_days(self, monkeypatch):
-        import hermes_cli.config
+        import hermes_agent.hermes_cli.config
         import hermes_agent.tools.tool_result_storage as trs
 
         monkeypatch.setattr(
-            hermes_cli.config, "load_config_readonly",
+            hermes_agent.hermes_cli.config, "load_config_readonly",
             lambda: {"sessions": {"retention_days": 7}})
         assert trs._spillover_retention_hours() == 7 * 24
 
     def test_retention_hours_defaults_and_falls_back(self, monkeypatch):
-        import hermes_cli.config
+        import hermes_agent.hermes_cli.config
         import hermes_agent.tools.tool_result_storage as trs
 
-        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
+        monkeypatch.setattr(hermes_agent.hermes_cli.config, "load_config_readonly", dict)
         assert trs._spillover_retention_hours() == 90 * 24
 
         def _boom():
             raise RuntimeError("config unreadable")
 
-        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", _boom)
+        monkeypatch.setattr(hermes_agent.hermes_cli.config, "load_config_readonly", _boom)
         assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
 
         monkeypatch.setattr(
-            hermes_cli.config, "load_config_readonly",
+            hermes_agent.hermes_cli.config, "load_config_readonly",
             lambda: {"sessions": {"retention_days": -5}})
         assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
 
         # 0 is a legal prune setting (ended sessions go at once) but open sessions survive it;
         # a 0h spill window would delete the file the first spill just wrote.
         monkeypatch.setattr(
-            hermes_cli.config, "load_config_readonly",
+            hermes_agent.hermes_cli.config, "load_config_readonly",
             lambda: {"sessions": {"retention_days": 0}})
         assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
 
         # YAML ``.inf`` / ``.nan`` parse as floats; int() on them raises and used to
         # silently kill every sweep after the once-per-home flag was set.
         monkeypatch.setattr(
-            hermes_cli.config, "load_config_readonly",
+            hermes_agent.hermes_cli.config, "load_config_readonly",
             lambda: {"sessions": {"retention_days": float("inf")}})
         assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
         monkeypatch.setattr(
-            hermes_cli.config, "load_config_readonly",
+            hermes_agent.hermes_cli.config, "load_config_readonly",
             lambda: {"sessions": {"retention_days": float("nan")}})
         assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
 

@@ -36,8 +36,8 @@ _PLUGIN = textwrap.dedent(
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
     import hermes_agent.providers as providers  # noqa: PLR0402
-    from hermes_cli import auth_plugin_providers as app
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli import auth_plugin_providers as app
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     plugin_home, bare_home = tmp_path / "with_plugin", tmp_path / "bare"
     plugin = plugin_home / "plugins" / "model-providers" / SLUG
@@ -71,9 +71,9 @@ def _bound(home: Path, fn):
 
 
 def _view(home: Path) -> dict:
-    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials, resolve_provider
-    from hermes_cli.auth_plugin_providers import canonical_registry_rows
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials, resolve_provider
+    from hermes_agent.hermes_cli.auth_plugin_providers import canonical_registry_rows
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     def runtime(requested):
         out = resolve_runtime_provider(requested=requested)
@@ -106,7 +106,7 @@ def _assert_owner(view: dict) -> None:
 
 
 def _assert_absent(view: dict) -> None:
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
 
     assert view["profile"] is None
     assert view["rows"] is False
@@ -128,7 +128,7 @@ def test_mirrored_row_is_absent_in_a_home_without_the_plugin_a_b_a(homes):
 
 
 def test_setup_detection_ignores_another_homes_mirrored_row(homes, monkeypatch):
-    from hermes_cli.setup_migration import _model_section_has_credentials
+    from hermes_agent.hermes_cli.setup_migration import _model_section_has_credentials
 
     from hermes_agent import providers
 
@@ -141,8 +141,8 @@ def test_setup_detection_ignores_another_homes_mirrored_row(homes, monkeypatch):
 
 def test_hidden_rows_survive_registry_reordering(homes):
     """A later mirror inserted mid-registry while another home is bound must not drop hidden rows."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.auth_plugin_providers import _insert_row
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth_plugin_providers import _insert_row
 
     from hermes_agent import providers
 

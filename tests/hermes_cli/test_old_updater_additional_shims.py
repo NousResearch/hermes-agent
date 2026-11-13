@@ -27,8 +27,8 @@ def test_live_profile_parser_does_no_external_work(command, profile, no_external
 
 @pytest.mark.parametrize("refresh", [False, True])
 def test_retired_code_identity_is_unknown(refresh, no_external_work, monkeypatch):
-    from hermes_cli import version_info
-    from hermes_cli.build_info import get_code_identity
+    from hermes_agent.hermes_cli import version_info
+    from hermes_agent.hermes_cli.build_info import get_code_identity
 
     monkeypatch.setattr(version_info, "get_code_identity", no_external_work)
     identity = get_code_identity(refresh=refresh)
@@ -47,7 +47,7 @@ def test_retired_constants_reload_handoffs_old_gateway_recovery(fresh_child, mon
         try:
             from hermes_constants import venv_python_path
         except ImportError:
-            from hermes_cli.managed_uv import _reload_hermes_constants
+            from hermes_agent.hermes_cli.managed_uv import _reload_hermes_constants
             venv_python_path = _reload_hermes_constants().venv_python_path
         pytest.fail(f"old recovery continued with {venv_python_path}")
     assert vars(hermes_constants) == before
@@ -80,8 +80,8 @@ def test_live_dingtalk_dependencies_use_pm_not_retired_installer(monkeypatch):
 
 @pytest.mark.parametrize("handled", [False, True], ids=["unacknowledged", "child-completed"])
 def test_historical_payload_survives_bridge_and_cleanup_requires_ack(handled, fresh_child, monkeypatch):
-    from hermes_cli import update_receipt
-    from hermes_cli.managed_uv import ensure_uv
+    from hermes_agent.hermes_cli import update_receipt
+    from hermes_agent.hermes_cli.managed_uv import ensure_uv
 
     @dataclass
     class HistoricalPlan:
@@ -127,7 +127,7 @@ def test_historical_payload_survives_bridge_and_cleanup_requires_ack(handled, fr
 
 
 def test_retired_subprocess_run_handoffs_instead_of_running_powershell(fresh_child):
-    from hermes_cli import _subprocess_compat
+    from hermes_agent.hermes_cli import _subprocess_compat
 
     with fresh_child.exits():
         _subprocess_compat.run(

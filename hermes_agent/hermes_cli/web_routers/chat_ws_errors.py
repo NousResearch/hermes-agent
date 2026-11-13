@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from hermes_cli.pty_session import RegistryFull
+from hermes_agent.hermes_cli.pty_session import RegistryFull
 
 CHAT_NEEDS_NODE = (
     "{surface} could not start: Hermes needs Node.js to run the terminal chat. "

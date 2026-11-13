@@ -13,7 +13,7 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli import sessions_cmd
+from hermes_agent.hermes_cli import sessions_cmd
 
 pytestmark = pytest.mark.platforms("posix")  # holder scan is unavailable on Windows
 
@@ -70,7 +70,7 @@ def _args(action, force):
 
 def _sessions_subparsers():
     parser = argparse.ArgumentParser()
-    from hermes_cli.subcommands.sessions import build_sessions_parser
+    from hermes_agent.hermes_cli.subcommands.sessions import build_sessions_parser
 
     build_sessions_parser(parser.add_subparsers(dest="command"), cmd_sessions=sessions_cmd.cmd_sessions)
     subparsers = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))

@@ -17,7 +17,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from hermes_cli._subprocess_compat import (
+from hermes_agent.hermes_cli._subprocess_compat import (
     FILTER_DISCOVERY_FAILED,
     harden_git_argv,
     noninteractive_git_env,
@@ -648,7 +648,7 @@ def _fetch_tracking_ref(root: str, remote: str, branch: str) -> bool:
     A tag-pinned narrow clone maps only the tag in ``remote.<remote>.fetch``, so a by-name
     fetch writes FETCH_HEAD without creating the tracking ref (#125686).
     """
-    from hermes_cli.update_cmd_check import tracking_refspec
+    from hermes_agent.hermes_cli.update_cmd_check import tracking_refspec
 
     return _git_write(root, ["fetch", remote, tracking_refspec(remote, branch)])[0] == 0
 
@@ -757,7 +757,7 @@ def worktree_add(cwd: str, options: dict) -> dict:
     if options.get("existingBranch"):
         result = _worktree_for_existing(root, options["existingBranch"])
         if result.get("path") != root:  # a new checkout, not a switch of the main tree
-            from hermes_cli.worktree_registry import record_worktree_repo
+            from hermes_agent.hermes_cli.worktree_registry import record_worktree_repo
             record_worktree_repo(root)
         return result
 
@@ -785,7 +785,7 @@ def worktree_add(cwd: str, options: dict) -> dict:
         if "already exists" not in (err or "").lower():
             raise RuntimeError(err.strip() or "git worktree add failed")
         _git_ok(root, ["worktree", "add", target, branch])
-    from hermes_cli.worktree_registry import record_worktree_repo
+    from hermes_agent.hermes_cli.worktree_registry import record_worktree_repo
     record_worktree_repo(root)
     return {"path": target, "branch": branch, "repoRoot": root}
 

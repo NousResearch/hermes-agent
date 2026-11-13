@@ -168,7 +168,7 @@ def _get_bedrock_runtime_client(region: str, model: Optional[str] = None):
     request timeout (``providers.bedrock.models.<model>.timeout_seconds`` over
     ``providers.bedrock.request_timeout_seconds``). Resolved per call, so a model switch or a
     fallback to another Bedrock model gets that model's budget, not the one the session started with."""
-    from hermes_cli.timeouts import get_provider_request_timeout
+    from hermes_agent.hermes_cli.timeouts import get_provider_request_timeout
     return _cached_client(_bedrock_runtime_client_cache, "bedrock-runtime", region,
                           read_timeout=get_provider_request_timeout("bedrock", model))
 
@@ -432,7 +432,7 @@ def resolve_bedrock_runtime_region(config: Optional[dict[str, Any]] = None) -> s
     endpoint must use this so auxiliary calls never leave the primary runtime's region. *config* skips disk."""
     if config is None:
         with suppress(Exception):
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             config = load_config_readonly()
     cfg_region = str(((config or {}).get("bedrock") or {}).get("region") or "").strip()
     return cfg_region or resolve_bedrock_region()
@@ -449,7 +449,7 @@ def bedrock_guardrail_config(config: Optional[dict[str, Any]] = None) -> Optiona
     if config is None:
         config = {}
         with suppress(Exception):
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             config = load_config_readonly()
     gr = ((config or {}).get("bedrock") or {}).get("guardrail") or {}
     if not (gr.get("guardrail_identifier") and gr.get("guardrail_version")):
@@ -503,7 +503,7 @@ def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
     agent._is_anthropic_oauth = False
     if api_mode == "anthropic_messages":
         from hermes_agent.agent.anthropic_adapter import build_anthropic_bedrock_client
-        from hermes_cli.timeouts import get_provider_request_timeout
+        from hermes_agent.hermes_cli.timeouts import get_provider_request_timeout
         agent._anthropic_client = build_anthropic_bedrock_client(
             agent._bedrock_region, timeout=get_provider_request_timeout("bedrock", getattr(agent, "model", None)))
     else:

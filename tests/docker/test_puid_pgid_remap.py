@@ -78,7 +78,7 @@ def test_root_registered_gateway_after_uid_remap(built_image: str, container_nam
     ))
     assert setup.returncode == 0, setup.stderr
     registered = docker_exec(container_name, "python3", "-c", (
-        "import os; from hermes_cli.service_manager import S6ServiceManager; "
+        "import os; from hermes_agent.hermes_cli.service_manager import S6ServiceManager; "
         "assert os.geteuid() == 0; os.umask(0o077); "
         "S6ServiceManager().register_profile_gateway('remapped')"
     ), user="root", extra_docker_args=("-e", "HERMES_DOCKER_EXEC_AS_ROOT=1"))

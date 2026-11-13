@@ -16,23 +16,23 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli import kanban_db_workspace as kbw
-from hermes_cli import kanban_db_notify as kbn
-from hermes_cli import kanban_swarm as ks
-from hermes_cli import kanban_workflow
-from hermes_cli.kanban_output import (
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_db_workspace as kbw
+from hermes_agent.hermes_cli import kanban_db_notify as kbn
+from hermes_agent.hermes_cli import kanban_swarm as ks
+from hermes_agent.hermes_cli import kanban_workflow
+from hermes_agent.hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
     _fmt_counts, _fmt_task_line, _fmt_ts, _json_out, _obj_dict, _print_json,
     _task_to_dict,
 )
-from hermes_cli.kanban_boards import _dispatch_boards
-from hermes_cli.kanban_ops import (
+from hermes_agent.hermes_cli.kanban_boards import _dispatch_boards
+from hermes_agent.hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
-from hermes_cli.kanban_parser import build_parser
+from hermes_agent.hermes_cli.kanban_parser import build_parser
 
 
 # --- Flag parsing helpers ---
@@ -201,7 +201,7 @@ def kanban_command(args: argparse.Namespace) -> int:
 
 def _profile_author() -> str:
     """Best-effort author name for an interactive CLI call."""
-    from hermes_cli.profiles import current_profile_name
+    from hermes_agent.hermes_cli.profiles import current_profile_name
     return current_profile_name("user") or "user"
 
 
@@ -528,7 +528,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     field("created", f"{_fmt_ts(task.created_at)} by {task.created_by or '-'}")
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
-    from hermes_cli import kanban_diagnostics as kd
+    from hermes_agent.hermes_cli import kanban_diagnostics as kd
     diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
     if diags:
         print(f"\n  Diagnostics ({len(diags)}):")
@@ -628,13 +628,13 @@ def _rows_by_task(conn, table: str, ids: list[str]) -> dict[str, list]:
 
 def _cmd_diagnostics(args: argparse.Namespace) -> int:
     """List active diagnostics on the board via the same rule engine the dashboard uses."""
-    from hermes_cli import kanban_diagnostics as kd
+    from hermes_agent.hermes_cli import kanban_diagnostics as kd
     # Honour kanban.default_assignee as the fallback for unassigned ready tasks (#27145),
     # kanban.max_in_progress as the global concurrency cap (#33488), kanban.max_in_progress_per_profile as
     # the per-profile cap (#21582), and kanban.max_spawn as the per-tick spawn limit (#28805). Same
     # semantics as the gateway dispatch path so behavior matches whether the user runs the CLI directly or
     # relies on the gateway-embedded dispatcher.
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     diag_config = kd.config_from_runtime_config(load_config())
 
@@ -848,7 +848,7 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     if client is None or not model:
         return ("done", None)
 
-    from hermes_cli.goals import judge_goal
+    from hermes_agent.hermes_cli.goals import judge_goal
 
     verdict, reason, transport_failed = "done", "", False
     try:
@@ -1314,7 +1314,7 @@ def _retitled_suffix(outcome) -> str:
 
 def _cmd_specify(args: argparse.Namespace) -> int:
     """Spec a triage task (or all) via the auxiliary LLM, promote to todo."""
-    from hermes_cli import kanban_specify as spec
+    from hermes_agent.hermes_cli import kanban_specify as spec
 
     return _run_triage_sweep(args, "specify", spec, spec.specify_task, "specified",
                              ("task_id", "ok", "reason", "new_title"),
@@ -1330,7 +1330,7 @@ def _decompose_ok_line(o) -> str:
 
 def _cmd_decompose(args: argparse.Namespace) -> int:
     """Fan a triage task (or all) out into child tasks via the auxiliary LLM."""
-    from hermes_cli import kanban_decompose as decomp
+    from hermes_agent.hermes_cli import kanban_decompose as decomp
 
     return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)

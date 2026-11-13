@@ -4,7 +4,7 @@ import pytest
 
 from hermes_agent.agent.models_dev import ModelInfo
 from hermes_agent.agent.usage_pricing import PricingEntry
-from hermes_cli.model_cost_guard import expensive_model_warning
+from hermes_agent.hermes_cli.model_cost_guard import expensive_model_warning
 
 
 def test_no_warning_when_known_prices_are_at_threshold():

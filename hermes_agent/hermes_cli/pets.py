@@ -252,7 +252,7 @@ def _cmd_doctor(args) -> int:
 # ── config helpers ────────────────────────────────────────────────────────
 
 def _pet_config() -> dict:
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     cfg = load_config()
     display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
@@ -275,7 +275,7 @@ def _update_pet_config(when_slug: str | None = None, **values) -> bool:
     With ``when_slug`` the write only happens when the configured slug equals it (remove/rename
     must never disturb a different active pet).
     """
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     pet = cfg.setdefault("display", {}).setdefault("pet", {})

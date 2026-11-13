@@ -30,7 +30,7 @@ def _selection_readers(config_path: Path):
     deployment never asks whether this is PM's runtime (the selector is all it needs)."""
     import os
 
-    from hermes_cli import config_backend
+    from hermes_agent.hermes_cli import config_backend
 
     if os.environ.get(config_backend.BACKEND_ENV, "").strip().lower() in ("", "file"):
         return config_backend.config_version, config_backend.read_config_doc

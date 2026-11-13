@@ -36,14 +36,14 @@ def home(tmp_path, monkeypatch) -> Path:
 
 @pytest.fixture
 def quiet_receipt(monkeypatch):
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import update_receipt
 
     monkeypatch.setattr(update_receipt, "record_step", lambda *a, **k: None)
     monkeypatch.setattr(update_receipt, "finalize_pending_update_receipt", lambda *a, **k: None)
 
 
 def test_fleet_writer_never_exposes_an_empty_exit_code(home):
-    from hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
+    from hermes_agent.hermes_cli.update_cmd_fleet import _write_gateway_update_exit_code
 
     marker = home / ".update_exit_code"
     seen, poll = _watch(marker)
@@ -54,7 +54,7 @@ def test_fleet_writer_never_exposes_an_empty_exit_code(home):
 
 
 def test_completion_success_never_exposes_an_empty_exit_code(home):
-    from hermes_cli.update_completion import _publish_gateway_success
+    from hermes_agent.hermes_cli.update_completion import _publish_gateway_success
 
     marker = home / ".update_exit_code"
     seen, poll = _watch(marker)
@@ -65,7 +65,7 @@ def test_completion_success_never_exposes_an_empty_exit_code(home):
 
 
 def test_takeover_failure_never_exposes_an_empty_exit_code(home, tmp_path, quiet_receipt):
-    from hermes_cli._update_takeover import _record_failure
+    from hermes_agent.hermes_cli._update_takeover import _record_failure
 
     marker = home / ".update_exit_code"
     seen, poll = _watch(marker)
@@ -76,7 +76,7 @@ def test_takeover_failure_never_exposes_an_empty_exit_code(home, tmp_path, quiet
 
 
 def test_takeover_owed_finish_never_exposes_an_empty_exit_code(home, tmp_path, quiet_receipt):
-    from hermes_cli._update_takeover import _record_owed_finish
+    from hermes_agent.hermes_cli._update_takeover import _record_owed_finish
 
     marker = home / ".update_exit_code"
     seen, poll = _watch(marker)
@@ -89,12 +89,12 @@ def test_takeover_owed_finish_never_exposes_an_empty_exit_code(home, tmp_path, q
 @pytest.mark.parametrize("recorder", ["failure", "owed_finish"])
 def test_takeover_records_without_runtime_state_or_pm(home, tmp_path, quiet_receipt, monkeypatch, recorder):
     """The takeover bootstraps before the app is importable; its recorders must still write
-    result.json and the gateway exit code when hermes_cli.runtime_state (→ pm) cannot be imported."""
+    result.json and the gateway exit code when hermes_agent.hermes_cli.runtime_state (→ pm) cannot be imported."""
     import sys
 
-    from hermes_cli import _update_takeover
+    from hermes_agent.hermes_cli import _update_takeover
 
-    for module in ("hermes_cli.runtime_state", "pm", "pm.filesystem"):
+    for module in ("hermes_agent.hermes_cli.runtime_state", "pm", "pm.filesystem"):
         monkeypatch.setitem(sys.modules, module, None)
     result = tmp_path / "result.json"
     if recorder == "failure":

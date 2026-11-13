@@ -15,7 +15,7 @@ def all_assignees_spawnable(monkeypatch):
     those tasks into ``skipped_nonspawnable`` instead of spawning, which
     would break tests that assert spawn behavior.
     """
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
 
 
@@ -38,11 +38,11 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
     if request.node.get_closest_marker("real_concurrent_gate"):
         return
     try:
-        from hermes_cli import main as _cli_main
+        from hermes_agent.hermes_cli import main as _cli_main
     except Exception:
         return
     # raising=False: under pytest's per-test spawn isolation, a concurrent
-    # xdist worker importing a module that transitively touches hermes_cli.main
+    # xdist worker importing a module that transitively touches hermes_agent.hermes_cli.main
     # can briefly expose a partially-initialized module object here — one where
     # _detect_concurrent_hermes_instances isn't defined yet. A bare setattr
     # would raise AttributeError and error the (unrelated) test. The attribute
@@ -64,7 +64,7 @@ def _private_repo_checkout_lock(monkeypatch, tmp_path_factory):
     fixture checkouts are unaffected."""
     from pathlib import Path
 
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     repo = Path(update_lock.__file__).resolve().parents[1]
     real = update_lock.checkout_lock_path
@@ -87,8 +87,8 @@ def _source_channels_resolve_locally(request, monkeypatch):
     """
     if request.node.get_closest_marker("real_release_channels"):
         return
-    from hermes_cli import source_releases
-    from hermes_cli.release_channels import ChannelResolution
+    from hermes_agent.hermes_cli import source_releases
+    from hermes_agent.hermes_cli.release_channels import ChannelResolution
 
     def resolve(name, repository):
         record = {"schema": 1, "name": name, "repository": repository, "policy": "source-branch",
@@ -106,7 +106,7 @@ def _source_channels_resolve_locally(request, monkeypatch):
 def _no_detached_commit_graph_writer(monkeypatch):
     """The update's maintenance starts a detached ``git commit-graph write`` on the checkout it ran
     from: in a test, this repository or a tmp copy deleted under it. In-process runs never spawn it."""
-    from hermes_cli import git_commit_graph
+    from hermes_agent.hermes_cli import git_commit_graph
 
     monkeypatch.setattr(git_commit_graph, "spawn_commit_graph_refresh", lambda root: False)
 
@@ -125,7 +125,7 @@ def _discharge_host_update_obligation():
 
     def _clear() -> None:
         try:
-            from hermes_cli.update_host_obligation import clear_host_obligation
+            from hermes_agent.hermes_cli.update_host_obligation import clear_host_obligation
 
             clear_host_obligation()
         except Exception:
@@ -140,10 +140,10 @@ def _discharge_host_update_obligation():
 @pytest.fixture
 def isolated_source_completion(monkeypatch):
     """Unit-test the completion tail in-process; real transport is tested separately."""
-    from hermes_cli import update_cmd, update_completion
+    from hermes_agent.hermes_cli import update_cmd, update_completion
 
-    monkeypatch.setattr("hermes_cli.source_build.build_update_products", lambda *a, **kw: None)
-    monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda *a: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_build.build_update_products", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.venv_sync.publish_launchers", lambda *a: None)
 
     def complete(request):
         update_completion._complete_selected(request)

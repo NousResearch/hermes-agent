@@ -7,7 +7,7 @@ from tests.pm._range_server import RangeHandler, dl_server
 
 
 def test_tag_endpoint_drives_package_updates_and_preserves_escaped_names(upstream, monkeypatch):
-    from hermes_cli import urllib_security
+    from hermes_agent.hermes_cli import urllib_security
     calls, failures = upstream
     tags = {
         "/-/package/npm/dist-tags": {"latest": "2.3.4", "next": "3.0.0-beta.1"},

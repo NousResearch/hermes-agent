@@ -6,7 +6,7 @@ import argparse
 import functools
 import sys
 
-from hermes_cli import projects_db as pdb
+from hermes_agent.hermes_cli import projects_db as pdb
 
 
 def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -215,7 +215,7 @@ def _cmd_bind_board(args, conn, proj) -> str:
         return f"Unbound board from {proj.slug}"
     if proj.primary_path:  # best-effort: point the bound board's default_workdir at the primary repo
         try:
-            from hermes_cli import kanban_db as kb
+            from hermes_agent.hermes_cli import kanban_db as kb
 
             slug = kb._normalize_board_slug(args.board)
             if slug and (slug == kb.DEFAULT_BOARD or kb.board_exists(slug)):

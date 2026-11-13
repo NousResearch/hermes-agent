@@ -1,6 +1,6 @@
 """Plugin discovery: directory scanning, entry-point manifests, and the enable/disable gate.
 
-Split out of :mod:`hermes_cli.plugins`. Names that tests patch on the origin
+Split out of :mod:`hermes_agent.hermes_cli.plugins`. Names that tests patch on the origin
 (``get_bundled_plugins_dir``, ``_env_enabled``) are looked up lazily through it.
 """
 
@@ -15,16 +15,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from hermes_constants import get_hermes_home
-from hermes_cli.config import cfg_get
-from hermes_cli.plugin_capabilities import VALID_CAPABILITY_IDS
-from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
-from hermes_cli.plugins_manifest import (
+from hermes_agent.hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.plugin_capabilities import VALID_CAPABILITY_IDS
+from hermes_agent.hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
+from hermes_agent.hermes_cli.plugins_manifest import (
     PluginManifest, _detect_kind_from_source, manifest_key, _resolve_module_source,
     parse_manifest_file, portable_plugin_manifest,
 )
-from hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
+from hermes_agent.hermes_cli.relay_plugin_cutover import LEGACY_RELAY_PLUGIN_KEYS, RELAY_PLUGINS_CONFIG_ENV
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
@@ -112,7 +112,7 @@ def _classify_entrypoint_value_kind(value: str) -> str:
 def _get_disabled_plugins() -> set:
     """Read ``plugins.disabled`` — a deny-list that wins over ``plugins.enabled``."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         disabled = cfg_get(load_config(), "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
@@ -124,7 +124,7 @@ def _get_enabled_plugins() -> Optional[set]:
     enabled yet"; the first ``migrate_config`` run grandfathers installed user plugins); ``set()`` = explicitly
     empty; else the allow-list."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         enabled = cfg_get(load_config(), "plugins", "enabled")
         return set(enabled) if isinstance(enabled, list) else None
     except Exception:
@@ -191,7 +191,7 @@ def collect_directory_manifests() -> list[PluginManifest]:
     """Read directory manifests in full-discovery order (bundled top-level, bundled/platforms, user, opt-in
     project) without loading or mutating anything, so startup probes share the exact precedence/containment
     rules of the real discovery sweep."""
-    from hermes_cli import plugins as _origin  # patched names resolve through the origin
+    from hermes_agent.hermes_cli import plugins as _origin  # patched names resolve through the origin
     manifests: list[PluginManifest] = []
 
     def _scan(label: str, directory: Path, source: str, skip_names: Optional[set[str]] = None) -> None:
@@ -273,7 +273,7 @@ def gate_manifest(
     category-owned kinds (exclusive / model-provider), bundled auto-loads (backend now, platform deferred),
     then ``plugins.enabled`` opt-in (path-derived key or legacy bare name)."""
     lookup_key = manifest_key(manifest)
-    from hermes_cli.left_core_migration import legacy_plugin_keys
+    from hermes_agent.hermes_cli.left_core_migration import legacy_plugin_keys
     # A bundled key that left core (``observability/langfuse``) keeps selecting its catalog plugin.
     names = {lookup_key, manifest.name, *legacy_plugin_keys(lookup_key)}
 
@@ -325,7 +325,7 @@ def gate_manifest(
     if manifest.source != "bundled":
         # The catalog kill list is enforced at install; a plugin recalled AFTER it was installed must not keep
         # loading. Offline check (in-tree list + cached live copy), honours an explicit install-time bypass.
-        from hermes_cli.plugins_cmd_catalog import installed_plugin_removal
+        from hermes_agent.hermes_cli.plugins_cmd_catalog import installed_plugin_removal
         removed = installed_plugin_removal(manifest.name, manifest.path)
         if removed is not None:
             error = f"removed from the Hermes plugin catalog: {removed.reason or 'no reason recorded'}"

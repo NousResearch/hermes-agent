@@ -2,7 +2,7 @@
 
 The slash-command worker is spawned as ``-m hermes_agent.tui_gateway.slash_worker`` and
 inherits the user's CWD. A local package (e.g. ``utils/``) in that CWD shadows
-the installed hermes ``utils`` module and crashes the worker on ``import cli``
+the installed hermes ``utils`` module and crashes the worker on ``from hermes_agent import cli``
 (``ImportError: cannot import name 'atomic_replace' from 'utils'``).
 
 #51693 added this guard to the sibling entrypoints ``hermes_agent/tui_gateway/entry.py`` and

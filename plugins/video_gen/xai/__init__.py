@@ -148,7 +148,7 @@ class XAIVideoGenProvider(VideoGenProvider):
         return DEFAULT_MODEL
 
     def get_setup_schema(self) -> dict[str, Any]:
-        # Auth resolution lives in the shared ``xai_grok`` post_setup hook (hermes_cli/tools_config.py): no API-key
+        # Auth resolution lives in the shared ``xai_grok`` post_setup hook (hermes_agent/hermes_cli/tools_config.py): no API-key
         # prompt when already signed in via xAI Grok OAuth; OAuth-vs-API-key choice when neither is configured.
         storage_notice = _xai_http("xai_storage_notice_text", "", "video_gen")
         tag = ("grok-imagine-video for text/reference; grok-imagine-video-1.5 for image-to-video; edit/extend: pass the stored public "

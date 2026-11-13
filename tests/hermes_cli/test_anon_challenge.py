@@ -1,4 +1,4 @@
-"""Nous free tier: the browser challenge in front of a token exchange (``hermes_cli.anon_challenge``).
+"""Nous free tier: the browser challenge in front of a token exchange (``hermes_agent.hermes_cli.anon_challenge``).
 
 Driven through the fake NAS with Hermes' real client code: the exchange hits a 428, the challenge is
 presented and polled OUTSIDE the auth locks, and the exchange runs once more.
@@ -9,7 +9,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from hermes_cli import anon_auth, anon_challenge
+from hermes_agent.hermes_cli import anon_auth, anon_challenge
 
 from tests.hermes_cli.anon_portal import PORTAL, claimed_trial, install_portal
 
@@ -35,14 +35,14 @@ def _desktop_backend(monkeypatch):
 def _resolve(monkeypatch):
     """A free-model call: only a guest that claimed the welcome trial on the desktop's local backend
     mints an inference token."""
-    from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+    from hermes_agent.hermes_cli.auth_nous import resolve_nous_runtime_credentials
     claimed_trial(monkeypatch)
     return resolve_nous_runtime_credentials()
 
 
 def _connectors_token():
     """A connectors / managed-tool token read: the one exchange a terminal guest makes."""
-    from hermes_cli.auth import resolve_nous_access_token
+    from hermes_agent.hermes_cli.auth import resolve_nous_access_token
     assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
     return resolve_nous_access_token()
 
@@ -70,7 +70,7 @@ class TestRequiredChallenge:
         assert [p for _, p in nas.calls].count("/api/anonymous/challenge/status") == 1
         # A window that crashed is not a reason to let a boot burst of callers each re-mint and
         # reopen a window: the second 428 starts the same fail-fast cooldown as a timeout.
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+        from hermes_agent.hermes_cli.auth_nous import resolve_nous_runtime_credentials
         with pytest.raises(anon_auth.AuthError):
             resolve_nous_runtime_credentials()
         assert [p for _, p in nas.calls].count("/api/anonymous/challenge/status") == 1
@@ -97,8 +97,8 @@ class TestRequiredChallenge:
     def test_the_status_poll_trusts_what_the_credential_was_minted_with(self, nas, presented, monkeypatch):
         """A guest whose ``auth.json`` carries a ``tls`` block polls under it (a private CA, say),
         not under a fresh default context that would fail every read and run out the clock."""
-        from hermes_cli import auth_nous
-        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+        from hermes_agent.hermes_cli import auth_nous
+        from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
         claimed_trial(monkeypatch)
         with _auth_store_lock():
             store = _load_auth_store()
@@ -109,7 +109,7 @@ class TestRequiredChallenge:
         monkeypatch.setattr(auth_nous, "_nous_http_client",
                             lambda timeout, verify: polled_with.append(verify) or real(timeout, verify))
         nas.challenge_required = True
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+        from hermes_agent.hermes_cli.auth_nous import resolve_nous_runtime_credentials
         resolve_nous_runtime_credentials()
         assert [p for _, p in nas.calls].count("/api/anonymous/challenge/status") >= 1
         assert polled_with and all(verify is False for verify in polled_with)
@@ -144,7 +144,7 @@ class TestRequiredChallenge:
 
     def test_the_wait_happens_outside_the_auth_locks(self, nas, monkeypatch):
         """A sibling process must be able to take the shared-store lock while the page runs."""
-        from hermes_cli.auth_nous import _nous_shared_store_lock
+        from hermes_agent.hermes_cli.auth_nous import _nous_shared_store_lock
         nas.challenge_required = True
         nas.challenge_statuses = ["pending"]
 
@@ -164,7 +164,7 @@ class TestRequiredChallenge:
         assert exc.value.code == anon_auth.ANON_CHALLENGE_REQUIRED and exc.value.retryable is True
         assert "browser" in str(exc.value)
         # The callers queued behind it fail fast instead of each parking for a full wait.
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+        from hermes_agent.hermes_cli.auth_nous import resolve_nous_runtime_credentials
         with pytest.raises(anon_auth.AuthError):
             resolve_nous_runtime_credentials()
         assert len(presented) == 1
@@ -187,7 +187,7 @@ class TestRequiredChallenge:
 
     def test_the_managed_tool_token_path_works_a_challenge_too(self, nas, presented):
         """Against a NAS from before the connectors purpose, which still challenges that mint."""
-        from hermes_cli.auth import resolve_nous_access_token
+        from hermes_agent.hermes_cli.auth import resolve_nous_access_token
         assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
         nas.honours_purpose = False
         nas.challenge_required = True
@@ -199,7 +199,7 @@ class TestRequiredChallenge:
 class TestWhoWaits:
     def test_a_background_caller_announces_and_returns_at_once(self, nas, presented, monkeypatch):
         """A keepalive tick or a status paint has nobody waiting on it: no poll, no parked thread."""
-        from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+        from hermes_agent.hermes_cli.auth_nous import resolve_nous_runtime_credentials
         claimed_trial(monkeypatch)
         nas.challenge_required = True
         nas.challenge_never_clears = True
@@ -235,8 +235,8 @@ class TestWhoWaits:
         assert capsys.readouterr().err == ""
 
     def test_the_keepalive_and_the_status_paint_are_background_callers(self, nas, presented):
-        from hermes_cli.auth_nous import _compute_nous_auth_status
-        from hermes_cli.nous_auth_keepalive import refresh_nous_auth_keepalive_once
+        from hermes_agent.hermes_cli.auth_nous import _compute_nous_auth_status
+        from hermes_agent.hermes_cli.nous_auth_keepalive import refresh_nous_auth_keepalive_once
         assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
         nas.challenge_required = True
         nas.challenge_never_clears = True
@@ -412,7 +412,7 @@ class TestPresenting:
 
     def test_a_terminal_opens_one_tab_per_ticket_however_many_attempts_resume_it(self, monkeypatch, capsys):
         import webbrowser
-        from hermes_cli import auth_device_flow
+        from hermes_agent.hermes_cli import auth_device_flow
         opened = []
         monkeypatch.setattr(auth_device_flow, "_is_remote_session", lambda: False)
         monkeypatch.setattr(auth_device_flow, "_can_open_graphical_browser", lambda: True)

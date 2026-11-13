@@ -2,7 +2,7 @@
 gateway api_server on loopback, so ``hermes peer`` can reach a hosted agent without its key.
 
 The bearer is a short-lived pass minted for this one agent, verified before this route runs
-(``hermes_cli.dashboard_auth.peer_pass``). Each path in :data:`_ROUTES` needs one permission; a path
+(``hermes_agent.hermes_cli.dashboard_auth.peer_pass``). Each path in :data:`_ROUTES` needs one permission; a path
 not listed is never forwarded, which keeps machine plumbing (``/api/cron/fire``, platform event
 intake, RoomLink grants, ``/health/detailed``) off this route. The request goes on with the
 API_SERVER_KEY the listener checks, which never leaves the machine, and with the pass holder's id
@@ -26,9 +26,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from hermes_agent.gateway.platforms.api_server_profile_prefix import DEFAULT_PROFILE_HANDLE, UNKNOWN_PROFILE_ERROR
-from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.peer_pass import PEER_PREFIX
-from hermes_cli.dashboard_auth.request_utils import client_ip
+from hermes_agent.hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+from hermes_agent.hermes_cli.dashboard_auth.peer_pass import PEER_PREFIX
+from hermes_agent.hermes_cli.dashboard_auth.request_utils import client_ip
 
 _log = logging.getLogger(__name__)
 router = APIRouter()
@@ -126,8 +126,8 @@ def _upstream(profile: Optional[str]) -> Optional[tuple[str, str]]:
     profile this dashboard serves), or None when this host has no such profile. The prefix reads as
     the api_server reads it: the default profile's handle ``hermes`` is the default profile unless a
     profile has that name. Reads config and .env files: call it off the event loop."""
-    from hermes_cli import profiles
-    from hermes_cli import web_server_cron as cron
+    from hermes_agent.hermes_cli import profiles
+    from hermes_agent.hermes_cli import web_server_cron as cron
     if profile is None:
         name, home = cron._cron_profile_home(None)
         return cron._gateway_api_target(name, home)

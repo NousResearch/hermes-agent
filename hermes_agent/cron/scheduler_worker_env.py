@@ -1,7 +1,7 @@
 """Cron: import path of the restart-safe external worker.
 
 The worker is spawned as ``sys.executable -m hermes_agent.cron.scheduler``. Its entry module is
-``hermes_agent.cron.scheduler``, not ``hermes_cli.main``, so nothing bootstraps the gateway's checkout
+``hermes_agent.cron.scheduler``, not ``hermes_agent.hermes_cli.main``, so nothing bootstraps the gateway's checkout
 onto its ``sys.path``; historically it imported ``cron`` only through the implicit ``-m``
 cwd entry. That entry is gone under ``PYTHONSAFEPATH`` and useless when the venv's
 editable install maps a moved/deleted checkout -- the worker then dies with

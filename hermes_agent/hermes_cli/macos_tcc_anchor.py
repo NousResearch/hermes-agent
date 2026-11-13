@@ -25,7 +25,7 @@ from pathlib import Path
 
 from pm.environments import venv_python
 from utils import atomic_write_text
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +283,7 @@ def _passes_boot_gate(staged: Path, venv_dir: Path) -> bool:
 
 def _install_anchor(venv_dir: Path, source_file: Path) -> None:
     """Replace ``bin/python`` with a signed copy, gated on a real boot."""
-    from hermes_cli.macos_signing import sign_managed_python
+    from hermes_agent.hermes_cli.macos_signing import sign_managed_python
 
     venv_py = venv_python(venv_dir)
     venv_bin = venv_py.parent

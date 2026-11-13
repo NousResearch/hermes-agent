@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_cli.session_listing import subagent_listing_scope
+from hermes_agent.hermes_cli.session_listing import subagent_listing_scope
 from hermes_agent.hermes_state import SessionDB
 
 

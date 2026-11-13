@@ -72,7 +72,7 @@ def live_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _resolve(provider: str, model: str | None) -> dict:
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     return resolve_runtime_provider(requested=provider, target_model=model)
 
@@ -82,11 +82,11 @@ def _live_listing(provider: str, runtime: dict) -> list[str]:
     (a silent fallback is exactly what hides a broken listing)."""
     api_key, base_url = runtime.get("api_key") or "", runtime.get("base_url") or ""
     if provider == "openai":
-        from hermes_cli.models import fetch_api_models
+        from hermes_agent.hermes_cli.models import fetch_api_models
 
         return list(fetch_api_models(api_key, base_url, timeout=20.0) or [])
     if provider == "nous":
-        from hermes_cli.auth import fetch_nous_models
+        from hermes_agent.hermes_cli.auth import fetch_nous_models
 
         return list(fetch_nous_models(inference_base_url=base_url, api_key=api_key) or [])
     from hermes_agent.providers import get_provider_profile

@@ -16,17 +16,17 @@ from typing import Any, Callable, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from hermes_cli.web_deps import late
-from hermes_cli.web_models import DelegationBackendSelect, DelegationModelMapUpdate, DelegationProfileRoutesUpdate
-from hermes_cli.web_routers._common import (
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.web_models import DelegationBackendSelect, DelegationModelMapUpdate, DelegationProfileRoutesUpdate
+from hermes_agent.hermes_cli.web_routers._common import (
     _profile_scope, config_write_scope, is_redacted_credential_preview, redacted_credential_preview,
 )
 
 router = APIRouter()
 _log = logging.getLogger(__name__)
 
-load_config = late("load_config", "hermes_cli.config")
-save_config = late("save_config", "hermes_cli.config")
+load_config = late("load_config", "hermes_agent.hermes_cli.config")
+save_config = late("save_config", "hermes_agent.hermes_cli.config")
 
 DEFAULT_BACKEND = "default"
 MODEL_MAP = "model_map"
@@ -62,7 +62,7 @@ def _registered_backends() -> list[dict[str, Any]]:
     """``default`` plus every plugin-registered backend of the active profile, with availability."""
     from hermes_agent.agent.delegation_backends import list_backends
     from hermes_agent.agent.delegation_registry import DEFAULT_BACKEND as builtin
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
 
     discover_plugins()  # idempotent; a plugin enabled after boot loads on the next scan
     # ``description`` is the provider's ``summary``: the one line a backend picker shows for it.
@@ -85,7 +85,7 @@ def _redacted_options(options: Any) -> list[dict[str, Any]]:
 
 
 def _profile_names() -> list[str]:
-    from hermes_cli.profiles import list_profile_names
+    from hermes_agent.hermes_cli.profiles import list_profile_names
     return list_profile_names()
 
 
@@ -124,7 +124,7 @@ async def select_delegation_backend(body: DelegationBackendSelect, profile: Opti
 
     def _run():
         from hermes_agent.agent.delegation_backends import set_global_backend
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         with config_write_scope(body.profile or profile):
             discover_plugins()
             try:
@@ -213,7 +213,7 @@ def _clean_model_option(index: int, entry: dict, stored: dict[str, dict],
 
 
 def _write_backend_block(profile: Optional[str], backend: str, build: Callable[[dict], dict]) -> dict:
-    from hermes_cli.config import format_managed_message, is_managed
+    from hermes_agent.hermes_cli.config import format_managed_message, is_managed
     if is_managed():
         raise _managed_install(format_managed_message(f"save delegation.backends.{backend}"))
     with config_write_scope(profile):

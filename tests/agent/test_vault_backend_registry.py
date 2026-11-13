@@ -50,8 +50,8 @@ def test_builtin_names_and_handle_prefixes_are_reserved():
 
 
 def test_reload_cannot_change_prefix_and_leave_ambiguous_restore(tmp_path):
-    from hermes_cli.plugins import PluginContext, PluginManager
-    from hermes_cli.plugins_manifest import PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager
+    from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
     scope = str(tmp_path / "home")
     context = PluginContext(PluginManifest(name="login-example", source="bundled"), PluginManager(scope_key=scope))
     original = Example()
@@ -68,8 +68,8 @@ def test_reload_cannot_change_prefix_and_leave_ambiguous_restore(tmp_path):
 
 
 def test_lease_reload_and_unload_do_not_cross_profiles(tmp_path):
-    from hermes_cli.plugins import PluginContext, PluginManager
-    from hermes_cli.plugins_manifest import PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager
+    from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
     first, second = str(tmp_path / "first"), str(tmp_path / "second")
     manifest = PluginManifest(name="test-vault", source="bundled")
     first_ctx = PluginContext(manifest, PluginManager(scope_key=first))
@@ -87,7 +87,7 @@ def test_lease_reload_and_unload_do_not_cross_profiles(tmp_path):
 
 
 def test_real_plugin_discovery_reload_and_disable(tmp_path, monkeypatch):
-    from hermes_cli.plugins import PluginManager
+    from hermes_agent.hermes_cli.plugins import PluginManager
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     home = tmp_path / "home"
     plugin = home / "plugins" / "login_example"
@@ -127,8 +127,8 @@ def test_real_plugin_discovery_reload_and_disable(tmp_path, monkeypatch):
 
 
 def test_host_plugin_refuses_server_local_fill_context():
-    from hermes_cli.plugin_host_child import RemotePluginContext
-    from hermes_cli.plugin_host_wire import PluginHostUnsupported
+    from hermes_agent.hermes_cli.plugin_host_child import RemotePluginContext
+    from hermes_agent.hermes_cli.plugin_host_wire import PluginHostUnsupported
     remote = RemotePluginContext(None, "example", {"ctx_methods": ["register_login_backend"]})
     with pytest.raises(PluginHostUnsupported, match="server-local"):
         remote.register_login_backend(Example())

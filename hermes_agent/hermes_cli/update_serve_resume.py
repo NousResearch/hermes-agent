@@ -18,8 +18,8 @@ def main(context: Path, result: Path) -> int:
         sys.path.insert(0, str(root))
         from pm.environments import activate_dependencies
         activate_dependencies(root)
-        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
-        from hermes_cli.main_dashboard import _respawn_dashboard_processes
+        from hermes_agent.hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+        from hermes_agent.hermes_cli.main_dashboard import _respawn_dashboard_processes
 
         candidates = []
         skipped = 0

@@ -35,7 +35,7 @@ _provider_lock = threading.RLock()
 def browser_section() -> dict:
     """The active profile's ``browser:`` section as every runtime reader sees it: the user file, the managed
     overlay winning, ``${VAR}`` expanded, no defaults (``load_user_config_effective``); ``{}`` when absent."""
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     section = load_user_config_effective().get("browser")
     return section if isinstance(section, dict) else {}
 
@@ -171,7 +171,7 @@ def _registry_generation(scope: str):
 def _ensure_browser_plugins_loaded() -> None:
     """Idempotent plugin discovery (standalone scripts/tests may never import ``model_tools``)."""
     try:
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from hermes_agent.hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
     except Exception as exc:  # health: allow BLE001 -- plugin discovery failure must never break browsing
         logger.debug("Browser plugin discovery failed (non-fatal): %s", exc)

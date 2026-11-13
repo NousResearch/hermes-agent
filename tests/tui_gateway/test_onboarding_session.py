@@ -49,7 +49,7 @@ def client(root, monkeypatch):
 
     monkeypatch.setitem(server._methods, "session.resume", resume)
     monkeypatch.setitem(server._methods, "prompt.submit", submit)
-    from hermes_cli.process_identity import serving_local_desktop
+    from hermes_agent.hermes_cli.process_identity import serving_local_desktop
     with serving_local_desktop(True):  # the local Desktop's requests: only it starts a first run
         yield calls
 
@@ -205,7 +205,7 @@ def test_skip_setup_ends_the_run_and_closes_the_waiting_card(root, monkeypatch):
     assert reply == [None]
     assert events == [("request.cancel", {"id": frames[0]["id"], "method": "setup_beat", "reason": "resolved"})]
     assert onboarding_record.load(db, "onb")["phase"] == "skipped"
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     onboarding = read_user_config_raw(root / "config.yaml")["onboarding"]
     assert onboarding["run"] is False and onboarding["seen"]["profile_build_offered"] is True
 
@@ -261,7 +261,7 @@ def test_a_compression_rotation_carries_the_run_record(root):
 
 def test_skip_that_read_the_id_before_a_rotation_ends_the_run_at_the_tip(root, monkeypatch):
     """Compression published a child between Skip reading the agent's id and writing the record."""
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     db = server._get_db()
     db.create_session("parent", "desktop")
     onboarding_record.start(db, "parent", FACTS)
@@ -278,8 +278,8 @@ def test_skip_that_read_the_id_before_a_rotation_ends_the_run_at_the_tip(root, m
 
 
 def test_a_skip_retried_after_a_failed_config_write_closes_the_install_flag(root, monkeypatch):
-    from hermes_cli import onboarding_run
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli import onboarding_run
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     db = server._get_db()
     db.create_session("onb", "desktop")
     onboarding_record.start(db, "onb", FACTS)
@@ -300,7 +300,7 @@ def test_a_skip_retried_after_a_failed_config_write_closes_the_install_flag(root
 
 
 def test_an_old_ended_chat_never_closes_the_flag_of_a_newer_run(root):
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     db = server._get_db()
     db.create_session("old", "desktop")
     onboarding_record.start(db, "old", FACTS)
@@ -314,7 +314,7 @@ def test_an_old_ended_chat_never_closes_the_flag_of_a_newer_run(root):
 
 
 def test_a_rerun_ends_the_run_it_replaces_so_finishing_the_new_one_closes_the_flag(client, root, monkeypatch):
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     broadcast = []
     monkeypatch.setattr(server, "_broadcast_global_event", lambda event, payload: broadcast.append((event, payload)))
     old = _call("onboarding.start")["result"]
@@ -334,7 +334,7 @@ def test_a_rerun_ends_the_run_it_replaces_so_finishing_the_new_one_closes_the_fl
 
 
 def test_a_rerun_never_writes_the_install_flag_off_and_heals_leftover_open_runs(client, monkeypatch):
-    from hermes_cli import onboarding_run
+    from hermes_agent.hermes_cli import onboarding_run
     db = server._get_db()
     for leftover in ("crash-a", "crash-b"):  # two open runs, as a crash mid-rerun could leave
         db.create_session(leftover, "desktop")
@@ -397,6 +397,6 @@ def test_the_onboarding_facts_are_read_in_the_default_profile(root, client, monk
 
 def test_a_start_outside_the_local_desktop_schedules_nothing(root):
     """A CLI or TUI calling onboarding.start is refused before ``onboarding.run`` is written."""
-    from hermes_cli.onboarding_run import _explicit_run
+    from hermes_agent.hermes_cli.onboarding_run import _explicit_run
     assert _call("onboarding.start")["error"]["code"] == 5080
     assert _explicit_run() is None

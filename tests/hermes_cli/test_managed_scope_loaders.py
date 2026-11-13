@@ -1,7 +1,7 @@
 """Each standalone config loader (gateway, TUI/desktop, cron) must honor managed scope.
 
 These loaders build their own config dict instead of routing through
-hermes_cli.config.load_config, so the managed overlay has to be wired into each.
+hermes_agent.hermes_cli.config.load_config, so the managed overlay has to be wired into each.
 This is the regression guard for the whole bug class (a managed display.skin was
 silently ignored by the TUI; the same gap existed in the gateway and cron).
 """
@@ -18,8 +18,8 @@ def homes(tmp_path, monkeypatch):
     managed.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
-    import hermes_cli.config as cfg
-    from hermes_cli import managed_scope
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import managed_scope
 
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
@@ -30,8 +30,8 @@ def homes(tmp_path, monkeypatch):
 def _seed(home, managed, *, user, mgd):
     (home / "config.yaml").write_text(textwrap.dedent(user), encoding="utf-8")
     (managed / "config.yaml").write_text(textwrap.dedent(mgd), encoding="utf-8")
-    import hermes_cli.config as cfg
-    from hermes_cli import managed_scope
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import managed_scope
 
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
@@ -72,7 +72,7 @@ def test_gateway_env_bridge_honors_managed(homes, monkeypatch):
     """
     home, managed = homes
     _seed(home, managed, user="timezone: America/New_York\n", mgd="timezone: Asia/Tokyo\n")
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     managed_scope.invalidate_managed_cache()
     # The bridge loads config.yaml, expands env, then applies this overlay before

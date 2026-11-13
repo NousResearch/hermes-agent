@@ -49,7 +49,7 @@ class GatewayUnreachable(Exception):
 def _gateway_home(home: Path) -> Path:
     """The home whose gateway serves *home*: the default gateway for a named profile it serves (the
     route native Desktop takes), else the profile's own."""
-    from hermes_cli.gateway_runtime_multiplex import implied_host_root
+    from hermes_agent.hermes_cli.gateway_runtime_multiplex import implied_host_root
     return implied_host_root(home) or home
 
 
@@ -57,7 +57,7 @@ def _deleted_profile_refusal(home: Path) -> str | None:
     """What ``-p <name>`` says when *home* is a named profile that was deleted or never created, else
     None. ``HERMES_HOME`` set to such a home skips that check, and its gateway would be the default
     one, so the command refuses it the same way rather than act on the default profile."""
-    from hermes_cli.profiles import _missing_profile_error
+    from hermes_agent.hermes_cli.profiles import _missing_profile_error
     from hermes_constants import named_profile_home, named_profile_is_live
     profile = named_profile_home(home)
     if profile is None or named_profile_is_live(profile):
@@ -66,15 +66,15 @@ def _deleted_profile_refusal(home: Path) -> str | None:
 
 
 def _build(args):
-    from hermes_cli.config import get_project_root
-    from hermes_cli.webapp import prepare_webapp_renderer
+    from hermes_agent.hermes_cli.config import get_project_root
+    from hermes_agent.hermes_cli.webapp import prepare_webapp_renderer
     return prepare_webapp_renderer(
         get_project_root(), force=args.force_build, skip_build=args.skip_build,
         explicit=args.force_build or args.build_only)
 
 
 def _ensure(home) -> None:
-    from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime
+    from hermes_agent.hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime
     result = ensure_gateway_runtime(home, idle_exit=False)
     if not attachable(result):
         cause = ": ".join(part for part in (result.state, result.detail or result.reason_code) if part)
@@ -82,7 +82,7 @@ def _ensure(home) -> None:
 
 
 def _control(home, verb: str, params: dict | None = None) -> dict:
-    from hermes_cli.gateway_client import private_control_query
+    from hermes_agent.hermes_cli.gateway_client import private_control_query
     request = json.dumps({"protocol": 1, "id": 1, "verb": verb, "params": params or {}}).encode() + b"\n"
     try:
         data = private_control_query(Path(home), request)
@@ -93,7 +93,7 @@ def _control(home, verb: str, params: dict | None = None) -> dict:
 
 def _open(url: str) -> bool:
     import webbrowser
-    from hermes_cli.auth_device_flow import _can_open_graphical_browser
+    from hermes_agent.hermes_cli.auth_device_flow import _can_open_graphical_browser
     if not _can_open_graphical_browser():
         return False
     try:
@@ -157,8 +157,8 @@ def _rerun_command(*flags: str) -> str:
     """``hermes webapp *flags*`` for the profile this run used: ``-p`` re-homed only this process, so a
     bare rerun gets the sticky profile, and the command keeps ``-p <name>`` when that names another one."""
     import shlex
-    from hermes_cli.main import explicit_cli_profile
-    from hermes_cli.profiles import get_active_profile
+    from hermes_agent.hermes_cli.main import explicit_cli_profile
+    from hermes_agent.hermes_cli.profiles import get_active_profile
     name = explicit_cli_profile()
     profile = ["-p", shlex.quote(name)] if name and name != get_active_profile() else []
     return " ".join(["hermes", *profile, "webapp", *flags])
@@ -209,8 +209,8 @@ def _browser_address(target: Path, settings, served_url: str) -> str:
     ``webapp-launch`` works it out: ``webapp.public_url`` when set, else behind sign-in the LAN address
     Web Access registered Nous sign-in for, else *served_url* (a private Webapp's launch link). Read from
     *target*'s config now, not from when the gateway started."""
-    from hermes_cli.web_server_boundary import public_hosts_engage_gate, public_url_hosts, should_require_auth
-    from hermes_cli.webapp_access import registered_lan_origin
+    from hermes_agent.hermes_cli.web_server_boundary import public_hosts_engage_gate, public_url_hosts, should_require_auth
+    from hermes_agent.hermes_cli.webapp_access import registered_lan_origin
     # The sign-in gate hermes_agent.gateway.run_api.start_gateway_api engages on the Webapp's listener; without it
     # webapp-launch hands out the loopback launch link and never reads the registration, which outlives
     # a move back to a loopback bind.
@@ -332,7 +332,7 @@ def _sign_out(target: Path) -> int:
 def _gateway_state(home: Path) -> str:
     """What *home*'s gateway lock and control socket say: ``absent`` (none running), ``starting``,
     ``ready``, or why it cannot be reached."""
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
     return discover_gateway_endpoint(home).state
 
 
@@ -352,7 +352,7 @@ def _explain_refused_launch(target: Path, response: dict) -> int:
 
 def cmd_webapp(args) -> int:
     from hermes_agent.gateway.webapp_listener import webapp_settings
-    from hermes_cli.webapp import WebappBuildError, packaged_webapp_dist
+    from hermes_agent.hermes_cli.webapp import WebappBuildError, packaged_webapp_dist
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()

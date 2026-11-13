@@ -1,6 +1,6 @@
 """The worker client's environment is an allowlist of host plumbing (``kanban_worker_env``)."""
 
-from hermes_cli.kanban_worker_env import worker_client_env
+from hermes_agent.hermes_cli.kanban_worker_env import worker_client_env
 
 
 def test_keeps_host_plumbing_and_hermes_location(tmp_path):

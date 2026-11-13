@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import onboarding_run, profiles
-from hermes_cli.config import read_user_config_raw
+from hermes_agent.hermes_cli import onboarding_run, profiles
+from hermes_agent.hermes_cli.config import read_user_config_raw
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -67,7 +67,7 @@ def test_a_user_profile_is_history(root):
 
 def test_a_managed_run_false_wins_on_a_fresh_install(root, tmp_path, monkeypatch):
     # IT can pin onboarding off through the managed overlay; the root file stays unset.
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     managed = tmp_path / "managed"
     managed.mkdir()

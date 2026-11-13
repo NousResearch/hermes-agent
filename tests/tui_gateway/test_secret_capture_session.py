@@ -15,7 +15,7 @@ import pytest
 
 def _gateway(monkeypatch):
     """Import the real gateway after neutralizing process-wide import side effects."""
-    from hermes_cli import banner
+    from hermes_agent.hermes_cli import banner
 
     monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)
     monkeypatch.setattr(sys, "stdout", sys.stdout)
@@ -67,7 +67,7 @@ def _capture(server, server_requests, skills_tool, monkeypatch, *, values):
         return {"success": True, "stored_as": key, "validated": False}
 
     frames, _ = _client(server, server_requests, monkeypatch, values)
-    monkeypatch.setattr("hermes_cli.config.save_env_value_secure", save)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.save_env_value_secure", save)
     result = skills_tool._capture_required_environment_variables(
         "demo-skill", [{"name": "DEMO_TOKEN", "prompt": "Token"}]
     )

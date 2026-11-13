@@ -9,9 +9,9 @@ import types
 
 import pytest
 
-from hermes_cli import update_cmd_fleet as fleet
-from hermes_cli import update_cmd_fleet_unit_budget as budget
-from hermes_cli import update_cmd_posix_pause as pause
+from hermes_agent.hermes_cli import update_cmd_fleet as fleet
+from hermes_agent.hermes_cli import update_cmd_fleet_unit_budget as budget
+from hermes_agent.hermes_cli import update_cmd_posix_pause as pause
 
 UNIT = "hermes-gateway"
 SCOPE = ["systemctl", "--user"]

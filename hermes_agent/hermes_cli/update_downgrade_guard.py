@@ -30,7 +30,7 @@ _DOCS = "https://hermes-agent.nousresearch.com/docs/getting-started/updating#rol
 def _updater_git(git_cmd, root: Path) -> Callable[..., int]:
     import subprocess
 
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_custody import run_git
 
     def git(*args: str) -> int:
         try:
@@ -73,7 +73,7 @@ def _has_ledger_rows(db_path: Path) -> bool:
         return False
     from hermes_agent.hermes_state_holders import read_only_db_uri
     try:
-        from hermes_cli.sqlite_safe_read import connect_tracked
+        from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
         with closing(connect_tracked(read_only_db_uri(db_path), uri=True, timeout=5.0, tracking_path=db_path,
                                      connect_fn=sqlite3.connect)) as conn:
@@ -84,7 +84,7 @@ def _has_ledger_rows(db_path: Path) -> bool:
 
 def _pre_runtime_snapshot(home: Path) -> str | None:
     """Newest quick snapshot of ``home`` holding a state.db from before the runtime ledger."""
-    from hermes_cli.backup import _quick_snapshot_root
+    from hermes_agent.hermes_cli.backup import _quick_snapshot_root
     from hermes_agent.hermes_state_holders import read_only_db_uri
     root = _quick_snapshot_root(home)
     for snap in sorted(root.iterdir(), reverse=True) if root.is_dir() else ():
@@ -103,7 +103,7 @@ def _pre_runtime_snapshot(home: Path) -> str | None:
 def _named_profile(home: Path) -> str:
     """The ``-p`` name that opens ``home`` (``hermes -p acme update`` passes ``profiles/acme``);
     ``""`` for the default root or a custom HERMES_HOME, which bare ``hermes`` opens."""
-    from hermes_cli.profiles import _PROFILE_ID_RE, _get_profiles_root
+    from hermes_agent.hermes_cli.profiles import _PROFILE_ID_RE, _get_profiles_root
     parent = _get_profiles_root().resolve()
     resolved = home.resolve()
     named = resolved.parent == parent and _PROFILE_ID_RE.match(resolved.name) and resolved.name != "default"
@@ -111,7 +111,7 @@ def _named_profile(home: Path) -> str:
 
 
 def _ledgered_profiles(home: Path | None) -> list[tuple[str, Path]]:
-    from hermes_cli.backup import _sibling_profile_homes
+    from hermes_agent.hermes_cli.backup import _sibling_profile_homes
     from hermes_constants import get_hermes_home
 
     home = Path(home or get_hermes_home())

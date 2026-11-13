@@ -333,7 +333,7 @@ class TestProviderRouting:
 
     def test_provider_tier_reads_config(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_agent.hermes_cli.config.load_config",
             lambda: {"web": {"provider_tier": {"exa": "FREE", "parallel": "bogus"}}},
         )
         assert keyless_mcp.provider_tier("exa") == "free"
@@ -462,10 +462,10 @@ class TestResolutionOrder:
 
 class TestPickerTierRows:
     def test_variant_schemas_flatten_to_tier_rows(self, fresh_registry, monkeypatch):
-        from hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config
 
         monkeypatch.setattr(
-            "hermes_cli.plugins._ensure_plugins_discovered", lambda: None
+            "hermes_agent.hermes_cli.plugins._ensure_plugins_discovered", lambda: None
         )
         rows = tools_config._plugin_web_search_providers()
         by_backend_tier = {
@@ -483,7 +483,7 @@ class TestPickerTierRows:
                 assert r["env_vars"], r
 
     def test_selection_persists_tier(self):
-        from hermes_cli.tools_config import _write_provider_config
+        from hermes_agent.hermes_cli.tools_config import _write_provider_config
 
         config: dict = {}
         _write_provider_config(
@@ -500,7 +500,7 @@ class TestPickerTierRows:
         assert "exa" not in config["web"]["provider_tier"]
 
     def test_tier_match_highlights_correct_row(self):
-        from hermes_cli.tools_config import _web_tier_matches
+        from hermes_agent.hermes_cli.tools_config import _web_tier_matches
 
         free_row = {"web_backend": "parallel", "web_tier": "free"}
         paid_row = {"web_backend": "parallel", "web_tier": "paid"}

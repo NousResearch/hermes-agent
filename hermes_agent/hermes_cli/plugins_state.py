@@ -1,4 +1,4 @@
-"""Plugin-owned durable state and namespaced settings helpers (split out of hermes_cli.plugins)."""
+"""Plugin-owned durable state and namespaced settings helpers (split out of hermes_agent.hermes_cli.plugins)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from hermes_constants import get_hermes_home
-from hermes_cli.plugins_manifest import _portable_data_namespace
+from hermes_agent.hermes_cli.plugins_manifest import _portable_data_namespace
 
 _PLUGIN_SETTING_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _PLUGIN_SETTING_RESERVED_ROOTS = frozenset({"model", "plugins", "security", "settings"})
@@ -71,8 +71,8 @@ def save_plugin_setting(plugin_id: str, segments: tuple[str, ...], value: Any) -
     administrator-managed-key refusals, the cross-process lock and the fail-closed raw read
     are enforced once. ``segments`` must already be validated by :func:`_plugin_relative_segments`.
     """
-    from hermes_cli import config as config_mod
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import managed_scope
 
     if config_mod.is_managed():
         raise PermissionError("Plugin settings cannot be changed in a managed install")

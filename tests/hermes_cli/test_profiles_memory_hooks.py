@@ -35,7 +35,7 @@ def _select(home: Path, name: str) -> None:
 
 def test_create_and_rename_call_the_selected_providers_hooks_with_its_home_bound(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
-    from hermes_cli.profiles import create_profile, rename_profile
+    from hermes_agent.hermes_cli.profiles import create_profile, rename_profile
     from hermes_constants import get_hermes_home
 
     calls = []
@@ -54,7 +54,7 @@ def test_create_and_rename_call_the_selected_providers_hooks_with_its_home_bound
     _select(profile_env, "recorder")
     create_profile("plain", no_alias=True)  # fresh: no memory.provider, so no hook
     created = create_profile("ssi_health", clone_config=True, no_alias=True)  # the clone carries it
-    with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+    with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"):
         renamed = rename_profile("ssi_health", "heimdall")
 
     assert calls == [
@@ -66,7 +66,7 @@ def test_create_and_rename_call_the_selected_providers_hooks_with_its_home_bound
 def test_the_hook_reads_the_new_profiles_secrets_not_the_callers(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     seen = []
 
@@ -87,7 +87,7 @@ def test_the_hook_reads_the_new_profiles_secrets_not_the_callers(profile_env, mo
 def test_the_hook_follows_the_effective_selection_including_env_refs(profile_env, monkeypatch):
     """``memory.provider: ${VAR}`` resolves through the new profile's own .env, like at runtime."""
     import plugins.memory as memory_pkg
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     loaded = []
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: loaded.append(name))
@@ -98,16 +98,16 @@ def test_the_hook_follows_the_effective_selection_including_env_refs(profile_env
 
 
 def test_an_unreadable_config_backend_never_fails_create(profile_env, monkeypatch, caplog):
-    from hermes_cli.config_backend import ConfigBackendUnavailable
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     def boom(*_a, **_k):
         raise ConfigBackendUnavailable("backend down")
 
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
     monkeypatch.setattr(config_mod, "load_config_readonly", boom)
     _select(profile_env, "recorder")  # an external provider, so the hook reaches the effective-config read
-    with caplog.at_level("WARNING", logger="hermes_cli.profile_memory_config"):
+    with caplog.at_level("WARNING", logger="hermes_agent.hermes_cli.profile_memory_config"):
         assert create_profile("work", clone_config=True, no_alias=True).is_dir()
     assert "profile hook failed" in caplog.text
 
@@ -115,7 +115,7 @@ def test_an_unreadable_config_backend_never_fails_create(profile_env, monkeypatc
 def test_a_missing_profile_secret_never_falls_back_to_the_callers_env(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     seen = []
 
@@ -134,7 +134,7 @@ def test_a_missing_profile_secret_never_falls_back_to_the_callers_env(profile_en
 
 def test_a_provider_hook_that_exits_never_fails_create_or_rename(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
-    from hermes_cli.profiles import create_profile, rename_profile
+    from hermes_agent.hermes_cli.profiles import create_profile, rename_profile
     from hermes_constants import get_hermes_home
 
     class Exits(_Stub):
@@ -153,7 +153,7 @@ def test_a_provider_hook_that_exits_never_fails_create_or_rename(profile_env, mo
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Exits())
     _select(profile_env, "exits")
     assert create_profile("work", clone_config=True, no_alias=True).is_dir()
-    with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+    with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"):
         assert rename_profile("work", "play").is_dir()
     assert calls == ["created", "renamed"]
 
@@ -162,7 +162,7 @@ def test_a_provider_hook_that_exits_never_fails_create_or_rename(profile_env, mo
 
 def test_a_failing_provider_hook_never_fails_create_or_rename(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
-    from hermes_cli.profiles import create_profile, rename_profile
+    from hermes_agent.hermes_cli.profiles import create_profile, rename_profile
 
     calls = []
 
@@ -180,7 +180,7 @@ def test_a_failing_provider_hook_never_fails_create_or_rename(profile_env, monke
     monkeypatch.setattr(memory_pkg, "load_memory_provider", lambda name, **kw: Broken())
     _select(profile_env, "broken")
     create_profile("work", clone_config=True, no_alias=True)
-    with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+    with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"):
         assert rename_profile("work", "play").is_dir()
     assert calls == ["created", "renamed"]
 
@@ -188,7 +188,7 @@ def test_a_failing_provider_hook_never_fails_create_or_rename(profile_env, monke
 def test_a_profile_without_an_external_provider_binds_no_secret_scope(profile_env, monkeypatch):
     """The common create: nothing selected, so no secret hydration, effective config or provider load."""
     from hermes_agent.agent import secret_scope
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     built = []
     monkeypatch.setattr(secret_scope, "build_profile_secret_scope", lambda *a, **k: built.append(a) or {})
@@ -200,8 +200,8 @@ def test_a_profile_without_an_external_provider_binds_no_secret_scope(profile_en
 
 def test_the_hook_sees_the_new_profiles_configured_secret_sources(profile_env, monkeypatch):
     import plugins.memory as memory_pkg
-    from hermes_cli import env_loader
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli import env_loader
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     hydrated = []
     monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", lambda home: hydrated.append(Path(home)) or {})
@@ -214,7 +214,7 @@ def test_the_hook_sees_the_new_profiles_configured_secret_sources(profile_env, m
 def test_an_installed_memory_provider_name_is_not_a_free_alias(profile_env, monkeypatch):
     """A memory provider registers ``hermes <name>``; core no longer hardcodes which names those are."""
     import plugins.memory as memory_pkg
-    from hermes_cli.profiles import check_alias_collision
+    from hermes_agent.hermes_cli.profiles import check_alias_collision
 
     monkeypatch.setattr(memory_pkg, "list_memory_provider_names", lambda: ["somemem"])
     assert "memory provider" in check_alias_collision("somemem")

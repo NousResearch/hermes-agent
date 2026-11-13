@@ -1,6 +1,6 @@
 """Messaging dashboard routes: WhatsApp/Telegram onboarding and per-platform enable/config/test.
 
-Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
+Extracted from ``hermes_agent.hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are resolved late at call time (cycle-safe).
 """
 
@@ -24,45 +24,45 @@ from fastapi import APIRouter, HTTPException
 
 from hermes_agent.gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS as _LISTENER_MIRRORS
 from hermes_agent.gateway.status import resolve_gateway_liveness, retained_gateway_state
-from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
-from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
+from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import get_process_hermes_home
-from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_server_gateway import _restart_gateway_after
-from hermes_cli.web_whatsapp_session import _backup_whatsapp_session
-from hermes_cli.web_server_messaging import (
+from hermes_agent.hermes_cli.web_deps import LateState, late
+from hermes_agent.hermes_cli.web_server_gateway import _restart_gateway_after
+from hermes_agent.hermes_cli.web_whatsapp_session import _backup_whatsapp_session
+from hermes_agent.hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
-from hermes_cli.web_routers._common import (
+from hermes_agent.hermes_cli.web_routers._common import (
     REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
     redacted_credential_preview,
 )
-from hermes_cli.web_models import (
+from hermes_agent.hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
 )
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
-_profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
-_resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_restart_gateway_after_whatsapp_onboarding = late("_restart_gateway_after_whatsapp_onboarding", "hermes_cli.web_server_messaging")
-_telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "hermes_cli.web_server_messaging")
-_whatsapp_session_path = late("_whatsapp_session_path", "hermes_cli.web_server_messaging")
-_write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
-load_env = late("load_env", "hermes_cli.config")
-get_secret_source_values = late("get_secret_source_values", "hermes_cli.env_loader")
+_config_profile_scope = late("_config_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
+_profile_scope = late("_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
+_resolve_profile_dir = late("_resolve_profile_dir", "hermes_agent.hermes_cli.web_server_profiles")
+_restart_gateway_after_whatsapp_onboarding = late("_restart_gateway_after_whatsapp_onboarding", "hermes_agent.hermes_cli.web_server_messaging")
+_telegram_onboarding_request_sync = late("_telegram_onboarding_request_sync", "hermes_agent.hermes_cli.web_server_messaging")
+_whatsapp_session_path = late("_whatsapp_session_path", "hermes_agent.hermes_cli.web_server_messaging")
+_write_platform_enabled = late("_write_platform_enabled", "hermes_agent.hermes_cli.web_server_messaging")
+load_env = late("load_env", "hermes_agent.hermes_cli.config")
+get_secret_source_values = late("get_secret_source_values", "hermes_agent.hermes_cli.env_loader")
 builtin_platform_status = late("builtin_platform_status", "hermes_agent.gateway.config_env")
-load_config = late("load_config", "hermes_cli.config")
+load_config = late("load_config", "hermes_agent.hermes_cli.config")
 read_runtime_status = late("read_runtime_status", "hermes_agent.gateway.status")
-remove_env_value = late("remove_env_value", "hermes_cli.config")
-save_env_value = late("save_env_value", "hermes_cli.config")
-_gateway_subcommand = late("_gateway_subcommand", "hermes_cli.web_server_gateway")
-_probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
+remove_env_value = late("remove_env_value", "hermes_agent.hermes_cli.config")
+save_env_value = late("save_env_value", "hermes_agent.hermes_cli.config")
+_gateway_subcommand = late("_gateway_subcommand", "hermes_agent.hermes_cli.web_server_gateway")
+_probe_gateway_health = late("_probe_gateway_health", "hermes_agent.hermes_cli.web_server_gateway")
 get_running_pid_cached = late("get_running_pid_cached", "hermes_agent.gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "hermes_agent.gateway.status")
 served_profile_runtime = late("served_profile_runtime", "hermes_agent.gateway.status_served")
@@ -1020,7 +1020,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
 
     requested = (requested_profile or "").strip()
     if not requested or requested.lower() == "current":
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
 
         # The dashboard's own profile. "custom" (unrecognized HERMES_HOME) is outside
         # the profiles tree, so a multiplexed gateway never serves it.
@@ -1034,7 +1034,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     # The flag that matters is the one the shared gateway settled at startup: its served record when
     # it runs, else the DEFAULT profile's explicit config (plus the process-wide
     # GATEWAY_MULTIPLEX_PROFILES override). An unset flag is decided by the gateway, not guessed here.
-    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+    from hermes_agent.hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
     if not default_gateway_multiplexes():
         return None
 
@@ -1117,8 +1117,8 @@ def _notify_multiplexer_hot_serve(profile: Optional[str]) -> bool:
     """True when a live multiplexer serves the written profile and was told to rebuild its adapters.
     Unscoped (no ``?profile=``) means THIS process's profile: Desktop routes a pooled
     ``hermes --profile X serve`` without the query (#109088), so X must resolve here too."""
-    from hermes_cli.gateway import _current_profile_name, named_profile_served_by_running_multiplexer
-    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    from hermes_agent.hermes_cli.gateway import _current_profile_name, named_profile_served_by_running_multiplexer
+    from hermes_agent.hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
     name = (profile or "").strip() or _current_profile_name()
     if not name or name == "default" or not named_profile_served_by_running_multiplexer(name):
         return False

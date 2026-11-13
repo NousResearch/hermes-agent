@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cli
+from hermes_agent import cli
 from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV
 
 AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
@@ -113,7 +113,7 @@ def test_quiet_notify_loop_shares_one_linger_budget(monkeypatch):
     A fresh per-round deadline (the pre-fix bug) would pass round 1 as 600 and
     round 2 as 600 again; the shared deadline yields 600 then the remainder.
     """
-    from hermes_cli import quiet_single_query as qsq
+    from hermes_agent.hermes_cli import quiet_single_query as qsq
     from hermes_agent.tools import process_registry as pr
 
     waits = []
@@ -145,7 +145,7 @@ def test_quiet_notify_loop_shares_one_linger_budget(monkeypatch):
 
 def test_quiet_notify_loop_stops_after_timeout_with_drained_texts(monkeypatch):
     """A timed-out process is waited on no further: drained texts still run, then the loop stops."""
-    from hermes_cli import quiet_single_query as qsq
+    from hermes_agent.hermes_cli import quiet_single_query as qsq
     from hermes_agent.tools import process_registry as pr
 
     waits = []
@@ -182,7 +182,7 @@ def test_finalize_linger_skipped_after_quiet_notify_loop(monkeypatch):
     cli = SimpleNamespace(_quiet_notify_linger_done=True)
     cli._wait_for_oneshot_background_completions(cli) if hasattr(cli, "_wait_for_oneshot_background_completions") else None
     # The real entrypoint is the module function; call it through the CLI module.
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     cli_mod._wait_for_oneshot_background_completions(cli)
     assert waited == [], "finalize must skip the re-wait when the quiet notify loop already ran"
@@ -195,7 +195,7 @@ def test_quiet_notify_loop_injects_owned_async_delegation_events(monkeypatch):
     one-shot's only consumer, so an owned async_delegation text is injected as a
     follow-up turn exactly like a completion.
     """
-    from hermes_cli import quiet_single_query as qsq
+    from hermes_agent.hermes_cli import quiet_single_query as qsq
     from hermes_agent.tools import process_registry as pr
 
     monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions",
@@ -239,7 +239,7 @@ def test_quiet_diagnostic_only_wake_runs_but_reply_displaces_result_only_when_vi
     """Grid sweep: -Q linger had no diagnostic admission rule. A wake made only of automatic early
     failure notices still runs (the agent may act on it) but under suppression its reply must not
     replace the requested one-shot answer; absent/false keep legacy displacement."""
-    from hermes_cli import quiet_single_query as qsq
+    from hermes_agent.hermes_cli import quiet_single_query as qsq
     _quiet_policy(tmp_path, monkeypatch, setting)
     _quiet_drain(monkeypatch, [({"type": "completion", "task_failure_notice": True, "session_key": "s"},
                                 "[Background process failed early: exit 7]")])
@@ -251,7 +251,7 @@ def test_quiet_diagnostic_only_wake_runs_but_reply_displaces_result_only_when_vi
 
 
 def test_quiet_requested_completion_wake_never_muted(tmp_path, monkeypatch):
-    from hermes_cli import quiet_single_query as qsq
+    from hermes_agent.hermes_cli import quiet_single_query as qsq
     _quiet_policy(tmp_path, monkeypatch, True)
     _quiet_drain(monkeypatch, [({"type": "completion", "session_key": "s"}, "[Background process finished: OK]"),
                                 ({"type": "completion", "task_failure_notice": True, "session_key": "s"}, "[failed early]")])

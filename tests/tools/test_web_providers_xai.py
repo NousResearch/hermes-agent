@@ -483,7 +483,7 @@ class TestXAIProviderOAuthPath:
         pair only to ``providers.xai-oauth`` leaves the manual row stale and
         breaks the next main-runtime load.
         """
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -531,7 +531,7 @@ class TestXAIProviderOAuthPath:
             }
 
         monkeypatch.setattr(
-            "hermes_cli.auth.refresh_xai_oauth_pure",
+            "hermes_agent.hermes_cli.auth.refresh_xai_oauth_pure",
             fake_refresh,
         )
 

@@ -160,9 +160,9 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    import hermes_cli.lifecycle
+    import hermes_agent.hermes_cli.lifecycle
 
-    monkeypatch.setattr(hermes_cli.lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(hermes_agent.hermes_cli.lifecycle, "has_hook", lambda name: True)
     # Transport-only photo stand-in: no file or Telegram network operation.
     download = AsyncMock(return_value=SimpleNamespace(
         file_path="offline.png", download_as_bytearray=AsyncMock(return_value=bytearray(b"offline"))))
@@ -536,7 +536,7 @@ async def _check_native_error_callback(monkeypatch, adapter, app, stage, failure
             native.add_error_handler(native_error, block=block)
 
     manager = SimpleNamespace(get_platform_handler_factories=lambda platform: [(factory, "offline-error")])
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_plugin_manager", lambda: manager)
     adapter._wire_plugin_handlers(app)
     assert native_error in app.error_handlers
     monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
@@ -579,9 +579,9 @@ async def _check_native_error_callback(monkeypatch, adapter, app, stage, failure
       for failure in ("error", "cancel")],
 ])
 async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path, caplog, stage, failure):
-    import hermes_cli.lifecycle
+    import hermes_agent.hermes_cli.lifecycle
 
-    monkeypatch.setattr(hermes_cli.lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(hermes_agent.hermes_cli.lifecycle, "has_hook", lambda name: True)
     async with connected(monkeypatch) as (adapter, app, delivered):
         if stage == "ingress":
             monkeypatch.setattr(adapter, "_cache_replied_media", AsyncMock(side_effect=OSError("before enqueue")))
@@ -697,7 +697,7 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
                 native.add_handler(conversation, group=-1)
 
             manager = SimpleNamespace(get_platform_handler_factories=lambda platform: [(factory, "offline-conversation")])
-            monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+            monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_plugin_manager", lambda: manager)
             adapter._wire_plugin_handlers(app)
             assert -1 in app.handlers  # Factory errors are logged/swallowed, not connection failures.
             assert app.handlers[-1][0] is conversation

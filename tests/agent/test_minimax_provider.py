@@ -119,7 +119,7 @@ class TestMinimaxApiMode:
     """
 
     def test_minimax_returns_anthropic_messages(self):
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.hermes_cli.providers import determine_api_mode
         assert determine_api_mode("minimax") == "anthropic_messages"
 
 

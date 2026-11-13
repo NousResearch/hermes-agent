@@ -78,7 +78,7 @@ async def across_sign_out(runner, origin, ask):
     from websockets.asyncio.client import connect
 
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
-    from hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli import web_host_terminal
     from tests.gateway.fixtures.local_recovery_probe import rpc
 
     # A harmless program stands in for the user's login shell.
@@ -152,16 +152,16 @@ async def probe(port):
     from hermes_agent.gateway.run_api import stop_gateway_api
     from hermes_agent.gateway.run_runtime import start_gateway_runtime_api
     from hermes_agent.gateway.session_authority import initialize_session_authority
-    from hermes_cli.dashboard_auth import list_providers
-    from hermes_cli.plugins import discover_plugins
-    import hermes_cli.webapp
+    from hermes_agent.hermes_cli.dashboard_auth import list_providers
+    from hermes_agent.hermes_cli.plugins import discover_plugins
+    import hermes_agent.hermes_cli.webapp
 
     home = Path(os.environ["HERMES_HOME"])
     write_config(home, port)
     dist = home / "dist-webapp"
     dist.mkdir()
     (dist / "index.html").write_text("<!doctype html><html><body>WEBAPP_BUNDLE</body></html>", encoding="utf-8")
-    hermes_cli.webapp.webapp_dist_dir = lambda _root: dist  # the built bundle, without a build
+    hermes_agent.hermes_cli.webapp.webapp_dist_dir = lambda _root: dist  # the built bundle, without a build
     discover_plugins()  # the gateway loads the bundled sign-in providers at startup
     runner = GatewayRunner()
     runner.session_control_server = GatewayControlServer(home)  # verbs only; not listening
@@ -171,7 +171,7 @@ async def probe(port):
     await initialize_session_authority(runner, profile_id=str(home), instance_id="webapp-gated")
     await start_gateway_runtime_api(runner)
     api = runner.session_api
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     def ask(verb):
         raw = json.dumps({"protocol": 1, "verb": verb, "id": 1, "params": {}}).encode()

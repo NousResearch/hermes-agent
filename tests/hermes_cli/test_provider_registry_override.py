@@ -2,7 +2,7 @@
 
 ``register_provider()`` is last-writer-wins for the profile, and the docs promise that dropping
 ``plugins/model-providers/<bundled-name>/`` points that provider at another endpoint. The runtime
-reads ``hermes_cli.auth.PROVIDER_REGISTRY`` though, so the mirror has to carry the override across.
+reads ``hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY`` though, so the mirror has to carry the override across.
 Each case runs in a fresh interpreter: real discovery, real auth import, no process-global leakage.
 """
 
@@ -19,8 +19,8 @@ REPO = Path(__file__).resolve().parents[2]
 _PROBE = """
 import json, os
 from hermes_agent.providers import list_providers
-from hermes_cli.auth import PROVIDER_REGISTRY
-from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 list_providers()
 row = PROVIDER_REGISTRY["stepfun"]
 print(json.dumps({
@@ -56,7 +56,7 @@ def test_user_plugin_endpoint_and_env_vars_reach_the_runtime(tmp_path):
 
 
 def test_user_plugin_declaring_no_endpoint_keeps_the_builtin_row(tmp_path):
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     result = _run(tmp_path, (
         "from hermes_agent.providers import register_provider\n"

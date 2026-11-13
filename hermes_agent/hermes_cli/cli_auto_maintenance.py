@@ -1,7 +1,7 @@
 """Startup auto-maintenance for the classic CLI: state-db pack/vacuum and checkpoint pruning run off the prompt thread.
 
 Split out of ``cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
-cli-level names through ``from cli import ...`` at call time so facade monkeypatch seams hold.
+cli-level names through ``from hermes_agent.cli import ...`` at call time so facade monkeypatch seams hold.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import sqlite3
 import threading
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("cli")
+logger = logging.getLogger("hermes_agent.cli")
 
 
 def _run_state_db_auto_maintenance(session_db) -> None:
@@ -19,7 +19,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
     if session_db is None:
         return
     try:
-        from hermes_cli.config import load_config as _load_full_config
+        from hermes_agent.hermes_cli.config import load_config as _load_full_config
         from hermes_constants import get_hermes_home as _get_hermes_home  # lazy: tests patch it
         _hermes_home_maint = _get_hermes_home()
 

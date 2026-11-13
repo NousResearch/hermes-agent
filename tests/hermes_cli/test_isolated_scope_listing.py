@@ -17,12 +17,12 @@ import urllib.request
 import psutil
 import pytest
 
-from hermes_cli import isolated_scope
+from hermes_agent.hermes_cli import isolated_scope
 
 
 @pytest.fixture(autouse=True)
 def _reset_scope(monkeypatch):
-    from hermes_cli.web_routers import profiles as profiles_routes
+    from hermes_agent.hermes_cli.web_routers import profiles as profiles_routes
 
     monkeypatch.setattr(profiles_routes, "_SIDEBAR_CACHE_TTL_SECONDS", 0.0)
     yield
@@ -72,7 +72,7 @@ def _launch_in(monkeypatch, home, *, isolated=True, desktop_owned=False):
 def client(homes):
     from starlette.testclient import TestClient
 
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     c = TestClient(app)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN

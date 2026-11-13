@@ -1,4 +1,4 @@
-"""Host-specific gating in ``hermes_cli.gateway._all_platforms()``.
+"""Host-specific gating in ``hermes_agent.hermes_cli.gateway._all_platforms()``.
 
 Some messaging platforms can't function on every host. The gate lives
 in one place — ``_all_platforms()`` — so the setup wizard, the curses
@@ -24,7 +24,7 @@ class TestMatrixHiddenOnWindows:
         on native Windows this also proves the picker the user actually sees
         omits the platform whose dependency cannot build here.
         """
-        import hermes_cli.gateway as gateway_mod
+        import hermes_agent.hermes_cli.gateway as gateway_mod
 
         platforms = gateway_mod._all_platforms()
         keys = {p["key"] for p in platforms}

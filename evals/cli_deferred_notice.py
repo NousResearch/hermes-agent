@@ -42,8 +42,8 @@ def run_case(root, output, name, behind, early=False, cancel=False):
                "OPENAI_API_KEY": "local-not-used", "PROMPT_TOOLKIT_NO_CPR": "1"}
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-        bootstrap = ("import json; from pathlib import Path; import hermes_cli.main as m; "
-                     "import hermes_cli.banner as b; from hermes_cli import source_check; "
+        bootstrap = ("import json; from pathlib import Path; import hermes_agent.hermes_cli.main as m; "
+                     "import hermes_agent.hermes_cli.banner as b; from hermes_agent.hermes_cli import source_check; "
                      f"source_check.check_for_updates = lambda **kw: json.loads(Path({str(cache)!r}).read_text()); "
                      "print('LOADED', m.__file__, b.__file__, flush=True); m.main()")
         proc = subprocess.Popen([sys.executable, "-c", bootstrap, "chat"], cwd=root,

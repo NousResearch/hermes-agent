@@ -3,7 +3,7 @@
     python evals/plugin_isolation/audit_catalog.py --out <dir> [--jobs 12] [--limit N]
 
 Fetches each entry's repo at its pinned sha (shallow, blob-filtered) into ``<dir>/src/``, runs
-:func:`hermes_cli.plugin_isolation_audit.audit_plugin_dir` on the entry's subdir, and writes
+:func:`hermes_agent.hermes_cli.plugin_isolation_audit.audit_plugin_dir` on the entry's subdir, and writes
 ``<dir>/results.json`` plus a markdown summary on stdout: how many catalog plugins run in the
 plugin host unchanged, and the reasons the rest need in-process loading.
 """
@@ -22,8 +22,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from hermes_cli.plugin_catalog import load_catalog
-from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+from hermes_agent.hermes_cli.plugin_catalog import load_catalog
+from hermes_agent.hermes_cli.plugin_isolation_audit import audit_plugin_dir
 
 
 def _git(args, cwd: Path) -> None:

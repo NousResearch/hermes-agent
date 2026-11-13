@@ -7,7 +7,7 @@ and starts it — the two things every in-bundle caller needs and each one
 used to work out for itself.
 
 The shape authority is the build stamp (``payload: bundled``, read through
-:func:`hermes_cli.steward.is_bundled_payload`), never a filesystem probe: a
+:func:`hermes_agent.hermes_cli.steward.is_bundled_payload`), never a filesystem probe: a
 probe answers "is this artifact intact?", not "which shape am I?". Callers
 gate on the stamp, then ask here WHERE the app is. A stamp that says bundled
 over a tree that is not one is damage, and :func:`resolve_bundle_layout`
@@ -164,7 +164,7 @@ def launch_detached(
     null device, because the terminal that ran ``hermes desktop`` is free
     to close the moment this call returns.
     """
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+    from hermes_agent.hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
     child = subprocess.Popen(
         argv,

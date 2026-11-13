@@ -31,7 +31,7 @@ def pinned_home(definition_path: Path) -> str | None:
         env = data.get("EnvironmentVariables") if isinstance(data, dict) else None
         value = env.get("HERMES_HOME") if isinstance(env, dict) else None
         return (str(value).strip() or None) if value is not None else None
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     return gw._hermes_home_pinned_by_unit(definition_path)
 
 
@@ -50,7 +50,7 @@ def service_home_for_unit(unit_path: Path, system: bool) -> Path:
     unit's own pinned home, which is the only thing naming the install being operated on. Pure: it never
     adopts the unit's home into ``os.environ``, so a check on this value compares caller and unit.
     """
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     if not system:
         return gw.get_hermes_home()
@@ -87,7 +87,7 @@ def definition_belongs_to_home(definition_path: Path, home: Path, action: str) -
 def unit_belongs_to_caller(unit_path: Path, system: bool, action: str, run_as_user: str | None = None) -> bool:
     """``definition_belongs_to_home`` for the systemd unit at *unit_path*, judged against the home this
     process would pin there (``run_as_user``'s for an explicit ``--system --run-as-user`` install)."""
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     home = service_home_for_unit(unit_path, system)
     if system and run_as_user:
@@ -112,7 +112,7 @@ def foreign_systemd_unit_home(system: bool) -> str | None:
     is not the account's own default root. The last clause keeps the ``sudo`` remap (#108674): root's
     default home operating a unit that pins the invoking user's home is the operator, not a stranger.
     """
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     unit_home = gw._hermes_home_pinned_by_unit(gw.get_systemd_unit_path(system=system))
     if not unit_home:
         return None
@@ -131,7 +131,7 @@ def foreign_systemd_unit_home(system: bool) -> str | None:
 
 def refuse_foreign_systemd_unit(action: str, system: bool) -> None:
     """Exit non-zero instead of operating another install's unit (see ``foreign_systemd_unit_home``)."""
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     unit_home = foreign_systemd_unit_home(system)
     if unit_home is None:
         return
@@ -146,7 +146,7 @@ def refuse_foreign_systemd_unit(action: str, system: bool) -> None:
 def refuse_foreign_launchd_plist(verb: str) -> None:
     """The launchd half of ``refuse_foreign_systemd_unit``: exit 1 rather than start/stop/restart/remove a
     LaunchAgent pinning another HERMES_HOME. (Windows task names derive from LOCALAPPDATA, not HOME.)"""
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     if not definition_belongs_to_home(gw.get_launchd_plist_path(), gw.get_hermes_home(), verb):
         sys.exit(1)
 

@@ -1,4 +1,4 @@
-"""Shared argparse helpers for the ``hermes_cli/subcommands/*`` builders.
+"""Shared argparse helpers for the ``hermes_agent/hermes_cli/subcommands/*`` builders.
 
 Import-cycle-free (no ``main`` import); ``main.py`` re-exports for compatibility.
 """

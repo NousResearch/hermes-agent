@@ -21,20 +21,20 @@ def desktop_stamp(tmp_path, monkeypatch):
             "updateMechanism": update_mechanism, "commit": "a" * 40,
             "displayVersion": "0.17.6", "baseVersion": "0.17.6", "tag": tag,
         }))
-        monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.get_project_root", lambda: root)
         monkeypatch.setattr("pm.paths.repo_root", lambda: root)
         monkeypatch.delenv("HERMES_INSTALL_ROOT", raising=False)
-        from hermes_cli.version_info import _reset_version_info_cache
+        from hermes_agent.hermes_cli.version_info import _reset_version_info_cache
         _reset_version_info_cache()
         return root
 
     yield _stamp
-    from hermes_cli.version_info import _reset_version_info_cache
+    from hermes_agent.hermes_cli.version_info import _reset_version_info_cache
     _reset_version_info_cache()
 
 
 def test_bootstrap_shell_banner_says_installer(desktop_stamp):
-    from hermes_cli import banner
+    from hermes_agent.hermes_cli import banner
 
     desktop_stamp("bootstrap", "self")
     label = banner.format_banner_version_label()
@@ -43,7 +43,7 @@ def test_bootstrap_shell_banner_says_installer(desktop_stamp):
 
 
 def test_bundled_release_banner_does_not_say_installer(desktop_stamp):
-    from hermes_cli import banner
+    from hermes_agent.hermes_cli import banner
 
     desktop_stamp("bundled", "electron-updater")
     assert "installer" not in banner.format_banner_version_label()

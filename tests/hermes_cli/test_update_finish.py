@@ -30,7 +30,7 @@ def _put(root, name, content):
 
 @pytest.fixture
 def completion(tmp_path, monkeypatch):
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     from pm.environments import install_state_dir, runtime_facts_path, site_packages
 
     home = tmp_path / "home"
@@ -435,8 +435,8 @@ def _pnpm_graph(source):
 
 @pytest.mark.platforms("posix")
 def test_selected_child_builds_and_finalizes_under_parent_lock(completion):
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from hermes_cli.update_lock import UpdateLock
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.update_lock import UpdateLock
     import hermes_yaml
 
     source, home, request, context, result, run = completion
@@ -483,8 +483,8 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
     """Contract C3 for the historical takeover child: the code is committed, so a failed product
     build is an owed ``build`` follow-up, never a failed update. Maintenance (config migration)
     and the fleet restart still run, the exit is 0, and the tail stays pending until it builds."""
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from hermes_cli.venv_sync import completion_pending_path
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.venv_sync import completion_pending_path
     import hermes_yaml
 
     source, home, request, context, result, run = completion

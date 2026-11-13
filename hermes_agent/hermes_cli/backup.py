@@ -23,16 +23,16 @@ from hermes_constants import (
 )
 from hermes_agent.hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_agent.hermes_state_holders import read_only_db_uri
-from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, read_header_bytes_preopen
+from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, read_header_bytes_preopen
 
 from hermes_agent.agent.provider_media import GENERATED_SUBDIR
-from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
-from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
-from hermes_cli.sizefmt import format_bytes as _format_size
+from hermes_agent.hermes_cli.archive_safe import normalize_archive_parts
+from hermes_agent.hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
+from hermes_agent.hermes_cli.config_backend import require_file_tooling, supports_file_tooling
+from hermes_agent.hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
+from hermes_agent.hermes_cli.sizefmt import format_bytes as _format_size
 
-from hermes_cli.backup_restore import (
+from hermes_agent.hermes_cli.backup_restore import (
     _count_cron_jobs,
     _count_session_rows,
     _default_new_file_mode,
@@ -65,7 +65,7 @@ _QUICK_SNAPSHOTS_DIR = "state-snapshots"
 
 def _snapshot_recovery_hint() -> str:
     """How to restore a state snapshot. There is no `hermes snapshot` subcommand — only the /snapshot
-    slash command inside a `hermes` session (hermes_cli/commands.py)."""
+    slash command inside a `hermes` session (hermes_agent/hermes_cli/commands.py)."""
     return ("To restore a newer snapshot, start `hermes` in a terminal and run `/snapshot list`, then "
             "`/snapshot restore <id>` (CLI only).")
 
@@ -855,7 +855,7 @@ def run_import(args) -> Optional[int]:
         restored_profiles = []
         if profiles_dir.is_dir():
             try:
-                from hermes_cli.profiles import (
+                from hermes_agent.hermes_cli.profiles import (
                     create_wrapper_script, check_alias_collision,
                     _is_wrapper_dir_in_path, _get_wrapper_dir,
                 )
@@ -886,7 +886,7 @@ def run_import(args) -> Optional[int]:
                         print('  Add to your shell config (~/.bashrc or ~/.zshrc):')
                         print('    export PATH="$HOME/.local/bin:$PATH"')
             except ImportError:
-                # hermes_cli.profiles might not be available (fresh install)
+                # hermes_agent.hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):
                     print("\n  Profiles detected but aliases could not be created.")
                     print("  Run: hermes profile list  (after installing hermes)")
@@ -1084,8 +1084,8 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
               "To start a gateway for this home, run:  hermes gateway run")
         return
     try:
-        from hermes_cli.gateway import _is_service_running
-        from hermes_cli.gateway_setup_service import ensure_gateway_service
+        from hermes_agent.hermes_cli.gateway import _is_service_running
+        from hermes_agent.hermes_cli.gateway_setup_service import ensure_gateway_service
         if not _is_service_running():
             print()
             ensure_gateway_service(context="import")
@@ -1760,7 +1760,7 @@ def _sibling_profile_homes(invoking_home: Path) -> list[tuple[str, Path]]:
     """
     homes: list[tuple[str, Path]] = []
     try:
-        from hermes_cli.profiles import (
+        from hermes_agent.hermes_cli.profiles import (
             _get_default_hermes_home,
             _get_profiles_root,
             _PROFILE_ID_RE,
@@ -1907,7 +1907,7 @@ def restore_config_model_settings_if_rewritten(
         return None
 
     try:
-        from hermes_cli.config import atomic_config_write
+        from hermes_agent.hermes_cli.config import atomic_config_write
 
         atomic_config_write(live_path, live)
     except (OSError, PermissionError) as exc:

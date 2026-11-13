@@ -13,7 +13,7 @@ Browser-based dashboard for managing Hermes Agent configuration, API keys, and m
 ```bash
 # Start the backend API server
 cd ../
-python -m hermes_cli.main web --no-open
+python -m hermes_agent.hermes_cli.main web --no-open
 
 # In another terminal, start the Vite dev server (with HMR + API proxy)
 cd web/

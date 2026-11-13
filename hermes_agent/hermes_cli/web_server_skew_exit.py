@@ -38,7 +38,7 @@ def should_retire_for_skew(*, skew: Skew, update_in_progress: bool) -> bool:
 
 def _update_in_progress() -> bool:
     try:
-        from hermes_cli.update_lock import update_in_progress
+        from hermes_agent.hermes_cli.update_lock import update_in_progress
 
         return update_in_progress()
     except Exception:
@@ -51,7 +51,7 @@ def _run_retirement_watchdog(server, *, observe: Callable[[], Optional[str]], fe
     reason while retirement is warranted (else None); after ``_CONFIRMATIONS`` consecutive reasons
     the backend exits only through the retirement fence (proven idle, admission closed first)."""
     if fence is None:
-        from hermes_cli.backend_retirement import retirement
+        from hermes_agent.hermes_cli.backend_retirement import retirement
 
         fence = retirement
 

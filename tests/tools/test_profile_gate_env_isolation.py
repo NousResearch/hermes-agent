@@ -57,7 +57,7 @@ def test_routed_child_drops_gates_and_same_home_child_keeps_them(homes):
 def test_update_recovery_child_env_drops_gates_only_for_other_profiles(homes):
     """The updater relaunches EVERY profile from one environment; the per-profile child env must
     strip gates for a foreign profile and keep them for the profile the updater itself runs as."""
-    from hermes_cli import update_restart_recovery as recovery
+    from hermes_agent.hermes_cli import update_restart_recovery as recovery
 
     routed = recovery._child_environment("b")
     same = recovery._child_environment("default")

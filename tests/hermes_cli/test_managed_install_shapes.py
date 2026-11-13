@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from hermes_cli import config as config_mod
+from hermes_agent.hermes_cli import config as config_mod
 
 
 @pytest.fixture

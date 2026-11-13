@@ -6,10 +6,10 @@ from the gateway's ``commands.catalog``: no plugin code is imported or executed 
 """
 import pytest
 
-import cli as cli_mod
-from cli import HermesCLI
-from hermes_cli.commands_completion import SlashCommandCompleter
-from hermes_cli.gateway_client import GatewayClientError
+import hermes_agent.cli as cli_mod
+from hermes_agent.cli import HermesCLI
+from hermes_agent.hermes_cli.commands_completion import SlashCommandCompleter
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 
 class _Conn:
@@ -63,12 +63,12 @@ def local_plugin_reads(monkeypatch):
             return {} if name == "get_plugin_commands" else None
         return read
     for name in ("get_plugin_commands", "get_plugin_command_handler", "discover_plugins"):
-        monkeypatch.setattr(f"hermes_cli.plugins.{name}", recorder(name))
+        monkeypatch.setattr(f"hermes_agent.hermes_cli.plugins.{name}", recorder(name))
     return reads
 
 
 def _cli(monkeypatch, conn):
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
     monkeypatch.setattr(cli_mod, "_ensure_skill_commands", dict)
     monkeypatch.setattr(cli_mod, "get_skill_bundles", dict)
     c = HermesCLI.__new__(HermesCLI)
@@ -151,7 +151,7 @@ def test_an_unknown_command_refreshes_the_catalog_once_then_falls_through(monkey
 def test_a_session_boundary_rereads_the_catalog(monkeypatch, boundary):
     """/new or resume (a new session id) and a redial to another gateway life re-read the names,
     so completion also sees a plugin set the gateway changed meanwhile."""
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     conn = _Conn({"old-plugin": "Before"})
     c = _cli(monkeypatch, conn)
     assert set(gateway_plugin_commands.names(c) or ()) == {"old-plugin"}
@@ -193,7 +193,7 @@ def _colliding_skill_and_bundle(monkeypatch, name):
 def test_a_catalog_whose_plugin_discovery_failed_runs_nothing_else(monkeypatch, capsys, local_plugin_reads):
     """The gateway answers commands.catalog but says its plugin discovery failed: the missing plugin
     list is not evidence the name is no plugin, so the colliding skill or bundle must not run."""
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     conn = _Conn({})
     conn.extra = {"plugin_discovery_error": "boom in register()",
                   "warning": "plugin command discovery unavailable: boom in register()"}
@@ -222,7 +222,7 @@ def test_an_older_gateway_without_the_discovery_field_keeps_todays_behaviour(mon
 def test_a_plugin_command_a_display_entry_hides_still_dispatches(monkeypatch, local_plugin_reads):
     """Ink's ``/logs`` row hides a plugin's ``/logs`` from the display categories; the catalog's
     ``plugin_commands`` still names it, and that list routes and completes."""
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     conn = _Conn({})
     conn.extra = {"plugin_commands": {"logs": "Plugin logs"}}
     c = _cli(monkeypatch, conn)
@@ -249,7 +249,7 @@ def test_a_hung_up_connection_rereads_the_catalog_before_a_cached_name_runs(monk
 
 def test_a_hung_up_connection_rereads_the_sessions_skills(monkeypatch):
     """/help and completion: the old gateway life's skills are not served after it hung up."""
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     conn = _Conn({})
     conn.extra = {"skills": ["/old-skill"]}
     c = _cli(monkeypatch, conn)
@@ -261,7 +261,7 @@ def test_a_hung_up_connection_rereads_the_sessions_skills(monkeypatch):
 
 def test_a_hung_up_connection_rereads_the_plugin_toolsets(monkeypatch):
     """/tools validation: the old gateway life's plugin toolsets are not served after it hung up."""
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     conn = _Conn({}, reply={"toolsets": [{"key": "old-ts"}]})
     c = _cli(monkeypatch, conn)
     assert gateway_plugin_commands.toolsets(c) == ([("old-ts", "old-ts", "")], set())
@@ -283,7 +283,7 @@ def test_a_reply_that_is_no_plugin_run_is_reported(monkeypatch, capsys):
 def test_a_catalog_served_before_a_redial_is_not_cached_as_the_new_lifes(monkeypatch):
     """Completion worker: the reply comes from epoch E, another caller redials to E+1 before the worker
     publishes it. The cache must not take E's names as E+1's; the next lookup reads again."""
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     conn = _Conn({"old-plugin": "Served by the old gateway life"})
     c = _cli(monkeypatch, conn)
 
@@ -299,7 +299,7 @@ def test_a_catalog_served_before_a_redial_is_not_cached_as_the_new_lifes(monkeyp
 
 
 def test_a_catalog_read_across_a_session_change_is_not_cached_for_the_new_session(monkeypatch):
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     conn = _Conn({"old-plugin": "Before"})
     c = _cli(monkeypatch, conn)
 
@@ -315,9 +315,9 @@ def test_a_catalog_read_across_a_session_change_is_not_cached_for_the_new_sessio
 def test_slash_new_rereads_the_catalog(monkeypatch):
     """The real /new path (``new_session``), not a hand-set session id. Off a GatewaySessionStore the
     id is main's local mint; the gateway's session.create path is covered by its own tests."""
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     conn = _Conn({"old-plugin": "Before"})
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
     c = HermesCLI()
     c.agent = None
     assert set(gateway_plugin_commands.names(c) or ()) == {"old-plugin"}
@@ -342,7 +342,7 @@ def test_a_failed_refresh_on_a_miss_runs_nothing_else(monkeypatch, capsys):
 
 
 def test_completion_degrades_quietly_when_the_catalog_fails(monkeypatch, capsys):
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     c = _cli(monkeypatch, _Conn({}, catalog_error=GatewayClientError("gateway restarting")))
     assert gateway_plugin_commands.names(c) == {}
     assert capsys.readouterr().out == ""
@@ -360,7 +360,7 @@ def _unloaded_since_the_cached_read(monkeypatch, name, skills=()):
     """The CLI ran ``/name`` and cached the catalog (``skills``: the session's skill commands the
     gateway lists); then a gateway plugin reload dropped it (same session, same gateway life), so
     ``slash.exec`` refuses it as the gateway does."""
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     conn = _Conn({name: "Before the reload"})
     conn.extra = {"skills": {"/" + skill: {} for skill in skills}}
     c = _cli(monkeypatch, conn)
@@ -421,8 +421,8 @@ def test_a_skill_reply_for_an_unloaded_plugin_command_runs_the_skill_here(monkey
 def test_the_open_sessions_catalog_is_read_and_an_older_gateway_is_asked_without_it(monkeypatch, local_plugin_reads):
     """On its open gateway session the CLI reads that session's catalog (skills from the session's folder);
     a gateway older than this CLI refuses ``session_id`` and is asked again without it."""
-    from hermes_cli import gateway_plugin_commands
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     conn = _Conn({"mcp-status": "Ask the MCP server"})
     c = _cli(monkeypatch, conn)
     c._gateway_session_open = True

@@ -6,8 +6,8 @@ and this profile's CLI toolset selection, so it runs in the client without an ag
 
 
 def _selection(args):
-    from hermes_cli.config import load_config
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools
     requested = getattr(args, "toolsets", None)
     if isinstance(requested, (list, tuple)):
         requested = ",".join(map(str, requested))

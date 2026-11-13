@@ -113,7 +113,7 @@ def _fenced_kanban_root() -> str:
     """The board root this process's Kanban lineage lives under (``kanban_home()``); ``"1"`` when it
     cannot be resolved, which readers treat as "fence every board" (the pre-path marker)."""
     try:
-        from hermes_cli.kanban_db import kanban_home
+        from hermes_agent.hermes_cli.kanban_db import kanban_home
         return str(kanban_home())
     except Exception:
         return "1"

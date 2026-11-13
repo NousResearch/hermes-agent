@@ -2,7 +2,7 @@
 
 A plugin that calls a third-party API with the user's own OAuth client (a Google Cloud client, for example)
 declares it under ``oauth:``. ``hermes auth add <plugin>:<id>`` runs the PKCE login of
-:mod:`hermes_cli.auth_oauth_pkce_plugin` in a terminal, the grant lives in the active profile's
+:mod:`hermes_agent.hermes_cli.auth_oauth_pkce_plugin` in a terminal, the grant lives in the active profile's
 ``auth.json`` (section ``plugin_oauth``) and Hermes refreshes it. The plugin calls
 ``credentialed_provider_request(<id>, ...)``: Hermes attaches the bearer for the declared hosts only, so
 the plugin never holds a token (#139077; the same contract as the Codex lane, #136117).
@@ -81,8 +81,8 @@ def _url_problems(where: str, url: Any) -> list[str]:
 def _hermes_owned_env(name: str) -> bool:
     """A variable Hermes itself reads (a provider key, a platform secret): never a plugin's client variable,
     or a manifest could have Hermes POST that secret to the token URL it names."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config_env_routing import is_registered_env_name
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.config_env_routing import is_registered_env_name
 
     return is_registered_env_name(name) or any(name in p.api_key_env_vars for p in PROVIDER_REGISTRY.values())
 
@@ -152,7 +152,7 @@ def _declared_clients(plugin_dir: Path) -> list[OAuthClient]:
 
 def plugin_key(plugin_dir: Path) -> str:
     """The plugin's key under the plugins root it lives in (``voice``, ``web/exa``); grants are stored by it."""
-    from hermes_cli.plugin_provider_requests import _plugin_roots
+    from hermes_agent.hermes_cli.plugin_provider_requests import _plugin_roots
 
     for path in (plugin_dir.absolute(), plugin_dir.resolve()):
         for root in _plugin_roots():
@@ -193,7 +193,7 @@ def _declared_env_names(manifest: Mapping[str, Any]) -> set[str]:
 
 def oauth_admission_problems(manifest: Mapping[str, Any], plugin_dir: Path) -> list[str]:
     """Catalog admission on top of the shape: declared variables, no clash with core sign-ins or ``custom:``."""
-    from hermes_cli.plugin_provider_requests import _PROVIDERS
+    from hermes_agent.hermes_cli.plugin_provider_requests import _PROVIDERS
 
     clients, problems = parse_oauth_clients(manifest)
     declared = _declared_env_names(manifest)
@@ -236,7 +236,7 @@ def oauth_admission_warnings(manifest: Mapping[str, Any], plugin_dir: Path) -> l
 # ── Grant store: section ``plugin_oauth`` of the active profile's auth.json ────────────────────────
 
 def _read_grant(key: str) -> Optional[dict]:
-    from hermes_cli.auth import _load_auth_store
+    from hermes_agent.hermes_cli.auth import _load_auth_store
 
     section = _load_auth_store().get(_SECTION)
     row = section.get(key) if isinstance(section, dict) else None
@@ -245,7 +245,7 @@ def _read_grant(key: str) -> Optional[dict]:
 
 def forget_plugin_grants(plugin: str) -> None:
     """Drop every grant of plugin key *plugin* from the active profile (``hermes plugins remove``)."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 
     with _auth_store_lock():
         store = _load_auth_store()
@@ -259,7 +259,7 @@ def forget_plugin_grants(plugin: str) -> None:
 
 def _write_grant(key: str, row: Optional[dict]) -> None:
     """Replace one grant (``None`` removes it) under the auth-store lock; other sections stay as they are."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _store_section
+    from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _store_section
 
     with _auth_store_lock():
         store = _load_auth_store()
@@ -274,7 +274,7 @@ def _write_grant(key: str, row: Optional[dict]) -> None:
 # ── Token endpoint ─────────────────────────────────────────────────────────────────────────────────
 
 def _auth_error(key: str, message: str, code: str):
-    from hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.auth_constants import AuthError
 
     return AuthError(f"{key}: {message}", provider=key, code=code)
 
@@ -298,7 +298,7 @@ def _json_object(response: Any) -> dict:
 
 def _token_error(key: str, status: int, payload: Mapping[str, Any]):
     """Keep the OAuth ``error`` code a caller can act on; never echo the response body."""
-    from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
+    from hermes_agent.hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
 
     error = str(payload.get("error") or "").strip()
     if error in _OAUTH_GRANT_DEAD_CODES or error in _CLIENT_ERROR_CODES:
@@ -321,8 +321,8 @@ def _token_request(client: OAuthClient, key: str) -> Callable[[dict[str, str]], 
     secret never sits in the frozen config, whose repr would show it."""
 
     def post(fields: dict[str, str]) -> Mapping[str, Any]:
-        from hermes_cli.auth import _default_verify
-        from hermes_cli.auth_constants import httpx
+        from hermes_agent.hermes_cli.auth import _default_verify
+        from hermes_agent.hermes_cli.auth_constants import httpx
 
         form = {**fields, "client_id": _env(client.client_id_env, "oauth_client_id_missing", key)}
         if client.client_secret_env:
@@ -346,7 +346,7 @@ def _token_request(client: OAuthClient, key: str) -> Callable[[dict[str, str]], 
 
 
 def _pkce_config(client: OAuthClient, key: str, *, timeout: Optional[float] = None):
-    from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig
+    from hermes_agent.hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig
 
     return OAuthPKCEConfig(
         client_id=_env(client.client_id_env, "oauth_client_id_missing", key), authorize_url=client.authorize_url,
@@ -357,7 +357,7 @@ def _pkce_config(client: OAuthClient, key: str, *, timeout: Optional[float] = No
 # ── Bearer for credentialed_provider_request ───────────────────────────────────────────────────────
 
 def _not_signed_in(message: str):
-    from hermes_cli.plugin_provider_requests import ProviderNotSignedIn
+    from hermes_agent.hermes_cli.plugin_provider_requests import ProviderNotSignedIn
 
     return ProviderNotSignedIn(message)
 
@@ -390,9 +390,9 @@ def _live_token(row: Mapping[str, Any]) -> str:
 def _refresh(client: OAuthClient, key: str, row: dict) -> str:
     """Rotate the grant; the caller holds the auth-store lock, so a peer process waits instead of spending
     the same refresh token, and a logout cannot be undone by a refresh in flight."""
-    from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
-    from hermes_cli.auth_constants import AuthError
-    from hermes_cli.auth_oauth_pkce_plugin import _post_token
+    from hermes_agent.hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
+    from hermes_agent.hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.auth_oauth_pkce_plugin import _post_token
 
     refresh_token = str(row.get("refresh_token") or "")
     if not refresh_token:
@@ -412,7 +412,7 @@ def _refresh(client: OAuthClient, key: str, row: dict) -> str:
 def _bearer(plugin_dir: Path, client: OAuthClient) -> str:
     """A live access token for the plugin's grant. Reading takes no lock (writes are atomic); a refresh
     re-reads under the lock, because a peer may have rotated the grant meanwhile."""
-    from hermes_cli.auth import _auth_store_lock
+    from hermes_agent.hermes_cli.auth import _auth_store_lock
 
     key = f"{plugin_key(plugin_dir)}:{client.id}"
     token = _live_token(_usable_grant(_read_grant(key), client, key))
@@ -451,7 +451,7 @@ def _origins(client: OAuthClient) -> frozenset:
 
 def _installed_client(plugin: str, oauth_id: str) -> Optional[tuple[Path, OAuthClient]]:
     """Resolve *plugin* the way ``hermes plugins show`` does, then its ``oauth:`` entry *oauth_id*."""
-    from hermes_cli.plugins_cmd import _find_plugin_entry
+    from hermes_agent.hermes_cli.plugins_cmd import _find_plugin_entry
 
     entry = _find_plugin_entry(plugin)
     if entry is None or not entry[4]:
@@ -468,8 +468,8 @@ def _unattended() -> bool:
 
 
 def _cli_add(args: Any, client: OAuthClient, key: str) -> bool:
-    from hermes_cli.auth_constants import AuthError
-    from hermes_cli.auth_oauth_pkce_plugin import login
+    from hermes_agent.hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.auth_oauth_pkce_plugin import login
 
     if _unattended():
         raise SystemExit(f"`hermes auth add {key}` signs you in through a browser; run it in your own terminal, "
@@ -489,7 +489,7 @@ def _cli_add(args: Any, client: OAuthClient, key: str) -> bool:
 
 
 def _cli_status(args: Any, client: OAuthClient, key: str) -> bool:
-    from hermes_cli.plugin_provider_requests import ProviderNotSignedIn
+    from hermes_agent.hermes_cli.plugin_provider_requests import ProviderNotSignedIn
 
     row = _read_grant(key)
     try:
@@ -506,9 +506,9 @@ def _cli_status(args: Any, client: OAuthClient, key: str) -> bool:
 
 
 def _cli_refresh(args: Any, client: OAuthClient, key: str) -> bool:
-    from hermes_cli.auth import _auth_store_lock
-    from hermes_cli.auth_constants import AuthError
-    from hermes_cli.plugin_provider_requests import ProviderNotSignedIn
+    from hermes_agent.hermes_cli.auth import _auth_store_lock
+    from hermes_agent.hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.plugin_provider_requests import ProviderNotSignedIn
 
     try:
         with _auth_store_lock():
@@ -527,7 +527,7 @@ def _cli_logout(args: Any, client: OAuthClient, key: str) -> bool:
 
 def _logout_key(plugin: str, oauth_id: str) -> Optional[str]:
     """The stored grant key ``hermes auth logout <plugin>:<id>`` means, without parsing the manifest."""
-    from hermes_cli.plugins_cmd import _find_plugin_entry
+    from hermes_agent.hermes_cli.plugins_cmd import _find_plugin_entry
 
     entry = _find_plugin_entry(plugin)
     names = [f"{plugin_key(Path(str(entry[4])))}:{oauth_id}"] if entry is not None and entry[4] else []

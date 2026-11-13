@@ -3,14 +3,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli import HermesCLI
-from hermes_cli.main_agent_cmds import cmd_insights
+from hermes_agent.cli import HermesCLI
+from hermes_agent.hermes_cli.main_agent_cmds import cmd_insights
 
 
 @pytest.fixture(autouse=True)
 def existing_store(tmp_path, monkeypatch):
     # insights short-circuits before opening when state.db is absent (fresh install).
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: tmp_path)
     (tmp_path / "state.db").touch()
     return tmp_path / "state.db"
 

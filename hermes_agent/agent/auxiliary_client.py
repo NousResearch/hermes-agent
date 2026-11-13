@@ -130,8 +130,8 @@ from hermes_agent.agent.credential_pool_model_cooldowns import pool_failure_reas
 from hermes_agent.agent.custom_entry_pool import entry_scoped_pool, pool_for_aux_provider
 from hermes_agent.agent.message_metadata import data_use_requirement
 from hermes_agent.agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
-from hermes_cli.config import get_hermes_home
-from hermes_cli.config_providers import _canonical_api_mode
+from hermes_agent.hermes_cli.config import get_hermes_home
+from hermes_agent.hermes_cli.config_providers import _canonical_api_mode
 from hermes_agent.agent.auxiliary_health import (
     _custom_health_base_url, _unhealthy_cache_key, fallback_candidate_quarantine_ttl,
 )
@@ -157,7 +157,7 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     ``ssl_verify``; otherwise the OS trust store); any failure → httpx default (``True``)."""
     try:
         from hermes_agent.agent.ssl_verify import resolve_httpx_verify
-        from hermes_cli.config import get_custom_provider_tls_settings, load_config_readonly
+        from hermes_agent.hermes_cli.config import get_custom_provider_tls_settings, load_config_readonly
         tls = get_custom_provider_tls_settings(str(base_url or ""), config=load_config_readonly())
         return resolve_httpx_verify(
             ca_bundle=tls.get("ssl_ca_cert"), ssl_verify=tls.get("ssl_verify"), base_url=str(base_url or ""))
@@ -541,7 +541,7 @@ def _extract_url_query_params(url: str):
 _stale_base_url_warned = False
 
 # Local OpenAI-compatible servers (Ollama, vLLM, llama.cpp) route through the generic custom
-# provider — mirrors hermes_cli.auth._PROVIDER_ALIASES. Without this group an explicit
+# provider — mirrors hermes_agent.hermes_cli.auth._PROVIDER_ALIASES. Without this group an explicit
 # ``provider: ollama`` aux lane matches no registry entry and raises a misleading
 # ``OLLAMA_API_KEY`` error instead of using the lane's base_url (#106010).
 _LOCAL_SERVER_ALIASES = {
@@ -553,7 +553,7 @@ _ALIAS_TABLES: dict[str, tuple[int, dict[str, str]]] = {}  # home key -> (regist
 
 
 def _provider_alias_table() -> dict[str, str]:
-    """The alias table the main provider path resolves against (hermes_cli.auth), per home and registry
+    """The alias table the main provider path resolves against (hermes_agent.hermes_cli.auth), per home and registry
     generation: plugin aliases are per home. A hand-copied mirror rots silently (#106010); local-server
     names stay in: they guard the /v1 tail and the custom-branch no-key-borrow rule."""
     from hermes_agent.providers import bound_registry_key
@@ -562,7 +562,7 @@ def _provider_alias_table() -> dict[str, str]:
     if cached is None or cached[0] != generation:
         cached = (generation, dict(_LOCAL_SERVER_ALIASES))
         with contextlib.suppress(Exception):
-            from hermes_cli.auth import _plugin_aliases
+            from hermes_agent.hermes_cli.auth import _plugin_aliases
             cached[1].update(_plugin_aliases())
         _ALIAS_TABLES[home] = cached
     return cached[1]
@@ -733,8 +733,8 @@ def _fast_model_from_catalog(provider_id: str) -> str:
     """
     is_nous = provider_id.strip().lower() == "nous"
     try:
-        from hermes_cli.auth import resolve_api_key_provider_credentials
-        from hermes_cli.models_pricing import fetch_models_with_pricing
+        from hermes_agent.hermes_cli.auth import resolve_api_key_provider_credentials
+        from hermes_agent.hermes_cli.models_pricing import fetch_models_with_pricing
         from hermes_agent.providers import get_provider_profile
         # Most /v1/models endpoints are authenticated; an anonymous 401 would read as "no small
         # model" and pin the curated default forever.
@@ -749,7 +749,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         if not api_key and is_nous:
             # Nous is OAuth (resolver raises); anonymous reads return the full catalog.
             try:
-                from hermes_cli.models_pricing import _resolve_nous_pricing_credentials
+                from hermes_agent.hermes_cli.models_pricing import _resolve_nous_pricing_credentials
                 api_key, base_url = _resolve_nous_pricing_credentials()
             except Exception:
                 logger.debug("No Nous credentials for catalog", exc_info=True)
@@ -763,7 +763,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
         # policy-catalog expiry.
         _nous_kwargs = {}
         if is_nous:
-            from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
+            from hermes_agent.hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
             _nous_kwargs = {"include_sale_original": True, "cache_ttl_seconds": _NOUS_CATALOG_TTL_SECONDS}
         catalog = fetch_models_with_pricing(
             api_key=api_key or None, base_url=base_url, timeout=3.0, **_nous_kwargs) or {}
@@ -774,7 +774,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
     if is_nous:
         # Narrow catalog ids by org policy, as the pickers do.
         try:
-            from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
+            from hermes_agent.hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
             ids = restrict_to_nous_policy(ids, nous_policy_allowed_ids())
         except Exception:
             logger.debug("Nous policy filter unavailable", exc_info=True)
@@ -814,7 +814,7 @@ def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) 
     # let the caller keep the main model.
     if picked and provider_id.strip().lower() == "nous":
         try:
-            from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
+            from hermes_agent.hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
             allowed = nous_policy_allowed_ids()
             if allowed and not restrict_to_nous_policy([picked], allowed):
                 return ""
@@ -887,7 +887,7 @@ def _apply_user_default_headers(headers: dict | None) -> dict | None:
     alias wins over both). Mirrors ``AIAgent._apply_user_default_headers`` so a custom endpoint behind a
     WAF rejecting ``User-Agent`` / ``X-Stainless-*`` works for aux calls. SECURITY: never log values."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_agent.hermes_cli.config import cfg_get, load_config
         _cfg = load_config()
         user_headers = cfg_get(_cfg, "model", "default_headers")
         alias_headers = cfg_get(_cfg, "model", "extra_headers")
@@ -912,7 +912,7 @@ def build_or_headers(or_config: dict | None = None) -> dict:
     headers = dict(_OR_HEADERS_BASE)
     if or_config is None:
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             or_config = load_config_readonly().get("openrouter", {})
         except Exception:
             or_config = {}
@@ -941,7 +941,7 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
 
 
 # Vercel AI Gateway attribution (HTTP-Referer → referrerUrl, X-Title → appName).
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 
 
 def _ai_gateway_headers() -> dict[str, str]:
@@ -968,7 +968,7 @@ def _auth_json_path():
     """Active profile's ``auth.json`` at call time (a patched ``_AUTH_JSON_PATH`` still wins). The
     import-time constant is the LAUNCH profile's; under multiplexing a secondary's auxiliary calls
     would otherwise authenticate to Nous with the default profile's token."""
-    from hermes_cli.auth import _auth_file_path
+    from hermes_agent.hermes_cli.auth import _auth_file_path
     return _AUTH_JSON_PATH if _AUTH_JSON_PATH != _AUTH_JSON_PATH_AT_IMPORT else _auth_file_path()
 
 # Hosts exposing BOTH ``…/anthropic`` and a sibling OpenAI ``…/v1``. Matched on the URL *host*
@@ -997,7 +997,7 @@ def _to_openai_base_url(base_url: str) -> str:
     """
     url = str(base_url or "").strip().rstrip("/")
     if base_url_hostname(url) == "api.actual.inc":
-        from hermes_cli.auth import normalize_actual_base_url
+        from hermes_agent.hermes_cli.auth import normalize_actual_base_url
         return normalize_actual_base_url(url)
     if url.endswith("/anthropic"):
         if base_url_host_matches(url, "open.bigmodel.cn") or base_url_host_matches(url, "api.z.ai"):
@@ -1076,7 +1076,7 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
         return str(fallback or "").strip().rstrip("/")
     if getattr(entry, "provider", None) == "nous":
         # Canonical auth-layer reader so the env override shares one normalization path.
-        from hermes_cli.auth import _nous_inference_env_override
+        from hermes_agent.hermes_cli.auth import _nous_inference_env_override
         env_url = _nous_inference_env_override()
         if env_url:
             return env_url
@@ -1549,7 +1549,7 @@ class _CodexCompletionsAdapter:
         return resp_kwargs, model, timeout
 
     def create(self, **kwargs) -> Any:
-        from hermes_cli.providers import is_actual_route
+        from hermes_agent.hermes_cli.providers import is_actual_route
 
         if is_actual_route(
             getattr(self._client, "_hermes_aux_effective_provider", ""),
@@ -1896,7 +1896,7 @@ class AsyncBedrockAuxiliaryClient(_AsyncAuxiliaryClientBase):
 def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     """True if ``base_url`` speaks Anthropic Messages, not OpenAI chat.completions.
 
-    Mirrors ``hermes_cli.runtime_provider._detect_api_mode_for_url`` so aux and main agree: any
+    Mirrors ``hermes_agent.hermes_cli.runtime_provider._detect_api_mode_for_url`` so aux and main agree: any
     ``/anthropic`` URL (MiniMax, Zhipu, LiteLLM), ``api.kimi.com/coding`` (chat 404s), ``api.anthropic.com``.
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
@@ -1990,7 +1990,7 @@ def _read_nous_auth() -> Optional[dict]:
 
 def _nous_api_key(provider: dict) -> str:
     """Extract a usable Nous inference JWT from stored auth state."""
-    from hermes_cli.auth import _nous_invoke_jwt_is_usable
+    from hermes_agent.hermes_cli.auth import _nous_invoke_jwt_is_usable
     for token_key, expiry_key in (("agent_key", "agent_key_expires_at"), ("access_token", "expires_at")):
         token = provider.get(token_key)
         if not isinstance(token, str) or not token.strip():
@@ -2003,7 +2003,7 @@ def _nous_api_key(provider: dict) -> str:
 def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
     """Resolve Nous auxiliary credentials from the selected pool entry."""
     try:
-        from hermes_cli.auth import _agent_key_is_usable
+        from hermes_agent.hermes_cli.auth import _agent_key_is_usable
         pool = load_pool("nous")
     except Exception as exc:
         logger.debug("Auxiliary Nous pool credential resolution failed: %s", exc)
@@ -2048,7 +2048,7 @@ def _resolve_nous_runtime_api(
     if pooled is not None:
         return pooled
     try:
-        from hermes_cli.auth import resolve_nous_runtime_credentials
+        from hermes_agent.hermes_cli.auth import resolve_nous_runtime_credentials
         creds = resolve_nous_runtime_credentials(
             timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
             force_refresh=force_refresh,
@@ -2078,7 +2078,7 @@ def _resolve_xai_oauth_for_aux(model: Optional[str] = None) -> Optional[tuple[st
     Pool first (some xAI OAuth logins exist only as pool entries), then the singleton auth-store resolver.
     """
     try:
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
+        from hermes_agent.hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
         pool = load_pool("xai-oauth")
         if pool and pool.has_credentials():
             entry = pool.select(model=model)
@@ -2099,7 +2099,7 @@ def _resolve_xai_oauth_for_aux(model: Optional[str] = None) -> Optional[tuple[st
     except Exception as exc:
         logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
     try:
-        from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+        from hermes_agent.hermes_cli.auth import resolve_xai_oauth_runtime_credentials
         creds = resolve_xai_oauth_runtime_credentials()
     except Exception as exc:
         logger.debug("Auxiliary xAI OAuth runtime credential resolution failed: %s", exc)
@@ -2120,7 +2120,7 @@ def _resolve_codex_credential_and_base(model: Optional[str] = None) -> tuple[Opt
             if override:
                 return token, override
             # Same route rule as the chat path (row URL, else ``model.base_url``); never empty.
-            from hermes_cli.auth_codex import _codex_pool_route_base_url
+            from hermes_agent.hermes_cli.auth_codex import _codex_pool_route_base_url
             return token, _codex_pool_route_base_url(_pool_runtime_base_url(entry))
     # No usable pool token: auth.json only (re-selecting could pair another row's key with the default).
     return _read_codex_singleton_token(), override or _CODEX_AUX_BASE_URL
@@ -2129,7 +2129,7 @@ def _resolve_codex_credential_and_base(model: Optional[str] = None) -> tuple[Opt
 def _read_codex_singleton_token() -> Optional[str]:
     """The profile's auth.json Codex access token (expired JWTs skipped), else None."""
     try:
-        from hermes_cli.auth import _read_codex_tokens
+        from hermes_agent.hermes_cli.auth import _read_codex_tokens
         access_token = _read_codex_tokens().get("tokens", {}).get("access_token")
         if not isinstance(access_token, str) or not access_token.strip():
             return None
@@ -2153,11 +2153,11 @@ def _read_codex_singleton_token() -> Optional[str]:
 def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
     """Try each API-key provider in PROVIDER_REGISTRY order; (client, model) or (None, None)."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
     except ImportError:
         logger.debug("Could not import PROVIDER_REGISTRY for API-key fallback")
         return None, None
-    from hermes_cli.auth_plugin_providers import canonical_registry_rows
+    from hermes_agent.hermes_cli.auth_plugin_providers import canonical_registry_rows
     for provider_id, pconfig in canonical_registry_rows():
         if pconfig.auth_type != "api_key":
             continue
@@ -2167,7 +2167,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         if provider_id == "anthropic":
             # Explicit-config gate: Claude Code credentials must not silently become aux fallback.
             with contextlib.suppress(ImportError):
-                from hermes_cli.auth import is_provider_explicitly_configured
+                from hermes_agent.hermes_cli.auth import is_provider_explicitly_configured
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
             client, model = _try_anthropic()
@@ -2175,7 +2175,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
         from hermes_agent.providers import get_provider_profile
         if getattr(get_provider_profile(provider_id), "ambient_credentials", False):
             # Explicit-config gate: ambient credentials (another tool's login) must not silently become aux fallback (#114740).
-            from hermes_cli.auth import is_provider_explicitly_configured
+            from hermes_agent.hermes_cli.auth import is_provider_explicitly_configured
             if not is_provider_explicitly_configured(provider_id):
                 continue
         model = _get_aux_model_for_provider(provider_id) or None
@@ -2289,7 +2289,7 @@ def _is_free_model(model: Optional[str]) -> bool:
 def _aux_openrouter_settings() -> tuple[bool, str]:
     """Read (free_only, openrouter_model) from config; (False, _OPENROUTER_MODEL) on failure."""
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly
+        from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly
         cfg = load_config_readonly()
         free_only = bool(cfg_get(cfg, "auxiliary", "free_only", default=False))
         val = cfg_get(cfg, "auxiliary", "openrouter_model")
@@ -2395,7 +2395,7 @@ def _try_nous(vision: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
         ).rstrip("/")
     with contextlib.suppress(Exception):
         from hermes_agent.agent.nous_rate_guard import nous_rate_limit_remaining
-        from hermes_cli.anon_auth import is_anonymous_request
+        from hermes_agent.hermes_cli.anon_auth import is_anonymous_request
         anonymous = is_anonymous_request("nous", api_key)
         remaining = nous_rate_limit_remaining(anonymous=anonymous)
         if remaining is not None and remaining > 0:
@@ -2412,7 +2412,7 @@ def _try_nous(vision: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
     # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead.
     # Vision rides the same id (the backing model is multimodal; a backing that is not answers
     # the request with the upstream's own error, which the ladder handles like any other).
-    from hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
+    from hermes_agent.hermes_cli.anon_auth import GUEST_MODEL, route_is_welcome_host
     if route_is_welcome_host(base_url):
         logger.debug("Auxiliary/%s: Nous free tier; using %s", lane, GUEST_MODEL)
         return _create_openai_client(api_key=api_key, base_url=base_url), GUEST_MODEL
@@ -2422,7 +2422,7 @@ def _try_nous(vision: bool = False) -> tuple[Optional[OpenAI], Optional[str]]:
     model = _NOUS_MODEL
     if not _aux_probe_active():
         try:
-            from hermes_cli.models import get_nous_recommended_aux_model
+            from hermes_agent.hermes_cli.models import get_nous_recommended_aux_model
             recommended = get_nous_recommended_aux_model(vision=vision)
             if recommended:
                 model = recommended
@@ -2446,7 +2446,7 @@ def _refresh_nous_recommended_model(*, vision: bool, stale_model: Optional[str])
     stale = (stale_model or "").strip().lower()
     fresh: Optional[str] = None
     try:
-        from hermes_cli.models import get_nous_recommended_aux_model
+        from hermes_agent.hermes_cli.models import get_nous_recommended_aux_model
         fresh = get_nous_recommended_aux_model(vision=vision, force_refresh=True)
     except Exception as exc:
         logger.debug("Nous recommended-model refresh failed (%s); using default %s", exc, _NOUS_MODEL)
@@ -2466,7 +2466,7 @@ def _read_main_field(field: str, *, readonly: bool, lower: bool = False) -> str:
         value = override.strip()
         return value.lower() if lower else value
     with contextlib.suppress(Exception):
-        from hermes_cli import config as _cfg_mod
+        from hermes_agent.hermes_cli import config as _cfg_mod
         cfg = (_cfg_mod.load_config_readonly if readonly else _cfg_mod.load_config)()
         model_cfg = cfg.get("model", {})
         if field == "model" and isinstance(model_cfg, str) and model_cfg.strip():
@@ -2493,8 +2493,8 @@ def _resolve_moa_aggregator(preset_name: Optional[str]) -> tuple[Optional[str], 
     "moa" is virtual — aux tasks skip the fan-out and use the aggregator slot; shared so lookup can't drift.
     """
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import resolve_moa_preset
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.moa_config import resolve_moa_preset
         preset = resolve_moa_preset(load_config().get("moa") or {}, preset_name or None)
         agg = preset.get("aggregator") or {}
         agg_provider = str(agg.get("provider") or "").strip()
@@ -2818,8 +2818,8 @@ def clear_runtime_main() -> None:
 def _resolve_custom_runtime() -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint like the main CLI (env OPENAI_BASE_URL or config-saved)."""
     try:
-        from hermes_cli.auth import AuthError
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.auth import AuthError
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested="custom")
     except AuthError as exc:
         # Bare 'custom' with nothing configured fails fast in the main resolver: there is no
@@ -2991,9 +2991,9 @@ def _try_azure_foundry(
     """Azure Foundry aux client via the main agent's ``_resolve_azure_foundry_runtime`` (api_key vs Entra
     callable bearer, per-model api_mode, base_url overrides). Returns ``(client, model)`` or ``(None, None)``."""
     try:
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        from hermes_cli.auth import AuthError
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
+        from hermes_agent.hermes_cli.auth import AuthError
+        from hermes_agent.hermes_cli.config import load_config_readonly
     except ImportError:
         return None, None
     try:
@@ -3064,7 +3064,7 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
     # Anthropic-compatible; a foreign host (Codex, OpenRouter) would 401 every aux call.
     base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         cfg = load_config_readonly()
         model_cfg = cfg.get("model")
         if isinstance(model_cfg, dict):
@@ -3240,7 +3240,7 @@ def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
 def _nous_portal_account_has_fresh_paid_access() -> bool:
     """Return True only when the fresh Nous account API says paid access is allowed."""
     try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
+        from hermes_agent.hermes_cli.nous_account import get_nous_portal_account_info
         return get_nous_portal_account_info(force_fresh=True).paid_service_access is True
     except Exception as exc:
         logger.debug("Auxiliary Nous paid-entitlement refresh check failed: %s", exc)
@@ -3255,7 +3255,7 @@ def _transient_retry_count() -> int:
     """Same-provider retries for a transient blip: ``auxiliary.transient_retries``
     (default 2), clamped to [0, 6]; config-read failures fall back to default."""
     try:
-        from hermes_cli.config import cfg_get, load_config
+        from hermes_agent.hermes_cli.config import cfg_get, load_config
         val = cfg_get(load_config(), "auxiliary", "transient_retries")
         return _DEFAULT_TRANSIENT_RETRIES if val is None else max(0, min(int(val), 6))
     except Exception:
@@ -3519,7 +3519,7 @@ def _recoverable_pool_provider(
         rt_provider = runtime.get("provider", "")
         if rt_provider and rt_provider not in {"", "auto", "custom"}:
             with contextlib.suppress(Exception):
-                from hermes_cli.auth import PROVIDER_REGISTRY
+                from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
                 pconfig = PROVIDER_REGISTRY.get(rt_provider)
                 if pconfig and getattr(pconfig, "auth_type", None) == "api_key":
                     # The pool's key was issued for the endpoint the main runtime actually uses; a
@@ -3663,12 +3663,12 @@ def _creds_have_api_key(creds: dict[str, Any]) -> bool:
 
 
 def _refresh_codex_credentials() -> bool:
-    from hermes_cli.auth import resolve_codex_runtime_credentials
+    from hermes_agent.hermes_cli.auth import resolve_codex_runtime_credentials
     return _creds_have_api_key(resolve_codex_runtime_credentials(force_refresh=True))
 
 
 def _refresh_nous_credentials() -> bool:
-    from hermes_cli.auth import resolve_nous_runtime_credentials
+    from hermes_agent.hermes_cli.auth import resolve_nous_runtime_credentials
     return _creds_have_api_key(resolve_nous_runtime_credentials(
         timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15), force_refresh=True
     ))
@@ -3697,7 +3697,7 @@ def _refresh_xai_oauth_credentials() -> bool:
         refreshed = pool.try_refresh_current()
         if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
             return True
-    from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+    from hermes_agent.hermes_cli.auth import resolve_xai_oauth_runtime_credentials
     return _creds_have_api_key(resolve_xai_oauth_runtime_credentials(force_refresh=True))
 
 
@@ -3810,7 +3810,7 @@ def _complete_fallback_destination(
             api_mode = "anthropic_messages"
         else:
             with contextlib.suppress(Exception):
-                from hermes_cli.runtime_provider import resolve_runtime_provider
+                from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
                 runtime = resolve_runtime_provider(
                     requested=provider, explicit_base_url=base_url or None, target_model=model or ""
                 )
@@ -4287,7 +4287,7 @@ def _try_configured_fallback_for_unavailable_client(
 
 def _fallback_entry_api_key(entry: dict[str, Any]) -> Optional[str]:
     """Resolve inline or env-backed API key via the secret-scope-aware resolver (no raw os.getenv under multiplexing)."""
-    from hermes_cli.fallback_config import resolve_entry_api_key
+    from hermes_agent.hermes_cli.fallback_config import resolve_entry_api_key
     return resolve_entry_api_key(entry)
 
 
@@ -4316,8 +4316,8 @@ def _try_main_fallback_chain(
     user's main fallback policy before the built-in discovery chain; read via ``get_fallback_chain`` so
     ``fallback_providers`` and legacy ``fallback_model`` keep the main agent's order."""
     try:
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_agent.hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.fallback_config import get_fallback_chain
         chain = get_fallback_chain(load_config_readonly())
     except Exception as exc:
         logger.debug("Auxiliary %s: could not load main fallback chain: %s", task or "call", exc)
@@ -4428,7 +4428,7 @@ def _try_main_provider_route(
         # Named custom provider (custom_providers / providers dict entry).
         _has_named_entry = False
         with contextlib.suppress(ImportError):
-            from hermes_cli.runtime_provider import _get_named_custom_provider
+            from hermes_agent.hermes_cli.runtime_provider import _get_named_custom_provider
             _has_named_entry = _get_named_custom_provider(main_provider) is not None
         if _has_named_entry:
             # KEEP the full ``custom:<name>`` so the named arm honours the entry's api_mode
@@ -4605,7 +4605,7 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
     if not model_name:
         return model_name
     try:
-        from hermes_cli.model_normalize import normalize_model_for_provider
+        from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
         return normalize_model_for_provider(model_name, provider)
     except Exception:
         return model_name
@@ -4749,9 +4749,9 @@ def _log_once_debug(seen: set, key: Any, msg: str, *args: Any) -> None:
 
 
 def _is_actual_auxiliary_route(req: _ResolveRequest, base_url: str) -> bool:
-    from hermes_cli.auth import normalize_actual_base_url
-    from hermes_cli.providers import is_actual_route
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.auth import normalize_actual_base_url
+    from hermes_agent.hermes_cli.providers import is_actual_route
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
 
     if is_actual_route(req.provider, base_url):
         return True
@@ -4876,7 +4876,7 @@ def _resolve_nous_branch(req: _ResolveRequest) -> _ResolveResult:
     final_model = _normalize_resolved_model(model or default, req.provider)
     # Dual-wire: anthropic/* → /v1/messages, else /chat/completions. Derive from the catalog id
     # (not a stale api_mode) so aux matches the main agent.
-    from hermes_cli.providers import nous_api_mode
+    from hermes_agent.hermes_cli.providers import nous_api_mode
     client = _maybe_wrap_anthropic(
         client, final_model, str(getattr(client, "api_key", "") or ""),
         str(getattr(client, "base_url", "") or ""), nous_api_mode(final_model),
@@ -4936,7 +4936,7 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
-            from hermes_cli.runtime_provider import openai_env_key_authoritative_for  # SECURITY #91308: gated as main
+            from hermes_agent.hermes_cli.runtime_provider import openai_env_key_authoritative_for  # SECURITY #91308: gated as main
             paired = any(openai_env_key_authoritative_for(u, _scoped_key_env("OPENAI_BASE_URL"))  # requested URL too:
                          for u in (req.explicit_base_url, custom_base))  # _to_openai_base_url rewrites its path
             custom_key = (_normalize_api_key(req.explicit_api_key) or _read_main_api_key_if_same_origin(custom_base)
@@ -4956,14 +4956,14 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             custom_base, custom_key = _main_base, _main_key
     if custom_base and custom_key:
         if _is_actual_auxiliary_route(req, custom_base):
-            from hermes_cli.auth import normalize_actual_base_url
+            from hermes_agent.hermes_cli.auth import normalize_actual_base_url
             custom_base = normalize_actual_base_url(custom_base)
         final_model = _normalize_resolved_model(
             model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini", provider,
         )
         _clean_base, _dq = _extract_url_query_params(custom_base)
         extra = {"default_query": _dq} if _dq else {}
-        from hermes_cli.config import get_custom_provider_extra_headers  # this endpoint's entry, as agent_init
+        from hermes_agent.hermes_cli.config import get_custom_provider_extra_headers  # this endpoint's entry, as agent_init
         _custom_headers = {**(_endpoint_default_headers(custom_base, provider, is_vision=req.is_vision) or {}),
                            **get_custom_provider_extra_headers(custom_base)}
         if _custom_headers:
@@ -5004,7 +5004,7 @@ def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_he
 
 def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResult]:
     """Named custom provider (config.yaml providers dict / custom_providers list); None if no entry matches."""
-    from hermes_cli.runtime_provider import _get_named_custom_provider
+    from hermes_agent.hermes_cli.runtime_provider import _get_named_custom_provider
     provider = req.provider
     # If the raw name is an alias (``kimi`` → ``kimi-coding``) and a custom_providers entry exists
     # under it, the custom entry wins over alias rewriting. Only for aliases, so entries matching a
@@ -5028,13 +5028,13 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # Actual's wire protocol takes precedence over persisted task/provider modes.
     entry_api_mode = (req.api_mode or custom_entry.get("api_mode") or "").strip()
     if _is_actual_auxiliary_route(req, custom_base):
-        from hermes_cli.auth import normalize_actual_base_url
+        from hermes_agent.hermes_cli.auth import normalize_actual_base_url
         custom_base = normalize_actual_base_url(custom_base)
         entry_api_mode = "chat_completions"
     if not custom_base:
         logger.warning("resolve_provider_client: named custom provider %r has no base_url", provider)
         return None, None
-    from hermes_cli.config import normalize_extra_headers
+    from hermes_agent.hermes_cli.config import normalize_extra_headers
     entry_headers = normalize_extra_headers(custom_entry.get("extra_headers"))
     final_model = _normalize_resolved_model(
         req.model
@@ -5132,7 +5132,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
         raw_base_url = req.explicit_base_url.strip().rstrip("/")
     if provider == "actual":
         with contextlib.suppress(Exception):
-            from hermes_cli.auth import (
+            from hermes_agent.hermes_cli.auth import (
                 ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, is_actual_local_base_url, normalize_actual_base_url
             )
             raw_base_url = normalize_actual_base_url(raw_base_url)
@@ -5217,7 +5217,7 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
     """PROVIDER_REGISTRY providers, dispatched on ``auth_type``; unknown providers log once."""
     provider = req.provider
     try:
-        from hermes_cli.auth import (
+        from hermes_agent.hermes_cli.auth import (
             PROVIDER_REGISTRY, resolve_api_key_provider_credentials,
             resolve_external_process_provider_credentials,
         )
@@ -5364,7 +5364,7 @@ def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
     """True when ``provider``/``model`` is known to accept image input; unknown capability → True (attempt the call)."""
     try:
         from hermes_agent.agent.image_routing import _lookup_supports_vision
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
     except ImportError:
         return True
     try:
@@ -5961,7 +5961,7 @@ def _builtin_provider_present(name: str) -> bool:
     """*name* is a built-in provider. Never raises, so a failing catalog cannot suppress the parallel
     user-defined lookup in ``_preserve_provider_with_base_url`` (#76602)."""
     try:
-        from hermes_cli.providers import get_provider
+        from hermes_agent.hermes_cli.providers import get_provider
 
         return get_provider(name) is not None
     except Exception:
@@ -5993,7 +5993,7 @@ def _named_custom_provider_present(name: str) -> bool:
     (parallel lookup; each side fails independently — #76602).
     """
     try:
-        from hermes_cli.runtime_provider import _get_named_custom_provider
+        from hermes_agent.hermes_cli.runtime_provider import _get_named_custom_provider
 
         return _get_named_custom_provider(name) is not None
     except Exception:
@@ -6049,7 +6049,7 @@ def _resolve_task_provider_model(
             cfg_api_key = None
     # One shared alias table with resolve_runtime_provider(): ``provider: openai`` routes the same
     # way here (compression/vision/title) and on the runtime path (background review, curator, MoA).
-    from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+    from hermes_agent.hermes_cli.runtime_provider_custom import expand_direct_api_alias
     if provider:
         provider, base_url = expand_direct_api_alias(provider, base_url)
     if cfg_provider:
@@ -6217,7 +6217,7 @@ def _with_custom_endpoint_extra_body(
         return extra_body
     try:
         from hermes_agent.agent.agent_init import _custom_provider_extra_body_for_agent
-        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config_readonly
         inherited = _custom_provider_extra_body_for_agent(
             provider=provider or "", model=model or "", base_url=str(base_url),
             custom_providers=get_compatible_custom_providers(load_config_readonly()),
@@ -6378,7 +6378,7 @@ def _nous_on_messages_wire(provider_norm: str, model: str) -> bool:
     """True when a Nous Portal route serves ``model`` over /v1/messages (dual-wire catalog)."""
     if provider_norm not in _NOUS_PROVIDER_NAMES:
         return False
-    from hermes_cli.providers import nous_api_mode
+    from hermes_agent.hermes_cli.providers import nous_api_mode
     return nous_api_mode(model) == "anthropic_messages"
 
 
@@ -6456,7 +6456,7 @@ def _routes_to_custom_endpoint(provider_norm: str) -> bool:
     name = _normalize_aux_provider(provider_norm)
     if name == "custom":
         return True
-    from hermes_cli.runtime_provider import _get_named_custom_provider
+    from hermes_agent.hermes_cli.runtime_provider import _get_named_custom_provider
     return _get_named_custom_provider(name) is not None
 
 
@@ -6857,7 +6857,7 @@ def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     if base_url_host_matches(_url, "copilot.tencent.com") or _is_managed_local_endpoint(_url):
         return True
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         markers = (load_config() or {}).get("auxiliary", {}).get("stream_only_base_urls") or []
         if isinstance(markers, (list, tuple)):
             return any(

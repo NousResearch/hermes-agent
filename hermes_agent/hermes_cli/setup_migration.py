@@ -15,15 +15,15 @@ def _model_section_has_credentials(config: dict) -> bool:
     """True when any known inference provider has usable credentials: ``active_provider`` in the
     auth store (OAuth providers), ``PROVIDER_REGISTRY`` ``api_key_env_vars``, or the legacy
     OpenRouter aggregator env vars (``OPENAI_API_KEY`` / ``OPENROUTER_API_KEY``)."""
-    from hermes_cli.setup import get_env_value
+    from hermes_agent.hermes_cli.setup import get_env_value
     try:
-        from hermes_cli.auth import get_active_provider
+        from hermes_agent.hermes_cli.auth import get_active_provider
         if get_active_provider():
             return True
     except Exception:
         pass
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
     except Exception:
         PROVIDER_REGISTRY = {}  # type: ignore[assignment]
 
@@ -66,12 +66,12 @@ def _model_summary(config: dict) -> Optional[str]:
 
 
 def _cfg_summary(config: dict, section: str, key: str, default, prefix: str) -> str:
-    from hermes_cli.setup import cfg_get
+    from hermes_agent.hermes_cli.setup import cfg_get
     return f"{prefix}{cfg_get(config, section, key, default=default)}"
 
 
 def _gateway_summary(config: dict) -> Optional[str]:
-    from hermes_cli.gateway import _all_platforms, _platform_status
+    from hermes_agent.hermes_cli.gateway import _all_platforms, _platform_status
     # Any non-empty status other than "not configured" counts — WhatsApp ("enabled, not paired"),
     # Matrix ("configured + E2EE") mean setup already started.
     configured = [
@@ -91,7 +91,7 @@ _TOOL_ENV_LABELS = (
 
 
 def _tools_summary(config: dict) -> Optional[str]:
-    from hermes_cli.setup import get_env_value
+    from hermes_agent.hermes_cli.setup import get_env_value
     tools = [label for env_var, label in _TOOL_ENV_LABELS if get_env_value(env_var)]
     return ", ".join(tools) if tools else None
 
@@ -107,7 +107,7 @@ _SECTION_SUMMARIES = {
 
 def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
     """Short summary if a setup section is already configured (post-import skip detection), else
-    None. ``get_env_value`` is reached through hermes_cli.setup so test patches
+    None. ``get_env_value`` is reached through hermes_agent.hermes_cli.setup so test patches
     on ``setup_mod.get_env_value`` apply."""
     summarize = _SECTION_SUMMARIES.get(section_key)
     return summarize(config) if summarize else None
@@ -115,7 +115,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
 
 def _skip_configured_section(config: dict, section_key: str, label: str) -> bool:
     """Show an already-configured section summary and offer to skip; True when the user skips."""
-    from hermes_cli.setup import print_success, prompt_yes_no
+    from hermes_agent.hermes_cli.setup import print_success, prompt_yes_no
     summary = _get_section_config_summary(config, section_key)
     if not summary:
         return False

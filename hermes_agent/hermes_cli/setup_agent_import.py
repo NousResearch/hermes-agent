@@ -5,7 +5,7 @@ Detection is a few ``is_dir`` checks and needs nothing installed. Importing live
 ``agent-importers`` catalog plugin (``hermes import-agent <source>``): only after the user says yes
 does this step install it through the normal catalog install and run its import in a child process,
 which owns the preview, the confirmation and what gets imported. Setup helpers are imported lazily
-from hermes_cli.setup so test patches there apply.
+from hermes_agent.hermes_cli.setup so test patches there apply.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def offer_agent_import(hermes_home: Path, from_setup: bool = True) -> str:
     install the plugin if it is missing and run its import for each pick. Returns the labels whose
     import changed this home's config.yaml or .env (``""`` when none did). Asks nothing, and so never
     installs anything, when nothing is found or no one can answer the prompts."""
-    from hermes_cli.setup import _info, is_noninteractive, print_header, print_info, prompt_yes_no
+    from hermes_agent.hermes_cli.setup import _info, is_noninteractive, print_header, print_info, prompt_yes_no
     found = [] if is_noninteractive() else detect_import_sources()
     if not found:
         return ""
@@ -89,7 +89,7 @@ def offer_agent_import(hermes_home: Path, from_setup: bool = True) -> str:
 
 def _pick_sources(found: list[tuple[ImportSource, Path]]) -> list[ImportSource]:
     """Only one found: that one (the question named it). Several: a checklist, all checked."""
-    from hermes_cli.setup import print_info, prompt_checklist
+    from hermes_agent.hermes_cli.setup import print_info, prompt_checklist
     if len(found) == 1:
         return [found[0][0]]
     picked = prompt_checklist("Which agents should Hermes import from?", [s.label for s, _ in found],
@@ -102,11 +102,11 @@ def _pick_sources(found: list[tuple[ImportSource, Path]]) -> list[ImportSource]:
 def _ensure_plugin(hermes_home: Path) -> bool:
     """The plugin installed and enabled in *hermes_home*: the catalog install (reviewed pin, the
     usual install checks) when it is missing, else just an enable."""
-    from hermes_cli.left_core_migration import plugin_present
-    from hermes_cli.plugins_admission import AdmissionRefused
-    from hermes_cli.plugins_cmd import cmd_enable
-    from hermes_cli.plugins_cmd_install import cmd_install
-    from hermes_cli.setup import _info, print_warning
+    from hermes_agent.hermes_cli.left_core_migration import plugin_present
+    from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_agent.hermes_cli.plugins_cmd import cmd_enable
+    from hermes_agent.hermes_cli.plugins_cmd_install import cmd_install
+    from hermes_agent.hermes_cli.setup import _info, print_warning
     present = plugin_present(PLUGIN, hermes_home)
     if not present:
         _info(None, f"Importing is done by the '{PLUGIN}' plugin from the Hermes plugin catalog. "
@@ -149,7 +149,7 @@ def _import_child(source: ImportSource, hermes_home: Path, extra_args: tuple[str
     is wired; it previews and asks before changing anything (and exits 0 on a no too). Returns its
     exit code. ``hermes migrate`` passes the user's flags as ``extra_args`` and runs it as a command
     of its own (``from_setup`` False)."""
-    from hermes_cli.setup import print_header, print_warning
+    from hermes_agent.hermes_cli.setup import print_header, print_warning
     from hermes_agent.tools.environments.local import served_profile_child_env
     print_header(f"Importing from {source.label}", gap=True)
     # A home that is not <root>/profiles/<name> is the root: without a selector the child's
@@ -159,7 +159,7 @@ def _import_child(source: ImportSource, hermes_home: Path, extra_args: tuple[str
     # OpenClaw's skipped items folded into one line).
     # source.extra_args are setup's own choices (OpenClaw's --migrate-secrets, what core's old setup
     # step did); `hermes migrate` passes only what the user typed.
-    argv = [sys.executable, "-P", "-m", "hermes_cli.main", *selector, "import-agent", source.name,
+    argv = [sys.executable, "-P", "-m", "hermes_agent.hermes_cli.main", *selector, "import-agent", source.name,
             *(source.extra_args if from_setup else ()), *extra_args, *(["--from-setup"] if from_setup else [])]
     env = served_profile_child_env(target_home=hermes_home)
     if os.environ.get("PYTHONPATH"):  # this same interpreter running Hermes: keep the source tree
@@ -180,8 +180,8 @@ def _import_child(source: ImportSource, hermes_home: Path, extra_args: tuple[str
 
 def _update_plugin(source: ImportSource) -> bool:
     """Bring the installed plugin to the catalog's current pin; False when that update failed."""
-    from hermes_cli.plugins_cmd_update import cmd_update
-    from hermes_cli.setup import _info
+    from hermes_agent.hermes_cli.plugins_cmd_update import cmd_update
+    from hermes_agent.hermes_cli.setup import _info
     _info(None, f"Your '{PLUGIN}' plugin predates the {source.label} importer. Updating it...")
     try:
         cmd_update(PLUGIN, interactive=False)
@@ -194,7 +194,7 @@ def migrate_from_agents(hermes_home: Path, source_name: str = "", extra_args: tu
     """``hermes migrate [<agent>]``: the same import as setup's step, on demand. Named: install the
     plugin when missing and run that agent's import with ``extra_args``. Bare: offer the agents found
     on this computer, as setup does."""
-    from hermes_cli.setup import is_noninteractive, print_info
+    from hermes_agent.hermes_cli.setup import is_noninteractive, print_info
     if not source_name:
         found = detect_import_sources()
         if found and not is_noninteractive():

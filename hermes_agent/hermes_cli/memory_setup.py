@@ -8,7 +8,7 @@ import shlex
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 
 _CANCELLED = -1
 
@@ -17,7 +17,7 @@ def _curses_select(
     title: str, items: list[tuple[str, str]], default: int = 0, *, cancel_returns: int | None = None
 ) -> int:
     """Interactive single-select with arrow keys."""
-    from hermes_cli.curses_ui import curses_radiolist
+    from hermes_agent.hermes_cli.curses_ui import curses_radiolist
 
     if cancel_returns is None:
         cancel_returns = default
@@ -53,7 +53,7 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 
 def memory_provider_dependency_inputs(provider_name: str) -> tuple[dict, dict]:
     """Read one candidate declaration for preparation and passive readiness."""
-    from hermes_cli.plugins_cmd import PluginOperationError, _read_manifest_for_install
+    from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError, _read_manifest_for_install
     from pm.package import InstallError
     from pm.plugin_inputs import Candidates
     from pm.workspace import _is_member_candidate
@@ -157,7 +157,7 @@ def _find_provider(providers: list, provider_name: str):
 def _catalog_install_hint(provider_name: str):
     """The install command for a catalog memory provider that resolves nowhere, else None."""
     from plugins.memory import find_provider_dir
-    from hermes_cli.memory_provider_migration import catalog_install_hint
+    from hermes_agent.hermes_cli.memory_provider_migration import catalog_install_hint
     if not provider_name or find_provider_dir(provider_name) is not None:
         return None
     return catalog_install_hint(provider_name, category="memory")
@@ -176,7 +176,7 @@ def _post_setup_hook(provider, config: dict) -> bool:
 
 def cmd_setup_provider(provider_name: str) -> None:
     """Run memory setup for a specific provider, skipping the picker."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     match = _find_provider(_get_available_providers(), provider_name)
     if not match:
@@ -257,7 +257,7 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
 
 def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     providers = _get_available_providers()
     if not providers:
@@ -322,7 +322,7 @@ def _write_env_vars(
     env_writes: dict, hermes_home: str | os.PathLike[str] | None = None) -> None:
     """Persist memory-provider env vars through the canonical ``.env`` writer.
 
-    Delegates to ``hermes_cli.config.save_env_value`` so every key flows
+    Delegates to ``hermes_agent.hermes_cli.config.save_env_value`` so every key flows
     through the same input-validation gate as every other ``.env`` writer:
     the ``_ENV_VAR_NAME_RE`` regex (no malformed identifiers), the
     ``_ENV_VAR_NAME_DENYLIST`` (no ``LD_PRELOAD`` / ``PYTHONPATH`` /
@@ -343,7 +343,7 @@ def _write_env_vars(
     so ``save_env_value`` still owns the validation, sanitization, and
     atomic-write path without mutating global ``os.environ``.
     """
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.config import save_env_value
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     token = set_hermes_home_override(hermes_home) if hermes_home is not None else None
@@ -364,7 +364,7 @@ def _mark(enabled) -> str:
 
 def cmd_status(args) -> None:
     """Show current memory provider config."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     config = load_config()
     mem_config = config.get("memory", {})
@@ -372,7 +372,7 @@ def cmd_status(args) -> None:
 
     # Memory tool enablement for the CLI platform via the canonical resolver, respecting the
     # check_fn gate when both stores are disabled.
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools
     from hermes_agent.tools.memory_tool import check_memory_requirements
     cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
     memory_tool_enabled = ("memory" in cli_tools) and check_memory_requirements()

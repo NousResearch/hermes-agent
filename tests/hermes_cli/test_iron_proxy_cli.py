@@ -1,4 +1,4 @@
-"""Unit tests for ``hermes_cli.proxy_cli`` command handlers.
+"""Unit tests for ``hermes_agent.hermes_cli.proxy_cli`` command handlers.
 
 These tests cover the user-facing CLI surface that was previously
 uncovered.  We mock the iron_proxy module's side-effect functions
@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hermes_agent.agent.proxy_sources import iron_proxy as ip
-from hermes_cli import proxy_cli
+from hermes_agent.hermes_cli import proxy_cli
 
 
 @pytest.fixture
@@ -74,7 +74,7 @@ def test_cmd_setup_from_bitwarden_refuses_on_empty_vault(hermes_home, monkeypatc
     """If BW returns {} (empty vault / scoped wrong / unreachable), fail
     loud rather than silently writing credential_source: bitwarden."""
 
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     cfg.setdefault("secrets", {})["bitwarden"] = {
@@ -110,7 +110,7 @@ def test_cmd_start_passes_bitwarden_refresh_flag_when_credential_source_is_bitwa
     refresh_secrets_from_bitwarden=True into start_proxy.  That's what
     delivers the rotation promise the docs make."""
 
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "bitwarden"
@@ -154,7 +154,7 @@ def test_cmd_disable_uses_public_status_pid_not_private_read_pid(
     check) — NOT ip._read_pid() directly (which would fire a spurious
     'still running' warning for a stale pidfile from a crashed run)."""
 
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
@@ -186,7 +186,7 @@ def test_cmd_disable_uses_public_status_pid_not_private_read_pid(
     # assertion is that no "still running" message fired with a stale
     # pidfile.  That's covered by inspecting return code + config
     # mutation only.
-    from hermes_cli.config import load_config as _lc
+    from hermes_agent.hermes_cli.config import load_config as _lc
     cfg2 = _lc()
     assert cfg2["proxy"]["enabled"] is False
 
@@ -202,7 +202,7 @@ def test_cmd_start_refuses_when_bitwarden_mode_but_disabled(hermes_home, monkeyp
     later flips to false — cmd_start must refuse, not silently start on
     host env (the silent-degrade class strict mode is meant to close)."""
 
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     cfg = load_config()
     cfg.setdefault("proxy", {})["enabled"] = True
     cfg["proxy"]["credential_source"] = "bitwarden"

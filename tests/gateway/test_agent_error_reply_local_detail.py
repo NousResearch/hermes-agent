@@ -35,7 +35,7 @@ def _committed_error(platform):
 
 
 def test_local_client_sees_the_raised_cause_and_chat_keeps_the_apology():
-    from hermes_cli.cli_chat_error_copy import chat_error_response
+    from hermes_agent.hermes_cli.cli_chat_error_copy import chat_error_response
 
     panel = chat_error_response(_committed_error(Platform.LOCAL), provider="anthropic")
     assert "Details: ImportError: The 'anthropic' package is required" in panel, panel

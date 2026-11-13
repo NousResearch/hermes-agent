@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import update_cmd_check
-from hermes_cli.source_releases import SourceTarget
-from hermes_cli.version_info import _git_version_info
+from hermes_agent.hermes_cli import update_cmd_check
+from hermes_agent.hermes_cli.source_releases import SourceTarget
+from hermes_agent.hermes_cli.version_info import _git_version_info
 
 
 def _git(cwd, *args):
@@ -37,9 +37,9 @@ def test_stable_update_fetch_brings_the_release_tag(tmp_path, monkeypatch):
 
     monkeypatch.setattr(update_cmd_check, "_uc", lambda: SimpleNamespace(
         _m=lambda: SimpleNamespace(PROJECT_ROOT=checkout), _update_run_channel=lambda _a: "stable"))
-    monkeypatch.setattr("hermes_cli.source_releases.resolve_source_target", lambda *a, **k: SourceTarget(
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_releases.resolve_source_target", lambda *a, **k: SourceTarget(
         "stable", "stable", "NousResearch/hermes-agent", commit=release, version="0.22.3"))
-    monkeypatch.setattr("hermes_cli.config.require_readable_config_before_write", lambda _p: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.require_readable_config_before_write", lambda _p: {})
     request = {"home": str(tmp_path)}
     target_ref, _sha, _is_head, _repo = update_cmd_check.select_apply_target(
         SimpleNamespace(branch=None), "main", request, git_cmd=["git"], stop=lambda: None)

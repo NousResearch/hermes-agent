@@ -7,8 +7,8 @@ import pytest
 from rich.console import Console
 
 from hermes_agent.agent.i18n import t
-from hermes_cli import anon_auth
-from hermes_cli import cli_commands_mixin as commands
+from hermes_agent.hermes_cli import anon_auth
+from hermes_agent.hermes_cli import cli_commands_mixin as commands
 
 class _Thread:
     def __init__(self, target):
@@ -128,7 +128,7 @@ def test_the_handler_never_calls_input_and_uses_the_short_timeout(monkeypatch):
     assert seen == [{"timeout_seconds": 8.0}]
 
 def test_the_command_resolves_through_the_cli_fallback():
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     assert HermesCLI._slash_handler("login") == ("_handle_login_command", True)
 
 def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
@@ -170,7 +170,7 @@ def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
     assert new_buf.getvalue() == ""
 
 def test_the_live_tui_drain_prints_through_cprint_instead_of_the_captured_console(monkeypatch):
-    import cli as cli_module
+    import hermes_agent.cli as cli_module
 
     old_buf, new_buf = StringIO(), StringIO()
     gate = threading.Event()

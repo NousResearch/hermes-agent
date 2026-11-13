@@ -22,7 +22,7 @@ def resolve_stream_max_lifetime(stale_timeout: float | None) -> float:
     cap can never cut a stream the stale detector would still be waiting on."""
     configured = 0.0
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
 
         agent_cfg = (load_config_readonly() or {}).get("agent")
         value = agent_cfg.get("stream_max_lifetime") if isinstance(agent_cfg, dict) else None

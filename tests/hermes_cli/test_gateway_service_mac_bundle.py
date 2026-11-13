@@ -54,8 +54,8 @@ def _mac_bundle(tmp_path: Path) -> tuple[Path, Path, Path]:
 @pytest.mark.platforms("macos")
 @pytest.mark.spawns_gateway_lookalike
 def test_gateway_service_runs_the_apps_own_launcher_and_writes_nothing_into_it(tmp_path, monkeypatch):
-    from hermes_cli import gateway
-    from hermes_cli.gateway_runtime_service_identity import verify_launchd_plist
+    from hermes_agent.hermes_cli import gateway
+    from hermes_agent.hermes_cli.gateway_runtime_service_identity import verify_launchd_plist
 
     app, repo, launcher = _mac_bundle(tmp_path)
     home = tmp_path / "home" / ".hermes"

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.backup import (
+from hermes_agent.hermes_cli.backup import (
     BackupInProgressError,
     _atomic_output_path,
     _backup_operation_lock,
@@ -59,7 +59,7 @@ def test_quick_snapshot_is_published_with_manifest(tmp_path, monkeypatch) -> Non
     (home / "config.yaml").write_bytes(b"model: {}\n")
     published: list[tuple[Path, Path]] = []
 
-    from hermes_cli import backup
+    from hermes_agent.hermes_cli import backup
 
     real_replace = backup.os.replace
 
@@ -134,7 +134,7 @@ def test_failed_automatic_backup_preserves_previous_archive(tmp_path, monkeypatc
     archive = tmp_path / "automatic.zip"
     archive.write_bytes(b"previous-valid-backup")
 
-    monkeypatch.setattr("hermes_cli.backup._safe_copy_db", lambda _src, _dst: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.backup._safe_copy_db", lambda _src, _dst: False)
 
     assert _write_full_zip_backup(archive, home) is None
     assert archive.read_bytes() == b"previous-valid-backup"

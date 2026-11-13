@@ -18,8 +18,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
-from hermes_cli.git_commit_graph import (
+from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_agent.hermes_cli.git_commit_graph import (
     claim_commit_graph_refresh,
     claim_maintenance_slot,
     common_git_dir,
@@ -29,11 +29,11 @@ from hermes_cli.git_commit_graph import (
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
-logger = logging.getLogger("cli")
+logger = logging.getLogger("hermes_agent.cli")
 
 
 def _cprint(text: str) -> None:
-    from cli import _cprint as _impl
+    from hermes_agent.cli import _cprint as _impl
     _impl(text)
 
 
@@ -155,7 +155,7 @@ def _maintain_pack_health(repo_root: str) -> None:
             return
         packs = len(list(pack_dir.glob("*.pack")))
         if packs >= _PACK_SPRAWL_THRESHOLD and _claim_repack_slot(git_dir):
-            from hermes_cli.gitlock import clear_stale_tmp_packs
+            from hermes_agent.hermes_cli.gitlock import clear_stale_tmp_packs
             clear_stale_tmp_packs(git_dir)
             logger.info("git pack sprawl (%d packs) — repacking in background", packs)
             _run_bounded_repack(repo_root)
@@ -178,8 +178,8 @@ def _resolve_worktree_base(repo_root: str, fetch_timeout: float = 5,
     *freshness_window* s, capped at *fetch_timeout*, and never retried: on failure the cached
     remote-tracking ref is used (the pre-push stale-base gate backstops genuine staleness).
     """
-    from hermes_cli._subprocess_compat import noninteractive_git_env
-    from hermes_cli.update_cmd_check import tracking_refspec
+    from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
+    from hermes_agent.hermes_cli.update_cmd_check import tracking_refspec
 
     def _run(args, timeout: float = 20):
         return _git(args, repo_root, timeout=timeout, stdin=subprocess.DEVNULL, env=noninteractive_git_env())
@@ -339,7 +339,7 @@ def _worktree_add(repo_root: str, wt_path: Path, branch_name: str, base_ref: str
 
     Every failed attempt is swept with ``_cleanup_failed_worktree_add`` so the retry is not poisoned.
     """
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from hermes_agent.hermes_cli._subprocess_compat import noninteractive_repo_git_env
 
     # The checkout runs repo-named smudge filters too; refuse when they cannot be neutralized.
     env = noninteractive_repo_git_env(repo_root)
@@ -427,10 +427,10 @@ def _setup_worktree(repo_root: str | None = None, sync_base: bool = True,
     except Exception as e:
         logger.debug("git worktree lock failed (non-fatal): %s", e)
 
-    from hermes_cli.worktree_registry import record_worktree_repo
+    from hermes_agent.hermes_cli.worktree_registry import record_worktree_repo
     record_worktree_repo(repo_root)
     if retain_db is not None:  # a -w tree: a resume may recreate it once quit removed it (N8)
-        from hermes_cli.tui_worktree_resume import record_tui_worktree
+        from hermes_agent.hermes_cli.tui_worktree_resume import record_tui_worktree
         record_tui_worktree({"path": str(wt_path), "branch": branch_name, "repo_root": repo_root})
     _cprint(f"\033[32m✓ Worktree created:\033[0m {wt_path}")
     print(f"  Branch: {branch_name}")
@@ -526,7 +526,7 @@ def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool
     skip-worktree / assume-unchanged files whose bytes differ from the index count as changes
     (``git status`` trusts both flags).
     """
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from hermes_agent.hermes_cli._subprocess_compat import noninteractive_repo_git_env
     try:
         # Reclaimers run this unattended; status reads the index (core.fsmonitor, clean filters).
         env = noninteractive_repo_git_env(worktree_path)
@@ -538,7 +538,7 @@ def _worktree_is_dirty(worktree_path: str, repo_root, timeout: int = 10) -> bool
             return True
         entries = [e for e in result.stdout.split("\0") if e]
         if not entries:
-            from hermes_cli.worktree_retention import hidden_index_edits
+            from hermes_agent.hermes_cli.worktree_retention import hidden_index_edits
             return bool(hidden_index_edits(worktree_path))
         if any(not e.startswith("?? ") for e in entries):
             return True
@@ -589,7 +589,7 @@ def _deepen_shallow_repo(repo_root: str, timeout: int = 600) -> bool:
             # The filtered attempt makes the clone partial (git writes the config before fetching,
             # so even when it fails); its old packs need the marker or git 2.53+ crashes every
             # later fetch (#124272). Markers are inert in a clone without a promisor remote.
-            from hermes_cli.gitlock import mark_unmarked_packs_promisor
+            from hermes_agent.hermes_cli.gitlock import mark_unmarked_packs_promisor
             mark_unmarked_packs_promisor(Path(repo_root))
     except Exception as e:
         logger.debug("Deepening shallow repo failed (non-fatal): %s", e)
@@ -797,7 +797,7 @@ def _inside_tree(worktree_path: str):
 
 
 # The gateway's own records that it will still act in a session after its last viewer quits:
-# an active /loop, /heartbeat or /goal (its continuation) row (``hermes_cli.loops`` / ``heartbeat`` /
+# an active /loop, /heartbeat or /goal (its continuation) row (``hermes_agent.hermes_cli.loops`` / ``heartbeat`` /
 # ``goals``, keyed by the stored session id, status ``active`` when the field is absent), and a row
 # no viewer close ended: Ink's exit detaches with ``tui_shutdown`` and the owner ends the idle row
 # only once no other viewer holds it (``hermes_agent/gateway/session_viewer_close.py``).
@@ -817,7 +817,7 @@ def _tree_still_served(db_path: str, worktree_path: str) -> Optional[str]:
     import sqlite3
     from urllib.parse import quote
 
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
     path = Path(db_path)
     chats: set = set()
@@ -871,7 +871,7 @@ def _retained_tree_is_live(db_path: str, worktree_path: str, *, pending_only: bo
     import sqlite3
     from urllib.parse import quote
 
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
     path = Path(db_path)
     if not path.is_file():
@@ -1081,7 +1081,7 @@ def removal_blocked(path: str) -> Optional[tuple[str, str]]:
     """``(keep-action, reason)`` when deleting the clean tree at *path* would lose something no
     branch holds (``worktree_retention.removal_blocker``: a checked-out submodule, an embedded
     repository, a per-worktree ref); unverifiable counts as blocked."""
-    from hermes_cli.worktree_retention import removal_blocker
+    from hermes_agent.hermes_cli.worktree_retention import removal_blocker
     return removal_blocker(path)
 
 
@@ -1106,7 +1106,7 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
         if blocked:
             preserved_stale.append(f"{entry.name} ({blocked[1]})")
             continue
-        from hermes_cli.worktree_sweep import pinned_now
+        from hermes_agent.hermes_cli.worktree_sweep import pinned_now
         if pinned := pinned_now(str(entry)):  # a continue pinned it after the plan was made
             logger.info("Keeping worktree %s: %s", entry.name, pinned)
             continue
@@ -1177,7 +1177,7 @@ def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
     if _repo_is_shallow(repo_root):
         _deepen_shallow_repo(repo_root)
 
-    from hermes_cli import worktree_sweep
+    from hermes_agent.hermes_cli import worktree_sweep
     settings = worktree_sweep.sweep_settings()
     if not worktree_sweep.classic_mode(settings):
         worktree_sweep.run_sweep(repo_root, max_age_hours, settings)
@@ -1205,7 +1205,7 @@ def _prune_stale_worktree_trees(repo_root: str, max_age_hours: int) -> None:
 def _warn_worktree_footprint(repo_root: str) -> None:
     """The startup pass can leave trees it may not reclaim; say so once per launch."""
     try:
-        from hermes_cli.worktree_gc import worktrees_summary
+        from hermes_agent.hermes_cli.worktree_gc import worktrees_summary
 
         count, size_mb = worktrees_summary(repo_root, size_below_count=10)
         if count >= 10 or (size_mb or 0) >= 5120:

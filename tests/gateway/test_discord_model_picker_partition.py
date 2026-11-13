@@ -158,7 +158,7 @@ def test_small_provider_single_select_unchanged():
 
 
 def test_a_large_row_carries_its_tag_as_the_option_description():
-    """Usage-window plans: ``model_labels`` (hermes_cli/model_switch_providers.py) becomes the option's
+    """Usage-window plans: ``model_labels`` (hermes_agent/hermes_cli/model_switch_providers.py) becomes the option's
     second line (Large / Free only); every other row and every other account has no description."""
     view = ModelPickerView(
         providers=[{

@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli import web_server
-import hermes_cli.web_server_chat as _web_server_chat
+from hermes_agent.hermes_cli import web_server
+import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
 
 
 # ---------------------------------------------------------------------------

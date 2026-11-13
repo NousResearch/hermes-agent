@@ -11,8 +11,8 @@ import pytest
 @pytest.mark.parametrize("returncode", [0, 1, None])
 def test_pairing_exit_controls_enablement_and_forwards_browser(tmp_path, monkeypatch, capsys, returncode):
     from hermes_agent.gateway.platforms import whatsapp_common
-    from hermes_cli import config, main, main_platform_setup as setup
-    from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
+    from hermes_agent.hermes_cli import config, main, main_platform_setup as setup
+    from hermes_agent.hermes_cli.subcommands.whatsapp import build_whatsapp_parser
     import hermes_constants
 
     parser = argparse.ArgumentParser()

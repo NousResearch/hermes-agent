@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.image_provenance import read_image_provenance
-from hermes_cli.update_contract import (
+from hermes_agent.hermes_cli.image_provenance import read_image_provenance
+from hermes_agent.hermes_cli.update_contract import (
     UpdateRefusal,
     evaluate_update_admission,
     record_refusal_receipt,
@@ -90,11 +90,11 @@ def test_reader_rejects_symlink_marker(tmp_path):
 def test_admission_marker_refuses_even_on_git_checkout(tmp_path, monkeypatch):
     """The bind-mounted-checkout case: heuristics say git, marker says image
     — the marker wins."""
-    import hermes_cli.image_provenance as ip
+    import hermes_agent.hermes_cli.image_provenance as ip
 
     monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", _valid_marker(tmp_path))
     monkeypatch.setattr(
-        "hermes_cli.config.detect_install_method", lambda *a, **k: "git"
+        "hermes_agent.hermes_cli.config.detect_install_method", lambda *a, **k: "git"
     )
     refusal = evaluate_update_admission(tmp_path)
     assert refusal is not None
@@ -103,7 +103,7 @@ def test_admission_marker_refuses_even_on_git_checkout(tmp_path, monkeypatch):
 
 
 def test_admission_invalid_marker_fails_closed(tmp_path, monkeypatch):
-    import hermes_cli.image_provenance as ip
+    import hermes_agent.hermes_cli.image_provenance as ip
 
     bad = tmp_path / "image-provenance.json"
     bad.write_text("corrupted {{{")
@@ -115,34 +115,34 @@ def test_admission_invalid_marker_fails_closed(tmp_path, monkeypatch):
 
 
 def test_admission_no_marker_falls_back_to_heuristics(tmp_path, monkeypatch):
-    import hermes_cli.image_provenance as ip
+    import hermes_agent.hermes_cli.image_provenance as ip
 
     monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
     monkeypatch.setattr(
-        "hermes_cli.config.detect_install_method", lambda *a, **k: "docker"
+        "hermes_agent.hermes_cli.config.detect_install_method", lambda *a, **k: "docker"
     )
     refusal = evaluate_update_admission(tmp_path)
     assert refusal is not None and refusal.code == "docker"
 
 
 def test_admission_git_checkout_no_marker_is_admitted(tmp_path, monkeypatch):
-    import hermes_cli.image_provenance as ip
+    import hermes_agent.hermes_cli.image_provenance as ip
 
     monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
     monkeypatch.setattr(
-        "hermes_cli.config.detect_install_method", lambda *a, **k: "git"
+        "hermes_agent.hermes_cli.config.detect_install_method", lambda *a, **k: "git"
     )
     assert evaluate_update_admission(tmp_path) is None
 
 
 def test_admission_nix_refuses(tmp_path, monkeypatch):
-    import hermes_cli.image_provenance as ip
+    import hermes_agent.hermes_cli.image_provenance as ip
 
     monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
     def _detect(*a, **k):
         return "nix"
 
-    monkeypatch.setattr("hermes_cli.config.detect_install_method", _detect)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.detect_install_method", _detect)
     refusal = evaluate_update_admission(tmp_path)
     assert refusal is not None and refusal.code == "nix"
 
@@ -154,7 +154,7 @@ def test_admission_nix_refuses(tmp_path, monkeypatch):
 
 def test_refusal_receipt_written_as_refused(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_cli.update_receipt as ur
+    import hermes_agent.hermes_cli.update_receipt as ur
 
     monkeypatch.setattr(ur, "_receipt_dir", lambda: tmp_path / "receipts")
 
@@ -195,7 +195,7 @@ def test_admission_source_checkout_on_termux_host_refuses_with_apt_hint(tmp_path
     """A git checkout is normally admitted, but not on a Termux host: the
     lock has no Android wheels, so a source sync would build sdists on the
     phone. The refusal must point at the APT package, never `hermes update`."""
-    import hermes_cli.image_provenance as ip
+    import hermes_agent.hermes_cli.image_provenance as ip
 
     monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
     (tmp_path / ".git").mkdir()
@@ -214,11 +214,11 @@ def test_admission_apt_termux_refuses_with_pkg_upgrade(tmp_path, monkeypatch):
     """A sealed apt-termux tree (no .git) is refused by the steward gate:
     the package manager owns the code tree, so remediation is pkg upgrade
     — never `hermes update`."""
-    import hermes_cli.image_provenance as ip
+    import hermes_agent.hermes_cli.image_provenance as ip
 
     monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
     monkeypatch.setattr(
-        "hermes_cli.config.detect_install_method", lambda *a, **k: "git"
+        "hermes_agent.hermes_cli.config.detect_install_method", lambda *a, **k: "git"
     )
     root = _sealed_tree(tmp_path, "apt-termux")
     refusal = evaluate_update_admission(root)
@@ -233,12 +233,12 @@ def test_admission_apt_termux_command_comes_from_steward_table(tmp_path, monkeyp
     ``_UPDATE_COMMAND_BY_METHOD`` table (the same one every install method
     reads) — not hardcoded inline in the steward refusal — so there is ONE
     source of truth for the update command."""
-    import hermes_cli.config as config_mod
-    import hermes_cli.image_provenance as ip
+    import hermes_agent.hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.image_provenance as ip
 
     monkeypatch.setattr(ip, "IMAGE_PROVENANCE_PATH", tmp_path / "absent.json")
     monkeypatch.setattr(
-        "hermes_cli.config.detect_install_method", lambda *a, **k: "git"
+        "hermes_agent.hermes_cli.config.detect_install_method", lambda *a, **k: "git"
     )
     # Prove the table is the source: a table edit flows into the refusal.
     monkeypatch.setitem(

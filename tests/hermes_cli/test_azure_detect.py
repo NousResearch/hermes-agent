@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.azure_detect — transport & model auto-detection."""
+"""Tests for hermes_agent.hermes_cli.azure_detect — transport & model auto-detection."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli import azure_detect
+from hermes_agent.hermes_cli import azure_detect
 
 
 # ----------------------------------------------------------------------

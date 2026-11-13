@@ -124,6 +124,13 @@ def keenable_origin_error(status: Any, body: str) -> Optional[str]:
     return origin_http_error(status, message) if _KEENABLE_ORIGIN_MESSAGE_RE.match(message) else None
 
 
+def keenable_fetch_params(url: str) -> dict[str, str]:
+    """Query for Keenable ``/v1/fetch``: Keenable answers from its indexed copy of the page unless asked
+    for ``live``, so a URL that must come from the origin (``must_fetch_live``) asks for it."""
+    from tools.web_result_cache import must_fetch_live
+    return {"url": url, "live": "true"} if must_fetch_live(url) else {"url": url}
+
+
 def with_origin_status(entry: dict[str, Any], status: Any, reason: Any = None) -> dict[str, Any]:
     """Set ``error`` on an extract entry whose target answered >= 400; the error page body
     stays in ``content`` (it can still explain the refusal)."""

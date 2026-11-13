@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from agent.ssl_verify import requests_verify
 
 from plugins.web._common import (
-    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keenable_origin_error, keyless_extract, keyless_search,
+    SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keenable_fetch_params, keenable_origin_error, keyless_extract, keyless_search,
     keyless_variant_schema, page_error, provider_env, run_extract, run_search, search_fail, search_ok, use_keyless, web_hit,
 )
 
@@ -72,7 +72,7 @@ class KeenableWebSearchProvider(BaseWebSearchProvider):
             results: list[dict[str, Any]] = []
             for url in urls:
                 try:
-                    response = requests.get(f"{_KEENABLE_API_URL}/v1/fetch", params={"url": url}, headers=_keenable_headers(api_key), timeout=30, verify=requests_verify())
+                    response = requests.get(f"{_KEENABLE_API_URL}/v1/fetch", params=keenable_fetch_params(url), headers=_keenable_headers(api_key), timeout=30, verify=requests_verify())
                     if response.status_code >= 400:
                         if origin := keenable_origin_error(response.status_code, response.text):
                             results.append(page_error(url, origin))

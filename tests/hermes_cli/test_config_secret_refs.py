@@ -144,7 +144,8 @@ def test_plugin_aux_task_keys_with_distinct_underscores_keep_distinct_credential
     from hermes_cli.config import load_config, read_raw_config
     from hermes_cli.main_provider_setup import _save_aux_choice
 
-    tasks = (("my_task", "KEY-ONE"), ("my__task", "KEY-TWO"), ("my_task_", "KEY-THREE"), ("_my_task", "KEY-FOUR"))
+    tasks = (("my_task", "KEY-ONE"), ("my__task", "KEY-TWO"), ("my_task_", "KEY-THREE"), ("_my_task", "KEY-FOUR"),
+             ("My_Task", "KEY-FIVE"))
     for n, (task, key) in enumerate(tasks):
         _save_aux_choice(task, provider="custom", model="m", base_url=f"https://h{n}.example/v1", api_key=key)
 
@@ -152,6 +153,7 @@ def test_plugin_aux_task_keys_with_distinct_underscores_keep_distinct_credential
     resolved = load_config()["auxiliary"]
     assert len({raw[task]["api_key"] for task, _ in tasks}) == len(tasks)
     assert {task: resolved[task]["api_key"] for task, _ in tasks} == dict(tasks)
+    assert raw["my_task"]["api_key"] == "${AUXILIARY_MY_TASK_API_KEY}"  # lowercase keys keep the legacy name
 
 
 def test_endpoint_names_separate_gateways_behind_one_host():
@@ -382,3 +384,55 @@ def test_clearing_an_endpoint_key_keeps_the_variable_the_main_model_reads(home, 
     upsert_custom_endpoint(CustomEndpointUpdate(**solo, api_key="KEY-SOLO"))
     upsert_custom_endpoint(CustomEndpointUpdate(**solo, api_key=""))
     assert "KEY-SOLO" not in (home / ".env").read_text(encoding="utf-8")
+
+
+def test_hermes_model_custom_flow_rotates_the_known_row_variable(home, monkeypatch):
+    """``hermes model`` for an endpoint that already has a Hermes-written row writes the new key
+    under that row's variable, so every block reading it (here an aux slot) gets the rotation."""
+    from hermes_cli import model_setup_flows_custom as flow
+    from hermes_cli.config import load_config, read_raw_config
+
+    row_env = "HERMES_PROVIDER_LAB_0000ABCD_API_KEY"
+    (home / ".env").write_text(f"{row_env}=KEY-OLD\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: x\n"
+        f"providers:\n  lab:\n    base_url: https://lab.example/v1\n    key_env: {row_env}\n"
+        "auxiliary:\n  vision:\n    provider: custom\n    base_url: https://lab.example/v1\n"
+        f"    api_key: ${{{row_env}}}\n", encoding="utf-8")
+    answers = iter(["https://lab.example/v1", "", "lab"])
+    monkeypatch.setattr(flow, "line_input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "KEY-NEW")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+    monkeypatch.setattr("hermes_cli.models.probe_api_models", lambda *a, **k: {"models": ["m"]})
+    monkeypatch.setattr("hermes_cli.main_provider_setup._prompt_custom_api_mode_selection",
+                        lambda *a, **k: None)
+
+    flow._model_flow_custom({})
+
+    assert read_raw_config()["model"]["api_key"] == f"${{{row_env}}}"
+    assert load_config()["auxiliary"]["vision"]["api_key"] == "KEY-NEW"
+
+
+def test_config_set_on_a_dotted_provider_name_stores_a_reference(home):
+    """``config set`` writes ``providers.lab.example.api_key`` into the existing
+    ``providers["lab.example"]`` block, so the credential routing must classify it the same way."""
+    from hermes_cli.config import load_config, set_config_value
+
+    (home / "config.yaml").write_text(
+        "providers:\n  lab.example:\n    base_url: https://lab.example/v1\n", encoding="utf-8")
+    set_config_value("providers.lab.example.api_key", SECRET)
+
+    _assert_secret_only_in_env(home)
+    assert load_config()["providers"]["lab.example"]["api_key"] == SECRET
+
+
+def test_config_set_on_hostless_rows_keeps_each_row_its_own_key(home):
+    """Rows without a URL yet fall back to their name, so two named rows still get two variables."""
+    from hermes_cli.config import load_config, set_config_value
+
+    (home / "config.yaml").write_text("custom_providers:\n- name: one\n- name: two\n", encoding="utf-8")
+    set_config_value("custom_providers.0.api_key", "KEY-ONE")
+    set_config_value("custom_providers.1.api_key", "KEY-TWO")
+
+    assert [row["api_key"] for row in load_config()["custom_providers"]] == ["KEY-ONE", "KEY-TWO"]
+    assert "KEY-ONE" not in _config_text(home)

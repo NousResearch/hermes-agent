@@ -10,9 +10,11 @@ Inline values a user already has keep working; nothing is migrated.
 Names follow the conventions already in the tree:
 
 - ``model.api_key`` -> ``HERMES_MODEL_API_KEY``
-- ``auxiliary.<task>.api_key`` -> ``AUXILIARY_<TASK>_API_KEY`` (the legacy aux env-var spelling)
+- ``auxiliary.<task>.api_key`` -> ``AUXILIARY_<TASK>_API_KEY`` (the legacy aux env-var spelling;
+  a task key that is not lowercase ASCII also gets ``_<HASH>``)
 - ``delegation.api_key`` -> ``HERMES_DELEGATION_API_KEY``
-- ``custom_providers[N].api_key`` / ``providers.<name>.api_key`` -> ``provider_name_key_env(name)``
+- ``providers.<name>.api_key`` -> ``provider_name_key_env(name)``
+- ``custom_providers[N].api_key`` -> ``endpoint_api_key_env(row base_url)`` (by name for a row with no URL)
 - a custom endpoint the dashboard or ``hermes model`` saves -> ``endpoint_api_key_env(base_url)``
 
 The derived names carry a hash of the exact endpoint / name: a readable slug alone folds ``-``, ``.``,
@@ -30,6 +32,7 @@ import urllib.parse
 from typing import Any, Optional
 
 _ENV_REF_ONLY_RE = re.compile(r"^\$\{[^}]+\}$")
+_PLAIN_AUX_TASK_RE = re.compile(r"[a-z0-9_]+")
 
 
 def _env_slug(text: str) -> str:
@@ -45,10 +48,15 @@ def aux_api_key_env(task: str) -> str:
     ``HERMES_DELEGATION_API_KEY``."""
     if task == "delegation":
         return "HERMES_DELEGATION_API_KEY"
-    # Plugin task keys may contain repeated underscores; the gateway bridge preserves them.
-    # Collapsing them here makes two distinct tasks load the same credential.
-    slug = re.sub(r"[^A-Z0-9_]+", "_", str(task or "").upper())
-    return f"AUXILIARY_{slug or 'TASK'}_API_KEY"
+    # Injective over task keys: ``upper()`` is one-to-one on lowercase ASCII keys (every built-in,
+    # and ``my_task`` / ``my__task`` / ``_my_task`` keep their underscores), so those keep the
+    # legacy spelling. Any other key (``My_Task``, a non-ASCII letter) would fold onto another
+    # task's variable, so its name also carries a hash of the exact key.
+    task = str(task or "")
+    slug = re.sub(r"[^A-Z0-9_]+", "_", task.upper())
+    if not _PLAIN_AUX_TASK_RE.fullmatch(task):
+        slug = f"{slug}_{_digest(task)}"
+    return f"AUXILIARY_{slug}_API_KEY"
 
 
 def _digest(text: str) -> str:
@@ -217,6 +225,29 @@ def secret_key_env_for(env_name: str, value: Any, base_url: str = "") -> str:
     return env_name if secret_ref_for(env_name, value, base_url) != value else ""
 
 
+def _literal_path(parts: list[str], user_config: dict) -> list[str]:
+    """``parts`` regrouped the way ``_set_nested`` walks them: an existing literal key containing
+    dots (``providers["lab.example"]``) is one segment, so ``providers.lab.example.api_key`` is
+    classified as the provider block it writes, not as an unknown 4-part path."""
+    from hermes_cli.config import _greedy_literal_match
+    out: list[str] = []
+    node: Any = user_config
+    i = 0
+    while i < len(parts):
+        match = _greedy_literal_match(node, parts[i:]) if isinstance(node, dict) else None
+        if match is None:  # a list index, or a key the write will create: one segment each
+            out.append(parts[i])
+            node = (node[int(parts[i])] if isinstance(node, list) and parts[i].isdigit()
+                    and int(parts[i]) < len(node) else None)
+            i += 1
+            continue
+        key, consumed = match
+        out.append(key)
+        node = node[key]
+        i += consumed
+    return out
+
+
 def _config_block(parts: list[str], user_config: dict) -> dict:
     """The mapping that holds the leaf of ``parts`` (``{}`` when the path does not exist yet)."""
     node: Any = user_config
@@ -242,6 +273,7 @@ def config_path_api_key_env(parts: list[str], user_config: dict) -> Optional[str
     None for paths it writes as given."""
     if not parts or parts[-1] != "api_key":
         return None
+    parts = _literal_path(parts, user_config)
     head = parts[:-1]
     if head == ["model"]:
         return model_api_key_env()
@@ -261,7 +293,7 @@ def config_set_secret_value(key: str, value: Any, user_config: dict) -> Any:
     for a path in :func:`config_path_api_key_env` is saved to ``.env`` (a note names the variable)
     and its ``${VAR}`` reference returned; a refused ``.env`` write exits without writing."""
     from hermes_cli.config import _exit_invalid, _split_key_path
-    parts = _split_key_path(key)
+    parts = _literal_path(_split_key_path(key), user_config)
     env_name = config_path_api_key_env(parts, user_config)
     if env_name is None:
         return value

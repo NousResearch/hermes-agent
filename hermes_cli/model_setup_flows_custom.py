@@ -162,10 +162,14 @@ def _model_flow_custom(config):
 
     # The key goes to .env and config.yaml only references it, under a name unique to the endpoint
     # (#69449, #77471). Configs written by older releases keep the ${VAR} they already reference.
+    # An endpoint that already has a Hermes-written row keeps that row's variable, so a key
+    # rotation reaches every block reading it instead of forking a second copy.
     custom_key_env = ""
     if effective_key:
-        from hermes_cli.config_secret_refs import endpoint_api_key_env, store_secret
-        custom_key_env = endpoint_api_key_env(effective_url)
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.config_secret_refs import endpoint_api_key_env, known_endpoint_key_env, store_secret
+        custom_key_env = (known_endpoint_key_env(read_raw_config(), effective_url)
+                          or endpoint_api_key_env(effective_url))
         try:
             store_secret(custom_key_env, effective_key, effective_url)
         except ValueError as exc:

@@ -1,6 +1,6 @@
 name: vivarium
 repo: https://github.com/r3adaszer0/vivarium
-sha: 81a535ed1bde8e9d8fddebe86b4aa6c197beb7e5
+sha: 2fa71bb428bbf8590002598a6672797d42b183d4
 subdir: ""
 description: A living artificial-life world inside Hermes. Real tool calls drop nutrients into a 48x48 cellular-automaton dish; creatures carry genomes, forage, reproduce, mutate and go extinct on their own; every skill the agent learns births a new species. Deterministic, mathematically grounded, private.
 maintainer: r3adaszer0

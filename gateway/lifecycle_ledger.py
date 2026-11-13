@@ -218,7 +218,7 @@ def _install_integrity_check_lease(conn: sqlite3.Connection, *, deadline_at: Opt
     caller can bound the scan.  Synchronous by design: no checker worker thread can outlive
     the check.
     """
-    from hermes_startup_watchdog import report_startup_progress
+    from hermes_agent.hermes_startup_watchdog import report_startup_progress
 
     report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
     last_renew = time.monotonic()

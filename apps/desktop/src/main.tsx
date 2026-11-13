@@ -30,6 +30,7 @@ import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router'
 
 import App from './app'
+import { DownloadTray } from './components/download-tray'
 import { RootErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
 import { RootTooltipProvider } from './components/ui/tooltip'
@@ -117,6 +118,9 @@ if (winParam === 'overlay') {
                     Disabling transitions makes navigate() commit at default priority. */}
                   <HashRouter useTransitions={false}>
                     <App />
+                    {/* Download progress lives outside the routed tree: it must
+                        survive navigation and stay put while a transfer runs. */}
+                    <DownloadTray />
                   </HashRouter>
                 </RootTooltipProvider>
               </HapticsProvider>

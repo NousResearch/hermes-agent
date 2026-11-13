@@ -3718,6 +3718,22 @@ export interface Translations extends NoticeTranslations {
 
   rightSidebar: RightSidebarTranslations
 
+  downloads: {
+    heading: (count: number) => string
+    activeHeading: (count: number) => string
+    connections: (count: number) => string
+    singleStream: string
+    completed: string
+    paused: string
+    canceled: string
+    failed: string
+    pause: string
+    resume: string
+    cancel: string
+    dismiss: string
+    showInFolder: string
+  }
+
   preview: {
     tab: string
     pin: string

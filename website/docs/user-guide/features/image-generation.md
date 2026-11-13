@@ -247,6 +247,16 @@ named endpoint's `api_key`/`key_env` → `OPENAI_API_KEY`; an explicit `base_url
 or `key_env` next to `provider` therefore overrides that part of the endpoint. A
 name that matches no `providers:` entry is logged as a warning and ignored.
 
+## MiniMax: H3-Image
+
+The **MiniMax** provider generates and edits images with `MiniMax-H3-Image`
+using `MINIMAX_API_KEY`. Select it through `hermes tools` → Image Generation → MiniMax,
+or set `image_gen.provider: minimax`. Hermes `landscape` / `square` / `portrait`
+map to H3 `aspect_ratio` `16:9` / `1:1` / `9:16` plus `area` (default `4K`).
+Optional `image_gen.minimax.area` (`1K` / `2K` / `4K`) and
+`image_gen.minimax.base_url` (CN: `https://api.minimaxi.com/v1`). Requests are
+not retried and use a 610s read timeout.
+
 ## Usage
 
 The agent-facing schema is intentionally minimal — the model picks up whatever you've configured:
@@ -289,6 +299,7 @@ Two inputs drive the edit:
 |---|---|---|---|
 | **FAL.ai** (edit-capable models below) | ✓ | up to 16 (per model) | routes to the model's `/edit` endpoint |
 | **OpenAI** (GPT Image 2 / 2.5 Flare / Sunburst) | ✓ | up to 16 | `images.edit()` |
+| **MiniMax** (`MiniMax-H3-Image`) | ✓ | up to 16 | `POST /v1/images/edits` with `images[].image_url` |
 | **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
 | **Krea** (`Krea 3`) | ✓ | up to 4 | instruction-following edit of the pictures given (`image_urls`); local files are embedded in the request, up to 3 MB in total |
 | **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`); local files are embedded in the request, up to 3 MB in total |
@@ -403,7 +414,7 @@ Debug logs go to `./logs/image_tools_debug_<session_id>.json` with per-call deta
 
 ## Limitations
 
-- **Requires credentials** for the active backend (FAL `FAL_KEY` / Nous Subscription, `OPENAI_API_KEY`, xAI OAuth, `KREA_API_KEY`)
+- **Requires credentials** for the active backend (FAL `FAL_KEY` / Nous Subscription, `OPENAI_API_KEY`, xAI OAuth, `KREA_API_KEY`, `MINIMAX_API_KEY`)
 - **Editing is model-dependent** — image-to-image works only on edit-capable models (see the table above); text-to-image-only models reject image inputs with a clear error
 - **Temporary URLs** — backends return hosted URLs that expire after hours/days; Hermes materializes them to the local cache so delivery still works after expiry
 - **Per-model constraints** — some models don't support `seed`, `num_inference_steps`, etc. The `supports` / `edit_supports` filter silently drops unsupported params; this is expected behavior

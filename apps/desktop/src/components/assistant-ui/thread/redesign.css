@@ -15,8 +15,8 @@
   --portal-conversation-turn-gap: 1.875rem;
   --portal-conversation-prompt-clearance: 0.75rem;
   --portal-conversation-fill: var(--portal-raw-ink-5);
-  /* The tool-steps row is its own, quieter fill (Var1 147:7470: light/3). */
-  --portal-conversation-tool-fill: var(--portal-raw-ink-3);
+  /* The tool-steps row takes the same fill under its dashed edge (1089:8401: light/5). */
+  --portal-conversation-tool-fill: var(--portal-raw-ink-5);
   --portal-conversation-dash: var(--portal-raw-ink-10);
   --portal-conversation-done: color-mix(in srgb, var(--portal-raw-green) 50%, transparent);
   --dt-user-bubble: var(--portal-conversation-fill);

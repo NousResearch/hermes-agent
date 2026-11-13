@@ -947,3 +947,54 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+@pytest.mark.parametrize(("stored_model", "provider", "expected"), [
+    ("@openai:gpt-4o", None, ("openai", "gpt-4o", "official_docs_snapshot")),
+    ("@openai:gpt-4o", "openai", ("openai", "gpt-4o", "official_docs_snapshot")),
+    ("@copilot:gpt-5.5", "copilot", ("copilot", "gpt-5.5", "unknown")),
+    ("@custom:wandb:glm-5.2", None, ("custom:wandb", "glm-5.2", "unknown")),
+    ("@custom:wandb:org/team/glm:rev", "custom:wandb", ("custom:wandb", "org/team/glm:rev", "unknown")),
+])
+def test_legacy_at_provider_model_metadata_resolves_without_suffix_pricing(stored_model, provider, expected):
+    """Legacy ``@provider:model`` metadata retains the exact custom model ID.
+
+    Named custom endpoints stay custom/unknown: their model names must not be
+    mapped to a vendor's rates merely because of a recognizable suffix.
+    """
+    route = resolve_billing_route(stored_model, provider=provider, base_url="https://relay.example/v1")
+
+    assert (route.provider, route.model, route.billing_mode) == expected
+
+
+def test_at_prefixed_official_model_prices_through_real_cost_consumer():
+    """The stored ``@openai:...`` shape must reach the production pricing path."""
+    legacy = estimate_usage_cost(
+        "@openai:gpt-4o", CanonicalUsage(input_tokens=100, output_tokens=50), provider="openai"
+    )
+    plain = estimate_usage_cost(
+        "gpt-4o", CanonicalUsage(input_tokens=100, output_tokens=50), provider="openai"
+    )
+
+    assert legacy.status == "estimated"
+    assert legacy.amount_usd == plain.amount_usd
+
+
+@pytest.mark.parametrize("stored_model", ["@openai:", "@custom::gpt-4o", "@custom:wandb:"])
+def test_malformed_at_provider_metadata_is_not_rewritten(stored_model):
+    """Missing providers, endpoint names or model IDs remain unknown, not re-routed."""
+    route = resolve_billing_route(stored_model)
+
+    assert route.provider == "unknown"
+    assert route.model == stored_model
+    assert route.billing_mode == "unknown"
+
+
+def test_conflicting_at_provider_metadata_keeps_the_explicit_route():
+    """An embedded provider hint never overrides a different explicit provider."""
+    stored_model = "@openai:gpt-4o"
+    route = resolve_billing_route(stored_model, provider="anthropic")
+
+    assert route.provider == "anthropic"
+    assert route.model == stored_model
+    assert get_pricing_entry(stored_model, provider="anthropic") is None

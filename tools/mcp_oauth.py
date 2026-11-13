@@ -891,6 +891,44 @@ def _callback_outcome(result: dict, cimd_url: str | None):
     return _authorization_code_result(result["auth_code"], result["state"], result.get("iss"))
 
 
+async def _close_callback_server(server: HTTPServer) -> None:
+    """``shutdown()`` then ``server_close()`` on a dedicated thread (off the shared MCP event loop), awaited
+    to the end even when cancelled: a cancel that skipped ``server_close()`` left the port bound and the
+    retry died with EADDRINUSE (#113771). A cancellation that arrives meanwhile is re-raised afterwards.
+    Not ``asyncio.to_thread``: that is a task of its own, which ``asyncio.run`` teardown cancels while it
+    still waits for an executor slot, so the listener was never closed."""
+    loop = asyncio.get_running_loop()
+    closed = loop.create_future()
+
+    def settle() -> None:
+        if not closed.done():
+            closed.set_result(None)
+
+    def close() -> None:
+        try:
+            try:
+                server.shutdown()
+            finally:
+                server.server_close()  # even when shutdown() failed: the port must be released
+        except Exception:
+            logger.debug("OAuth callback listener cleanup failed", exc_info=True)
+        finally:
+            try:  # always settle, or the waiter would wait forever
+                loop.call_soon_threadsafe(settle)
+            except RuntimeError:  # the loop already closed; nobody is waiting any more
+                pass
+
+    threading.Thread(target=close, daemon=True, name="mcp-oauth-cb-close").start()
+    cancelled: asyncio.CancelledError | None = None
+    while not closed.done():
+        try:
+            await asyncio.shield(closed)
+        except asyncio.CancelledError as exc:
+            cancelled = exc  # keep waiting: returning now would leave the port bound
+    if cancelled is not None:
+        raise cancelled
+
+
 def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float = 300.0):
     """Callback waiter bound to one flow's port. ``timeout`` is where ``oauth.timeout`` applies (mcp 2.0
     dropped the provider's own). ``cimd_url`` only tailors the timeout message: a server refusing the
@@ -942,8 +980,7 @@ def _make_callback_waiter(port: int, cimd_url: str | None = None, timeout: float
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
         finally:
-            await asyncio.to_thread(server.shutdown)  # an idle socket must not stall the shared MCP event loop
-            server.server_close()
+            await _close_callback_server(server)
         return _callback_outcome(result, cimd_url)
 
     return _wait

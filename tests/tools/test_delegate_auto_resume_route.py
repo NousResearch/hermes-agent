@@ -71,6 +71,19 @@ def test_the_stand_in_parent_keeps_the_sessions_model_override(tmp_path):
     assert resumed == [sid], _db_rows(parent)[sid][2].get("auto_note")
 
 
+def test_the_stand_in_parent_runs_on_the_sessions_own_tier_not_the_runners_last_one(tmp_path):
+    """Another conversation's /fast turn left ``runner._service_tier`` at priority; this session has none."""
+    from tools.delegate_tool_auto_resume import tick
+    _parent_agent, model, sid = _limited_child_of_session(tmp_path)
+    runner, built = _runner(), []
+    runner._service_tier = "priority"
+    factory, start = _start(runner, model, built)
+    with patch("hermes_cli.models.resolve_fast_mode_overrides", return_value={"service_tier": "priority"}), \
+            patch("run_agent.AIAgent", side_effect=factory):
+        assert tick(start, capacity=3) == [sid]
+    assert built[0].get("service_tier") is None and "service_tier" not in (built[0]["request_overrides"] or {})
+
+
 @pytest.mark.parametrize("broken", ["route", "agent"])
 def test_a_stand_in_that_cannot_be_built_retries_later_and_never_turns_auto_resume_off(tmp_path, broken):
     from tools.delegate_tool_auto_resume import tick

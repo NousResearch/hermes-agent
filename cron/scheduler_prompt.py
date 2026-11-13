@@ -267,7 +267,7 @@ def _load_cron_skill_parts(job: dict, skill_names: list[str]) -> list[str]:
     return parts
 
 
-_CRON_HINT = (
+_CRON_HINT_HEAD = (
     "[IMPORTANT: You are running as a scheduled cron job. "
     "DELIVERY: Your final response will be automatically delivered "
     "to the user — do NOT use send_message or try to deliver "
@@ -279,15 +279,52 @@ _CRON_HINT = (
     "rephrase it, whatever language the rest of your answer uses. "
     "Never combine [SILENT] with content — either report your "
     "findings normally, or say [SILENT] and nothing more. "
-    "FAILURE: If a delegated child fails and this cron run must be "
-    "recorded as failed, put [CRON_FAILURE] on the first line by itself, "
-    "then explain the child failure on following lines. "
+)
+
+# Emitted ONLY for jobs that can actually delegate — see ``_cron_hint``. Two reasons:
+# (1) a job whose toolset list excludes ``delegation`` has no ``delegate_task`` tool, so the
+#     instruction is unreachable advice; (2) a job whose SUBJECT MATTER is failing cron jobs (the
+#     daily diagnosis digest) reads "if a delegated child fails" as "declare THIS run failed" and
+#     puts [CRON_FAILURE] on the first line of a run that succeeded — which ``scheduler`` then
+#     records as a real failure (streak + last_error = the digest text). The clause is kept as its
+#     own constant so a delegation-capable job's prompt stays byte-identical.
+_CRON_FAILURE_CLAUSE = (
+    "FAILURE: ONLY if a child YOU delegated in THIS run failed and this cron "
+    "run must be recorded as failed, put [CRON_FAILURE] on the first line by "
+    "itself, then explain the child failure on following lines. "
+)
+
+_CRON_HINT_TAIL = (
     "RECURSION: This is a run of an EXISTING scheduled job — execute "
     "the task now. NEVER create or update a cron job because of "
     "recurring or future-schedule language in the task prompt below; "
     "treat phrasing like \"each Monday\" or \"every day at 9\" as "
     "context for this run, not as a request to schedule another job.]\n\n"
 )
+
+_CRON_HINT = _CRON_HINT_HEAD + _CRON_FAILURE_CLAUSE + _CRON_HINT_TAIL
+
+
+def _delegation_reachable(job: dict) -> bool:
+    """True when this job's toolsets can include ``delegate_task``.
+
+    ``enabled_toolsets`` None/absent means no per-job restriction (``cron/jobs.py`` normalizes a
+    falsy value to None), so the platform/config default applies and delegation is reachable. An
+    explicit list must name the ``delegation`` toolset.
+    """
+    toolsets = job.get("enabled_toolsets")
+    if toolsets is None:
+        return True
+    return "delegation" in toolsets
+
+
+def _cron_hint(job: dict) -> str:
+    """The cron preamble for one job: ``_CRON_HINT``, minus the FAILURE clause when the job
+    cannot delegate. Byte-identical to the old unconditional hint whenever delegation is reachable.
+    """
+    if _delegation_reachable(job):
+        return _CRON_HINT
+    return _CRON_HINT_HEAD + _CRON_HINT_TAIL
 
 
 def _run_time_line() -> str:
@@ -354,7 +391,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + _run_time_line() + prompt
+    prompt = _cron_hint(job) + _run_time_line() + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

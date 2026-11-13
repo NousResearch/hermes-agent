@@ -237,6 +237,18 @@ class TestGoogleOAuthCredentials:
         for out in _both_modes(f"token {token} end"):
             assert self.REFRESH[8:] not in out, out
 
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    @pytest.mark.parametrize("split", ["\x1b", "\u200b"])
+    def test_glued_refresh_token_split_by_control_char_is_masked(self, separator, split):
+        token = "1//0g_A-" + split + "x_B-y_C-z_D-w_E-v"
+        for out in _both_modes(f"msg='log{separator}{token}'"):
+            assert "x_B-y_C-z_D-w_E-v" not in out, out
+
+    @pytest.mark.parametrize("text", ["backup-sk-\x1blearn-model-weights-final", "scikit-\x1blearn",
+                                      "x_sk-le\u200barn_rate_schedule_v2"])
+    def test_glued_identifiers_split_by_control_char_kept(self, text):
+        _assert_unchanged(text)
+
     @pytest.mark.parametrize("text", ["see /usr/lib/\x1bfoo/bar.so", "https://example.com/a\u200b/b/c",
                                       "v1//\x1bapi/" + "a" * 24])
     def test_paths_with_control_chars_kept(self, text):

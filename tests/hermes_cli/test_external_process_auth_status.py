@@ -271,6 +271,10 @@ def _fake_external_process_plugin(monkeypatch, provider_id="fake-agy"):
         auth_mod, "get_external_process_provider_status",
         lambda pid: {"configured": True, "provider": pid, "command": "agy",
                      "resolved_command": "/usr/local/bin/agy"})
+    from hermes_cli import auth_plugin_providers as ap
+
+    profile = ProviderProfile(name=provider_id, auth_type="external_process", process_command="agy")
+    monkeypatch.setattr(ap, "plugin_profile", lambda provider: profile if provider == provider_id else None)
     return provider_id
 
 
@@ -285,8 +289,21 @@ def test_cli_command_never_swaps_cli_into_hermes_template(monkeypatch):
     rendered = _external_process_cli_command(provider_id, f"hermes auth add {provider_id}")
 
     assert rendered != f"agy auth add {provider_id}"
-    assert "agy" in rendered and provider_id in rendered
     assert "auth add" not in rendered
+
+
+def test_cli_command_for_handlerless_plugin_is_runnable(monkeypatch):
+    """The dialog shows the command with a ``$`` and a Copy button, so it must be one a shell runs:
+    the same re-login every other surface gives for these plugins, not a comment line."""
+    from agent.turn_failure_copy import oauth_relogin_command
+    from hermes_cli.web_server_oauth import _external_process_cli_command
+
+    provider_id = _fake_external_process_plugin(monkeypatch)
+
+    rendered = _external_process_cli_command(provider_id, f"hermes auth add {provider_id}")
+
+    assert not rendered.startswith("#")
+    assert rendered == oauth_relogin_command(provider_id)
 
 
 def test_cli_command_keeps_hermes_template_when_plugin_owns_auth(monkeypatch):

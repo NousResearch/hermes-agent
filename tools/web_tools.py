@@ -23,8 +23,8 @@ from tools.url_safety import async_is_safe_url
 from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
-    _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
-    _strict_selection_error, _validate_extract_urls,
+    _extract_with_fallback, _merge_in_order, _no_provider_error, _result_entry, _strict_selection_error,
+    _validate_extract_urls,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,9 +186,46 @@ def _get_search_backend() -> str:
 
 def _get_extract_backend() -> str:
     """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect.
-    A ``nous`` pin is managed Firecrawl; the client picks the gateway route for that capability."""
+    A ``nous`` pin is managed Firecrawl; the client picks the gateway route for that capability.
+
+    This is the scalar (single-backend) selection. When ``web.extract_backends`` is set, the
+    dispatcher walks :func:`_get_extract_backends` instead — this scalar is then only the legacy
+    key behind the chain."""
     pin = _configured_backend("extract_backend")
     return "firecrawl" if pin == NOUS_MANAGED_PROVIDER else pin or _get_backend()
+
+
+def _explicit_extract_chain() -> list[str]:
+    """Normalized ``web.extract_backends`` list, or ``[]`` when unset (a non-list value counts as unset).
+
+    Blank/``None`` entries are dropped and duplicates collapse to their first occurrence, so a hand-edited
+    ``[firecrawl, "", tavily, firecrawl]`` resolves to ``["firecrawl", "tavily"]`` rather than re-attempting a
+    backend that already failed. A ``nous`` entry is the managed Firecrawl route, exactly as the ``nous`` pin
+    is on the scalar key, and collapses into a neighbouring ``firecrawl`` entry. A non-empty return is the
+    signal that the user *explicitly* asked for a chain: every entry is then resolved exactly (see
+    ``web_tools_extract._extract_with_fallback``).
+    """
+    backends = _load_web_config().get("extract_backends")
+    if not isinstance(backends, list):
+        return []
+    chain: list[str] = []
+    for entry in backends:
+        name = str(entry).lower().strip() if entry is not None else ""
+        if name == NOUS_MANAGED_PROVIDER:
+            name = "firecrawl"
+        if name and name not in chain:
+            chain.append(name)
+    return chain
+
+
+def _get_extract_backends() -> list[str]:
+    """Ordered backends a ``web_extract`` call tries, first hit first.
+
+    ``web.extract_backends`` (explicit chain, honored as written — no availability probe, matching the
+    strict scalar selection: a keyless-capable or misconfigured entry surfaces its own honest result and
+    the chain moves on) > the scalar :func:`_get_extract_backend` as a one-entry chain (pre-chain path).
+    """
+    return _explicit_extract_chain() or [b for b in (_get_extract_backend(),) if b]
 
 
 def _ddgs_package_importable() -> bool:
@@ -420,12 +457,15 @@ async def web_extract_tool(urls: list[Any], format: str | None = None, char_limi
 
         results = []
         if safe_urls:
-            backend = _get_extract_backend()
+            # Discovery BEFORE the chain is resolved: a custom-plugin ``web.extract_backends`` entry only
+            # becomes a registered provider once its plugin has loaded (cold-start subprocess runs,
+            # delegate children, standalone scripts).
             _ensure_web_plugins_loaded()
-            provider, error_json = _resolve_extract_provider(backend)
+            results, error_json = await _extract_with_fallback(
+                _get_extract_backends(), safe_urls, format, explicit=bool(_explicit_extract_chain()),
+            )
             if error_json is not None:
                 return error_json
-            results = await _extract_safe_urls(provider, safe_urls, format)
         # Reconstruct input order across invalid, blocked, and provider entries (providers preserve
         # the order of the safe URL list they receive).
         if invalid_urls or ssrf_blocked:

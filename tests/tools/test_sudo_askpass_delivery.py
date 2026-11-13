@@ -649,6 +649,10 @@ def test_live_backgrounded_sudo_is_served_after_the_shell_exits(tmp_path):
 ])
 def test_live_backgrounded_sudo_in_case_or_coproc_is_served_after_the_shell_exits(live_env, body):
     env, sudo, temp_dir = live_env
+    if body.startswith("coproc"):
+        from tools.environments.local import _find_bash
+        if subprocess.run([_find_bash(), "-c", "coproc true"], capture_output=True, check=False).returncode:
+            pytest.skip("this bash has no coproc (bash 3.2)")
     out = temp_dir.parent / "out"
     rc, output = _run(env, body.format(sudo=sudo, out=out))
     assert rc == 0, output

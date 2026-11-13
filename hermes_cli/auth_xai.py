@@ -338,9 +338,11 @@ def refresh_xai_oauth_pure(
                   " upgrade your subscription at https://x.ai/grok.",
                 "xai_oauth_tier_denied", relogin=False,
             )
-        raise _xai_err(
+        error = _xai_err(
             "xAI token refresh failed." + suffix, "xai_refresh_failed", relogin=response.status_code in {400, 401},
         )
+        error.retryable = response.status_code >= 500  # the endpoint failed, not the grant
+        raise error
     payload, refreshed_access = _refresh_payload_access_token(
         response, provider="xai-oauth",
         invalid_json=("xAI token refresh returned invalid JSON: {exc}", "xai_refresh_invalid_json"),

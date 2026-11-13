@@ -115,6 +115,12 @@ class TestBuildToolPreview:
         "fill_input(**{'selector': '#p', 'text': 'Hunter2Correct!'})",
         "for pw in ['Hunter2Correct!']:\n    fill_input('#p', pw)",
         "def go(pw):\n    fill_input('#p', pw)\ngo('Hunter2Correct!')",
+        # the raw-text fallback (unparsed: extra ')') ends a literal at \r and skips comments, so the
+        # quote in "# it's" cannot swallow the typed value
+        "fill_input('#p',\r  # it's here\r  'Hunter2Correct!'))\r",
+        # a long concatenation makes the walk give up: the whole-pass fallback must hold too
+        pytest.param("# don't echo the password\rcss = " + " + ".join(f"'.c{i}{{}}'" for i in range(900))
+                     + "\rfill_input('#password', 'Hunter2Correct!')\r", id="cr-comment-quote-walk-fallback"),
     ])
     def test_browser_exec_typed_password_never_reaches_display(self, code):
         """#72298: an ordinary password typed by a browser_exec snippet matches no secret shape,

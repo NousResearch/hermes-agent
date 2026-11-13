@@ -22,6 +22,7 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
+      common: { suggestions: 'Suggestions' },
       settings: {
         appearance: {
           terminalFontDesc: 'Choose an installed font.',

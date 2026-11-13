@@ -278,20 +278,29 @@ messaging = [
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family
 cron = [] # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.30.0", "slack-sdk==3.45.0", "aiohttp==3.14.5"]
-# Matrix gateway deps. `mautrix[encryption]` pulls `python-olm`, whose
-# vendored libolm (archived 2023) cannot build on Windows or modern macOS:
-# no wheels for those targets AND the sdist fails to compile on current
-# clang/MSVC (olm/list.hh const-iterator error) and on CMake >= 4. It is
-# linux-only — gate the whole extra so `uv sync --all-extras` (the bundle
-# build) doesn't try to build python-olm on the win/darwin lanes. The
-# matrix adapter degrades gracefully without mautrix (import stubs).
+# Matrix gateway deps. Only E2EE needs `python-olm` (via `mautrix[encryption]`),
+# whose vendored libolm (archived 2023) cannot build on Windows or modern
+# macOS: no wheels for those targets AND the sdist fails to compile on current
+# clang/MSVC (olm/list.hh const-iterator error) and on CMake >= 4. So only the
+# encryption extra is linux-only, which keeps python-olm off the win/darwin
+# lanes of `uv sync --all-extras` (the bundle build). Plaintext Matrix needs
+# bare mautrix, which is pure Python — the adapter imports mautrix.crypto only
+# for E2EE — so darwin gets the plaintext set. Linux is unchanged: it still
+# pulls `mautrix[encryption]`, so existing E2EE installs keep python-olm.
+# win32 stays gated: plaintext Matrix is unverified on native Windows.
+# [matrix-e2ee] names the olm-bound part.
 matrix = [
   "mautrix[encryption]==0.21.1; sys_platform == 'linux'",
-  "aiosqlite==0.22.1; sys_platform == 'linux'",
-  "asyncpg==0.32.0; sys_platform == 'linux'",
-  "aiohttp-socks==0.12.0; sys_platform == 'linux'",
-  "aiohttp==3.14.5; sys_platform == 'linux'",
+  "mautrix==0.21.1; sys_platform == 'darwin'",
+  "aiosqlite==0.22.1; sys_platform == 'linux' or sys_platform == 'darwin'",
+  "asyncpg==0.32.0; sys_platform == 'linux' or sys_platform == 'darwin'",
+  "aiohttp-socks==0.12.0; sys_platform == 'linux' or sys_platform == 'darwin'",
+  "aiohttp==3.14.5; sys_platform == 'linux' or sys_platform == 'darwin'",
 ] # aiohttp 3.14.5: prior CVEs + GHSA-9xw5-w5jj-pvcg/GHSA-2g87-pp6c-29x5/GHSA-5wr8-gcqf-gqf3 family (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+# Matrix E2EE alone: the olm-bound part of [matrix]. Linux's [matrix] already
+# pulls it; setup asks this extra's gate before offering E2EE, the way
+# [stt-whisper] names faster-whisper inside [voice].
+matrix-e2ee = ["mautrix[encryption]==0.21.1; sys_platform == 'linux'"]
 
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
@@ -624,8 +633,11 @@ update-startup-files = [
 # single-authority for WHICH extra is supported WHERE.
 
 [tool.hermes.extras-platforms]
+# Plaintext Matrix: linux + darwin. win32 stays off: plaintext Matrix is
+# unverified on native Windows.
+matrix = "sys_platform == 'linux' or sys_platform == 'darwin'"
 # mautrix[encryption] → python-olm: linux-only wheels, no win/darwin build.
-matrix = "sys_platform == 'linux'"
+matrix-e2ee = "sys_platform == 'linux'"
 # grpcio (via google-cloud-pubsub) has no win_arm64 wheel.
 google-chat = "platform_machine != 'ARM64' or sys_platform != 'win32'"
 # Match the engine dependency markers so PM refuses an unsupported install.

@@ -7,13 +7,16 @@ The interactive_setup wizard lazy-imports its CLI helpers from
 the wizard runs without provisioning dependencies. Covers the home-channel
 clear-on-blank behavior added in the follow-up to PR #58421.
 """
+import pytest
+
 import hermes_cli.config as config_mod
 import hermes_cli.cli_output as cli_output_mod
 import pm as pm_mod
+import pm.extras as extras_mod
 from plugins.platforms.matrix.adapter import interactive_setup
 
 
-def _patch_setup_io(monkeypatch, prompts, yes_no_responses, saved, removed, existing):
+def _patch_setup_io(monkeypatch, prompts, yes_no_responses, saved, removed, existing, synced=None):
     prompt_iter = iter(prompts)
     yes_no_iter = iter(yes_no_responses)
     monkeypatch.setattr(config_mod, "get_env_value", lambda key: existing.get(key, ""))
@@ -30,8 +33,13 @@ def _patch_setup_io(monkeypatch, prompts, yes_no_responses, saved, removed, exis
     )
     for name in ("print_header", "print_info", "print_success", "print_warning"):
         monkeypatch.setattr(cli_output_mod, name, lambda *_a, **_kw: None)
+
     # Setup explicitly syncs dependencies; lazy-import patches do not intercept it.
-    monkeypatch.setattr(pm_mod, "sync_venv", lambda *a, **kw: None)
+    def _sync(extras=None, **kw):
+        if synced is not None:
+            synced.append((list(extras or []), kw))
+
+    monkeypatch.setattr(pm_mod, "sync_venv", _sync)
 
 
 # Matrix prompts (after the E2EE yes_no): allowed_users, home_channel.
@@ -80,3 +88,42 @@ class TestMatrixHomeChannelClear:
         assert "MATRIX_HOME_ROOM" not in saved
 
 
+_E2EE_KEYS = ("MATRIX_ENCRYPTION", "MATRIX_E2EE_MODE")
+_OLM_GATED_OFF = "sys_platform == 'never'"
+
+
+@pytest.mark.parametrize(("e2ee_gate", "existing", "answers", "mode"), [
+    # python-olm installs: E2EE is offered, and a yes on a fresh setup turns it on.
+    (None, {}, [True], "required"),
+    # The saved mode is the default, and a no turns E2EE off instead of leaving it required.
+    (None, {"MATRIX_ENCRYPTION": "true"}, [False], "off"),
+    # A yes also beats an explicit MATRIX_E2EE_MODE=off, which outranks MATRIX_ENCRYPTION.
+    (None, {"MATRIX_E2EE_MODE": "off"}, [True], "required"),
+    # python-olm can't install: never offered, even though olm imports in this venv (hand-installed).
+    (_OLM_GATED_OFF, {}, [], "off"),
+    # A required mode saved before this gate existed (the #62401 state) is offered for removal.
+    (_OLM_GATED_OFF, {"MATRIX_ENCRYPTION": "true"}, [True], "off"),
+])
+def test_e2ee_setup_follows_the_python_olm_gate(monkeypatch, tmp_path, e2ee_gate, existing, answers, mode):
+    """#62401: a yes on macOS stored MATRIX_ENCRYPTION=true, then the adapter refused to start because
+    E2EE was required and python-olm cannot install there. The wizard asks pm's ``matrix-e2ee`` gate,
+    not the running venv, and the mode the adapter resolves from the .env it leaves behind is the one
+    its answers chose, whatever was saved before. It prepares the plaintext deps either way."""
+    from plugins.platforms.matrix.adapter import _resolve_e2ee_mode
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(extras_mod, "_PLATFORM_GATES", {"matrix-e2ee": e2ee_gate} if e2ee_gate else {})
+    monkeypatch.setattr(extras_mod, "_importable", lambda _anchor: True)
+    env, saved, synced = dict(existing), {}, []
+    answers = iter(answers)
+    _patch_setup_io(monkeypatch, _PROMPTS_BLANK, answers, saved, [], existing=env, synced=synced)
+    interactive_setup()
+    assert list(answers) == []  # every yes/no the case expects was asked, and no other
+    env.update(saved)  # the .env the wizard leaves behind (its removals already popped from env)
+    for key in _E2EE_KEYS:
+        if key in env:
+            monkeypatch.setenv(key, env[key])
+        else:
+            monkeypatch.delenv(key, raising=False)
+    assert _resolve_e2ee_mode() == mode
+    assert synced == [(["matrix"], {"explicit": True})]

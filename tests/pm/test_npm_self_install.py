@@ -10,6 +10,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import pm.install
 import pm.packages
 from pm.registry import get_package
@@ -57,3 +59,43 @@ def test_npm_self_install_leaves_download_entry_holding_only_the_archive(tmp_pat
 
     assert [p.name for p in entry.iterdir()] == [archive.name]
     assert caches and not caches[0].is_relative_to(staged)
+
+
+# npm's globalDir, spelled out per target so a wrong expression in pm cannot
+# make this test agree with itself (lib/npm.js: `resolve(globalPrefix, 'lib',
+# 'node_modules')`, or `resolve(globalPrefix, 'node_modules')` on win32).
+NPM_GLOBAL_ROOT = {
+    "win32-x64": "node_modules",
+    "linux-x64": "lib/node_modules",
+    "darwin-arm64": "lib/node_modules",
+}
+
+
+@pytest.mark.parametrize("target", sorted(NPM_GLOBAL_ROOT))
+def test_npm_self_install_precreates_the_global_root(tmp_path, monkeypatch, target):
+    """npm >= 11.19 realpaths the global root while building the ideal tree and
+    exits 254 (`ENOENT lstat <prefix>/lib`) when the --prefix tree is bare."""
+    store = Store(tmp_path / "store")
+    _fake_node(store, target)
+    monkeypatch.setattr(pm.install, "_lockfile", lambda: None)
+    monkeypatch.setattr(pm.install, "_installed_location",
+                        lambda package, lockfile, target: ({"node": {"entry": "node-1"}}, store))
+
+    roots_when_npm_ran: list[bool] = []
+
+    def fake_npm(cmd, **kwargs):
+        prefix = Path(cmd[cmd.index("--prefix") + 1])
+        roots_when_npm_ran.append((prefix / NPM_GLOBAL_ROOT[target]).is_dir())
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(pm.packages.subprocess, "run", fake_npm)
+
+    entry = store.entry("fetch-" + "b" * 64)
+    entry.mkdir(parents=True)
+    archive = entry / "npm-1.0.0.tgz"
+    archive.write_bytes(b"archive")
+    staged = tmp_path / "scratch" / "tree"
+
+    get_package("npm").unpack(archive, staged, target)
+
+    assert roots_when_npm_ran == [True]

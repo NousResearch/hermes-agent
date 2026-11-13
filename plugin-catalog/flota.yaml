@@ -3,22 +3,7 @@ title: Flota
 repo: https://github.com/Bto-03/hermes-flota
 sha: bd99f3270489790b1d25c79809e6994184a8f128
 version: "0.2.2"
-description: >-
-  Run delegate_task subagents on your own machines over SSH (delegation.backend: flota). Flota
-  wakes the chosen machine (Wake-on-LAN, a relay host on its LAN, any command, or the machine's
-  own wake timer), falls back to another machine if it does not come up, and suspends it after
-  its last subagent, never a busy one (the model cannot force it). The agent tool checks and
-  wakes machines; asking it to suspend or power one off is opt-in and every such call goes
-  through Hermes' approval prompt. `hermes flota setup user@host` detects OS, MAC, broadcast and
-  how the machine can sleep; `doctor` prints fixes; `uninstall` undoes it; fleet pairing with
-  two codes (public keys only); a fleet map page for Hermes Desktop and the web dashboard.
-  Python standard library only. Disclosure: runs ssh to the machines you configure and your own
-  wake/sleep commands, sends Wake-on-LAN packets on your LAN, can run `sudo -n` for one fixed
-  wake-alarm command only if you allow it, creates an SSH key pair without a passphrase when you
-  have none (flota_ed25519), adds that public key to a ship's authorized_keys at pairing as an
-  ordinary login line without command= or restrict options, writes terminal.ssh_sync_files:
-  false into the Hermes profiles it creates, and keeps auto-sleep timers in the gateway
-  process; no third-party network calls, no telemetry, no stored credentials.
+description: "Run delegate_task subagents on your own machines over SSH (delegation.backend: flota). Flota wakes the chosen machine (Wake-on-LAN, a relay host on its LAN, any command, or the machine's own wake timer), falls back to another machine if it does not come up, and suspends it after its last subagent, never a busy one (the model cannot force it). The agent tool checks and wakes machines; asking it to suspend or power one off is opt-in and every such call goes through Hermes' approval prompt. `hermes flota setup user@host` detects OS, MAC, broadcast and how the machine can sleep; `doctor` prints fixes; `uninstall` undoes it; fleet pairing with two codes (public keys only); a fleet map page for Hermes Desktop and the web dashboard. Python standard library only. Disclosure — runs ssh to the machines you configure and your own wake/sleep commands, sends Wake-on-LAN packets on your LAN, can run `sudo -n` for one fixed wake-alarm command only if you allow it, creates an SSH key pair without a passphrase (`~/.ssh/flota_ed25519`) when you have none and adds that public key to a ship's `authorized_keys` at pairing as an ordinary login line with no `command=` or `restrict` options, creates `flota-<machine>` Hermes profiles with `terminal.ssh_sync_files: false`, lets the agent suspend or power off a machine only if you turn on `agent_power_actions` and approve each call, and keeps auto-sleep timers in the gateway process; no third-party network calls, no telemetry."
 maintainer: Francisco Bastidas
 tier: community
 category: automation

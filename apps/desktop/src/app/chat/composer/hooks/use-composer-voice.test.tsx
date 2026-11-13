@@ -135,7 +135,6 @@ describe('useComposerVoice voice submission', () => {
           disabled: false,
           focusInput: vi.fn(),
           insertText: vi.fn(),
-          maxRecordingSeconds: 60,
           onSubmit: mocks.onSubmit,
           onTranscribeAudio: vi.fn(async () => ''),
           sessionId: 'session-1',

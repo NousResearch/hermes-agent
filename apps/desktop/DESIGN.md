@@ -545,7 +545,9 @@ a new chat and a page body `--portal-surface-stage-veil`, a conversation the str
 Every painter repeats the art on its own box (`--artwork-paint`, `background-attachment: fixed`)
 so nested surfaces never compound a veil; covers that cannot (`--portal-surface-stage`,
 `--portal-page-background`) take the veil flattened onto the ground. With a sidebar or page nav
-docked (wide), the figure artworks move right by Figma's own amount to stay on the stage. Figma's
+docked (wide), the figure artworks move right by Figma's own amount to stay on the stage; every
+image carries bleed past every placement (Ascend repeats across), so no window size ever reaches an
+image edge. Figma's
 "01 · Artwork" screens are the canvas layer on its own, not an app state; it shows no setting to
 turn the art off or choose one.
 

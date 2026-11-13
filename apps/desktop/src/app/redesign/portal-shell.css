@@ -37,14 +37,6 @@
   background-color: transparent;
 }
 
-/* Side tool panels (Files, Review) are the sidebar's kind of panel (Brand rev 491:40755's right
-   panel): the same translucent fill, so the artwork reads through them as through the sidebar. */
-:root[data-shell='portal']
-  [data-tree-group][data-window-top]:is([data-zone-pane='files'], [data-zone-pane='review'])
-  > [data-panel-header]::before {
-  background-color: var(--portal-sidebar-panel-background);
-}
-
 /* The outer edge of the row needs no hairline: the rail's canvas is the edge. */
 :root[data-shell='portal']
   [data-tree-group][data-window-top][data-window-start]:not([data-zone-page])
@@ -123,6 +115,12 @@
     border-radius: var(--portal-panel-radius);
     box-shadow: var(--portal-shadow-workspace);
   }
+}
+
+/* A workspace page's own shell repaints the page background; on the frame the panel's veiled art
+   is that background. */
+:root[data-shell='portal'] [data-tree-group][data-zone-page] :is([data-page-surface], .page-search-body) {
+  background-color: transparent;
 }
 
 /* ── Chrome buttons ───────────────────────────────────────────────────────────────────────── */

@@ -18,6 +18,9 @@ from typing import Any, Callable, Optional
 Resolve = Callable[[str], Optional[dict]]
 # "does this directory still exist?"; always-True default keeps remote-host projects visible.
 Exists = Callable[[str], bool]
+# Physical spelling of a local path (symlinks resolved). It feeds IDENTITY comparisons only and
+# is never emitted: ids and display paths are always a spelling that arrived on a row.
+Canonical = Callable[[str], str]
 
 # Only KANBAN-TASK worktrees (`<repo>/.worktrees/t_<hex>`, the id kanban_db mints)
 # collapse into one lane; user-named dirs under `.worktrees/` stay their own lanes.
@@ -62,7 +65,7 @@ def _is_windows_path(path: str) -> bool:
     return bool(re.match(r"^[A-Za-z]:[/\\]", value)) or value.startswith(("\\", "//"))
 
 
-def _comparison_segments(path: str) -> list[str]:
+def _comparison_segments(path: str, canonical: Optional[Canonical] = None) -> list[str]:
     """Path segments suitable for identity comparisons on any host.
 
     Windows paths remain case-insensitive even when tests or remote backends run
@@ -73,23 +76,68 @@ def _comparison_segments(path: str) -> list[str]:
     HFS+/APFS round-trips), and ``casefold()`` does not unify the two forms —
     an accented project folder would otherwise render empty (#65014). Mirrors
     ``comparisonSegments`` in the desktop's ``workspace-groups.ts``.
+
+    ``canonical`` first maps the path to its physical spelling, so a folder reached
+    through a symlinked parent (a renamed home that left a compatibility link) is
+    one identity when no git probe unifies the two spellings. The renderer cannot
+    stat, so this step has no mirror there: its live overlay leaves a row it cannot
+    match by spelling where this builder placed it. Case-insensitivity follows the
+    spelling that arrived, so resolving never case-folds a POSIX path.
     """
+    windows = _is_windows_path(path)
+    if canonical and path:
+        path = canonical(path)
     segs = [unicodedata.normalize("NFC", segment) for segment in _segments(path)]
-    return [segment.casefold() for segment in segs] if _is_windows_path(path) else segs
+    return [segment.casefold() for segment in segs] if windows else segs
 
 
-def _path_key(path: str) -> str:
+def _path_key(path: str, canonical: Optional[Canonical] = None) -> str:
     """Canonical comparison key (separator/trailing-slash agnostic)."""
-    return "/".join(_comparison_segments(path))
+    return "/".join(_comparison_segments(path, canonical))
 
 
-def _lane_key(path_or_lane: str) -> str:
-    """Canonicalize only the path portion of a lane id (branch labels stay byte-preserved)."""
+def _split_lane(path_or_lane: str) -> tuple[str, str]:
+    """``(path, tail)`` of a lane id; the tail is its ``::branch::<label>`` / ``::kanban`` part."""
     marker = next((m for m in ("::branch::", "::kanban") if m in path_or_lane), None)
     if marker is None:
-        return _path_key(path_or_lane)
+        return path_or_lane, ""
     root, suffix = path_or_lane.split(marker, 1)
-    return f"{_path_key(root)}{marker}{suffix}"
+    return root, marker + suffix
+
+
+def _lane_key(path_or_lane: str, canonical: Optional[Canonical] = None) -> str:
+    """Canonicalize only the path portion of a lane id (branch labels stay byte-preserved)."""
+    root, tail = _split_lane(path_or_lane)
+    return _path_key(root, canonical) + tail
+
+
+def _shown(spellings: dict[str, str], identity: str) -> str:
+    """The ONE spelling a folded identity is emitted under, out of ``{lexical key: spelling}``:
+    the physical one when a row carries it, else the smallest. Never the most recent: rows
+    arrive by recency, and an id that followed them would orphan the renderer's persisted
+    state (dismissed auto projects, pins, order) each time the other spelling is used."""
+    return spellings[min(spellings, key=lambda key: (key != identity, key))]
+
+
+def _respeller(paths: list[str], canonical: Optional[Canonical]) -> Optional[Callable[[str], str]]:
+    """``None`` unless ``canonical`` identifies some of ``paths`` that differ lexically; then a
+    function mapping a path or lane id onto the spelling its folded identity is shown under.
+    Spellings that already compare equal keep today's first-seen representative."""
+    if not canonical:
+        return None
+    seen: dict[str, dict[str, str]] = {}  # identity -> {lexical key: first spelling}
+    for path in paths:
+        seen.setdefault(_path_key(path, canonical), {}).setdefault(_path_key(path), path)
+    shown = {
+        key: _shown(spellings, identity)
+        for identity, spellings in seen.items() if len(spellings) > 1 for key in spellings}
+    if not shown:
+        return None
+
+    def respell(path_or_lane: str) -> str:
+        root, tail = _split_lane(path_or_lane)
+        return shown.get(_path_key(root), root) + tail
+    return respell
 
 
 def base_name(path: str) -> str:
@@ -257,14 +305,31 @@ def _repo_node(root: str, label: str) -> dict:
     return {"id": root, "label": label, "path": root, "groups": [], "sessionCount": 0}
 
 
-def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool) -> list[dict]:
-    """Build the ``repo -> lane -> sessions`` subtree for a set of sessions."""
+def _build_repos(
+        sessions: list[dict], resolve: Optional[Resolve], hydrate: bool,
+        canonical: Optional[Canonical]) -> list[dict]:
+    """Build the ``repo -> lane -> sessions`` subtree for a set of sessions. Roots and lane
+    paths that only ``canonical`` identifies fold into one row under the spelling ``_shown``
+    picks, with its lane ids re-rooted on it (``<repoRoot>::…`` stays true of the node)."""
+    placed = [(s, p) for s in sessions if (p := _place_session(s, resolve))]
+    respell = _respeller(
+        [p[key] for _, p in placed for key in ("repo_key", "lane_path")], canonical)
     lanes: dict[str, tuple[dict, dict]] = {}  # lane identity -> (group, placement)
-    for session in sessions:
-        placement = _place_session(session, resolve)
-        if not placement:
-            continue
-        lane_identity = _lane_key(placement["lane_key"])
+    for session, placement in placed:
+        if respell:
+            root = respell(placement["repo_key"])
+            lane_path = respell(placement["lane_path"])
+            label = placement["lane_label"]
+            # A lane named after its folder (non-git, linked worktree) follows the spelling
+            # shown; a trunk lane is named after its branch, even one called like the folder.
+            if label == base_name(placement["lane_path"]) and not (
+                    placement["is_main"] and placement["is_git"]):
+                label = base_name(lane_path) or lane_path
+            placement = {
+                **placement, "repo_key": root, "repo_label": base_name(root) or root,
+                "lane_key": respell(placement["lane_key"]), "lane_label": label,
+                "lane_path": lane_path}
+        lane_identity = _lane_key(placement["lane_key"], canonical)
         if lane_identity not in lanes:
             group = dict(zip(_LANE_FIELDS, (placement[k] for k in _PLACEMENT_LANE_KEYS)))
             group["sessions"] = []
@@ -274,7 +339,8 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
     for group, placement in lanes.values():
         group["sessions"].sort(key=_session_time, reverse=True)
         repo_key = placement["repo_key"]
-        repo = repos.setdefault(_path_key(repo_key), _repo_node(repo_key, placement["repo_label"]))
+        repo = repos.setdefault(
+            _path_key(repo_key, canonical), _repo_node(repo_key, placement["repo_label"]))
         repo["groups"].append(group)
         repo["sessionCount"] += len(group["sessions"])
     repo_list = list(repos.values())
@@ -290,10 +356,12 @@ def _build_repos(sessions: list[dict], resolve: Optional[Resolve], hydrate: bool
 
 
 def _seed_folder_repos(
-        repos: list[dict], folders: list[dict], resolve: Optional[Resolve]) -> list[dict]:
+        repos: list[dict], folders: list[dict], resolve: Optional[Resolve],
+        canonical: Optional[Canonical]) -> list[dict]:
     """Ensure every declared project folder shows as a repo, even with 0 sessions (else the
     entered-project view renders blank); folders covered by a session-derived repo are untouched."""
-    seen = {_path_key(v) for repo in repos for v in (repo.get("id"), repo.get("path")) if v}
+    seen = {
+        _path_key(v, canonical) for repo in repos for v in (repo.get("id"), repo.get("path")) if v}
     seeded = list(repos)
     for folder in folders or []:
         raw = _field(folder, "path")
@@ -301,7 +369,7 @@ def _seed_folder_repos(
             continue
         info = resolve(raw) if resolve else None
         root = (info or {}).get("repo_root") or raw.rstrip("/\\")
-        root_key = _path_key(root)
+        root_key = _path_key(root, canonical)
         if not root_key or root_key in seen:
             continue
         seeded.append(_repo_node(root, base_name(root) or root))
@@ -312,25 +380,56 @@ def _seed_folder_repos(
 
 
 class _FolderIndex:
-    """Normalized folder path -> (owning project, depth); matched by walking cwd ancestors."""
+    """Normalized folder path -> (owning project, depth); matched by walking cwd ancestors.
+    A target walks the folders as declared under its own spelling, exactly as it does
+    without ``canonical``. Only when that finds no owner is its physical spelling tried:
+    against the declared folders (the owner the same row has under that spelling), then
+    against the targets of folders declared through a link. So for ONE target a link can
+    supply a match but never replaces the one its own spelling makes: a cwd reached
+    through a link that points OUT of its project stays in it. A row still takes the
+    deeper of its cwd's and its repo root's matches (``_project_for_session``), so a match
+    supplied for one of them can outrank the other's. A folder's depth is always its
+    declared spelling's, whichever way it was found."""
 
-    def __init__(self, projects: list[dict]) -> None:
+    def __init__(self, projects: list[dict], canonical: Optional[Canonical]) -> None:
+        self._canonical = canonical
         self._by_path: dict[str, tuple[dict, int]] = {}
+        # Where a folder declared through a link points: the last resort of ``match``.
+        self._by_target: dict[str, tuple[dict, int]] = {}
         for project in projects:
             for folder in project.get("folders") or []:
                 segs = _comparison_segments(folder.get("path") or "")
-                # Deepest folder wins; ties keep the first project (scan order).
-                if segs and len(segs) > self._by_path.get("/".join(segs), (None, -1))[1]:
-                    self._by_path["/".join(segs)] = (project, len(segs))
+                self._add(self._by_path, segs, project, len(segs))
+                physical = _comparison_segments(folder.get("path") or "", canonical)
+                if physical != segs:
+                    self._add(self._by_target, physical, project, len(segs))
+
+    @staticmethod
+    def _add(
+            index: dict[str, tuple[dict, int]], segs: list[str], project: dict, depth: int) -> None:
+        # Deepest folder wins; ties keep the first project (scan order).
+        if segs and depth > index.get("/".join(segs), (None, -1))[1]:
+            index["/".join(segs)] = (project, depth)
+
+    @staticmethod
+    def _walk(index: dict[str, tuple[dict, int]], segs: list[str]) -> tuple[Optional[dict], int]:
+        for end in range(len(segs), 0, -1):
+            hit = index.get("/".join(segs[:end]))
+            if hit:
+                return hit
+        return None, -1
 
     def match(self, target: str) -> tuple[Optional[dict], int]:
         """Owning project for ``target`` by longest ancestor folder, + its depth."""
         segs = _comparison_segments(target or "")
-        for end in range(len(segs), 0, -1):
-            hit = self._by_path.get("/".join(segs[:end]))
-            if hit:
-                return hit
-        return None, -1
+        hit = self._walk(self._by_path, segs)
+        # No declared folders: nothing to resolve a cwd for.
+        if hit[0] is not None or not self._canonical or not self._by_path:
+            return hit
+        physical = _comparison_segments(target or "", self._canonical)
+        if physical != segs:
+            hit = self._walk(self._by_path, physical)
+        return hit if hit[0] is not None else self._walk(self._by_target, physical)
 
 
 def _project_for_session(
@@ -371,7 +470,7 @@ def _project_node(
 
 def _auto_buckets(
     unowned: list[dict], resolve: Optional[Resolve], junk: Callable, junk_cwd: Callable,
-    exists: Callable) -> tuple[dict[str, dict], list[dict]]:
+    exists: Callable, canonical: Optional[Canonical]) -> tuple[dict[str, dict], list[dict]]:
     """Group leftover sessions by auto-project root (common git root, else the session cwd
     for non-git workspaces); the rest go to the Home bucket."""
     by_auto_root: dict[str, dict] = {}
@@ -389,11 +488,15 @@ def _auto_buckets(
             placement = _place_session(session, resolve)
             if placement and exists(placement["repo_key"]):
                 root = placement["repo_key"]
-        key = _path_key(root) if root else ""
+        key = _path_key(root, canonical) if root else ""
         if key:
-            by_auto_root.setdefault(key, {"root": root, "sessions": []})["sessions"].append(session)
+            bucket = by_auto_root.setdefault(key, {"spellings": {}, "sessions": []})
+            bucket["spellings"].setdefault(_path_key(root), root)
+            bucket["sessions"].append(session)
         else:
             homeless.append(session)
+    for key, bucket in by_auto_root.items():
+        bucket["root"] = _shown(bucket.pop("spellings"), key)
     return by_auto_root, homeless
 
 
@@ -414,19 +517,23 @@ def build_tree(
     projects: list[dict], sessions: list[dict], discovered_repos: list[dict],
     resolve: Optional[Resolve] = None, *, preview_limit: int = 3, hydrate: bool = False,
     is_junk_root: Optional[Callable[[str], bool]] = None,
-    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None) -> dict:
+    is_junk_cwd: Optional[Callable[[str], bool]] = None, exists: Optional[Exists] = None,
+    canonical: Optional[Canonical] = None) -> dict:
     """Build the authoritative project tree -> ``{"projects", "scoped_session_ids"}``.
 
     ``is_junk_root`` flags git roots that must never become an AUTO project; ``is_junk_cwd``
     is the narrower non-git policy (explicit projects are honored regardless); ``exists``
     keeps a DELETED workspace from becoming a phantom AUTO project (omit on remote backends).
+    ``canonical`` folds two spellings of one local folder (a symlinked parent) into one row
+    when no git probe does. The row is emitted under one of them, picked without regard to
+    row order (``_shown``); a folder that arrives under a single spelling keeps it.
     ``hydrate`` False empties lane ``sessions`` but keeps counts + ``previewSessions``.
     """
     active_projects = [p for p in projects if not p.get("archived")]
     _junk = is_junk_root or (lambda _root: False)
     _junk_cwd = is_junk_cwd or (lambda _cwd: False)
     _exists = exists or (lambda _path: True)
-    folder_index = _FolderIndex(active_projects)
+    folder_index = _FolderIndex(active_projects, canonical)
     by_project: dict[str, list[dict]] = {}  # explicit project id -> owned rows
     unowned: list[dict] = []
     for session in sessions:
@@ -447,22 +554,24 @@ def build_tree(
     for project in active_projects:
         psessions = by_project.get(project["id"], [])
         _scope(psessions)
-        repos = _build_repos(psessions, resolve, hydrate)
-        repos = _seed_folder_repos(repos, project.get("folders") or [], resolve)
+        repos = _build_repos(psessions, resolve, hydrate, canonical)
+        repos = _seed_folder_repos(repos, project.get("folders") or [], resolve, canonical)
         result.append(_project_node(
             project["id"], project.get("name") or project["id"], project.get("primary_path"), repos,
             len(psessions), _last_active(psessions), _previews(psessions), psessions,
             color=project.get("color"), icon=project.get("icon")))
 
     # Tier 2: auto projects from leftover sessions.
-    by_auto_root, homeless = _auto_buckets(unowned, resolve, _junk, _junk_cwd, _exists)
+    by_auto_root, homeless = _auto_buckets(
+        unowned, resolve, _junk, _junk_cwd, _exists, canonical)
     seen: set[str] = set()
     for bucket in by_auto_root.values():
         auto_root, auto_sessions = bucket["root"], bucket["sessions"]
-        auto_key = _path_key(auto_root)
-        repos = _build_repos(auto_sessions, resolve, hydrate)
+        auto_key = _path_key(auto_root, canonical)
+        repos = _build_repos(auto_sessions, resolve, hydrate, canonical)
         repo_node = next(
-            (r for r in repos if _path_key(r.get("id") or r.get("path") or "") == auto_key), None)
+            (r for r in repos
+             if _path_key(r.get("id") or r.get("path") or "", canonical) == auto_key), None)
         if repo_node is None:
             homeless.extend(auto_sessions)
             continue
@@ -474,13 +583,16 @@ def build_tree(
             auto_sessions, isAuto=True))
 
     # Tier 3: discovered repos with no loaded sessions, folded to their common root.
+    found: list[tuple[dict, str]] = []
     for repo in discovered_repos or []:
         raw_root = _field(repo, "root")
-        if not raw_root:
-            continue
-        info = resolve(raw_root) if resolve else None
-        root = (info or {}).get("repo_root") or raw_root
-        root_key = _path_key(root)
+        if raw_root:
+            info = resolve(raw_root) if resolve else None
+            found.append((repo, (info or {}).get("repo_root") or raw_root))
+    respell = _respeller([root for _, root in found], canonical)
+    for repo, root in found:
+        root = respell(root) if respell else root
+        root_key = _path_key(root, canonical)
         if root_key in seen or _junk(root) or folder_index.match(root)[0]:
             continue
         seen.add(root_key)

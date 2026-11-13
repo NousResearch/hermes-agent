@@ -71,6 +71,36 @@ def test_repo_root_cache_does_not_freeze_a_not_yet_repo(monkeypatch):
     assert git_probe.repo_root(cwd) == cwd  # now cached
 
 
+@pytest.mark.platforms("posix")
+def test_project_tree_folds_a_symlinked_parent_when_git_is_unavailable(monkeypatch, tmp_path):
+    """The tree RPC resolves symlinks for identity: one folder reached through a link and
+    through its target is one repo row, shown under its physical spelling even when the
+    most recent session came in through the link."""
+    home = tmp_path / "home"
+    repo, other = home / "repo", home / "other"
+    repo.mkdir(parents=True)
+    other.mkdir()
+    link = tmp_path / "old-home"
+    link.symlink_to(home, target_is_directory=True)
+    linked_repo = str(link / "repo")
+    # A project that recorded the folder under both spellings must not seed it twice either.
+    projects = [{"id": "p_demo", "name": "Demo", "primary_path": str(repo),
+                 "folders": [{"path": linked_repo}, {"path": str(repo)}, {"path": str(other)}]}]
+    sessions = [{"id": sid, "cwd": path, "git_repo_root": path, "git_branch": "main", "started_at": 1}
+                for sid, path in [("linked", linked_repo), ("current", str(repo)), ("other", str(other))]]
+    monkeypatch.setattr(server, "_project_tree_inputs", lambda *_a, **_kw: (sessions, projects, [], None))
+    monkeypatch.setattr(server.git_probe, "warm_roots", lambda *_a: None)
+    monkeypatch.setattr(server.git_probe, "resolve", lambda _p: None)
+
+    tree, _ = server._build_project_tree(
+        None, preview_limit=3, hydrate=True, session_limit=100, include_discovered=False)
+
+    project = next(p for p in tree["projects"] if p["id"] == "p_demo")
+    repos = {r["id"]: r for r in project["repos"]}
+    assert set(repos) == {str(repo), str(other)}
+    assert {s["id"] for g in repos[str(repo)]["groups"] for s in g["sessions"]} == {"current", "linked"}
+
+
 
 
 

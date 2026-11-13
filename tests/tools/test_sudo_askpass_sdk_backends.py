@@ -236,6 +236,34 @@ def test_sdk_backend_sudo_rejecting_askpass_falls_back_to_stdin_form_in_the_same
     _wait_gone(runner.temp_dir)
 
 
+_REFUSING_SUDO_FUNCTION = 'sudo() { if [ "$1" = -A ]; then echo "wrapper refuses -A" >&2; return 42; fi; command sudo "$@"; }\n'
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("command", ["sudo id -u && echo authed; cat", '"sudo" id -u && echo authed; cat'])
+def test_sdk_backend_sudo_function_rejecting_askpass_falls_back_to_stdin_form(make_backend, tmp_path, backend,
+                                                                              command):
+    """A snapshot function shadows the binary: the check runs the function, as the command does."""
+    env, runner = make_backend(backend)
+    (tmp_path / "functions.sh").write_text(_REFUSING_SUDO_FUNCTION, encoding="utf-8")
+    runner.env["BASH_ENV"] = str(tmp_path / "functions.sh")
+    result = env.execute(command, stdin_data="rest\n")
+    _wait_gone(runner.temp_dir)
+    assert result["returncode"] == 0, result
+    assert result["output"].split() == [str(os.getuid()), "authed", "rest"]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_sdk_backend_sudo_wrapper_accepting_askpass_keeps_askpass_form(make_backend, tmp_path, backend):
+    env, runner = make_backend(backend)
+    (tmp_path / "functions.sh").write_text('sudo() { command sudo "$@"; }\n', encoding="utf-8")
+    runner.env["BASH_ENV"] = str(tmp_path / "functions.sh")
+    result = env.execute("sudo true && sudo true; cat", stdin_data="rest\n")
+    _wait_gone(runner.temp_dir)
+    assert result["returncode"] == 0, result
+    assert result["output"].strip() == "rest"
+
+
 def test_local_backend_sudo_rejecting_askpass_falls_back_to_stdin_form(tmp_path, monkeypatch):
     """LocalEnvironment with a probe answer of True: the prologue's own check still falls back."""
     from tools.environments.local import LocalEnvironment
@@ -352,13 +380,13 @@ def test_sdk_backend_prologue_checks_each_distinct_sudo_word_as_written(make_bac
     exec_command, sudo_stdin = env._prepare_command(command)
     assert sudo_stdin == (PW + "\n") * 4  # one line per counted sudo, as for the stdin form
     checks = [line.strip() for line in exec_command.splitlines() if "-A -V" in line]
-    assert checks == [f"SUDO_ASKPASS=/bin/false \\command {word} -A -V </dev/null >/dev/null 2>&1 &&"
+    assert checks == [f"SUDO_ASKPASS=/bin/false {word} -A -V </dev/null >/dev/null 2>&1 &&"
                       for word in ("/opt/x/sudo", "sudo", "'/opt/y z/sudo'")]
 
 
 def test_build_prologue_default_checks_bare_sudo():
     checks = [line.strip() for line in askpass.build_prologue(1, "10").splitlines() if "-A -V" in line]
-    assert checks == ["SUDO_ASKPASS=/bin/false \\command sudo -A -V </dev/null >/dev/null 2>&1 &&"]
+    assert checks == ["SUDO_ASKPASS=/bin/false sudo -A -V </dev/null >/dev/null 2>&1 &&"]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

@@ -46,6 +46,9 @@ def test_pip_is_a_uv_backed_shim_with_a_system_fallback() -> None:
     assert match, "the /usr/local/bin/pip shim is gone from the toolchain layer"
     shim = match.group(1)
     assert "exec uv pip" in shim, "the pip shim must forward to `uv pip`"
+    assert "--version" in shim and "-V" in shim and "exec uv --version" in shim, (
+        "`uv pip` rejects pip's version flags; the shim must route them to `uv --version`"
+    )
     assert "UV_SYSTEM_PYTHON" in shim and "VIRTUAL_ENV" in shim, (
         "the pip shim must mirror pip's target selection: the active "
         "VIRTUAL_ENV when set, the exported interpreter otherwise"
@@ -56,4 +59,5 @@ def test_smoke_check_covers_uv_and_pip() -> None:
     """The layer must fail the build if either command stops resolving."""
     layer = _toolchain_layer()
     assert re.search(r"uv --version", layer), "no uv smoke check in the toolchain layer"
+    assert re.search(r"pip --version", layer), "no pip --version smoke check in the toolchain layer"
     assert re.search(r"pip --help", layer), "no pip smoke check in the toolchain layer"

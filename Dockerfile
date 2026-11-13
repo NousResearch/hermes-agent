@@ -217,8 +217,8 @@ RUN set -eu; \
     python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("node", "node"), ("npm", "npm"), ("ffmpeg", "ffmpeg"), ("rg", "ripgrep"), ("uv", "uv"))]; Path("/usr/local/bin/ffprobe").symlink_to(installed_package("ffmpeg").binary.with_name("ffprobe"))'; \
     ffmpeg -version >/dev/null; ffprobe -version >/dev/null; rg --version >/dev/null; \
     python3 -c 'import shutil; from pathlib import Path; from pm import env_for; Path("/usr/local/bin/npx").symlink_to(shutil.which("npx", path=env_for("npm", base_env={})["PATH"]))'; \
-    printf '#!/bin/sh\n[ -n "${VIRTUAL_ENV:-}" ] || export UV_SYSTEM_PYTHON=1\nexec uv pip "$@"\n' > /usr/local/bin/pip; chmod 0755 /usr/local/bin/pip; \
-    node --version; npm --version; uv --version; pip --help >/dev/null; \
+    printf '#!/bin/sh\ncase "$1" in\n  --version|-V) exec uv --version ;;\nesac\n[ -n "${VIRTUAL_ENV:-}" ] || export UV_SYSTEM_PYTHON=1\nexec uv pip "$@"\n' > /usr/local/bin/pip; chmod 0755 /usr/local/bin/pip; \
+    node --version; npm --version; uv --version; pip --version; pip --help >/dev/null; \
     browser_bin="$(python3 -c 'from pm import installed_package; print(installed_package("chromium").binary)')"; \
     test -n "$browser_bin"; \
     "$browser_bin" --version; \

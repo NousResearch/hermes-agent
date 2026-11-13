@@ -1,6 +1,6 @@
-/* Redesigned shell frame (Figma 906:19396): the window canvas shows through the titlebar band and
-   the 60px rails; zones at the window top become panels whose OUTER top corners round at 9px,
-   with a hairline between neighbours. Tokens come from tokens/, the wing from portal-artwork.css. */
+/* Redesigned shell frame (Figma 906:19396, 1089:7972): the window canvas shows through the titlebar
+   band and the 60px rails; each zone at the window top is a panel with a hairline edge whose
+   leading top corner rounds at 9px (906:19804, 1089:8226), as does the row's trailing one. Tokens come from tokens/, the wing from portal-artwork.css. */
 
 /* A page or route overlay paints over the chat it covers (contrib/route-cover.tsx). The chat keeps
    its rendering state (scroll, draft) but is skipped by style, layout and paint, so covering and
@@ -26,7 +26,9 @@
   inset-inline: 0;
   top: var(--zone-band-height, 100%);
   height: 100dvh;
+  border-block-start: 1px solid var(--portal-panel-divider);
   border-inline-start: 1px solid var(--portal-panel-divider);
+  border-start-start-radius: var(--portal-panel-radius);
   background-color: var(--ui-editor-surface-background);
   pointer-events: none;
 }
@@ -44,13 +46,17 @@
   background-color: var(--portal-sidebar-panel-background);
 }
 
-/* The outer edge of the row needs no hairline: the rail's canvas is the edge. A workspace page is
-   framed like every other page instead: square and full bleed (919:9263). */
+/* The outer edge of the row needs no hairline: the rail's canvas is the edge. */
 :root[data-shell='portal']
   [data-tree-group][data-window-top][data-window-start]:not([data-zone-page])
   > [data-panel-header]::before {
   border-inline-start-width: 0;
-  border-start-start-radius: var(--portal-panel-radius);
+}
+
+/* A workspace page is framed like every other page instead: square and full bleed (919:9263). */
+:root[data-shell='portal'] [data-tree-group][data-window-top][data-zone-page] > [data-panel-header]::before {
+  border-block-start-width: 0;
+  border-start-start-radius: 0;
 }
 
 :root[data-shell='portal']
@@ -59,10 +65,10 @@
   border-start-end-radius: var(--portal-panel-radius);
 }
 
-/* The body clips its pane layers (overflow: hidden), so they take the panel's outer corners. The
+/* The body clips its pane layers (overflow: hidden), so they take the panel's corners. The
    conversation header between them overlays the stage out of flow (app/chat/stage.css). */
 :root[data-shell='portal']
-  [data-tree-group][data-window-top][data-window-start]:not([data-zone-page])
+  [data-tree-group][data-window-top]:not([data-zone-page])
   > [data-panel-header]
   ~ [data-zone-body]
   > * {
@@ -165,6 +171,8 @@
   justify-content: flex-start;
   gap: var(--portal-rail-gap);
   padding-block-start: var(--portal-rail-top);
+  /* The rail's edge against the sidebar (1089:7985). */
+  border-inline-end: 1px solid var(--portal-stroke-floating);
 }
 
 :root[data-shell='portal'] .portal-rail-badge {
@@ -190,6 +198,8 @@
 :root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button {
   inline-size: var(--portal-rail-button);
   block-size: var(--portal-rail-button);
+  /* A 40px button takes the next radius step (1089:7985). */
+  border-radius: var(--portal-radius-card);
 }
 
 :root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button .codicon[class*='codicon-'] {

@@ -157,7 +157,7 @@
 
 :root[data-shell='portal'] [data-slot='dialog-content'] {
   border-color: var(--portal-floating-stroke);
-  border-radius: var(--portal-radius-floating);
+  border-radius: var(--portal-radius-surface);
   background-color: var(--portal-floating-surface);
   box-shadow: var(--portal-floating-shadow);
 }

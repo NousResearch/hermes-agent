@@ -131,6 +131,8 @@
 
 /* The redesign's section heading role (Agent Overview 877, Settings 1036:7481: 15px Medium, the
    column's own left edge), so the catalog's shelves read like every other page's sections. */
+/* Catalog cards sit on the redesign's card radius, not the classic scale's. */
+:root[data-shell='portal'] :is([data-catalog-card], .catalog-featured-track, .catalog-developer, [data-catalog-skeleton] :is(.catalog-skeleton-hero, .catalog-skeleton-card)) { border-radius: var(--portal-radius-card); }
 :root[data-shell='portal'] .catalog-section-heading { padding-inline: 0; }
 :root[data-shell='portal'] .catalog-section-heading h2 { font-size: var(--portal-type-section-size); font-weight: 500; line-height: 1.1; letter-spacing: 0; }
 :root[data-shell='portal'] [data-catalog-skeleton] .catalog-skeleton-title { height: var(--portal-type-section-size); margin-block: 0; }

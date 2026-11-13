@@ -18,7 +18,7 @@ export function FigmaAgentIcon({ color, className, size, variant = 'solid' }: Fi
   return (
     <span
       aria-hidden
-      className={cn('inline-flex size-5 shrink-0 overflow-hidden rounded-sm', className)}
+      className={cn('inline-flex size-5 shrink-0 overflow-hidden rounded-(--portal-radius-control,0.125rem)', className)}
       style={{
         backgroundColor:
           subtle || outline ? `color-mix(in srgb, ${tileColor} ${outline ? 12 : 25}%, transparent)` : tileColor,

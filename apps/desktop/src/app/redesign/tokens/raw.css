@@ -10,10 +10,11 @@
   --portal-raw-white: #f2f2f2;
   --portal-raw-pure-white: #fff;
   --portal-raw-black: #000;
-  /* Figma secondary/green (live dots and gradients). */
+  /* Figma secondary/green (live dots and gradients); at .6 it is the connected / online ink on dark
+     (1089:8305). */
   --portal-raw-green: #00f279;
-  /* Connected / online ink on dark (877:4308); its AA-darkened twin for light. */
-  --portal-raw-mint: #6df2a8;
+  --portal-raw-green-60: color-mix(in srgb, var(--portal-raw-green) 60%, transparent);
+  /* Connected / online ink on light: the green darkened to AA. */
   --portal-raw-mint-deep: #1f8a65;
   /* Figma secondary/orange: pending and warning. */
   --portal-raw-orange: #f27900;

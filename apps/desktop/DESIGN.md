@@ -552,9 +552,9 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-raw-white` | `#f2f2f2` | ″ | Figma primary/white: ink on the brand fill. |
 | `--portal-raw-pure-white` | `#fff` | ″ |  |
 | `--portal-raw-black` | `#000` | ″ |  |
-| `--portal-raw-green` | `#00f279` | ″ | Figma secondary/green (live dots and gradients). |
-| `--portal-raw-mint` | `#6df2a8` | ″ | Connected / online ink on dark (877:4308); its AA-darkened twin for light. |
-| `--portal-raw-mint-deep` | `#1f8a65` | ″ |  |
+| `--portal-raw-green` | `#00f279` | ″ | Figma secondary/green (live dots and gradients); at .6 it is the connected / online ink on dark (1089:8305). |
+| `--portal-raw-green-60` | `color-mix(in srgb, var(--portal-raw-green) 60%, transparent)` | ″ |  |
+| `--portal-raw-mint-deep` | `#1f8a65` | ″ | Connected / online ink on light: the green darkened to AA. |
 | `--portal-raw-orange` | `#f27900` | ″ | Figma secondary/orange: pending and warning. |
 | `--portal-raw-danger` | `#a22a20` | ″ | Danger fill and stroke (877:4212, 878:7066, 1038:7836) and its soft status text (877:4312). |
 | `--portal-raw-danger-soft` | `#cc8a84` | ″ |  |
@@ -638,7 +638,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-stroke-strong` | `var(--portal-raw-ink-28)` | ″ | Selects, checkbox and radio at rest. |
 | `--portal-stroke-selected` | `var(--portal-raw-ink-5)` | ″ |  |
 | `--portal-stroke-floating` | `var(--portal-raw-ink-10)` | ″ |  |
-| `--portal-status-online` | `var(--portal-raw-mint)` | `var(--portal-raw-mint-deep)` | Status inks, one set for the whole redesign (sidebar machines, dots, chips, page status text): online is the pages' spec green (877:4308), pending Figma's orange, failed its soft red; each passes 4.5:1 on its mode's panels. |
+| `--portal-status-online` | `var(--portal-raw-green-60)` | `var(--portal-raw-mint-deep)` | Status inks, one set for the whole redesign (sidebar machines, dots, chips, page status text): online is secondary/green at .6 (1089:8305, the newest sidebar), pending Figma's orange, failed its soft red; each passes 4.5:1 on its mode's panels. |
 | `--portal-status-pending` | `var(--portal-raw-orange)` | `color-mix(in srgb, var(--portal-raw-orange) 70%, var(--portal-raw-black))` |  |
 | `--portal-status-error-ink` | `var(--portal-raw-danger-soft)` | `var(--portal-raw-danger)` |  |
 | `--portal-focus-ring-color` | `var(--portal-text-brand)` | ″ | The one focus ring's colour (geometry in shape.css). |

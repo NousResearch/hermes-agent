@@ -90,9 +90,9 @@
   --portal-stroke-floating: var(--portal-raw-ink-10);
 
   /* Status inks, one set for the whole redesign (sidebar machines, dots, chips, page status text):
-     online is the pages' spec green (877:4308), pending Figma's orange, failed its soft red; each passes
+     online is secondary/green at .6 (1089:8305, the newest sidebar), pending Figma's orange, failed its soft red; each passes
      4.5:1 on its mode's panels. */
-  --portal-status-online: var(--portal-raw-mint);
+  --portal-status-online: var(--portal-raw-green-60);
   --portal-status-pending: var(--portal-raw-orange);
   --portal-status-error-ink: var(--portal-raw-danger-soft);
 

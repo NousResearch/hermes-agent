@@ -102,7 +102,7 @@
   white-space: nowrap;
 }
 
-/* ── Status chip (1098:8495): 9px uppercase, status ink; problems on the danger tint ── */
+/* ── Status chip (1098:8480): 9px uppercase, each status ink on its own 14% tint ── */
 
 .routines-chip {
   display: inline-flex;
@@ -120,6 +120,7 @@
 }
 
 .routines-chip[data-tone='good'] {
+  background: color-mix(in srgb, var(--portal-status-online) 14%, transparent);
   color: var(--portal-status-online);
 }
 
@@ -128,7 +129,7 @@
 }
 
 .routines-chip[data-tone='bad'] {
-  background: var(--portal-surface-danger);
+  background: var(--portal-surface-danger-hover);
   color: var(--portal-text-danger);
 }
 

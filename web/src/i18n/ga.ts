@@ -217,7 +217,7 @@ export const ga: Translations = {
 
   models: {
     modelsUsed: "Samhlacha úsáidte",
-    estimatedCost: "Costas measta",
+    cost: "Costas",
     tokens: "tokens",
     sessions: "seisiúin",
     avgPerSession: "meán/seisiún",

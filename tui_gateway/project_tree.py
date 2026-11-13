@@ -13,6 +13,8 @@ import re
 import unicodedata
 from typing import Any, Callable, Optional
 
+from hermes_state_usage import finite_cost
+
 # cwd -> ``{"repo_root", "worktree_root"}`` (COMMON main root / this cwd's checkout root);
 # ``None`` when not in git or unprobeable (remote backend).
 Resolve = Callable[[str], Optional[dict]]
@@ -355,11 +357,11 @@ def _project_node(
         "id": pid, "label": label, "path": path, "color": None, "icon": None,
         "isAuto": False, "isNoProject": False,
         "sessionCount": session_count, "lastActive": last_active,
-        # Totals over the same sessions `sessionCount` counts (billed cost, else estimated).
+        # Totals over the same sessions `sessionCount` counts (billed cost plus estimate: disjoint calls).
         "totalTokens": sum(
             (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0) for s in rows),
         "totalCostUsd": sum(
-            float(s.get("actual_cost_usd") or s.get("estimated_cost_usd") or 0) for s in rows),
+            finite_cost(s.get("actual_cost_usd")) + finite_cost(s.get("estimated_cost_usd")) for s in rows),
         "repos": repos, "previewSessions": preview_sessions,
         # Every claimed row, not just the preview window: the renderer's live overlay
         # uses this as the ONE owner (a sibling worktree row with git_repo_root NULL

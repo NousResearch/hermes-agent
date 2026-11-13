@@ -12,13 +12,15 @@ from hermes_state_common import (
     escape_like as _escape_like, emit_session_deleted,
 )
 from hermes_startup_watchdog import report_startup_progress
+from hermes_state_usage import finite_cost_sql
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
 
 _LAST_ACTIVE_SQL = _sql_session_last_active("s")
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
-_COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
+# Spend = provider-reported amount + estimate: the two columns hold disjoint calls (inf reads as 0).
+_COST_SQL = f"({finite_cost_sql('s.actual_cost_usd')} + {finite_cost_sql('s.estimated_cost_usd')})"
 
 
 def _like(value: str) -> str:

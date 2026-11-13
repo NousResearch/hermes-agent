@@ -14,6 +14,8 @@ import logging
 from contextvars import ContextVar
 from typing import Any, Optional
 
+from agent.usage_cost_columns import split_cost_columns
+
 logger = logging.getLogger(__name__)
 
 # (session_db, session_id) for the active agent turn, or None outside one.
@@ -74,11 +76,13 @@ def record_aux_usage(
         ):
             return
         model = str(getattr(response, "model", "") or "") or "unknown"
-        estimated_cost = None
+        cost_fields: dict[str, Any] = {"estimated_cost_usd": None}
         try:
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
-            if cost.amount_usd is not None:
-                estimated_cost = float(cost.amount_usd)
+            amount = float(cost.amount_usd) if cost.amount_usd is not None else None
+            # Same split as the main loop: a provider-reported amount lands in actual_cost_usd.
+            cost_fields = {**split_cost_columns(amount, cost.status), "cost_status": cost.status,
+                           "cost_source": cost.source}
         except Exception:
             logger.debug("Aux usage cost estimation failed", exc_info=True)
         # Inside a Relay-driven tool callback the thread runs Relay's loop; a worker store refuses
@@ -89,7 +93,7 @@ def record_aux_usage(
             session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
-            reasoning_tokens=usage.reasoning_tokens, estimated_cost_usd=estimated_cost,
+            reasoning_tokens=usage.reasoning_tokens, **cost_fields,
         )
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)

@@ -215,7 +215,7 @@ export const zh: Translations = {
 
   models: {
     modelsUsed: "使用模型数",
-    estimatedCost: "预估费用",
+    cost: "费用",
     tokens: "Token",
     sessions: "会话",
     avgPerSession: "平均/会话",

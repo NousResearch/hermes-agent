@@ -137,10 +137,10 @@ $apiRequestScope.listen(() => {
   }
 })
 
-/** Spend on a session — provider-reported price when we have one, our own
- *  estimate otherwise. */
+/** Spend on a session — the provider-reported price plus our own estimate. The two
+ *  columns hold disjoint calls (a reported call is never also estimated), so they add. */
 export const sessionCostUsd = (session: SessionInfo): number =>
-  session.actual_cost_usd || session.estimated_cost_usd || 0
+  (session.actual_cost_usd ?? 0) + (session.estimated_cost_usd ?? 0)
 
 /** Whether ANY loaded session reports spend. Subscription auth never quotes a
  *  price, so for those users a cost sort would rank a list of zeroes — the

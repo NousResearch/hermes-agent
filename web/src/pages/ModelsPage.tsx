@@ -65,6 +65,11 @@ function formatCost(n: number): string {
   return "$0";
 }
 
+/** A model card's spend: provider-reported plus estimated (disjoint calls, so they add). */
+function cardSpend(entry: ModelsAnalyticsModelEntry): number {
+  return entry.estimated_cost + (entry.actual_cost || 0);
+}
+
 /** Short model name: strip vendor prefix like "openrouter/" or "anthropic/". */
 function shortModelName(model: string): string {
   const slashIdx = model.indexOf("/");
@@ -503,10 +508,11 @@ function ModelCard({
 
         <div className="flex items-center justify-between text-xs text-text-secondary border-t border-border/30 pt-2">
           <div className="flex items-center gap-3">
-            {showTokens && entry.estimated_cost > 0 && (
+            {/* Reported and estimated spend are disjoint calls, so the card shows their sum. */}
+            {showTokens && cardSpend(entry) > 0 && (
               <span className="flex items-center gap-0.5">
                 <DollarSign className="h-2.5 w-2.5" />
-                {formatCost(entry.estimated_cost)}
+                {formatCost(cardSpend(entry))}
               </span>
             )}
             {showTokens && entry.tool_calls > 0 && (
@@ -1305,8 +1311,9 @@ export default function ModelsPage() {
                           value: formatTokens(data.totals.total_output),
                         },
                         {
-                          label: t.models.estimatedCost,
-                          value: formatCost(data.totals.total_estimated_cost),
+                          // Reported plus estimated spend, so not "estimated" alone.
+                          label: t.models.cost,
+                          value: formatCost(data.totals.total_estimated_cost + (data.totals.total_actual_cost || 0)),
                         },
                         {
                           label: t.analytics.totalSessions,

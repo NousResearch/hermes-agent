@@ -217,7 +217,7 @@ export const tr: Translations = {
 
   models: {
     modelsUsed: "Kullanılan Modeller",
-    estimatedCost: "Tahmini Maliyet",
+    cost: "Maliyet",
     tokens: "token",
     sessions: "oturum",
     avgPerSession: "ort/oturum",

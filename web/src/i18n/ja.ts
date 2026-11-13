@@ -217,7 +217,7 @@ export const ja: Translations = {
 
   models: {
     modelsUsed: "使用モデル",
-    estimatedCost: "推定コスト",
+    cost: "コスト",
     tokens: "トークン",
     sessions: "セッション",
     avgPerSession: "平均/セッション",

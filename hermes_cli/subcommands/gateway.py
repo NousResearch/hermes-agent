@@ -156,7 +156,8 @@ def build_gateway_parser(
                     "calls its HTTP API. --probe prints what this host can mint and touches no gateway. "
                     "--serve prints a hello line with the running gateway's endpoint, then answers each "
                     'stdin line {"id": ..., "purpose": "native-http"} with one stdout line holding a '
-                    "single-use ticket, until stdin closes. It never starts a gateway: use "
+                    'single-use ticket, until stdin closes. A line may add "profile": "<name>" for '
+                    "another profile the same gateway serves. It never starts a gateway: use "
                     "`hermes gateway attach --start` for that. Tickets are credentials: they are printed "
                     "for the calling process only and never logged.",
         epilog="Exit codes: 0 probe printed, or --serve ended at stdin EOF; 2 invalid invocation; "

@@ -1095,6 +1095,15 @@ class ToolRegistry:
         refusal, unknown, valid = check_tool_args(entry, args)
         if refusal is not None:
             return refusal
+        # Project arguments against the tool's registered schema at the final
+        # dispatch boundary. Middleware and hooks can still rewrite args above
+        # this point; hidden control-plane parameters (e.g. terminal's ``force``)
+        # are stripped just before the handler receives them.  The schema is
+        # taken from the already scope-resolved entry so projection always
+        # matches the handler that will execute.
+        from tools.arg_coercion import project_tool_args
+
+        args = project_tool_args(name, args, schema=entry.schema, compat_args=entry.compat_args)
         try:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``

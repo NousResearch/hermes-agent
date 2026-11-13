@@ -1,0 +1,25 @@
+name: opensop
+title: OpenSOP
+repo: https://github.com/opensop/hermes-opensop
+sha: cd35a0b509b7fc70ef59019452fef8a3a523e266
+description: "Turn your best agent workflow into a file anyone can run. An OpenSOP process file sets, step by step, what is a script (must be certain) and what needs the agent (judgment). Hermes starts a run with sop_run, does its steps and submits them with sop_submit; the next script step checks the work, so scripts decide done. The run lives on disk, not in the conversation: Hermes is re-anchored on its open step every turn and across compaction, nudged to finish it before wrapping up, and refused when it tries to decide a step reserved for a person (seat belts, not a sandbox). Any agent or person can pick the run up with the opensop CLI, and every step leaves a receipt. Requires the opensop CLI 0.10.0+ on PATH. Disclosure — sop_run goes through Hermes's approval prompt (naming the process file's hash and the inputs) because a run's script steps run as shell commands with your permissions, outside Hermes's terminal approvals; llm and judgment steps can drive coding-agent CLIs (claude, codex, cursor-agent, kimi) with the permission the file declares, so only run process files you trust. Run folders are written under OPENSOP_LOCAL_HOME, the nearest .opensop cell or ~/.opensop-local; the plugin keeps a session-to-run map in plugin state. Tool calls are bounded by OPENSOP_HERMES_TIMEOUT (default 1800 s). The plugin makes no network calls, reads no credentials, never auto-approves or changes approval settings, starts no Hermes children, runs nothing in the background and has no self-updater."
+maintainer: opensop
+tier: community
+category: automation
+requires_hermes: '>=0.23.0'
+docs_url: https://github.com/opensop/hermes-opensop#readme
+version: "0.1.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - sop_run
+    - sop_status
+    - sop_submit
+    - sop_retry
+  provides_hooks:
+    - pre_llm_call
+    - pre_verify
+    - pre_tool_call
+    - post_compaction
+  provides_middleware: []
+  requires_env: []

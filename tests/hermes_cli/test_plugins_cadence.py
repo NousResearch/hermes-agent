@@ -135,3 +135,13 @@ def test_housekeeping_runs_real_cadence_and_backs_off(homed, monkeypatch, caplog
     assert (homed / 'plugin-update-checks/last-run').is_file()
     if failed:
         assert saved['warnings'][0]['message'] in caplog.text
+
+
+@pytest.mark.parametrize('raw, expected', [('false', False), ('"false"', False), ('"no"', False),
+                                           ('"0"', False), ('true', True), ('"true"', True)])
+def test_auto_apply_reads_quoted_words_as_the_word(tmp_path, monkeypatch, raw, expected):
+    """`hermes config set plugins.auto_apply '"false"'` and a hand-edited `auto_apply: "false"`
+    store the STRING "false"; a raw bool() read it as enabled and applied updates unattended."""
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    (tmp_path / 'config.yaml').write_text(f'plugins:\n  auto_apply: {raw}\n', encoding='utf-8')
+    assert cad.auto_apply_enabled() is expected

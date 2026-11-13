@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from utils import is_truthy_value
+
 _MARKERS_DIR = "plugin-update-checks"
 _DEFAULT_INTERVAL_HOURS = 24
 
@@ -118,7 +120,7 @@ def auto_apply_enabled(config_get: Callable | None = None) -> bool:
     if config_get is None:
         config_get = _default_config_get
     try:
-        return bool(config_get("plugins", "auto_apply"))
+        return is_truthy_value(config_get("plugins", "auto_apply"))
     except Exception:
         return False
 

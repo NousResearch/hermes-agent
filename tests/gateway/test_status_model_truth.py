@@ -86,11 +86,13 @@ async def test_status_and_usage_label_a_fallback_route_with_the_primary(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_status_reports_channel_override_over_stale_usage_route(tmp_path):
+async def test_status_reports_channel_override_over_stale_usage_route(tmp_path, monkeypatch):
     """A channel_overrides model is the chat default the next turn runs, not the global config model."""
-    from types import SimpleNamespace
+    from gateway.config import ChannelOverride, Platform
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     runner, db = _runner_with_old_usage(tmp_path)
-    runner._channel_override_for = lambda _source: SimpleNamespace(model="channel/model-b", provider="openrouter")
+    runner.config.platforms[Platform.TELEGRAM].channel_overrides = {
+        _make_source().chat_id: ChannelOverride(model="channel/model-b", provider="openrouter")}
     try:
         with patch("gateway.run._load_gateway_config", return_value=_CONFIG):
             status = await runner._handle_message(_make_event("/status"))

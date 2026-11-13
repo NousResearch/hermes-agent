@@ -1492,6 +1492,10 @@ class MoAChatCompletions:
             self._pending_trace = None
         else:
             reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
+            # The aggregator wire sends each advisor run's guidance once. Only a finished run is cached, so a HIT
+            # reuses the latest run; a fan-out that runs again under the same key (an interrupted one is not cached)
+            # is a new run, and its advice goes out.
+            self._fanout_run = getattr(self, "_fanout_run", 0) + 1
 
         agg_messages = [dict(m) for m in messages]
         guidance = self._build_guidance(
@@ -1502,8 +1506,8 @@ class MoAChatCompletions:
             _attach_reference_guidance(agg_messages, guidance)
 
         prepared_request = {
-            "messages": agg_messages, "guidance": guidance, "guidance_key": cache_key, "aggregator": aggregator,
-            "aggregator_temperature": aggregator_temperature,
+            "messages": agg_messages, "guidance": guidance, "guidance_key": (cache_key, getattr(self, "_fanout_run", 0)),
+            "aggregator": aggregator, "aggregator_temperature": aggregator_temperature,
         }
         if api_kwargs.pop("_moa_prepare_only", False):
             return prepared_request

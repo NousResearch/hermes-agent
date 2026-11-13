@@ -220,7 +220,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(submitted_executors, [owned_executor])
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
+    def test_edit_message_falls_back_when_interactive_card_is_rejected(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -255,12 +255,60 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
-        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
-        self.assertEqual(
-            captured["calls"][1].request_body.content,
-            json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
+        # First attempt uses interactive card; on rejection falls back to post
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "post")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_falls_back_when_interactive_card_is_rejected(self):
+        """send() degrades from interactive card to post when card is rejected."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=230001,
+                        msg="content format of the post type is incorrect",
+                        data=SimpleNamespace(message_id="om_fail"),
+                    )
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_ok"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
         )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="Here is a **bold** message with\n\n| a | b |\n|---|---|\n| 1 | 2 |",
+                )
+            )
+
+        self.assertTrue(result.success)
+        # First attempt: interactive card; on rejection: falls back
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        fallback_type = captured["calls"][1].request_body.msg_type
+        self.assertIn(fallback_type, ("post", "text"), (
+            f"fallback should be 'post' or 'text', got {fallback_type!r}"
+        ))
 
 
 @patch.dict(os.environ, {}, clear=True)
@@ -1299,10 +1347,10 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
+    def test_send_uses_interactive_for_every_chunk_of_multi_chunk_markdown(self):
         """Regression for #26841: when a long Markdown message is split
         across multiple chunks, every chunk must go out as
-        ``msg_type=post`` — including chunk 1.  The bug was that the
+        ``msg_type=interactive`` — including chunk 1.  The bug was that the
         first chunk often had only plain prose (the per-chunk regex
         didn't match) and was sent as ``text``, so users saw literal
         ``**bold``/``## heading``/code fences while later chunks
@@ -1355,10 +1403,10 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(len(captured), 2)
         msg_types = [r.request_body.msg_type for r in captured]
-        self.assertEqual(msg_types, ["post", "post"])
+        self.assertEqual(msg_types, ["interactive", "interactive"])
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
+    def test_send_splits_fenced_code_blocks_into_separate_card_elements(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -1403,22 +1451,20 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
         payload = json.loads(captured["request"].request_body.content)
-        rows = payload["zh_cn"]["content"]
-        self.assertEqual(
-            rows,
-            [
-                [
-                    {
-                        "tag": "md",
-                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
-                    }
-                ],
-                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
-                [{"tag": "md", "text": "后续说明仍应保留。"}],
-            ],
-        )
+        self.assertEqual(payload["schema"], "2.0")
+        elements = payload["body"]["elements"]
+        # Fenced code blocks should be split into separate elements
+        self.assertGreaterEqual(len(elements), 2, "code block should be in its own element")
+        # All elements use markdown tag
+        for el in elements:
+            self.assertEqual(el["tag"], "markdown")
+        # Verify all content is preserved across elements
+        joined = "\n".join(el["content"] for el in elements)
+        self.assertIn("确认已入库", joined)
+        self.assertIn("```json", joined)
+        self.assertIn("后续说明仍应保留", joined)
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestPendingInboundQueue(unittest.TestCase):

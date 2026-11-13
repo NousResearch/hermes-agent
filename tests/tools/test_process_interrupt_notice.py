@@ -276,3 +276,40 @@ class TestReplayAfterRestart:
         assert not (receipts_home / "logs" / "process-results" / "proc_silent.json").exists()
         assert registry.pending_watchers == []
 
+    def test_multiplex_recovery_scans_each_profile_without_a_checkpoint(
+        self, registry, receipts_home, tmp_path, monkeypatch
+    ):
+        """One shared registry must replay each served profile's owed death notice."""
+        from tools import process_registry as registry_module
+        from tools import process_registry_results as receipts
+
+        secondary_home = tmp_path / "secondary"
+        active_home = [receipts_home]
+        monkeypatch.setattr(registry_module, "get_hermes_home", lambda: active_home[0])
+        monkeypatch.setattr(receipts, "get_hermes_home", lambda: active_home[0])
+
+        # Two profile-local ledgers can contain the same session ID. Neither
+        # has a processes.json: the notice receipt must suffice at startup.
+        with patch("hermes_constants.assert_named_profile_home_live"):
+            for home, profile in ((receipts_home, "main"), (secondary_home, "work")):
+                active_home[0] = home
+                session = _make_session()
+                session.session_key = f"agent:{profile}:feishu:forum:oc_x:omt_y"
+                session.exited = True
+                session.exit_code = -15
+                session.completion_reason = "killed"
+                session.termination_source = "agent_close"
+                session.exited_at = time.time()
+                save_completed_result(session)
+
+        active_home[0] = receipts_home
+        assert registry.recover_from_checkpoint() == 0
+        assert len(registry.pending_watchers) == 1
+
+        active_home[0] = secondary_home
+        assert registry.recover_from_checkpoint() == 0
+        assert [w["dead_session"].session_key for w in registry.pending_watchers] == [
+            "agent:main:feishu:forum:oc_x:omt_y",
+            "agent:work:feishu:forum:oc_x:omt_y",
+        ]
+        assert registry.arm_interrupt_notices() == 0  # repeat scan is idempotent

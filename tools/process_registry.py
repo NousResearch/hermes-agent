@@ -690,8 +690,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     _completions_restored = False
     # Interruption notices already armed this process (lazy per instance; see arm_interrupt_notices).
     _interrupt_notices_armed = None
-    # Whether this process already scanned the receipt ledger for pending interruption notices.
-    _interrupt_notices_scanned = False
+    # Profile homes already scanned for pending interruption notices (one gateway serves many homes).
+    _interrupt_notices_scanned = None
 
     def __init__(self):
         self._running: dict[str, ProcessSession] = {}
@@ -1833,11 +1833,18 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         instead of silently disappearing with the killed watcher. Each pending receipt becomes a
         one-shot synthetic watcher (``interrupted_death`` + ``dead_session``) that delivers through
         the SAME wake chain as a completion notification, then stamps the receipt delivered so no
-        later boot replays it. Idempotent per session id within the process; the receipt scan runs
-        once per process unless ``rescan`` (a recovery pass just recorded new downtime deaths)."""
-        if self._interrupt_notices_scanned and not rescan:
-            return 0
-        self._interrupt_notices_scanned = True
+        later boot replays it. Idempotent per profile and session id; each profile home
+        is scanned once unless ``rescan`` records new downtime deaths."""
+        # The registry is process-global, but every multiplexed profile has its own
+        # receipt ledger. A scan of the launch home must not suppress the next
+        # profile's scan (including profiles with no processes.json checkpoint).
+        profile_home = str(get_hermes_home().resolve())
+        with self._lock:
+            if self._interrupt_notices_scanned is None:
+                self._interrupt_notices_scanned = set()
+            if profile_home in self._interrupt_notices_scanned and not rescan:
+                return 0
+            self._interrupt_notices_scanned.add(profile_home)
         from tools.process_registry_results import pending_interrupt_notices, session_from_result_record
         try:
             records = pending_interrupt_notices()
@@ -1852,9 +1859,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             with self._lock:
                 if self._interrupt_notices_armed is None:
                     self._interrupt_notices_armed = set()
-                if session_id in self._interrupt_notices_armed:
+                # A session identifier is local to its profile's ledger.
+                notice_key = (profile_home, session_id)
+                if notice_key in self._interrupt_notices_armed:
                     continue
-                self._interrupt_notices_armed.add(session_id)
+                self._interrupt_notices_armed.add(notice_key)
             session = session_from_result_record(record)
             if session is None:
                 continue

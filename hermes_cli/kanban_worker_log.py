@@ -74,6 +74,14 @@ def open_worker_log(log_path: Path):
     # Worker output is durable and may quote secrets: never world-readable. Only the other bits
     # are stripped (a shared-group home keeps group access), and a log created before this fix
     # is tightened on its next open.
+    # A private log owned by another account (shared-group home) is reopened as is: chmod would
+    # raise EPERM. One that is still world-readable fails closed, with the descriptor released.
     fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o660)
-    os.chmod(log_path, os.fstat(fd).st_mode & 0o7770)
+    try:
+        mode = os.fstat(fd).st_mode
+        if mode & 0o007:
+            os.chmod(log_path, mode & 0o7770)
+    except BaseException:
+        os.close(fd)
+        raise
     return os.fdopen(fd, "ab")

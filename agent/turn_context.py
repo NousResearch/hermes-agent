@@ -157,6 +157,27 @@ def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
     return v if isinstance(v, str) else None
 
 
+def carry_merged_api_content(row: dict[str, Any], absorbed: Mapping[str, Any], row_content: str) -> bool:
+    """Re-stamp the user ``row`` that just absorbed the next user row (``row_content``: its text before
+    the merge) with the bytes each side was sent with, joined like the merged content. Returns whether
+    the sidecar changed.
+
+    Dropping the sidecars instead loses the absorbed turn's injected context (memory prefetch,
+    ``pre_llm_call`` notes): the live turn sent it, but a history rebuilt from the session DB merges
+    the rows again without it, so the request stops matching at this row."""
+    before = extract_api_content_sidecar(row)
+    absorbed_content = absorbed.get("content") or ""
+    left = before or row_content
+    right = extract_api_content_sidecar(absorbed) or absorbed_content
+    # An empty turn's sidecar is only its injected tail, which compose already led with the separator.
+    sep = "" if not absorbed_content and right.startswith("\n\n") else "\n\n"
+    wire = (left + sep + right) if left and right else (left or right)
+    drop_stale_api_content(row)
+    if wire != row.get("content"):
+        row["api_content"] = wire
+    return extract_api_content_sidecar(row) != before
+
+
 def _pop_turn_note(agent: Any, attr: str) -> str:
     """One-shot per-turn note: read and clear, so the system prompt stays byte-stable and a
     cached agent never replays a stale note."""

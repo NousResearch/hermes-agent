@@ -217,7 +217,6 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
         valid_names=valid_names,
     )
 
-
 def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
@@ -321,7 +320,7 @@ def decompose_task(
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
         ),
-        max_tokens=4000, timeout=timeout or 180, log=logger,
+        max_tokens=4000, timeout=timeout, log=logger,
     )
     if raw is None:
         return DecomposeOutcome(task_id, False, reason)

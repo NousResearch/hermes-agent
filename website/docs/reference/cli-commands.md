@@ -386,10 +386,11 @@ attaches through the same code. Details and the dial rules:
 
 `hermes gateway tickets (--probe | --serve) [--json]` is for a client that reaches the gateway
 over SSH and calls its HTTP API through a forwarded port. `--probe` prints
-`{"protocol": 1, "purposes": ["native-http"]}` and touches no gateway. `--serve` prints a hello
-line with the running gateway's endpoint, then answers each stdin line
-`{"id": ..., "purpose": "native-http"}` with one stdout line holding a single-use ticket, until
-stdin closes. It never starts a gateway, and tickets go to stdout only, never to a log. The line
+one JSON line (`protocol`, the ticket `purposes` it mints, `windows_service_session`) and touches
+no gateway. `--serve` prints a hello line with the running gateway's endpoint, then answers each
+stdin line `{"id": ..., "purpose": "native-http"}` with one stdout line holding a single-use
+ticket, until stdin closes. A line may add `"profile": "<name>"` for another profile the same
+gateway serves. It never starts a gateway, and tickets go to stdout only, never to a log. The line
 protocol and the client rules:
 [Gateway over SSH: client contract](../developer-guide/gateway-ssh-clients.md).
 

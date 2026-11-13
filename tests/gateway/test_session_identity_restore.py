@@ -152,3 +152,35 @@ def test_standalone_gateway_persists_nothing_and_keys_stay_agent_main(tmp_path, 
     assert identity_of(restored) is None
     assert fresh.runner._delivery_adapter_for(restored) is fresh.primary
     assert fresh.runner._session_key_for_source(restored) == "agent:main:telegram:dm:4040"
+
+
+@pytest.mark.parametrize("resolver", ["_adapter_profile_for_source", "_authorization_home_for_source"])
+def test_inferred_transport_uses_secondary_owner_policy(mux, resolver):
+    """A guessed default transport must not lend its policy or authorization home."""
+    from gateway.session import SessionSource
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="424242", chat_type="dm",
+        user_id="424242", thread_id="1234", profile="team_b",
+    )
+    identity = resolve_identity(source, runner=mux.runner)
+    assert identity.transport_inferred
+    assert identity.authorization_home == mux.home
+    assert mux.runner._delivery_adapter_for(source) is mux.team_b
+    expected = "team_b" if resolver == "_adapter_profile_for_source" else mux.home / "profiles" / "team_b"
+    assert getattr(mux.runner, resolver)(source) == expected
+
+
+@pytest.mark.parametrize("transport_profile", ["default", "team_b"])
+def test_explicit_transport_keeps_receiving_bot_policy(mux, transport_profile):
+    """A known shared bot keeps its own policy even when the runtime is a satellite."""
+    adapter = mux.primary if transport_profile == "default" else mux.team_b
+    chat_id = "72719239" if transport_profile == "default" else "555"
+    source = adapter.build_source(chat_id=chat_id, chat_type="dm", user_id=chat_id)
+    identity = resolve_identity(source, runner=mux.runner, transport_profile=transport_profile)
+    assert not identity.transport_inferred
+    assert identity.runtime_profile == "ops"
+    expected_profile = None if transport_profile == "default" else "team_b"
+    expected_home = mux.home if transport_profile == "default" else mux.home / "profiles" / "team_b"
+    assert mux.runner._adapter_profile_for_source(source) == expected_profile
+    assert mux.runner._authorization_home_for_source(source) == expected_home

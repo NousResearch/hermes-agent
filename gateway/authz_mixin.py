@@ -429,10 +429,11 @@ class GatewayAuthorizationMixin:
         injection, voice, auto-resume) must read the admitting bot's allowlist instead."""
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        if identity is not None:
+        if identity is not None and not identity.transport_inferred:
             return identity.authorization_home if identity.multiplexed else None
         stamped = getattr(source, "_authorization_profile_home", None)
-        if stamped is not None:
+        # An inferred identity stamps the same guessed home; it is not independent provenance.
+        if stamped is not None and (identity is None or not identity.transport_inferred):
             return Path(stamped)
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return None
@@ -455,7 +456,7 @@ class GatewayAuthorizationMixin:
             return owner[1]
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        if identity is not None and identity.multiplexed:
+        if identity is not None and identity.multiplexed and not identity.transport_inferred:
             return None if identity.transport_profile == "default" else identity.transport_profile
         return getattr(source, "profile", None)
 

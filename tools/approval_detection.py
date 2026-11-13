@@ -14,6 +14,8 @@ import shlex
 import tempfile
 import unicodedata
 
+from tools.approval_ansi_c import expand_ansi_c_quotes
+
 logger = logging.getLogger("tools.approval")
 
 # Sensitive write targets, matched via ~ / $HOME / $HERMES_HOME spellings. The resolved absolute
@@ -370,7 +372,7 @@ def detect_hardline_command(command: str) -> tuple:
     # (`\"` -> `"`), so a shell-valid pattern like `grep -o "[^\"]*"` lexed as unterminated and was
     # reported as a hardline block (118 of 125 hardline blocks in one week of real use, every one a
     # benign grep). Only quoted newlines are masked: they are data, and masking keeps quoting intact.
-    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(command))
+    _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(expand_ansi_c_quotes(command)))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
     for command_variant in _command_detection_variants(command):
@@ -759,6 +761,9 @@ def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command before pattern matching so ANSI escapes, null bytes, Unicode fullwidth
     forms, and shell splicing tricks cannot bypass detection."""
     from tools.ansi_strip import strip_ansi
+    # Decode $'...' first: the escape strip below would turn $'\x72\x6d' into $'x72x6d', and the
+    # home fold must see the decoded absolute path.
+    command = expand_ansi_c_quotes(command)
     command = unicodedata.normalize('NFKC', strip_ansi(command).replace('\x00', ''))
     # Collapse backslash-newline continuations (`rm -rf \<newline>/` runs as `rm -rf /`). MUST
     # precede the generic escape strip below, whose [^\n] class skips newlines and would leave the
@@ -1628,7 +1633,7 @@ def _deny_command_variants(command: str):
     executable basename (never arbitrary argument paths).
     """
     yield from _command_detection_variants(command)
-    pending, seen = [command], set()
+    pending, seen = [expand_ansi_c_quotes(command)], set()
     while pending:
         source = pending.pop()
         if source in seen:
@@ -1667,7 +1672,9 @@ def _deny_command_variants(command: str):
 def _command_detection_variants(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
-    # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state.
+    # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state
+    # once $'...' is rewritten as plain single quotes (`$'\''` otherwise desyncs every quote-aware scanner).
+    command = expand_ansi_c_quotes(command)
     normalized = _normalize_command_for_detection(_mask_quoted_newlines(command))
     # Quote-aware grep parsing hides only structurally identified pattern operands; malformed or
     # ambiguous input stays byte-for-byte intact.

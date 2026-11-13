@@ -308,8 +308,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 from gateway.stream_consumer import GatewayStreamConsumer
                 adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
-                    supports_incremental_stream = any(
-                        message_editing_capabilities(adapter, ctx.source.chat_id))
+                    supports_incremental_stream = any(message_editing_capabilities(
+                        adapter, ctx.source.chat_id, transport=getattr(scfg, "transport", "auto")))
                     consumer_stream_deltas = want_stream_deltas and supports_incremental_stream
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter,

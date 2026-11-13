@@ -957,7 +957,7 @@ def _chat_streams_drafts(adapter: Any, chat_id: Any) -> bool:
         return False
 
 
-def message_editing_capabilities(adapter: Any, chat_id: Any) -> tuple[bool, bool]:
+def message_editing_capabilities(adapter: Any, chat_id: Any, *, transport: str = "auto") -> tuple[bool, bool]:
     """``(can edit this chat, can stream it without editing)`` for one chat's delivery adapter.
 
     ``SUPPORTS_MESSAGE_EDITING`` is a class-wide attribute, but a relay connector fronts several
@@ -977,4 +977,5 @@ def message_editing_capabilities(adapter: Any, chat_id: Any) -> tuple[bool, bool
         can_edit = bool(getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True))
     if can_edit or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False)):
         return can_edit, True
-    return can_edit, _chat_streams_drafts(adapter, chat_id)
+    # Drafts cannot rescue an edit-only transport: the consumer never selects them.
+    return can_edit, (transport or "auto").lower() in ("auto", "draft") and _chat_streams_drafts(adapter, chat_id)

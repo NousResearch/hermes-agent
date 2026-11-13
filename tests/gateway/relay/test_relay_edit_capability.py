@@ -84,18 +84,20 @@ async def _attach(stub: StubConnector, platform: Platform, chat_id: str) -> None
     )
 
 
-def _stream_cfg() -> StreamingConfig:
-    return StreamingConfig(enabled=True, transport="edit")
+def _stream_cfg(*, transport: str = "auto") -> StreamingConfig:
+    return StreamingConfig(enabled=True, transport=transport)
 
 
 def _source(chat_id: str) -> SessionSource:
     return SessionSource(platform=Platform.RELAY, chat_id=chat_id, chat_type="dm", user_id="u-1")
 
 
-def _build(source: SessionSource, adapter: RelayAdapter, *, on_missing_cursor: str = "raise"):
+def _build(source: SessionSource, adapter: RelayAdapter, *, on_missing_cursor: str = "raise",
+           transport: str = "auto"):
     # The method reads only its arguments (no runner state), so a bare stand-in self is faithful.
     return GatewayTurnMixin._build_stream_consumer_config(
-        types.SimpleNamespace(), source, _stream_cfg(), adapter, on_missing_cursor=on_missing_cursor
+        types.SimpleNamespace(), source, _stream_cfg(transport=transport), adapter,
+        on_missing_cursor=on_missing_cursor
     )
 
 
@@ -164,3 +166,15 @@ async def test_draft_capable_chat_keeps_streaming_without_a_cursor():
 
     cfg, _pause = _build(_source("sig-1"), adapter)
     assert cfg.cursor == ""
+
+@pytest.mark.asyncio
+async def test_explicit_edit_transport_cannot_stream_to_draft_only_chat():
+    """Draft support is irrelevant when edit-only transport cannot select native drafts."""
+    stub = MultiDescriptorStub(EDITABLE, SIGNAL_DRAFTS)
+    adapter = RelayAdapter(PlatformConfig(), EDITABLE, transport=stub)
+    await adapter.connect()
+    await _attach(stub, Platform.SIGNAL, "sig-1")
+
+    # 'auto' uses the native draft path; 'edit' uses send/edit and would fragment SMS.
+    with pytest.raises(RuntimeError, match="skip streaming for non-editable platform"):
+        _build(_source("sig-1"), adapter, transport="edit")

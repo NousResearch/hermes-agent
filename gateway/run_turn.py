@@ -563,9 +563,9 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         if source.platform == Platform.TELEGRAM and hasattr(adapter, "pause_typing_for_chat"):
             def _pause_typing_before_finalize(_adapter=adapter, _chat_id=source.chat_id) -> None:
                 _adapter.pause_typing_for_chat(_chat_id)
-        # Non-editing platforms (QQ, WeChat) skip streaming — the partial first message could never be
-        # updated — unless the CHAT can draft-stream, or streams natively (WeCom msgtype "stream").
-        _adapter_supports_edit, _adapter_streams_unedited = message_editing_capabilities(adapter, source.chat_id)
+        # Non-editing chats need an enabled draft/native transport to receive streaming deltas.
+        _adapter_supports_edit, _adapter_streams_unedited = message_editing_capabilities(
+            adapter, source.chat_id, transport=scfg.transport)
         if not _adapter_supports_edit and not _adapter_streams_unedited and on_missing_cursor == "raise":
             raise RuntimeError("skip streaming for non-editable platform")
         _effective_cursor = scfg.cursor if _adapter_supports_edit else ""

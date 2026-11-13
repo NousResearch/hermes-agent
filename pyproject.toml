@@ -302,7 +302,7 @@ wecom = ["defusedxml==0.7.1"]
 # Opt-in OS-keychain storage for the local credential vault key (vault.key_storage: keychain).
 # Lazy-installed by `hermes vault key migrate --to keychain`, so NOT in [all].
 keychain = ["keyring==25.7.0"]
-tts-premium = ["elevenlabs==1.59.0"]
+tts-premium = ["elevenlabs==2.56.0"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
   # faster-whisper's closure is prebuilt-only and missing pieces on two

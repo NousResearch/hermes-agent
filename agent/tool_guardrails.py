@@ -51,6 +51,28 @@ _STALL_GUARD_CYCLE_HISTORY = 64
 IDENTICAL_RESULT_STUB_MIN_CHARS = 512
 _RESULT_STUB_ARGS_PREVIEW_CHARS = 120
 
+# Poller ARGV run through a generic tool (e.g. `terminal` running `gh pr checks`): the args stay
+# identical while the RESULT changes as the world moves (CI pending -> pass). The identical-call
+# streak keys on (tool, args, result), so these never form a streak and run to the budget.
+# Measured 2026-11-09: one session spent 96 of 297 turns re-running `gh pr checks`, ~22M tokens.
+# For these argv prefixes the streak keys on args ALONE.
+POLLER_ARGV_PREFIXES = (
+    "gh pr checks", "gh run view", "gh run list", "gh pr view", "gh pr status",
+    "kubectl get", "docker ps", "gcloud builds describe",
+)
+
+
+def _is_poller_args(args: Mapping[str, Any] | None) -> bool:
+    """True when the call's `command` argv starts with a known poller prefix."""
+    if not isinstance(args, Mapping):
+        return False
+    cmd = args.get("command")
+    if not isinstance(cmd, str):
+        return False
+    cmd = cmd.strip()
+    return any(cmd.startswith(prefix) for prefix in POLLER_ARGV_PREFIXES)
+
+
 # Tools whose "failure" is normal work output (red test run, empty grep, page timeout).
 # same_tool_failure (DIFFERENT commands) never halts these; only an exact-args replay with
 # no intervening change, or an identical-result streak, can.
@@ -462,12 +484,14 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         result_hash = _result_hash(result, tool_name) if is_plain_str else ""
 
-        if is_plain_str and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
+        # Pollers: key on args alone, because a changing result is the whole point of polling.
+        _streak_result_hash = "" if _is_poller_args(args) else result_hash
+        if is_plain_str and (signature, _streak_result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
             self._identical_streak_count += 1
         else:
             # New streak; non-string (multimodal) results never form one.
             self._identical_streak_sig = signature if is_plain_str else None
-            self._identical_streak_result_hash = result_hash
+            self._identical_streak_result_hash = _streak_result_hash
             self._identical_streak_count = 1 if is_plain_str else 0
             self._identical_streak_first_call_id = tool_call_id or ""
         count = self._identical_streak_count

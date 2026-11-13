@@ -17,6 +17,9 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.profile_routing import parse_profile_routes
 
 
+_PLATFORMS = (Platform.SLACK, Platform.TELEGRAM, Platform.DISCORD)
+
+
 class _Primary:
     """The default profile's live bot: records every outbound act."""
 
@@ -42,7 +45,7 @@ def satellite(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(multiplex_profiles=True)
-    runner.config.platforms = {p: PlatformConfig(enabled=True, extra={}) for p in (Platform.SLACK, Platform.TELEGRAM)}
+    runner.config.platforms = {p: PlatformConfig(enabled=True, extra={}) for p in _PLATFORMS}
     runner.config.profile_routes = parse_profile_routes([
         {"name": "sec-slack", "platform": "slack", "profile": "sec", "chat_id": "C0ROUTED1"},
         {"name": "sec-tg", "platform": "telegram", "profile": "sec", "chat_id": "-100111"},
@@ -51,7 +54,7 @@ def satellite(tmp_path, monkeypatch):
     runner._primary_profile_name = "default"
     runner._profile_failed_platforms = {}
     runner._profile_bot_platforms = {}
-    primary = {p: _Primary(p) for p in (Platform.SLACK, Platform.TELEGRAM)}
+    primary = {p: _Primary(p) for p in _PLATFORMS}
     runner.adapters = dict(primary)
     runner._profile_adapters = {"sec": {}}  # no bot of its own: borrows the primary's
     with patch("gateway.run._gateway_runner_ref", return_value=runner), \
@@ -62,7 +65,7 @@ def satellite(tmp_path, monkeypatch):
 def _satellite_config():
     """The satellite's own config enables the platforms (the cron fallback precondition)."""
     return SimpleNamespace(
-        platforms={p: PlatformConfig(enabled=True, token="xoxb-sat", extra={}) for p in (Platform.SLACK, Platform.TELEGRAM)},
+        platforms={p: PlatformConfig(enabled=True, token="xoxb-sat", extra={}) for p in _PLATFORMS},
         get_home_channel=lambda _p: None)
 
 
@@ -123,3 +126,93 @@ def test_cron_standalone_fallback_cannot_reach_the_primary_bot(satellite):
         error = _deliver_result(job, "hello", adapters=shared, loop=loop)
     assert slack.sent == []
     assert error is not None and "profile_routes" in error
+
+
+# (routes, the turn's inbound origin): the inbound matcher hands each conversation to ``sec`` though
+# none is a target-exact ``SharedRouteAdapters`` route: guild-only, a thread under a routed channel,
+# a non-Telegram ``user_id`` route.
+_ORIGIN_ROUTED = {
+    "guild": ([{"name": "g", "platform": "discord", "guild_id": "900", "profile": "sec"}],
+              dict(platform="discord", chat_id="111", scope_id="900")),
+    "thread-under-channel": ([{"name": "c", "platform": "discord", "chat_id": "111", "profile": "sec"}],
+                             dict(platform="discord", chat_id="555", thread_id="555", parent_chat_id="111")),
+    "slack-user": ([{"name": "u", "platform": "slack", "user_id": "U1", "profile": "sec"}],
+                   dict(platform="slack", chat_id="D1", user_id="U1")),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_ORIGIN_ROUTED))
+def test_satellite_acts_in_its_inbound_routed_conversation_only(satellite, shape):
+    """Its own conversation stays reachable; another chat, a foreign thread, or an origin whose most
+    specific route names another profile does not."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    routes, origin = _ORIGIN_ROUTED[shape]
+    satellite.runner.config.profile_routes = parse_profile_routes(routes)
+    adapter = satellite.primary[Platform(origin["platform"])]
+
+    def react(target):
+        return _tool({"action": "react", "target": target, "emoji": "👍", "message_id": "5"})
+
+    tokens = set_session_vars(profile="sec", **origin)
+    try:
+        assert react(f"{origin['platform']}:{origin['chat_id']}").get("success") is True
+        assert "profile_routes" in react(f"{origin['platform']}:777").get("error", "")
+        if origin["platform"] == "discord":  # thread ids are global there
+            assert "profile_routes" in react("discord:111:999").get("error", "")
+        # The same ids on another platform are not this conversation, whatever routes exist there.
+        elsewhere = "slack" if origin["platform"] == "discord" else "discord"
+        satellite.runner.config.profile_routes = parse_profile_routes(
+            routes + [{**r, "name": f"{r['name']}-x", "platform": elsewhere} for r in routes])
+        assert "profile_routes" in react(f"{elsewhere}:{origin['chat_id']}").get("error", "")
+        more_specific = {k: origin[k] for k in ("chat_id", "thread_id", "user_id") if k in origin}
+        satellite.runner.config.profile_routes = parse_profile_routes(routes + [dict(
+            name="other", platform=origin["platform"], profile="other", **more_specific)])
+        assert "profile_routes" in react(f"{origin['platform']}:{origin['chat_id']}").get("error", "")
+    finally:
+        clear_session_vars(tokens)
+    assert adapter.reactions == [origin["chat_id"]]
+
+
+def test_origin_topic_does_not_vouch_for_the_rest_of_its_chat(satellite):
+    """A Telegram topic id is scoped to its chat, so a target without it is the General topic,
+    which a topic-pinned route does not dispatch to ``sec``: the origin rule must match what the send
+    reaches, not the origin's topic."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    satellite.runner.config.profile_routes = parse_profile_routes([
+        {"name": "t", "platform": "telegram", "chat_id": "-100222", "thread_id": "7", "profile": "sec"}])
+    tg = satellite.primary[Platform.TELEGRAM]
+    tokens = set_session_vars(profile="sec", platform="telegram", chat_id="-100222", thread_id="7")
+    try:
+        refused = _tool({"action": "react", "target": "telegram:-100222", "emoji": "👍", "message_id": "5"})
+        sent = _tool({"action": "react", "target": "telegram:-100222:7", "emoji": "👍", "message_id": "5"})
+    finally:
+        clear_session_vars(tokens)
+    assert "profile_routes" in refused.get("error", ""), refused
+    assert sent.get("success") is True, sent
+    assert tg.reactions == ["-100222"]
+
+
+def test_shared_channel_origin_matches_on_the_turn_sender(satellite):
+    """A shared channel binds no route user (``session_env_source``), but dispatch matched the
+    sender: a ``user_id`` route admits that sender's turn, and a turn other senders joined (no single
+    actor) falls back to the strict rule."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    satellite.runner.config.profile_routes = parse_profile_routes([
+        {"name": "u", "platform": "slack", "user_id": "U1", "profile": "sec"}])
+    slack = satellite.primary[Platform.SLACK]
+    react = {"action": "react", "target": "slack:C0SHARED", "emoji": "👍", "message_id": "5"}
+    tokens = set_session_vars(profile="sec", platform="slack", chat_id="C0SHARED", actor_id="U1")
+    try:
+        assert _tool(react).get("success") is True
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(profile="sec", platform="slack", chat_id="C0SHARED", actor_id="U1",
+                              turn_event=SimpleNamespace(user_id=""))
+    try:
+        assert "profile_routes" in _tool(react).get("error", "")
+    finally:
+        clear_session_vars(tokens)
+    assert slack.reactions == ["C0SHARED"]

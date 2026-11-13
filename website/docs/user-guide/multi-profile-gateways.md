@@ -879,6 +879,16 @@ delivery to that user's DM without an extra route. The routed profile does not n
 own `platforms.<platform>` block for this: the shared bot's authorization comes
 from the route, not from the satellite's config.
 
+A routed profile's `send_message` sends and reactions, and plugin
+`ctx.platform_actions`, follow the same target rule, with one addition: during a
+turn, the conversation that turn came from also qualifies whenever the inbound
+route matcher would hand it to that profile. That covers guild-only routes, a
+thread under a routed channel, and `user_id` routes. Where thread ids are scoped
+to a chat (Telegram, Slack, Matrix, Mattermost), the target without a thread is the
+chat's top level, so a route pinned to one topic does not cover the rest of
+the chat. Webhook deliveries never qualify this way, because they have no
+inbound conversation.
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every

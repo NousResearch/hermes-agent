@@ -249,12 +249,46 @@ class GatewayAuthorizationMixin:
             return True
         if platform in (self._profile_adapters_map().get(profile_name) or {}):
             return True
+        if self._is_routed_turn_origin(platform, profile_name, chat_id, thread_id):
+            return True
         from cron.scheduler_preflight import SharedRouteAdapters
         routes = [r for r in getattr(self.config, "profile_routes", None) or []
                   if r.enabled and r.profile == profile_name and r.bot_profile is None]
         sentinel = object()
         target = {"chat_id": str(chat_id or ""), "thread_id": str(thread_id) if thread_id else None}
         return SharedRouteAdapters({platform: sentinel}, routes).get(platform, target) is sentinel
+
+    def _is_routed_turn_origin(self, platform: Platform, profile: str, chat_id, thread_id=None) -> bool:
+        """Whether the target is in the running turn's own chat and the inbound matcher
+        (``_default_bot_routes_to``) would dispatch it to *profile*. Guild-only routes, a channel
+        route's threads and non-Telegram ``user_id`` routes hand a satellite that conversation without
+        making it a ``SharedRouteAdapters`` target; its reply already goes there through the shared bot
+        (``_routed_primary_adapter``), so its tools may act there too. The target id carries no guild,
+        parent or sender, so it borrows the origin's, which is only sound for the origin chat. Cron
+        binds no origin and the webhook leg runs as ``webhook``, so both keep the stricter rule."""
+        from gateway.session_context import get_session_env
+        from cron.scheduler_preflight import _CHAT_SCOPED_THREAD_PLATFORMS
+        origin_chat = get_session_env("HERMES_SESSION_CHAT_ID")
+        if (not origin_chat or get_session_env("HERMES_SESSION_PLATFORM") != platform.value
+                or str(chat_id or "") != origin_chat):
+            return False
+        origin_thread = get_session_env("HERMES_SESSION_THREAD_ID") or None
+        target_thread = str(thread_id) if thread_id else None
+        # Where a thread id is scoped to its chat, match exactly what the send reaches: no thread is
+        # the chat's top level (Telegram's General topic), not the origin's topic. Elsewhere (Discord,
+        # Feishu) the thread id alone is the destination, carrying none of the origin's guild or
+        # parent, so only the origin's own thread qualifies.
+        if platform.value not in _CHAT_SCOPED_THREAD_PLATFORMS:
+            if target_thread is not None and target_thread != origin_thread:
+                return False
+            target_thread = origin_thread
+        target = SessionSource(
+            platform=platform, chat_id=origin_chat, thread_id=target_thread,
+            scope_id=get_session_env("HERMES_SESSION_SCOPE_ID") or None,
+            parent_chat_id=get_session_env("HERMES_SESSION_PARENT_CHAT_ID") or None,
+            # A shared chat binds no route user; the turn's sender is the one dispatch matched.
+            user_id=get_session_env("HERMES_SESSION_USER_ID") or get_session_env("HERMES_SESSION_ACTOR_ID") or None)
+        return self._default_bot_routes_to(target, profile)
 
     def _routed_primary_adapter(self, source: Optional[SessionSource]):
         """The primary's transport for *source* when it is a routed destination of a shared-bot satellite.

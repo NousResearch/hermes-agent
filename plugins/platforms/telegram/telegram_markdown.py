@@ -347,6 +347,7 @@ def to_markdown_v2(content: str) -> str:
         return _ph(f'[{_escape_mdv2(m.group(1))}]({url})')
 
     text = _MD_LINK_RE.sub(_convert_link, text)
+    text = _stash_bare_urls(text, _ph)
     # 4) Headers (## Title) → bold *Title*, stripping redundant ** inside the header
     def _convert_header(m):
         inner = re.sub(r'\*\*(.+?)\*\*', r'\1', m.group(1).strip())
@@ -387,6 +388,30 @@ def to_markdown_v2(content: str) -> str:
         else:
             _safe_parts.append(re.sub(r'[(){}]', lambda m, _seg=_seg: _escape_bare_bracket(m, _seg), _seg))
     return ''.join(_safe_parts)
+
+
+# A bare scheme URL; trailing punctuation and emphasis/spoiler marks are prose, not URL.
+_BARE_URL_RE = re.compile(r'(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\x00]+')
+_URL_TAIL_CHARS = '.,;:!?\'"*_~|'
+
+
+def _url_end(url: str) -> int:
+    """Length of *url* without trailing prose punctuation; a ``)`` stays only while it closes a ``(``."""
+    end = len(url)
+    while end and (url[end - 1] in _URL_TAIL_CHARS or (url[end - 1] == ')' and url.count('(', 0, end) < url.count(')', 0, end))):
+        end -= 1
+    return end
+
+
+def _stash_bare_urls(text: str, stash) -> str:
+    """Stash bare URLs escaped whole, so a ``*``, ``~~`` or ``||`` inside one stays literal URL text
+    instead of pairing into italic/strike/spoiler marks that drop characters or hide the URL."""
+    def _one(m) -> str:
+        url = m.group(0)
+        end = _url_end(url)
+        return stash(_escape_mdv2(url[:end])) + url[end:]
+
+    return _BARE_URL_RE.sub(_one, text)
 
 
 def _stash_inline_code(text: str, stash) -> str:

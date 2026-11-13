@@ -222,3 +222,19 @@ def test_link_shaped_text_inside_a_code_span_stays_verbatim(span):
     from plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links
 
     assert degrade_unrenderable_links(f"use {span} then [x](y)") == f"use {span} then x"
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:5173/?token=abc123",
+    "https://web.archive.org/web/*/example.com/*",
+    "http://h.example/p?t=a*b*c",
+    "https://x.example/a~~b~~c",
+    "http://h.example/x||y||z",
+])
+def test_bare_url_reaches_the_chat_as_literal_text(adapter, url):
+    """Every char of a bare URL is escaped, so * ~ || inside it never become italic/strike/spoiler."""
+    import re
+    out = adapter.format_message(f"Open {url} now")
+    assert mdv2_error(out) is None
+    assert re.sub(r"\\(.)", r"\1", out) == f"Open {url} now"
+    assert re.search(r"(?<!\\)[*_~|]", out) is None

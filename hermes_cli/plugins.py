@@ -1044,11 +1044,20 @@ def _loaded_registry_nowait(check: Callable[[PluginManager], bool]) -> bool:
     """``check(manager)`` when this home's plugins are loaded, else False (unknown). Never discovers or
     waits. ``_discovered`` is set before a sweep finishes and a force reload clears the registries
     first, so a held discovery lock is unknown, and ``check`` reads the registry under that lock."""
-    manager = get_plugin_manager()
-    if not manager._discovery_lock.acquire(blocking=False):
+    if not _plugin_managers_lock.acquire(blocking=False):
         return False
     try:
-        return manager._discovered and check(manager)
+        home = _plugin_home_key()
+        if home in _plugin_manager_teardown_owners:
+            return False
+        from hermes_cli.plugins_lifecycle import _manager_for_home
+        manager = _manager_for_home(sys.modules[__name__], home)
+        if manager is None or not manager._discovery_lock.acquire(blocking=False):
+            return False
+    finally:
+        _plugin_managers_lock.release()
+    try:
+        return not manager._retired and manager._discovered and check(manager)
     finally:
         manager._discovery_lock.release()
 

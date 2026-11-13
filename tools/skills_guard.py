@@ -154,6 +154,19 @@ _CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|creden
 # `os.path.expanduser(...)` (Python only).
 _CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
 _PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
+# Well-known PUBLIC Solana program ids (SPL Token, Token-2022, Associated Token Account, Memo,
+# System, Metaplex Token Metadata). On-chain code addresses every client hardcodes, so a
+# `TOKEN = '<id>'` constant names a program, it does not embed a credential. A CLOSED list, matched
+# case-sensitively as the WHOLE quoted value: this can only turn a hardcoded_secret flag into clean
+# for these exact ids; any other value, or one of these with a character changed, still matches.
+_PUBLIC_SOLANA_PROGRAM_IDS = r'(?-i:' + '|'.join((
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+    'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',
+    '11111111111111111111111111111111',
+    'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
+)) + r')'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -494,6 +507,7 @@ THREAT_PATTERNS = [
     # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
      r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'(?!' + _PUBLIC_SOLANA_PROGRAM_IDS + r'["\'])'
      r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
     (r'(?-i:-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----)',

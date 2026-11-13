@@ -1,0 +1,28 @@
+name: rubal-oracle
+repo: https://github.com/X0EF/rubal-oracle
+sha: "7ac3edac485ecd49a85e5018022dd635ef3bacd1"
+version: "0.1.0"
+title: rubal-oracle
+description: "Say a goal in Hermes chat with a deadline. Afterward Oracle checks proof (met / not met / couldn't verify) from git, Calendar, GitHub, Notion, Linear, Gmail, kanban, Strava, or Apple Health. Rubal is the forecast from similar past attempts. Disclosure — runs local git log on repo paths the user names; stores commitments in Hermes plugin SQLite under the plugin data dir; may cache Calendar event text from Hermes tool output; does not call third-party APIs itself and does not send telemetry."
+maintainer: X0EF
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/X0EF/rubal-oracle/blob/7ac3edac485ecd49a85e5018022dd635ef3bacd1/README.md
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - oracle_commit
+    - oracle_settle
+    - oracle_revise
+    - oracle_status
+    - oracle_mirror
+    - oracle_extend
+    - oracle_respond_track
+    - oracle_backfill
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

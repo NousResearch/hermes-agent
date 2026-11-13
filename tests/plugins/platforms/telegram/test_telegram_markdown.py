@@ -283,6 +283,11 @@ def test_emphasis_wrapping_a_url_that_ends_in_slash_still_renders(adapter, wrapp
     ("***a** https://x/y*", "_*a* https://x/y_"),
     ("**a *b https://x/c* d**", "*a _b https://x/c_ d*"),
     ("**rm *x https://x/y**", "*rm \\*x https://x/y*"),
+    # A backslash-escaped star is URL text; only the marks after it may close (as on main).
+    (r"***Docs https://ex.com/a\** now", r"\*\*_Docs https://ex\.com/a\\\*_ now"),
+    (r"***see https://ex.com/\**, ok", r"\*\*_see https://ex\.com/\\\*_, ok"),
+    (r"**x https://ex.com/a\** z", r"\*_x https://ex\.com/a\\\*_ z"),
+    (r"**a *x https://ex.com/\*** z", r"*a \*x https://ex\.com/\\\** z"),
 ])
 def test_emphasis_around_a_url_pairs_as_around_any_word(adapter, wrapped, rendered):
     """Bold across a newline, nested emphasis and a closer with prose right after it pair as they
@@ -294,17 +299,25 @@ def test_emphasis_around_a_url_pairs_as_around_any_word(adapter, wrapped, render
 
 def _url_survives(text: str, url: str, out: str) -> bool:
     """*url* reaches the chat whole (every mark escaped), or ends at a mark run that closes emphasis
-    opened before it: its text up to that run shows contiguous and escaped, the run renders as the
-    closer, and what follows the run is prose again."""
+    opened before it: its text up to that run (a backslash-escaped first mark included) shows
+    contiguous and escaped, the run renders as the closer, and what follows the run is prose again."""
     esc = telegram_markdown._escape_mdv2
     if esc(url) in out:
         return True
     opened = text[:text.index(url)]
-    return any(run.group()[0] in opened and re.search(re.escape(esc(url[:run.start()])) + r"[*_~|]", out)
+
+    def cut(run) -> int:  # a backslash-escaped first mark is URL text: the closer starts after it
+        slashes = len(url[:run.start()]) - len(url[:run.start()].rstrip("\\"))
+        return run.start() + slashes % 2
+
+    return any(run.group()[0] in opened and cut(run) < run.end()
+               and re.search(re.escape(esc(url[:cut(run)])) + r"[*_~|]", out)
                for run in re.finditer(r"[*~|]+", url))
 
 
 _URL_SHAPES = [f"a{m}{p}b{m}c{t}" for m in ("*", "**", "~~", "||") for p in ".,;:!?)" for t in ("", m)]
+# a backslash-escaped mark inside or at the end of a URL is URL text, never an emphasis closer
+_URL_SHAPES += [rf"a\{m}{p}b\{m}c{t}" for m in ("*", "**", "~~", "||") for p in ".," for t in ("", "\\" + m, m)]
 _URL_WRAPPERS = ["{}", "Open {} now", "*{}*", "**{}**", "~~{}~~", "||{}||", '"{}"', "*Open {} now*",
                  "**see\n{}**", "*x* {} *y*", "{}, then **b**"]
 

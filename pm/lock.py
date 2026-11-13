@@ -323,23 +323,25 @@ class Facts:
         self.retain(set(packages) - set(names))
 
     def drop_dead_history(self, live) -> None:
-        """Forget other installs' pins once ``live(owner)`` says no owning checkout remains.
+        """Forget tool pins whose owning checkouts ``live(owner)`` reports gone.
 
-        The selected record is never dropped."""
+        A dead selection gives way to the first live pin in its history; a row with no owners
+        (written before per-install history) is kept selected, since nothing proves it unused."""
         packages = _read(self.path, strict=True)["packages"]
         changed = False
-        for fact in packages.values():
-            history = fact.get("previous") if isinstance(fact, dict) else None
-            if not isinstance(history, list):
+        for name, fact in packages.items():
+            if not isinstance(fact, dict) or not isinstance(fact.get("previous"), list):
                 continue
-            kept = [row for row in history
+            top = {k: v for k, v in fact.items() if k != "previous"}
+            rows = [row for row in [top, *fact["previous"]]
                     if isinstance(row, dict) and any(map(live, row.get("owners") or []))]
-            if kept != history:
-                changed = True
-                if kept:
-                    fact["previous"] = kept
-                else:
-                    del fact["previous"]
+            if not top.get("owners") and top not in rows:
+                rows.insert(0, top)
+            if not rows:
+                rows = [top]
+            kept = {**rows[0], "previous": rows[1:]} if rows[1:] else rows[0]
+            if kept != fact:
+                packages[name], changed = kept, True
         if changed:
             _write(self.path, {"schema": SCHEMA, "packages": packages})
         self._packages = packages

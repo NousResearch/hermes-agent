@@ -6,7 +6,7 @@ description: 'Acrylic glass for Hermes Desktop: a frosted, see-through theme wit
 maintainer: Saderius
 tier: community
 category: desktop
-requires_hermes: '>=0.23.0'
+requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Saderius/hermes-acrylic#readme
 version: 1.1.0
 platforms: []

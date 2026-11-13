@@ -275,12 +275,13 @@ class TestFeishuAllowlistMatchesEveryOperatorId:
 
 
 class TestCachedChatTypeResolution:
-    """Card clicks resolve dm/group from the message lane's chat-info cache (a DM click must
-    follow DM admission, not the group allowlist); unknown chats fail closed to "group"."""
+    """Card clicks resolve dm/group/forum from the cache's raw_mode (conversation mode), NOT
+    raw_type (visibility private/public). A private-visibility group must follow group admission,
+    not DM. Unknown chats fail closed to "group"."""
 
     def test_dm_cached_chat_type_passes_dm_admission(self):
         adapter = _make_adapter()
-        adapter._chat_info_cache["oc_group"] = {"type": "dm"}
+        adapter._chat_info_cache["oc_group"] = {"raw_type": "private", "raw_mode": "p2p"}
         seen = []
 
         def dm_only(user_id, chat_type=None, chat_id=None, **_kw):
@@ -298,7 +299,7 @@ class TestCachedChatTypeResolution:
 
     def test_update_prompt_dm_cached_chat_type(self):
         adapter = _make_adapter()
-        adapter._chat_info_cache["oc_group"] = {"type": "dm"}
+        adapter._chat_info_cache["oc_group"] = {"raw_type": "private", "raw_mode": "p2p"}
         seen = []
 
         def dm_only(user_id, chat_type=None, chat_id=None, **_kw):
@@ -324,9 +325,9 @@ class TestCachedChatTypeResolution:
 
         assert check.seen == [("ou_requester", "group", "oc_group")]
 
-    def test_cached_group_type_stays_group(self):
+    def test_cached_group_mode_stays_group(self):
         adapter = _make_adapter()
-        adapter._chat_info_cache["oc_group"] = {"type": "group"}
+        adapter._chat_info_cache["oc_group"] = {"raw_type": "public", "raw_mode": "group"}
         check = _gateway_check({"ou_requester"})
         adapter.set_authorization_check(check)
 
@@ -334,6 +335,46 @@ class TestCachedChatTypeResolution:
             adapter._on_card_action_trigger(_approval_click("ou_requester"))
 
         assert check.seen == [("ou_requester", "group", "oc_group")]
+
+    def test_private_visibility_group_mode_maps_to_group_not_dm(self):
+        """Counterexample: raw_type=private (visibility) + raw_mode=group (conversation mode)
+        must be admitted as "group", NOT "dm" — private is about who can see the chat, not
+        whether it is a 1:1 DM."""
+        adapter = _make_adapter()
+        adapter._chat_info_cache["oc_group"] = {"raw_type": "private", "raw_mode": "group"}
+        seen = []
+
+        def group_only(user_id, chat_type=None, chat_id=None, **_kw):
+            seen.append(chat_type)
+            return chat_type == "group"
+
+        adapter.set_authorization_check(group_only)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_requester"))
+
+        assert response.card is not None
+        submit.assert_called_once()
+        assert seen == ["group"]
+
+    def test_private_visibility_topic_mode_maps_to_forum(self):
+        """Counterexample: raw_type=private + raw_mode=topic must map to "forum", not "dm"."""
+        adapter = _make_adapter()
+        adapter._chat_info_cache["oc_topic"] = {"raw_type": "private", "raw_mode": "topic"}
+        seen = []
+
+        def forum_only(user_id, chat_type=None, chat_id=None, **_kw):
+            seen.append(chat_type)
+            return chat_type == "forum"
+
+        adapter.set_authorization_check(forum_only)
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro) as submit:
+            response = adapter._on_card_action_trigger(_approval_click("ou_requester", chat_id="oc_topic"))
+
+        assert response.card is not None
+        submit.assert_called_once()
+        assert seen == ["forum"]
 
 
 class TestIdFormFallback:

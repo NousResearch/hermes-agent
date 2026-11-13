@@ -147,10 +147,10 @@ def test_anthropic_fetch_honors_explicit_api_key_and_marks_model_scoped_windows(
 
     def fake_get_json(url, headers, *, timeout):
         called["url"], called["headers"] = url, headers
-        return {"five_hour": {"utilization": 0.3, "resets_at": "2026-10-05T12:00:00Z"},
-                "seven_day": {"utilization": 0.2, "resets_at": "2026-10-08T12:00:00Z"},
-                "seven_day_opus": {"utilization": 1.0, "resets_at": "2026-10-09T12:00:00Z"},
-                "seven_day_sonnet": {"utilization": 0.4, "resets_at": "2026-10-09T12:00:00Z"}}
+        return {"five_hour": {"utilization": 30, "resets_at": "2026-10-05T12:00:00Z"},
+                "seven_day": {"utilization": 20, "resets_at": "2026-10-08T12:00:00Z"},
+                "seven_day_opus": {"utilization": 100, "resets_at": "2026-10-09T12:00:00Z"},
+                "seven_day_sonnet": {"utilization": 40, "resets_at": "2026-10-09T12:00:00Z"}}
 
     monkeypatch.setattr(account_usage, "_get_json", fake_get_json)
     monkeypatch.setattr(account_usage, "resolve_anthropic_token",
@@ -165,6 +165,24 @@ def test_anthropic_fetch_honors_explicit_api_key_and_marks_model_scoped_windows(
                       "Opus week": "model", "Sonnet week": "model"}
     percents = {w.label: w.used_percent for w in snapshot.windows}
     assert percents["Opus week"] == 100.0 and percents["Current session"] == 30.0
+
+
+@pytest.mark.parametrize("utilization,expected", [
+    (0, 0), (0.5, 0.5), (1, 1), (1.5, 1.5), (87, 87), (100, 100),
+])
+def test_anthropic_utilization_not_scaled_from_percent(monkeypatch, utilization, expected):
+    """Anthropic's ``utilization`` is a 0-100 percent, not a 0-1 fraction (#147006).
+
+    Boundary values in (0, 1] must NOT be scaled by 100: 1% must read as 1%, not 100%.
+    """
+    def fake_get_json(url, headers, *, timeout):
+        return {"five_hour": {"utilization": utilization, "resets_at": "2026-10-05T12:00:00Z"}}
+    monkeypatch.setattr(account_usage, "_get_json", fake_get_json)
+    monkeypatch.setattr(account_usage, "resolve_anthropic_token", lambda **kw: "sk-ant-oat-fake")
+    snapshot = fetch_account_usage("anthropic")
+    assert snapshot is not None
+    assert snapshot.windows[0].used_percent == float(expected), \
+        f"utilization={utilization} should yield used_percent={expected}, got {snapshot.windows[0].used_percent}"
 
 
 def test_read_only_fetch_remembered_under_identity_slot(monkeypatch, tmp_path):

@@ -1,0 +1,19 @@
+name: mote
+repo: https://github.com/magisterai/hermes-mote
+sha: af8975d2eef273e804181ef43a054d8dd9087deb
+description: Write documents in Mote and see them. Renders Mote source to page images the agent can look at, and exports editable Word, PowerPoint and PDF files.
+maintainer: magisterai
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/magisterai/hermes-mote#readme
+version: "0.1.1"
+title: Mote
+platforms: []
+capabilities:
+  provides_tools:
+  - mote_render
+  - mote_export
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

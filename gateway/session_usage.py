@@ -93,6 +93,9 @@ def usage_stats(agent) -> dict:
         active = active_count()
     base = getattr(agent, TURN_BASE_ATTR, None)
     stats.update(avg_latency_s=avg_latency, tokens_per_s=tps,
+                 # Decode-only rate of the latest call (``agent/turn_usage.py``): TTFT and prefill
+                 # excluded, unlike ``tokens_per_s``. None when that call did not stream.
+                 decode_tps=_finite(getattr(agent, "_last_api_decode_tps", None)),
                  last_turn_tokens=max(0, stats["output_tokens"] - base) if isinstance(base, int) else 0,
                  rate_limit=_rate_limit(agent) if agent is not None else None, active_subagents=active,
                  model=str(getattr(agent, "model", "") or ""), provider=str(getattr(agent, "provider", "") or ""),
@@ -149,7 +152,8 @@ def tui_usage(stats: dict) -> dict:
     prompt_total, cache_read = stats.get("prompt_tokens") or 0, stats.get("cache_read_tokens") or 0
     if prompt_total > 0 and cache_read > 0:
         usage["cache_hit_pct"] = max(0, min(100, round(cache_read / prompt_total * 100)))
-    for key, source_key in (("avg_latency_s", "avg_latency_s"), ("avg_tps", "tokens_per_s")):
+    for key, source_key in (("avg_latency_s", "avg_latency_s"), ("avg_tps", "tokens_per_s"),
+                            ("decode_tps", "decode_tps")):
         if isinstance(stats.get(source_key), (int, float)):
             usage[key] = round(float(stats[source_key]), 1)
     if isinstance(stats.get("active_subagents"), int):

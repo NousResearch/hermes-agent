@@ -491,6 +491,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
 | `on_human_input_request` | Observer | The agent is about to block on a person — sudo password prompt, `clarify` question, or dangerous-command approval — on CLI, Ink TUI/Desktop, ACP and gateway platforms; return ignored. | `kind` (`"sudo"` \| `"clarify"` \| `"approval"`), `request_id`, `session_id`, `session_key`, `platform`, `prompt` | `prompt` is always force-redacted; the typed password or answer is never passed. |
 | `on_human_input_resolved` | Observer | Exactly once per `on_human_input_request`, when the wait ends (answered, skipped, timed out, withdrawn, or failed); return ignored. | Same as the request plus `outcome` | Outcome only — never the answer itself. |
+| `on_session_prompt` | Observer | In the gateway, once when a session's owner opens a prompt a person answers for that session's viewers (approval, clarify, sudo, secret, password-manager prompts), after it is registered; queued off the prompt path, in the owning profile; return ignored. | `session_id`, `kind`, `prompt_id`, `execution_generation`, `params` | `params` strings are always force-redacted; never the answer. |
+| `on_session_prompt_settled` | Observer | Exactly once per `on_session_prompt`, when the prompt stops being open (answered, timed out, interrupted, withdrawn, turn ended); return ignored. | `session_id`, `kind`, `prompt_id`, `execution_generation`, `reason` | Identifiers and reason only. |
 | `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
@@ -1638,6 +1640,58 @@ def register(ctx):
 
     ctx.register_hook("on_human_input_request", on_request)
     ctx.register_hook("on_human_input_resolved", on_resolved)
+```
+
+---
+
+### `on_session_prompt`
+
+Fires in the gateway once when a session's owner opens a prompt a person answers for the viewers attached to that session (CLI, Ink TUI, Desktop, a phone app), after the prompt is registered where an answer can find it. Each call carries the id that answers the prompt, so a notification can let the person answer it in place:
+
+| `kind` | Prompt | Answered with `prompt_id` through |
+|--------|--------|-----------------------------------|
+| `"approval"` | Dangerous-command approval (`approval.request` event) | `approval.respond` |
+| `"clarify"` | A clarify question card (`clarify.request` event) | `clarify.respond` |
+| `"sudo"`, `"secret"`, `"vault.unlock_prompt"`, `"vault.code"`, `"vault.save_login"` | Masked sudo password, skill secret, password-manager unlock, one-time code, save-login prompts (server-to-client request frames) | A response frame with that `srq-` id |
+| `"clarify"` (request frame) | The classic CLI's batch clarify panel, or a plugin command's choice | A response frame or `clarify.lock` with that `srq-` id |
+
+Desktop window requests a client app answers without a person (theme, tour, preview, window and terminal reads) never fire it, and neither does a prompt that was never opened because no viewer was attached.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, kind: str, prompt_id: str,
+                execution_generation: int | None, params: dict, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The live session id the prompt was opened in (the id viewers pass back) |
+| `kind` | `str` | As in the table above |
+| `prompt_id` | `str` | The id that answers the prompt; the matching `on_session_prompt_settled` carries the same value |
+| `execution_generation` | `int \| None` | The turn's generation for `approval` / `clarify` events, `None` for request frames |
+| `params` | `dict` | A deep copy of the prompt as the viewers received it (event payload or frame `params`). Every string is redacted with the secret redactor, even when `security.redact_secrets` is off |
+
+What the person types is **never** passed. **Return value:** ignored; a raising callback is logged at debug and the prompt is unaffected. Calls run in order on one background worker, never on the agent thread or the event loop and never under a session lock, in the scope of the profile that owns the session (on a multi-profile gateway, only that profile's plugins are called). A slow callback only delays later calls of these two hooks.
+
+**When to use which:** `on_human_input_request` is surface-neutral (it also fires on messaging platforms and for the CLI's in-process prompts) but carries no answerable id, fires once for a whole multi-question clarify, and never for secret or password-manager prompts. Use `on_session_prompt` when you need to answer or track a specific prompt of a gateway session. A plugin can detect support with `importlib.util.find_spec("gateway.session_prompt_hooks")`.
+
+### `on_session_prompt_settled`
+
+Fires exactly once for every `on_session_prompt`, after it, when the prompt stops being open: answered (from any viewer, a chat button or a remote responder), timed out, interrupted, withdrawn, or its turn ended. Kwargs: `session_id`, `kind`, `prompt_id`, `execution_generation` and `reason` — the `request.cancel` reason for a request frame (`"resolved"`, `"timeout"`, `"interrupted"`), or `"settled"` for an approval or clarify event. No `params`, and never the answer.
+
+```python
+def register(ctx):
+    waiting = {}
+
+    def on_prompt(session_id, kind, prompt_id, params, **kwargs):
+        waiting[prompt_id] = (session_id, kind)  # e.g. notify, with prompt_id as the answer target
+
+    def on_settled(prompt_id, **kwargs):
+        waiting.pop(prompt_id, None)  # e.g. withdraw the notification
+
+    ctx.register_hook("on_session_prompt", on_prompt)
+    ctx.register_hook("on_session_prompt_settled", on_settled)
 ```
 
 ---

@@ -1028,7 +1028,7 @@ async function gatewayForProfile(
   const noRelease = () => undefined
 
   if (key === g.primaryProfile) {
-    return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
+    return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: await sharedPrimaryRoute(key) }
   }
 
   // sharedPrimaryRoute is itself a dial into main (it can start the profile's spawn), so a

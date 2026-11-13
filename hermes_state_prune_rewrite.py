@@ -127,7 +127,12 @@ class SessionPruneRewriteMixin:
                 row["role"], self._decode_content(row["content"]), row["tool_call_id"],
                 _parse_tool_calls(row["tool_calls"]))
             if held_identity != stored_identity:
-                mismatches.append(int(row["id"]))
+                durable = message.get("_held_durable_content")
+                durable_identity = self._row_identity(
+                    "user", durable, message.get("tool_call_id"),
+                    _parse_tool_calls(message.get("tool_calls"))) if durable is not None and message.get("role") == "user" else None
+                if durable_identity != stored_identity:
+                    mismatches.append(int(row["id"]))
         return mismatches
 
     def rewrite_pruned_rows(self, session_id: str, changes: list[tuple[dict[str, Any], dict[str, Any]]], *,

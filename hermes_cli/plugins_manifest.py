@@ -499,9 +499,18 @@ def version_satisfies(spec: str, current: str) -> bool:
     return True
 
 
+def requires_hermes_spec(data: Mapping[str, Any]) -> str:
+    """The ``requires_hermes`` spec a raw manifest declares: top-level in ``plugin.yaml``, or
+    ``extensions."com.nousresearch.hermes".requires_hermes`` in a portable ``plugin.json``. Clients
+    older than this key ignore unknown keys in that namespace, so a plugin can declare it safely."""
+    from hermes_cli.agent_plugins import manifest_hermes_extension
+    spec = data.get("requires_hermes") or manifest_hermes_extension(data).get("requires_hermes")
+    return str(spec or "").strip()
+
+
 def requires_hermes_error(manifest: PluginManifest | Mapping[str, Any]) -> Optional[str]:
     """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
-    spec = manifest.get("requires_hermes", "") if isinstance(manifest, Mapping) else manifest.requires_hermes
+    spec = requires_hermes_spec(manifest) if isinstance(manifest, Mapping) else manifest.requires_hermes
     if not spec:
         return None
     current = running_hermes_version()
@@ -523,6 +532,7 @@ def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginMan
         portable=True, data_namespace=_portable_data_namespace(key),
         config_schema=_config_schema_entries(key, manifest_config_schema(data)),
         config_keys=manifest_config_keys(manifest_hermes_extension(data), key),
+        requires_hermes=requires_hermes_spec(data),
     )
 
 

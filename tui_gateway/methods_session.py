@@ -143,8 +143,24 @@ def _auto_resume_denied_source(row: dict) -> bool:
     return source in _LISTING_DENY_SOURCES or source == "unknown"
 
 
+# The WS listing over-fetches a fixed recency window and post-filters the deny-list, so
+# sources missing from the SQL window crowd human sessions out before the filter ever
+# sees them. Cron is the flood source: a host minting cron sessions every few minutes
+# fills the whole window with watcher rows, and Discord/CLI/app chats vanish from the
+# mobile app's list (measured 196/200 cron rows on a production host). Exclude cron in
+# the query itself; post-filtering cannot recover rows already crowded out.
+_WS_LISTING_EXCLUDE_SOURCES = sorted(_LISTING_DENY_SOURCES | {"cron"})
+
+
 def _listing_rows(db, limit: int, **kwargs) -> list:
-    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied."""
+    """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied.
+
+    Cron is excluded from the recency window unless the caller explicitly scopes the
+    query to a ``source``/``sources`` set (``session.list`` accepts no source param, so
+    no RPC caller can request cron).
+    """
+    if kwargs.get("source") is None and not kwargs.get("sources"):
+        kwargs.setdefault("exclude_sources", _WS_LISTING_EXCLUDE_SOURCES)
     rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True, compact_rows=True, **kwargs)
     return [row for row in rows if not _denied_source(row)]
 

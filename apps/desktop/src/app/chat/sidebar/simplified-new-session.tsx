@@ -14,7 +14,7 @@ import { ChevronDown, Message as IconMessage } from '@/lib/icons'
 import { recordAction } from '@/store/desktop-metrics'
 import { recordIaAction } from '@/store/ia-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
-import { $activeGatewayProfile, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $newChatRoute, $profiles } from '@/store/profile'
 import { knownSessionOwner } from '@/store/session'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
@@ -49,9 +49,12 @@ export function SimplifiedNewSession({ sessions, onFallback }: { sessions: Sessi
   const focusedSessionId = useStore($focusedStoredSessionId)
   const tiles = useStore($sessionTiles)
 
+  // A draft on screen is owned by the agent pinned for it, not by the ambient profile.
+  const draft = useStore($newChatRoute)
+
   const viewedOwner = focusedSessionId
     ? (tileOwnerRoute(tiles, sessions, focusedSessionId) ?? knownSessionOwner(sessions, focusedSessionId))
-    : undefined
+    : (draft ?? undefined)
 
   const viewedRoute = typeof viewedOwner === 'string' ? { connectionId: owner, profile: viewedOwner } : viewedOwner
   const viewedProfile = viewedRoute?.profile ?? profile

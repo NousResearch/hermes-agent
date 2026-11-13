@@ -5,6 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { FigmaAgentIcon } from '@/components/ui/figma-agent-icon'
 import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
+import { $pluginDecisions, pluginActive } from '@/contrib/plugins-store'
 import { portalAgentSwatch } from '@/lib/portal-profile-color'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
@@ -18,6 +19,7 @@ import { $profileColors } from '@/store/profile'
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
 
+import { startSimplifiedAgentSession } from './simplified-new-session-model'
 import type { SimplifiedAgent } from './use-simplified-agents'
 
 interface SimplifiedBotChatRowProps {
@@ -42,6 +44,9 @@ export function SimplifiedBotChatRow({
   const tiles = useStore($sessionTiles)
   const colors = useStore($profileColors)
   const roster = useStore($lastRoster)
+  // An agent's own ongoing chat is Bot Mode's. With the plugin off the agent is still a profile:
+  // its name starts a new chat with it, as New chat does.
+  const botMode = (useStore($pluginDecisions), pluginActive('hermes-bots'))
   const nameId = useId()
   const subtitleId = useId()
 
@@ -84,8 +89,10 @@ export function SimplifiedBotChatRow({
 
           if (onOpen) {
             onOpen()
-          } else {
+          } else if (botMode) {
             void openRosterBot(bot)
+          } else {
+            startSimplifiedAgentSession(agent)
           }
         }}
       >

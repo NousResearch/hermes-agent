@@ -235,3 +235,13 @@ it('does not count a shortcut-created session as a dismissed picker', () => {
   expect(record).toHaveBeenCalledWith('ia.new_session.specific')
   expect(record).not.toHaveBeenCalledWith('ia.new_session.dismissed')
 })
+
+it('targets the agent pinned for the draft on screen, not the ambient profile', () => {
+  profile.$newChatRoute.set({ connectionId: 'alpha', profile: 'default' })
+  render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
+
+  expect(screen.getByRole('combobox').getAttribute('aria-label')).toContain('default')
+  fireEvent.click(screen.getByRole('button', { name: 'New session' }))
+  expect(profile.newSessionInAgent).toHaveBeenCalledWith({ connectionId: 'alpha', profile: 'default' })
+  profile.$newChatRoute.set(null)
+})

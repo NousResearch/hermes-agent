@@ -1,9 +1,11 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { $pluginDecisions } from '@/contrib/plugins-store'
 import { $openBotChat, $pendingBotOpen } from '@/plugins/hermes-bots/bot-state'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import { botWorkspaceOwnerKey } from '@/plugins/hermes-bots/routing'
+import * as profile from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 
@@ -28,6 +30,7 @@ afterEach(() => {
   $openBotChat.set(null)
   $pendingBotOpen.set(null)
   $selectedStoredSessionId.set(null)
+  $pluginDecisions.set({})
 })
 
 it('only opens on click and preserves the exact gateway and target profile', () => {
@@ -86,4 +89,18 @@ it('highlights a canonical tab after its temporary open claim is released', () =
   expect(screen.getByRole('button', { name: 'Alpha' }).hasAttribute('aria-current')).toBe(false)
   act(() => $selectedStoredSessionId.set('canonical-tip'))
   expect(screen.getByRole('button', { name: 'Alpha' }).getAttribute('aria-current')).toBe('page')
+})
+
+it('starts a normal chat with the agent when Bot Mode is switched off', () => {
+  const start = vi.spyOn(profile, 'newSessionInAgent').mockImplementation(() => {})
+  $pluginDecisions.set({ 'hermes-bots': false })
+  render(<SimplifiedBotChatRow agent={agent} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Alpha' }))
+
+  expect(openRosterBot).not.toHaveBeenCalled()
+  expect(start).toHaveBeenCalledExactlyOnceWith({
+    connectionId: 'remote',
+    profile: 'alpha',
+    targetProfile: 'actual-alpha'
+  })
 })

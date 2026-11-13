@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, $newChatRoute } from '@/store/profile'
 import {
   $cronSessions,
   $messagingSessions,
@@ -53,6 +53,9 @@ export function PortalConversationHeader({ paneId }: { paneId: string }) {
   const tiles = useStore($sessionTiles)
   const profile = useStore($activeGatewayProfile)
   const primary = useStore($primaryGatewayRoute)
+  // A draft belongs to the agent pinned for it (session.create reads the same route), which the
+  // ambient profile only follows once that agent's backend is in front.
+  const draft = useStore($newChatRoute)
 
   const rows = [
     ...useStore($sessions),
@@ -66,10 +69,15 @@ export function PortalConversationHeader({ paneId }: { paneId: string }) {
   const { agents, owner } = useSimplifiedAgents(row ? [row] : [])
   const route = sessionId ? (tileOwnerRoute(tiles, rows, sessionId) ?? knownSessionOwner(rows, sessionId)) : undefined
   // An unresolved existing session must never offer the ambient agent's settings.
-  const ownerProfile = typeof route === 'string' ? route : (route?.profile ?? (!sessionId ? profile : undefined))
+  const ownerProfile =
+    typeof route === 'string' ? route : (route?.profile ?? (!sessionId ? (draft?.profile ?? profile) : undefined))
 
   const connectionId =
-    route && typeof route === 'object' ? route.connectionId : sessionId ? primary.connectionId : owner
+    route && typeof route === 'object'
+      ? route.connectionId
+      : sessionId
+        ? primary.connectionId
+        : (draft?.connectionId ?? owner)
 
   const agent = agents.find(item => item.connectionId === connectionId && item.profile === ownerProfile)
 

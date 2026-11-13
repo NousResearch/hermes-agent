@@ -752,7 +752,8 @@ export function useComposerActions({
    * Hermes-managed composer-pastes file via the main process, then attached
    * through the same `@file:` pipeline as a manually attached text file.
    * Returns false (paste stays inline) when the desktop bridge is missing
-   * or the write fails.
+   * or the write fails. A paste rejected for its size returns true after the
+   * error toast: inlining it would put that oversized text in the editor.
    */
   const attachPastedText = useCallback(
     async (text: string) => {
@@ -783,7 +784,8 @@ export function useComposerActions({
       } catch (err) {
         notifyError(err, copy.pasteAttachFailed)
 
-        return false
+        // IPC rejections lose `code`; the main-process cap and the browser 413 both say "too large".
+        return /too large/i.test(err instanceof Error ? err.message : String(err))
       }
     },
     [attachToMain, copy.pasteAttachFailed, copy.pastedContent, currentCwd]

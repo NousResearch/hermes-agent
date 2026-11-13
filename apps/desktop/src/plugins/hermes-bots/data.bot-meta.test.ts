@@ -514,6 +514,31 @@ describe("a bot is named by its own backend, never by another bot's cached recor
     }
   })
 
+  it("an aliased row's server record never freezes the alias's look", () => {
+    indexAliasRoutes([{ connectionId: 'vps', mode: 'remote', profile: 'kody', targetProfile: 'default' }])
+
+    try {
+      $botMeta.set({ 'vps::kody': { color: '#00ff00' } })
+      mergeServerMeta([{ ...vps, ui_meta: { 'hermes-bots': { sectionId: 's1', sectionName: 'S1' } } } as RosterRow])
+      // The direct record holds the backend's fields only, never a copy of the alias.
+      expect($botMeta.get()['vps::default']).toEqual({ sectionId: 's1', sectionName: 'S1' })
+
+      // A later alias edit (or one racing an in-flight roster answer) still shows on the row.
+      $botMeta.set({ ...$botMeta.get(), 'vps::kody': { color: '#0000ff' } })
+      const shown = botRosterMeta(vps, $botMeta.get())
+
+      expect(shown).toMatchObject({ color: '#0000ff', sectionId: 's1' })
+      // Stable identity while neither record changes: renders compare by reference.
+      expect(botRosterMeta(vps, $botMeta.get())).toBe(shown)
+
+      // Once the alias stops claiming the row, nothing of it lingers there.
+      indexAliasRoutes([])
+      expect(botRosterMeta(vps, $botMeta.get())).toEqual({ sectionId: 's1', sectionName: 'S1' })
+    } finally {
+      indexAliasRoutes([])
+    }
+  })
+
   it('Edit Profile sends only what the user changed since it opened', () => {
     const opened = { color: '#ff0000', image: null, shape: 'circle' as const, title: 'Old title' }
 

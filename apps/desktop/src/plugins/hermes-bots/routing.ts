@@ -412,6 +412,32 @@ export function aliasMetaFor<T extends BotMeta>(
   return key ? metaByName[key] : undefined
 }
 
+const layeredCache = new WeakMap<BotMeta, WeakMap<BotMeta, BotMeta>>()
+
+/** A row's own record over its configured alias's. The own record holds what
+ *  the row's backend reports (sections, groups); the alias keeps owning the
+ *  look it was given, so a later alias edit still shows. Never copied into the
+ *  own record: a copy would freeze the alias's look and outlive the alias.
+ *  Memoized per record pair so renders that compare by reference stay stable. */
+function layered<T extends BotMeta>(own: null | T | undefined, alias: T | undefined): null | T | undefined {
+  if (!own || !alias) {
+    return own || alias || own
+  }
+
+  const byAlias = layeredCache.get(own) || new WeakMap<BotMeta, BotMeta>()
+  layeredCache.set(own, byAlias)
+  const cached = byAlias.get(alias) as T | undefined
+
+  if (cached) {
+    return cached
+  }
+
+  const merged = { ...alias, ...own }
+  byAlias.set(alias, merged)
+
+  return merged
+}
+
 // Bot metadata is scoped to the active gateway until the server exposes a
 // union of rich profile rows. Never paint that metadata onto a thin row from
 // another source: two `default` agents must not borrow each other's title,
@@ -428,11 +454,7 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
     const route = resolved.status === 'resolved' ? resolved.route : null
     const direct = route ? metaByName?.[botRouteKey(route)] : null
 
-    if (direct) {
-      return direct
-    }
-
-    return aliasMetaFor(bot, metaByName) || direct
+    return layered(direct, aliasMetaFor(bot, metaByName))
   }
 
   const own = metaByName?.[bot?.name]

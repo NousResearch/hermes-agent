@@ -173,3 +173,38 @@ async def test_under_cap_inbound_media_is_cached_and_dispatched(monkeypatch):
 
     cache.assert_awaited_once_with(b"small", "small.bin")
     assert adapter.handle_message.await_args.args[0].media_urls == ["/cache/small.bin"]
+
+
+class _HttpSession:
+    """aiohttp.ClientSession stand-in serving one 200 response to the outbound image fetch."""
+
+    def __init__(self, response):
+        self.response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+    def get(self, *_args, **_kwargs):
+        return self.response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers, yielded", [({}, 3), ({"Content-Length": "17"}, 0)],
+                         ids=["streamed", "declared"])
+async def test_outbound_image_fetch_uses_the_same_cap(monkeypatch, headers, yielded):
+    """send_image's external fetch shares read_body_capped with the inbound mxc read."""
+    import aiohttp
+    from tools import url_safety
+
+    response = _Response([b"x" * 8] * 4, headers=headers)
+    response.content_type = "image/png"
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda **_kw: _HttpSession(response))
+    monkeypatch.setattr(url_safety, "is_safe_url", lambda *_a, **_k: True)
+    adapter = _adapter(monkeypatch, _Client(response), max_bytes=16)
+
+    with pytest.raises(ValueError, match="exceeds Matrix limit"):
+        await adapter._download_external_media_with_cap("https://cdn.example.com/huge.png")
+    assert response.content.yielded == yielded

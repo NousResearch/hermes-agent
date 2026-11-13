@@ -34,7 +34,7 @@ def _install(home: Path) -> None:
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
     from hermes_cli import auth_plugin_providers as app
     from hermes_cli.auth import PROVIDER_REGISTRY
 

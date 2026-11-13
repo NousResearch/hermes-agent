@@ -2635,7 +2635,7 @@ def _seed_nous_singleton(seed: _Seeder, auth_store: dict[str, Any]) -> None:
 def _seed_profile_singleton(seed: _Seeder) -> None:
     """Rows a provider profile seeds itself (``seed_pool_credentials``): ambient/env tokens it
     validates or exchanges. The profile gates its own work on suppression and explicit config."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(seed.provider)
     if profile is None or not _profile_seeds_pool(seed.provider):
         return
@@ -2655,8 +2655,8 @@ def _seed_profile_singleton(seed: _Seeder) -> None:
 
 def _profile_seeds_pool(provider: str) -> bool:
     """Whether the provider's profile owns pool seeding (the generic env loop must not overwrite it)."""
-    from providers import get_provider_profile
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import get_provider_profile
+    from hermes_agent.providers.base import ProviderProfile
     profile = get_provider_profile(provider)
     return profile is not None and type(profile).seed_pool_credentials is not ProviderProfile.seed_pool_credentials
 

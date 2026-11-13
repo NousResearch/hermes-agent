@@ -29,7 +29,7 @@ _PROFILE_SOURCE = textwrap.dedent(
 
 
 def _clear_provider_caches():
-    import providers as _pkg
+    import hermes_agent.providers as _pkg
 
     _pkg._REGISTRY.clear()
     _pkg._ALIASES.clear()
@@ -61,7 +61,7 @@ def test_flat_installed_model_provider_plugins_are_discovered_alongside_nested_o
                   manifest='name: installed-acp\nkind: "model-provider"\n')
     _write_plugin(hermes_home / "plugins" / "model-providers" / "nested-acp", name="nested-acp",
                   manifest="name: nested-acp\nkind: model-provider\n")
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     assert get_provider_profile("installed-acp").base_url == "acp://installed-acp"
     assert get_provider_profile("installed-acp-alias") is not None
@@ -74,7 +74,7 @@ def test_other_plugins_in_the_flat_directory_are_left_to_the_plugin_manager(herm
     _write_plugin(hermes_home / "plugins" / "manifestless", name="manifestless", manifest=None)
     _write_plugin(hermes_home / "plugins" / "broken-manifest", name="broken-manifest",
                   manifest="kind: [this is: not valid\n")
-    from providers import get_provider_profile, list_providers
+    from hermes_agent.providers import get_provider_profile, list_providers
 
     assert not [p for p in list_providers() if p.name in ("other-standalone", "manifestless", "broken-manifest")]
     assert get_provider_profile("openrouter") is not None  # bundled set still intact
@@ -90,7 +90,7 @@ def test_disabled_plugins_are_never_imported_or_registered(hermes_home):
                   manifest='name: kept-acp\nkind: "model-provider"\n')
     _write_plugin(hermes_home / "plugins" / "model-providers" / "nested-acp", name="nested-acp",
                   manifest="name: nested-acp\nkind: model-provider\n")
-    from providers import get_provider_profile, list_providers
+    from hermes_agent.providers import get_provider_profile, list_providers
 
     assert not [p for p in list_providers() if p.name in ("installed-acp", "nested-acp")]
     assert get_provider_profile("installed-acp") is None
@@ -108,7 +108,7 @@ def test_disabled_by_manifest_name_when_directory_name_differs(hermes_home):
     _write_plugin(hermes_home / "plugins" / "directsdk-experimental",
                   name="claude-subscription-directsdk-experimental",
                   manifest="name: claude-subscription-directsdk-experimental\nkind: model-provider\n")
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     assert get_provider_profile("claude-subscription-directsdk-experimental") is None
     assert not [m for m in sys.modules if "directsdk_experimental" in m]
@@ -116,7 +116,7 @@ def test_disabled_by_manifest_name_when_directory_name_differs(hermes_home):
 
 def test_enabling_a_disabled_plugin_finds_it_without_touching_the_plugin_dirs(hermes_home, monkeypatch):
     # Desktop's Plugins page edits only config.yaml; the plugin dirs keep their settled mtimes.
-    import providers
+    from hermes_agent import providers
 
     monkeypatch.setattr(providers, "_PLUGIN_DIR_STAMP_TTL_SECONDS", 0.0)
     config = hermes_home / "config.yaml"

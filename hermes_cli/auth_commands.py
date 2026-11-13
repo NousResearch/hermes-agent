@@ -812,7 +812,7 @@ def _interactive_auth() -> None:
 
 def _pick_provider(prompt: str = "Provider") -> str:
     """Prompt for a provider name with auto-complete hints."""
-    from providers import unlisted_provider_names
+    from hermes_agent.providers import unlisted_provider_names
     known = sorted(({pid for pid, _ in canonical_registry_rows()} - unlisted_provider_names()) | {"openrouter"})
     custom_display = [entry["name"] for entry in _get_custom_provider_entries()]
     print(f"\nKnown providers: {', '.join(known)}")

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 # Snapshot for callers inspecting this constant; prefix routing queries the registry live.
 try:
-    from providers import list_providers as _list_providers
+    from hermes_agent.providers import list_providers as _list_providers
 except Exception:
     def _list_providers():
         return []
@@ -60,7 +60,7 @@ def _strip_provider_prefix(model: str) -> str:
         return model
     prefix, suffix = model.split(":", 1)
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         is_provider = get_provider_profile(prefix.strip().lower()) is not None
     except Exception:
         is_provider = False
@@ -476,7 +476,7 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     host = base_url_hostname(base_url)
     if not host:
         return None
-    from providers import profile_for_host
+    from hermes_agent.providers import profile_for_host
     if (profile := profile_for_host(base_url, metadata=True)) is not None:  # profile claims beat table rows
         return profile.name
     for domain, provider in _URL_TO_PROVIDER.items():
@@ -2151,7 +2151,7 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
 def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: str, provider: str, effective_provider: str) -> Optional[int]:
     """Step 5: provider-specific sources, tried in order; None when all miss."""
     # 5a. The profile's live, credentialed catalog: account-specific models absent from models.dev.
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(effective_provider) if effective_provider else None
     with contextlib.suppress(Exception):  # fall through to models.dev
         if profile is not None and (ctx := profile.live_context_length(model, api_key=api_key or "", base_url=base_url or "")):
@@ -2252,7 +2252,7 @@ def get_model_context_length(
         return endpoint_context
     # A profile that qualifies its own bound (external processes have no /models probe) wins
     # over the generic caches below; explicit user/endpoint overrides above still take precedence.
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(provider)
     context = profile.get_model_context_length(model) if profile else None
     if type(context) is int and context > 0:

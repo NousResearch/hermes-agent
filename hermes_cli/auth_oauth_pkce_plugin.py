@@ -155,7 +155,7 @@ def _token_http_error(provider: str, response: Any, fallback_code: str):
 def _pool_provider(args: Any) -> str:
     """Canonical profile name for the credential pool. ``args.provider`` may be an alias."""
     raw = str(getattr(args, "provider", "") or "").strip().lower()
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(raw)
     return profile.name if profile is not None else raw
 

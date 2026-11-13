@@ -24,7 +24,7 @@ def _model(entry_id):
 
 def _wire_effort(model_id, reasoning_config, base_url=MANAGED):
     from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     wire = ChatCompletionsTransport().build_kwargs(
         model=model_id, messages=[{"role": "user", "content": "Hello"}],

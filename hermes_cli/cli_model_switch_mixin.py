@@ -474,7 +474,7 @@ class CLIModelSwitchMixin:
         except Exception:
             pass
 
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(resolved_provider)
         try:
             native_id = profile.normalize_model_id(current_model, api_key=self.api_key or "") if profile else None

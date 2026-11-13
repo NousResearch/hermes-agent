@@ -71,8 +71,8 @@ class TestResolveProviderClientMainAlias:
 
     def test_main_resolves_plugin_provider_alias(self, tmp_path, request):
         import hermes_cli.auth
-        import providers
-        from providers.base import ProviderProfile
+        from hermes_agent import providers
+        from hermes_agent.providers.base import ProviderProfile
 
         providers.register_provider(ProviderProfile(
             name="acme-hub", aliases=("acme-hub-alias",), env_vars=("ACME_HUB_API_KEY",),

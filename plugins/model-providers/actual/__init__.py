@@ -5,8 +5,8 @@ import sys
 from typing import Any
 from urllib.parse import urlparse
 
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
 

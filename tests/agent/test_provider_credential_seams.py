@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import providers
-from providers.base import ProviderProfile
+from hermes_agent import providers
+from hermes_agent.providers.base import ProviderProfile
 from utils import base_url_host_matches
 
 

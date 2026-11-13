@@ -14,7 +14,7 @@ Model provider plugins are the third kind of **provider plugin**. The others are
 
 ## How discovery works
 
-`providers/__init__.py._discover_providers()` runs lazily the first time any code calls `get_provider_profile()` or `list_providers()`. Discovery order:
+`hermes_agent/providers/__init__.py._discover_providers()` runs lazily the first time any code calls `get_provider_profile()` or `list_providers()`. Discovery order:
 
 1. **Bundled plugins** — `<repo>/plugins/model-providers/<name>/` — ship with Hermes
 2. **User plugins** — `$HERMES_HOME/plugins/model-providers/<name>/` — drop in a directory; a running process picks it up on its next provider lookup (no restart)
@@ -40,8 +40,8 @@ The only required file is `__init__.py`. `plugin.yaml` is used by `hermes plugin
 
 ```python
 # plugins/model-providers/acme-inference/__init__.py
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 acme = ProviderProfile(
     name="acme-inference",
@@ -89,7 +89,7 @@ That's it. After dropping these two files, the following **auto-wire** with no o
 
 ## ProviderProfile fields
 
-Full definition in `providers/base.py`. The most useful ones:
+Full definition in `hermes_agent/providers/base.py`. The most useful ones:
 
 | Field | Type | Purpose |
 |---|---|---|
@@ -111,7 +111,7 @@ Full definition in `providers/base.py`. The most useful ones:
 | `fallback_models` | `tuple[str, ...]` | Curated list shown when live catalog fetch fails — in the `/model` picker AND the first-time `hermes setup` / `hermes model` API-key flow, which resolve the catalog the same way (`fetch_models()` merged curated-first with `fallback_models`; `fallback_models` alone when the fetch returns `None` or raises) |
 | `supports_vision` | bool | Declares the provider's API accepts image content inside **tool-result** messages (a provider-wide wire capability). Per-model user-image routing comes from `model_capabilities` / models.dev, not from this flag |
 | `model_capabilities` | `dict[str, dict[str, Any]]` | Per-model capability declarations in the `model_overrides` schema — see [Declaring model capabilities](#declaring-model-capabilities) |
-| `default_headers` | `dict[str, str]` | Sent on every request (e.g. an `Editor-Version` header an IDE-subscription API requires); also forwarded by the default `fetch_models()` catalog request. A value that is costly to compute at import (a User-Agent carrying the release) can be deferred with `providers.base.LazyHeaders({"User-Agent": lambda: hermes_user_agent("MyAgent")})`, a `dict` whose callable values run on first read (`hermes_user_agent` is in `hermes_cli.version_info`) |
+| `default_headers` | `dict[str, str]` | Sent on every request (e.g. an `Editor-Version` header an IDE-subscription API requires); also forwarded by the default `fetch_models()` catalog request. A value that is costly to compute at import (a User-Agent carrying the release) can be deferred with `hermes_agent.providers.base.LazyHeaders({"User-Agent": lambda: hermes_user_agent("MyAgent")})`, a `dict` whose callable values run on first read (`hermes_user_agent` is in `hermes_cli.version_info`) |
 | `fixed_temperature` | Any | `None` = use caller's value; `OMIT_TEMPERATURE` sentinel = don't send temperature at all (Kimi) |
 | `default_max_tokens` | `int \| None` | Provider-level max_tokens cap (Nvidia: 16384) |
 | `unsupported_response_formats` | `tuple` | `response_format` types the API rejects outright; auxiliary requests omit them instead of paying a guaranteed 400 (DeepSeek: `("json_schema",)`) |
@@ -167,7 +167,7 @@ Subclass `ProviderProfile` for non-trivial quirks:
 
 ```python
 from typing import Any
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 class AcmeProfile(ProviderProfile):
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -219,7 +219,7 @@ class AcmeProfile(ProviderProfile):
 
 ## ProviderProfile fields and hooks
 
-Every field and hook `providers/base.py` declares, in declaration order. Names ending in `()` are methods
+Every field and hook `hermes_agent/providers/base.py` declares, in declaration order. Names ending in `()` are methods
 to override in a subclass; the rest are dataclass fields (a few, such as `picker_catalog` and the
 device-login callables, take a callable). Endpoint-keyed hooks (`client_headers`, `request_headers`,
 `max_tokens_param`) receive the request's `base_url` and return `None` / `{}` for an endpoint that is
@@ -472,8 +472,8 @@ Look at these bundled plugins for idioms:
 Say you want to point `gmi` at your private staging endpoint for testing. Create `~/.hermes/plugins/model-providers/gmi/__init__.py`:
 
 ```python
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 register_provider(ProviderProfile(
     name="gmi",
@@ -555,8 +555,8 @@ stored.
 
 ```python
 import uuid
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 def example_auth(action: str, args) -> bool:
@@ -612,8 +612,8 @@ hooks above by hand: declare the endpoints in `OAuthPKCEConfig` and let the two 
 
 ```python
 from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, pkce_auth_handler, pkce_refresh_credential
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 cfg = OAuthPKCEConfig(
     client_id="hermes-public-client",                       # public client — no secret, PKCE is the proof
@@ -692,7 +692,7 @@ hermes doctor
 For programmatic inspection:
 
 ```python
-from providers import list_providers
+from hermes_agent.providers import list_providers
 for p in list_providers():
     print(p.name, p.base_url, p.api_mode)
 ```
@@ -705,8 +705,8 @@ Point `HERMES_HOME` at a temp directory so you don't pollute your real config:
 export HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-plugin-test
 mkdir -p $HERMES_HOME/plugins/model-providers/my-provider
 cat > $HERMES_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 register_provider(ProviderProfile(
     name="my-provider",
     env_vars=("MY_API_KEY",),
@@ -721,7 +721,7 @@ hermes -z "hello" --provider my-provider -m some-model
 
 ## General PluginManager integration
 
-The general `PluginManager` (the thing `hermes plugins` operates on) **sees** model-provider plugins but does not import them — `providers/__init__.py` owns their lifecycle. The manager records the manifest for introspection and categorizes by `kind: model-provider`. When you drop an unlabeled user plugin into `$HERMES_HOME/plugins/` that happens to call `register_provider` with a `ProviderProfile`, the manager auto-coerces it to `kind: model-provider` via a source-text heuristic — so the plugin still routes correctly even without `plugin.yaml`.
+The general `PluginManager` (the thing `hermes plugins` operates on) **sees** model-provider plugins but does not import them — `hermes_agent/providers/__init__.py` owns their lifecycle. The manager records the manifest for introspection and categorizes by `kind: model-provider`. When you drop an unlabeled user plugin into `$HERMES_HOME/plugins/` that happens to call `register_provider` with a `ProviderProfile`, the manager auto-coerces it to `kind: model-provider` via a source-text heuristic — so the plugin still routes correctly even without `plugin.yaml`.
 
 ## Distribute via pip
 
@@ -741,7 +741,7 @@ The target may be either:
   `register_provider(...)` side effect, mirroring the directory-plugin
   `__init__.py` contract.
 
-`providers/__init__.py` discovers these entry points itself — the general
+`hermes_agent/providers/__init__.py` discovers these entry points itself — the general
 `PluginManager` never invokes provider registration for pip packages (its
 entry-point path targets `register(ctx)`-style general plugins, gated by
 `plugins.enabled`), so the provider registry does its own scan. Two rules

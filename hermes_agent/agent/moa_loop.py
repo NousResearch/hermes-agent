@@ -401,7 +401,7 @@ def _slot_request_headers(runtime: dict[str, Any], agent: Any = None) -> dict[st
     per-request hook (``route_answer``: memoized, one failure policy for the agent's session)."""
     from hermes_agent.agent.auxiliary_client import _normalize_aux_provider
     from hermes_agent.agent.provider_route_hooks import route_answer
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     provider = _normalize_aux_provider(str(runtime.get("provider") or ""))
     profile = get_provider_profile(provider) if provider else None

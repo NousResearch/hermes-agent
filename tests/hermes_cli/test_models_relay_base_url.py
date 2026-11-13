@@ -23,7 +23,7 @@ class _RecordingProfile:
 def test_canonical_url_preserves_native_catalog_but_other_paths_stay_relays(monkeypatch, provider):
     from hermes_cli.config import atomic_config_write
     from hermes_constants import get_hermes_home
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     canonical = get_provider_profile(provider).base_url
     config_path = get_hermes_home() / "config.yaml"
@@ -52,7 +52,7 @@ def test_registry_endpoint_is_canonical_when_the_profile_leaves_base_url_empty(m
     ``hermes model`` saved as that endpoint is not a relay: the picker keeps the curated Hy list
     instead of replacing it with a live probe of the same host."""
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     assert get_provider_profile("tencent-tokenhub").base_url == ""
     endpoint = PROVIDER_REGISTRY["tencent-tokenhub"].inference_base_url
@@ -74,7 +74,7 @@ def test_relay_base_url_is_probed_for_configured_provider(monkeypatch):
         },
     )
     profile = _RecordingProfile()
-    import providers
+    from hermes_agent import providers
 
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: profile)
     monkeypatch.setattr(models, "_api_key_credentials", lambda name: (None, None))
@@ -134,7 +134,7 @@ def test_a_failed_relay_probe_never_falls_back_to_the_vendor_host(monkeypatch, p
             raise RuntimeError("relay down")
         return probe_result
 
-    import providers
+    from hermes_agent import providers
 
     monkeypatch.setattr(
         providers,

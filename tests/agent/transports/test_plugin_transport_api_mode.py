@@ -51,7 +51,7 @@ def install_dialect_plugin(tmp_path, monkeypatch):
         (plugin_dir / "__init__.py").write_text(source, encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
         monkeypatch.setenv(env, "sk-fixture")
-        import providers as _pkg
+        import hermes_agent.providers as _pkg
         _pkg._discovered = False
         for mod in [m for m in sys.modules if m.startswith("_hermes_user_provider")]:
             del sys.modules[mod]
@@ -59,7 +59,7 @@ def install_dialect_plugin(tmp_path, monkeypatch):
 
     yield _install
 
-    import providers as _pkg
+    import hermes_agent.providers as _pkg
     from hermes_agent.agent.transports import _REGISTRY
     for name, mode in installed:
         _pkg._REGISTRY.pop(name, None)

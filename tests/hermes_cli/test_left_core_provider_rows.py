@@ -160,7 +160,7 @@ def acme_row(monkeypatch, tmp_path):
     monkeypatch.setattr(lcm, "LEFT_CORE", (ACME,))
     home = _home(tmp_path, config="model:\n  provider: acme\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import providers
+    from hermes_agent import providers
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: None)
     return home
 
@@ -205,7 +205,7 @@ def test_runtime_resolution_installs_the_plugin_first_for_a_home_using_it(acme_r
     (acme_row / "config.yaml").write_text("model:\n  provider: nous\n", encoding="utf-8")
     lcm.recover_for_provider("acme")  # requested, but this home never chose it: no install
     assert len(calls) == 1
-    import providers
+    from hermes_agent import providers
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: object())
     (acme_row / "config.yaml").write_text("model:\n  provider: acme\n", encoding="utf-8")
     lcm.recover_for_provider("acme")  # another plugin already serves it
@@ -215,7 +215,7 @@ def test_runtime_resolution_installs_the_plugin_first_for_a_home_using_it(acme_r
 @pytest.mark.parametrize("plugin_dir", [False, True])  # absent, or installed but not loaded (disabled/failed)
 def test_launch_env_is_refused_by_env_writers_while_no_profile_declares_it(acme_row, monkeypatch, plugin_dir):
     from hermes_cli.config import validate_env_var_name_for_write
-    import providers
+    from hermes_agent import providers
     monkeypatch.setattr(lcm, "LEFT_CORE", (replace(ACME, profile_env=("ACME_CLI_PATH", "ACME_BASE_URL"),
                                                    launch_env=("ACME_CLI_PATH",)),))
     monkeypatch.setattr(providers, "list_providers", list)
@@ -229,7 +229,7 @@ def test_launch_env_is_refused_by_env_writers_while_no_profile_declares_it(acme_
 @pytest.mark.parametrize("plugin_dir", [False, True])
 def test_copilot_launch_names_stay_refused_and_its_base_url_writable(tmp_path, monkeypatch, plugin_dir):
     from hermes_cli.config import validate_env_var_name_for_write
-    import providers
+    from hermes_agent import providers
     home = _home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(providers, "list_providers", list)  # no profile registered: plugin not loaded
@@ -250,7 +250,7 @@ def test_models_dev_never_stands_in_for_a_provider_whose_plugin_left_core(acme_r
         env=("ACME_TOKEN",), name="Acme", api="https://api.acme.test", doc="") if name == "acme" else None)
     assert hp.get_provider("acme") is None
     assert hp.get_provider("acme-acp") is None
-    import providers
+    from hermes_agent import providers
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: object())  # the plugin is loaded
     assert hp.get_provider("acme").base_url == "https://api.acme.test"
 
@@ -314,6 +314,6 @@ def test_a_request_rejected_at_the_rows_host_names_the_install(acme_row, monkeyp
         return "\n".join(printed)
     assert "hermes plugins install acme-llm" in reject("https://api.eu.acme.test/v1")
     assert "acme-llm" not in reject("https://api.other.test/v1")
-    import providers
+    from hermes_agent import providers
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: object())  # the plugin is loaded
     assert "acme-llm" not in reject("https://api.eu.acme.test/v1")

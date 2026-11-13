@@ -32,7 +32,7 @@ def minimax_profile(request):
     ``ProviderProfile``, every assertion below collapses.
     """
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile(request.param)
     assert profile is not None, f"{request.param} provider profile must be registered"
@@ -78,7 +78,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
 
     def test_m3_openai_route_requests_reasoning_split_by_default(self):
         from hermes_agent import model_tools
-        import providers
+        from hermes_agent import providers
 
         profile = providers.get_provider_profile("minimax")
         assert profile is not None
@@ -103,7 +103,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
         self, model, base_url
     ):
         from hermes_agent import model_tools
-        import providers
+        from hermes_agent import providers
 
         profile = providers.get_provider_profile("minimax")
         assert profile is not None
@@ -117,7 +117,7 @@ class TestMinimaxM3OpenAIReasoningWireShape:
 
     def test_transport_threads_base_url_to_profile(self):
         from hermes_agent import model_tools
-        import providers
+        from hermes_agent import providers
         from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         profile = providers.get_provider_profile("minimax")
@@ -144,7 +144,7 @@ class TestMinimaxOauthAliases:
 
     def test_each_documented_oauth_alias_resolves_to_minimax_oauth(self):
         from hermes_agent import model_tools
-        import providers
+        from hermes_agent import providers
 
         for alias in ("minimax_oauth", "minimax-portal", "minimax-global"):
             resolved = providers.get_provider_profile(alias)

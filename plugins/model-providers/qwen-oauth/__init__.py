@@ -1,8 +1,8 @@
 """Qwen Portal provider profile."""
 from typing import Any
 
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 def _normalize_parts(content: list) -> list | None:

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import providers
+from hermes_agent import providers
 from hermes_agent.run_agent import AIAgent
 
 # Assembled at runtime so no credential-shaped literal sits in source (scanner guard).
@@ -44,7 +44,7 @@ def test_auth_fallback_follows_the_verdict(hook_verdict, falls_back):
     real = providers.get_provider_profile
     hooked = dataclasses.replace(real("custom"), classify_api_error=lambda error, **_: hook_verdict)
     with (
-        patch("providers.get_provider_profile", side_effect=lambda name, *a, **k: hooked if name == "custom" else real(name, *a, **k)),
+        patch("hermes_agent.providers.get_provider_profile", side_effect=lambda name, *a, **k: hooked if name == "custom" else real(name, *a, **k)),
         patch.object(agent, "_interruptible_api_call", side_effect=_NotLoggedIn("Not logged in")),
         patch.object(agent, "_try_activate_fallback", return_value=False) as activate,
         patch.object(agent, "_persist_session"),

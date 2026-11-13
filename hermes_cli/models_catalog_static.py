@@ -444,7 +444,7 @@ def sync_plugin_provider_catalog() -> int:
     after its ``picker_after`` slug when that row exists, else at the end.
     """
     try:
-        from providers import list_providers
+        from hermes_agent.providers import list_providers
         profiles = list_providers()
     except Exception:
         return 0
@@ -489,7 +489,7 @@ def listed_canonical_providers() -> list[ProviderEntry]:
     """``CANONICAL_PROVIDERS`` minus pre-release profiles the user has not opted into: what a provider
     LIST offers. Typed paths (``provider:model``, labels, ``--provider``) keep the full table."""
     from hermes_cli import models  # the binding every list consumer read before this filter existed
-    from providers import unlisted_provider_names
+    from hermes_agent.providers import unlisted_provider_names
     hidden = unlisted_provider_names()
     return [p for p in models.CANONICAL_PROVIDERS if p.slug not in hidden]
 
@@ -570,7 +570,7 @@ class _CatalogAliases(dict):
     _memo: tuple[tuple, dict[str, str]] = ((), {})
 
     def _plugin_aliases(self) -> dict[str, str]:
-        from providers import bound_registry_key, list_providers
+        from hermes_agent.providers import bound_registry_key, list_providers
         token = bound_registry_key()
         if self._memo[0] == token:
             return self._memo[1]

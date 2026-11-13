@@ -587,7 +587,7 @@ _DEVICE_CODE_STARTERS = {
 
 def _device_login_profile(provider_id: str):
     """The registered provider profile that owns an in-app device-code login, or None."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     prof = get_provider_profile(provider_id)
     if prof is None or not (prof.start_device_login and prof.poll_device_login and prof.save_device_login):
         return None
@@ -700,7 +700,7 @@ def _profile_account_row(d) -> Optional[dict[str, Any]]:
     """Accounts-tab card for one catalog provider: the generic external card, overlaid with what its
     profile declares (``account_card``, ``account_status``, an in-app ``start_device_login``). A
     Keys-tab provider gets a card only when its profile asks for one."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     prof = get_provider_profile(d.slug)
     card = dict(getattr(prof, "account_card", None) or {})
     device = _device_login_profile(d.slug) is not None

@@ -28,7 +28,7 @@ _PLUGIN = textwrap.dedent(
 
 @pytest.fixture
 def layer_env(tmp_path, monkeypatch):
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
 
     home = tmp_path / "home"
     home.mkdir()
@@ -54,7 +54,7 @@ def _install(home, name):
 
 
 def test_repeated_misses_do_not_restat_within_the_ttl(layer_env):
-    import providers
+    from hermes_agent import providers
 
     _home, clock, stats = layer_env
     assert providers.get_provider_profile("no-profile-id") is None  # first lookup: periodic check
@@ -71,7 +71,7 @@ def test_repeated_misses_do_not_restat_within_the_ttl(layer_env):
 
 
 def test_new_install_found_by_new_name_and_after_the_ttl(layer_env):
-    import providers
+    from hermes_agent import providers
 
     home, clock, _stats = layer_env
     assert providers.get_provider_profile("late-a") is None
@@ -88,8 +88,8 @@ def test_new_install_found_by_new_name_and_after_the_ttl(layer_env):
 
 
 def test_runtime_registration_is_found_despite_a_cached_miss(layer_env):
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
 
     assert providers.get_provider_profile("late-runtime") is None
     providers.register_provider(ProviderProfile(name="late-runtime", auth_type="api_key"))
@@ -101,7 +101,7 @@ def test_install_in_the_same_timestamp_tick_is_found_after_the_ttl(layer_env, mo
     within one tick the same mtime, so the stamp read at the last scan can equal the stamp after an
     install: the new plugin must still be found once the TTL has passed, even when the scan itself
     outlasts the tick."""
-    import providers
+    from hermes_agent import providers
 
     home, clock, _stats = layer_env
     real_scan = providers._scan_home_layer
@@ -125,7 +125,7 @@ def test_install_in_the_same_timestamp_tick_is_found_after_the_ttl(layer_env, mo
 
 
 def test_settled_unchanged_plugin_dirs_are_not_rescanned(layer_env, monkeypatch):
-    import providers
+    from hermes_agent import providers
 
     home, clock, _stats = layer_env
     _install(home, "settled")

@@ -74,7 +74,7 @@ class _Resp:
 
 
 def _router():
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("router")
     return profile, sys.modules[type(profile).__module__]

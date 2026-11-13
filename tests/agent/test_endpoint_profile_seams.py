@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 RELAY = "https://relay.example/v1"
 OTHER = "https://other.example/v1"
@@ -25,7 +25,7 @@ class _RelayProfile(ProviderProfile):
 
 @pytest.fixture
 def relay(request):
-    import providers
+    from hermes_agent import providers
 
     profile = _RelayProfile(
         name="relay-fake", hostnames=("relay.example",), responses_replay_item_ids=False, responses_prompt_cache_key=False,

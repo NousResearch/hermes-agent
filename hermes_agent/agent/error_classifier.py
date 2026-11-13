@@ -845,7 +845,7 @@ def _profile_verdict(c: _Ctx) -> Optional[Verdict]:
     if not c.provider_slug:
         return None
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         hook = getattr(get_provider_profile(c.provider_slug), "classify_api_error", None)
         if not callable(hook):
             return None

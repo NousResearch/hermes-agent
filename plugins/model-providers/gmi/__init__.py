@@ -1,8 +1,8 @@
 """GMI Cloud provider profile."""
 
 from hermes_cli.version_info import hermes_user_agent
-from providers import register_provider
-from providers.base import LazyHeaders, ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import LazyHeaders, ProviderProfile
 
 gmi = ProviderProfile(
     name="gmi", aliases=("gmi-cloud", "gmicloud"), display_name="GMI Cloud",

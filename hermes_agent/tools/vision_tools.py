@@ -532,7 +532,7 @@ def _profile_rejects_tool_media(provider: str, model: str = "") -> bool:
     and the image never enters context (#89981).
     """
     try:
-        from providers import routed_model_rejects_vision_tool_messages
+        from hermes_agent.providers import routed_model_rejects_vision_tool_messages
         return routed_model_rejects_vision_tool_messages(provider, model)
     except Exception:
         return False
@@ -551,7 +551,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         m = model.strip().lower() if isinstance(model, str) else ""
         return any(tag in m for tag in ("gemini-3", "gemini-pro-3", "gemini-flash-3"))
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(p)
         return profile is not None and bool(profile.supports_vision)
     except Exception:

@@ -556,7 +556,7 @@ def _provider_alias_table() -> dict[str, str]:
     """The alias table the main provider path resolves against (hermes_cli.auth), per home and registry
     generation: plugin aliases are per home. A hand-copied mirror rots silently (#106010); local-server
     names stay in: they guard the /v1 tail and the custom-branch no-key-borrow rule."""
-    from providers import bound_registry_key
+    from hermes_agent.providers import bound_registry_key
     home, generation = bound_registry_key()
     cached = _ALIAS_TABLES.get(home)
     if cached is None or cached[0] != generation:
@@ -735,7 +735,7 @@ def _fast_model_from_catalog(provider_id: str) -> str:
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
         from hermes_cli.models_pricing import fetch_models_with_pricing
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         # Most /v1/models endpoints are authenticated; an anonymous 401 would read as "no small
         # model" and pin the curated default forever.
         api_key, base_url = "", ""
@@ -796,7 +796,7 @@ def _get_aux_model_for_provider(provider_id: str, *, prefer_fast: bool = False) 
     """
     profile = None
     with contextlib.suppress(Exception):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(provider_id)
     picked = ""
     if prefer_fast:
@@ -863,7 +863,7 @@ def _resolve_provider_vision_default(provider: str) -> Optional[str]:
     if static:
         return static
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(provider)
         return profile.default_vision_model() if profile is not None else None
     except Exception:
@@ -2172,7 +2172,7 @@ def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
                     continue
             client, model = _try_anthropic()
             return _tag_backend(client, "anthropic"), model
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         if getattr(get_provider_profile(provider_id), "ambient_credentials", False):
             # Explicit-config gate: ambient credentials (another tool's login) must not silently become aux fallback (#114740).
             from hermes_cli.auth import is_provider_explicitly_configured
@@ -2266,7 +2266,7 @@ def _profile_default_headers(provider: str) -> Optional[dict]:
     if not provider:
         return None
     with contextlib.suppress(Exception):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(provider)
         if profile and profile.default_headers:
             return dict(profile.default_headers)
@@ -3475,7 +3475,7 @@ def _provider_for_host(base_url: str, table: tuple[tuple[str, str], ...]) -> Opt
     for host, provider in table:
         if base_url_host_matches(base_url, host):
             return provider
-    from providers import profile_for_host
+    from hermes_agent.providers import profile_for_host
     return getattr(profile_for_host(base_url), "name", None)
 
 
@@ -3722,7 +3722,7 @@ def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") ->
     normalized = _normalize_aux_provider(provider)
     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
     if refresher is None:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(normalized)
         if profile is None:
             return False
@@ -4809,7 +4809,7 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
 
 def _profile_declared_messages_wire(provider: str) -> Optional[str]:
     """``"anthropic_messages"`` when the registered profile declares that api_mode, else None."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(str(provider or "").strip().lower())
     return "anthropic_messages" if profile is not None and profile.api_mode == "anthropic_messages" else None
 
@@ -5099,7 +5099,7 @@ def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any
     A profile that raises is logged and skipped — a third-party plugin can only fail to
     provide a client, never take the auxiliary resolution down."""
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile(provider)
     except Exception:
         return None
@@ -5161,7 +5161,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     headers = _endpoint_default_headers(base_url, provider, is_vision=req.is_vision, xai=True)
     client = _create_openai_client(api_key=api_key, base_url=base_url, **({"default_headers": headers} if headers else {}))
     from hermes_agent.agent.provider_route_hooks import model_api_mode  # a Responses-only model: call_llm() streams responses
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile(provider) if final_model and not req.raw_codex else None
     if profile is not None and model_api_mode(profile, final_model) == "codex_responses":
         logger.debug("resolve_provider_client: %s model %s needs Responses API — wrapping", provider, final_model)
@@ -5183,7 +5183,7 @@ def _resolve_external_process_branch(req: _ResolveRequest, creds: dict[str, Any]
     # Keyed on the registered profile, not a provider name, so an out-of-tree ACP provider reaches
     # the auxiliary path (compression, vision, background review) exactly like the in-tree one.
     try:
-        from providers import get_provider_profile as _get_provider_profile
+        from hermes_agent.providers import get_provider_profile as _get_provider_profile
         _extproc_profile = _get_provider_profile(provider)
     except Exception:
         _extproc_profile = None
@@ -5973,7 +5973,7 @@ def _builtin_provider_present(name: str) -> bool:
 def _profile_credentials_bypass_custom(name: str) -> bool:
     """A profile (canonical name) whose credentials ``custom`` cannot carry: ambient, or an external process's."""
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile(name)
     except Exception:
@@ -6470,8 +6470,8 @@ def _project_provider_profile(
     handles_reasoning = False
     messages_wire = False
     try:
-        from providers import get_provider_profile
-        from providers.base import ProviderProfile
+        from hermes_agent.providers import get_provider_profile
+        from hermes_agent.providers.base import ProviderProfile
         profile = get_provider_profile(provider_norm)
         if profile is None and _routes_to_custom_endpoint(provider_norm):
             # A keyed ``providers:`` entry referenced by its bare key (or via ``main``/``auto``) is

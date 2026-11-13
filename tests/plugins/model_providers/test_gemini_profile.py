@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def gemini_profile():
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("gemini")
     assert profile is not None, "gemini provider profile must be registered"

@@ -18,7 +18,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 _PROBE = """
 import json, os
-from providers import list_providers
+from hermes_agent.providers import list_providers
 from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.runtime_provider import resolve_runtime_provider
 list_providers()

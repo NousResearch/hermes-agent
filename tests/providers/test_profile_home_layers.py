@@ -35,7 +35,7 @@ def _install(home: Path, name: str) -> None:
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
 
     launch = tmp_path / "launch"
     secondary = tmp_path / "profiles" / "scaleup"
@@ -60,7 +60,7 @@ def _bound(home: Path, fn):
 
 
 def test_secondary_profile_plugin_resolves_for_its_home_only(homes):
-    import providers
+    from hermes_agent import providers
     from hermes_cli.auth import resolve_provider
 
     _launch, secondary = homes
@@ -81,7 +81,7 @@ def test_secondary_profile_plugin_resolves_for_its_home_only(homes):
 
 
 def test_plugin_installed_after_discovery_is_found_without_a_restart(homes):
-    import providers
+    from hermes_agent import providers
 
     launch, _ = homes
     assert providers.get_provider_profile("late-install") is None

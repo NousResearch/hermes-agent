@@ -19,7 +19,7 @@ load into that home's own layer, so one process serving several profiles
 plugins override bundled plugins on name collision, so third parties can
 monkey-patch or replace any built-in profile without editing the repo.
 
-For backward compatibility, ``providers/*.py`` files (other than ``base.py``
+For backward compatibility, ``hermes_agent/providers/*.py`` files (other than ``base.py``
 and ``__init__.py``) are still discovered via ``pkgutil.iter_modules``.
 This lets out-of-tree users drop a single-file profile into an editable
 install without the plugin dir structure. New profiles should prefer the
@@ -27,7 +27,7 @@ plugin layout.
 
 Usage::
 
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     profile = get_provider_profile("nvidia")   # ProviderProfile or None
     profile = get_provider_profile("kimi")     # checks name + aliases
 """
@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_cli.plugins import get_bundled_plugins_dir
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
 
@@ -950,13 +950,13 @@ def _run_discovery_steps() -> None:
     try:
         import pkgutil
 
-        import providers as _pkg
+        import hermes_agent.providers as _pkg
 
         for _importer, modname, _ispkg in pkgutil.iter_modules(_pkg.__path__):
             if modname.startswith("_") or modname == "base":
                 continue
             try:
-                importlib.import_module(f"providers.{modname}")
+                importlib.import_module(f"hermes_agent.providers.{modname}")
             except ImportError as exc:
                 logger.warning(
                     "Failed to import legacy provider module %s: %s", modname, exc

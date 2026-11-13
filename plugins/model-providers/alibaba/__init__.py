@@ -8,8 +8,8 @@ and ``model.provider: alibaba-cn`` resolves at runtime.
 from typing import Any
 
 from hermes_agent.agent.reasoning_effort import dashscope_preserve_thinking_extras
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class DashScopeProfile(ProviderProfile):

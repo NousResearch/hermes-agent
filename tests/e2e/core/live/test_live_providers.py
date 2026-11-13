@@ -89,7 +89,7 @@ def _live_listing(provider: str, runtime: dict) -> list[str]:
         from hermes_cli.auth import fetch_nous_models
 
         return list(fetch_nous_models(inference_base_url=base_url, api_key=api_key) or [])
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile(provider)
     assert profile is not None, f"no provider profile registered for {provider!r}"

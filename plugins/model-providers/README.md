@@ -16,7 +16,7 @@ plugins/model-providers/
 
 ## How discovery works
 
-`providers/__init__.py._discover_providers()` scans this directory (and
+`hermes_agent/providers/__init__.py._discover_providers()` scans this directory (and
 `$HERMES_HOME/plugins/model-providers/`) the first time anything calls
 `get_provider_profile()` or `list_providers()`. Each `__init__.py` is
 imported and expected to call `providers.register_provider(profile)`.
@@ -30,8 +30,8 @@ bundled plugins of the same name — last-writer-wins in
 1. Create `plugins/model-providers/<your_provider>/__init__.py`:
 
    ```python
-   from providers import register_provider
-   from providers.base import ProviderProfile
+   from hermes_agent.providers import register_provider
+   from hermes_agent.providers.base import ProviderProfile
 
    my_provider = ProviderProfile(
        name="your-provider",

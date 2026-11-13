@@ -2,7 +2,7 @@
 when primary provider credentials are exhausted."""
 import pytest
 from unittest.mock import patch, MagicMock
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 from hermes_agent.run_agent import AIAgent
 
 
@@ -156,7 +156,7 @@ def test_init_fallback_recomputes_api_mode_for_per_model_profile_exception():
     for the fallback model went out via the Responses API and silently returned no
     reasoning/thinking content.
     """
-    import providers
+    from hermes_agent import providers
 
     fb_client = _mock_client(base_url="https://api.acme-relay.test")
     real_get_profile = providers.get_provider_profile
@@ -168,7 +168,7 @@ def test_init_fallback_recomputes_api_mode_for_per_model_profile_exception():
         return None, None  # primary (nous) has no usable credentials
 
     with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
-         patch("providers.get_provider_profile",
+         patch("hermes_agent.providers.get_provider_profile",
                side_effect=lambda name: _RELAY if name == "acme-relay" else real_get_profile(name)), \
          patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \

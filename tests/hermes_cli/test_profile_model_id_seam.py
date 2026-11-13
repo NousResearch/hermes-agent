@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-import providers
-from providers.base import ProviderProfile
+from hermes_agent import providers
+from hermes_agent.providers.base import ProviderProfile
 
 NAME = "l4-fake-idspace"
 

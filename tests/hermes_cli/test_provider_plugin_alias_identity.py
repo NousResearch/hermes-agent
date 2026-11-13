@@ -66,7 +66,7 @@ register_provider(ProviderProfile(name="my-meta", aliases=("meta",), auth_type="
 def home_with_meta_plugin(tmp_path, monkeypatch):
     import sys
 
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
     from hermes_cli import auth_plugin_providers as app
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -94,7 +94,7 @@ def home_with_meta_plugin(tmp_path, monkeypatch):
 @pytest.mark.parametrize("registry", [_CATALOG, {}], ids=["catalog", "offline"])
 def test_home_plugin_claiming_the_alias_wins_over_the_bundled_one(monkeypatch, home_with_meta_plugin, registry):
     """The registry picks the home's plugin for an alias it declares; resolution must agree."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", lambda *a, **k: registry)
 

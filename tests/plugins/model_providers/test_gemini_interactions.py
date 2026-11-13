@@ -11,7 +11,7 @@ import json
 import httpx
 import pytest
 
-import providers
+from hermes_agent import providers
 from hermes_agent.agent.gemini_native_adapter import GeminiAPIError
 
 SIG_A, SIG_B = "c2lnLWE=", "c2lnLWI="

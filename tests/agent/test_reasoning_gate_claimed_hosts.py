@@ -8,8 +8,8 @@ import pytest
 
 @pytest.fixture
 def claiming_profile(request):
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
 
     providers.list_providers()  # discovery first, so the fake survives it
     providers.register_provider(ProviderProfile(name="hostclaimer", hostnames=("openrouter.ai", "ollama.com")))

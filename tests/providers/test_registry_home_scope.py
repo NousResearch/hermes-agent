@@ -35,7 +35,7 @@ _PLUGIN = textwrap.dedent(
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
     from hermes_cli import auth_plugin_providers as app
     from hermes_cli.auth import PROVIDER_REGISTRY
 
@@ -79,7 +79,7 @@ def _view(home: Path) -> dict:
         out = resolve_runtime_provider(requested=requested)
         return out["provider"], out.get("base_url"), out.get("api_key") == TOKEN
 
-    import providers
+    from hermes_agent import providers
 
     return {  # a turn starts with a profile lookup; that is what loads the home's plugins
         "profile": _bound(home, lambda: getattr(providers.get_provider_profile(SLUG), "name", None)),
@@ -130,7 +130,7 @@ def test_mirrored_row_is_absent_in_a_home_without_the_plugin_a_b_a(homes):
 def test_setup_detection_ignores_another_homes_mirrored_row(homes, monkeypatch):
     from hermes_cli.setup_migration import _model_section_has_credentials
 
-    import providers
+    from hermes_agent import providers
 
     plugin_home, bare_home = homes
     monkeypatch.delenv("GEMINI_API_KEY")
@@ -144,7 +144,7 @@ def test_hidden_rows_survive_registry_reordering(homes):
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.auth_plugin_providers import _insert_row
 
-    import providers
+    from hermes_agent import providers
 
     plugin_home, bare_home = homes
     _bound(plugin_home, lambda: providers.get_provider_profile(SLUG))

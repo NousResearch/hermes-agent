@@ -26,7 +26,7 @@ def deepseek_profile():
     # ``model_tools`` triggers plugin discovery on import, which is what
     # registers the DeepSeek profile in the global provider registry.
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("deepseek")
     assert profile is not None, "deepseek provider profile must be registered"

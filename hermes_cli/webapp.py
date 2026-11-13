@@ -10,6 +10,7 @@ receipt inside ``dist-webapp`` decides freshness.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -55,6 +56,24 @@ def mark_webapp_stale(project_root: Path) -> bool:
 def webapp_bundle_stale(dist: Path) -> bool:
     """Whether the bundle in *dist* is marked out of date (:func:`mark_webapp_stale`)."""
     return (Path(dist) / STALE_MARKER).is_file()
+
+
+def webapp_bundle_id(index_html: str) -> str:
+    """The id of the bundle whose ``index.html`` reads *index_html*: the page names the hashed
+    entry chunks, so any rebuild that changes what a tab runs changes it. A tab that booted with
+    another id is running an older bundle than the one served now."""
+    return hashlib.sha256(index_html.encode("utf-8")).hexdigest()[:16]
+
+
+def served_webapp_bundle(dist: Path) -> dict:
+    """The bundle a page load from *dist* gets now: its :func:`webapp_bundle_id` and whether it is
+    current. A bundle ``hermes update`` could not rebuild is not current: its page load is
+    refused, so a tab must not reload onto it."""
+    try:
+        html = (Path(dist) / "index.html").read_text(encoding="utf-8-sig")
+    except OSError:
+        return {"id": None, "current": False}
+    return {"id": webapp_bundle_id(html), "current": not webapp_bundle_stale(dist)}
 
 
 def _clear_stale_mark(dist: Path) -> None:

@@ -21,6 +21,9 @@ import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
+/** A composer's unsent-attachments row, mounted only while it holds an attachment. */
+export const ATTACHMENTS_SLOT = 'composer-attachments'
+
 /** Chromium's litter: editing beside a `contenteditable=false` chip splits the
  *  line and leaves zero-length text nodes behind. They render as nothing and
  *  serialize as nothing, so no reader of the editor should count them. */

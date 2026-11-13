@@ -33,7 +33,7 @@ import { $introView } from '@/store/onboarding-intro'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
-import { $profileSwitchFailure, $profileSwitchPending } from '@/store/profile-switch-state'
+import { $profileSwitchFailure } from '@/store/profile-switch-state'
 import {
   $connection,
   $contextSuggestions,
@@ -71,6 +71,7 @@ import {
   useComposerScope,
   useComposerSurfaceId
 } from './composer/scope'
+import { useSwitchSendTarget } from './composer/send-target-hint'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
@@ -584,10 +585,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const hydrationSyncProfile = useStore($hydrationSyncProfile)
   const profileSwitchFailure = useStore($profileSwitchFailure)
-  const profileSwitchPending = useStore($profileSwitchPending)
-  // A rail pick on a registry source dials before $gatewaySwapTarget is set;
-  // the pending pick starts the indicator's clock from the click instead.
-  const switchTarget = gatewaySwapTarget ?? profileSwitchPending
+  const switchTarget = useSwitchSendTarget()
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)

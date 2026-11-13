@@ -40,13 +40,29 @@ export function trackProfileSwitch<T>(profile: string, attempt: Promise<T>, retr
       if (current === generation) {
         batch(() => {
           $profileSwitchPending.set(null)
-          $profileSwitchFailure.set({ profile, retry })
+          $profileSwitchFailure.set({
+            profile,
+            retry: () => {
+              if (current === generation) {
+                retry()
+              }
+            }
+          })
         })
       }
 
       throw error
     }
   )
+}
+
+/** A new draft/source intent supersedes both settled failures and late attempts. */
+export function invalidateProfileSwitch(): void {
+  generation += 1
+  batch(() => {
+    $profileSwitchPending.set(null)
+    $profileSwitchFailure.set(null)
+  })
 }
 
 export function dismissProfileSwitchFailure(): void {

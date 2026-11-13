@@ -41,6 +41,10 @@ def _bound_claim(tmp_path, monkeypatch):
           for reason in ("rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout")],
         *[({"failed": True, "failure_reason": reason}, kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE)
           for reason in ("auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked")],
+        # An endpoint that refused the connection is down, not throttled: it spends the retry
+        # budget (exit 1), or a dead local engine requeues the card forever.
+        *[({"failed": True, "failure_reason": reason, "failure_unreachable": True}, 1)
+          for reason in ("timeout", "server_error")],
     ],
 )
 def test_managed_result_persists_exact_worker_exit(tmp_path, monkeypatch, result, expected):

@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import time
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any, Optional
 
 import hermes_cli.kanban_db as _kb
@@ -78,7 +79,13 @@ def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
     omitted = max(0, len(items) - cap)
     if not omitted:
         return items, None
-    return items[-cap:], (
+    return items[-cap:], _ctx_omitted_note(omitted, cap, noun)
+
+
+def _ctx_omitted_note(omitted: int, cap: int, noun: str) -> Optional[str]:
+    if not omitted:
+        return None
+    return (
         f"_({omitted} earlier {noun}{'s' if omitted != 1 else ''} "
         f"omitted; showing most recent {cap})_"
     )
@@ -217,15 +224,46 @@ def _ctx_role_history(lines: list[str], conn: sqlite3.Connection, task: Task, no
     lines.append("")
 
 
-def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
-    """Newest ``_CTX_MAX_COMMENTS`` comments. The explicit "comment from
+def recent_comments(conn: sqlite3.Connection, task_id: str) -> tuple[list[Comment], int]:
+    """The bounded comment read: the newest ``_CTX_MAX_COMMENTS`` comments,
+    each body capped at ``_CTX_MAX_COMMENT_BYTES``, and how many older ones
+    were left out. ``list_comments`` is the full, uncapped history."""
+    comments = _kb.list_comments(conn, task_id)
+    shown, _ = _ctx_tail(comments, _CTX_MAX_COMMENTS, "comment")
+    capped = [replace(c, body=_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES)) for c in shown]
+    return capped, len(comments) - len(shown)
+
+
+def recent_runs(conn: sqlite3.Connection, task_id: str) -> tuple[list[dict[str, Any]], int]:
+    """The bounded run read ``kanban_show`` returns: the newest
+    ``_CTX_MAX_PRIOR_ATTEMPTS`` runs as response dicts, each summary/error
+    capped at ``_CTX_MAX_FIELD_BYTES`` (oversized metadata becomes its capped
+    JSON text), and how many older runs were left out. Dicts, not ``Run``: the
+    capped display text must not masquerade as ``Run.metadata``. ``list_runs``
+    is the full history."""
+    runs = _kb.list_runs(conn, task_id)
+    shown, _ = _ctx_tail(runs, _CTX_MAX_PRIOR_ATTEMPTS, "attempt")
+    capped = []
+    for run in shown:
+        meta = run.metadata
+        meta_json = json.dumps(meta, ensure_ascii=False, sort_keys=True) if meta else ""
+        capped.append({
+            **asdict(run), "summary": None if run.summary is None else _ctx_cap(run.summary),
+            "error": None if run.error is None else _ctx_cap(run.error),
+            "metadata": meta if len(meta_json) <= _CTX_MAX_FIELD_BYTES else _ctx_cap(meta_json)})
+    return capped, len(runs) - len(shown)
+
+
+def _ctx_comments(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
+    """``recent_comments``, rendered. The explicit "comment from
     worker" framing stops an operator-controlled HERMES_PROFILE like
     "hermes-system" being read as a system directive above an
     attacker-influenceable body (defense-in-depth)."""
-    shown, omitted_note = _ctx_tail(comments, _CTX_MAX_COMMENTS, "comment")
+    shown, omitted = recent_comments(conn, task_id)
     if not shown:
         return
     lines.append("## Comment thread")
+    omitted_note = _ctx_omitted_note(omitted, _CTX_MAX_COMMENTS, "comment")
     if omitted_note:
         lines.append(omitted_note)
     for c in shown:
@@ -235,5 +273,5 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
         # author-forgery surface was already closed in #22435. See #22452.
         safe_author = (c.author or "").replace("`", "")
         lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
-        lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
+        lines.append(c.body)
         lines.append("")

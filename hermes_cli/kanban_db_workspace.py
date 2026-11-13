@@ -73,6 +73,70 @@ def _git(repo_root: Path, *args: str, timeout: int) -> subprocess.CompletedProce
     )
 
 
+_RUNNING_PATHS_SQL = (
+    "SELECT id, status, claim_lock, claim_expires, worker_pid, worker_started_at, workspace_path "
+    "FROM tasks WHERE id != ? AND status = 'running' AND workspace_path IS NOT NULL"
+)
+
+
+def _holds_workspace(row: sqlite3.Row, now: int) -> bool:
+    """A running claim still owns its directory: its recorded worker is alive, or
+    no worker was recorded yet (a CLI ``claim``, or the dispatcher between claim
+    and spawn) and the claim has not expired. A recorded worker that died owns
+    nothing; crash detection reclaims the card."""
+    if row["worker_pid"]:
+        return _kb._claim_is_live(row)
+    return row["claim_lock"] is not None and (row["claim_expires"] or 0) > now
+
+
+def _worktree_runs_in(path: Path, branch: str) -> bool:
+    """Whether :func:`_resolve_worktree_workspace` runs a ``worktree`` card in its
+    stored path itself: its own checkout on a retry (dispatch writes the resolved
+    path back), or a fresh ``worktree add`` there. A repo root anchors
+    ``<repo>/.worktrees/<id>`` and another branch's checkout falls back to it."""
+    if _is_linked_worktree_checkout(path):
+        return _git_current_branch(path) == branch
+    return _path_key(_git_toplevel(path)) != _path_key(path.resolve(strict=False))
+
+
+def workspace_holder(conn: sqlite3.Connection, task_id: str, now: int) -> Optional[str]:
+    """Id of another live running task whose directory is ``task_id``'s, else None.
+
+    A path-less task gets a per-id directory and never collides. A ``worktree``
+    card collides only when it would run in its stored path (git is asked only
+    on a path hit, so the claim txn does not pay for it otherwise)."""
+    own = conn.execute(_WORKSPACE_ROW_SQL, (task_id,)).fetchone()
+    if own is None or not own["workspace_path"]:
+        return None
+    path = Path(own["workspace_path"]).expanduser()
+    key = _path_key(path.resolve(strict=False))
+    for row in conn.execute(_RUNNING_PATHS_SQL, (task_id,)).fetchall():
+        other = _path_key(Path(row["workspace_path"]).expanduser().resolve(strict=False))
+        if other != key or not _holds_workspace(row, now):
+            continue
+        if (own["workspace_kind"] or "scratch") == "worktree" and not _worktree_runs_in(
+                path, (own["branch_name"] or "").strip() or f"wt/{task_id}"):
+            return None
+        return row["id"]
+    return None
+
+
+def refuse_busy_workspace_claim(conn: sqlite3.Connection, task_id: str, now: int) -> bool:
+    """True (claim refused, card stays where it is) while another live task writes
+    in ``task_id``'s directory; the next dispatcher tick retries. One
+    ``claim_rejected`` event per holder, not one per tick. Caller holds the txn."""
+    holder = workspace_holder(conn, task_id, now)
+    if holder is None:
+        return False
+    payload = {"reason": "workspace_busy", "holder": holder}
+    last = conn.execute(
+        "SELECT kind, payload FROM task_events WHERE task_id = ? "
+        "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+    if last is None or last["kind"] != "claim_rejected" or last["payload"] != _kb._json_or_null(payload):
+        _kb._append_event(conn, task_id, "claim_rejected", payload)
+    return True
+
+
 def _has_active_children(conn: sqlite3.Connection, task_id: str) -> bool:
     return conn.execute(_ACTIVE_CHILDREN_SQL, (task_id,)).fetchone() is not None
 

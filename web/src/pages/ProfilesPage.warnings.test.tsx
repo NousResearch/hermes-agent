@@ -16,6 +16,7 @@ let container: HTMLDivElement;
 let headerContainer: HTMLDivElement;
 let reply: Record<string, unknown>;
 let createRequests: number;
+const scrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function button(label: string, scope: ParentNode = document) {
@@ -72,6 +73,8 @@ afterEach(async () => {
   headerContainer.remove();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  if (scrollIntoView) Object.defineProperty(Element.prototype, "scrollIntoView", scrollIntoView);
+  else delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
 });
 
 it("renders every creation warning with success after closing the modal", async () => {

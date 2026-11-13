@@ -34,11 +34,7 @@ interface Dictation {
   live?: () => Promise<DictationStreamSession | null>
 }
 
-export function useVoiceRecorder({
-  onTranscribeAudio,
-  focusInput,
-  onTranscript
-}: VoiceRecorderOptions) {
+export function useVoiceRecorder({ onTranscribeAudio, focusInput, onTranscript }: VoiceRecorderOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
   const { handle, level, recording } = useMicRecorder(voiceCopy)
@@ -184,15 +180,14 @@ export function useVoiceRecorder({
     dictationRef.current = dictation
 
     try {
-      // Bot tiles can outlive foreground profile changes. Read the cap from
-      // the same pinned owner as STT, before opening the mic or its timer.
-      const config = await hermesApiAs<Record<string, unknown>>(owner, { path: '/api/config' }).catch(() => null)
+      // Bot tiles can outlive foreground profile changes, so the cap comes from
+      // the same pinned owner as STT. Read it alongside the mic, not before:
+      // a slow or unreachable backend must not delay or block the take.
+      const ownerCap = hermesApiAs<Record<string, unknown>>(owner, { path: '/api/config' }).then(
+        voiceMaxRecordingSecondsFromConfig,
+        () => null
+      )
 
-      if (dictationRef.current !== dictation) {
-        return
-      }
-
-      const maxRecordingSeconds = voiceMaxRecordingSecondsFromConfig(config)
       await handle.start({
         onError: error => notifyError(error, voiceCopy.recordingFailed),
         onPcm: stream.push,
@@ -214,8 +209,28 @@ export function useVoiceRecorder({
       setVoiceStatus('recording')
       recordFeatureUse('voice_dictation')
       intervalRef.current = window.setInterval(() => setElapsedSeconds((Date.now() - startedAtRef.current) / 1000), 250)
-      const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
-      timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
+
+      const armCap = (seconds: number) => {
+        const cap = Math.max(1, Math.min(Math.trunc(seconds), 600))
+
+        if (timeoutRef.current) {
+          window.clearTimeout(timeoutRef.current)
+        }
+
+        timeoutRef.current = window.setTimeout(
+          () => void stop(),
+          Math.max(0, cap * 1000 - (Date.now() - startedAtRef.current))
+        )
+      }
+
+      // Default cap until the owner's config answers; stop() clears the
+      // timer, so a late answer re-arms only a take that is still running.
+      armCap(voiceMaxRecordingSecondsFromConfig(null))
+      void ownerCap.then(seconds => {
+        if (seconds !== null && dictationRef.current === dictation && timeoutRef.current) {
+          armCap(seconds)
+        }
+      })
     } catch (error) {
       if (dictationRef.current !== dictation) {
         return

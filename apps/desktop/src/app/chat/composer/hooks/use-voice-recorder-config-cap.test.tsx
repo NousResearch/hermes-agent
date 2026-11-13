@@ -91,7 +91,11 @@ describe('dictation cap from voice.max_recording_seconds', () => {
     })
 
     const recorder = renderHook(() =>
-      useVoiceRecorder({ focusInput: () => undefined, onTranscribeAudio: async () => '', onTranscript: () => undefined })
+      useVoiceRecorder({
+        focusInput: () => undefined,
+        onTranscribeAudio: async () => '',
+        onTranscript: () => undefined
+      })
     )
 
     await act(async () => {
@@ -118,9 +122,13 @@ describe('dictation cap from voice.max_recording_seconds', () => {
     api.mockResolvedValue({ voice: { max_recording_seconds: 600 } })
     await startRecorder(600)
     await expectCap(600)
-    expect(api).toHaveBeenCalledWith(expect.objectContaining({
-      connectionId: 'gateway-a', path: '/api/config', profile: 'default'
-    }))
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'gateway-a',
+        path: '/api/config',
+        profile: 'default'
+      })
+    )
   })
 
   it.each([
@@ -129,7 +137,10 @@ describe('dictation cap from voice.max_recording_seconds', () => {
   ])('uses the tile owner cap ($owner), not the foreground cap ($foreground)', async ({ foreground, owner }) => {
     scope = { connectionId: 'bot-gateway', profile: 'bot-owner' }
     api.mockImplementation(async (request: { connectionId?: string; profile?: string }) => ({
-      voice: { max_recording_seconds: request.connectionId === 'bot-gateway' && request.profile === 'bot-owner' ? owner : foreground }
+      voice: {
+        max_recording_seconds:
+          request.connectionId === 'bot-gateway' && request.profile === 'bot-owner' ? owner : foreground
+      }
     }))
     const recorder = await startRecorder(foreground)
 
@@ -139,9 +150,13 @@ describe('dictation cap from voice.max_recording_seconds', () => {
     scope = { connectionId: 'gateway-b', profile: 'other-profile' }
     recorder.rerender()
     await expectCap(owner)
-    expect(api).toHaveBeenCalledWith(expect.objectContaining({
-      connectionId: 'bot-gateway', path: '/api/config', profile: 'bot-owner'
-    }))
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'bot-gateway',
+        path: '/api/config',
+        profile: 'bot-owner'
+      })
+    )
   })
 
   it.each([
@@ -157,19 +172,34 @@ describe('dictation cap from voice.max_recording_seconds', () => {
     await expectCap(seconds)
   })
 
-  it('does not open the mic if the owner config settles after unmount', async () => {
+  it('opens the mic without waiting for the owner config, then applies its cap', async () => {
     const config = Promise.withResolvers<Record<string, unknown>>()
 
     api.mockReturnValue(config.promise)
+    await startRecorder(600)
 
-    const recorder = renderHook(() =>
-      useVoiceRecorder({ focusInput: () => undefined, onTranscribeAudio: async () => '', onTranscript: () => undefined })
-    )
+    // The owner has not answered 30 s in: the take is already recording.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    await act(async () => {
+      config.resolve({ voice: { max_recording_seconds: 600 } })
+    })
 
-    act(() => recorder.result.current.dictate())
-    expect(api).toHaveBeenCalledTimes(1)
-    expect(micHandle.start).not.toHaveBeenCalled()
-    recorder.unmount()
+    // The cap counts from mic-open, not from the late answer.
+    await expectCap(570)
+  })
+
+  it('a late owner config does not restart a take that already stopped', async () => {
+    const config = Promise.withResolvers<Record<string, unknown>>()
+
+    api.mockReturnValue(config.promise)
+    const recorder = await startRecorder(600)
+
+    await act(async () => {
+      recorder.result.current.dictate()
+    })
+    expect(micHandle.stop).toHaveBeenCalledTimes(1)
 
     await act(async () => {
       config.resolve({ voice: { max_recording_seconds: 600 } })
@@ -177,8 +207,7 @@ describe('dictation cap from voice.max_recording_seconds', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(601_000)
     })
-    expect(micHandle.start).not.toHaveBeenCalled()
-    expect(micHandle.stop).not.toHaveBeenCalled()
+    expect(micHandle.stop).toHaveBeenCalledTimes(1)
   })
 
   it('uses the default when the owner config is unavailable', async () => {

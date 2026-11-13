@@ -2966,6 +2966,10 @@ class FeishuAdapter(FeishuChoiceCardsMixin, FeishuSyntheticEventsMixin, BasePlat
         )
         inbound_type = self._resolve_normalized_message_type(normalized, media_types)
         text = normalized.text_content
+        if normalized.raw_type == "merge_forward" and text == FALLBACK_FORWARD_TEXT:
+            from .adapter_merge_forward import fetch_merge_forward_text
+
+            text = await fetch_merge_forward_text(self, message_id) or text
         media_text_inlined: list[bool] = []
         inlined_parts: list[str] = []
         is_command = caption_is_command(_strip_edge_self_mentions(text, normalized.mentions))  # "@Hermes /goal x"

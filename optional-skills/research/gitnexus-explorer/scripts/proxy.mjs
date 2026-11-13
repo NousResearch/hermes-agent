@@ -53,11 +53,20 @@ function proxyToApi(req, res) {
 
 function serveStatic(req, res) {
   const urlPath = req.url.split('?')[0];
-  let filePath = path.join(DIST_DIR, urlPath === '/' ? 'index.html' : urlPath);
+  const base = path.resolve(DIST_DIR);
+  let filePath = path.resolve(base, urlPath === '/' ? 'index.html' : '.' + urlPath);
+
+  // Refuse anything that escapes the dist dir: path.join collapses `..`, so a
+  // request like `/../../etc/passwd` would otherwise read arbitrary files.
+  if (filePath !== base && !filePath.startsWith(base + path.sep)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
 
   // SPA fallback: if file doesn't exist and isn't a static asset, serve index.html
   if (!fs.existsSync(filePath) && !path.extname(filePath)) {
-    filePath = path.join(DIST_DIR, 'index.html');
+    filePath = path.join(base, 'index.html');
   }
 
   const ext = path.extname(filePath);

@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { bindDesktopMetrics, resetDesktopMetricsForTests, setDesktopMetricsGate } from '@/store/desktop-metrics'
+import { bindDesktopMetrics, captureDesktopMetricsGate, resetDesktopMetricsForTests } from '@/store/desktop-metrics'
+import { immediateMetricsLocks, setMetricsGate } from '@/store/desktop-metrics-test-locks'
 import type { FreeTierSignInState } from '@/store/free-tier-sign-in'
 import type { SharedMetricsRequester } from '@/store/shared-metrics'
 
@@ -19,6 +20,7 @@ async function walk(...states: FreeTierSignInState[]): Promise<string[]> {
   }
 
   bindDesktopMetrics(request)
+  await setMetricsGate(captureDesktopMetricsGate, 'on')
 
   for (let i = 1; i < states.length; i++) {
     signInTransition(states[i - 1], states[i])
@@ -34,12 +36,15 @@ const OFFER: FreeTierSignInState = { kind: 'trial', status: 'offer' }
 const SETTING_UP: FreeTierSignInState = { minting: false, status: 'setting_up' }
 
 beforeEach(() => {
+  immediateMetricsLocks()
   window.localStorage.clear()
   resetDesktopMetricsForTests()
-  setDesktopMetricsGate('on')
 })
 
-afterEach(() => resetDesktopMetricsForTests())
+afterEach(() => {
+  resetDesktopMetricsForTests()
+  vi.unstubAllGlobals()
+})
 
 describe('sign-in funnel from the offer', () => {
   it('an offer the user signs in from and then cancels is a reach followed by a cancel', async () => {

@@ -538,7 +538,54 @@ session/bot/profile names, paths and setting values never leave.
 
 Desktop visible-time spans are split at UTC midnight before a day is rolled or sent.
 The clock restarts on opt-in and profile changes; hidden and suspended time is excluded.
-Withdrawing consent purges pending histograms and prevents their send after an in-flight daily report.
+Each renderer keeps its own journal. A finished day's report combines all windows'
+frame counts and visible time; overlapping visible windows contribute separately.
+Reporting waits for every pre-midnight cursor to close or **exceed** the 11-minute
+suspend limit (equality is still eligible). Persisted frames and checkpointed time
+survive a renderer crash; an unobserved crash/suspend tail is never invented.
+The UTC wall clock determines the usage day. A high-water mark prevents counting
+time twice after a backwards clock correction; observations of an already closed
+day are omitted rather than reassigned to another day.
+
+Publication, report freezing, acknowledgement, consent withdrawal and profile
+migration share one short ownership phase: Web Locks where available, otherwise
+an IndexedDB readwrite transaction. Network requests run outside that phase.
+The ordinary daily aggregate's complete read/modify/write shares that phase too,
+so a descheduled writer cannot restore old data beneath a recreated profile name.
+Daily RPC acknowledgements remain bound to their original cohort. Ordinary
+counters roll their UTC day at publication; frame timestamps retain their observed day.
+The first frame report is a verified, durable snapshot; concurrent sends and lost
+acknowledgements replay the same totals against the backend's first-day latch,
+not a correction that an older backend would ignore. A backend without the frame
+RPC still receives the day's other reports.
+
+Journals and pending reports expire after seven days. A renderer whose journal
+was pruned cannot resume its old ownership: the existing focus-time backend
+consent refresh must positively authorize a replacement collector. Coordination
+or persistence failures likewise stop that collector rather than retaining a
+frame-only reporter without visible time.
+
+Consent ownership is captured before an asynchronous status read or save. A fresh
+immutable local cohort permit is allocated before the RPC; it is not consent to
+collect. Only an accepted positive backend result can start a collector. Stale
+saved/read callbacks retain their original cohort across focus changes and
+renames. An off result revokes that cohort's transferred measurements, but cannot
+answer a newly recreated profile's offer or overwrite a newer owner's UI state.
+These local keys are never telemetry dimensions or RPC fields.
+
+Rename waits for telemetry coordination before changing local tab/session
+ownership. A complete, verified quarantine copy is stored before retiring the
+source name. Interrupted destination writes retry only that immutable copy, never
+data collected by a newly recreated source profile. If storage cannot preserve
+an isolated copy, only those optional measurements are discarded; sessions and
+other user content are untouched. An unavailable coordinator or storage never
+turns a successful backend rename or consent save into a UI failure.
+
+When coordination fails, withdrawal may only remove its already-captured
+immutable permit, never resolve or replace the current owner's token. A fresh
+authorization uses a different permit. If the browser also denies that removal,
+durable deletion cannot be guaranteed; the affected renderer remains disabled.
+With neither Web Locks nor usable IndexedDB, optional collection stays paused.
 
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the

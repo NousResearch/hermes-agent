@@ -20,7 +20,7 @@ import re
 import secrets
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
 from tools.mcp_tool_common import _parse_boolish
 from tools.registry import tool_error
@@ -92,7 +92,14 @@ def _event_prompt(server_name: str, name: str, instructions: str) -> str:
 async def _send(session, method: str, params: dict) -> dict:
     from mcp import types
     from pydantic import TypeAdapter
-    request = types.Request[dict[str, Any], str](method=method, params=params)
+
+    class NamedEventRequest(types.Request[dict[str, Any], str]):
+        # Extension methods are absent from the SDK's built-in name-bearing method table.
+        name_param: ClassVar[str | None] = "name"
+
+    request_type = (NamedEventRequest if method in ("events/subscribe", "events/unsubscribe")
+                    else types.Request[dict[str, Any], str])
+    request = request_type(method=method, params=params)
     return await session.send_request(request, TypeAdapter(dict[str, Any]))
 
 

@@ -2352,30 +2352,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     @_require_auth
     async def _handle_capabilities(self, request: web.Request) -> web.Response:
         """GET /v1/capabilities — the stable, machine-readable API surface for external UIs."""
-        runner = getattr(self, "gateway_runner", None)
-        features = {
-            "chat_completions": True, "chat_completions_streaming": True,
-            "responses_api": True, "responses_streaming": True, "run_submission": True,
-            "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
-            **_STATIC_FEATURE_FLAGS,
-            "run_unknown_resolution": getattr(runner, "session_authority", None) is not None,
-            "cors": bool(self._cors_origins)}
-        return web.json_response({
-            "object": "hermes.api_server.capabilities", "platform": "hermes-agent",
-            "model": self._model_name,
-            "auth": {"type": "bearer", "required": bool(self._api_key)},
-            "runtime": {
-                "mode": "server_agent", "tool_execution": "server", "split_runtime": False,
-                "description": (
-                    "The API server creates a server-side Hermes AIAgent; "
-                    "tools execute on the API-server host unless a future "
-                    "explicit split-runtime mode is enabled.")},
-            "features": features,
-            "endpoints": {
-                name: {"method": entry[0], "path": entry[1]}
-                for name, entry in _CAPABILITY_ENDPOINTS
-                if len(entry) < 3 or features[entry[2]]},
-        })
+        from gateway.platforms.api_server_capabilities import capabilities
+        return await capabilities(self)
 
     @_require_auth
     async def _handle_skills(self, request: web.Request) -> web.Response:

@@ -1027,6 +1027,14 @@ _CODEX_INCOMPLETE_NUDGE = (
     "now (or make the tool call you were planning).]"
 )
 
+# Second thinking-only completion reminder: re-sending _CODEX_INCOMPLETE_NUDGE would make
+# the second retry byte-identical to the first, so the escalation uses different words
+# (and the caller also turns reasoning off for that one request).
+_THINKING_ONLY_FINAL_NUDGE = (
+    "[System: That is a second reply in a row with only internal reasoning. Stop analysing "
+    "and respond now: either the final answer as plain text or the next tool call.]"
+)
+
 
 # Re-prompt after an acknowledgment-only Codex/Responses reply.
 _CODEX_ACK_CONTINUATION_NUDGE = (

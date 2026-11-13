@@ -45,3 +45,15 @@ def test_official_openai_routes_keep_the_requested_tier(provider, base_url):
 ])
 def test_fast_route_boundaries_are_preserved(model, provider, base_url, expected):
     assert resolve_fast_mode_overrides(model, provider=provider, base_url=base_url) == expected
+
+
+@pytest.mark.parametrize("model,host,tier", [
+    ("gpt-6-luna", "jp.api.openai.com", None),  # au/jp/in: "Standard pay-as-you-go only"
+    ("gpt-6.1-sol", "au.api.openai.com", None),
+    ("gpt-6.1-sol", "ca.api.openai.com", None),  # storage-only region, no documented Fast
+    ("gpt-6-astra", "eu.api.openai.com", None),  # EU Fast excludes GPT-6 Astra / GPT-6 Sol
+    ("gpt-6-sol", "eu.api.openai.com", None),
+    ("gpt-6-astra", "eu.api.openai.com", "ultrafast"),  # Astra Ultrafast: US + global only
+])
+def test_regional_hosts_only_get_documented_fast_tiers(model, host, tier):
+    assert resolve_fast_mode_overrides(model, provider="openai-api", base_url=f"https://{host}/v1", tier=tier) is None

@@ -1,4 +1,5 @@
-"""A native ``vision_analyze`` image is re-sent on turns rebuilt from the session DB (#142288).
+"""A native tool image (``vision_analyze``, a browser screenshot) is re-sent on turns rebuilt from the
+session DB (#142288).
 
 The live turn sends the pixels inside the tool result, and the native embed is meant to ride every
 later request (``tools/AGENTS.md``). The session DB stores the tool row as text with a
@@ -15,6 +16,8 @@ import os
 import time
 from pathlib import Path
 
+import pytest
+
 from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
 from agent.session_persistence import _durable_content
 from agent.turn_context import build_api_messages
@@ -23,24 +26,36 @@ from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
 from tests.agent.test_image_replay import _PNG, _Agent, _config
 from tests.tools.test_vision_native_fast_path import _TINY_PNG
+from tools.browser_use_cli import _native_screenshot_result
 from tools.vision_tools import _vision_analyze_native
 
 
-def test_rebuilt_turn_resends_the_vision_analyze_image_byte_identical(tmp_path):
+def _vision_analyze(image, _monkeypatch):
+    return "vision_analyze", asyncio.run(_vision_analyze_native(str(image), "What is on this label?"))
+
+
+def _browser_screenshot(image, monkeypatch):
+    # The browser embeds the screenshot only when the main model takes images natively.
+    monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: True)
+    return "browser_exec", _native_screenshot_result({"success": True, "output": "captured"}, str(image))
+
+
+@pytest.mark.parametrize("call_tool", [_vision_analyze, _browser_screenshot], ids=["vision_analyze", "browser_screenshot"])
+def test_rebuilt_turn_resends_the_tool_image_byte_identical(tmp_path, monkeypatch, call_tool):
     _config()
     image = tmp_path / "label.png"
     image.write_bytes(_TINY_PNG)
-    envelope = asyncio.run(_vision_analyze_native(str(image), "What is on this label?"))
+    tool, envelope = call_tool(image, monkeypatch)
     live = envelope["content"]  # what a vision model's tool message carries (_tool_result_content_for_active_model)
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session(session_id="s", source="telegram")
     call = {"id": "call_1", "type": "function",
-            "function": {"name": "vision_analyze", "arguments": json.dumps({"image_url": str(image)})}}
+            "function": {"name": tool, "arguments": json.dumps({"image_url": str(image)})}}
     db.append_message("s", role="user", content="What is on this label?", timestamp=1000.0)
     db.append_message("s", role="assistant", content="", tool_calls=[call], timestamp=1001.0)
     db.append_message("s", role="tool", content=_durable_content(live), tool_call_id="call_1",
-                      tool_name="vision_analyze", timestamp=1002.0)
+                      tool_name=tool, timestamp=1002.0)
     db.append_message("s", role="assistant", content="It says 250 ml.", timestamp=1003.0)
     history = db.get_messages_as_conversation("s") + [{"role": "user", "content": "and the expiry date?"}]
 

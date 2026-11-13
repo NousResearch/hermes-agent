@@ -954,6 +954,12 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         with suppress(Exception):
             from gateway.channel_directory import build_channel_directory
             await build_channel_directory(self.adapters)
+        # A late Relay connection must retry the durable FIFO, not only legacy resume_pending rows.
+        if platform == Platform.RELAY:
+            from gateway.run_runtime import recover_profile_native_sessions
+            from gateway.session_authorities import serving_authorities
+            for authority in serving_authorities(self):
+                await recover_profile_native_sessions(self, authority)
         # A platform offline at startup skipped its restart-interrupted sessions; resume them now.
         try:
             self._schedule_resume_pending_sessions(platform=platform)

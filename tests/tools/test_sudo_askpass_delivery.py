@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.waiting import wait_until
 from tools import terminal_tool, terminal_tool_sudo
 from tools import terminal_tool_sudo_askpass as askpass
 from tools.environments.base import BaseEnvironment
@@ -542,6 +543,27 @@ def test_live_temp_path_with_quote_special_char_is_setup_failure(tmp_path, speci
     assert proc.returncode != 0
     assert list(odd.iterdir()) == []
     assert _bash(askpass.CAPABILITY_PROBE, env_vars={"TMPDIR": str(odd)}).returncode == 1
+
+
+@_needs_posix_shell
+def test_live_sudo_after_watchdog_timeout_is_served_while_the_command_runs(tmp_path):
+    """A command yielded to the background outlives its timeout; its later sudo still authenticates."""
+    sudo = _write_fake_sudo(tmp_path / "bin")
+    command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(f"sleep 3; {sudo} id -u", askpass=True)
+    proc = _bash(askpass.build_prologue(count, "1") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == str(os.getuid())
+    wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
+
+
+@_needs_posix_shell
+def test_live_orphan_holding_fd_19_does_not_keep_the_writer_past_the_timeout(tmp_path):
+    sudo = _write_fake_sudo(tmp_path / "bin")
+    command, count = terminal_tool_sudo._rewrite_real_sudo_invocations(
+        f"sleep 8 >/dev/null 2>&1 & false && {sudo} true", askpass=True)
+    proc = _bash(askpass.build_prologue(count, "1") + command, stdin=PW + "\n", env_vars={"TMPDIR": str(tmp_path)})
+    assert proc.returncode == 1, proc.stderr
+    wait_until(lambda: not list(tmp_path.glob("hermes-sudo.*")), timeout=5, what="askpass dir removed")
 
 
 def _probe_env(tmp_path, bin_dir):

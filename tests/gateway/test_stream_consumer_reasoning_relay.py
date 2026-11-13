@@ -249,22 +249,22 @@ class TestReasoningEntitySafety:
         assert "▉" not in edits[-1][2]
         assert not edits[-1][2].endswith("||")
 
-    def test_retains_up_to_three_bubbles_and_vaporizes_oldest(self, monkeypatch, tmp_path):
-        """When >3 thinking bubbles accumulate for a chat, the oldest ones are deleted."""
+    def test_retains_up_to_two_bubbles_and_vaporizes_oldest(self, monkeypatch, tmp_path):
+        """Default retain count (2): when >2 thinking bubbles accumulate for a chat, the oldest ones are deleted."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setattr(GatewayStreamConsumer, "_REASONING_RETAIN_BUBBLES", 3)
+        assert GatewayStreamConsumer._REASONING_RETAIN_BUBBLES == 2
 
         async def scenario():
-            for idx in range(1, 6):
+            for idx in range(1, 5):
                 adapter = _RecordingAdapter()
                 consumer = _consumer(adapter)
                 consumer._reasoning_live_msg_id = f"r_{idx}"
                 await consumer._close_reasoning_phase(f"Reasoning {idx}")
-                if idx <= 3:
+                if idx <= 2:
                     assert adapter.deleted == []
-                elif idx == 4:
+                elif idx == 3:
                     assert adapter.deleted == [(consumer.chat_id, "r_1")]
-                elif idx == 5:
+                elif idx == 4:
                     assert adapter.deleted == [(consumer.chat_id, "r_2")]
 
         _run(scenario())

@@ -456,8 +456,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     _REASONING_FIRST_BUBBLE_SECONDS = 0.6  # fast initial appearance
     _REASONING_MIN_INITIAL_CHARS = 12      # avoid spawning a bubble on 1-2 stray tokens
     # Completed 💭 bubbles kept per chat before oldest ones vaporize via deleteMessage
-    # (0 = vaporize immediately when answer starts; 3 = keep up to 3 recent thinking cards).
-    _REASONING_RETAIN_BUBBLES = 3
+    # (0 = vaporize immediately when answer starts; 2 = keep up to 2 recent thinking cards).
+    _REASONING_RETAIN_BUBBLES = 2
     _REASONING_RETAIN_LOCK = threading.Lock()
 
     def _reasoning_flush_due(self) -> bool:

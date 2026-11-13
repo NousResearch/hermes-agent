@@ -129,6 +129,8 @@ publish a partial destination, and garbage collection cannot delete a live
 transfer's files. Resume reuses ranges only when their recorded length,
 validator, and optional hash still match. Without a strong ETag or pinned
 hash, an interrupted transfer restarts instead of mixing different versions.
+An abandoned transfer's partials are removed with `Download.discard()`, which
+skips any partial whose lock another transfer holds.
 The small `.locks/` files remain after completion so waiting processes use
 the same lock.
 

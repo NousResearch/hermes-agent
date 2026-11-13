@@ -62,6 +62,10 @@ async def test_delivery_after_archive_of_delivery_minted_bot_chat_mints_fresh(hi
                                   operation='sidebar', payload={'archived': True})
         _ref, _live, entry = await _target(authority, owner.actor)
         assert entry.session_id != old
+        # Bot Mode resolves once more while reopening its tab. The replacement
+        # registry row must win again rather than minting a hidden kickoff chat.
+        _ref, _live, reopened = await _target(authority, owner.actor)
+        assert reopened.session_id == entry.session_id
         assert db.get_session_by_title('Bot Chat')['id'] == entry.session_id
         assert {k: db.get_session(old)[k] for k in ('title', 'archived', 'hidden')} == {
             'title': None, 'archived': 1, 'hidden': 0}

@@ -175,7 +175,7 @@ def _shimmed_packages(root: Path, plan) -> set[str]:
     table = {**plan.moves, **plan.renames}
     out = set()
     for name, kind in required.items():
-        old = ".".join(PurePosixPath(name).with_suffix("").parts) if kind in ("by-path", "exists") else name
+        old = ".".join(PurePosixPath(name).with_suffix("").parts) if kind in ("by-path", "exists", "copy") else name
         old = old.removesuffix(".__init__")
         if current_name(old, table) is None:
             continue

@@ -223,3 +223,42 @@ def test_profiles_without_model_listing_never_hit_the_network():
         for profile in flagged:
             assert profile.fetch_models(api_key="k", base_url=profile.base_url) is None, profile.name
     opener.assert_not_called()
+
+
+class _GzipModelHandler(BaseHTTPRequestHandler):
+    """Serves /models as a gzip-compressed payload, like api.kimi.com/coding does when the
+    profile's default_headers advertise ``Accept-Encoding: gzip`` (urllib never inflates)."""
+
+    def do_GET(self):
+        import gzip
+
+        if self.path.rstrip("/") == "/models":
+            body = gzip.compress(json.dumps({"data": [{"id": "gz-model-1"}, {"id": "gz-model-2"}]}).encode())
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Encoding", "gzip")
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # suppress noise
+
+
+def test_fetch_models_inflates_gzip_catalog():
+    """A gzipped /models body must decode instead of failing the utf-8 parse and silently
+    dropping the picker to the static curated list."""
+    server = HTTPServer(("127.0.0.1", 0), _GzipModelHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        profile = ProviderProfile(
+            name="test-gzip",
+            base_url=f"http://127.0.0.1:{server.server_address[1]}",
+            default_headers={"Accept-Encoding": "gzip"},
+        )
+        assert profile.fetch_models(api_key="k") == ["gz-model-1", "gz-model-2"]
+    finally:
+        server.shutdown()

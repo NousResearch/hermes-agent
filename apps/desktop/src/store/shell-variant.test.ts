@@ -9,7 +9,6 @@ vi.mock('./desktop-metrics', () => ({
   recordFeatureToggle: vi.fn()
 }))
 
-const legacyKey = 'hermes.desktop.simplifiedAgentMode.v1'
 const shellKey = 'hermes.desktop.agentShell.v1'
 const paintedShell = () => document.documentElement.getAttribute('data-shell')
 
@@ -28,22 +27,16 @@ async function launch(search = '') {
 afterEach(() => {
   uninstall?.()
   uninstall = undefined
-  localStorage.removeItem(legacyKey)
   localStorage.removeItem(shellKey)
   window.history.replaceState(null, '', '/')
   delete document.documentElement.dataset.shell
   vi.resetModules()
 })
 
-it.each([null, 'false', 'true'])('boots the portal shell and retires prototype preference %s', async legacy => {
-  if (legacy !== null) {
-    localStorage.setItem(legacyKey, legacy)
-  }
-
+it('boots the portal shell when no choice is stored', async () => {
   const { $portalPreferred, $portalShell } = await launch()
   expect($portalPreferred.get()).toBe(true)
   expect($portalShell.get()).toBe(true)
-  expect(localStorage.getItem(legacyKey)).toBeNull()
 })
 
 it('keeps an explicit classic rollback across launches and can restore the portal shell', async () => {

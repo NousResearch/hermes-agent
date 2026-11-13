@@ -7,6 +7,7 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { clearSessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
+import { clearNotifications } from '@/store/notifications'
 import { prunePreviewTabsForSession } from '@/store/preview'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree, getProjectTreeConnectionId, refreshProjectTree } from '@/store/projects'
@@ -39,6 +40,7 @@ import {
 } from '@/store/session-states'
 import { sameSessionOwner } from '@/store/session-tile-identity'
 import { forgetSessionUnread } from '@/store/session-unread'
+import { $deleteKeepsNotifications } from '@/store/shell-policy'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
@@ -50,6 +52,13 @@ import { resumeRouteStillCurrent } from '../session-context-drift'
 import { listedSliceTarget } from './utils'
 
 const listedStores = { sessions: $sessions, messaging: $messagingSessions, cron: $cronSessions }
+
+/** Classic (main) dismisses every toast when a delete starts; see `$deleteKeepsNotifications`. */
+export function clearNotificationsForDeletion(): void {
+  if (!$deleteKeepsNotifications.get()) {
+    clearNotifications()
+  }
+}
 
 /** A failed deletion may restore only the draft it opened, not newer navigation. */
 export function captureDeletionDraft(

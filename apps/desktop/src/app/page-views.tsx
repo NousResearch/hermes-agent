@@ -3,6 +3,7 @@
  * overlays) shares one chunk promise, and so the shell can warm them before they are clicked.
  */
 import { lazyView } from '@/lib/lazy-view'
+import { $portalShell } from '@/store/shell-variant'
 
 export const AgentsView = lazyView(async () => (await import('./agents')).AgentsView)
 export const ArtifactsView = lazyView(async () => (await import('./artifacts')).ArtifactsView)
@@ -74,6 +75,23 @@ export function preloadRailPagesWhenIdle(): () => void {
   return () => {
     cancelled = true
     cancelSlice()
+  }
+}
+
+/** Warms the rail destinations while this window renders the redesign, whose global rail they are.
+ *  Classic has no rail and loads each page (and its reads, e.g. the artifact index's transcripts)
+ *  only when it opens, as on main. Returns a canceller. */
+export function preloadRailPagesInRedesign(): () => void {
+  let cancel: (() => void) | undefined
+
+  const stop = $portalShell.subscribe(portal => {
+    cancel?.()
+    cancel = portal ? preloadRailPagesWhenIdle() : undefined
+  })
+
+  return () => {
+    stop()
+    cancel?.()
   }
 }
 

@@ -14,6 +14,7 @@ import { AlertTriangle, Save } from '@/lib/icons'
 import { lazyView } from '@/lib/lazy-view'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
+import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileColors, profileLabel, refreshProfiles } from '@/store/profile'
 import { usePortalShell } from '@/store/shell-variant'
@@ -252,13 +253,19 @@ function ProfileRow({
 function ProfileDetail({ profile }: { profile: ProfileInfo }) {
   const { t } = useI18n()
   const p = t.profiles
+  const redesign = usePortalShell()
 
   return (
     <PanelDetail>
       <header className="space-y-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="min-w-0 break-words text-[0.95rem] font-semibold tracking-tight text-foreground">
+            <h3
+              className={cn(
+                'text-[0.95rem] font-semibold tracking-tight text-foreground',
+                redesign && 'min-w-0 break-words'
+              )}
+            >
               {profileLabel(profile)}
             </h3>
             {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}

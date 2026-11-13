@@ -14,8 +14,7 @@ export const enConnectorAccounts: Translations['connectorsPage']['accounts'] = {
   renameGone: 'That account is no longer there. It was removed or replaced by a reconnect.',
   remove: 'Remove',
   removeTitle: (app: string, name: string) => `Remove the ${name} ${app} account?`,
-  removeBody:
-    'This removes the connected account for all profiles using the same Nous account, not just this profile. Your other accounts stay connected.',
+  removeBody: 'Hermes stops acting as this account. Your other accounts stay connected.',
   retiredCount: (count: number) => `${count} retired`,
   status: {
     expired: 'Access expired',

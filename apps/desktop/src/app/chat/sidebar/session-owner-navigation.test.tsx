@@ -82,7 +82,9 @@ describe.each([false, true])('session row navigation, redesign=%s', redesign => 
     expect($sessionTiles.get()).toEqual([])
   })
 
-  it('rejects a different-owner same-ID tab before touching its existing surface', () => {
+  // The owner guard belongs to the redesign's cross-profile list; classic opens as main does
+  // (src/store/session-open-owner-guard.test.ts pins both).
+  it.runIf(redesign)('rejects a different-owner same-ID tab before touching its existing surface', () => {
     vi.spyOn(notifications, 'notifyError').mockReturnValue('owner-conflict')
     const request = vi.spyOn(apiClient, 'hermesApi')
     const otherOwner = { connectionId: 'local', profile: 'default' }

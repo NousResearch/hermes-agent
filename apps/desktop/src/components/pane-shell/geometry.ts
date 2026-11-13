@@ -16,6 +16,7 @@ import { type RefObject, useLayoutEffect, useState, useSyncExternalStore } from 
 import { $layoutTree } from '@/components/pane-shell/tree/store'
 import { $paneStates } from '@/store/panes'
 import { $connection } from '@/store/session'
+import { $portalShell } from '@/store/shell-variant'
 
 // ---------------------------------------------------------------------------
 // Rects
@@ -256,7 +257,8 @@ export function publishWorkspaceGeometry(): () => void {
   const publishSidebarWidth = () => {
     const width = $paneStates.get()[CHAT_SIDEBAR_PANE]?.widthOverride
 
-    if (sashDragging() || width === lastSidebar) {
+    // Only the redesign reads it; classic leaves <html> style (and its theme-epoch watchers) alone.
+    if (!$portalShell.get() || sashDragging() || width === lastSidebar) {
       return
     }
 
@@ -274,6 +276,7 @@ export function publishWorkspaceGeometry(): () => void {
   // side collapses); window resize covers the rest.
   const unsubTree = $layoutTree.listen(() => requestAnimationFrame(measure))
   const unsubPanes = $paneStates.subscribe(publishSidebarWidth)
+  const unsubShell = $portalShell.listen(publishSidebarWidth)
   // Drag released → publish the final geometry the deferral above skipped.
   onSashDragEnd = () =>
     requestAnimationFrame(() => {
@@ -286,6 +289,7 @@ export function publishWorkspaceGeometry(): () => void {
   return () => {
     unsubTree()
     unsubPanes()
+    unsubShell()
     onSashDragEnd = null
     window.removeEventListener('resize', measure)
     ro.disconnect()

@@ -33,7 +33,14 @@ import {
 import { writeBootPalette } from './boot-palette'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, normalizeHex, readableInk } from './color'
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, defaultSkinName, nousTheme, RETIRED_SKINS } from './presets'
+import {
+  BUILTIN_THEME_LIST,
+  DEFAULT_TYPOGRAPHY,
+  defaultSkinName,
+  nousTheme,
+  RETIRED_SKINS,
+  skinInShell
+} from './presets'
 import { $pendingModeApply } from './request'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors, DesktopThemeTypography } from './types'
@@ -59,8 +66,10 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
-const normalizeSkin = (name: string | null): string =>
-  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : defaultSkinName($portalShell.get())
+const normalizeSkin = (name: string | null, portalShell = $portalShell.get()): string =>
+  name && resolveTheme(name) && !RETIRED_SKINS.has(name) && skinInShell(name, portalShell)
+    ? name
+    : defaultSkinName(portalShell)
 
 /**
  * A stored mode, or `system` when there isn't one.
@@ -512,7 +521,9 @@ export interface ThemeContextValue {
   clearThemePreview: () => void
 }
 
-const SKIN_LIST = BUILTIN_THEME_LIST.map(({ name, label, description }) => ({ name, label, description }))
+const SKIN_LIST = BUILTIN_THEME_LIST.filter(({ name }) => skinInShell(name, false)).map(
+  ({ name, label, description }) => ({ name, label, description })
+)
 
 const ThemeContext = createContext<ThemeContextValue>({
   theme: nousTheme,
@@ -546,23 +557,25 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const backendCustomCSS = useStore($backendCustomCSS)
   const registryVersion = useStore($registryVersion)
 
+  const portalShell = usePortalShell()
+
   const availableThemes = useMemo(
     () =>
-      listAllThemes().map(({ name, label, description }) => ({
-        name,
-        label,
-        description
-      })),
+      listAllThemes()
+        .filter(({ name }) => skinInShell(name, portalShell))
+        .map(({ name, label, description }) => ({
+          name,
+          label,
+          description
+        })),
     // userThemes + backendThemes + registryVersion ARE listAllThemes' reactivity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [userThemes, backendThemes, registryVersion]
+    [portalShell, userThemes, backendThemes, registryVersion]
   )
 
   const [themeName, setThemeNameState] = useState<null | string>(() =>
     typeof window === 'undefined' ? null : storedSkin(BOOT_PROFILE_KEY)
   )
-
-  const portalShell = usePortalShell()
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
     typeof window === 'undefined' ? 'system' : modePref.resolve(BOOT_PROFILE_KEY)
@@ -608,7 +621,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // The committed skin, resolved against the CURRENT registry — so a stored
   // backend skin that failed to resolve at boot paints once the gateway seeds it.
   const committedName = useMemo(
-    () => normalizeSkin(themeName),
+    () => normalizeSkin(themeName, portalShell),
     // normalizeSkin resolves through the merged registry and the shell's default;
     // the stores are its reactivity.
     // eslint-disable-next-line react-hooks/exhaustive-deps

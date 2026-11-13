@@ -170,8 +170,7 @@ export const deOverrides = {
     dialog: {
       disconnect: 'Trennen',
       disconnectTitle: (name: string) => `${name} trennen?`,
-      disconnectBody:
-        'Das Konto wird für alle Profile getrennt, die dasselbe Nous-Konto verwenden, nicht nur für dieses Profil. Sie können es jederzeit wieder verbinden.',
+      disconnectBody: 'Hermes handelt nicht mehr über dieses Konto. Sie können sich jederzeit wieder verbinden.',
       menuRefreshTools: 'Tools aktualisieren',
       moreActions: 'Weitere Aktionen',
       removeServerTitle: (name: string) => `${name} entfernen?`,
@@ -3574,6 +3573,8 @@ export const deOverrides = {
       custom: 'Benutzerdefiniert',
       subtitle: 'Fertige Automatisierungen',
       dialogDesc: 'Füllen Sie die Details aus und planen Sie den Job ein.',
+      scheduleIt: 'Einplanen',
+      scheduling: 'Wird eingeplant...',
       scheduled: 'Blueprint eingeplant',
       loading: 'Blueprints werden geladen...',
       failedLoad: 'Blueprints konnten nicht geladen werden',

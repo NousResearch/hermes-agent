@@ -14,6 +14,7 @@ import {
 import type { ProfileScope } from '@/hermes'
 import { saveMemoryProviderConfig } from '@/hermes'
 import { ExternalLink, Loader2, Save, SlidersHorizontal } from '@/lib/icons'
+import { shellCopy } from '@/lib/shell-copy'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
@@ -102,7 +103,8 @@ export function ProviderConfigModal({
             <span className="font-medium">
               {(typeof profile === 'string' ? profile : profile?.profile) ?? activeProfile}
             </span>{' '}
-            agent. Blank fields fall back to the resolved host or built-in default.
+            {shellCopy({ classic: 'profile', redesign: 'agent' })}. Blank fields fall back to the resolved host or
+            built-in default.
           </DialogDescription>
           {config.docs_url && (
             <a

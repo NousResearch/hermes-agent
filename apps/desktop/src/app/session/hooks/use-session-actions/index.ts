@@ -149,7 +149,12 @@ import { branchThroughRowId } from './branch-boundary'
 import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
-import { captureDeletionDraft, sessionDeletionOwner, sessionDeletionRow } from './deletion-owner'
+import {
+  captureDeletionDraft,
+  clearNotificationsForDeletion,
+  sessionDeletionOwner,
+  sessionDeletionRow
+} from './deletion-owner'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
@@ -2991,6 +2996,8 @@ export function useSessionActions({
 
   const removeSession = useCallback(
     async (storedSessionId: string, ownerRow?: SessionInfo) => {
+      clearNotificationsForDeletion()
+
       // The row may live in the main list, the messaging/cron sidebar slices,
       // OR the archived view's own store (archived rows are excluded from
       // $sessions by design). Resolve from all of them so deleting a

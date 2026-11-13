@@ -28,6 +28,7 @@ import {
   reuseBlankDraftTile,
   setSessionTileWorkspaceScope
 } from '@/store/session-states'
+import { $sessionListSpansProfiles } from '@/store/shell-policy'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { $workspaceIsPage, sessionRoute } from './routes'
@@ -122,10 +123,14 @@ export function openSession(
     return
   }
 
-  // A separate window has its own caches; do not touch a same-ID local row or
-  // tile while opening its other-owner twin there.
-  if (intent === 'window' && canOpenSessionWindow()) {
+  const popOut = intent === 'window' && canOpenSessionWindow()
+
+  // A separate window has its own caches: the redesign's cross-profile list must
+  // not touch a same-ID local row or tile while opening its other-owner twin
+  // there. Classic marks the row read here first, as main does.
+  if (popOut && $sessionListSpansProfiles.get()) {
     void openSessionInNewWindow(storedSessionId, { ownerRoute: workspaceScope.ownerRoute })
+
     return
   }
 
@@ -139,6 +144,13 @@ export function openSession(
   // at focusOpenSession and never clear its unread dot.
   markSessionRead(storedSessionId)
   setSessionTileWorkspaceScope(storedSessionId, workspaceScope)
+
+  if (popOut) {
+    void openSessionInNewWindow(storedSessionId, { ownerRoute: workspaceScope.ownerRoute })
+
+    return
+  }
+
   const botWorkspaceScope = workspaceScope.workspaceMode === 'bots' ? workspaceScope : undefined
 
   // No pop-out support → treat like a new tab.

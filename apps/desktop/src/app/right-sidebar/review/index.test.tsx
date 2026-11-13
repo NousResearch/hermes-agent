@@ -13,6 +13,7 @@ import {
   $reviewScope,
   $reviewSelectedPath
 } from '@/store/review'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { ReviewPane } from './index'
 
@@ -49,6 +50,21 @@ describe('ReviewPane header gating', () => {
     cleanup()
     $reviewFiles.set([])
     $reviewScope.set('uncommitted')
+  })
+
+  // Main caps the selected file's diff at 55% under the tree; the redesign's panel gives it 2/3.
+  it.each([
+    [false, ['max-h-[55%]', 'shrink-0']],
+    [true, ['flex-[2]', 'min-h-0']]
+  ])('sizes the selected diff as each shell does (redesign=%s)', (redesign, classes) => {
+    $shellChoice.set(redesign)
+    $reviewSelectedPath.set('a.ts')
+    const { container } = renderPane()
+
+    const diff = container.querySelector('[data-slot="review-diff"]')
+
+    expect(classes.every(name => diff?.classList.contains(name))).toBe(true)
+    $shellChoice.set(null)
   })
 
   it('enables stage-all / revert-all under the uncommitted scope', () => {

@@ -59,6 +59,7 @@ import { ambientRequestFor } from '@/store/session-gone-latch'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles, closeAllOpenSessionTiles, requestForOwnedSession } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
+import { $sessionListSpansProfiles } from '@/store/shell-policy'
 import { usePortalShell } from '@/store/shell-variant'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
@@ -281,11 +282,21 @@ function matchesAmbientSessionOwner(ownerRoute: SessionOwnerRoute | undefined, p
   )
 }
 
-function sessionActionScope(ownerRoute: SessionOwnerRoute | undefined, profile: string | undefined) {
+/** The redesign's list spans every profile and machine, so a row's terminal and project moves are
+ *  offered only for the ambient owner (both act through this window's profile). Classic lists one
+ *  connection and offers them on every row, as main does. */
+function sessionActionScope(
+  ownerRoute: SessionOwnerRoute | undefined,
+  profile: string | undefined,
+  ambientOnly: boolean,
+  scopeProfile: string | null
+) {
+  const ambient = !ambientOnly || matchesAmbientSessionOwner(ownerRoute, scopeProfile)
+
   return {
     profile: ownerRoute ?? profile,
-    canOpenTerminal:
-      canOpenSessionInTerminal() && matchesAmbientSessionOwner(ownerRoute, $apiRequestScope.get().profile),
+    ambient,
+    canOpenTerminal: canOpenSessionInTerminal() && ambient,
     workspace: ownerRoute ? { workspaceMode: 'sessions' as const, ownerRoute } : undefined
   }
 }
@@ -312,8 +323,10 @@ function useSessionActions({
   const { t } = useI18n()
   const r = t.sidebar.row
   const scope = useStore($apiRequestScope)
-  const projectScopeMatches = matchesAmbientSessionOwner(ownerRoute, scope.profile)
-  const actionScope = sessionActionScope(ownerRoute, profile)
+  const ambientOnly = useStore($sessionListSpansProfiles)
+
+  const actionScope = sessionActionScope(ownerRoute, profile, ambientOnly, scope.profile)
+
   const [renameOpen, setRenameOpen] = useState(false)
   // The rename item opens a Dialog. When a menu closes, Radix restores focus to
   // its trigger — for a sidebar row that trigger is the row's own <button>, so
@@ -613,7 +626,7 @@ function useSessionActions({
       <kit.Separator />
       {workItems.map(item => renderActionItem(kit, item))}
       <kit.Sub>
-        <kit.SubTrigger disabled={!sessionId || !projectScopeMatches}>
+        <kit.SubTrigger disabled={!sessionId || !actionScope.ambient}>
           <Codicon name="folder" size="0.875rem" />
           <span>{t.sidebar.projects.moveToProject}</span>
         </kit.SubTrigger>

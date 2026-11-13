@@ -107,7 +107,6 @@ import { $botChatScopes } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $portalShell } from '@/store/shell-variant'
 import { $statusbarShown, $statusbarVisible } from '@/store/statusbar-prefs'
-import { $statusbarStripAvailable } from '@/store/statusbar-strip'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
@@ -403,6 +402,18 @@ registry.registerMany([
       run: resetLayoutTree
     } satisfies PaletteContribution
   },
+  // Hiding the bar removes the surface that would otherwise offer it back, so
+  // ⌘K is the guaranteed door in (alongside the rebindable ⌘⇧S). A shell with no
+  // strip does not offer the action, so the palette drops the row there.
+  paletteToggle({
+    id: 'view.toggleStatusbar',
+    label: 'Toggle status bar',
+    action: 'view.toggleStatusbar',
+    icon: PanelBottom,
+    keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
+    get: () => $statusbarVisible.get(),
+    set: enabled => $statusbarVisible.set(enabled)
+  }),
   paletteToggle({
     id: 'view.toggleProfileRail',
     label: 'Toggle profile rail',
@@ -478,27 +489,6 @@ registerLayoutPresets()
 declareDefaultTree(DEFAULT_TREE, BASIC_TREE)
 
 bindBotsPaneToShell()
-
-// Hiding the bar removes the surface that would otherwise offer it back, so ⌘K is the guaranteed
-// door in (alongside the rebindable ⌘⇧S) — offered only while the shell has a strip to toggle.
-let disposeStatusbarToggle: (() => void) | undefined
-
-$statusbarStripAvailable.subscribe(available => {
-  disposeStatusbarToggle?.()
-  disposeStatusbarToggle = available
-    ? registry.register(
-        paletteToggle({
-          id: 'view.toggleStatusbar',
-          label: 'Toggle status bar',
-          action: 'view.toggleStatusbar',
-          icon: PanelBottom,
-          keywords: ['status bar', 'statusbar', 'bottom bar', 'hide', 'show', 'chrome'],
-          get: () => $statusbarVisible.get(),
-          set: enabled => $statusbarVisible.set(enabled)
-        })
-      )
-    : undefined
-})
 
 // Bundled plugins load AFTER core, so a same-id contribution from a plugin
 // deliberately overrides the core default (last writer wins). Third-party

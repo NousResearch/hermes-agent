@@ -31,6 +31,19 @@ describe('per-shell wording', () => {
     expect([classic.settings.nav.gateway, redesign.settings.nav.gateway]).toEqual(['Gateways', 'Machines'])
   })
 
+  // Classic is main's copy verbatim; the redesign's shared-account warning lives in its overlay.
+  it("keeps main's connector and blueprint copy in classic", () => {
+    const classic = resolveTranslations('en', 'classic').connectorsPage
+    const redesign = resolveTranslations('en', 'redesign').connectorsPage
+
+    expect(classic.dialog.disconnectBody).toBe('Hermes stops acting as this account. You can connect again at any time.')
+    expect(classic.accounts.removeBody).toBe('Hermes stops acting as this account. Your other accounts stay connected.')
+    expect(redesign.dialog.disconnectBody).toMatch(/for all agents using the same Nous account/)
+    expect(redesign.accounts.removeBody).toMatch(/for all agents using the same Nous account/)
+    expect(TRANSLATIONS.en.cron.blueprints.scheduleIt).toBe('Schedule it')
+    expect(TRANSLATIONS.en.cron.blueprints.scheduling).toBe('Scheduling...')
+  })
+
   it('overrides function-valued messages too', () => {
     expect(resolveTranslations('en', 'classic').profiles.count(2)).toBe('2 profiles')
     expect(resolveTranslations('en', 'redesign').profiles.count(2)).toBe('2 agents')

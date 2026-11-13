@@ -2380,6 +2380,8 @@ export const ruOverrides = {
       custom: 'Свой',
       subtitle: 'Готовые автоматизации',
       dialogDesc: 'Заполните детали и запланируйте.',
+      scheduleIt: 'Запланировать',
+      scheduling: 'Планирование...',
       scheduled: 'Шаблон запланирован',
       loading: 'Загрузка шаблонов...',
       failedLoad: 'Не удалось загрузить шаблоны',

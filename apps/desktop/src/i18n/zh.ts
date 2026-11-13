@@ -3029,6 +3029,8 @@ export const zhOverrides = {
       custom: '自定义',
       subtitle: '现成的自动化',
       dialogDesc: '填写详细信息并进行排程。',
+      scheduleIt: '安排任务',
+      scheduling: '安排中...',
       scheduled: '蓝图已安排',
       loading: '正在加载蓝图...',
       failedLoad: '加载蓝图失败',

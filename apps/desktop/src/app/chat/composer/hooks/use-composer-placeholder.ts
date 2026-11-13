@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { pickPlaceholder } from '../composer-utils'
 
@@ -17,12 +18,37 @@ interface UseComposerPlaceholderOptions {
 
 const existingConversation = (scope: null | string | undefined) => Boolean(scope) && !isFreshDraftScope(scope)
 
+type Identity = null | string | undefined
+
+/** Whether the composer sits in an existing conversation (follow-up text) or a new one (starter). */
+const inConversation = (identity: Identity, redesign: boolean) =>
+  redesign ? existingConversation(identity) : Boolean(identity)
+
+/** Whether moving from `prev` to `next` is a different conversation, which re-rolls the text.
+ *  Classic keeps main's rule, keyed on the runtime id: a session opened paint-first keeps the
+ *  starter it showed while its runtime was unbound, since null → id reads as "the new session we're
+ *  in just got persisted". The redesign keys on the durable scope (below). */
+function movedConversation(prev: Identity, next: Identity, created: null | string, redesign: boolean): boolean {
+  if (prev === next) {
+    return false
+  }
+
+  if (!redesign) {
+    return !(prev == null && next)
+  }
+
+  // Fresh-draft keys come and go without the conversation changing, and the new chat we're already
+  // in just got persisted when its own send reports the scope it created.
+  return (existingConversation(prev) || existingConversation(next)) && next !== created
+}
+
 /**
  * The composer's placeholder text. A resting starter (new chat) / continuation
  * (existing chat) is picked once and only re-rolled when we genuinely move to a
  * *different* conversation.
  *
- * Identity is the durable draft scope, not the runtime id: a routed chat owns
+ * In the redesign, identity is the durable draft scope, not the runtime id (classic keeps main's
+ * runtime-id rule, see movedConversation): a routed chat owns
  * its stored key the moment the route lands, while its runtime may bind much
  * later (paint-first resume), and compression rotates the runtime under the
  * same chat. A fresh draft becoming a stored chat is either this composer's
@@ -37,14 +63,16 @@ export function useComposerPlaceholder({ disabled, reconnecting, scope, sessionI
   sessionCreated: (scope: string) => void
 } {
   const { t } = useI18n()
+  const redesign = usePortalShell()
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
+  const identity = redesign ? scope : sessionId
 
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(existingConversation(scope) ? followUpPlaceholders : newSessionPlaceholders)
+    pickPlaceholder(inConversation(identity, redesign) ? followUpPlaceholders : newSessionPlaceholders)
   )
 
-  const prevScopeRef = useRef(scope)
+  const prevIdentityRef = useRef(identity)
   const prevSessionIdRef = useRef(sessionId)
   const createdScopeRef = useRef<null | string>(null)
 
@@ -60,24 +88,19 @@ export function useComposerPlaceholder({ disabled, reconnecting, scope, sessionI
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    const prev = prevScopeRef.current
-    prevScopeRef.current = scope
+    const prev = prevIdentityRef.current
+    prevIdentityRef.current = identity
 
-    // Fresh-draft keys come and go without the conversation changing.
-    if (prev === scope || (!existingConversation(prev) && !existingConversation(scope))) {
-      return
-    }
-
-    // The new chat we're already in just got persisted. Keep the starter we
-    // showed instead of swapping to a follow-up under the user.
-    if (scope === createdScopeRef.current) {
+    if (!movedConversation(prev, identity, createdScopeRef.current, redesign)) {
       return
     }
 
     createdScopeRef.current = null
 
-    setRestingPlaceholder(pickPlaceholder(existingConversation(scope) ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, scope])
+    setRestingPlaceholder(
+      pickPlaceholder(inConversation(identity, redesign) ? followUpPlaceholders : newSessionPlaceholders)
+    )
+  }, [followUpPlaceholders, newSessionPlaceholders, identity, redesign])
 
   const placeholder = disabled
     ? reconnecting

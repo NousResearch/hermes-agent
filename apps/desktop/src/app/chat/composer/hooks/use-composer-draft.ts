@@ -34,6 +34,7 @@ import { adoptInterruptedSend, type InterruptedSendHandlers, restoreInterruptedS
 import { $composerPopout } from '@/store/composer-popout'
 import { migrateQueuedPrompts } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
+import { $portalShell } from '@/store/shell-variant'
 
 import { type ComposerStoreWriter, createComposerStoreWriter } from '../composer-store-writer'
 import {
@@ -291,13 +292,18 @@ export function useComposerDraft({
   useEffect(() => {
     if (!inputDisabled && paneVisible && !floating) {
       // Revealing a session must not open a phone keyboard or take focus from
-      // another control. Explicit composer requests below still focus normally.
+      // its tab header (classic, as on main) or, in the redesign, from any other
+      // control. Explicit composer requests below still focus normally.
       const active = document.activeElement
 
-      const anotherControl = active instanceof HTMLElement && active !== editorRef.current &&
-        active !== document.body && !isElementInHiddenPane(active)
+      const keepsFocus = $portalShell.get()
+        ? active instanceof HTMLElement &&
+          active !== editorRef.current &&
+          active !== document.body &&
+          !isElementInHiddenPane(active)
+        : Boolean(active?.closest('[role="tab"]'))
 
-      if (isTouchInteraction() || anotherControl) {
+      if (isTouchInteraction() || keepsFocus) {
         markActiveComposer(target)
       } else {
         focusInput()

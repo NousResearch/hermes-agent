@@ -457,8 +457,10 @@ export default {
       disposeScreenCommand = undefined
       const owner = $focusedBotOwner.get()
 
-      // Unresolved/ambiguous focus must never open another connection's Screen.
-      if (!owner?.connectionId) {return}
+      // The palette is Screen's door only where the sidebar hosts no Screen portal (the redesign);
+      // the classic shell keeps main's palette. Unresolved/ambiguous focus must never open another
+      // connection's Screen.
+      if ($botsPaneHosted.get() || !owner?.connectionId) {return}
 
       disposeScreenCommand = ctx.register({
         id: 'open-screen',
@@ -472,8 +474,10 @@ export default {
 
     syncScreenCommand()
     const stopScreenCommand = $focusedBotOwner.listen(syncScreenCommand)
+    const stopScreenCommandHost = $botsPaneHosted.listen(syncScreenCommand)
     ctx.onDispose?.(() => {
       stopScreenCommand()
+      stopScreenCommandHost()
       disposeScreenCommand?.()
     })
 

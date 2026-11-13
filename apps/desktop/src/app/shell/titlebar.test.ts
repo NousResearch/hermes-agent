@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { $connection } from '@/store/session'
 import { $shellChoice } from '@/store/shell-variant'
 
@@ -22,7 +23,7 @@ import {
   TOUCH_TITLEBAR_HEIGHT,
   windowLightsInRail
 } from './titlebar'
-import { installTitlebarBandProperty, useTitlebarHeight } from './use-touch-titlebar'
+import { installTitlebarBandProperty, titlebarHeightNow, useTitlebarHeight } from './use-touch-titlebar'
 
 describe('titlebarControlsPosition', () => {
   afterEach(() => vi.restoreAllMocks())
@@ -124,6 +125,23 @@ describe('titlebarBandHeight', () => {
     $shellChoice.set(null)
     expect(band()).toBe(`${PORTAL_TITLEBAR_HEIGHT}px`)
     stop()
+  })
+
+  // Main placed the find bar, toast stack and floating HUDs (and pets, floating panes) against the
+  // compact 34px band on every host; a touch browser host must not push them down in classic.
+  it("keeps classic's body-portalled readers on the compact band under a touch pointer", () => {
+    const root = document.createElement('html')
+    const stop = installTitlebarBandProperty(root)
+
+    $touchPointer.set(true)
+    $shellChoice.set(false)
+    expect(root.style.getPropertyValue('--titlebar-band-height')).toBe(`${TITLEBAR_HEIGHT}px`)
+    expect(titlebarHeightNow()).toBe(TITLEBAR_HEIGHT)
+
+    $shellChoice.set(null)
+    expect(titlebarHeightNow()).toBe(PORTAL_TITLEBAR_HEIGHT)
+    stop()
+    $touchPointer.set(false)
   })
 })
 

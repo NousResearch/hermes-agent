@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { registry } from '@/contrib/registry'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { allPaneIds, group, split } from './model'
 import {
@@ -393,6 +394,25 @@ describe('a terminal that owns its own zone (Default / Terminal deck / Quad)', (
 
     expect(isPaneVisible('terminal')).toBe(true)
     expect($terminalTakeover.get()).toBe(true)
+  })
+
+  // Main only activates a picked tab; reopening its hidden pane is the redesign's.
+  it('in classic, selecting a hidden terminal tab only activates it, as main does', () => {
+    $shellChoice.set(false)
+    $layoutTree.set(group(['workspace', 'terminal'], { active: 'workspace', id: 'g-chat' }))
+    bindToolPaneCollapse(
+      'terminal',
+      $terminalTakeover,
+      () => setTerminalTakeover(false),
+      () => setTerminalTakeover(true)
+    )
+    setTerminalTakeover(true)
+    setTerminalTakeover(false)
+
+    activateTreePane('g-chat', 'terminal')
+
+    expect($terminalTakeover.get()).toBe(false)
+    $shellChoice.set(null)
   })
 
   it('survives a restart with a clickable, mountable terminal tab', () => {

@@ -687,7 +687,7 @@ DESKTOP_FEATURE_AREAS = DESKTOP_SETTINGS_AREAS | {
     # overlays and pickers
     "command_palette", "find_in_page", "model_picker", "session_picker", "session_switcher",
     # first-class features
-    "bot_mode", "classic_sidebar", "simplified_sidebar", "simplified_sidebar_offer", "projects", "session_search", "skins", "voice_conversation", "voice_dictation",
+    "bot_mode", "classic_sidebar", "simplified_sidebar", "projects", "session_search", "skins", "voice_conversation", "voice_dictation",
     # full pages (APP_ROUTES in apps/desktop/src/app/routes.ts, plus contributed plugin pages)
     "agents", "artifacts", "capabilities", "command_center", "cron", "extension_page", "kanban", "messaging",
     "profiles", "session_import", "starmap", "webhooks",

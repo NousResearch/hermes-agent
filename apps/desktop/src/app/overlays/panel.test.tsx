@@ -66,3 +66,12 @@ it('keeps the default Portal heading for an empty page without changing classic 
   rerender(<PanelHeader hideInClassic={false} title="Agents" />)
   expect(screen.getAllByRole('heading')).toHaveLength(1)
 })
+
+it("sets the classic heading in main's metrics (14px, default leading) so nothing below it shifts", () => {
+  $shellChoice.set(false)
+  render(<PanelHeader subtitle="2 profiles" title="Profiles" />)
+
+  const heading = screen.getByRole('heading', { level: 2, name: 'Profiles' })
+
+  expect(heading.className.split(' ').sort()).toEqual(['font-semibold', 'text-foreground', 'text-sm'])
+})

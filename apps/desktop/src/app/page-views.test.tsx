@@ -2,10 +2,13 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 import { Suspense } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $shellChoice } from '@/store/shell-variant'
+
 import {
   ArtifactsView,
   CapabilitiesView,
   CronView,
+  preloadRailPagesInRedesign,
   preloadRailPagesWhenIdle,
   ProfilesView,
   SettingsView
@@ -47,6 +50,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  $shellChoice.set(null)
 })
 
 async function drainIdle() {
@@ -87,6 +91,23 @@ describe('rail page preloading', () => {
     // And the data those pages lay out from, so they paint final rows instead of placeholders.
     expect(nested.agentOverview).toHaveBeenCalled()
     expect(nested.capabilities).toHaveBeenCalled()
+    expect(nested.artifacts).toHaveBeenCalled()
+  })
+
+  // Classic has no rail: like main, it loads a page and its reads (the artifact index fetches every
+  // recent transcript) only when the page opens.
+  it('warms nothing at launch in classic, and starts once the window flips to the redesign', async () => {
+    $shellChoice.set(false)
+    const stop = preloadRailPagesInRedesign()
+    await drainIdle()
+
+    expect(nested.artifacts).not.toHaveBeenCalled()
+    expect(nested.directory).not.toHaveBeenCalled()
+
+    $shellChoice.set(true)
+    await drainIdle()
+    stop()
+
     expect(nested.artifacts).toHaveBeenCalled()
   })
 

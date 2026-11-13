@@ -170,8 +170,7 @@ export const esOverrides = {
     dialog: {
       disconnect: 'Desconectar',
       disconnectTitle: (name: string) => `¿Desconectar ${name}?`,
-      disconnectBody:
-        'Esto desconecta la cuenta para todos los perfiles que usan la misma cuenta de Nous, no solo para este perfil. Puedes volver a conectarla cuando quieras.',
+      disconnectBody: 'Hermes deja de actuar con esta cuenta. Puedes volver a conectarla cuando quieras.',
       menuRefreshTools: 'Actualizar herramientas',
       moreActions: 'Más acciones',
       removeServerTitle: (name: string) => `¿Quitar ${name}?`,
@@ -3563,6 +3562,8 @@ export const esOverrides = {
       custom: 'Personalizada',
       subtitle: 'Automatizaciones listas para usar',
       dialogDesc: 'Completa los detalles y prográmala.',
+      scheduleIt: 'Programar',
+      scheduling: 'Programando…',
       scheduled: 'Plantilla programada',
       loading: 'Cargando plantillas…',
       failedLoad: 'No se pudieron cargar las plantillas',

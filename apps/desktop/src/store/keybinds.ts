@@ -132,6 +132,8 @@ declareKeybindAvailability('view.toggleStatusbar', $statusbarStripAvailable)
 // Back/Forward live in the redesign's band; the classic shell has no history controls.
 declareKeybindAvailability('nav.back', $portalPreferred)
 declareKeybindAvailability('nav.forward', $portalPreferred)
+// "New agent" is the redesign's Agents-page button; classic has no such action, so ⌘N stays New chat.
+declareKeybindAvailability('agents.new', $portalPreferred)
 
 /** Live combos for an action: explicit binding → stored override → default. */
 export function bindingsFor(id: string, bindings: KeybindBindings = $bindings.get()): string[] {

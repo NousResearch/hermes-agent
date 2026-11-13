@@ -162,6 +162,8 @@ function ConfigLoading({
   onRetry
 }: ConfigLoadingProps) {
   const { t } = useI18n()
+  // Classic keeps main's label; the redesign names the action.
+  const retryLabel = usePortalShell() ? t.common.retry : t.skills.refresh
 
   if ((configFailed && !configLoaded) || (schemaFailed && !schemaLoaded)) {
     return (
@@ -169,7 +171,7 @@ function ConfigLoading({
         <PanelEmpty
           action={
             <Button onClick={onRetry} size="sm">
-              {t.common.retry}
+              {retryLabel}
             </Button>
           }
           icon="error"

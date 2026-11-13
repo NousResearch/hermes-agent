@@ -101,6 +101,7 @@ import {
 import { sameSessionOwner, tilesShareOwner, tileWorkspaceMode } from './session-tile-identity'
 import { nextWorkspaceSession, orderTilesByTree } from './session-tile-order'
 import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
+import { $sessionListSpansProfiles } from './shell-policy'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -1948,10 +1949,10 @@ export function isBotChatSession(sessionId: null | string | undefined): boolean 
   return Boolean(stored && $botChatSessionIds.get().has(stored))
 }
 
-/** Pane/runtime caches still use bare stored IDs. Never retarget an open
- * surface when another gateway has a session with that same ID. */
+/** Pane/runtime caches use bare stored IDs: never retarget an open surface to another gateway's
+ * same-ID session. Only the redesign's cross-profile list asks; classic opens as main does. */
 export function canOpenSessionOwner(storedSessionId: string, owner?: SessionProfileRoute): boolean {
-  if (!owner?.connectionId) {
+  if (!owner?.connectionId || !$sessionListSpansProfiles.get()) {
     return true
   }
 

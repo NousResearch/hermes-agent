@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { en } from '@/i18n/en'
 import { browserDefaultProjectDirKey, browserFolderBasePath } from '@/lib/browser-settings'
 import { browserStartupProfileKey } from '@/lib/browser-startup-profile'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { CreateProfileDialog } from './create-profile-dialog'
 
@@ -13,6 +14,16 @@ vi.mock('@/hermes', () => api)
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  $shellChoice.set(null)
+})
+
+it.each([
+  [false, 'my-profile'],
+  [true, 'my-agent']
+])('suggests a name in each shell’s vocabulary (redesign=%s)', (redesign, placeholder) => {
+  $shellChoice.set(redesign)
+  render(<CreateProfileDialog onClose={vi.fn()} open />)
+  expect(screen.getByRole('textbox', { name: en.profiles.nameLabel }).getAttribute('placeholder')).toBe(placeholder)
 })
 
 it.each([true, false])(

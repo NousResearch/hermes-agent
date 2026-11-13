@@ -22,16 +22,15 @@ DESKTOP_KEYBIND_ACTION_IDS = frozenset({
     "workspace.newWorktree", "workspace.openFolder",
 })
 DESKTOP_BUTTON_ACTION_IDS = frozenset({
-    "composer.attach", "message.copy", "message.retry", "sidebar.simplified.enable_offer",
-    "sidebar.simplified.enable_settings", "sidebar.simplified.decline", "sidebar.simplified.dismiss",
+    "composer.attach", "message.copy", "message.retry", "sidebar.simplified.enable_settings",
     "sidebar.simplified.disable",
 })
 # Content-free IA counters; mirrored by store/ia-metrics-contract.ts in Desktop.
 DESKTOP_IA_ACTIONS = {
     "rail": ('chat', 'profiles', 'capabilities', 'artifacts', 'cron', 'plugin'),
-    "drawer": ('opened', 'settings', 'account', 'credit-card', 'remote', 'key', 'paintcan', 'mic', 'keyboard', 'shield', 'info', 'question', 'tools', 'documentation'),
+    "drawer": ('settings',),
     "session": ('opened_pinned', 'opened_agent', 'opened_search'),
-    "section": ('pinned_expanded', 'pinned_collapsed', 'agent_expanded', 'agent_collapsed', 'gateway_expanded', 'gateway_collapsed'),
+    "section": ('pinned_expanded', 'pinned_collapsed', 'agent_expanded', 'agent_collapsed'),
     "search": ('opened', 'used', 'results', 'empty', 'partial_failure', 'selected', 'cleared', 'early'),
     "pin_count": ("zero", "one", "two", "three", "overflow"),
     "profile_pin_count": ("zero", "one", "two", "three", "overflow"),

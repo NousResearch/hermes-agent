@@ -122,7 +122,8 @@ describe.each([false, true])('ConfigSettings autosave, simplified mode %s', simp
     failedRequest.mockRejectedValueOnce(new Error('Gateway unavailable'))
 
     renderConfigSettings()
-    fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+    // Classic keeps main's "Refresh skills" label on this button; the redesign names the action.
+    fireEvent.click(await screen.findByRole('button', { name: simplified ? 'Retry' : 'Refresh skills' }))
 
     expect((await screen.findByRole('switch')).getAttribute('aria-checked')).toBe('false')
     expect(failedRequest).toHaveBeenCalledTimes(2)

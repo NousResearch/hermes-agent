@@ -182,8 +182,7 @@ export const en: Translations = {
     dialog: {
       disconnect: 'Disconnect',
       disconnectTitle: (name: string) => `Disconnect ${name}?`,
-      disconnectBody:
-        'This disconnects the account for all profiles using the same Nous account, not just this profile. You can connect again at any time.',
+      disconnectBody: 'Hermes stops acting as this account. You can connect again at any time.',
       menuRefreshTools: 'Refresh tools',
       moreActions: 'More actions',
       removeServerTitle: (name: string) => `Remove ${name}?`,
@@ -3132,6 +3131,8 @@ export const en: Translations = {
       custom: 'Custom',
       subtitle: 'Ready-made automations',
       dialogDesc: 'Fill in the details and schedule it.',
+      scheduleIt: 'Schedule it',
+      scheduling: 'Scheduling...',
       scheduled: 'Blueprint scheduled',
       loading: 'Loading blueprints...',
       failedLoad: 'Failed to load blueprints',

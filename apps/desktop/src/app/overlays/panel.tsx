@@ -113,9 +113,7 @@ export function PanelHeader({ actions, meta, subtitle, title, simplifiedTitle, h
       className={cn('panel-header mb-3 flex shrink-0 items-start justify-between gap-3', actions ? 'pr-8' : undefined)}
     >
       <div className="min-w-0">
-        <h2 className="text-[length:var(--portal-type-display-lg-size,0.875rem)] leading-tight font-semibold text-foreground">
-          {title}
-        </h2>
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
         {subtitle ? <p className="truncate text-xs text-muted-foreground/80">{subtitle}</p> : null}
       </div>
       {meta ? <span className="panel-header-meta">{meta}</span> : null}

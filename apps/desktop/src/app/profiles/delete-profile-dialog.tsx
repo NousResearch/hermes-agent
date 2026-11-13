@@ -3,6 +3,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { PathText } from '@/components/ui/path-text'
 import { deleteProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { cn } from '@/lib/utils'
 import { activeGatewayConnectionId, retireLocalProfileGateways } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 import { dropTilesForProfile } from '@/store/session-states'
@@ -42,13 +43,13 @@ export function DeleteProfileDialog({
         profile ? (
           <>
             {p.deleteDescPrefix}
-            <span className="break-words font-medium text-foreground">{profile.name}</span>
+            <span className={cn('font-medium text-foreground', redesign && 'break-words')}>{profile.name}</span>
             {gatewayLabel ? p.fleet.deleteOn(gatewayLabel) : null}
             {p.deleteDescMid}
             {redesign ? (
               <PathText className="max-w-full align-bottom text-xs" path={profile.path} />
             ) : (
-              <span className="break-all font-mono text-xs">{profile.path}</span>
+              <span className="font-mono text-xs">{profile.path}</span>
             )}
             {p.deleteDescSuffix}
           </>

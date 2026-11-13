@@ -2731,6 +2731,8 @@ export interface Translations extends NoticeTranslations {
       custom: string
       subtitle: string
       dialogDesc: string
+      scheduleIt: string
+      scheduling: string
       scheduled: string
       loading: string
       failedLoad: string

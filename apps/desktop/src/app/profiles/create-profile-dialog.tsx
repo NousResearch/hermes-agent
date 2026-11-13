@@ -20,6 +20,7 @@ import { useI18n } from '@/i18n'
 import { dropBrowserProfilePrefs } from '@/lib/browser-profile-prefs'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
+import { shellCopy } from '@/lib/shell-copy'
 import type { ProfileInfo } from '@/types/hermes'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -125,7 +126,7 @@ export function CreateProfileDialog({
               autoFocus
               id="new-profile-name"
               onValueChange={setName}
-              placeholder="my-agent"
+              placeholder={shellCopy({ classic: 'my-profile', redesign: 'my-agent' })}
               sanitize={slug}
               value={name}
             />

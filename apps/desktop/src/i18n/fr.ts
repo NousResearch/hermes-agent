@@ -170,8 +170,7 @@ export const frOverrides = {
     dialog: {
       disconnect: 'Déconnecter',
       disconnectTitle: (name: string) => `Déconnecter ${name} ?`,
-      disconnectBody:
-        "Ce compte sera déconnecté pour tous les profils utilisant le même compte Nous, pas seulement pour ce profil. Vous pourrez le reconnecter à tout moment.",
+      disconnectBody: "Hermes cesse d'agir avec ce compte. Vous pouvez vous reconnecter à tout moment.",
       menuRefreshTools: 'Actualiser les outils',
       moreActions: "Plus d'actions",
       removeServerTitle: (name: string) => `Supprimer ${name} ?`,
@@ -3581,6 +3580,8 @@ export const frOverrides = {
       custom: 'Personnalisé',
       subtitle: "Automatismes prêts à l'emploi",
       dialogDesc: 'Remplissez les détails et planifiez-les.',
+      scheduleIt: 'Planifiez-le',
+      scheduling: 'Planification...',
       scheduled: 'Plan planifié',
       loading: 'Chargement des plans...',
       failedLoad: 'Échec du chargement des plans',

@@ -462,3 +462,22 @@ it('exports a remote search result using the exact owner from its row', async ()
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Export' }))
   expect(exportSession).toHaveBeenCalledWith('remote-only', { profile: owner, title: 'Remote' })
 })
+
+// Main offers "Move to project" on every row of its one-connection list; only the redesign's
+// cross-machine list holds it back for a row another machine or profile owns.
+it.each([
+  [false, null],
+  [true, 'true']
+])('offers Move to project on another owner’s row as main does in classic (redesign=%s)', async (redesign, disabled) => {
+  $shellChoice.set(redesign)
+  render(
+    <SessionActionsMenu ownerRoute={{ connectionId: 'remote-b', profile: 'research' }} sessionId="remote" title="Remote">
+      <button>Actions</button>
+    </SessionActionsMenu>
+  )
+  fireEvent.keyDown(screen.getByRole('button', { name: 'Actions' }), { key: 'Enter' })
+
+  const move = await screen.findByRole('menuitem', { name: 'Move to project' })
+
+  expect(move.getAttribute('aria-disabled')).toBe(disabled)
+})

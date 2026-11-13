@@ -2,14 +2,10 @@ import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 
 import { persistentAtom } from '@/lib/persisted'
-import { writeKey } from '@/lib/storage'
 
 import { DESKTOP_BUTTON_ACTIONS, recordAction, recordFeatureToggle } from './desktop-metrics'
 import { providePortalPresentation } from './shell-presentation'
 import { isBrowserWindow, isHudWindow } from './windows'
-
-// The prototype's opt-in choice is deliberately not inherited; retire it.
-writeKey('hermes.desktop.simplifiedAgentMode.v1', null)
 
 /** The persisted explicit choice: null until the user picks, `false` = classic rollback. */
 export const $shellChoice = persistentAtom<boolean | null>('hermes.desktop.agentShell.v1', null, {

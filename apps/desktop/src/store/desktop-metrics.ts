@@ -111,7 +111,6 @@ export type DesktopFeatureArea =
   | 'settings_sessions'
   | 'settings_vault'
   | 'simplified_sidebar'
-  | 'simplified_sidebar_offer'
   | 'skins'
   | 'starmap'
   | 'terminal_pane'

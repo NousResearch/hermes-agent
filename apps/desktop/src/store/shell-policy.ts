@@ -24,6 +24,9 @@ export const $capabilitiesManagedPerAgent = gate(portal => portal)
 /** Bots are a section of the Agents page, so the Bots plugin registers no sidebar pane. */
 export const $botsInAgentsPage = gate(portal => portal)
 
+/** Deleting a chat leaves the toast stack alone; classic dismisses every toast on a delete. */
+export const $deleteKeepsNotifications = gate(portal => portal)
+
 /** Navigation (IA) metrics measure the redesigned information architecture only. */
 export const $recordsIaMetrics = gate(portal => portal)
 

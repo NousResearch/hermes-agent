@@ -8,6 +8,7 @@ import { clearQueuedPrompts, enqueueQueuedPrompt, getQueuedPrompts } from '@/sto
 import { $backgroundStatusBySession } from '@/store/composer-status'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $notifications, clearNotifications, notify } from '@/store/notifications'
 import { $projectTree, getProjectTreeConnectionId, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
@@ -27,6 +28,7 @@ import {
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles, clearAllSessionStates, recordSessionEventScope } from '@/store/session-states'
+import { $shellChoice } from '@/store/shell-variant'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { clearTranscriptTails, loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
@@ -421,4 +423,25 @@ it('rolls back only deleted-owner rows while preserving concurrent updates to th
   expect(view.navigate).not.toHaveBeenCalled()
   expect(getQueuedPrompts(id)).toHaveLength(1)
   expect(getSessionOwnerHint(id)).toEqual(ownerA)
+})
+
+// Main dismisses every toast when a delete starts, even for a chat that is not open (an open one
+// also resets to a fresh draft, which clears toasts in both shells); the redesign leaves the stack alone.
+it.each([
+  [false, 0],
+  [true, 1]
+])('clears the toast stack on a background delete only in classic (redesign=%s)', async (redesign, remaining) => {
+  $shellChoice.set(redesign)
+  clearNotifications()
+  notify({ kind: 'info', message: 'Unrelated toast' })
+  const removed = row(ownerA)
+  setSessions([removed])
+  const view = mountDeletion(ownerA)
+  view.selectedStoredSessionIdRef.current = null
+
+  await act(() => view.result.current.removeSession(id, removed))
+
+  expect($notifications.get()).toHaveLength(remaining)
+  clearNotifications()
+  $shellChoice.set(null)
 })

@@ -3,6 +3,7 @@ import { type PointerEvent, type ReactNode, useEffect, useId, useRef, useState }
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { RowButton } from '@/components/ui/row-button'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -72,17 +73,18 @@ export function SimplifiedGatewayHeader({
       data-tone={TONE[state]}
       role="group"
     >
-      <RowButton
-        aria-describedby={statusId}
-        aria-expanded={open}
-        aria-label={toggleLabel}
-        className="portal-machine-row"
-        onClick={onToggle}
-        title={address ? `${label} · ${address}` : label}
-      >
-        <span className="portal-machine-name">{label}</span>
-        {registered?.org && <span className="portal-machine-tag">{registered.org}</span>}
-      </RowButton>
+      <Tip label={address ? `${label} · ${address}` : label}>
+        <RowButton
+          aria-describedby={statusId}
+          aria-expanded={open}
+          aria-label={toggleLabel}
+          className="portal-machine-row"
+          onClick={onToggle}
+        >
+          <span className="portal-machine-name">{label}</span>
+          {registered?.org && <span className="portal-machine-tag">{registered.org}</span>}
+        </RowButton>
+      </Tip>
       <MachineStatusPopover
         label={t.shell.gatewayMenu.machineStatus(label, status)}
         panel={close =>

@@ -1856,7 +1856,8 @@ export function activateTreePane(groupId: string, paneId: string) {
 
   if (tree) {
     commit(setActivePaneOp(tree, groupId, paneId))
-    paneOpeners[paneId]?.()
+    // The redesign reopens a hidden pane whose tab is picked; classic only activates it, as main.
+    ;($portalShell.get() ? paneOpeners[paneId] : undefined)?.()
   }
 }
 

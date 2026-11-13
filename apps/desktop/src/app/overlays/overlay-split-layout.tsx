@@ -6,6 +6,7 @@ import { TabDropdown } from '@/components/ui/tab-dropdown'
 import { useI18n } from '@/i18n'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { PAGE_MAX_W } from '../layout-constants'
 
@@ -127,13 +128,16 @@ export const OverlayNavItem = memo(function OverlayNavItem({
   onClick,
   trailing
 }: OverlayNavItemProps) {
+  const redesign = usePortalShell()
+
   return (
     <button
       aria-current={current ? 'page' : undefined}
       aria-pressed={pressed}
       className={cn(
         'row-hover flex w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
-        nested ? 'min-h-7' : 'min-h-(--page-nav-row-height,1.75rem)',
+        // Classic rows are main's fixed 28px; the redesign's grow with its row token and text size.
+        !redesign ? 'h-7' : nested ? 'min-h-7' : 'min-h-(--page-nav-row-height,1.75rem)',
         nested
           ? active
             ? current

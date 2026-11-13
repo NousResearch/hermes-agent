@@ -473,6 +473,13 @@ export function defaultSkinName(portalShell: boolean): string {
   return portalShell ? PORTAL_SKIN_NAME : DEFAULT_SKIN_NAME
 }
 
+/** Whether `name` belongs to this shell's skin set. The Portal skin is the redesign's own
+ *  palette: classic neither lists nor paints it (its picker is main's), so a stored Portal pick
+ *  reads as "no pick" there — classic paints its default and the pick returns with the redesign. */
+export function skinInShell(name: string, portalShell: boolean): boolean {
+  return portalShell || name !== PORTAL_SKIN_NAME
+}
+
 /** Names that no longer resolve to a skin of their own. A stored pick of one
  *  falls back to DEFAULT_SKIN_NAME, and a cached backend theme under one is
  *  dropped (the reverted #130015 build cached the CLI `default` skin as a

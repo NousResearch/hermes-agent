@@ -1,5 +1,6 @@
 import { type CSSProperties, type ReactNode, useEffect } from 'react'
 
+import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { useTitlebarHeight } from '@/app/shell/use-touch-titlebar'
 import { Button } from '@/components/ui/button'
@@ -108,7 +109,8 @@ export function OverlayView({
       // below its in-flow title bar), and CSS vars inherit through the DOM —
       // so a fixed overlay mounted inside a zone would read 0 and bleed to
       // the edges. Re-pin the real height at the overlay root.
-      style={{ '--titlebar-height': `${titlebarHeight}px` } as CSSProperties}
+      // Classic's card insets from its compact band on every host, as on main.
+      style={{ '--titlebar-height': `${page ? titlebarHeight : TITLEBAR_HEIGHT}px` } as CSSProperties}
     >
       {page && (
         <div className="absolute inset-x-0 bottom-full h-(--titlebar-height) bg-background [-webkit-app-region:drag]" data-slot="page-toolbar">

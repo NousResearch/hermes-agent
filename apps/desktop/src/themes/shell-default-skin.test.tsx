@@ -56,3 +56,44 @@ it('keeps an explicit pick in both shells', () => {
   expect(seen?.themeName).toBe('everforest')
   expect(seen?.defaultThemeName).toBe('nous')
 })
+
+it("lists exactly main's skins, in main's order, in classic and adds Portal only in the redesign", () => {
+  mount()
+  expect(seen?.availableThemes[0]?.name).toBe('portal')
+
+  act(() => $shellChoice.set(false))
+  expect(seen?.availableThemes.map(theme => theme.name)).toEqual([
+    'nous',
+    'github',
+    'catppuccin',
+    'everforest',
+    'solarized',
+    'nous-alt',
+    'classic',
+    'midnight',
+    'ember',
+    'mono',
+    'slate',
+    'cyberpunk'
+  ])
+})
+
+it('paints a Portal pick as the classic default in classic and restores it with the redesign', () => {
+  mount()
+  act(() => seen?.setTheme('portal'))
+  const stored = window.localStorage.getItem(SKIN_KEY)
+
+  act(() => $shellChoice.set(false))
+  expect(seen?.themeName).toBe('nous')
+  expect(window.localStorage.getItem(SKIN_KEY)).toBe(stored)
+
+  act(() => $shellChoice.set(true))
+  expect(seen?.themeName).toBe('portal')
+})
+
+it('refuses the Portal skin as an explicit classic pick', () => {
+  $shellChoice.set(false)
+  mount()
+  act(() => seen?.setTheme('portal'))
+  expect(seen?.themeName).toBe('nous')
+})

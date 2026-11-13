@@ -1642,7 +1642,7 @@ function CronEditorDialog({
                 {t.common.cancel}
               </Button>
               <Button disabled={saving} type="submit">
-                {saving ? t.common.saving : c.createAction}
+                {saving ? c.blueprints.scheduling : c.blueprints.scheduleIt}
               </Button>
             </DialogFooter>
           </form>

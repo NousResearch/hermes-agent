@@ -2122,6 +2122,8 @@ export const jaOverrides = {
       custom: 'カスタム',
       subtitle: 'すぐに使える自動化',
       dialogDesc: '詳細を入力してスケジュールします。',
+      scheduleIt: 'スケジュールする',
+      scheduling: 'スケジュール中...',
       scheduled: 'ブレーンプリントをスケジュールしました',
       loading: 'ブレーンプリントを読み込み中...',
       failedLoad: 'ブレーンプリントの読み込みに失敗しました',

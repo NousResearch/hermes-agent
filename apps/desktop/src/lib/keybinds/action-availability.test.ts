@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 // The bindings store every keybind surface reads; it declares window-dependent availability itself.
-import { $bindings, conflictsFor } from '@/store/keybinds'
+import { $bindings, $comboIndex, bindingsFor, conflictsFor } from '@/store/keybinds'
 import { $shellChoice } from '@/store/shell-variant'
 
-import { $offeredKeybindActions, allKeybindActions, defaultBindings } from './actions'
+import { $offeredKeybindActions, allKeybindActions, defaultBindings, keybindActionAvailable } from './actions'
+import { canonicalizeCombo } from './combo'
 
 const listed = (id: string) => allKeybindActions().some(action => action.id === id)
 
@@ -45,5 +46,29 @@ describe('shell-dependent shortcuts', () => {
     expect(defaultBindings()['view.toggleStatusbar']).toEqual(['mod+shift+s'])
     expect($bindings.get()['view.toggleStatusbar']).toEqual(['mod+shift+s'])
     expect(conflictsFor('view.toggleTabStrip', 'mod+shift+s')).toContain('view.toggleStatusbar')
+  })
+})
+
+// "New agent" is the redesign's Agents-page button. Classic (main) has no such shortcut: the
+// shortcut map does not list it and the new-chat chord goes straight to New chat.
+describe('the New agent shortcut', () => {
+  const chordTakers = () =>
+    bindingsFor('agents.new').map(combo =>
+      ($comboIndex.get().get(canonicalizeCombo(combo)) ?? []).filter(keybindActionAvailable)
+    )
+
+  it('is neither listed nor dispatched in classic', () => {
+    $shellChoice.set(false)
+
+    expect(listed('agents.new')).toBe(false)
+    expect(listed('session.new')).toBe(true)
+    expect(chordTakers().every(ids => ids.length === 1 && ids[0] === 'session.new')).toBe(true)
+  })
+
+  it('is listed and takes the chord first in the redesign', () => {
+    $shellChoice.set(true)
+
+    expect(listed('agents.new')).toBe(true)
+    expect(chordTakers().every(ids => ids[0] === 'agents.new' && ids.includes('session.new'))).toBe(true)
   })
 })

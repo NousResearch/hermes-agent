@@ -18,6 +18,7 @@ import {
   takeSessionDraft
 } from '@/store/composer'
 import { $connection } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
@@ -698,6 +699,38 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     expect(globalThis.document.activeElement).toBe(tab)
     act(() => focusInput())
     expect(globalThis.document.activeElement).toBe(getByRole('textbox', { name: 'Composer' }))
+  })
+
+  // Main (classic) keeps only a focused tab header: revealing a session from a sidebar button
+  // moves the caret into the composer.
+  it.each([
+    ['tab', 'Other control'],
+    ['button', 'Composer']
+  ] as const)('in classic, a focused %s leaves focus on %s when a session is revealed', (role, focused) => {
+    $shellChoice.set(false)
+
+    function Draft({ focusKey }: { focusKey: string }) {
+      const draft = useComposerDraft({
+        activeQueueSessionKey: 'keyboard-focus',
+        focusKey,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: 'keyboard-focus'
+      })
+
+      return (
+        <>
+          <div aria-label="Other control" ref={element => element?.focus()} role={role} tabIndex={0}>Other control</div>
+          <div aria-label="Composer" contentEditable data-slot="composer-rich-input" ref={draft.editorRef} role="textbox" tabIndex={0} />
+        </>
+      )
+    }
+
+    const { getByLabelText, rerender } = render(<Draft focusKey="first" />)
+    getByLabelText('Other control').focus()
+    rerender(<Draft focusKey="second" />)
+    expect(globalThis.document.activeElement).toBe(getByLabelText(focused))
+    $shellChoice.set(null)
   })
 
   it('claims the bus on mount when visible', () => {

@@ -116,7 +116,7 @@ import {
   AgentsView,
   CommandCenterView,
   CronView,
-  preloadRailPagesWhenIdle,
+  preloadRailPagesInRedesign,
   ProfilesView,
   SettingsView,
   StarmapView,
@@ -392,7 +392,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useRouteRequestNavigation(navigate)
   useRecoveryRequestToasts()
-  useEffect(() => preloadRailPagesWhenIdle(), [])
+  useEffect(() => preloadRailPagesInRedesign(), [])
 
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)

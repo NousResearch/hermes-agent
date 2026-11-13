@@ -33,6 +33,18 @@ interface Dictation {
   live?: () => Promise<DictationStreamSession | null>
 }
 
+/**
+ * A dictation press while the previous clip is still TRANSCRIBING must be ignored.
+ *
+ * `stop()` guards every step with `live()` (`dictationRef.current === dictation`), so a second press
+ * that re-enters `stop()` races the first: the second reaches `finish()` first and nulls the ref, and
+ * the first then drops its finished transcript before `onTranscript` — the words vanish, with no toast
+ * (reported on macOS; upstream tracks the same seam for a chat switch mid-transcription, #149000).
+ */
+export function dictationPressIgnored(status: VoiceStatus): boolean {
+  return status === 'transcribing'
+}
+
 export function useVoiceRecorder({
   maxRecordingSeconds,
   onTranscribeAudio,
@@ -256,6 +268,10 @@ export function useVoiceRecorder({
   }
 
   const dictate = () => {
+    if (dictationPressIgnored(voiceStatus)) {
+      return
+    }
+
     if (recording) {
       void stop()
     } else if (voiceStatus === 'idle') {

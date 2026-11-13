@@ -393,12 +393,25 @@ def to_markdown_v2(content: str) -> str:
 # A bare scheme URL; trailing punctuation and emphasis/spoiler marks are prose, not URL.
 _BARE_URL_RE = re.compile(r'(?i)\b[a-z][a-z0-9+.-]*://[^\s<>\x00]+')
 _URL_TAIL_CHARS = '.,;:!?\'"*_~|'
+_URL_PATH_MARKS = '*_~'  # inside a URL path a trailing wildcard is URL text, never an emphasis closer
 
 
 def _url_end(url: str) -> int:
-    """Length of *url* without trailing prose punctuation; a ``)`` stays only while it closes a ``(``."""
-    end = len(url)
-    while end and (url[end - 1] in _URL_TAIL_CHARS or (url[end - 1] == ')' and url.count('(', 0, end) < url.count(')', 0, end))):
+    """Length of *url* without trailing prose punctuation; a ``)`` stays only while it closes a ``(``,
+    and a ``*``/``_``/``~`` right after a ``/`` stays (``/web/*``). One pass: the paren balance is
+    counted once and updated while trimming."""
+    end, unclosed = len(url), url.count(')') - url.count('(')
+    while end:
+        ch = url[end - 1]
+        if ch in _URL_PATH_MARKS and end >= 2 and url[end - 2] == '/':
+            break
+        if ch == ')' and unclosed > 0:
+            unclosed -= 1
+        elif ch == '(':
+            unclosed += 1
+            break
+        elif ch not in _URL_TAIL_CHARS:
+            break
         end -= 1
     return end
 

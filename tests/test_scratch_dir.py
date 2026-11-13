@@ -47,6 +47,80 @@ def test_boot_hook_and_prompt_hand_the_prune_to_one_child(scratch_prune_spawns, 
     assert scratch_prune_spawns == [scratch, routed / "cache" / "scratch"]
 
 
+def test_the_process_gate_keeps_its_chance_when_the_hour_is_not_up(scratch_prune_spawns, tmp_path, monkeypatch):
+    """A process that starts inside the hour the last pass stamped keeps its one chance.
+
+    The gate is a per-process door: once stamped, ``get_scratch_dir`` never prunes again in that
+    process. Stamping it before the hour check spent that chance on a call that pruned nothing,
+    so a gateway restarted minutes after a prune never pruned for the rest of its life (5 days and
+    18 MB of leftovers in the observation that prompted this test). Here the first call must leave
+    the door open, and the call after the hour must walk through it.
+    """
+    import hermes_constants as constants
+
+    monkeypatch.setattr(constants, "_scratch_pruned_once", False)
+    home = tmp_path / "home"
+    scratch = get_scratch_dir(home, prune=False)
+    stamp = scratch / ".last_prune"
+    stamp.write_text("")
+    recent = time.time() - 30 * 60
+    os.utime(stamp, (recent, recent))
+
+    get_scratch_dir(home)  # inside the hour: nothing to prune, and nothing spent
+    assert scratch_prune_spawns == []
+
+    elapsed = time.time() - 2 * 3600
+    os.utime(stamp, (elapsed, elapsed))
+    get_scratch_dir(home)  # the hour is up: the chance is still there
+    assert scratch_prune_spawns == [scratch]
+
+
+def test_the_process_gate_still_holds_after_a_real_pass(scratch_prune_spawns, tmp_path, monkeypatch):
+    """The per-process door still closes on a pass that ran: a fan-out of children stays cheap.
+
+    Fixing the stamp order must not turn the gate into a per-call prune — that is the cost the
+    gate exists to avoid.
+    """
+    import hermes_constants as constants
+
+    monkeypatch.setattr(constants, "_scratch_pruned_once", False)
+    home = tmp_path / "home"
+    scratch = get_scratch_dir(home, prune=False)
+
+    get_scratch_dir(home)  # no stamp at all: due, and the door closes
+    assert scratch_prune_spawns == [scratch]
+
+    elapsed = time.time() - 2 * 3600  # the hour is up again, but this process already had its turn
+    os.utime(scratch / ".last_prune", (elapsed, elapsed))
+    get_scratch_dir(home)
+    assert scratch_prune_spawns == [scratch]
+
+
+def test_a_long_lived_caller_re_asks_the_hour_not_the_process(scratch_prune_spawns, tmp_path, monkeypatch):
+    """``prune_scratch_dir_if_due`` prunes on the stamped hour even after the gate has closed.
+
+    That is the gateway's shape: one process, days of uptime, its single per-process chance spent
+    long ago. The housekeeping chore re-asks this on every tick, so the hour — not the process age
+    — is the floor.
+    """
+    import hermes_constants as constants
+    from hermes_constants import prune_scratch_dir_if_due
+
+    monkeypatch.setattr(constants, "_scratch_pruned_once", True)  # gate long closed, as in a gateway
+    scratch = get_scratch_dir(tmp_path / "home", prune=False)
+
+    prune_scratch_dir_if_due(scratch)  # no stamp: due
+    assert scratch_prune_spawns == [scratch]
+
+    prune_scratch_dir_if_due(scratch)  # stamped a moment ago: not due
+    assert scratch_prune_spawns == [scratch]
+
+    elapsed = time.time() - 2 * 3600
+    os.utime(scratch / ".last_prune", (elapsed, elapsed))
+    prune_scratch_dir_if_due(scratch)  # the hour is up again: due again
+    assert scratch_prune_spawns == [scratch, scratch]
+
+
 def _idle_entry(scratch: Path, name: str) -> Path:
     entry = scratch / name
     (entry / "sub").mkdir(parents=True)

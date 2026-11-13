@@ -3630,6 +3630,60 @@ describe('branchStoredSession desktop source tagging', () => {
     expect(branchParams).toMatchObject({ session_id: 'live-parent', count: 2, idempotency_key: expect.any(String) })
   })
 
+  it('branches an open live chat via session.branch through the clicked message rowId', async () => {
+    let branchParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.branch') {
+        branchParams = params
+
+        return {
+          session_id: 'branch-runtime',
+          stored_session_id: 'branch-stored',
+          title: 'Branch',
+          message_count: 2,
+          messages: [],
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    setMessages([
+      { id: 'q1', role: 'user', rowId: 10, parts: [{ type: 'text', text: 'question one', sourceRowId: 10 }] },
+      { id: 'a1', role: 'assistant', rowId: 12, parts: [{ type: 'text', text: 'answer one', sourceRowId: 12 }] },
+      { id: 'q2', role: 'user', rowId: 13, parts: [{ type: 'text', text: 'question two', sourceRowId: 13 }] },
+      { id: 'a2', role: 'assistant', rowId: 15, parts: [{ type: 'text', text: 'answer two', sourceRowId: 15 }] }
+    ])
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!('a1')).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('session.branch', {
+      session_id: 'live-parent',
+      count: 2,
+      through_message_id: 12,
+      idempotency_key: expect.any(String)
+    })
+    expect(branchParams).toMatchObject({
+      session_id: 'live-parent',
+      count: 2,
+      through_message_id: 12,
+      idempotency_key: expect.any(String)
+    })
+  })
+
   it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {
     let branchParams: Record<string, unknown> | undefined
 

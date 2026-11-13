@@ -167,17 +167,24 @@ def _is_command_word(token: str) -> bool:
     base = _token_basename(token)
     return base in _SHELL_INTERPRETERS or base in _EXEC_WRAPPERS
 
-_NEEDS_SHLEX = re.compile(r"[\\'\"#]")
+_NEEDS_SHLEX = re.compile(r"[\\'\"#$]")
 
 def _split_env_string(argv: list[str], idx: int, consumed: int, value: str) -> bool:
     """Replace env's ``-S`` option token(s) with the split string's words."""
     if not _NEEDS_SHLEX.search(value):
-        argv[idx:idx + consumed] = value.split()  # same words, without shlex's per-char cost
+        argv[idx:idx + consumed] = value.split()  # same words, without the GNU parser's per-char cost
         return True
-    try:
-        argv[idx:idx + consumed] = shlex.split(value)
-    except ValueError:
-        return False  # env itself refuses an unterminated split string
+    from tools.approval_detection import _split_env_string as gnu_env_split
+
+    words = gnu_env_split(value)
+    if words is None:
+        # ${NAME} expansion or an escape env would reject: shlex keeps the
+        # words visible to the shell scan, so an unparsed payload over-blocks.
+        try:
+            words = shlex.split(value)
+        except ValueError:
+            return False  # env itself refuses an unterminated split string
+    argv[idx:idx + consumed] = words
     return True
 
 def _skip_option(argv: list[str], idx: int, wrapper: str) -> int | None:
@@ -231,6 +238,9 @@ def _is_positional_operand(wrapper: str, token: str) -> bool:
     pattern = _POSITIONAL_OPERAND[wrapper]
     return pattern is None or bool(re.fullmatch(pattern, token))
 
+# Wrappers that take ``NAME=value`` words before the command (sudo(8) "VAR=value").
+_ASSIGNMENT_WRAPPERS = frozenset({"env", "sudo"})
+
 def _skip_wrapper_args(argv: list[str], idx: int, wrapper: str) -> int:
     """Consume wrapper operands by arity, expanding env's command-bearing -S."""
     after_option = False  # previous token was a flag that took no operand
@@ -241,10 +251,12 @@ def _skip_wrapper_args(argv: list[str], idx: int, wrapper: str) -> int:
             idx += 1
             if idx < len(argv) and _is_positional_operand(wrapper, argv[idx]):
                 idx += 1
+            while wrapper in _ASSIGNMENT_WRAPPERS and idx < len(argv) and _is_env_assignment(argv[idx]):
+                idx += 1  # ``env -- X=1 sh``: assignments still precede the command
             return idx
         if token in {"--help", "--version"}:
             return len(argv)
-        if wrapper == "env" and (_is_env_assignment(token) or token == "-"):
+        if (wrapper in _ASSIGNMENT_WRAPPERS and _is_env_assignment(token)) or (wrapper == "env" and token == "-"):
             idx, after_option = idx + 1, False
             continue
         if token.startswith("-") and token != "-":

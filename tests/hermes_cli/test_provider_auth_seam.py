@@ -213,3 +213,21 @@ def test_external_process_plugin_relogin_is_its_declared_login_command(monkeypat
 
     assert oauth_relogin_command("cli-declares") == "'/opt/vendor cli/vendor' auth login"
     assert relogin_command_hint("cli-declares") == "'/opt/vendor cli/vendor' auth login"
+
+
+def test_declared_login_command_is_quoted_for_the_windows_shell(monkeypatch):
+    """On Windows the Copy button's command runs in cmd.exe or PowerShell: a POSIX single-quoted path
+    (what ``shlex.join`` gives every backslash path) does not run there."""
+    import sys
+
+    from providers.base import ProviderProfile
+
+    class _Declares(ProviderProfile):
+        def setup_status(self, **kwargs):
+            return {"login_command": [r"C:\Users\Jane Doe\.local\bin\claude.exe", "auth", "login"]}
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    from agent.turn_failure_copy import declared_login_command
+
+    profile = _Declares(name="cli-declares", auth_type="external_process", process_command="claude")
+    assert declared_login_command(profile) == r'"C:\Users\Jane Doe\.local\bin\claude.exe" auth login'

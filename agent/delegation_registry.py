@@ -115,10 +115,20 @@ def backend_status(name: str) -> tuple[Optional[DelegationProvider], str]:
         return None, ("No default delegation strategy is available: the bundled plugin delegation/default is "
                       "disabled. Remove it from plugins.disabled in config.yaml.")
     if registered is None:
-        return None, (
+        advice = (
             f"Delegation backend '{name}' is not installed: no enabled plugin provides it. Install or enable the "
             f"plugin that does (`hermes plugins list`), or switch back to the default backend "
             f"(`hermes config set delegation.backend default`).")
+        # Which plugin provides a backend is only known once it loads, so an unloaded one is a possible cause,
+        # never the diagnosis: `hermes plugins list` shows it enabled, and a restart is what loads it.
+        from hermes_cli.plugins_discovery import enabled_plugins_not_loaded
+        unloaded = enabled_plugins_not_loaded()
+        if unloaded:
+            advice += (
+                f" This profile enables {', '.join(unloaded)}, which this process has not loaded (enabled after it "
+                f"started, or it failed to load: `hermes logs` says why). If one of them provides '{name}', restart "
+                "Hermes (the gateway, when it serves this session) to load it.")
+        return None, advice
     return registered, (
         f"Delegation backend '{name}' is unavailable here (its plugin reports it cannot run). Fix its setup, or "
         f"switch back to the default backend: `/delegation default` for this session, or "

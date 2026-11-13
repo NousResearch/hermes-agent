@@ -13,6 +13,8 @@ Covers:
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -179,3 +181,78 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+
+
+# ─── oversized inline images: downscale before giving up (#132605 follow-up) ──
+
+
+def _noise_jpeg(width: int, height: int, quality: int = 95) -> bytes:
+    """Random pixels compress badly, so this lands well over the byte cap."""
+    import io
+    import os
+
+    from PIL import Image
+
+    img = Image.frombytes("RGB", (width, height), os.urandom(width * height * 3))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+class TestOversizedDataUrlDownscale:
+    """A 20-64 MB inline image should be shrunk, not silently dropped."""
+
+    def test_oversized_payload_is_downscaled_instead_of_skipped(self, monkeypatch):
+        from agent.vision_message_prep import VisionMessagePrepMixin
+
+        raw = _noise_jpeg(3000, 2000)
+        payload = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+        cap = 1_000_000
+        monkeypatch.setattr(VisionMessagePrepMixin, "_MAX_DATA_URL_BASE64_BYTES", cap)
+        assert len(payload.partition(",")[2]) > cap
+
+        path, cleanup = VisionMessagePrepMixin._materialize_data_url_for_vision(payload)
+        try:
+            assert path, "oversized image should be materialized after downscaling"
+            out = Path(path)
+            assert out.suffix == ".jpg"
+            assert out.stat().st_size < cap
+        finally:
+            if cleanup is not None and cleanup.exists():
+                cleanup.unlink()
+
+    def test_payload_past_hard_cap_is_still_skipped(self, monkeypatch):
+        from agent.vision_message_prep import VisionMessagePrepMixin
+
+        monkeypatch.setattr(VisionMessagePrepMixin, "_MAX_DATA_URL_BASE64_BYTES", 1_024)
+        monkeypatch.setattr(VisionMessagePrepMixin, "_MAX_DATA_URL_DECODE_BYTES", 2_048)
+        payload = "data:image/png;base64," + base64.b64encode(b"x" * 4_096).decode("ascii")
+        assert VisionMessagePrepMixin._materialize_data_url_for_vision(payload) == ("", None)
+
+    def test_pixel_bomb_is_refused(self, monkeypatch):
+        from agent import vision_message_prep as vmp
+
+        monkeypatch.setattr(vmp.VisionMessagePrepMixin, "_MAX_DATA_URL_BASE64_BYTES", 1_024)
+        monkeypatch.setattr(vmp.VisionMessagePrepMixin, "_MAX_DATA_URL_DECODE_BYTES", 10 ** 9)
+
+        class _FakeProbe:
+            size = (12_000, 12_000)
+            is_animated = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        encoded = base64.b64encode(b"x" * 4_096).decode("ascii")
+        with patch("PIL.Image.open", return_value=_FakeProbe()):
+            assert vmp.VisionMessagePrepMixin._decode_oversized_data_url(encoded, "image/png") is None
+
+    def test_non_image_data_url_is_not_downscaled(self, monkeypatch):
+        from agent.vision_message_prep import VisionMessagePrepMixin
+
+        monkeypatch.setattr(VisionMessagePrepMixin, "_MAX_DATA_URL_BASE64_BYTES", 1_024)
+        monkeypatch.setattr(VisionMessagePrepMixin, "_MAX_DATA_URL_DECODE_BYTES", 10 ** 9)
+        encoded = base64.b64encode(b"%PDF-1.7" + b"x" * 4_096).decode("ascii")
+        assert VisionMessagePrepMixin._decode_oversized_data_url(encoded, "application/pdf") is None

@@ -63,7 +63,9 @@ function makeZipWithDeflated(entries) {
   for (const { name, data, method = 0 } of entries) {
     const nameBuf = Buffer.from(name, 'utf8')
     const raw = Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8')
-    const body = method === 8 ? zlib.deflateRawSync(raw) : raw
+    // Any non-stored method gets a real deflate stream, so a mislabelled
+    // method would still inflate if the reader didn't check it.
+    const body = method === 0 ? raw : zlib.deflateRawSync(raw)
 
     const local = Buffer.alloc(30 + nameBuf.length)
     local.writeUInt32LE(0x04034b50, 0)
@@ -177,6 +179,70 @@ test('extractThemes skips an oversized stored theme entry instead of decoding it
 
   const themes = extractThemes(zip)
   assert.strictEqual(themes.length, 0) // oversized stored entry skipped, not decoded
+})
+
+test('extractThemes skips entries with an unsupported compression method', () => {
+  const pkg = JSON.stringify({
+    name: 'odd-theme',
+    contributes: {
+      themes: [
+        { label: 'Odd', uiTheme: 'vs-dark', path: './themes/odd.json' },
+        { label: 'Ok', uiTheme: 'vs-dark', path: './themes/ok.json' }
+      ]
+    }
+  })
+
+  // Method 12 (bzip2) must not be handed to inflateRawSync as if it were deflate.
+  const zip = makeZipWithDeflated([
+    { name: 'extension/package.json', data: pkg, method: 0 },
+    { name: 'extension/themes/odd.json', data: '{"colors":{}}', method: 12 },
+    { name: 'extension/themes/ok.json', data: '{"colors":{}}', method: 8 }
+  ])
+
+  const themes = extractThemes(zip)
+  assert.deepStrictEqual(
+    themes.map(theme => theme.label),
+    ['Ok']
+  )
+})
+
+test('extractThemes bounds the number of contributed themes processed', () => {
+  const pkg = JSON.stringify({
+    name: 'many-themes',
+    contributes: {
+      themes: Array.from({ length: 500 }, (_, i) => ({ label: `T${i}`, uiTheme: 'vs-dark', path: './themes/t.json' }))
+    }
+  })
+
+  const zip = makeZip([
+    { name: 'extension/package.json', data: pkg },
+    { name: 'extension/themes/t.json', data: '{"colors":{}}' }
+  ])
+
+  const themes = extractThemes(zip)
+  assert.ok(themes.length > 0)
+  assert.ok(themes.length <= 64, `processed ${themes.length} themes`)
+})
+
+test('extractThemes bounds the total inflated bytes across theme entries', () => {
+  // One 15 MB entry (under the per-entry cap) listed 20 times would inflate
+  // 300 MB in aggregate without a total budget.
+  const big = Buffer.alloc(15 * 1024 * 1024, 0x41)
+
+  const pkg = JSON.stringify({
+    name: 'repeat-theme',
+    contributes: {
+      themes: Array.from({ length: 20 }, (_, i) => ({ label: `R${i}`, uiTheme: 'vs-dark', path: './themes/big.json' }))
+    }
+  })
+
+  const zip = makeZipWithDeflated([
+    { name: 'extension/package.json', data: pkg, method: 0 },
+    { name: 'extension/themes/big.json', data: big, method: 8 }
+  ])
+
+  const total = extractThemes(zip).reduce((sum, theme) => sum + theme.contents.length, 0)
+  assert.ok(total <= 64 * 1024 * 1024, `inflated ${total} bytes`)
 })
 
 test('extractThemes returns empty when the extension contributes no themes', () => {

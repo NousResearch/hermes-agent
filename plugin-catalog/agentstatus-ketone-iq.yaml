@@ -1,0 +1,19 @@
+name: agentstatus-ketone-iq
+title: "Ketone-IQ® | Premium Brain Fuel for Sustained Mental Focus"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 4ba06c2a1fa5b33d8fd8c9badcafa7e3a0543a4e
+subdir: plugins/ketone-iq
+version: "1.0.0"
+description: "Public MCP for Ketone-IQ® | Premium Brain Fuel for Sustained Mental Focus, hosted by AgentStatus at https://ketone-iq.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://ketone-iq.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -84,3 +84,22 @@ def test_unusable_peer_tokens_preserve_shared_bearer_and_warn(monkeypatch, caplo
     ]
     assert any("only the shared A2A_BEARER_TOKEN is accepted" in msg for msg in errors)
     assert not any("every request is refused" in msg for msg in errors)
+
+
+def test_setup_refuses_to_save_peer_tokens_the_runtime_cannot_parse(monkeypatch):
+    """The wizard must not persist a value that ``capture()`` turns into refuse-every-caller."""
+    import hermes_cli.setup as setup_mod
+    from plugins.platforms import a2a
+
+    for answer, expected in (("vibe_abc123", None), ("alice:tok-a", "alice:tok-a")):
+        saved: dict[str, str] = {}
+        warnings: list[str] = []
+        answers = iter(["", "", answer, "", ""])  # port, name, peer tokens, shared bearer, bind host
+        monkeypatch.setattr(setup_mod, "prompt", lambda *_a, **_kw: next(answers))
+        monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: True)
+        monkeypatch.setattr(setup_mod, "get_env_value", lambda _name: "")
+        monkeypatch.setattr(setup_mod, "save_env_value", lambda k, v: saved.__setitem__(k, v))
+        monkeypatch.setattr(setup_mod, "print_warning", warnings.append)
+        a2a.interactive_setup()
+        assert saved.get("A2A_PEER_TOKENS") == expected
+        assert any("name:token" in w for w in warnings) is (expected is None)

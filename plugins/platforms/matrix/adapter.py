@@ -78,7 +78,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker, hash_for_log
-from plugins.platforms.matrix.media_download import MatrixMediaTooLarge, download_mxc_capped
+from plugins.platforms.matrix.media_download import MatrixMediaTooLarge, download_mxc_capped, read_body_capped
 from plugins.platforms.matrix.adapter_html import _latex_to_tokens, _pre_sanitize_matrix_markdown, _sanitize_matrix_html
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
@@ -1385,23 +1385,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
         async def _read_capped(resp, chunks, content_type) -> tuple[bytes, str]:
             """Enforce Content-Length + streamed size caps, then require an image/* type."""
-            try:
-                size = int(resp.headers.get("Content-Length") or resp.headers.get("content-length"))
-            except Exception:
-                size = None
-            if size is not None and size > self._max_media_bytes:
-                raise ValueError(f"media exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
-            parts: list[bytes] = []
-            total = 0
-            async for chunk in chunks:
-                total += len(chunk)
-                if total > self._max_media_bytes:
-                    raise ValueError(f"media exceeds Matrix limit (> {self._max_media_bytes} bytes)")
-                parts.append(bytes(chunk))
+            data = await read_body_capped(resp.headers, chunks, self._max_media_bytes)
             content_type = str(content_type or "").split(";", 1)[0].strip().lower()
             if not content_type.startswith("image/"):
                 raise ValueError("external media is not an image")
-            return b"".join(parts), content_type
+            return data, content_type
         fname = url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
         try:
             import aiohttp as _aiohttp

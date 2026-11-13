@@ -52,7 +52,7 @@ _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
 _lock = threading.RLock()  # re-entrant: a card settle checks and resolves under one hold
 _pending: dict[str, dict] = {}
-_session_approved: dict[str, set] = {}
+_session_approved: dict[str | tuple[str, str], set] = {}
 _session_yolo: set[str] = set()
 # Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
 # ``tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
@@ -320,9 +320,9 @@ def submit_pending(session_key: str, approval: dict):
 
 
 def approve_session(session_key: str, pattern_key: str):
-    """Approve a pattern for this session only."""
+    """Approve a pattern for this session and the profile executing it."""
     with _lock:
-        _session_approved.setdefault(session_key, set()).add(pattern_key)
+        _session_approved.setdefault(_session_grant_key(session_key), set()).add(pattern_key)
 
 
 def _release_permission_mode_dependents(session_key: str) -> None:
@@ -360,7 +360,11 @@ def clear_session(session_key: str) -> None:
     if not session_key:
         return
     with _lock:
-        _session_approved.pop(session_key, None)
+        # A child routed to another profile keeps its grants in that profile's
+        # namespace; retire those grants with the same conversation session.
+        for key in list(_session_approved):
+            if key == session_key or (isinstance(key, tuple) and key[0] == session_key):
+                _session_approved.pop(key, None)
         _session_yolo.discard(session_key)
         _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
@@ -439,6 +443,20 @@ def _sync_permanent_from_disk(approved: set, key: str) -> None:
     _permanent_baseline_by_home[key] = on_disk
 
 
+def _session_grant_key(session_key: str) -> str | tuple[str, str]:
+    """A parent's session grant cannot authorize a child running as another profile (any route, room or not).
+
+    Ordinary turns keep their legacy session key. A profile route runs with its own
+    home/credentials; approvals in that child are keyed by both the session and home.
+    The mark is scoped by delegated_profile_scope and survives nested child routes.
+    """
+    from gateway.hosted_room_execution_policy import profile_routed
+    if not profile_routed():
+        return session_key
+    from hermes_constants import hermes_home_key
+    return (session_key, hermes_home_key())
+
+
 def _approval_scope(session_key: str, pattern_key: str) -> str | None:
     """``'permanent'``, ``'session'`` or None for one key, from ONE read of both stores, so the
     decision and its provenance label cannot disagree when a grant is revoked concurrently.
@@ -447,7 +465,7 @@ def _approval_scope(session_key: str, pattern_key: str) -> str | None:
     aliases = _approval_key_aliases(pattern_key)
     with _lock:
         permanent = _permanent_set()
-        session = _session_approved.get(session_key, set())
+        session = _session_approved.get(_session_grant_key(session_key), set())
         if any(alias in permanent for alias in aliases):
             return "permanent"
         if any(alias in session for alias in aliases):

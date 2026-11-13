@@ -12,7 +12,7 @@ description: >-
   the hosted endpoint and is fully configurable. Disclosure — the scanned URL is
   sent to the configured scanner endpoint over the network, and nothing else is:
   no page content, no credentials, no local paths leave the machine.
-maintainer: Scott Scheferman
+maintainer: shagghiesuperstar
 tier: community
 category: tools
 docs_url: https://github.com/shagghiesuperstar/agentpass-plugin#readme

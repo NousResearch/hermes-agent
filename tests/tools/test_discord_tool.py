@@ -820,3 +820,25 @@ class TestSnowflakeValidation:
         data = json.loads(result)
         assert "error" not in data
         mock_req.assert_called_once()
+
+    @pytest.mark.parametrize("action, kwargs, field", [
+        ("create_thread", {"name": "t", "message_id": "1/../2"}, "message_id"),
+        ("fetch_messages", {"before": "1?x=y"}, "before"),
+        ("fetch_messages", {"after": "１２３"}, "after"),
+    ])
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_optional_id_returns_error_without_request(
+            self, mock_req, monkeypatch, action, kwargs, field):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        data = json.loads(discord_core(action=action, channel_id="11", **kwargs))
+        assert f"Invalid Discord {field}" in data["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_valid_pagination_ids_reach_request(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = []
+        data = json.loads(discord_core(
+            action="fetch_messages", channel_id="11", before="1001", after="999"))
+        assert "error" not in data
+        assert mock_req.call_args.kwargs["params"] == {"limit": "50", "before": "1001", "after": "999"}

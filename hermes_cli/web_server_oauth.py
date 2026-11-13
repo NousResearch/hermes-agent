@@ -100,8 +100,8 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
     rows like ``copilot login``). Plugin rows default to the *Hermes* command ``hermes auth add
     <slug>``; swapping its first token mints a command neither CLI understands (``agy auth add
     <slug>``), so a ``hermes``-led default survives verbatim when the plugin ships an
-    ``auth_handler`` (then Hermes really can run it) and becomes a neutral use-the-provider-CLI
-    instruction when it does not (#136071)."""
+    ``auth_handler`` and otherwise becomes the re-login every other surface names for these
+    plugins (#136071)."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
         pconfig = PROVIDER_REGISTRY.get(provider_id)
@@ -113,9 +113,8 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
             from hermes_cli.auth_plugin_providers import plugin_auth_handler
             if plugin_auth_handler(provider_id) is not None:
                 return default
-            status = get_external_process_provider_status(provider_id) or {}
-            cli = str(status.get("command") or "").strip() or provider_id
-            return f"# sign in with the {cli} CLI itself; hermes auth cannot manage {provider_id}"
+            from agent.turn_failure_copy import oauth_relogin_command
+            return oauth_relogin_command(provider_id)
         status = get_external_process_provider_status(provider_id) or {}
         command = str(status.get("command") or "").strip()
         if command:

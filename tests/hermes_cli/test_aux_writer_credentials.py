@@ -243,3 +243,22 @@ def test_dashboard_config_form_round_trip_keeps_typed_key(home):
     _put_config(form)
 
     assert _resolved_vision()[3] == "typed-key"
+
+
+@pytest.mark.parametrize("change", [{"base_url": "https://b.example/v1"}, {"provider": "anthropic"}],
+                         ids=["new_base_url", "new_provider"])
+def test_dashboard_config_form_delegation_route_change_drops_old_key(home, change):
+    """``delegation`` sits in the same form; its resolver posts ``api_key`` to ``base_url``."""
+    import asyncio
+    from hermes_cli.config import read_raw_config
+    from hermes_cli.web_routers.config_env import get_config
+    (home / ".env").write_text(f"HERMES_DELEGATION_API_KEY={OLD_SECRET}\n")
+    (home / "config.yaml").write_text(yaml.safe_dump({"delegation": {
+        "provider": "custom", "model": "m", "base_url": "https://a.example/v1",
+        "api_key": "${HERMES_DELEGATION_API_KEY}"}}))
+    form = asyncio.run(get_config())
+    form["delegation"].update(change)
+
+    _put_config(form)
+
+    assert not read_raw_config()["delegation"].get("api_key")

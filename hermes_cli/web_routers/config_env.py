@@ -122,9 +122,10 @@ async def get_egress_status(profile: Optional[str] = None):
 
 def _drop_carried_route_state(existing: dict, merged: dict) -> None:
     """The form never sends key_env/api_mode and re-sends base_url unchanged, so the merge keeps
-    the old route's under a new ``model``/``auxiliary.<task>`` provider (#141832)."""
+    the old route's under a new ``model``/``auxiliary.<task>``/``delegation`` provider (#141832)."""
     from hermes_cli.config_route_guard import drop_carried_route_state
-    drop_carried_route_state(existing.get("model"), merged.get("model"), merged)
+    for section in ("model", "delegation"):
+        drop_carried_route_state(existing.get(section), merged.get(section), merged)
     old_aux, new_aux = existing.get("auxiliary"), merged.get("auxiliary")
     if isinstance(old_aux, dict) and isinstance(new_aux, dict):
         for task, block in new_aux.items():

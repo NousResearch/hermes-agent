@@ -1,18 +1,18 @@
 name: saphira-office
 repo: https://github.com/caiquenzt-lang/saphira-office
-sha: a38dfd6cf5c5e0b9d84ff74dee203e9e7fbb9ad5
+sha: 1c117b1bb9d3ebcdee0667ee5782ef26e3454011
 version: "1.0.2"
 description: Animated virtual pixel art office for Hermes Desktop agents and profiles with multi-language support.
 maintainer: caiquenzt-lang
 tier: community
 category: desktop
 docs_url: https://github.com/caiquenzt-lang/saphira-office#readme
-image: https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/a38dfd6cf5c5e0b9d84ff74dee203e9e7fbb9ad5/screenshots/saphira_office_stage3_main.png
+image: https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/1c117b1bb9d3ebcdee0667ee5782ef26e3454011/screenshots/saphira_office_stage3_main.png
 screenshots:
-  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/a38dfd6cf5c5e0b9d84ff74dee203e9e7fbb9ad5/screenshots/saphira_office_stage4_command_bar.png
-  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/a38dfd6cf5c5e0b9d84ff74dee203e9e7fbb9ad5/screenshots/saphira_office_stage4_modal_response.png
-  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/a38dfd6cf5c5e0b9d84ff74dee203e9e7fbb9ad5/screenshots/saphira_office_stage3_marketplace.png
-  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/a38dfd6cf5c5e0b9d84ff74dee203e9e7fbb9ad5/screenshots/saphira_office_stage3_customizer.png
+  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/1c117b1bb9d3ebcdee0667ee5782ef26e3454011/screenshots/saphira_office_stage4_command_bar.png
+  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/1c117b1bb9d3ebcdee0667ee5782ef26e3454011/screenshots/saphira_office_stage4_modal_response.png
+  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/1c117b1bb9d3ebcdee0667ee5782ef26e3454011/screenshots/saphira_office_stage3_marketplace.png
+  - https://raw.githubusercontent.com/caiquenzt-lang/saphira-office/1c117b1bb9d3ebcdee0667ee5782ef26e3454011/screenshots/saphira_office_stage3_customizer.png
 capabilities:
   provides_tools: []
   provides_hooks: []

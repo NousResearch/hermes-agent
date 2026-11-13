@@ -2614,15 +2614,9 @@ def run_job(
             final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        # Text-file reads normalize newlines; count the same characters the
-        # context_from reader sees so quoted markers can never become boundaries.
-        framed_prompt = _normalize_newlines(prompt)
-        logged_response = _normalize_newlines(logged_response)
-        output = (
-            _run_doc_header(job, job_name, job_id, framed_prompt,
-                            prompt_stamp=f"{_PROMPT_FRAME}{len(framed_prompt)}\n")
-            + f"{_RESPONSE_FRAME}{len(logged_response)}\n{_RESPONSE_HEADING}{logged_response}{_RESPONSE_TERMINATOR}"
-        )
+        # Redacted once, then stamped: the stamps describe the stored bytes (#153079).
+        from cron.scheduler_prompt import _framed_run_document
+        output = _framed_run_document(job, job_name, job_id, prompt, logged_response)
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
         return True, output, final_response, None

@@ -753,3 +753,37 @@ async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_n
     assert "PASTED-BODY-MARKER" in result.message
     assert "LOOKALIKE-SECRET" not in result.message
     assert "outside the allowed workspace" in "\n".join(result.warnings)
+
+
+def _command_stt_home(tmp_path: Path, monkeypatch, *, audio_files: bool) -> Path:
+    """A HERMES_HOME whose STT is a real shell-command provider (no network, no mocks)."""
+    import wave
+    import hermes_yaml as yaml
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    stt = {"provider": "echo_stt", "transcribe_audio_files": audio_files,
+           "providers": {"echo_stt": {"type": "command",
+                                      "command": "printf 'see you at noon' > {output_path}"}}}
+    (home / "config.yaml").write_text(yaml.safe_dump({"stt": stt}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    clip = tmp_path / "note.wav"
+    with wave.open(str(clip), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * 1600)
+    return clip
+
+
+@pytest.mark.parametrize("audio_files", [True, False])
+def test_audio_file_reference_inlines_transcript_only_when_opted_in(tmp_path: Path, monkeypatch, audio_files):
+    """``stt.transcribe_audio_files`` turns an attached audio ``@file:`` into its transcript (path
+    kept); off, it stays the binary stub."""
+    from agent.context_references import preprocess_context_references
+
+    clip = _command_stt_home(tmp_path, monkeypatch, audio_files=audio_files)
+    result = preprocess_context_references(f"summarize @file:{clip.name}", cwd=tmp_path, context_length=100_000)
+
+    assert result.expanded and str(clip) in result.message
+    assert ("see you at noon" in result.message) is audio_files
+    assert ("binary file, not inlined" in result.message) is not audio_files

@@ -51,12 +51,13 @@ class TestCommandCodeReasoningWireControls:
     """DeepSeek V4+ defaults to thinking when ``thinking`` is omitted, so the profile
     must put the user's setting on the wire (#95232); other families stay a no-op."""
 
-    def test_deepseek_disabled_reasoning_sends_thinking_disabled(self, commandcode_profile):
+    @pytest.mark.parametrize("reasoning_config", [{"enabled": False}, {"enabled": True, "effort": "none"}])
+    def test_deepseek_disabled_reasoning_sends_effort_off(self, commandcode_profile, reasoning_config):
         extra_body, top_level = commandcode_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False}, model="deepseek/deepseek-v4-flash",
+            reasoning_config=reasoning_config, model="deepseek/deepseek-v4-flash",
         )
         assert extra_body.get("thinking") == {"type": "disabled"}
-        assert top_level == {}
+        assert top_level == {"reasoning_effort": "off"}
 
     def test_deepseek_effort_matches_native_profile_and_others_noop(self, commandcode_profile):
         from plugins.model_providers.deepseek import deepseek

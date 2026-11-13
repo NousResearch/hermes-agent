@@ -54,9 +54,13 @@ class CommandCodeProfile(ProviderProfile):
         native = get_provider_profile("deepseek")
         if native is None:
             return {}, {}
-        return native.build_api_kwargs_extras(
+        extra_body, top_level = native.build_api_kwargs_extras(
             reasoning_config=reasoning_config, model=m.split("/", 1)[1], **context,
         )
+        # CommandCode ignores ``thinking: disabled``; only its own ``reasoning_effort: "off"`` stops reasoning.
+        if extra_body.get("thinking") == {"type": "disabled"}:
+            top_level = {**top_level, "reasoning_effort": "off"}
+        return extra_body, top_level
 
 
 class CommandCodeAnthropicProfile(CommandCodeProfile):

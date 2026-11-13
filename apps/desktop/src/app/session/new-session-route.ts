@@ -1,5 +1,6 @@
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $defaultProfileRoute } from '@/store/default-profile'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
@@ -18,12 +19,16 @@ import {
   windowProfileOverride
 } from '@/store/windows'
 
+type NewSessionTarget = { profile: string; route: AgentProfileRoute | null }
+
+/** Hermes' root profile (`~/.hermes`): what "default" means with no saved
+ * Desktop preference. */
+const ROOT_PROFILE = 'default'
+
 /** Only generic New Session actions consult this preference. Explicit profile,
  * agent, project and existing-session actions keep their captured owner. */
-export function defaultNewSessionTarget(): { profile: string; route: AgentProfileRoute | null } | null {
-  const project = $projectScope.get()
-
-  if (project !== ALL_PROJECTS && project !== NO_PROJECT_ID) {
+export function defaultNewSessionTarget(): NewSessionTarget | null {
+  if (inProjectScope()) {
     return null
   }
 
@@ -45,9 +50,40 @@ export function defaultNewSessionTarget(): { profile: string; route: AgentProfil
   }
 }
 
-export function prepareDefaultNewSession(): void {
-  const target = defaultNewSessionTarget()
+function inProjectScope(): boolean {
+  const project = $projectScope.get()
 
+  return project !== ALL_PROJECTS && project !== NO_PROJECT_ID
+}
+
+/** The root profile on the source the user is looking at (legacy door when
+ * the primary has no registry identity). */
+function rootProfileTarget(): NewSessionTarget {
+  const connectionId = activeGatewayConnectionId()
+
+  return { profile: ROOT_PROFILE, route: connectionId ? { connectionId, profile: ROOT_PROFILE } : null }
+}
+
+/** The generic "New session" doors (sidebar row, ⌘N): a plain session, never
+ * the owner an earlier action pinned. A bot chat pins its exact route
+ * (`pinNewChatRoute`) and selecting another bot does not unpin it, so a door
+ * that kept the pin opened the PREVIOUS bot's session. Drops the whole intent
+ * (profile, route, source), then targets the default-profile preference, else
+ * the root `default` profile: the ambient profile is whichever bot or
+ * workspace was selected last, which the user never chose as a default. A
+ * project scope keeps its own owner. */
+export function prepareGenericNewSession(): void {
+  $newChatProfile.set(null)
+  $newChatRoute.set(null)
+  captureNewChatSource()
+  applyNewSessionTarget(defaultNewSessionTarget() ?? (inProjectScope() ? null : rootProfileTarget()))
+}
+
+export function prepareDefaultNewSession(): void {
+  applyNewSessionTarget(defaultNewSessionTarget())
+}
+
+function applyNewSessionTarget(target: NewSessionTarget | null): void {
   if (!target) {
     return
   }

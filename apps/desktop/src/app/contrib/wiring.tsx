@@ -25,7 +25,7 @@ import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
-import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
+import { registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
@@ -100,7 +100,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
-import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
+import { useNewSessionDoors } from '../chat/use-new-session-doors'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
@@ -998,8 +998,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // The tab-strip "+" and ⌘T share one action (see `openNewSessionTab`).
-  const openNewSessionTab = useCallback(() => openNewSessionTabAction(openNewSessionTile), [openNewSessionTile])
+  const doors = useNewSessionDoors(openNewSessionTile, startFreshSessionDraft, selectSidebarItem)
 
   // Archive the selected session (rebindable `session.archive` hotkey).
   const archiveSelectedSession = useCallback(() => {
@@ -1016,20 +1015,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // keybind editor's capture mode (same as DesktopController).
   useKeybinds({
     archiveSelectedSession,
-    openNewSessionTab,
+    openNewSessionTab: doors.openNewSessionTab,
     requestGateway,
-    startFreshSession: startFreshSessionDraft,
+    startFreshSession: doors.startNewSession,
     toggleCommandCenter,
     toggleSelectedPin
   })
-
-  // Register the tab-strip "+" action (the generic renderer stays
-  // session-agnostic; null until wired hides the glyph).
-  useEffect(() => {
-    $newSessionTabAction.set(openNewSessionTab)
-
-    return () => $newSessionTabAction.set(null)
-  }, [openNewSessionTab])
 
   // The MAIN tab's Close. The workspace pane can't leave the tree, so its
   // closer empties it instead: the next stacked session shifts in, else main
@@ -1110,7 +1101,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       setCronFocusJobId(jobId)
       navigate(CRON_ROUTE)
     },
-    onNavigate: selectSidebarItem,
+    onNavigate: doors.navigateSidebar,
     onNewSessionInWorkspace: (path, owner) => startSessionInWorkspace(path, { openTab: true, owner }),
     onNewSessionSplit: (dir, opts) =>
       void openNewSessionTile(dir, {

@@ -89,7 +89,7 @@ export function isUntouchedDraftTile(tile: SessionTile): boolean {
 }
 
 /** Main holds a blank new chat: no session yet, no page over it, nothing typed. */
-function mainIsUntouchedDraft(): boolean {
+export function mainIsUntouchedDraft(): boolean {
   const owner = resolveNewChatOwnerRoute()
 
   return (

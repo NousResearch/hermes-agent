@@ -126,10 +126,13 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
   const { t } = useI18n()
   const r = t.sidebar.row
 
-  // Subscribe to the shared color map for reactivity; sessionColorFor falls
-  // back to the resolver for a session outside the recents page.
-  useStore($sessionColorById)
-  const color = sessionColorFor(session) ?? null
+  // READ the shared color map, not just subscribe to it: `sessionColorFor` is
+  // memoized on its argument, so a discarded subscription left the colour
+  // cached on `session`'s identity and a fresh pick only showed up after a
+  // reload. Reading the map makes the map a dependency of the colour itself;
+  // sessionColorFor still covers a session outside the recents page.
+  const colorById = useStore($sessionColorById)
+  const color = (session ? colorById[session.id] : undefined) ?? sessionColorFor(session) ?? null
 
   // Selector, not a plain useStore: the map is rebuilt whenever any session's
   // status changes, but a given dot only repaints when ITS OWN state flips.

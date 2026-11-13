@@ -1,0 +1,21 @@
+name: lexicon-seo
+title: Lexicon SEO
+repo: https://github.com/NK2-arch/lexicon-mcp
+sha: 1002a36e16601580acf77304cd7327d0ff64520b
+subdir: ""
+version: "1.0.0"
+description: "Hosted Lexicon SEO MCP (Streamable HTTP at https://lexiconseo.com/mcp) for technical SEO and AI-visibility audits: start audits, read reports, list issues, verify page fixes, monitoring diffs, citation questions, and content-refresh drafts. Agent Plugins v1 package (plugin.json + mcp.json + skills/). Configuration only — no local server binary. Disclosure: every tool call goes to lexiconseo.com; requires a paid Lexicon API key (Starter/Professional/Business; Free plan gets an upgrade error). Bearer auth is client-managed (not embedded in portable mcp.json). Spend-capable tools (start_audit after allowance, extra_citation, refresh_page after allowance) quote then require confirm true. Package marks the Hermes server trust untrusted. The live tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: Lexicon SEO
+tier: community
+category: tools
+docs_url: https://lexiconseo.com/docs/mcp/
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - LEXICON_API_KEY
+    

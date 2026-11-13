@@ -2,17 +2,13 @@
 
 import importlib.util
 import json
-import os
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    os.name != "posix",
-    reason="POSIX permission bits are not available on this platform",
-)
+pytestmark = pytest.mark.platforms("posix")
 
 
 SCRIPT_PATH = (

@@ -822,9 +822,14 @@ def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
         entries.extend(value if isinstance(value, list) else [value])
 
     model = _dict_at(config, "model")
+    delegation = _dict_at(config, "delegation")
+    backend_routes = [route for backend in _dict_at(delegation, "backends").values() if isinstance(backend, dict)
+                      for route in (backend.get("options") if isinstance(backend.get("options"), list) else [])]
     for slot in (model, *(model.get(k) for k in ("default", "model", "name")),
-                 config.get("delegation"), config.get("fallback_model"), config.get("fallback_providers"),
-                 _dict_at(config, "delegation").get("fallback_providers")):
+                 *_dict_at(config, "model_aliases").values(), *_dict_at(model, "aliases").values(),
+                 config.get("fallback_model"), config.get("fallback_providers"),
+                 delegation, delegation.get("fallback_providers"), *backend_routes,
+                 *(route.get("fallback_providers") for route in backend_routes if isinstance(route, dict))):
         add(slot)
     for task in _dict_at(config, "auxiliary").values():
         if isinstance(task, dict):
@@ -848,6 +853,12 @@ def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
                 and _qwen_meant_the_cli_login(entry)):
             entry["provider"] = "qwen-oauth"
             rewritten.append(entry)
+    aliases = _dict_at(model, "aliases")  # ``name: qwen/<model>`` takes its provider from the prefix
+    for name, value in aliases.items():
+        if (isinstance(value, str) and value.strip().lower().startswith("qwen/")
+                and _qwen_meant_the_cli_login({})):
+            aliases[name] = "qwen-oauth/" + value.strip().split("/", 1)[1]
+            rewritten.append(aliases)
     for block, refs in encoded_refs:  # re-encode only a string whose advisors changed
         if any(ref is entry for ref in refs for entry in rewritten):
             import json

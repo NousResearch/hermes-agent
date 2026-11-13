@@ -191,3 +191,23 @@ def test_empty_alibaba_pool_entry_does_not_block_oauth_migration(home):
         "alibaba": [{"id": "empty", "access_token": ""}]
     }}), encoding="utf-8")
     assert _migrate(home)["model"]["provider"] == "qwen-oauth"
+
+
+def test_saved_aliases_and_delegation_backend_routes_are_migrated(home):
+    """Direct model aliases and delegation backend routes are provider selectors too."""
+    raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    raw["model"]["aliases"] = {"q": {"provider": "qwen", "model": "qwen3-coder-plus"},
+                               "qs": "qwen/qwen3-coder-plus", "other": "openrouter/qwen/qwen3"}
+    raw["model_aliases"] = {"coder": {"provider": "qwen", "model": "qwen3-coder-plus"}}
+    raw["delegation"] = {"backends": {"model_map": {"options": [
+        {"title": "q", "provider": "qwen", "model": "qwen3-coder-plus",
+         "fallback_providers": [{"provider": "qwen", "model": "qwen3-coder-plus"}]}]}}}
+    (home / "config.yaml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+    out = _migrate(home)
+    route = out["delegation"]["backends"]["model_map"]["options"][0]
+    assert out["model"]["aliases"]["q"]["provider"] == "qwen-oauth"
+    assert out["model"]["aliases"]["qs"] == "qwen-oauth/qwen3-coder-plus"
+    assert out["model"]["aliases"]["other"] == "openrouter/qwen/qwen3"
+    assert out["model_aliases"]["coder"]["provider"] == "qwen-oauth"
+    assert route["provider"] == route["fallback_providers"][0]["provider"] == "qwen-oauth"
+    assert route["model"] == "qwen3-coder-plus"

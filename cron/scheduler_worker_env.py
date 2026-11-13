@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import sysconfig
 from pathlib import Path
 
@@ -59,6 +60,36 @@ def _committed_dependency_site_packages(project_root: Path) -> Path | None:
         return None
     selected = site_packages(environment)
     return selected if selected.is_dir() else None
+
+
+def select_worker_interpreter(repo_root: Path) -> Path:
+    """The interpreter the restart-safe worker must run on.
+
+    ``sys.executable`` is the bare store Python in a managed install: the launcher
+    re-execs the gateway there (``hermes_bootstrap.prepare_launch``), and that process
+    has the repo and the managed site-packages only on its own in-process ``sys.path``.
+    A child spawned from it imports neither, so the worker dies before its ownership
+    ack with e.g. ``No module named 'ruamel'`` (same class as #123044, which
+    ``cron/scheduler_script.py::_posix_cron_script_argv`` already fixes for cron
+    scripts). On a managed install the worker runs on the selected dependency venv's
+    interpreter; a packaged or developer install owns its runtime and keeps
+    ``sys.executable``.
+    """
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import project_python
+
+    worker_python = Path(sys.executable)
+    if resolve_store_python(repo_root) is None:
+        return worker_python
+    candidate = project_python(repo_root)
+    if candidate.is_file():
+        return candidate
+    logger.warning(
+        "cron external worker: dependency environment interpreter missing at %s; "
+        "falling back to %s",
+        candidate, worker_python,
+    )
+    return worker_python
 
 
 def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:

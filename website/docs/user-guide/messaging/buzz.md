@@ -58,6 +58,7 @@ BUZZ_PRIVATE_KEY=nsec1...
 | `BUZZ_POLL_INTERVAL` | — | Seconds between inbound poll sweeps (default: 4) |
 | `BUZZ_CLI_PATH` | — | Path to the `buzz` binary (default: `buzz` on PATH, then `~/bin/buzz`) |
 | `BUZZ_CREDENTIALS_FILE` | — | JSON credentials file holding the nsec, used when `BUZZ_PRIVATE_KEY` is unset |
+| `BUZZ_OBSERVER_TELEMETRY` | — | Opt-in Desktop activity telemetry — turn frames, presence, and typing (see [Desktop activity telemetry](#desktop-activity-telemetry-opt-in)) |
 
 ## Recommended default settings
 
@@ -144,6 +145,42 @@ media on another public origin, add its exact `host` or `host:port` to
 `attachment_hosts` under `gateway.platforms.buzz.extra`. Non-default ports
 must be listed explicitly. Protected media that requires authenticated
 retrieval through the Buzz CLI is not handled by this native public-URL path.
+
+## Desktop activity telemetry (opt-in)
+
+Buzz Desktop shows live agent activity ("view activity") for turns in
+progress. To participate, enable `observer_telemetry` under
+`gateway.platforms.buzz.extra` (or `BUZZ_OBSERVER_TELEMETRY=true`):
+
+```yaml
+gateway:
+  platforms:
+    buzz:
+      extra:
+        observer_telemetry: true
+```
+
+The adapter then publishes, over its own authenticated WebSocket:
+
+- **Turn frames** (kind 24200): `harness_started` once when telemetry
+  starts, then `turn_started`, a 10-second `turn_liveness` heartbeat while the
+  turn runs, and `turn_completed` (with ok/error/cancelled). These are the
+  only encrypted frames: NIP-44 v2, to the agent's owner.
+- **Presence** (kind 20001): `online` on connect plus a 60-second heartbeat,
+  `offline` on graceful shutdown. Not encrypted.
+- **Typing** (kind 20002), tagged with the channel, while a turn is in
+  progress. Not encrypted.
+
+Telemetry always requires the NIP-OA auth tag (`BUZZ_AUTH_TAG`, or `auth_tag`
+in the credentials file), on any relay: the owner and the encryption key are
+derived from it. If no tag is configured, telemetry is disabled with a single
+error log line and messaging keeps working; a tag that is not a valid
+four-string JSON array fails the adapter's connect, with or without telemetry.
+On a Buzz relay, a turn frame is accepted only when its owner matches the
+owner the relay has registered for the agent; otherwise the relay rejects it,
+and the adapter logs a warning and does not retry that frame. Telemetry is
+strictly opt-in and best-effort: it never breaks message delivery, and nothing
+is published when the flag is off.
 
 ## Run the gateway
 

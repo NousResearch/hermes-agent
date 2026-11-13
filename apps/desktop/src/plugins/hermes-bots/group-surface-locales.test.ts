@@ -13,15 +13,43 @@ it.each([
 ])('names the deleted section with feminine agreement in %s', (locale, sentence, singular, plural) => {
   const t = translateBotsIn(locale)
   expect([0, 1, 2].map(count => t('sections.deleted', 'Notes', count))).toEqual([
-    sentence, `${sentence} — 1 ${singular}`, `${sentence} — 2 ${plural}`
+    sentence,
+    `${sentence} — 1 ${singular}`,
+    `${sentence} — 2 ${plural}`
   ])
 })
 
 const sharedKeys = {
-  bot: ['newChatWith', 'newTitle', 'thisDevice', 'removeFromAllGroups', 'openBotChat', 'openBotChatInNewTab', 'openingChat',
-    'pinToTop', 'unpin', 'pinnedToast', 'unpinnedToast', 'hide', 'unhide', 'hiddenToast', 'unhiddenToast',
-    'groupsMenu', 'manageGroups', 'metadataLoadFailed', 'loadFailed', 'groupsLoadFailed', 'attentionFallback',
-    'attentionProviderAuth', 'attentionQuota', 'attentionMissingConfig', 'attentionBlocked', 'editMenu', 'duplicate', 'duplicateFailed'],
+  bot: [
+    'newChatWith',
+    'newTitle',
+    'thisDevice',
+    'removeFromAllGroups',
+    'openBotChat',
+    'openBotChatInNewTab',
+    'openingChat',
+    'pinToTop',
+    'unpin',
+    'pinnedToast',
+    'unpinnedToast',
+    'hide',
+    'unhide',
+    'hiddenToast',
+    'unhiddenToast',
+    'groupsMenu',
+    'manageGroups',
+    'metadataLoadFailed',
+    'loadFailed',
+    'groupsLoadFailed',
+    'attentionFallback',
+    'attentionProviderAuth',
+    'attentionQuota',
+    'attentionMissingConfig',
+    'attentionBlocked',
+    'editMenu',
+    'duplicate',
+    'duplicateFailed'
+  ],
   avatar: ['upload', 'generate', 'generating'],
   screen: ['menu', 'autoOpenMenu', 'autoOpenOnToast', 'autoOpenOffToast']
 }
@@ -37,17 +65,20 @@ function requireOwnTranslations(english: unknown, localized: unknown, path: stri
   }
 }
 
-it.each(['ar', 'ru', 'fr', 'de', 'es', 'ja', 'zh', 'zh-hant'])('owns every group-screen translation in %s without English fallback', locale => {
-  const bundle = BOTS_LOCALES[locale] as Record<string, Record<string, unknown>>
-  const english = BOTS_LOCALES.en as Record<string, Record<string, unknown>>
+it.each(['ar', 'ru', 'fr', 'de', 'es', 'ja', 'zh', 'zh-hant'])(
+  'owns every group-screen translation in %s without English fallback',
+  locale => {
+    const bundle = BOTS_LOCALES[locale] as Record<string, Record<string, unknown>>
+    const english = BOTS_LOCALES.en as Record<string, Record<string, unknown>>
 
-  for (const namespace of namespaces) {
-    requireOwnTranslations(english[namespace], bundle[namespace], `${locale}.${namespace}`)
-  }
+    for (const namespace of namespaces) {
+      requireOwnTranslations(english[namespace], bundle[namespace], `${locale}.${namespace}`)
+    }
 
-  for (const [namespace, keys] of Object.entries(sharedKeys)) {
-    for (const key of keys) {
-      requireOwnTranslations(english[namespace][key], bundle[namespace]?.[key], `${locale}.${namespace}.${key}`)
+    for (const [namespace, keys] of Object.entries(sharedKeys)) {
+      for (const key of keys) {
+        requireOwnTranslations(english[namespace][key], bundle[namespace]?.[key], `${locale}.${namespace}.${key}`)
+      }
     }
   }
-})
+)

@@ -9,18 +9,12 @@ const REMOTE = 'https://gateway.example.com'
 
 test('joinBackendApiUrl keeps local API paths on the loopback origin', () => {
   assert.equal(joinBackendApiUrl(LOCAL, '/api/status'), `${LOCAL}/api/status`)
-  assert.equal(
-    joinBackendApiUrl(LOCAL, '/api/sessions?limit=50&offset=0'),
-    `${LOCAL}/api/sessions?limit=50&offset=0`
-  )
+  assert.equal(joinBackendApiUrl(LOCAL, '/api/sessions?limit=50&offset=0'), `${LOCAL}/api/sessions?limit=50&offset=0`)
 })
 
 test('joinBackendApiUrl keeps remote gateway paths on the configured origin', () => {
   assert.equal(joinBackendApiUrl(REMOTE, '/api/sessions'), `${REMOTE}/api/sessions`)
-  assert.equal(
-    joinBackendApiUrl(`${REMOTE}/`, '/api/model/info?profile=iris'),
-    `${REMOTE}/api/model/info?profile=iris`
-  )
+  assert.equal(joinBackendApiUrl(`${REMOTE}/`, '/api/model/info?profile=iris'), `${REMOTE}/api/model/info?profile=iris`)
 })
 
 test('joinBackendApiUrl allows path segments that look like userinfo but stay on-origin', () => {
@@ -55,7 +49,13 @@ test('joinBackendApiUrl rejects absolute URLs smuggled as the path', () => {
 // fetchJsonForBackend joins it; whatever they emit must still be refused or on-origin.
 test('routed renderer paths never leave the backend origin once joined', async () => {
   const { pathForRegistryBackendRequest, resolveProfileApiRequest } = await import('./connection-config')
-  const hostile = ['@attacker.example/', ' @attacker.example/', 'attacker.example', '//attacker.example/', 'https://attacker.example/']
+  const hostile = [
+    '@attacker.example/',
+    ' @attacker.example/',
+    'attacker.example',
+    '//attacker.example/',
+    'https://attacker.example/'
+  ]
 
   for (const path of hostile) {
     const routed = [

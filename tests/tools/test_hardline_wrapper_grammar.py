@@ -24,6 +24,9 @@ _RUNS_THE_VERB = [
     "env -vS 'nice' reboot",
     "env -iS reboot",
     "env -iSnice reboot",
+    "env -iS '-S reboot'",
+    "env -S '-S reboot'",
+    "env -S '-S -S reboot'",
     # In `sudo -ul`, `l` is -u's value (the user), not --list.
     "sudo -ul reboot",
 ]
@@ -38,6 +41,7 @@ _PRINTS_THE_VERB = [
     "env -S'echo' reboot",
     "env --split-string='echo' reboot",
     "env -iS echo reboot",
+    "env -S '-S echo' reboot",
 ]
 
 

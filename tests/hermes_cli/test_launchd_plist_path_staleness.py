@@ -15,6 +15,7 @@ Hermes-owned prefix is compared, the shell tail is not.
 from __future__ import annotations
 
 import json
+import re
 
 from hermes_cli import gateway as gateway_cli
 
@@ -51,9 +52,11 @@ def test_a_managed_node_bump_makes_the_installed_plist_stale(monkeypatch, tmp_pa
     home = tmp_path / "hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    bin_dir = home / "node_modules" / ".bin"  # a service bin dir ahead of Node: the prefix count must decide
+    bin_dir.mkdir(parents=True)
     old_dir = _seed_managed_node(home, "26.7.0")
     _, installed = _install_plist(monkeypatch, tmp_path, home)
-    assert old_dir in installed
+    assert f"{bin_dir}:{old_dir}:" in installed
     assert gateway_cli.launchd_plist_is_current() is True
 
     new_dir = _seed_managed_node(home, "26.12.1")
@@ -110,3 +113,23 @@ def test_removing_managed_node_makes_installed_plist_stale(monkeypatch, tmp_path
     )
     assert old_dir not in gateway_cli.generate_launchd_plist()
     assert gateway_cli.launchd_plist_is_current() is False
+
+
+def test_a_refresh_from_the_gateway_env_does_not_keep_the_superseded_node(monkeypatch, tmp_path):
+    """A refresh run inside the gateway inherits the installed plist's PATH; after a Node bump the
+    rewritten plist must not carry the old store Node, or the user's shell then reports it stale."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    old_dir = _seed_managed_node(home, "26.7.0")
+    plist_path, installed = _install_plist(monkeypatch, tmp_path, home)
+
+    monkeypatch.setenv("PATH", re.search(r"<key>PATH</key>\s*<string>(.*?)</string>", installed, re.DOTALL).group(1))
+    _seed_managed_node(home, "26.12.1")
+    assert gateway_cli.launchd_plist_is_current() is False
+    plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+    assert old_dir not in plist_path.read_text(encoding="utf-8")
+
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    assert gateway_cli.launchd_plist_is_current() is True

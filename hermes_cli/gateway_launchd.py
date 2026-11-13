@@ -383,7 +383,10 @@ def generate_launchd_plist() -> str:
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.
     priority_dirs = service_path_prefix_entries()
-    sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
+    # Only the prefix may carry a store Node: a refresh run inside the gateway inherits the old plist PATH.
+    store_node = str(_gw().get_hermes_home() / "tools" / "node-")
+    shell_dirs = [p for p in os.environ.get("PATH", "").split(":") if p and not p.startswith(store_node)]
+    sane_path = ":".join(dict.fromkeys(priority_dirs + shell_dirs))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).

@@ -31,6 +31,13 @@ export const emptyProviderSentinelKey = (provider: string): string =>
 /** Check whether a stored key is a provider-hidden sentinel. */
 export const isProviderSentinel = (key: string): boolean => key.endsWith('::')
 
+/** Providers switched off outright in Edit models: those whose hide-all
+ *  sentinel is stored. Reads the stored set, since `effectiveVisibleKeys`
+ *  strips the sentinels. */
+export function switchedOffProviders(stored: Set<string> | null): Set<string> {
+  return new Set([...(stored ?? [])].filter(isProviderSentinel).map(key => key.slice(0, -2)))
+}
+
 /** A model and its optional `…-fast` sibling, collapsed into one logical row.
  *  `id` is the canonical (base) model; `fastId` is the fast variant if present. */
 export interface ModelFamily {

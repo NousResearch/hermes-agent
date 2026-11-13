@@ -7,27 +7,54 @@ import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
-import { $gatewaySwapTarget, $profileColors } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $gatewaySwapTarget,
+  $newChatProfile,
+  $newChatRoute,
+  $profileColors,
+  normalizeProfileKey
+} from '@/store/profile'
 import { $profileSwitchPending } from '@/store/profile-switch-state'
+import { knownOwnerForSession } from '@/store/session-states'
+
+/** Activity comes from the switch; its assurance comes from Send's owner. */
+export function useSwitchSendTarget(): null | string {
+  const view = useSessionView()
+  const runtimeId = useStore(view.$runtimeId)
+  const storedId = useStore(view.$storedId)
+  const swapTarget = useStore($gatewaySwapTarget)
+  const pendingPick = useStore($profileSwitchPending)
+  const draftRoute = useStore($newChatRoute)
+  const draftProfile = useStore($newChatProfile)
+  const activeProfile = useStore($activeGatewayProfile)
+
+  if (view.kind !== 'primary' || (!swapTarget && !pendingPick)) {
+    return null
+  }
+
+  if (runtimeId || storedId) {
+    const owner = knownOwnerForSession(runtimeId) ?? knownOwnerForSession(storedId)
+
+    // An unresolved existing session must never borrow the new-chat pin.
+    return typeof owner === 'string' ? owner : (owner?.targetProfile || owner?.profile) ?? null
+  }
+
+  return draftRoute?.targetProfile || draftRoute?.profile || draftProfile || normalizeProfileKey(activeProfile)
+}
 
 /**
- * While a profile switch is in flight the composer stays usable: a send waits
- * for the swap (ensureGatewayProfile) and lands on the target. This pill says
- * so, on the primary surface only — tiles keep their own session's backend.
- * Same suppression as the switch indicator during first-run onboarding.
+ * While a profile switch is in flight, name the destination Send captures,
+ * not the older activation that may still hold the gateway mutex. Tiles keep
+ * their own backend and first-run onboarding suppresses switch chrome.
  */
 export function SendTargetHint() {
   const { t } = useI18n()
-  const primary = useSessionView().kind === 'primary'
-  const swapTarget = useStore($gatewaySwapTarget)
-  // A registry-source pick waits behind the agent dial before the swap target
-  // is published; the send still waits for it and lands on the pick.
-  const pendingPick = useStore($profileSwitchPending)
-  const target = swapTarget ?? pendingPick
+  const target = useSwitchSendTarget()
   const colors = useStore($profileColors)
   const onboarding = useOnboardingChatActive()
 
-  if (!primary || !target || onboarding) {
+  if (!target || onboarding) {
     return null
   }
 

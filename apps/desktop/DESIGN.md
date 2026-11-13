@@ -463,6 +463,12 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   The enclosing button retains the accessible state and drag/selection gestures.
   Retrying the same failed profile restarts the quiet grace period; an earlier
   attempt's stalled indicator must not carry into the new attempt.
+  Send assurances follow the captured draft route or existing session owner,
+  not an older activation still holding the switch queue. A new draft, source,
+  or selected conversation invalidates the old Retry, including saved callbacks;
+  retrying a still-current intent preserves its draft and captured source.
+  Slash profile selections claim their intent before metadata lookup; stale
+  lookups, activations, and launch-restore rollbacks cannot replace a newer draft.
 - Guide startup has a dedicated landing screen with the shared long-operation
   Loader and a localized startup label. It remains active until the guide's
   saved conversation is loaded. No greeting, composer, Skip setup, or statusbar

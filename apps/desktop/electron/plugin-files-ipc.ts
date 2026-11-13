@@ -40,7 +40,7 @@ export function registerPluginFilesIpc(deps: PluginFilesIpcDeps): PluginFiles {
       const window = deps.windowFor(event)
 
       const defaultPath =
-        typeof labels?.defaultPath === 'string' && labels.defaultPath.trim() && !labels.defaultPath.includes('\\0')
+        typeof labels?.defaultPath === 'string' && labels.defaultPath.trim() && !labels.defaultPath.includes('\0')
           ? labels.defaultPath
           : undefined
       const options = {

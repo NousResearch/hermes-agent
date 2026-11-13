@@ -54,9 +54,9 @@ def may_answer(authority: dict, actor_id: Any, admin_ids: Any = (), extra: Any =
     narrowed, an entry with no requester recorded (a turn merged from two senders) is answered by
     approvers and admins only, never by anyone.
 
-    ``admitted=False`` marks an answer whose sender no allowlist admitted (a relayed Discord button
-    press, which the connector forwards without its per-author check): under ``"*"`` the sender must
-    then pass the slash floor AND be the requester or an admin, as with ``approvers`` narrowed."""
+    ``admitted=False`` marks an answer whose sender no allowlist admitted (a relayed Discord sender the
+    connector never delivered a message from, ``gateway.relay.admitted_authors``): under ``"*"`` the
+    sender must then pass the slash floor AND be the requester or an admin, as with ``approvers`` narrowed."""
     from gateway.slash_access import SlashAccessPolicy, _coerce_id_list, policy_for_chat_type
 
     actor = str(actor_id or "").strip()
@@ -92,12 +92,6 @@ def _refusal_name(authority: dict, commands: tuple[str, ...], admitted: bool = T
     if admitted and commands and "*" in _coerce_id_list(authority.get("approvers")):
         return _ADMIN_ONLY + commands[0]
     return str(authority.get("requester_name") or authority.get("requester_id") or _NO_REQUESTER)
-
-
-def answer_admitted(event: Any) -> bool:
-    """Whether *event*'s sender passed an allowlist (``may_answer``'s ``admitted``): False for a relayed
-    Discord interaction (``MessageEvent.unadmitted_author``), forwarded without the connector's author check."""
-    return getattr(event, "unadmitted_author", False) is not True
 
 
 def runner_answer_policy(source: Any):

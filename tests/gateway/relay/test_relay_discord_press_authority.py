@@ -1,14 +1,16 @@
-"""A relayed Discord button press answers a prompt only for its requester, an approver or an admin.
+"""A relayed Discord button press answers a prompt only for an admitted sender, its requester or an admin.
 
 The connector forwards a Discord component press to every gateway of the tenant without the
 per-author check it runs on messages, so under the default ``approvals.approvers: ["*"]`` a press
 from any guild member, linked or not, settled another user's exec approval, slash confirmation or
-clarify question. The inbound lane (Telegram/Slack/WhatsApp presses, typed ``/approve``) is narrowed
-by the connector to admitted authors and keeps the default "any member answers".
+clarify question. A Discord member whose messages the connector delivers here is admitted and keeps
+"any member answers"; so does the inbound lane (Telegram/Slack/WhatsApp presses), which the connector
+narrows to admitted authors.
 """
 
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -16,6 +18,13 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from tests.gateway.test_approval_requester_binding import write_approvers
 
 SESSION = "agent:main:discord:group:c1"
+
+
+@pytest.fixture(autouse=True)
+def _no_admitted_authors(monkeypatch):
+    from gateway.relay import admitted_authors
+
+    monkeypatch.setattr(admitted_authors, "_admitted", type(admitted_authors._admitted)())
 
 
 @pytest.fixture
@@ -163,3 +172,23 @@ def test_unadmitted_card_answer_settles_nothing_for_another_member(relay):
     assert approval.resolve_gateway_approval_card(SESSION, "once", request_id, actor_id="alice",
                                                   admitted=False) == 1
     assert entry.result == "once"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+async def test_discord_press_from_a_member_whose_messages_arrive_here_still_answers(relay, kind, monkeypatch):
+    """``approvers: ["*"]``: a teammate the connector admitted (their Discord message reached this
+    gateway) answers another member's prompt with a button, as before."""
+    from gateway.relay.ws_transport import _event_from_wire
+
+    adapter, stub = relay
+    _no_admin_list(monkeypatch)
+    adapter.handle_message = AsyncMock()  # the plain message is only the connector's admission here
+    await adapter._on_inbound(_event_from_wire({"text": "hi", "message_id": "m-bob", "source": {
+        "platform": "discord", "user_id": "bob", "chat_id": "c1", "chat_type": "group"}}))
+    prompt_id, option, answered = await _raise_as_alice(adapter, stub, kind)
+
+    await _discord_press(adapter, "bob", prompt_id, option)
+
+    assert answered() is True
+

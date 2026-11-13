@@ -1211,7 +1211,8 @@ class GatewaySlashCommandsMixin(
         from tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
-            from gateway.approval_actor import answer_admitted, answerable_request_ids, refusal_text
+            from gateway.relay.admitted_authors import answer_admitted
+            from gateway.approval_actor import answerable_request_ids, refusal_text
             from gateway.slash_access import policy_for_runner_source
             ids, requester = answerable_request_ids(
                 session_key, event.sender_id(), resolve_all=resolve_all, choice=choice,

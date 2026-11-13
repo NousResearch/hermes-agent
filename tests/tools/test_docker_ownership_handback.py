@@ -55,7 +55,9 @@ def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
         labels = {**record["Config"].get("Labels", {}), **created_labels}
         return {**record, "Id": "fake-cid", "Name": "/" + str(created.get("name", "hermes-fake")),
                 "Config": {**record["Config"], "Labels": labels, "Image": created.get("image", "")},
-                "State": {"Running": False, "FinishedAt": "2020-01-01T00:00:00Z"}}
+                "State": {"Running": created.get("state") == "running",
+                          "FinishedAt": "0001-01-01T00:00:00Z" if created.get("state") == "running"
+                          else "2020-01-01T00:00:00Z"}}
 
     def _inspect_formatted(fmt: str) -> str:
         record = _inspect_record()
@@ -68,8 +70,24 @@ def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
         if fmt == "{{.HostConfig.NetworkMode}}":
             return "bridge"
         if "FinishedAt" in fmt:
-            return "2020-01-01T00:00:00Z"
+            return record["State"]["FinishedAt"]
         return json.dumps(record["Mounts"])
+
+    def _ps(argv):
+        if not created:
+            return ""
+        filters = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--filter"]
+        labels = _inspect_record()["Config"]["Labels"]
+        for constraint in filters:
+            if constraint.startswith("status=") and created["state"] != constraint[7:]:
+                return ""
+            if constraint.startswith("label="):
+                key, equals, value = constraint[6:].partition("=")
+                if key not in labels or (equals and labels[key] != value):
+                    return ""
+        if "-a" not in argv and "--all" not in argv and created["state"] != "running":
+            return ""
+        return f"fake-cid\t{created['state']}\n" if "{{.State}}" in argv[-1] else "fake-cid\n"
 
     def _run(cmd, **kwargs):
         argv = [str(a) for a in cmd]
@@ -86,14 +104,19 @@ def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
             # capture its name, image and runtime label for later inspects.
             created["name"] = argv[argv.index("--name") + 1]
             created["image"] = argv[-3]  # <all_run_args> <image> sleep infinity
+            created["state"] = "running"
             label_file = Path(argv[argv.index("--label-file") + 1])
             for pair in label_file.read_text(encoding="utf-8").splitlines():
                 key, _, value = pair.partition("=")
                 created_labels[key] = value
-        if sub == "ps" and "status=exited" in argv:  # the orphan sweep finds the detached container
-            out = "fake-cid\n"
+        if sub in ("stop", "start") and argv[-1] in ("fake-cid", created.get("name")):
+            created["state"] = "running" if sub == "start" else "exited"
+        if sub == "ps":
+            out = _ps(argv)
         if sub == "inspect" and argv[-1] == "fake-cid":
-            out = _inspect() if "--format" not in argv else _inspect_formatted(argv[argv.index("--format") + 1])
+            out = json.dumps([_inspect_record()]) if "--format" not in argv else _inspect_formatted(argv[argv.index("--format") + 1])
+        if sub == "rm" and argv[-1] in ("fake-cid", created.get("name")):
+            created.clear()
         if "--mount" in argv and fail == "strip":
             rc = 1  # e.g. an image without find
         elif "/usr/bin/find" in argv and "-user" in argv and "-print0" in argv:
@@ -223,7 +246,7 @@ def test_root_container_teardown_hands_every_sandbox_mount_back_before_removal(
         # Filtered to this sandbox: an env another test holds may tear down (and strip) mid-test.
         strips = [argv for argv, _ in calls if "--rm" in argv and f"{sandbox}/home" in " ".join(argv)]
         assert "stop" not in [argv[1] for argv, _ in calls] and not record.exists(), calls
-        assert len(strips) == {"persist-none": 0, "persist-gone": 0, "persist-reap": 3}.get(scenario, 2), calls
+        assert len(strips) == {"persist-none": 0, "persist-gone": 0}.get(scenario, 2), calls
         assert not [argv for argv, _ in calls if "--mount" in argv and str(decoy) in " ".join(argv)], calls
         if scenario == "persist-label":
             return

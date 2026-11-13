@@ -319,3 +319,36 @@ def test_api_key_not_configured_names_the_env_var(stubs, monkeypatch):
     with pytest.raises(ppr.ProviderNotSignedIn, match="DEEPSEEK_API_KEY"):
         _plugin("deepseek").get(allowed.url)
     assert allowed.seen == []
+
+
+def test_a_failed_refresh_leaves_no_chain_to_the_token(stubs, monkeypatch):
+    """httpx errors carry their request; a rebuild must not leave the refresh token reachable."""
+    allowed, _ = stubs
+    import httpx
+
+    secret = "rt_secret_refresh_value"
+
+    def failing(_url):
+        request = httpx.Request("POST", "https://api.xai.test/oauth2/token",
+                                headers={"Authorization": f"Bearer {secret}"})
+        raise httpx.HTTPStatusError("401 Unauthorized", request=request,
+                                    response=httpx.Response(401, request=request))
+
+    monkeypatch.setattr(ppr, "_access", lambda _name: ppr._Access(
+        frozenset({("http", "127.0.0.1", allowed.server.server_address[1])}), failing, read_only=True))
+
+    with pytest.raises(RuntimeError, match="401") as caught:
+        _plugin("deepseek").get(allowed.url + "/user/balance")
+
+    exc = caught.value
+    assert exc.__cause__ is None and exc.__context__ is None
+    broker_frames = []
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_filename == ppr.__file__:
+            broker_frames.extend(repr(value) for value in tb.tb_frame.f_locals.values())
+        tb = tb.tb_next
+    assert broker_frames, "expected the broker frame in the traceback"
+    assert all(secret not in value for value in broker_frames), "a broker frame still holds the refresh token"
+    assert secret not in repr(exc) and secret not in str(exc)
+    assert allowed.seen == []

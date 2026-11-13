@@ -222,6 +222,20 @@ def _detached(exc: BaseException) -> BaseException:
     return exc.with_traceback(None)
 
 
+def _transport_error(exc: BaseException) -> BaseException:
+    """Rebuild an httpx error without its request, which carries the attached credential.
+
+    ``HTTPStatusError`` and friends require ``request=``/``response=``, so a plain rebuild can
+    raise inside the handler — keeping the original alive through ``__context__``. Fall back to
+    a RuntimeError with the same text instead.
+    """
+    try:
+        rebuilt: BaseException = type(exc)(str(exc))
+    except Exception:
+        rebuilt = RuntimeError(str(exc))
+    return _detached(rebuilt)
+
+
 def _has_userinfo(url: str) -> bool:
     """True when *url* embeds ``user:password@``; ``url_origin`` normalizes that away."""
     parts = urllib.parse.urlsplit(url)
@@ -310,7 +324,7 @@ def credentialed_provider_request(
         try:
             auth_headers, credential_base = access.resolve(url)
         except httpx.HTTPError as exc:  # a resolver's own refresh POST failed: its request holds the refresh token
-            refusal = type(exc)(str(exc))
+            refusal = _transport_error(exc)
         except (RuntimeError, OSError, ValueError, LookupError, TypeError) as exc:
             refusal = _detached(exc)
         else:
@@ -325,7 +339,7 @@ def credentialed_provider_request(
                 try:
                     response = client.send(request)
                 except httpx.HTTPError as exc:
-                    refusal = type(exc)(str(exc))
+                    refusal = _transport_error(exc)
             auth_headers = request = None
     if refusal is not None:
         raise refusal

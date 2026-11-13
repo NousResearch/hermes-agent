@@ -9,7 +9,7 @@
 
 import { host, useValue, Wordmark } from '@hermes/plugin-sdk'
 
-import { avatarColor, botAppearance, BotFace } from './avatar'
+import { avatarColor, botAppearance, BotBadge } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { $botMeta, $lastRoster } from './data'
 import { useBots } from './i18n'
@@ -92,7 +92,7 @@ export function BotChatEmpty({ sessionId }: { sessionId: string }) {
     >
       <div className="w-full min-w-0">
         <div className="flex justify-center" style={{ marginBottom: FACE_GAP }}>
-          <BotFace
+          <BotBadge
             color={avatarColor(color, bot.name)}
             image={photo ? image : null}
             mood="idle"

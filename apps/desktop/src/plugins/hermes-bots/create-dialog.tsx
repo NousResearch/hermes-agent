@@ -38,7 +38,7 @@ import {
  */
 import { useEffect, useRef, useState } from 'react'
 
-import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
+import { avatarColor, blobatarSvg, botAppearance, BotBadge, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
@@ -1570,7 +1570,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
                     )}
                     key={botRosterKey(bot)}
                   >
-                    <BotFace
+                    <BotBadge
                       color={avatarColor(color, bot.name)}
                       image={image && !isBackfilledFacePng(image) ? image : null}
                       name={bot.name}

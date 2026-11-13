@@ -4,11 +4,13 @@ import { cn } from '@/lib/utils'
 interface FigmaAgentIconProps {
   color?: string | null
   className?: string
+  /** Edge in px for a tile off the 20px default (a dialog row, a chat's empty state). */
+  size?: number
   variant?: 'solid' | 'subtle' | 'outline'
 }
 
 /** Screenshot-backed agent marks; profile colors remain user-owned. */
-export function FigmaAgentIcon({ color, className, variant = 'solid' }: FigmaAgentIconProps) {
+export function FigmaAgentIcon({ color, className, size, variant = 'solid' }: FigmaAgentIconProps) {
   const tileColor = color || 'var(--portal-brand-fill)'
   const subtle = variant === 'subtle'
   const outline = variant === 'outline'
@@ -20,7 +22,8 @@ export function FigmaAgentIcon({ color, className, variant = 'solid' }: FigmaAge
       style={{
         backgroundColor:
           subtle || outline ? `color-mix(in srgb, ${tileColor} ${outline ? 12 : 25}%, transparent)` : tileColor,
-        boxShadow: subtle ? `inset 0 0 0 0.5px ${tileColor}` : undefined
+        boxShadow: subtle ? `inset 0 0 0 0.5px ${tileColor}` : undefined,
+        ...(size ? { borderRadius: size > 32 ? 'var(--portal-radius-surface)' : undefined, height: size, width: size } : {})
       }}
     >
       {outline ? (

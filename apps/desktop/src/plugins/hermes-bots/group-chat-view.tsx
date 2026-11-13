@@ -38,7 +38,7 @@ import {
 import type { ClipboardEvent, DragEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { avatarColor, botAppearance, BotFace } from './avatar'
+import { avatarColor, botAppearance, BotBadge } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
 import { groupCreationSource, groupDrivenByDesktop, groupExecutionMode, groupRoomRecorded } from './canonical-group-capabilities'
 import type { GroupExecutionMode } from './canonical-group-capabilities'
@@ -1454,7 +1454,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     const image = appearance.image ?? null
 
     return (
-      <BotFace
+      <BotBadge
         color={avatarColor(appearance.color, name)}
         image={image && !isBackfilledFacePng(image) ? image : null}
         name={name}

@@ -49,6 +49,38 @@ class GatewayClientError(ValueError):
     pass
 
 
+@asynccontextmanager
+async def _open_gateway_websocket(connect, url, *, subprotocols, max_size):
+    """Translate errors from opening the WebSocket, not errors from RPC operations."""
+    # The gateway is a loopback (or explicitly named) peer, never something to route through the
+    # user's HTTP(S) proxy; websockets>=14 reads HTTP_PROXY/HTTPS_PROXY by default and a proxy that
+    # cannot reach 127.0.0.1 turns every launch into a 10 s open timeout.
+    manager = connect(
+        url,
+        subprotocols=subprotocols,
+        open_timeout=10,
+        max_size=max_size,
+        proxy=None,
+    )
+
+    try:
+        ws = await manager.__aenter__()
+    except (OSError, TimeoutError) as exc:
+        raise GatewayClientError(
+            "Gateway connection failed; no local fallback"
+        ) from exc
+
+    try:
+        yield ws
+    except BaseException as exc:
+        if not await manager.__aexit__(
+            type(exc), exc, exc.__traceback__
+        ):
+            raise
+    else:
+        await manager.__aexit__(None, None, None)
+
+
 DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. "
                 "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.")
 # A request refused before it reached any socket: nothing is in doubt, so never DISCONNECTED.
@@ -377,17 +409,17 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
             raise GatewayUnavailableError(f"Gateway inaccessible: {exc.reason}" + (f" ({detail})" if detail else ""),
                                           "inaccessible", exc.reason) from exc
         url, protocols = gateway_ws_target(endpoint, ticket)
-    try:
-        # The gateway is a loopback (or explicitly named) peer, never something to route through the
-        # user's HTTP(S) proxy; websockets>=14 reads HTTP_PROXY/HTTPS_PROXY by default and a proxy that
-        # cannot reach 127.0.0.1 turns every launch into a 10 s open timeout.
-        async with connect(url, subprotocols=protocols, open_timeout=10, max_size=max_size,
-                           proxy=None) as ws:
-            if protocols and ws.subprotocol != GATEWAY_WS_PROTOCOL:
-                raise GatewayClientError("Gateway protocol mismatch; update/restart required")
-            async with GatewayClient(ws) as client:
-                yield client
-    except GatewayClientError:
-        raise
-    except (OSError, TimeoutError) as exc:
-        raise GatewayClientError("Gateway connection failed; no local fallback") from exc
+      
+    async with _open_gateway_websocket(
+        connect,
+        url,
+        subprotocols=protocols,
+        max_size=max_size,
+    ) as ws:
+        if protocols and ws.subprotocol != GATEWAY_WS_PROTOCOL:
+            raise GatewayClientError(
+                "Gateway protocol mismatch; update/restart required"
+            )
+
+        async with GatewayClient(ws) as client:
+            yield client

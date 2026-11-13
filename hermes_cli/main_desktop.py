@@ -1673,6 +1673,35 @@ def _launch_installed_macos_desktop_app() -> bool:
     return True
 
 
+def _installed_desktop_launcher() -> Optional[Path]:
+    """A separately installed ``hermes-desktop`` app on PATH, if any.
+
+    Two install shapes ship the desktop app as an artifact instead of an
+    ``apps/desktop`` source tree: the vendor's app bundle (macOS), and the Nix
+    flake, which builds the Electron app as its own ``hermes-desktop`` package
+    beside the agent package. In both, the app — not this code tree — is the
+    desktop surface, so nothing here can build one.
+    """
+    found = shutil.which("hermes-desktop")
+    return Path(found) if found else None
+
+
+def _launch_installed_desktop_app() -> bool:
+    """Launch a separately installed ``hermes-desktop`` app, if one is on PATH.
+
+    Returns True only when a launcher exists and a detached launch was
+    started — the caller then exits without touching the build ladder.
+    """
+    executable = _installed_desktop_launcher()
+    if executable is None:
+        return False
+    from hermes_cli.bundled_app import launch_detached
+
+    pid = launch_detached([str(executable)])
+    print(f"→ Launched the installed Hermes Desktop app: {executable} (pid {pid})")
+    return True
+
+
 def _run_desktop_one_shot(args: argparse.Namespace, desktop_dir: Path, *, bundled: bool) -> None:
     """Run a host-setup one-shot flag, then exit without building or launching."""
     # macOS: a self-signed code-signing identity so TCC grants survive rebuilds.
@@ -1703,22 +1732,46 @@ def cmd_gui(args: argparse.Namespace):
     # launcher is a sibling of this payload rather than something we
     # produce. Every rung below assembles a checkout build, so the sealed
     # shape leaves here with the env it just built.
-    from hermes_cli.steward import is_bundled_payload
+    from hermes_cli.steward import is_bundled_payload, sealed_steward
 
     bundled = is_bundled_payload(PROJECT_ROOT)
     if not bundled and not (desktop_dir / "package.json").exists():
-        # A package-manager install (Homebrew, pip, ...) ships no desktop
+        # A package-manager install (Homebrew, pip, Nix, ...) ships no desktop
         # source tree, so building here is impossible by construction (#61056).
         # Prefer the separately installed desktop app; otherwise explain the
         # packaging shape instead of the generic missing-source error.
         install_kind = _site_packages_install_kind(PROJECT_ROOT)
+        steward = sealed_steward(PROJECT_ROOT)
         if install_kind is not None and _launch_installed_macos_desktop_app():
             sys.exit(0)
+        # Only an install that cannot carry the desktop source may hand over: a
+        # checkout that merely lost its apps/desktop is a broken checkout, and
+        # its own error must point at the missing path.
+        packaged_install = install_kind is not None or steward not in (None, "unknown")
+        # A build flag asks for an artifact this tree cannot produce, so it must
+        # stay an error; every other run hands over to the app that exists.
+        wants_build = any(getattr(args, name, False) for name in ("source", "build_only", "force_build"))
+        if packaged_install and not wants_build and _launch_installed_desktop_app():
+            sys.exit(0)
         print(f"Desktop GUI source not found at: {desktop_dir}")
-        if install_kind == "homebrew":
+        if steward == "nix":
+            print(
+                "  This Hermes runs from the Nix store, which builds the desktop app as\n"
+                "  its own package instead of shipping this source tree.\n"
+                "  Enable it with `programs.hermes-agent.desktop.enable = true` in Home\n"
+                "  Manager (or `nix run .#desktop`), then run `hermes-desktop`."
+            )
+        elif install_kind == "homebrew":
             print(
                 "  This Hermes came from Homebrew, which does not ship the desktop app's\n"
                 "  source tree, so it cannot be built from this install.\n"
+                "  Install the desktop app from https://hermes-agent.nousresearch.com,\n"
+                "  or run `hermes desktop` from a source checkout."
+            )
+        elif install_kind is not None:
+            print(
+                "  This Hermes came from a Python package, which does not ship the\n"
+                "  desktop app's source tree, so it cannot be built from this install.\n"
                 "  Install the desktop app from https://hermes-agent.nousresearch.com,\n"
                 "  or run `hermes desktop` from a source checkout."
             )

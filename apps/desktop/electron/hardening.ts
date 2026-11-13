@@ -314,47 +314,94 @@ function normalizeSensitivePath(filePath) {
     .toLowerCase()
 }
 
-let hermesHomeRoots: string[] = []
+let hermesHomes: string[] = []
 
 /** Register the Hermes home whose credential stores (and every profile's under
  *  `profiles/<name>/`) preview reads must refuse. Both the given spelling and
  *  its realpath are kept, since callers check the requested and the real path. */
 function setSensitiveHermesHome(hermesHome: null | string | undefined) {
   if (!hermesHome) {
-    hermesHomeRoots = []
+    hermesHomes = []
 
     return
   }
 
-  const roots = [path.resolve(hermesHome)]
+  const homes = [path.resolve(hermesHome)]
+  const real = realpathOrNull(hermesHome)
 
-  try {
-    roots.push(fs.realpathSync.native(hermesHome))
-  } catch {
-    // Not created yet: the lexical spelling is all a request can use.
+  if (real) {
+    homes.push(real)
   }
 
-  hermesHomeRoots = [...new Set(roots.map(root => normalizeSensitivePath(root).replace(/\/+$/, '')))]
+  hermesHomes = [...new Set(homes)]
+}
+
+function realpathOrNull(filePath: string): null | string {
+  try {
+    return fs.realpathSync.native(filePath)
+  } catch {
+    return null
+  }
+}
+
+function credentialStoreRel(normalized: string, root: string): null | string {
+  if (!normalized.startsWith(`${root}/`)) {
+    return null
+  }
+
+  const fromRoot = normalized.slice(root.length + 1)
+
+  return fromRoot.match(/^profiles\/[^/]+\/(.+)$/)?.[1] ?? fromRoot
+}
+
+function isCredentialStoreRel(rel: string): boolean {
+  return HERMES_CREDENTIAL_FILES.has(rel) || HERMES_CREDENTIAL_DIRS.some(dir => rel === dir || rel.startsWith(`${dir}/`))
+}
+
+// Where each home's and profile's stores really live: a symlinked profile home,
+// vault/ or auth.json puts the secret outside every registered root, so the
+// lexical match alone would let its real path through (Python's read guard
+// resolves the same targets).
+function relocatedCredentialStores(): string[] {
+  const stores: string[] = []
+
+  for (const home of hermesHomes) {
+    let profiles: string[] = []
+
+    try {
+      profiles = fs.readdirSync(path.join(home, 'profiles')).map(name => path.join(home, 'profiles', name))
+    } catch {
+      // No profiles directory.
+    }
+
+    for (const base of [home, ...profiles]) {
+      for (const rel of [...HERMES_CREDENTIAL_FILES, ...HERMES_CREDENTIAL_DIRS]) {
+        const real = realpathOrNull(path.join(base, rel))
+
+        if (real) {
+          stores.push(normalizeSensitivePath(real).replace(/\/+$/, ''))
+        }
+      }
+    }
+  }
+
+  return stores
 }
 
 function hermesCredentialStoreReason(normalized: string): null | string {
-  for (const root of hermesHomeRoots) {
-    if (!normalized.startsWith(`${root}/`)) {
-      continue
-    }
+  const reason = 'Hermes credential stores are blocked.'
 
-    const fromRoot = normalized.slice(root.length + 1)
-    const rel = fromRoot.match(/^profiles\/[^/]+\/(.+)$/)?.[1] ?? fromRoot
+  for (const home of hermesHomes) {
+    const rel = credentialStoreRel(normalized, normalizeSensitivePath(home).replace(/\/+$/, ''))
 
-    if (
-      HERMES_CREDENTIAL_FILES.has(rel) ||
-      HERMES_CREDENTIAL_DIRS.some(dir => rel === dir || rel.startsWith(`${dir}/`))
-    ) {
-      return 'Hermes credential stores are blocked.'
+    if (rel !== null && isCredentialStoreRel(rel)) {
+      return reason
     }
   }
 
-  return null
+  return relocatedCredentialStores().some(store => normalized === store || normalized.startsWith(`${store}/`))
+    ? reason
+    : null
 }
 
 function sensitiveFileBlockReason(filePath) {

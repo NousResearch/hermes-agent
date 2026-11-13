@@ -954,11 +954,6 @@ test('resolveReadableFileForIpc blocks Hermes credential stores in the home and 
       }
     }
 
-    // A symlink outside the home is judged by the store it resolves to.
-    const link = path.join(tempDir, 'innocent.json')
-    fs.symlinkSync(path.join(hermesHome, 'auth.json'), link)
-    await rejectsWithCode(resolveReadableFileForIpc(link, { purpose: 'File preview' }), 'sensitive-file')
-
     // Ordinary Hermes files and same-named project files stay previewable.
     const allowed = [path.join(hermesHome, 'config.yaml'), path.join(tempDir, 'project', 'auth.json')]
 
@@ -967,6 +962,82 @@ test('resolveReadableFileForIpc blocks Hermes credential stores in the home and 
       fs.writeFileSync(filePath, '{}', 'utf8')
       assert.equal((await resolveReadableFileForIpc(filePath, { purpose: 'File preview' })).resolvedPath, filePath)
     }
+  } finally {
+    setSensitiveHermesHome(null)
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+// Symlink creation needs Developer Mode on Windows; false means skip.
+function trySymlink(target: string, link: string, type?: 'dir' | 'file' | 'junction'): boolean {
+  try {
+    fs.symlinkSync(target, link, type)
+
+    return true
+  } catch (error) {
+    if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+      return false
+    }
+
+    throw error
+  }
+}
+
+test('resolveReadableFileForIpc blocks a link outside the home that resolves to a Hermes store', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-link-'))
+  const hermesHome = path.join(tempDir, 'hermes-home')
+
+  try {
+    fs.mkdirSync(hermesHome)
+    fs.writeFileSync(path.join(hermesHome, 'auth.json'), 'TOKEN_MARKER', 'utf8')
+    setSensitiveHermesHome(hermesHome)
+
+    const link = path.join(tempDir, 'innocent.json')
+
+    if (!trySymlink(path.join(hermesHome, 'auth.json'), link, 'file')) {
+      return
+    }
+
+    await rejectsWithCode(resolveReadableFileForIpc(link, { purpose: 'File preview' }), 'sensitive-file')
+  } finally {
+    setSensitiveHermesHome(null)
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('resolveReadableFileForIpc blocks relocated Hermes stores read through their real path', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-creds-moved-'))
+  const hermesHome = path.join(tempDir, 'hermes-home')
+  const workHome = path.join(tempDir, 'data', 'work-home')
+  const vaultDir = path.join(tempDir, 'data', 'vault')
+  const authFile = path.join(tempDir, 'data', 'auth-store.json')
+
+  try {
+    fs.mkdirSync(path.join(hermesHome, 'profiles'), { recursive: true })
+    fs.mkdirSync(workHome, { recursive: true })
+    fs.mkdirSync(vaultDir, { recursive: true })
+    fs.writeFileSync(path.join(workHome, 'auth.json'), 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(path.join(workHome, 'notes.md'), 'ok', 'utf8')
+    fs.writeFileSync(path.join(vaultDir, 'vault.key'), 'TOKEN_MARKER', 'utf8')
+    fs.writeFileSync(authFile, 'TOKEN_MARKER', 'utf8')
+
+    const linked =
+      trySymlink(workHome, path.join(hermesHome, 'profiles', 'work'), 'junction') &&
+      trySymlink(vaultDir, path.join(hermesHome, 'vault'), 'junction') &&
+      trySymlink(authFile, path.join(hermesHome, 'auth.json'), 'file')
+
+    if (!linked) {
+      return
+    }
+
+    setSensitiveHermesHome(hermesHome)
+
+    for (const filePath of [path.join(workHome, 'auth.json'), path.join(vaultDir, 'vault.key'), authFile]) {
+      await rejectsWithCode(resolveReadableFileForIpc(filePath, { purpose: 'File preview' }), 'sensitive-file')
+    }
+
+    const notes = path.join(workHome, 'notes.md')
+    assert.equal((await resolveReadableFileForIpc(notes, { purpose: 'File preview' })).resolvedPath, notes)
   } finally {
     setSensitiveHermesHome(null)
     fs.rmSync(tempDir, { recursive: true, force: true })

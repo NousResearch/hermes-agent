@@ -73,12 +73,16 @@ def _record(home: Path, names: set[str]) -> None:
 
 
 def _installed_dir(home: Path, entry) -> Optional[Path]:
-    """*home*'s install of *entry*: the dir its install record ties to the catalog name, else its name."""
+    """*home*'s install of *entry*: the dir its install record ties to the catalog name, in either record
+    shape (``catalog.name``, or the older top-level ``catalog_name``), else the dir of that name. Read by
+    path, not by binding *home* (the installer's lookup reads the bound home only, and a bind at boot would
+    freeze the launch environment)."""
     from hermes_cli.plugins_provenance import read_sidecar_rows
     plugins = home / "plugins"
     for name, row in read_sidecar_rows(plugins).items():
         block = row.get("catalog") if isinstance(row, dict) else None
-        if isinstance(block, dict) and block.get("name") == entry.name and (plugins / name).is_dir():
+        named = block.get("name") if isinstance(block, dict) else (row.get("catalog_name") if isinstance(row, dict) else None)
+        if named == entry.name and (plugins / name).is_dir():
             return plugins / name
     return plugins / entry.name if (plugins / entry.name).is_dir() else None
 
@@ -91,7 +95,7 @@ def _settled(home: Path, entry) -> bool:
     from hermes_cli.memory_provider_migration import _failure_stamp
     target = _installed_dir(home, entry)
     if target is None:
-        return False
+        return _placed(home, entry).exists()  # the tree a failed attempt left is gone: the user removed it
     if not _failure_stamp(home, _attempt(entry)).exists():
         return True
     names = {entry.name, target.name}
@@ -107,6 +111,11 @@ def _settled(home: Path, entry) -> bool:
 def _attempt(entry) -> str:
     """Failure-stamp name of this home's automatic install of *entry*."""
     return f"default-{entry.name}"
+
+
+def _placed(home: Path, entry) -> Path:
+    """Written when a failed automatic attempt left *entry*'s tree on disk (a refused enable)."""
+    return home / "cache" / f"default-plugins.placed-{entry.name}"
 
 
 def fetch_allowed(home: Path) -> bool:
@@ -140,17 +149,23 @@ def install_defaults(home: Path, *, say: Callable[[str], None] = logger.info,
         if entry.name in have:
             continue
         try:
-            outcome = install(entry.name)  # reuses, and enables, a tree a refused enable left behind
+            # At the pin selected for every home (a home's own catalog cache may trail it); reuses, and
+            # enables, a tree a refused enable left behind at that pin.
+            outcome = install(entry.name, entry.sha)
         except Exception as exc:  # health: allow BLE001 -- network, uv or kill list: reported per plugin, never raised
             outcome = {"ok": False, "error": str(exc)}
         if outcome.get("ok"):
             _note_success(home, _attempt(entry))
+            _placed(home, entry).unlink(missing_ok=True)
             have.add(entry.name)
             result["installed"].append(entry.name)
             say(f"  ✓ Installed default plugin '{entry.name}' for {_home_label(home)}")
             continue
         result["owed"].append(entry.name)
         _note_failure(home, _attempt(entry))  # marks a tree it left as ours to retry, not the user's
+        if _installed_dir(home, entry) is not None:
+            _placed(home, entry).parent.mkdir(parents=True, exist_ok=True)
+            _placed(home, entry).touch()
         say(f"  ⚠ Default plugin '{entry.name}' could not be installed for {_home_label(home)}: "
             f"{_first_cause(str(outcome.get('error') or ''))}. Hermes retries at a later start; "
             f"`hermes plugins install {entry.name}` installs it now.")
@@ -168,7 +183,7 @@ def install_defaults_all_homes(*, say: Callable[[str], None] = print, wait: floa
     summary: dict = {"installed": [], "owed": []}
     homes = [home for home in dependency_homes() if fetch_allowed(home)]
     entries = default_entries() if homes else []  # no catalog read (or fetch) where nothing may install
-    if homes and fetch_live_catalog() is None:
+    if homes and not (fetch_live_catalog() or {}).get("entries"):  # an expired offline cache has none
         # Offline: the in-tree defaults still install, but one the live catalog added since this release
         # is unknown, so the pass is owed until the live catalog is read.
         summary["owed"].append("live catalog")
@@ -212,8 +227,9 @@ def spawn_install(home: Optional[Path] = None) -> bool:
     fetching), unless the last attempt failed recently. A running child sees the request when it finishes
     and scans again. Never waits."""
     from hermes_cli._launchers import runtime_command
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
     from hermes_cli.memory_provider_migration import _failed_recently
+    from hermes_cli._subprocess_compat import IS_WINDOWS
     from pm.environments import dependency_home_root
     from pm.paths import install_root
     root = Path(dependency_home_root())
@@ -224,39 +240,44 @@ def spawn_install(home: Optional[Path] = None) -> bool:
     rerun.touch()
     argv = runtime_command(install_root(), module="hermes_cli.default_plugins")
     kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-    # detached-spawn: ok — git and dependency installs must neither delay a boot or a create nor die with it; one installer at a time (OS lock)
-    subprocess.Popen(argv, **kwargs, **windows_detach_popen_kwargs())
+    try:
+        # detached-spawn: ok — git and dependency installs must neither delay a boot or a create nor die with it; one installer at a time (OS lock)
+        subprocess.Popen(argv, **kwargs, **windows_detach_popen_kwargs())
+    except OSError:
+        if not IS_WINDOWS:
+            raise
+        # A job object without BREAKAWAY_OK refuses CREATE_BREAKAWAY_FROM_JOB; retry without it.
+        subprocess.Popen(argv, **kwargs, creationflags=windows_detach_flags_without_breakaway())
     return True
 
 
 def _run_child() -> int:
-    """The detached child. Scans until no request arrived while it worked, then records the outcome the boot
-    step reads; a child that finds another installer running leaves the request to it."""
-    import time
+    """The detached child; one that finds another installer running leaves its request to that one."""
     from pm.environments import dependency_home_root
     root = Path(dependency_home_root())
     (root / "logs").mkdir(parents=True, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s default-plugins %(message)s",
                         filename=str(root / "logs" / "default-plugins.log"))
     try:
-        while True:
-            started = time.time()
-            outcome = install_and_record(say=logger.info, wait=1.0)
-            rerun = _state(root, "rerun")
-            if not (rerun.exists() and rerun.stat().st_mtime > started):
-                break
+        return 1 if install_and_record(say=logger.info, wait=1.0)["owed"] else 0
     except TimeoutError:
         return 0
-    return 1 if outcome["owed"] else 0
 
 
 def install_and_record(*, say: Callable[[str], None] = print, wait: float = 900.0) -> dict:
-    """:func:`install_defaults_all_homes`, then the outcome the boot step reads: a failure begins the
-    backoff, a clean pass marks this revision settled (so its first boot spawns nothing)."""
+    """The one coordinator (update tail and detached child): :func:`install_defaults_all_homes` again until
+    no rescan was requested meanwhile (a profile created during the pass), then the outcome the boot step
+    reads: a failure begins the backoff, a clean pass marks this revision settled."""
+    import time
     from hermes_cli.memory_provider_migration import _note_failure, _note_success
     from pm.environments import dependency_home_root
     root = Path(dependency_home_root())
-    outcome = install_defaults_all_homes(say=say, wait=wait)
+    rerun = _state(root, "rerun")
+    while True:
+        started = time.time()
+        outcome = install_defaults_all_homes(say=say, wait=wait)
+        if not (rerun.exists() and rerun.stat().st_mtime >= started):
+            break
     if outcome["owed"]:
         _note_failure(root, _BACKOFF)
         # A later pass (a profile created after this revision settled) can fail too: owed again.

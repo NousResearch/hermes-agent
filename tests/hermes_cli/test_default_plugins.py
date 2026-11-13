@@ -27,7 +27,7 @@ def installs(monkeypatch):
     calls: list[tuple[Path, str]] = []
 
     def install_into(home, consent=None):
-        def install(name):
+        def install(name, ref=None):
             calls.append((home, name))
             (home / "plugins" / name).mkdir(parents=True, exist_ok=True)
             return {"ok": True}
@@ -66,7 +66,7 @@ def test_a_refused_enable_is_retried_until_the_user_decides(tmp_path, monkeypatc
     calls: list[str] = []
 
     def install_into(h, consent=None):
-        def install(name):
+        def install(name, ref=None):
             calls.append(name)
             installed = name.removeprefix("hermes-")  # hermes-user-off installs as user-off, like hermes-memory-wiki
             (h / "plugins" / installed).mkdir(parents=True, exist_ok=True)  # the clone lands before the enable
@@ -80,6 +80,12 @@ def test_a_refused_enable_is_retried_until_the_user_decides(tmp_path, monkeypatc
     monkeypatch.setattr(lcm, "_install_into", install_into)
     entries = [_entry(name) for name in ("kept-off", "by-hand", "accent-picker", "user-on", "hermes-user-off")]
 
+    # An older install record (top-level catalog_name) under another dir name, disabled by the user.
+    (home / "plugins" / "legacy-dir").mkdir()
+    (home / "plugins" / ".install-metadata.json").write_text(json.dumps({"legacy-dir": {"catalog_name": "hermes-legacy"}}))
+    config.write_text("plugins:\n  disabled: [kept-off, legacy-dir]\n", encoding="utf-8")
+    entries.append(_entry("hermes-legacy"))
+
     first = default_plugins.install_defaults(home, entries=entries)
     assert first["owed"] == ["accent-picker", "user-on", "hermes-user-off"]
     # The user settles two of the leftover trees by hand before the next attempt (by their installed names).
@@ -87,6 +93,13 @@ def test_a_refused_enable_is_retried_until_the_user_decides(tmp_path, monkeypatc
     assert default_plugins.install_defaults(home, entries=entries) == {"installed": ["accent-picker"], "owed": []}
     assert calls == ["accent-picker", "user-on", "hermes-user-off", "accent-picker"], "retried the wrong trees"
     assert default_plugins.install_defaults(home, entries=entries) == {"installed": [], "owed": []}
+
+    # A tree a refused enable left, which the user then removes, is their removal: never reinstalled.
+    entries.append(_entry("removed"))
+    assert default_plugins.install_defaults(home, entries=entries)["owed"] == ["removed"]
+    (home / "plugins" / "removed").rmdir()
+    assert default_plugins.install_defaults(home, entries=entries) == {"installed": [], "owed": []}
+    assert calls.count("removed") == 1, "a removed leftover came back"
 
 
 def test_a_home_that_turned_lazy_installs_off_fetches_nothing(tmp_path, installs):

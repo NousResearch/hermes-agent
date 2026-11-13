@@ -581,6 +581,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         if not provider_override and not os.environ.get("HERMES_TUI_PROVIDER", "").strip() and (
                 aliased := _default_alias_request(model_override)):
             model, resolve_kwargs = aliased  # a ``model.default`` / ``-m`` alias: its own endpoint+key (#154786)
+            requested_provider = resolve_kwargs["requested"]  # a fallback notice names the provider tried
         overrides = {}
     resolution = _resolve_runtime_with_fallback(resolve_kwargs)
     if resolution.used_fallback:

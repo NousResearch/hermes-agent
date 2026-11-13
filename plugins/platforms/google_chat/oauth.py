@@ -43,7 +43,7 @@ SCOPES: list[str] = ["https://www.googleapis.com/auth/chat.messages.create"]
 # staleness probe so a half-synced interpreter is repaired instead of trusted.
 _DEPENDENCY_EXTRAS = ["google", "google-chat"]
 _REQUIRED_PACKAGES = [
-    "google-cloud-pubsub==2.39.0",
+    "google-cloud-pubsub==2.43.0",
     "google-api-python-client==2.201.0",
     "google-auth==2.62.0",
     "google-auth-oauthlib==1.5.0",

@@ -38,6 +38,7 @@ approvals:
   unattended_mode: deny           # deny | approve — what webhook/API sessions do on a dangerous command
   mcp_reload_confirm: true        # /reload-mcp asks before invalidating the MCP tool cache
   destructive_slash_confirm: true # /clear, /new, /reset, /undo prompt before discarding state
+  allow_always: true              # false: never offer or persist the permanent "Always" scope on approvals
 ```
 
 The full set of keys:
@@ -53,6 +54,7 @@ The full set of keys:
 | `approvers` | `["*"]` | Who may answer a pending approval from a messaging chat. `["*"]`: any admitted member. `[]` or a list of user ids: the requester, those ids and the platform admins only — see [Who can answer an approval in a shared chat](#who-can-answer-an-approval-in-a-shared-chat-approvalsapprovers). |
 | `mcp_reload_confirm` | `true` | When true, `/reload-mcp` asks before rebuilding the MCP tool set. Rebuilding invalidates the provider prompt cache (tool schemas live in the system prompt), so the next message re-sends full input tokens. Users who click **Always Approve** flip this key to `false`. |
 | `destructive_slash_confirm` | `true` | When true, destructive session slash commands (`/clear`, `/new`, `/reset`, `/undo`) prompt before discarding conversation state. Three-option dialog (Approve Once / Always Approve / Cancel) routed through native yes/no buttons on Telegram, Discord, and Slack; text fallback elsewhere. Users who click **Always Approve** flip this key to `false`. The TUI also honors this setting for its `/clear`, `/new`, and `/reset` modal; `HERMES_TUI_NO_CONFIRM=1` force-skips that modal regardless of the configured value. |
+| `allow_always` | `true` | When false, dangerous-command approval cards (and MCP consent prompts that offer a remembered scope) do not offer **Always**, and `command_allowlist` is never written by an approval: a typed `/approve always` or a stale card is treated as **once** (logged at WARNING). `once` and `session` are unchanged. Hand edits and `hermes approvals` suggestions are not affected. |
 
 | Mode | Behavior |
 |------|----------|

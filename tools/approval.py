@@ -79,6 +79,17 @@ def _get_denial_breaker_threshold() -> int:
         return 3
 
 
+def _allow_always_enabled() -> bool:
+    """``approvals.allow_always`` (default true). When false the permanent "always" scope is never
+    offered and nothing is written to ``command_allowlist``; ``once``/``session`` are unaffected."""
+    value = approval_context._get_approval_config().get("allow_always", True)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return not (isinstance(value, str) and value.strip().lower() in ("false", "0", "no", "off"))
+
+
 def _record_denial(session_key: str) -> int:
     """Increment and return the session's consecutive guardian-denial count. Pop-and-reinsert
     keeps actively-denying sessions at the most-recent end so eviction drops idle keys."""
@@ -483,6 +494,10 @@ def load_permanent(patterns: set):
 
 def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
     """Persist a human ``session``/``always`` choice for each pattern key. ``once`` persists nothing."""
+    if choice == "always" and not _allow_always_enabled():
+        # Typed ``/approve always`` and stale cards bypass the hidden button: honor the policy here too.
+        logger.warning("approvals.allow_always is false: 'always' downgraded to 'once' (nothing persisted)")
+        return
     for key in keys:
         if choice not in ("session", "always"):
             continue
@@ -948,7 +963,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    allow_permanent = (not smart_denied) and _allow_always_enabled()
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -997,7 +1012,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
+                "allow_permanent": allow_permanent,
                 "allow_session": not smart_denied,
             }
             if smart_denied:

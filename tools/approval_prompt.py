@@ -170,7 +170,9 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         else:
             decision = _CLI_CHOICE_ALIASES.get(choice, "deny")
             if decision == "always" and not allow_permanent:
-                decision = "session"
+                from tools import approval as _a
+                # approvals.allow_always: false means "this run only": a typed 'a' must not widen to the session.
+                decision = "session" if _a._allow_always_enabled() else "once"
         print(t(_CLI_CHOICE_I18N[decision]))
         return decision
     except (EOFError, KeyboardInterrupt):
@@ -318,6 +320,7 @@ def request_elicitation_consent(message: str, description: str, *,
     if _ctx._is_single_query_approval_context():
         return "decline"
     scoped = remember_key is not None
+    always_ok = scoped and _a._allow_always_enabled()  # approvals.allow_always: false hides "always" here too
 
     # api_server is an unattended *platform* for the dangerous-command gate, but a live ``/v1/runs`` run
     # registers an approval notify callback and answers via ``POST /v1/runs/{id}/approval``
@@ -339,7 +342,7 @@ def request_elicitation_consent(message: str, description: str, *,
                 session_key, notify_cb, {"command": message, "description": description,
                                          "pattern_key": "mcp_elicitation",
                                          "pattern_keys": ["mcp_elicitation"],
-                                         "allow_session": scoped, "allow_permanent": scoped}, surface=surface)
+                                         "allow_session": scoped, "allow_permanent": always_ok}, surface=surface)
         except Exception as exc:
             logger.error("Elicitation gateway dispatch failed: %s", exc, exc_info=True)
             return "decline"
@@ -365,7 +368,7 @@ def request_elicitation_consent(message: str, description: str, *,
         from tools.terminal_tool import _get_approval_callback
         # Pass the agent thread's panel callback: without it prompt_toolkit fails the prompt closed unseen.
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
-                                           allow_permanent=scoped, allow_session=scoped, title=title,
+                                           allow_permanent=always_ok, allow_session=scoped, title=title,
                                            approval_callback=_get_approval_callback())
         hook_choice = choice
     except Exception as exc:

@@ -8,8 +8,8 @@ Covers:
 - search dispatcher: failure-result and raised-exception paths both rescue,
   result annotated with rescued_from + backend_error
 - statelessness: the very next dispatch calls the chosen backend again
-- extract dispatcher: whole-batch failure rescues; partial failure passes
-  through untouched
+- extract dispatcher: whole-batch failure rescues; only throttled members of a
+  partly served batch are rescued; genuine page errors pass through untouched
 - rescue failure: original backend error survives, rescue note appended
 """
 
@@ -273,6 +273,45 @@ class TestExtractRescue:
             )
         assert results[1].get("error")
         ring.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_partial_rate_limit_rescued_by_url(self, monkeypatch):
+        class _Throttled(_KeyedBoomProvider):
+            def extract(self, urls, **kwargs):
+                return [
+                    {"url": urls[0], "title": "A", "content": "fine",
+                     "raw_content": "fine", "metadata": {"sourceURL": urls[0]}},
+                    {"url": urls[1], "title": "", "content": "",
+                     "error": "HTTP 429: rate limit exceeded"},
+                ]
+
+        rescued_page = {
+            "url": "https://b", "title": "B", "content": "y" * 50,
+            "raw_content": "y" * 50, "metadata": {"sourceURL": "https://b"},
+        }
+        with patch.object(
+            keyless_mcp, "extract_with_failover", return_value=[rescued_page]
+        ) as ring:
+            results = await self._dispatch(
+                monkeypatch, _Throttled(), ["https://a", "https://b"]
+            )
+        assert results[0]["content"] == "fine" and not results[0].get("error")
+        assert not results[1].get("error") and results[1]["content"].startswith("y")
+        ring.assert_called_once()
+        assert ring.call_args[0][1] == ["https://b"]
+
+    def test_rate_limited_indices_require_an_unambiguous_url(self):
+        results = [
+            {"url": "https://a", "content": "fine", "error": None},
+            {"url": "https://b", "error": "HTTP 429: rate limit exceeded"},
+            {"url": "https://c", "error": "404 Not Found"},
+            {"url": "https://d", "error": "rate limit exceeded", "blocked_by_policy": True},
+            {"url": "https://dup", "error": "rate limit exceeded"},
+            {"url": "https://dup", "error": "rate limit exceeded"},
+        ]
+        requested = ["https://a", "https://b", "https://c", "https://d",
+                     "https://dup", "https://dup"]
+        assert web_tools_rescue._rate_limited_extract_indices(results, requested) == [1]
 
     @pytest.mark.asyncio
     async def test_rescue_failure_keeps_original_errors(self, monkeypatch):

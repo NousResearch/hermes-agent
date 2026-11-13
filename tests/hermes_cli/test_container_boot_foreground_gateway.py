@@ -1,5 +1,6 @@
-"""#152152: a `gateway run --no-supervise` container CMD is the one gateway, so boot must leave
-the s6 root slot down even when the volume persists `desired_state: running`."""
+"""#152152: a foreground (`--no-supervise`) gateway container CMD is the one gateway, so boot must
+leave the s6 root slot down even when the volume persists `desired_state: running`, unless that
+foreground gateway serves only a `gateway.standalone` profile."""
 
 import json
 
@@ -15,13 +16,21 @@ _WRAPPER = ["/init", "/opt/hermes/docker/main-wrapper.sh"]
     [
         (["gateway", "run", "--no-supervise"], False, False),
         (["gateway", "run"], True, False),
+        (["gateway"], True, False),  # bare `gateway` runs the gateway too
         (["-p", "coder", "gateway", "run", "--no-supervise"], False, False),
+        (["-p", "solo", "gateway", "run", "--no-supervise"], False, True),  # standalone: serves only solo
         (["gateway", "run"], False, True),  # bare run redirects to s6: the slot IS the gateway
+        (["gateway", "status"], True, True),
     ],
 )
 def test_foreground_gateway_cmd_leaves_s6_root_slot_down(tmp_path, monkeypatch, cmd, env_opt_out, slot_up):
     home, scandir = tmp_path / "data", tmp_path / "scan"
-    home.mkdir()
+    for name, standalone in (("coder", False), ("solo", True)):
+        profile = home / "profiles" / name
+        profile.mkdir(parents=True)
+        (profile / "SOUL.md").write_text("x", encoding="utf-8")
+        if standalone:
+            (profile / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
     (home / "gateway_state.json").write_text(
         json.dumps({"gateway_state": "stopped", "desired_state": "running"}), encoding="utf-8")
     if env_opt_out:

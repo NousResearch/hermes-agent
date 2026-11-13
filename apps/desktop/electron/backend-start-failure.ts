@@ -16,9 +16,10 @@
  * whole app is quit and relaunched: reconnect, "Sign out & sign in" (which only
  * reloads the renderer), and the wake-recovery revalidate path all keep hitting
  * the same stale error. Not latching lets the very next connect re-mint a
- * ticket against the (now refreshed) session and self-heal.
+ * ticket against the (now refreshed) session and self-heal. Who may re-drive
+ * it, and when, is the retry window's job (createRemoteBootRetryWindow).
  *
- * Extracted as a dependency-free pure predicate so the invariant is testable
+ * Extracted as dependency-free predicates so the invariants are testable
  * without booting Electron or reading main.ts source text.
  */
 
@@ -185,6 +186,8 @@ export function isSshClientFailedBootFailure(error: unknown): boolean {
  * Whether a failed remote boot should latch because the local ssh client
  * itself failed. Same rationale as the credential latch: unlatched, every
  * api call re-drives boot and the overlay never holds still (#103288).
+ * Released by reset/repair/apply-config; a changed desktop.ssh_path needs an
+ * app restart.
  */
 export function shouldLatchSshClientFailure(context: RemoteBootRetryContext): boolean {
   return context.attemptedRemote && context.isSshClientFailed === true
@@ -238,6 +241,111 @@ export function isRetryableRemoteBootFailure(context: RemoteBootRetryContext): b
     context.isSshAuthFailed !== true &&
     context.isSshClientFailed !== true
   )
+}
+
+export interface PrimaryBootFailureContext {
+  attemptedRemote: boolean
+  /** isReauthRequiredError(error): a CONFIRMED 401/403, judged by the caller. */
+  isReauth: boolean
+}
+
+export interface PrimaryBootFailureVerdict {
+  /** Latch into `backendStartFailure` until reset/repair/apply-config. */
+  latchStart: boolean
+  /** Latch into the reauth latch until reset/repair/apply-config or a confirmed sign-in. */
+  latchReauth: boolean
+  /** Transient remote failure: the renderer may retry it, and it opens the retry window. */
+  retryable: boolean
+}
+
+/**
+ * What a failed primary boot does to every later start, composed from the
+ * predicates above. Local failures latch, and so do remote ones that cannot
+ * self-heal: a changed host key, rejected SSH credentials, a broken local ssh
+ * client, a confirmed reauth rejection. Every other remote failure is
+ * transient and stays retryable, never latched.
+ */
+export function classifyPrimaryBootFailure(
+  error: unknown,
+  context: PrimaryBootFailureContext
+): PrimaryBootFailureVerdict {
+  const remote: RemoteBootRetryContext = {
+    attemptedRemote: context.attemptedRemote,
+    isReauth: context.isReauth,
+    isHostKeyChanged: isHostKeyChangedBootFailure(error),
+    isSshAuthFailed: isSshAuthFailedBootFailure(error),
+    isSshClientFailed: isSshClientFailedBootFailure(error)
+  }
+
+  return {
+    latchStart:
+      shouldLatchBackendStartFailure(context) ||
+      shouldLatchHostKeyChangedFailure(remote) ||
+      shouldLatchSshAuthFailure(remote) ||
+      shouldLatchSshClientFailure(remote),
+    latchReauth: shouldLatchRemoteReauthFailure(remote),
+    retryable: isRetryableRemoteBootFailure(remote)
+  }
+}
+
+/** How long the first transient remote failure answers background callers. */
+export const REMOTE_BOOT_RETRY_BASE_MS = 5_000
+/** The longest window: a remote that stays down is re-dialed this often at most. */
+export const REMOTE_BOOT_RETRY_CAP_MS = 300_000
+
+export interface RemoteBootRetryWindow {
+  /** Open the window after a TRANSIENT remote boot failure (isRetryableRemoteBootFailure). */
+  fail(error: Error): void
+  /**
+   * The failure a caller gets back while the window is open, or null when it
+   * re-drives the boot. `redial` marks the boot's owner, which always does.
+   */
+  deferredFailure(caller: { redial: boolean }): Error | null
+  /** Close it: the remote answered, or a recovery path reset the connection. */
+  clear(): void
+}
+
+/**
+ * Retry window for a primary boot whose REMOTE dial failed transiently.
+ *
+ * Those failures never latch (see shouldLatchBackendStartFailure), so before
+ * this window every caller that wanted the primary re-drove the whole boot:
+ * each background poll (REST proxies, roster sweeps, on-demand socket
+ * reconnects) re-ran resolve + ticket mint and re-emitted boot progress. The
+ * renderer's bounded retry was bypassed and its overlay flickered (#123225);
+ * one four-day outage logged 32k boot failures.
+ *
+ * Inside the window, a caller that does not own the boot gets the failure
+ * back without a re-drive. The renderer's boot hook owns the retry pacing
+ * (bounded cold-boot retry, soft switch, reconnect loop) and dials with
+ * `redial`, so its attempts stay real. Each consecutive failure doubles the
+ * window up to the cap. It is a window, not a latch: once it closes the next
+ * caller re-drives, and a successful dial or any connection reset closes it.
+ */
+export function createRemoteBootRetryWindow({
+  baseMs = REMOTE_BOOT_RETRY_BASE_MS,
+  capMs = REMOTE_BOOT_RETRY_CAP_MS,
+  now = Date.now
+}: { baseMs?: number; capMs?: number; now?: () => number } = {}): RemoteBootRetryWindow {
+  let failure: Error | null = null
+  let failures = 0
+  let closesAt = 0
+
+  return {
+    fail(error) {
+      failure = error
+      failures += 1
+      closesAt = now() + Math.min(capMs, baseMs * 2 ** (failures - 1))
+    },
+    deferredFailure({ redial }) {
+      return redial || now() >= closesAt ? null : failure
+    },
+    clear() {
+      failure = null
+      failures = 0
+      closesAt = 0
+    }
+  }
 }
 
 export interface BootProgressUpdateLike {

@@ -1,6 +1,6 @@
 name: hostd-client
 repo: https://github.com/violetSoftware/hermes-hostd-plugin
-sha: 13df9552c44a150e3b602851a1d51a62ea7f2700
+sha: 9aacb5a08e8098f6e5bf69375ae84ac72b9f6b21
 version: "0.1.0rc2"
 title: Hermes Hostd
 description: Request command execution from a separately managed hermes-hostd daemon over HTTP or VSOCK, with host-side approval.
@@ -18,6 +18,6 @@ known_issues:
   - HTTP encryption requires an externally managed secure tunnel or TLS proxy protecting every hop; VSOCK has no native encryption.
 capabilities:
   provides_tools: [run_on_host]
-  provides_hooks: []
+  provides_hooks: [pre_tool_call]
   provides_middleware: []
   requires_env: [HOSTD_AUTH_TOKEN]

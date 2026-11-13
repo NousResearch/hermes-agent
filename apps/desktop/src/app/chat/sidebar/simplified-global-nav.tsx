@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 import { useLocation } from 'react-router'
 
-import wing from '@/assets/catalog-wing.svg'
 import figmaRobot from '@/assets/figma-agent-robot.svg'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -108,7 +107,7 @@ interface RailButtonProps {
   panel: null | PanelToggle
 }
 
-/** One rail destination: a 40px chrome button whose tooltip names it, or, while it is open with a
+/** One rail destination: a 30px chrome button whose tooltip names it, or, while it is open with a
  *  panel, names what a click does to that panel. The open destination keeps its selection either way. */
 function RailButton({ active, alert, area, children, label, metric, onNavigate, panel }: RailButtonProps) {
   return (
@@ -156,8 +155,9 @@ function useRoutinesAlert(): string | undefined {
   return count ? copy.railAttention(count) : undefined
 }
 
-/** The redesign's 60px global rail (Figma 906:19409): the brand badge on top, destinations under
- *  it, status and settings at the bottom. Only the redesigned shell mounts it. */
+/** The redesign's 60px global rail (rail 16292:15233): destinations from the top, status and
+ *  settings at its foot. The brand moved to the chat sidebar's wordmark; Figma hides the rail's badge
+ *  layer and draws the window's traffic lights in its place. Only the redesigned shell mounts it. */
 export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavProps) {
   const { t } = useI18n()
   const { pathname, search } = useLocation()
@@ -215,7 +215,8 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
       route: ARTIFACTS_ROUTE,
       active: view === 'artifacts'
     },
-    { id: 'cron', label: t.cron.title, icon: 'watch', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
+    // Figma's Routines glyph is a clock (16292:15264).
+    { id: 'cron', label: t.cron.title, icon: 'clock', area: 'cron', route: CRON_ROUTE, active: view === 'cron' }
   ] as const
 
   const coreItem = ({ icon, ...item }: (typeof anchored)[number] | (typeof movable)[number]) => ({
@@ -258,10 +259,6 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
 
   return (
     <nav aria-label={t.updates.appName} className="portal-rail w-(--global-nav-width) shrink-0" data-slot="global-nav">
-      {/* The brand mark heads the rail on every destination; the window drags by it, as by the band. */}
-      <span aria-hidden className="portal-rail-badge" data-slot="rail-badge">
-        <img alt="" src={wing} />
-      </span>
       <div className="portal-rail-group min-h-0 flex-1 overflow-y-auto">
         {items.map(item => {
           const button = (
@@ -301,7 +298,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
           )
         })}
       </div>
-      <div className="portal-rail-group">
+      <div className="portal-rail-group portal-rail-foot">
         {footer}
         {/* Settings opens its page directly: the page's own column is the menu. */}
         <RailButton

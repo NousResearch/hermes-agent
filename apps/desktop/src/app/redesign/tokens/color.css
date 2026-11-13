@@ -118,6 +118,26 @@
   --portal-surface-chrome: var(--portal-raw-ink-2);
   --portal-surface-chrome-hover: var(--portal-raw-ink-5);
   --portal-surface-chrome-pressed: var(--portal-raw-ink-10);
+  /* The global rail's buttons (ico 16292:15253): a navy tile, white .05 / black .60 / blue .20, the
+     glyph at .4; the open destination white .10 / black .60 / blue .40 (16292:15245) with its glyph in
+     full ink. Hover takes the step between them. */
+  --portal-rail-fill: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 5%,
+    color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent))
+  );
+  --portal-rail-fill-hover: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 8%,
+    color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 30%, transparent))
+  );
+  --portal-rail-fill-selected: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 10%,
+    color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent))
+  );
+  --portal-rail-ink: var(--portal-raw-ink-40);
+  --portal-rail-ink-selected: var(--portal-text-primary);
   /* Secondary and icon buttons (877:4189) at rest, hover and pressed: one ink step each. */
   --portal-surface-control: var(--portal-raw-ink-5);
   --portal-surface-control-hover: var(--portal-raw-ink-8);
@@ -222,6 +242,12 @@
   --portal-sidebar-background: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--portal-surface-canvas));
   --portal-page-background: color-mix(in srgb, var(--portal-raw-pure-white) 80%, var(--portal-surface-canvas));
   --portal-sidebar-panel-background: color-mix(in srgb, var(--portal-raw-pure-white) 98%, transparent);
+  /* Light's rail (16292:24841): white .20 tiles, the glyph black .80 at .6. Light draws no open
+     destination, so it takes one ink step over the hover's. */
+  --portal-rail-fill: color-mix(in srgb, var(--portal-raw-pure-white) 20%, transparent);
+  --portal-rail-fill-hover: var(--portal-raw-ink-5);
+  --portal-rail-fill-selected: var(--portal-raw-ink-10);
+  --portal-rail-ink: color-mix(in srgb, var(--ui-base) 48%, transparent);
   --portal-surface-control: var(--portal-raw-ink-3);
   --portal-surface-control-hover: var(--portal-raw-ink-5);
   --portal-surface-control-pressed: var(--portal-raw-ink-8);

@@ -292,7 +292,7 @@ accent-tinted greys (the colour roles below). Global settings cards and agent se
 the one card role. Settings-navigation selection is the neutral selection role;
 sub-pages reveal under the active row, without per-row carets. Settings pages compose
 `SettingsOverview` / `SettingsCard` / `SettingsDisclosure` (`settings-card.tsx`), which fall back to
-the classic wrapper. Brand-blue selection remains on the global rail. Agent-management navigation
+the classic wrapper. The global rail marks its open destination with a brighter navy tile. Agent-management navigation
 tiles stay translucent; agent rows and the overview header use the Figma robot with the real
 owner's color.
 The global rail tracks the owning agent even inside its settings editor.
@@ -302,9 +302,11 @@ in both LTR and RTL layouts.
 Checked switches use the brand-blue track and light thumb across settings
 and the capability catalog; unchecked tracks are neutral 14% fills.
 
-The brand badge heads the global rail, at the window top on every destination (20px down, 40×56;
-below the band where macOS traffic lights sit in the rail column, `data-portal-window-lights`), over
-40px destinations on a 55px pitch; the rail never moves between states. The redesigned chat sidebar
+The global rail (rail 16292:15233) carries no brand badge: Figma hides that layer and draws the
+window's traffic lights at the top of the column, so the destinations start 90px down on every host
+(clear of macOS lights), 30px navy tiles with 16px glyphs at .4 ink on a 50px pitch, the open one a
+brighter tile with its glyph in full ink; the foot (usage, Settings) carries 20px glyphs 40px off the
+floor, and Routines draws a clock. The rail never moves between states and has no edge of its own. The redesigned chat sidebar
 (340px, "Prod - Desktop" Panel 16292:15497) opens with its header (Top 16292:15498): the "Hermes"
 wordmark in Oswald Light 30 over a mono "// NOUS RESEARCH" caption (brand marks, never translated),
 and at its end a 30px search button. Search lives behind that button: it brings out a rimmed field
@@ -353,8 +355,8 @@ is anchored to the stage's leading edge with CSS anchor positioning, so it track
 sash drag in the same frame.
 The global Agents icon uses the Figma robot silhouette tinted by `currentColor`,
 sharing its peers' inactive, hover, and selected tones in both light and dark themes;
-rail destinations rest at .8 ink and the open one wears the brand selection with a
-60% brand ring.
+rail destinations rest at .4 ink on navy tiles and the open one takes the brighter tile with its glyph in
+full ink.
 The Hermes Portal skin supplies only the seeds the roles read (`--ui-base`, `--ui-bg-chrome`, the
 floating `--ui-bg-elevated`, the canvas `--portal-skin-window`: navy `#0a0a1a` / `#07071a` /
 `#0d0d1e` on dark); the shell's panels derive from them. Custom theme choices and classic styling
@@ -656,6 +658,11 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-surface-chrome` | `var(--portal-raw-ink-2)` | ″ | 30px chrome buttons and the session pill (906:19469): rest, hover, pressed. |
 | `--portal-surface-chrome-hover` | `var(--portal-raw-ink-5)` | ″ |  |
 | `--portal-surface-chrome-pressed` | `var(--portal-raw-ink-10)` | ″ |  |
+| `--portal-rail-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 5%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 20%, transparent)) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 20%, transparent)` | The global rail's buttons (ico 16292:15253): a navy tile, white .05 / black .60 / blue .20, the glyph at .4; the open destination white .10 / black .60 / blue .40 (16292:15245) with its glyph in full ink. Hover takes the step between them. |
+| `--portal-rail-fill-hover` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 30%, transparent)) )` | `var(--portal-raw-ink-5)` |  |
+| `--portal-rail-fill-selected` | `color-mix( in srgb, var(--portal-raw-pure-white) 10%, color-mix(in srgb, var(--portal-raw-black) 60%, color-mix(in srgb, var(--portal-raw-blue) 40%, transparent)) )` | `var(--portal-raw-ink-10)` |  |
+| `--portal-rail-ink` | `var(--portal-raw-ink-40)` | `color-mix(in srgb, var(--ui-base) 48%, transparent)` |  |
+| `--portal-rail-ink-selected` | `var(--portal-text-primary)` | ″ |  |
 | `--portal-surface-control` | `var(--portal-raw-ink-5)` | `var(--portal-raw-ink-3)` | Secondary and icon buttons (877:4189) at rest, hover and pressed: one ink step each. |
 | `--portal-surface-control-hover` | `var(--portal-raw-ink-8)` | `var(--portal-raw-ink-5)` |  |
 | `--portal-surface-control-pressed` | `var(--portal-raw-ink-10)` | `var(--portal-raw-ink-8)` |  |
@@ -733,14 +740,13 @@ The tables below are generated from the CSS; do not edit them by hand.
 |---|---|---|---|
 | `--portal-rail-width` | `3.75rem` | ″ | The global rail and the developer rail (1036:7202). |
 | `--portal-rail-reserve` | `0px` | ″ | What the rail takes from the layout: its width, none on compact, where it rides the sheet. |
-| `--portal-rail-top` | `1.25rem` | ″ | The global rail (906:19409): the brand badge at its top (40×56, 906:19687), 20px over the destinations, then 40px buttons with 20px glyphs on a 55px pitch (15px apart). A touch target never shrinks under the coarse pointer's floor. Where native window controls sit in the rail column (macOS traffic lights, `data-portal-window-lights`), the rail starts below the band instead of at Figma's 20px, so the badge never sits under them. |
-| `--portal-rail-badge-width` | `2.5rem` | ″ |  |
-| `--portal-rail-badge-height` | `3.5rem` | ″ |  |
-| `--portal-rail-badge-gap` | `1.25rem` | ″ |  |
-| `--portal-rail-button` | `max(2.5rem, var(--portal-row-chrome))` | ″ |  |
-| `--portal-rail-glyph` | `1.25rem` | ″ |  |
-| `--portal-rail-gap` | `0.9375rem` | ″ |  |
-| `--portal-rail-popover-offset` | `calc( (var(--portal-rail-width) - var(--portal-rail-button)) / 2 + var(--portal-space-tight) )` | ″ | A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size (40px, 44px on touch): the distance from the button's end to the rail's, plus that gap. |
+| `--portal-rail-top` | `5.625rem` | ″ | The global rail ("Prod - Desktop" rail 16292:15233): no brand badge (its layer is hidden in every row), the destinations from 90px down on every host, clear of macOS traffic lights in the column; 30px buttons (the chrome row, the touch target on a coarse pointer) with 16px glyphs, 20px apart; the foot's buttons carry 20px glyphs, 40px off the window floor. |
+| `--portal-rail-button` | `var(--portal-row-chrome)` | ″ |  |
+| `--portal-rail-glyph` | `1rem` | ″ |  |
+| `--portal-rail-glyph-foot` | `1.25rem` | ″ |  |
+| `--portal-rail-gap` | `1.25rem` | ″ |  |
+| `--portal-rail-bottom` | `2.5rem` | ″ |  |
+| `--portal-rail-popover-offset` | `calc( (var(--portal-rail-width) - var(--portal-rail-button)) / 2 + var(--portal-space-tight) )` | ″ | A rail menu or popover opens one tight gap past the rail's edge, whatever the rail button's size (30px, 44px on touch): the distance from the button's end to the rail's, plus that gap. |
 | `--portal-panel-reveal-width` | `2.75rem` | ″ | The way back to a folded sidebar or page panel in Simple mode (1061:7816): a 44×40 floating button at the stage's top-leading corner, clear of the band. Advanced keeps it in the band. |
 | `--portal-panel-reveal-height` | `2.5rem` | ″ |  |
 | `--portal-panel-reveal-inset` | `1rem` | ″ |  |

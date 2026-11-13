@@ -183,22 +183,6 @@ describe('portalBandLeadingInset', () => {
     stop()
     $connection.set(null)
   })
-
-  // The rail's brand badge sits at the window top (906:19409) unless native controls are there.
-  it('marks the root while native window controls sit in the rail column', () => {
-    const root = document.createElement('html')
-    const lights = () => root.hasAttribute('data-portal-window-lights')
-    const stop = installTitlebarBandProperty(root)
-
-    $connection.set({ isFullscreen: false, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
-    expect(lights()).toBe(true)
-    $connection.set({ isFullscreen: true, windowButtonPosition: { x: 23, y: 23 } } as HermesConnection)
-    expect(lights()).toBe(false)
-    $connection.set({ isFullscreen: false, windowButtonPosition: null } as HermesConnection)
-    expect(lights()).toBe(false)
-    stop()
-    $connection.set(null)
-  })
 })
 
 describe('windowLightsInRail', () => {

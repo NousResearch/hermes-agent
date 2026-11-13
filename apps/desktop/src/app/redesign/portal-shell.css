@@ -233,44 +233,42 @@
   padding-block: 1.0625rem 1.25rem;
 }
 
-/* The global rail runs from the window top: the brand badge at --portal-rail-top (20px, or under the
-   band where native window controls sit in the column), the destinations 20px under it, 40px buttons
-   15px apart. It reads the same on every destination and in every sidebar state: nothing in it moves. */
+/* The global rail runs from the window top, its destinations at --portal-rail-top (90px, clear of
+   native traffic lights in the column) on a 50px pitch, its foot 40px off the floor (16292:15233). It
+   reads the same on every destination and in every sidebar state: nothing in it moves. It sits on the
+   canvas with no edge of its own: the workspace frame beside it carries the separation. */
 :root[data-shell='portal'] [data-slot='global-nav'].portal-rail {
   justify-content: flex-start;
   gap: var(--portal-rail-gap);
-  padding-block-start: var(--portal-rail-top);
-}
-
-:root[data-shell='portal'] .portal-rail-badge {
-  display: grid;
-  flex-shrink: 0;
-  place-items: center;
-  inline-size: var(--portal-rail-badge-width);
-  block-size: var(--portal-rail-badge-height);
-  margin-block-end: calc(var(--portal-rail-badge-gap) - var(--portal-rail-gap));
-  overflow: hidden;
-  border-radius: var(--portal-radius-surface);
-  background: var(--portal-brand-fill);
-  -webkit-app-region: drag;
-}
-
-/* The wing at Figma's crop (906:19688): 60% of the badge's width, tilted 15°. */
-:root[data-shell='portal'] .portal-rail-badge img {
-  inline-size: 60%;
-  block-size: auto;
-  transform: rotate(15deg);
+  padding-block: var(--portal-rail-top) var(--portal-rail-bottom);
 }
 
 :root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button {
   inline-size: var(--portal-rail-button);
   block-size: var(--portal-rail-button);
-  /* A 40px button takes the next radius step (1089:7985). */
-  border-radius: var(--portal-radius-card);
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-rail-fill);
+  color: var(--portal-rail-ink);
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:is(:hover, [data-state='open']):not(:disabled) {
+  background-color: var(--portal-rail-fill-hover);
+  color: var(--ui-text-secondary);
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:is([aria-current='page'], [aria-pressed='true']) {
+  background-color: var(--portal-rail-fill-selected);
+  box-shadow: none;
+  color: var(--portal-rail-ink-selected);
 }
 
 :root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button .codicon[class*='codicon-'] {
   font-size: var(--portal-rail-glyph);
+}
+
+/* The foot's destinations draw their glyphs a step larger (bell, user: 16292:15274). */
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-rail-foot .portal-chrome-button .codicon[class*='codicon-'] {
+  font-size: var(--portal-rail-glyph-foot);
 }
 
 /* A destination that needs the user (Routines with a failed routine, Figma 1081:29422): the error
@@ -281,10 +279,10 @@
 
 :root[data-shell='portal'] [data-slot='rail-alert'] {
   position: absolute;
-  inset-block-start: 0.4375rem;
-  inset-inline-end: 0.4375rem;
-  width: 0.4375rem;
-  height: 0.4375rem;
+  inset-block-start: 0.1875rem;
+  inset-inline-end: 0.1875rem;
+  width: 0.375rem;
+  height: 0.375rem;
   border-radius: var(--portal-radius-round);
   background: var(--portal-status-error-ink);
   box-shadow: 0 0 0 2px var(--portal-surface-canvas);
@@ -296,9 +294,8 @@
   block-size: calc(var(--portal-rail-glyph) * 1.125);
 }
 
-/* Rail destinations rest at .8 ink (895/856 draw them at full ink, 906 at .4: .8 keeps the open
-   destination leading). */
-:root[data-shell='portal'] .portal-rail .portal-chrome-button:not([aria-current='page'], [aria-pressed='true']) {
+/* The developer rail's destinations rest at .8 ink. */
+:root[data-shell='portal'] .portal-rail:not([data-slot='global-nav']) .portal-chrome-button:not([aria-current='page'], [aria-pressed='true']) {
   color: color-mix(in srgb, var(--ui-base) 80%, transparent);
 }
 
@@ -307,6 +304,13 @@
   flex-direction: column;
   align-items: center;
   gap: 0.9375rem;
+}
+
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-rail-group {
+  gap: var(--portal-rail-gap);
+}
+
+:root[data-shell='portal'] .portal-rail-group {
   /* Room for the focus outline inside the scroll box. */
   padding: 0.1875rem;
   margin: -0.1875rem;
@@ -325,9 +329,10 @@
     scrollbar-width: none;
   }
 
+  /* The destinations rise to the band's foot, still clear of native traffic lights. */
   :root[data-shell='portal'] [data-slot='global-nav'].portal-rail {
     gap: var(--portal-space-tight);
-    padding-block-start: max(var(--portal-rail-top), var(--portal-space-compact));
+    padding-block: var(--titlebar-band-height) var(--portal-space-compact);
   }
 
   :root[data-shell='portal'] .portal-rail-group {

@@ -1,0 +1,20 @@
+name: hermes-borealis
+title: Borealis
+repo: https://github.com/Adolanium/hermes-borealis
+sha: 76cf80883cff8dcca1963eb7eb76ed666c641570
+description: "A Hermes Desktop theme with a live dithered landscape behind the window: aurora curtains over mountain ridges and a mirroring lake by night, a two-ink pink and teal dawn by day. Install once, then switch with /skin borealis. Disclosure — theme-only desktop plugin: it registers one theme through the plugin SDK, and its stylesheet restyles parts of Desktop's own UI (tabs, composer, sidebar edge, wordmark colour) and clears the window's field backgrounds only while the theme is active, and the scene fades back behind text. While active it also adds one canvas behind the app and draws the scene on it with WebGL, watches the root element's theme, mode and accent attributes to show, recolour or remove that canvas, and reads the pointer's horizontal position to slide the ridges. No images or fonts; no network requests, no agent tools or hooks."
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/Adolanium/hermes-borealis#readme
+version: "0.1.1"
+image: https://raw.githubusercontent.com/Adolanium/hermes-borealis/76cf80883cff8dcca1963eb7eb76ed666c641570/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-borealis/76cf80883cff8dcca1963eb7eb76ed666c641570/media/shots/night.png
+  - https://raw.githubusercontent.com/Adolanium/hermes-borealis/76cf80883cff8dcca1963eb7eb76ed666c641570/media/shots/day.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

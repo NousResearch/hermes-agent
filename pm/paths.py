@@ -52,11 +52,18 @@ def partials_root() -> Path:
     (WindowsApps/agent-payload), and partials are mutable state the
     downloader writes continuously, so they must land somewhere writable
     on every install kind: ``%LOCALAPPDATA%\\hermes\\cache\\partials`` on
-    Windows, ``~/.hermes/cache/partials`` on POSIX.
+    Windows, ``~/.hermes/cache/partials`` on POSIX. MSIX installs use the
+    package's physical LocalCache so uninstall owns these bytes as well.
     """
-    from hermes_constants import get_default_hermes_root
+    # The tool-only bootstrap stage carries just PM and hermes_constants.
+    # Store packages carry the complete application and a sealed manifest.
+    if not (store_root().parent / "manifest.json").is_file():
+        from hermes_constants import get_default_hermes_root
 
-    return get_default_hermes_root() / "cache" / "partials"
+        return get_default_hermes_root() / "cache" / "partials"
+    from hermes_cache import managed_cache_dir
+
+    return managed_cache_dir("cache/partials")
 
 
 def facts_path() -> Path:
@@ -66,9 +73,9 @@ def facts_path() -> Path:
 def writable_store_root() -> Path:
     if not (store_root().parent / "manifest.json").is_file():
         return store_root()
-    from hermes_constants import get_default_hermes_root
+    from hermes_cache import managed_cache_dir
 
-    return get_default_hermes_root() / "tools"
+    return managed_cache_dir("tools")
 
 
 def runtime_facts_path() -> Path:

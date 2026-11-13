@@ -39,6 +39,7 @@ from gateway.session_context import scoped_turn_actor
 from gateway.session_transcript import TranscriptReadError
 from gateway.run_turn_bubble_cleanup import register_bubble_cleanup, settle_turn_senders
 from gateway.turn_context import TurnContext
+from gateway.turn_timing import start_handler_timing, finish_agent_timing
 from gateway.turn_lease import DEFAULT_LEASE_WAIT, TurnLeaseTimeoutError
 from hermes_constants import get_hermes_home_override
 from pathlib import Path
@@ -188,15 +189,14 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        start_handler_timing(event)
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", (event.text or "")[:80].replace("\n", " "),
-            getattr(event, "reply_to_message_id", None),
-            (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "),
-        )
+            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r", _platform_name,
+            source.user_name or source.user_id or "unknown", source.chat_id or "unknown",
+            (event.text or "")[:80].replace("\n", " "), getattr(event, "reply_to_message_id", None),
+            (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " "))
 
         from gateway.run_turn_setup_guard import run_preagent_setup
         setup, reply = await run_preagent_setup(self, event, source, _quick_key, run_generation)
@@ -212,7 +212,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
             _run_start_session_id = session_entry.session_id
-            _turn_started_monotonic = time.monotonic()
+            _turn_started_monotonic = event._turn_timing.agent_start = time.monotonic()
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
@@ -234,7 +234,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
-            _turn_seconds = time.monotonic() - _turn_started_monotonic
+            _turn_seconds = finish_agent_timing(event, agent_result, time.monotonic()) - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that
@@ -259,7 +259,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
-                reply_expected=event.reply_expected,
+                reply_expected=event.reply_expected, turn_timing=event._turn_timing, message_timestamp=getattr(event, "timestamp", None),
             )
             if _intentional_silence:
                 self._hmwa_pause_typing_after_silence(event, source)

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { test } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -8,6 +9,8 @@ import os from 'node:os'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { recordNativeInputs } from './prepared-native-deps.mjs'
 import { productOutput } from '../../../scripts/build/frontend-common.mjs'
+
+const require = createRequire(import.meta.url)
 
 test('validate-only admits real prepared inputs without launching tools and rejects unsafe arguments', async () => {
   const source = path.resolve(import.meta.dirname, '../../..')
@@ -102,4 +105,22 @@ test('source builds hand every child the builder heap without rewriting inherite
   const quoted = '--require "/tmp/sp  ace/p.cjs"'
   assert.ok(builderNodeOptions(quoted).startsWith(quoted))
   assert.match(builderNodeOptions('--max-old-space-size=16384 --max-old-space-size=4096'), heap)
+})
+
+test('linux source builds default to the deb alongside the AppImage', () => {
+  // #86987: the Ubuntu .deb is a first-class artifact, not an opt-in flag —
+  // a bare linux invocation must prepare both formats, and the packaged
+  // config's target list must agree with the prepare defaults.
+  const calls = []
+  const spawn = (_node, args) => { calls.push(args); return { status: 0 } }
+  assert.equal(runElectronBuilder(['--linux'], { spawn }), 0)
+  const prepare = calls.find(args => args[0].endsWith('prepare-packaging-tools.mjs'))
+  assert.ok(prepare)
+  const formats = prepare.reduce((out, arg, index) => {
+    if (arg === '--format') out.push(prepare[index + 1])
+    return out
+  }, [])
+  assert.deepEqual(formats, ['AppImage', 'deb'])
+  const config = require(path.join(import.meta.dirname, '../electron-builder.config.cjs'))
+  assert.deepEqual(config.linux.target, ['AppImage', 'deb'])
 })

@@ -139,6 +139,7 @@ class GatewayRuntimeInitMixin:
         # AIAgent per session preserves prompt caching (fresh agent per message ~10x cost on Anthropic).
         # Value: (AIAgent, config_signature); LRU cap in _enforce_agent_cache_cap, TTL in expiry watcher.
         self._agent_cache: OrderedDict[str, tuple] = OrderedDict()
+        self._agent_cache_sig_parts: dict[str, dict[str, str]] = {}
         self._agent_cache_lock = threading.Lock()
         # Launch-time identity of the profile that owns ``self.adapters``; ``_authorization_adapter``
         # compares against this rather than the per-turn ``_active_profile_name()``. A multiplex

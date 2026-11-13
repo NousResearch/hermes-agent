@@ -1,0 +1,40 @@
+name: sieve
+repo: https://github.com/VGFreakXBL/hermes-sieve
+sha: 5da94237700515df123773dc542eb5cd7e394525
+subdir: ""
+title: SIEVE
+description: 'User-owned notification boundary for Hermes Agent. Event classes route through tiers T0 to T5 under quiet hours. Routine alerts hold for a digest. Urgent ones escalate, and the message names both the requested tier and the arm that actually ran.'
+maintainer: VGFreakXBL
+tier: community
+category: automation
+version: "0.1.0"
+docs_url: https://github.com/VGFreakXBL/hermes-sieve
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/VGFreakXBL/hermes-sieve/5da94237700515df123773dc542eb5cd7e394525/docs/screenshots/sieve-matrix-pane.png
+known_issues:
+  - 'Context slots such as meeting or sleeping are set with /sieve context. This build does not read location or calendar.'
+  - 'T4 is a 60-second timer. T5 is an alarm one minute out. They share one tone. T5 is top priority, not a siren.'
+  - 'Closed-app wake is not available in the current official iOS beta. The phone arm needs the Hermes app open and synced to this profile.'
+  - 'A messaging push is an ordinary notification. Focus can silence it, and it does not ring. It is a weaker interrupt than an alarm.'
+  - 'The desktop status poll and /sieve probe run tailscale status --json. A missing binary, a timeout, and the first reading are not an outage. That probe does not run when Desktop is closed or the Mac is asleep.'
+  - 'The Tailscale/gateway watchdog (scripts/watch.py) is opt-in and does not start itself. Load it once from a terminal with launchctl bootstrap. It cannot see an outage while the Mac is asleep.'
+  - 'The Desktop pane cannot write the phone. Desktop chat may refuse /sieve with permission_denied before the plugin starts. Run /sieve doctor in Discord or Telegram. That result is kept and shown on the pane.'
+  - 'A probe gap (Mac asleep, or the watcher not running) means the link state during that gap is unknown. A drop and recovery across a sleep is not observed.'
+  - 'One gallery screenshot (the matrix pane). More follow in a later SHA bump.'
+capabilities:
+  provides_tools:
+    - sieve_ping
+  provides_hooks:
+    - pre_gateway_dispatch
+    - on_human_input_request
+    - on_human_input_resolved
+    - pre_approval_request
+    - post_approval_response
+    - kanban_task_blocked
+    - subagent_stop
+    - on_session_end
+    - on_interim_message
+  provides_middleware: []
+  requires_env: []

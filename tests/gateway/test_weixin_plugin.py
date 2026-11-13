@@ -110,6 +110,23 @@ class TestWeixinCopyWrapKeepsRenderedUnitsIntact:
 
 
 
+    def test_cjk_prose_with_latin_terms_stays_one_paragraph(self):
+        adapter = _make_adapter()
+        content = (
+            "这段消息是发给手机端用户的：在 Open Compute Project 测试中，我们确认 "
+            "RDMA Verbs API 和 Linux network namespace 的指标可以跨平台对照；"
+            "目前 WeChat iLink AI bubble 会在用户屏幕上自动软换行，任何服务端强制插入的"
+            "换行都会把本来连续的中文段落拆成两个独立的显示区块，"
+            "这意味着读者看起来像是段落结束了，但实际上句子还没有讲完。"
+        )
+        assert len(content) > weixin.WEIXIN_COPY_LINE_WIDTH
+        assert "`" not in content
+
+        # Latin terms are part of the CJK prose, not author paragraph breaks.
+        assert adapter.format_message(content) == content
+
+
+
 class TestWeixinChunking:
 
 

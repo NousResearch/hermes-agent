@@ -439,7 +439,8 @@ def _wrap_copy_line(line: str, width: int) -> list[str]:
     and stranding the punctuation around it, so the injected ``\\n`` (a hard paragraph break
     there) damages the message more than the long line does — the client soft-wraps it.
     """
-    if len(line) <= width or "`" in line:
+    # Native wrapping keeps a CJK-led paragraph intact even around Latin terms.
+    if len(line) <= width or "`" in line or _CJK_CHAR_RE.match(line.lstrip()):
         return [line]
     breaks = [idx for idx, ch in enumerate(line) if ch == " " and not _is_cjk_neighbour(line, idx)]
     if not breaks:

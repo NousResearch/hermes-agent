@@ -264,6 +264,37 @@ def test_sdk_backend_sudo_wrapper_accepting_askpass_keeps_askpass_form(make_back
     assert result["output"].strip() == "rest"
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_sdk_backend_sudo_wrapper_that_exits_cannot_end_the_command(make_backend, tmp_path, backend):
+    """The check runs the wrapper in a subshell: an ``exit`` in it ends only the check."""
+    env, runner = make_backend(backend)
+    wrapper = 'sudo() { if [ "$1" = -A ] && [ "$2" = -V ]; then exit 0; fi; command sudo "$@"; }\n'
+    (tmp_path / "functions.sh").write_text(wrapper, encoding="utf-8")
+    runner.env["BASH_ENV"] = str(tmp_path / "functions.sh")
+    marker = tmp_path / "before"
+    result = env.execute(f"touch {marker}; echo before; sudo id -u && echo authed; cat", stdin_data="rest\n")
+    _wait_gone(runner.temp_dir)
+    assert marker.exists()
+    assert result["returncode"] == 0, result
+    assert result["output"].split() == ["before", str(os.getuid()), "authed", "rest"]
+    assert PW not in result["output"]
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_sdk_backend_sudo_wrapper_that_execs_cannot_end_the_command_early(make_backend, tmp_path, backend):
+    """An ``exec`` wrapper replaces only the check's subshell; the command still runs up to its own
+    sudo, which the wrapper then replaces the shell with, as it does on the stdin form."""
+    env, runner = make_backend(backend)
+    (tmp_path / "functions.sh").write_text('sudo() { exec sudo "$@"; }\n', encoding="utf-8")
+    runner.env["BASH_ENV"] = str(tmp_path / "functions.sh")
+    marker = tmp_path / "before"
+    result = env.execute(f"touch {marker}; echo before; sudo id -u", stdin_data="rest\n")
+    assert marker.exists()
+    assert result["returncode"] == 0, result
+    assert result["output"].split() == ["before", str(os.getuid())]
+    assert PW not in result["output"]
+
+
 def test_local_backend_sudo_rejecting_askpass_falls_back_to_stdin_form(tmp_path, monkeypatch):
     """LocalEnvironment with a probe answer of True: the prologue's own check still falls back."""
     from tools.environments.local import LocalEnvironment
@@ -380,13 +411,13 @@ def test_sdk_backend_prologue_checks_each_distinct_sudo_word_as_written(make_bac
     exec_command, sudo_stdin = env._prepare_command(command)
     assert sudo_stdin == (PW + "\n") * 4  # one line per counted sudo, as for the stdin form
     checks = [line.strip() for line in exec_command.splitlines() if "-A -V" in line]
-    assert checks == [f"SUDO_ASKPASS=/bin/false {word} -A -V </dev/null >/dev/null 2>&1 &&"
+    assert checks == [f"( SUDO_ASKPASS=/bin/false {word} -A -V ) </dev/null >/dev/null 2>&1 &&"
                       for word in ("/opt/x/sudo", "sudo", "'/opt/y z/sudo'")]
 
 
 def test_build_prologue_default_checks_bare_sudo():
     checks = [line.strip() for line in askpass.build_prologue(1, "10").splitlines() if "-A -V" in line]
-    assert checks == ["SUDO_ASKPASS=/bin/false sudo -A -V </dev/null >/dev/null 2>&1 &&"]
+    assert checks == ["( SUDO_ASKPASS=/bin/false sudo -A -V ) </dev/null >/dev/null 2>&1 &&"]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

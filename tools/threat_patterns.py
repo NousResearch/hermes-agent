@@ -19,6 +19,9 @@ MAX_SCAN_CHARS = 65_536
 _FILLER = r"(?:\w+\s+){0,8}"
 # Env var reference ending in a secret-ish suffix (see exfil comment below).
 _SECRET_VAR = r"\$\{?\w*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)S?\b"
+# "forget your original instructions" (#26977); shared with tools/skills_guard.py.
+FORGET_RULES_RE = (r"(?<!n't\s)(?<!not\s)(?<!never\s)\bforget\s+(?:about\s+)?(your|all|any|previous|prior|above|earlier)"
+                   r"\s+(?:\w+\s+){0,3}(instructions|rules|guidelines)\b")
 # Verb prefix for "modify agent config" patterns.
 _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
 # (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
@@ -27,6 +30,9 @@ _PATTERNS: list[tuple[str, str, str]] = [
     (rf'ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
     (r'system\s+prompt\s+override', "sys_prompt_override", "all"),
     (rf'disregard\s+{_FILLER}(your|all|any)\s+{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
+    # The determiner must follow `forget` directly and the filler is short, so docs like "don't forget to
+    # follow all the setup instructions" or "forget your password? follow the reset instructions" pass.
+    (FORGET_RULES_RE, "forget_rules", "all"),
     (rf'act\s+as\s+(if|though)\s+{_FILLER}you\s+{_FILLER}(have\s+no|don\'t\s+have)\s+{_FILLER}(restrictions|limits|rules)', "bypass_restrictions", "all"),
     (r'<!--[^>]{0,512}(?:ignore|override|system|secret|hidden)[^>]{0,512}-->', "html_comment_injection", "all"),
     (r'<\s*div\s+style\s*=\s*["\'][^>]{0,2048}display\s*:\s*none', "hidden_div", "all"),

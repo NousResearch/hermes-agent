@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
+from tools.threat_patterns import FORGET_RULES_RE
 
 
 SCANNER_VERSION = "skills-guard-v14"
@@ -276,6 +277,7 @@ THREAT_PATTERNS = [
      "role_pretend", "high", "injection", "attempts to make the agent assume a different identity"),
     (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)',
      "disregard_rules", "critical", "injection", "instructs agent to disregard its rules"),
+    (FORGET_RULES_RE, "forget_rules", "critical", "injection", "instructs agent to forget its instructions"),
     (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt',
      "leak_system_prompt", "high", "injection", "attempts to extract the system prompt"),
     (r'(when|if)\s+no\s*one\s+is\s+(watching|looking)',

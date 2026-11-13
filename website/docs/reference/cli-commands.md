@@ -55,6 +55,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes egress` | Outbound credential-injection firewall for remote terminal sandboxes (iron-proxy). Disabled by default. See [Egress proxy](../user-guide/egress/iron-proxy.md). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
+| `hermes move` | Carry this profile to another Hermes (a Hermes Cloud agent, a new computer) as a merge that can be undone. See [Move to Hermes Cloud](../user-guide/move-to-hermes-cloud.md). |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
 | `hermes whatsapp-cloud` | Configure the official Meta WhatsApp Business Cloud API adapter (Business account + public webhook required). Distinct from `hermes whatsapp` (Baileys personal-account bridge). |
 | `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
@@ -638,6 +639,28 @@ Common flags for migration subcommands:
 | `--no-backup` | Skip the timestamped backup of `config.yaml` when applying. |
 
 
+
+## `hermes move`
+
+```bash
+hermes move export [-o FILE] [--no-history] [--history-limit N] [--dry-run] [--json]
+hermes move receive FILE [-y] [--json]
+hermes move undo MOVE_ID
+hermes move list
+```
+
+Carries one profile to another Hermes. Hermes Desktop's **Move to Hermes Cloud** runs the same code over `/api/move/*`; these verbs are the scriptable path.
+
+`export` writes a move bundle of the active profile: config with credential-shaped keys and this-computer sections (`terminal`, `browser`, `gateway`, …) removed, `SOUL.md`, memory, your own and hub-installed skills (unchanged built-in skills stay behind), cron job definitions, and the most recent conversations (200 by default). It never includes `.env`, `auth.json` or `state.db`, and any credential value from `.env` or `auth.json` that appears inside a transcript or skill is replaced with `[redacted NAME]`. The manifest lists the names of keys to enter again on the other side.
+
+`receive` previews, then merges a bundle into the active profile while the gateway keeps running. The target's own config values, persona, skills and jobs always win; incoming memory entries are appended without duplicates; conversations are imported under new rows only; cron jobs arrive paused. A snapshot taken first makes `undo` put back every file the move rewrote and remove what it added.
+
+| Flag | Description |
+|------|-------------|
+| `--no-history` | Leave conversations behind. |
+| `--history-limit N` | Most recent conversations to carry (default 200). |
+| `--dry-run` | List what would be carried; write nothing. |
+| `-y`, `--yes` | `receive` without the confirmation prompt. |
 
 ## `hermes codex-runtime`
 

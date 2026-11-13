@@ -16,7 +16,7 @@ known_issues:
   - "Sound effects generation is unavailable outside the author's pinned Stable Audio setup; this release cannot configure another user's wrapper. Imported sound effects remain supported. Music generation is not available yet."
   - "Tested on Linux and Windows Hermes Desktop. macOS has not been tested."
   - "Saved takes and projects cannot be deleted from the app yet."
-  - "Install asks for confirmation: Hermes' security scan rates the package caution because it runs media tools (ffmpeg/ffprobe) on file descriptors and includes subprocess and setup helpers."
+  - "Hermes' security scan rates the package caution because it runs media tools (ffmpeg/ffprobe) on file descriptors and includes subprocess and setup helpers. A catalog install at the reviewed pin accepts that rating without a scan prompt; an install from the bare Git URL asks for confirmation."
 capabilities:
   provides_tools:
     - motion_studio_creation

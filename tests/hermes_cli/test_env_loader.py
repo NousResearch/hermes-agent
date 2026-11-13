@@ -782,6 +782,24 @@ def test_launch_only_warning_is_logged_once_per_profile_home(tmp_path, monkeypat
     assert caplog.text.count("launch-only key HERMES_MANAGED_DIR") == 2
 
 
+def test_config_yaml_launch_only_warning_is_keyed_by_profile_home(tmp_path, monkeypatch, caplog):
+    """The ``config.yaml`` source label is the same string for every home, so only the home part
+    of the once-only key gives a second profile its own warning."""
+    from hermes_cli.env_loader import bridge_config_scalars
+
+    with caplog.at_level("WARNING", logger="hermes_cli.env_loader"):
+        for name in ("a", "b"):
+            home = tmp_path / name
+            home.mkdir()
+            monkeypatch.setenv("HERMES_HOME", str(home))
+            for _ in range(3):
+                target: dict[str, str] = {}
+                bridge_config_scalars({"HERMES_MANAGED_DIR": f"{tmp_path}/untrusted"}, target)
+                assert target == {}
+
+    assert caplog.text.count("config.yaml: ignoring launch-only key HERMES_MANAGED_DIR") == 2
+
+
 def test_reload_env_skips_lowercase_launch_only_key(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

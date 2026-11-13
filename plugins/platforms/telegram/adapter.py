@@ -3373,7 +3373,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         # One chat at a time (held only around the API calls, never across the reconnect wait above), so
         # two concurrent split replies to one chat cannot interleave their chunks (#114396).
         async with self._chat_send_lock(chat_id):
-            return await self._send_text_locked(chat_id, content, reply_to, metadata)
+            result = await self._send_text_locked(chat_id, content, reply_to, metadata)
+        if not result.success and result.error:
+            # Live gateway sends bypass standalone_send; preserve its username-home diagnostic.
+            from plugins.platforms.telegram.standalone import _explain_username_chat_not_found
+            result.error = _explain_username_chat_not_found({"error": result.error}, chat_id)["error"]
+        return result
 
     async def _send_text_locked(
         self, chat_id: str, content: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]]) -> SendResult:

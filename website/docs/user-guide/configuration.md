@@ -1237,6 +1237,21 @@ automatically requeue the message because doing so without durable ordering and
 idempotency could process it twice. Non-positive values use the 5-second
 default.
 
+## Gateway SessionDB Loop Guard
+
+A debugging aid for gateway stalls: a synchronous `state.db` read or write on the
+gateway's event loop blocks every platform for as long as the storage takes. With
+the guard on, the gateway flags such calls:
+
+```yaml
+gateway:
+  sessiondb_loop_guard: warn   # off (default) | warn | raise
+```
+
+`warn` logs each offending call site once with its stack; `raise` makes the call
+fail (useful in development and CI). Off costs nothing: no storage method is
+wrapped. Takes effect on the next gateway start.
+
 ## Gateway Restart Drain
 
 When the gateway stops or restarts (SIGTERM, `hermes update`, `hermes gateway stop`, or the final

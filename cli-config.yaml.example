@@ -1429,6 +1429,11 @@ gateway:
   # isn't running). Explicit per-platform vars like DISCORD_PROXY still apply.
   # trust_env: true
 
+  # Debug guard: flag SessionDB (state.db) calls made on the gateway event loop,
+  # where slow storage blocks every platform. "warn" logs each call site once with
+  # its stack; "raise" fails the call (CI / development). Off by default.
+  # sessiondb_loop_guard: off
+
 # =============================================================================
 # Toolsets
 # =============================================================================

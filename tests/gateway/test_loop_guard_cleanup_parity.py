@@ -48,7 +48,7 @@ def test_startup_watchdog_failure_retains_gateway_logger(monkeypatch, caplog):
     from gateway.run_startup_liveness import start_loop_liveness_guards
     import hermes_state_loop_guard
 
-    monkeypatch.setattr(hermes_state_loop_guard, "install_from_env", lambda: None)
+    monkeypatch.setattr(hermes_state_loop_guard, "install_from_config", lambda cfg: None)
 
     def fail_start(*args, **kwargs):
         raise RuntimeError("synthetic watchdog startup failure")

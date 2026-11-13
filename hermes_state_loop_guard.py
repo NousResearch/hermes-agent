@@ -6,7 +6,7 @@ socket, timer, Stop and liveness probe the gateway serves. Async code reaches th
 worker (``asyncio.to_thread``, ``gateway.session_runtime_workers.tracked_write``) instead.
 
 Off by default and free when off: nothing is wrapped until :func:`install` runs. The gateway installs
-it at startup when ``HERMES_SESSIONDB_LOOP_GUARD`` is set (``warn`` logs each call site once with its
+it at startup when config.yaml sets ``gateway.sessiondb_loop_guard`` (``warn`` logs each call site once with its
 stack; ``raise`` raises :class:`LoopSessionDBCall` at the call). Tests call ``install('record')`` and
 read :func:`recorded`. Only ``SessionDB``'s two storage choke points are wrapped (``_read_ctx`` and
 ``_execute_write``); every public read and write goes through one of them.
@@ -20,7 +20,7 @@ import traceback
 
 logger = logging.getLogger(__name__)
 
-ENV = 'HERMES_SESSIONDB_LOOP_GUARD'
+CONFIG_KEY = 'gateway.sessiondb_loop_guard'
 _MODES = ('warn', 'raise', 'record')
 _RECORD_MAX = 2000
 
@@ -31,7 +31,7 @@ _lock = threading.Lock()
 
 
 class LoopSessionDBCall(RuntimeError):
-    """A SessionDB storage call ran on an event-loop thread (``HERMES_SESSIONDB_LOOP_GUARD=raise``)."""
+    """A SessionDB storage call ran on an event-loop thread (``gateway.sessiondb_loop_guard: raise``)."""
 
 
 def _on_event_loop():
@@ -79,14 +79,11 @@ def _check(kind):
                    ''.join(traceback.format_list(stack[-12:])))
 
 
-def install(mode=None):
-    """Wrap ``SessionDB``'s storage choke points; ``mode`` defaults to the env value. Idempotent:
-    a second call only changes the mode. Returns the active mode (None: not installed)."""
-    mode = mode if mode is not None else (os.environ.get(ENV) or '').strip().lower() or None
-    if mode is None:
-        return _state['mode']
+def install(mode):
+    """Wrap ``SessionDB``'s storage choke points in ``mode``. Idempotent: a second call only
+    changes the mode. Returns the active mode (None: not installed)."""
     if mode not in _MODES:
-        logger.warning('%s=%r is not one of %s; guard not installed', ENV, mode, '/'.join(_MODES))
+        logger.warning('%s=%r is not one of %s; guard not installed', CONFIG_KEY, mode, '/'.join(_MODES))
         return _state['mode']
     from hermes_state import SessionDB
     if not getattr(SessionDB, '_loop_guard_installed', False):
@@ -128,9 +125,15 @@ def clear():
         _warned.clear()
 
 
-def install_from_env():
-    """Gateway startup hook: install when ``HERMES_SESSIONDB_LOOP_GUARD`` is set, else do nothing."""
-    if os.environ.get(ENV):
-        mode = install()
-        if mode is not None:
-            print(f'[gateway] {ENV}={mode}: SessionDB calls on the event loop are flagged', file=sys.stderr)
+def install_from_config(cfg):
+    """Gateway startup hook: install in the mode ``gateway.sessiondb_loop_guard`` names in the raw
+    config.yaml mapping *cfg*; unset, empty, ``off`` or false does nothing."""
+    gateway = cfg.get('gateway') if isinstance(cfg, dict) else None
+    value = gateway.get('sessiondb_loop_guard') if isinstance(gateway, dict) else None
+    mode = str(value).strip().lower() if value not in (None, False) else ''
+    if mode in ('', 'off', 'false', 'none'):
+        return None
+    mode = install(mode)
+    if mode is not None:
+        print(f'[gateway] {CONFIG_KEY}={mode}: SessionDB calls on the event loop are flagged', file=sys.stderr)
+    return mode

@@ -31,13 +31,14 @@ def _env_first_pool_key(provider: str) -> Optional[str]:
     API-key providers served by ``resolve_provider_client``'s generic branch qualify: that branch
     reads the ``.env`` key ahead of the pool, while selecting the provider directly reads the pool
     first. Providers that pick from their pool themselves, own their key handling, derive the
-    endpoint from the key, or are shadowed by a ``providers:`` entry keep the resolver's key."""
+    endpoint from the key, or are shadowed by a ``providers:`` entry keep the resolver's key.
+    The pool is keyed by ``provider`` as given (an alias included), the pool the swap attaches."""
     from agent.auxiliary_client import _EXPLICIT_PROVIDER_BRANCHES, _normalize_aux_provider
     from hermes_cli.auth import _API_KEY_BASE_URL_RESOLVERS, PROVIDER_REGISTRY
     from hermes_cli.runtime_provider import _get_named_custom_provider
     from providers import get_provider_profile
     from providers.base import ProviderProfile
-    name = _normalize_aux_provider(provider)
+    pool_key, name = provider.strip().lower(), _normalize_aux_provider(provider)
     pconfig = PROVIDER_REGISTRY.get(name)
     if (pconfig is None or pconfig.auth_type != "api_key" or name in ("anthropic", "azure-foundry")
             or name in _EXPLICIT_PROVIDER_BRANCHES or name in _API_KEY_BASE_URL_RESOLVERS):
@@ -46,24 +47,26 @@ def _env_first_pool_key(provider: str) -> Optional[str]:
     seams = ("resolve_api_key_secret", "runtime_base_url", "prepare_pool_entry", "seed_pool_credentials")
     if profile is not None and any(getattr(type(profile), s) is not getattr(ProviderProfile, s) for s in seams):
         return None
-    return None if any(_get_named_custom_provider(p) for p in {provider, name}) else name
+    return None if any(_get_named_custom_provider(p) for p in {provider, name}) else pool_key
 
 
-def _select_pool_key(provider: str, model: str, base_url: Optional[str]) -> tuple[Any, Optional[str]]:
+def _select_pool_key(provider: str, model: str, base_url: Optional[str], *, commit: bool) -> tuple[Any, Optional[str]]:
     """``(pool, key)`` of the entry a direct selection of ``provider`` would send, else ``(None, None)``.
     Only a pool entry added for the endpoint the client will use (the entry's ``base_url`` when it
-    names one, else the provider's own) is eligible, so a key never moves to another endpoint."""
+    names one, else the provider's own) is eligible, so a key never moves to another endpoint.
+    ``commit`` selects (rotating and persisting the pool's cursor); otherwise the pool is only peeked."""
     try:
         if (pool_key := _env_first_pool_key(provider)) is None:
             return None, None
+        from agent.auxiliary_client import _normalize_aux_provider
         from agent.credential_pool import credential_pool_entry_serves_endpoint as serves, load_pool
         from hermes_cli.auth import PROVIDER_REGISTRY, _provider_env_base_url, has_usable_secret
-        pconfig = PROVIDER_REGISTRY[pool_key]
+        pconfig = PROVIDER_REGISTRY.get(pool_key) or PROVIDER_REGISTRY[_normalize_aux_provider(provider)]
         url = base_url or _provider_env_base_url(pconfig) or pconfig.inference_base_url
         pool = load_pool(pool_key)
         if not pool.has_credentials() or not any(serves(e, url) for e in pool.entries()):
             return None, None
-        entry = pool.select(model=model or None)
+        entry = (pool.select if commit else pool.peek)(model=model or None)
         key = (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")) if entry else ""
     except Exception as exc:  # health: allow BLE001 -- the resolver's own key still applies
         logger.debug("Fallback to %s: could not pick a pool key: %s", provider, exc)
@@ -75,10 +78,11 @@ def _select_pool_key(provider: str, model: str, base_url: Optional[str]) -> tupl
 
 
 def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str, *,
-                               raw_codex: bool = True) -> RouteEntryClient:
+                               raw_codex: bool = True, commit_pool_pick: bool = False) -> RouteEntryClient:
     """The client :func:`bind_route_entry` binds for ``entry``, shared with ``hermes fallback check
     --live`` so a readiness probe talks to exactly what the swap would. ``raw_codex=False`` returns
-    the chat-completions adapter for Codex/Responses providers."""
+    the chat-completions adapter for Codex/Responses providers. ``commit_pool_pick``: the swap's
+    pool selection; other callers peek and leave the pool's state on disk alone."""
     from agent.auxiliary_client import resolve_provider_client
     from agent.chat_completion_helpers import _fallback_api_mode_hint
     from hermes_cli.fallback_config import resolve_entry_api_key
@@ -90,7 +94,7 @@ def resolve_route_entry_client(entry: dict[str, Any], provider: str, model: str,
     if api_key_hint is None:
         # An entry naming its own key keeps it; otherwise the key comes from the pool the way a
         # direct selection picks it, and the resolver still builds the route.
-        pool, api_key_hint = _select_pool_key(provider, model, base_url_hint)
+        pool, api_key_hint = _select_pool_key(provider, model, base_url_hint, commit=commit_pool_pick)
     api_mode_explicit, api_mode = _fallback_api_mode_hint(entry, provider, base_url_hint)
     # Ollama Cloud: OLLAMA_API_KEY from env when the entry has no key. Host match, not
     # substring — GHSA-76xc-57q6-vm5m.
@@ -118,7 +122,7 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
         _reresolve_fallback_reasoning_config, _rescope_fallback_extra_body, _update_fallback_context_compressor,
     )
     # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-    route = resolve_route_entry_client(entry, provider, model)
+    route = resolve_route_entry_client(entry, provider, model, commit_pool_pick=True)
     client, model, api_mode_explicit, api_mode = route.client, route.model, route.api_mode_explicit, route.api_mode
     if client is None:
         return None

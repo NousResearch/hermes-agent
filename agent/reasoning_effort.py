@@ -35,8 +35,9 @@ CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh
 # wire level; callers normalize those requests to ``low`` at the transport boundary.
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
-#: GPT-6 Sol/Terra/Luna (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
-GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna")
+#: GPT-6 Sol/Luna and GPT-6.1 Terra (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the
+#: prefix). 6.1 Terra takes ``none`` AND ``max`` (model page + live Responses API, 2026-10-27).
+GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna", "gpt-6.1-terra")
 #: GPT-6.1 Sol takes Astra's ``low..max`` ladder (``none`` 400s, live 2026-09-29) without Astra's
 #: account gating, so it stays in the static catalogs.
 NO_DISABLE_TIER_PREFIXES: tuple[str, ...] = ("gpt-6.1-sol",)

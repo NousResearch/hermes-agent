@@ -1416,11 +1416,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 return False
             # Snapshot this profile's gate env vars inside its runtime scope (#72348): immune to the
             # first-writer-wins process-global env bridge under multiplex.
-            self._snapshot_gate_env()
-            self._allowed_user_ids = self._get_allowed_users()
-            # DISCORD_ALLOWED_ROLES: comma-separated role IDs; ANY match grants access.
-            self._allowed_role_ids = self._get_allowed_roles()
-            self._mark_live_gate_baseline()  # later config.yaml edits apply per event (_refresh_live_gates)
+            self._derive_connect_gates()  # users/roles; later config.yaml edits apply per event
             # Intents: Server Members only when usernames must be resolved — an unenabled privileged
             # intent can keep the bot offline. ``"*"`` is the open-mode wildcard, not a username.
             intents = Intents.default()
@@ -4306,9 +4302,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         Only the account username is matched: it is unique, while a display name or server nickname is
         chosen by the member and can copy an allowlisted name.
         """
-        # A re-IDENTIFY (or connect()) after a resolution sees the IDs that resolution wrote into the
+        # A re-IDENTIFY on the same connection sees the IDs the first resolution wrote into the
         # snapshot/env; keep the username each still stands for, or the next refresh reads the
-        # configured username and can no longer map it (#154562).
+        # configured username and can no longer map it (#154562). connect() starts the map empty.
         prior = getattr(self, "_username_to_id", None) or {}
         entries = self._allowed_user_ids or set()
         self._username_to_id = {name: uid for name, uid in prior.items() if uid in entries}

@@ -28,6 +28,16 @@ class DiscordLiveGatesMixin:
     def _mark_live_gate_baseline(self) -> None:
         mark_live_gate_baseline(self)
 
+    def _derive_connect_gates(self) -> None:
+        """connect()'s gate, inside the owning profile's scope. A fresh connection resolves usernames
+        from the configured names again (an account can rename, another can take its name), so the
+        username->ID map starts empty; only a repeated on_ready on one connection keeps it."""
+        self._snapshot_gate_env()
+        self._username_to_id = {}
+        self._allowed_user_ids = self._get_allowed_users()
+        self._allowed_role_ids = self._get_allowed_roles()  # ANY listed role grants access
+        self._mark_live_gate_baseline()
+
     def _get_allowed_users(self) -> set:
         """This adapter's DISCORD_ALLOWED_USERS entries (per-profile, cleaned); a username this adapter
         resolved at connect reads as its ID, so a refresh keeps it working and its removal revokes it."""

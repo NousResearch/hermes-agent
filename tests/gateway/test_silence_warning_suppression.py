@@ -173,4 +173,3 @@ async def test_suppressed_notice_is_still_logged(monkeypatch, tmp_path, caplog):
         assert await _live(runner, _event(_wa_source())) == ""
 
     assert any("warning notifications are suppressed" in r.getMessage() for r in caplog.records)
-

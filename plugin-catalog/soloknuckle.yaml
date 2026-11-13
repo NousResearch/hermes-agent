@@ -2,6 +2,7 @@ name: soloknuckle
 title: Soloknuckle
 repo: https://github.com/z99wE/soloknucklefXrhermes
 sha: "ef9f7565b63d2b3350095d0b953c1b6ea9c61a69"
+subdir: hermes-plugin
 version: "5.2.0"
 description: >-
   Deterministic local guardrails for Hermes and dev workflows. Three invocable

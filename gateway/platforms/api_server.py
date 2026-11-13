@@ -1334,6 +1334,10 @@ _SECURITY_HEADERS = {
 
 
 if AIOHTTP_AVAILABLE:
+    async def _remove_server_banner(request, response):
+        """Remove aiohttp/Python version details from public response headers."""
+        response.headers.pop("Server", None)
+
     @web.middleware
     async def security_headers_middleware(request, handler):
         """Add security headers to all responses (including errors)."""
@@ -3172,9 +3176,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
-        return web.json_response(
-            {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
-        )
+        return web.json_response({"status": "ok"})
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
         """GET /health/detailed — rich status for cross-container dashboard probing.
@@ -7775,6 +7777,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
+            self._app.on_response_prepare.append(_remove_server_banner)
             # Native routes + multiplex /p/<profile>/… mirrors. Same handlers;
             # the profile-prefix middleware validates the prefix and scopes
             # config/credentials to that profile when multiplexing is on.

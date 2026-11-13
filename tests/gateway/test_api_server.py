@@ -33,6 +33,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _derive_chat_session_id,
     _hermes_version,
+    _remove_server_banner,
     _redact_api_error_text,
     _request_agent_overrides,
     check_api_server_requirements,
@@ -303,6 +304,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
     mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
     app = web.Application(middlewares=mws)
+    app.on_response_prepare.append(_remove_server_banner)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
@@ -678,18 +680,15 @@ class TestHealthEndpoint:
 
 
     @pytest.mark.asyncio
-    async def test_health_reports_version(self, adapter):
-        """GET /health must expose a non-empty version so orchestrators (e.g.
-        AgentOS) can read the gateway version without scraping. Regression
-        guard for the missing-version gap."""
+    async def test_public_health_is_minimal_and_banner_free(self, adapter):
+        """Public health endpoints expose only status and no server banner."""
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/health")
-            assert resp.status == 200
-            data = await resp.json()
-            assert "version" in data
-            assert isinstance(data["version"], str)
-            assert data["version"] != ""
+            for path in ("/health", "/v1/health"):
+                resp = await cli.get(path)
+                assert resp.status == 200
+                assert await resp.json() == {"status": "ok"}
+                assert "Server" not in resp.headers
 
 
 # ---------------------------------------------------------------------------

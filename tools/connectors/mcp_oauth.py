@@ -221,7 +221,9 @@ def _start_loopback_receiver(flow) -> http.server.HTTPServer:
     from tools.mcp_oauth import _parse_redirect_query
 
     class _Handler(http.server.BaseHTTPRequestHandler):
-        timeout = 2  # an idle browser preconnect must not hold the redirect (see tools/mcp_oauth.py)
+        # Connections are served on their own threads, so an idle browser preconnect never blocks the
+        # redirect; this only bounds how long a silent socket keeps its thread.
+        timeout = 60
 
         def do_GET(self):
             parsed = urlparse(self.path)
@@ -245,7 +247,7 @@ def _start_loopback_receiver(flow) -> http.server.HTTPServer:
         def log_message(self, format, *args):
             return
 
-    httpd = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)  # daemon_threads: never joins an idle socket
     threading.Thread(
         target=httpd.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True,
         name=f"mcp-oauth-cb-{flow.server_name}").start()

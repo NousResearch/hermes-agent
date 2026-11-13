@@ -107,6 +107,29 @@ def test_dashboard_equivalent_https_url_keeps_its_key(home):
     assert _resolved_vision() == ("custom", "m2", "https://A.EXAMPLE:443/v1/", "a-key", None)
 
 
+def test_dashboard_bare_custom_on_same_url_keeps_its_key(home):
+    """Picking bare custom keeps the slot's URL (the keeps-old-URL branch), so the key configured
+    for that URL stays with it, as `hermes config set ….provider custom` keeps it."""
+    from hermes_cli.config import load_config
+    from hermes_cli.web_server_config import _apply_aux_assignment_sync
+    _seed(home, {"provider": "openrouter", "model": "m", "base_url": "https://openrouter.ai/api/v1", "api_key": "a-key"})
+
+    _apply_aux_assignment_sync(load_config(), "custom", "m2", "vision", "", "")
+
+    assert _resolved_vision() == ("custom", "m2", "https://openrouter.ai/api/v1", "a-key", None)
+
+
+def test_dashboard_same_provider_model_change_keeps_its_key(home):
+    """A model-only change (no base_url sent) keeps the slot's URL, so it is not a route change."""
+    from hermes_cli.config import load_config
+    from hermes_cli.web_server_config import _apply_aux_assignment_sync
+    _seed(home, {"provider": "openrouter", "model": "m", "base_url": "https://openrouter.ai/api/v1", "api_key": "a-key"})
+
+    _apply_aux_assignment_sync(load_config(), "openrouter", "m2", "vision", "", "")
+
+    assert _resolved_vision()[2:4] == ("https://openrouter.ai/api/v1", "a-key")
+
+
 def test_dashboard_same_route_keeps_its_key(home):
     from hermes_cli.config import load_config
     from hermes_cli.web_server_config import _apply_aux_assignment_sync
@@ -181,3 +204,12 @@ def test_dashboard_config_form_carried_mixed_case_url_still_dropped(home):
     _put_config({"auxiliary": {"vision": {"provider": "anthropic", "model": "m", "base_url": "https://A.example/v1"}}})
 
     assert _resolved_vision() == ("anthropic", "m", None, None, None)
+
+
+def test_dashboard_config_form_owner_of_carried_url_keeps_its_key(home):
+    """A provider change to the carried URL's own provider keeps the URL, and its key with it."""
+    _seed(home, {"provider": "custom", "model": "m", "base_url": "https://openrouter.ai/api/v1", "api_key": "a-key"})
+
+    _put_config({"auxiliary": {"vision": {"provider": "openrouter", "model": "m", "base_url": "https://openrouter.ai/api/v1"}}})
+
+    assert _resolved_vision()[2:4] == ("https://openrouter.ai/api/v1", "a-key")

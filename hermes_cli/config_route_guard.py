@@ -26,7 +26,9 @@ def clear_aux_credentials_on_route_change(entry: dict, provider: Any, base_url: 
     provider/base_url: when the route changes, the block's api_key/key_env/api_key_env/api_mode
     belong to the old endpoint, and the aux resolver would hand them to the new one (#141832).
     Returns True when credentials were cleared."""
-    if _route_of(entry.get("provider"), entry.get("base_url")) == _route_of(provider, base_url):
+    old, new = _route_of(entry.get("provider"), entry.get("base_url")), _route_of(provider, base_url)
+    # Bare custom is configured BY its base_url (provider_owns_route): an unchanged URL is the same endpoint.
+    if old == new or (new[0] == "custom" and new[1] and new[1] == old[1]):
         return False
     from hermes_cli.config import clear_model_endpoint_credentials
     clear_model_endpoint_credentials(entry)

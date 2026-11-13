@@ -1195,9 +1195,27 @@ class TestAuxiliaryProviderSwitchClearsStaleRoute:
         assert vision == {"provider": "anthropic", "api_key": "${AUXILIARY_VISION_API_KEY}"}
         assert "AUXILIARY_VISION_API_KEY=sk-new" in _read_env(_isolated_hermes_home)
 
-    def test_notice_masks_url_credentials(self, _isolated_hermes_home, capsys):
+    # llm.example.com: unknown host, kept with a warning; api.openai.com: dropped, "Cleared" notice.
+    @pytest.mark.parametrize("host", ["llm.example.com", "api.openai.com"])
+    def test_notice_masks_url_credentials(self, _isolated_hermes_home, capsys, host):
         self._seed(_isolated_hermes_home, {"vision": {
-            "provider": "custom", "base_url": "https://bob:hunter2secret@llm.example.com/v1"}})
+            "provider": "custom", "base_url": f"https://bob:hunter2secret@{host}/v1"}})
         set_config_value("auxiliary.vision.provider", "anthropic")
         out = capsys.readouterr().out
         assert "auxiliary.vision.base_url" in out and "hunter2secret" not in out
+
+    def test_auto_block_with_dropped_route_loses_its_key(self, _isolated_hermes_home):
+        # auto + base_url + api_key is a live custom route (the resolver pairs them); once the switch
+        # drops that base_url, the key belongs to the dropped endpoint, not the provider being set.
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "auto", "base_url": "https://api.openai.com/v1", "api_key": "sk-old"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic"}
+
+    def test_kept_route_keeps_its_key(self, _isolated_hermes_home):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "opencode-go", "base_url": "https://chatgpt.com/backend-api/codex", "key_env": "CODEX_KEY"}})
+        set_config_value("auxiliary.vision.provider", "openai-codex")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision["key_env"] == "CODEX_KEY"

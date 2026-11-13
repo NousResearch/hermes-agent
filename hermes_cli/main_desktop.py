@@ -227,8 +227,14 @@ def _rename_riding_out_file_lock(src: Path, dst: Path) -> None:
 def _desktop_staging_dir(desktop_dir: Path) -> Path:
     """Fresh staging dir ``apps/desktop/.staging-<pid>-<ts>``: a sibling of ``release/`` (same fs → the
     swap is a rename) but not inside it, so ``release/*-unpacked`` globs never see it. Sweeps leftovers."""
+    from hermes_cli.desktop_release_cleanup import remove_tree
+
     for stale in desktop_dir.glob(f"{_DESKTOP_STAGING_PREFIX}*"):
-        shutil.rmtree(stale, ignore_errors=True)
+        # A stale staging dir holding a DOS reserved name survives a plain rmtree, so the
+        # sweep would leave it behind forever and every later build would inherit the litter.
+        error = remove_tree(stale)
+        if error:
+            logger.warning("could not sweep the stale desktop staging directory: %s", error)
     return desktop_dir / f"{_DESKTOP_STAGING_PREFIX}{os.getpid()}-{int(_time_mod.time())}"
 
 
@@ -255,7 +261,15 @@ def _recover_interrupted_swap(live: Path, aside: Path) -> None:
         except OSError as exc:
             logger.warning("could not restore %s from %s: %s", live, aside, exc)
             return
-    shutil.rmtree(aside, ignore_errors=True)
+    # The aside copy is leftover, so removing it is safe -- but a leftover holding a DOS
+    # reserved name ("nul") survives a plain rmtree, and the promotion rename below then
+    # fails with WinError 183 "the file already exists", hiding the real cause. Remove it
+    # the way that succeeds, and say so when it cannot be removed at all.
+    from hermes_cli.desktop_release_cleanup import remove_tree
+
+    error = remove_tree(aside)
+    if error:
+        logger.warning("could not remove the leftover desktop app copy: %s", error)
 
 
 def _move_live_app_aside(live_root: Path, previous: Path, held_by: Optional[list], consent) -> None:
@@ -296,7 +310,7 @@ def _swap_staged_desktop_app(
     consent = take_consent(release_dir, _launcher_correlation_id())
     staged_exe = _desktop_packaged_executable_in(staging_dir)
     if staged_exe is None:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        _discard_desktop_staging(staging_dir)
         return None
     try:
         staged_root = _desktop_unpacked_root(staged_exe, staging_dir)
@@ -322,17 +336,25 @@ def _swap_staged_desktop_app(
                 _rename_riding_out_file_lock(previous, live_root)  # restore; live app back as it was
             raise
         if moved_aside:
-            shutil.rmtree(previous, ignore_errors=True)
+            from hermes_cli.desktop_release_cleanup import remove_tree
+
+            error = remove_tree(previous)
+            if error:
+                logger.warning("could not remove the previous desktop app copy: %s", error)
     except (OSError, ValueError) as exc:
         logger.warning("desktop stage-and-swap failed, live app kept: %s", exc)
         return None
     finally:
-        shutil.rmtree(staging_dir, ignore_errors=True)
+        _discard_desktop_staging(staging_dir)
     return live_root / staged_exe.relative_to(staged_root)
 
 
 def _discard_desktop_staging(staging_dir: Path) -> None:
-    shutil.rmtree(staging_dir, ignore_errors=True)
+    from hermes_cli.desktop_release_cleanup import remove_tree
+
+    error = remove_tree(staging_dir)
+    if error:
+        logger.warning("could not remove the staged desktop app: %s", error)
 
 
 # ─── Desktop exe integrity gate (#69179) ──────────────────────────────────── The desktop self-update chain

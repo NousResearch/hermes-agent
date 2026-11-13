@@ -162,36 +162,55 @@ def _primary_profile_routes_for_current_home() -> list:
         ):
             return []  # this IS the primary home — nothing to consult
 
-        # Same layers the primary gateway's own loader reads: routes pinned in the managed scope
-        # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
-        # false-blocked and routed delivery failed closed on centrally-managed installs.
-        from gateway.config_loader import read_yaml_layers
-        # The caller runs inside the SATELLITE's secret scope (the gateway drain walks satellites under
-        # their own profile scope), and ``${env:...}`` refs resolve through whatever scope is bound,
-        # fail-closed. Expanding the primary's YAML there resolved its refs against the satellite's
-        # .env: unresolved refs re-logged "keeping the literal placeholder" every housekeeping tick, and
-        # a satellite key of the same name was substituted into the primary's config (#148606).
-        # Bind only home + secrets: the terminal policy is not read here, and hydrating external
-        # secret sources every housekeeping tick is the primary's boot job, not this read's.
-        from agent.runtime_scope import bind_state, scope_for_profile
-        from agent.secret_scope import _is_process_home
-        with bind_state(scope_for_profile(primary_home), hydrate_secrets=False, terminal=False,
-                        stamp_home=not _is_process_home(primary_home)):
-            layered = read_yaml_layers(primary_home.expanduser())
-        routes_raw = layered.get("profile_routes")
-        if routes_raw is None and isinstance(layered.get("gateway"), dict):
-            routes_raw = layered["gateway"].get("profile_routes")
-        if not isinstance(routes_raw, list):
-            return []
-
-        from gateway.profile_routing import parse_profile_routes
         from hermes_cli.profiles import profile_matches_home
         return [
-            route for route in parse_profile_routes(routes_raw)
+            route for route in _primary_routes(primary_home)
             if route.enabled and profile_matches_home(route.profile)
         ]
     except Exception:
         logger.debug("primary-gateway profile-route lookup unavailable", exc_info=True)
+        return []
+
+
+def _primary_routes(primary_home) -> list:
+    """Every ``profile_routes`` entry of the primary home, most-specific-first (dispatch order)."""
+    # Same layers the primary gateway's own loader reads: routes pinned in the managed scope
+    # (/etc/hermes/config.yaml) never reached the raw user-file read (#121212), so preflight
+    # false-blocked and routed delivery failed closed on centrally-managed installs.
+    from gateway.config_loader import read_yaml_layers
+    # The caller runs inside the SATELLITE's secret scope (the gateway drain walks satellites under
+    # their own profile scope), and ``${env:...}`` refs resolve through whatever scope is bound,
+    # fail-closed. Expanding the primary's YAML there resolved its refs against the satellite's
+    # .env: unresolved refs re-logged "keeping the literal placeholder" every housekeeping tick, and
+    # a satellite key of the same name was substituted into the primary's config (#148606).
+    # Bind only home + secrets: the terminal policy is not read here, and hydrating external
+    # secret sources every housekeeping tick is the primary's boot job, not this read's.
+    from agent.runtime_scope import bind_state, scope_for_profile
+    from agent.secret_scope import _is_process_home
+    with bind_state(scope_for_profile(primary_home), hydrate_secrets=False, terminal=False,
+                    stamp_home=not _is_process_home(primary_home)):
+        layered = read_yaml_layers(primary_home.expanduser())
+    routes_raw = layered.get("profile_routes")
+    if routes_raw is None and isinstance(layered.get("gateway"), dict):
+        routes_raw = layered["gateway"].get("profile_routes")
+    if not isinstance(routes_raw, list):
+        return []
+    from gateway.profile_routing import parse_profile_routes
+    return parse_profile_routes(routes_raw)
+
+
+def _primary_dispatch_routes_for_current_home() -> list:
+    """The routes the primary's shared bot dispatches by (enabled, no ``bot_profile``), for every
+    profile; ``[]`` if this IS the primary home or the lookup fails."""
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+        primary_home = get_default_hermes_root()
+        if (primary_home.expanduser().resolve(strict=False)
+                == _sched.Path(get_hermes_home()).expanduser().resolve(strict=False)):
+            return []
+        return [r for r in _primary_routes(primary_home) if r.enabled and r.bot_profile is None]
+    except Exception:
+        logger.debug("primary-gateway dispatch-route lookup unavailable", exc_info=True)
         return []
 
 
@@ -216,14 +235,18 @@ class SharedRouteAdapters:
     """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
     resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
     the target; anything else (unmatched target, disabled route, other profile, or target-less
-    ``get(platform)``) is a miss — fail closed, never the default bot.
+    ``get(platform)``) is a miss — fail closed, never the default bot. ``dispatch_routes`` are the
+    shared bot's routes for every profile (default: the primary home's); a hit also needs the most
+    specific of them matching the target to name the same profile, as dispatch would pick it.
 
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes) -> None:
+    def __init__(self, primary_adapters, routes, dispatch_routes=None) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
+        self._dispatch_routes = list(
+            _primary_dispatch_routes_for_current_home() if dispatch_routes is None else dispatch_routes)
 
     def __bool__(self) -> bool:
         return bool(self._primary) and bool(self._routes)
@@ -261,12 +284,24 @@ class SharedRouteAdapters:
             route_user_id = (
                 str(chat_id) if route.user_id and platform_key == "telegram" else None
             )
-            if route.matches(
-                str(route.platform), guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id,
-                user_id=route_user_id,
-            ):
+            matched = dict(guild_id=route.guild_id, chat_id=chat_id, thread_id=thread_id, user_id=route_user_id)
+            if not route.matches(str(route.platform), **matched):
+                continue
+            if self._dispatch_winner(route, matched, platform_key).profile == route.profile:
                 return adapter
         return default
+
+    def _dispatch_winner(self, route, matched, platform_key):
+        """The route dispatch would pick for the target ``route`` matched: a chat-only route matches
+        every thread of its chat, but a more specific route pinning one of them to another profile
+        takes that thread (#147602). Same predicate and most-specific-first order as
+        ``match_profile_route``; each guild is matched against itself, as above. ``route`` is itself
+        a candidate, so a winner always exists."""
+        candidates = sorted([*self._dispatch_routes, *self._routes], key=lambda r: r.specificity, reverse=True)
+        if platform_key == "telegram":  # a DM's chat id is its sender's user id (#104933)
+            matched = {**matched, "user_id": matched["chat_id"]}
+        return next((r for r in candidates
+                     if r.matches(str(route.platform), **{**matched, "guild_id": r.guild_id})), route)
 
 
 def has_credential_platform(adapters, owned=None) -> bool:

@@ -41,6 +41,17 @@ from gateway.platforms._shared import extra_or_secret as _extra_or_secret
 from gateway.platforms._shared import platform_gate_env as _auth_env
 
 
+def _space_has_thread_of_another_profile(routes, space: str, profile: str) -> bool:
+    """Whether a route pins a thread of Google Chat *space* to a profile other than *profile*. A
+    thread-less Google Chat send outside cron replies under the space's last inbound thread
+    (``GoogleChatAdapter._resolve_thread_id``), so the gate cannot tell which conversation it
+    reaches once any thread there belongs to another profile."""
+    return any(
+        r.platform == "google_chat" and r.thread_id and r.profile != profile
+        and (r.chat_id == space or str(r.thread_id).startswith(f"{space}/threads/"))
+        for r in routes)
+
+
 def _env_truthy(name: str) -> bool:
     return _auth_env(name).lower() in _TRUTHY
 
@@ -249,14 +260,19 @@ class GatewayAuthorizationMixin:
             return True
         if platform in (self._profile_adapters_map().get(profile_name) or {}):
             return True
+        dispatch_routes = [r for r in getattr(self.config, "profile_routes", None) or []
+                           if r.enabled and r.bot_profile is None]
+        if (platform.value == "google_chat" and not thread_id
+                and _space_has_thread_of_another_profile(dispatch_routes, str(chat_id or ""), profile_name)):
+            return False
         if self._is_routed_turn_origin(platform, profile_name, chat_id, thread_id):
             return True
         from cron.scheduler_preflight import SharedRouteAdapters
-        routes = [r for r in getattr(self.config, "profile_routes", None) or []
-                  if r.enabled and r.profile == profile_name and r.bot_profile is None]
+        routes = [r for r in dispatch_routes if r.profile == profile_name]
         sentinel = object()
         target = {"chat_id": str(chat_id or ""), "thread_id": str(thread_id) if thread_id else None}
-        return SharedRouteAdapters({platform: sentinel}, routes).get(platform, target) is sentinel
+        shared = SharedRouteAdapters({platform: sentinel}, routes, dispatch_routes=dispatch_routes)
+        return shared.get(platform, target) is sentinel
 
     def _is_routed_turn_origin(self, platform: Platform, profile: str, chat_id, thread_id=None) -> bool:
         """Whether the target is in the running turn's own chat and the inbound matcher

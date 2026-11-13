@@ -869,8 +869,8 @@ default-profile behavior.
 Cron jobs owned by a routed profile deliver through the shared bot too, but
 only to targets an enabled route with a `chat_id`/`thread_id` maps to that
 profile (a `guild_id + chat_id` route qualifies its channel) — a routed
-profile's job targeting an unrouted chat (or a chat routed to another profile)
-is never sent through the shared bot. Guild-only routes do not qualify a cron
+profile's job targeting an unrouted chat (or a chat, topic or thread whose most
+specific route names another profile) is never sent through the shared bot. Guild-only routes do not qualify a cron
 target; add a `chat_id` route for the delivery channel. Routes declaring
 `user_id` do not qualify either: cron has no authenticated inbound sender, so
 they need a separate location-only route. Telegram DMs are the exception: a
@@ -888,9 +888,16 @@ the thread the send actually reaches. A target without a thread is the chat's
 top level (Telegram's General topic, a Slack/Matrix/Mattermost channel, a Feishu
 or Google Chat group), so a route pinned to one topic or thread does not cover
 the rest of the chat. On Discord, where a thread is its own channel, the thread's
-channel id is that thread. A thread other than the turn's own qualifies only if a
-route dispatches it to the profile. Webhook deliveries never qualify this way,
-because they have no inbound conversation.
+channel id is that thread. A thread other than the turn's own qualifies only if
+the most specific route matching it names the profile, the same route inbound
+dispatch picks. A chat route therefore does not cover a topic or thread that a
+more specific route pins to another profile. This holds for cron delivery too.
+A Google Chat send without a thread replies under the space's last inbound
+thread, so once a route pins any thread of a space to another profile, a
+routed profile's thread-less sends to that space are refused; name the thread
+explicitly.
+Webhook deliveries never qualify through the turn's conversation, because they
+have no inbound conversation.
 
 ## Start, stop, or restart all gateways at once
 

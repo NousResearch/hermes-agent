@@ -264,3 +264,96 @@ def test_discord_thread_origin_still_admits_itself_without_a_thread_id(satellite
         assert allowed(Platform.DISCORD, "sec", "555", "999") is False
     finally:
         clear_session_vars(tokens)
+
+
+# Chat-scoped thread ids (Telegram topic, Slack thread_ts, Matrix thread root, Mattermost root post):
+# a chat-only route matches every thread of its chat, so only dispatch's most specific pick says
+# whose a pinned thread is.
+_CHAT_SCOPED = {
+    "telegram": ("-100333", "7", "8"),
+    "slack": ("C0SHARED", "1700000000.000100", "1700000000.000200"),
+    "matrix": ("!room:hs", "$root1", "$root2"),
+    "mattermost": ("chan1", "post1", "post2"),
+}
+
+
+def _sibling_pinned_routes(platform, chat, pinned):
+    return [{"name": "c", "platform": platform, "chat_id": chat, "profile": "sec"},
+            {"name": "t", "platform": platform, "chat_id": chat, "thread_id": pinned, "profile": "other"}]
+
+
+@pytest.mark.parametrize("platform_name", sorted(_CHAT_SCOPED))
+@pytest.mark.parametrize("in_turn", [True, False], ids=["in-turn", "no-origin"])
+def test_chat_route_does_not_reach_a_thread_pinned_to_another_profile(satellite, platform_name, in_turn):
+    """``chat -> sec`` plus ``chat + T2 -> other``: dispatch hands T2 to ``other``, so the gate must
+    refuse it, from a turn in a sibling thread and with no origin bound (cron)."""
+    from gateway.profile_routing import match_profile_route
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    platform = Platform(platform_name)
+    chat, own, pinned = _CHAT_SCOPED[platform_name]
+    routes = satellite.runner.config.profile_routes = parse_profile_routes(
+        _sibling_pinned_routes(platform_name, chat, pinned))
+    assert match_profile_route(routes, platform_name, chat_id=chat, thread_id=pinned).profile == "other"
+    allowed = satellite.runner._shared_bot_target_allowed
+    tokens = (set_session_vars(profile="sec", platform=platform_name, chat_id=chat, thread_id=own)
+              if in_turn else None)
+    try:
+        assert allowed(platform, "sec", chat, pinned) is False
+        assert allowed(platform, "sec", chat, own) is True
+        assert allowed(platform, "sec", chat, None) is True
+    finally:
+        if tokens is not None:
+            clear_session_vars(tokens)
+
+
+@pytest.mark.parametrize("platform_name", sorted(_CHAT_SCOPED))
+def test_cron_shared_view_does_not_reach_a_thread_pinned_to_another_profile(tmp_path, monkeypatch,
+                                                                           platform_name):
+    """Cron's view (routes read from the primary home, as the ticker builds it): a chat route does not
+    lend the shared bot for a thread a more specific route dispatches to another profile."""
+    import hermes_yaml as yaml
+    from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    chat, own, pinned = _CHAT_SCOPED[platform_name]
+    root = tmp_path / "root"
+    (root / "profiles" / "sec").mkdir(parents=True)
+    (root / "config.yaml").write_text(yaml.safe_dump({"gateway": {
+        "multiplex_profiles": True, "profile_routes": _sibling_pinned_routes(platform_name, chat, pinned)}}),
+        encoding="utf-8")
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    primary = object()
+    platform = Platform(platform_name)
+    token = set_hermes_home_override(str(root / "profiles" / "sec"))
+    try:
+        shared = SharedRouteAdapters({platform: primary}, _primary_profile_routes_for_current_home())
+    finally:
+        reset_hermes_home_override(token)
+    assert shared.get(platform, {"chat_id": chat, "thread_id": pinned}) is None
+    assert shared.get(platform, {"chat_id": chat, "thread_id": own}) is primary
+    assert shared.get(platform, {"chat_id": chat}) is primary
+
+
+@pytest.mark.parametrize("in_turn", [True, False], ids=["in-turn", "no-origin"])
+def test_google_chat_space_top_level_refused_when_another_profile_owns_a_thread(satellite, in_turn):
+    """Outside cron, a thread-less Google Chat send replies under the space's last inbound thread
+    (``_resolve_thread_id``), which may be the thread pinned to ``other``: the gate cannot vouch for
+    it. An explicit thread of ``sec``'s still goes, and a space with no foreign thread is unaffected."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    space, pinned = "spaces/AAA", "spaces/AAA/threads/T2"
+    satellite.runner.config.profile_routes = parse_profile_routes([
+        {"name": "s", "platform": "google_chat", "chat_id": space, "profile": "sec"},
+        {"name": "b", "platform": "google_chat", "chat_id": "spaces/BBB", "profile": "sec"},
+        {"name": "t", "platform": "google_chat", "chat_id": space, "thread_id": pinned, "profile": "other"}])
+    allowed = satellite.runner._shared_bot_target_allowed
+    gchat = Platform("google_chat")
+    tokens = (set_session_vars(profile="sec", platform="google_chat", chat_id=space) if in_turn else None)
+    try:
+        assert allowed(gchat, "sec", space, None) is False
+        assert allowed(gchat, "sec", space, pinned) is False
+        assert allowed(gchat, "sec", "spaces/BBB", None) is True
+    finally:
+        if tokens is not None:
+            clear_session_vars(tokens)

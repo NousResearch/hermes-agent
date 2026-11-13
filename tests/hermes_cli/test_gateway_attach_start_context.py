@@ -46,7 +46,8 @@ def test_start_from_an_elevated_session_0_login_warns_and_still_starts_the_gatew
     code, payload, stderr, ran = _attach(monkeypatch, capsys, "--start", session=0, elevated=True)
     assert payload["start_context"] == {"windows_service_session": True}
     warning, = _warnings(stderr)
-    assert warning.startswith("warning:") and "hermes gateway install" in warning
+    assert warning.startswith("warning:") and "normal (non-administrator) window" in warning
+    assert "gateway install" not in warning  # installing can start the gateway elevated (#152218)
     assert ran == ["start"] and code == 0
     assert payload["ticket"] == "one-ticket" and payload["url"] == "ws://127.0.0.1:8765/api/ws"
 

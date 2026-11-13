@@ -631,8 +631,10 @@ else, including off Windows. A gateway started from such a login inherits both, 
 desktop apps are refused with `gateway_other_session` until it exits. `attach --start` still
 starts it and exits as before, and prints a one-line warning on stderr first. A remote client that
 sees `true` should run `attach` without `--start` (a gateway the user's own session started
-serves both), and when none is running ask the user to start Hermes, or run
-`hermes gateway install`, from their own session on that machine.
+serves both), and when none is running ask the user to start Hermes from a normal
+(non-administrator) window on that machine's desktop. Do not suggest `hermes gateway install`
+there: approved through the administrator prompt it can start the gateway elevated, which normal
+windows are refused by as well (`gateway_elevated`).
 
 With no owner to attach, the JSON adds `message` and has no `url` or `ticket`. `message` is
 the verdict Ink shows: `gateway <state>: <reason_code>` (`not ready` when there is no code),

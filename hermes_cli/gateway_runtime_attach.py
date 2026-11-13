@@ -28,10 +28,12 @@ DISCOVER_TIMEOUT = 5.0
 
 
 # One line, stderr only: ``attach --start`` still starts the gateway (see ``windows_service_session``).
+# Installing the task is not offered, as in CLIENT_ELEVATED_REMEDY: registered through the UAC hand-off it
+# can start the gateway elevated (#152218), which trades gateway_other_session for gateway_elevated.
 SERVICE_SESSION_START_WARNING = (
     "warning: this is an elevated Windows session-0 login (e.g. an administrator OpenSSH login); a gateway "
-    "started here refuses the user's normal Hermes windows (gateway_other_session). Start Hermes, or run "
-    "`hermes gateway install`, from the user's own desktop session, then attach without --start")
+    "started here refuses the user's normal Hermes windows (gateway_other_session). Start Hermes from "
+    "a normal (non-administrator) window on this machine's desktop, then attach without --start")
 
 
 def windows_service_session() -> bool:

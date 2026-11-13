@@ -198,6 +198,25 @@ _RECOVERABLE_END_REASONS = ("agent_close", "ws_orphan_reap", "superseded_by_resu
 # died with the process, so the row was closed at the next boot instead.
 _RECOVERABLE_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RECOVERABLE_END_REASONS)
 
+
+def is_deliberately_archived(archived, auto_archived, end_reason) -> bool:
+    """True when a row was archived on purpose (#154410): hidden by a user/CLI/API archive
+    (``set_session_archived`` clears ``auto_archived``), not by the idle sweep (``auto_archived``,
+    which re-activation undoes, #117713) and not by a recoverable accident (a reaper end stamp,
+    #92687). Same predicate as ``bot_chat_title_released`` in hermes_state_titles.py."""
+    return bool(archived) and not auto_archived and (end_reason or "") not in _RECOVERABLE_END_REASONS
+
+
+# Peer-recovery exclusion for deliberately archived rows (#154410): a row archived on purpose must
+# never be re-adopted as a chat's live session, so the next turn mints a fresh one instead of
+# replying into a hidden conversation. The recoverable-end exception keeps legacy reaper rows
+# (archived by the ws-orphan reaper, #92687) recoverable. Single source of truth with
+# ``is_deliberately_archived`` above; keep the two identical.
+_DELIBERATELY_ARCHIVED_EXCLUSION_SQL = (
+    f"AND NOT (COALESCE(s.archived, 0) <> 0 AND COALESCE(s.auto_archived, 0) = 0"
+    f" AND (s.end_reason IS NULL OR s.end_reason NOT IN ({_RECOVERABLE_END_REASONS_SQL})))"
+)
+
 # End reasons written by AUTOMATIC cleanup (shutdown, orphan reapers, idle/LRU eviction), not a deliberate
 # conversation boundary: "some runtime went away", so a writer that can prove liveness (e.g. a compression
 # rotation holding the lease) may clear it.  Recoverable set plus the TUI gateway's automatic reasons.

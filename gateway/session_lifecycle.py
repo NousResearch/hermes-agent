@@ -77,7 +77,8 @@ class SessionLifecycleMixin:
 
     def _is_session_ended_in_db(self, session_id: str, session_key: Optional[str] = None) -> bool:
         """True iff state.db says the session is gone: ended (non-null end_reason), hard-deleted
-        (no row in a readable owning DB), or a delegate subagent's row (never a chat's route). No DB or a DB error -> False (same failure mode as
+        (no row in a readable owning DB), a delegate subagent's row (never a chat's route), or
+        deliberately archived (#154410). No DB or a DB error -> False (same failure mode as
         ``_prune_stale_sessions_locked``). Lets routing self-heal a session finalized or deleted
         while the gateway stays alive. Store resolved from the owning profile.
 
@@ -112,7 +113,15 @@ class SessionLifecycleMixin:
             return False
         # A delegate subagent's row is never a chat's conversation: a route left naming one (written while
         # the subagent captured the thread, #138210) is stale, so recovery hands the chat back to its owner.
-        return row is None or row.get("end_reason") is not None or is_delegate_child_row(row)
+        # A deliberately archived row is stale the same way (#154410): the user hid the conversation
+        # from the sidebar, so the next turn must mint a fresh session instead of replying into an
+        # invisible one. An idle-sweep archive (auto_archived, #117713) stays live -- re-activation
+        # undoes it -- and a recoverable reaper stamp stays recoverable through the peer finder (#92687).
+        from hermes_state_common import is_deliberately_archived
+
+        return (row is None or row.get("end_reason") is not None or is_delegate_child_row(row)
+                or is_deliberately_archived(row.get("archived"), row.get("auto_archived"),
+                                           row.get("end_reason")))
 
     def _local_receipt_target(self, entry: Optional[SessionEntry]) -> Optional[str]:
         """The physical target the authority's receipt names for *entry*'s local route, else None

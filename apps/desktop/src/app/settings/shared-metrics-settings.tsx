@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { DocsLink } from '@/components/onboarding/flow'
 import { useI18n } from '@/i18n'
@@ -49,6 +49,7 @@ function SharedMetricsSettingsForOwner({ connectionId, profile }: SharedMetricsO
   const [consent, setConsent] = useState<SharedMetricsConsent | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
+  const mounted = useRef(false)
 
   const request = useMemo(
     () =>
@@ -62,8 +63,10 @@ function SharedMetricsSettingsForOwner({ connectionId, profile }: SharedMetricsO
     [connectionId, profile]
   )
 
+  // eslint-disable-next-line no-restricted-syntax -- component lifetime flag, not a reactive-value mirror
   useEffect(() => {
     let cancelled = false
+    mounted.current = true
 
     setLoaded(false)
     void readSharedMetricsConsent(request).then(next => {
@@ -73,7 +76,10 @@ function SharedMetricsSettingsForOwner({ connectionId, profile }: SharedMetricsO
       }
     })
 
-    return () => void (cancelled = true)
+    return () => {
+      cancelled = true
+      mounted.current = false
+    }
   }, [request])
 
   const save = async (flags: { enabled: boolean; send: boolean }) => {
@@ -88,7 +94,14 @@ function SharedMetricsSettingsForOwner({ connectionId, profile }: SharedMetricsO
 
       setConsent(saved)
 
-      await applyGate(saved.enabled ? 'on' : 'off')
+      if (!(await applyGate(saved.enabled ? 'on' : 'off')) && mounted.current) {
+        const applyCurrent = await captureDesktopMetricsGate(`${connectionId ?? ''}|${profile}`)
+        const current = await readSharedMetricsConsent(request)
+
+        if (mounted.current && current?.decided && await applyCurrent(current.enabled ? 'on' : 'off', current.decided)) {
+          setConsent(current)
+        }
+      }
     } catch (err) {
       setConsent(previous)
       notifyError(err, copy.saveFailed)

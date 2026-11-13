@@ -633,7 +633,8 @@ export function ChatBar({
     // The instruction the user types stays in the input; the pasted source
     // material rides along as a file. Falls back to inline insertion if the
     // attachment can't be created (missing bridge, write failure) so the
-    // paste is never lost.
+    // paste is never lost; a paste rejected as too large is dropped after the
+    // error toast rather than flooding the editor.
     if (onAttachPastedText && shouldConvertPasteToAttachment(pastedText)) {
       const editor = event.currentTarget
 

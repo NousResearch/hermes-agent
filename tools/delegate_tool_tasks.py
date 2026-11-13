@@ -98,7 +98,23 @@ def _normalize_task_list(
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             return None, f"Task {i} must be an object, got {type(task).__name__}."
-        if not task.get("goal", "").strip():
+        # LLM convenience alias: "instructions"/"task"/"prompt"/"query"/"description" -> "goal"/"context".
+        for alias in ("instructions", "task", "prompt", "query", "question", "description", "objective", "assignment"):
+            val = task.get(alias)
+            if val is not None and alias in task:
+                goal_val = task.get("goal")
+                goal_empty = not (isinstance(goal_val, str) and goal_val.strip())
+                ctx_val = task.get("context")
+                ctx_empty = not (isinstance(ctx_val, str) and ctx_val.strip())
+                if goal_empty:
+                    task["goal"] = val
+                elif ctx_empty:
+                    task["context"] = val
+                del task[alias]
+                break
+        goal_val = task.get("goal")
+        goal_str = goal_val.strip() if isinstance(goal_val, str) else ""
+        if not goal_str:
             return None, f"Task {i} is missing a 'goal'."
     # The single-goal form is exempt from the batch gate (short goals are valid there).
     batch_error = _validate_batch_tasks(task_list) if isinstance(tasks, list) else None

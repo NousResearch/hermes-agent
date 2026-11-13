@@ -165,6 +165,7 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
     assert argv[:3] == [str(venv_python), "-m", "hermes_cli.main"]
     assert cwd == str(hermes_home.resolve())
     assert env_overlay["VIRTUAL_ENV"] == str(project / "venv")
+    assert env_overlay["PYTHONUTF8"] == "1"
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
 
 
@@ -387,7 +388,7 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "hermes_cli.main" in content
     assert "gateway run" in content
     assert ", 0, False" in content  # hidden window, detached/async
-    for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
+    for var in ("HERMES_HOME", "PYTHONIOENCODING", "PYTHONUTF8", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")

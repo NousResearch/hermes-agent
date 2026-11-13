@@ -685,28 +685,37 @@ def supersede_for_session(*, session_key: str = "", origin_ui_session_id: str = 
     return int(_write(do) or 0)
 
 
-def dismiss(parent_agent: Any, sid: str) -> bool:
+def dismiss(parent_agent: Any, sid: str) -> Optional[str]:
     """``delegate_task(action='stop')`` on a child that is not running but waits to resume: it never resumes on its
-    own and its worktree pin is released (its transcript stays). False when there is no such record of this parent.
-    With ``auto_resume`` off only a promised one is dismissed (its parent was told to stop it this way)."""
+    own and its worktree pin is released (its transcript stays): ``"dismissed"``. None when there is no such record
+    of this parent. With ``auto_resume`` off only a promised one is dismissed (its parent was told to stop it this way).
+    A stop on a row the parent's own continue holds is recorded on it (``$.auto_cancel``): ``"recorded"``.
+    The read and the cancel are one write transaction: a refused continue handing the row back in between would
+    otherwise make the cancel match nothing and lose the stop."""
+    from tools.delegate_tool_resumable import _begin_immediate, _db_path_for, _write as write
+    return write(_db_path_for(parent_agent), lambda conn: (_begin_immediate(conn), _dismiss_in(conn, parent_agent,
+                                                                                               sid))[1])
+
+
+def _dismiss_in(conn, parent_agent: Any, sid: str) -> Optional[str]:
     from tools.delegate_tool_registry import _owns_subagent_record
-    from tools.delegate_tool_resumable import _db_path_for, _row, _write as write
-    path = _db_path_for(parent_agent)
-    record = write(path, lambda conn: _row(conn, sid))
-    owed_expired = record and record.get("state") == "expired" and not record.get("auto_gave_up")
+    from tools.delegate_tool_resumable import _row
+    record = _row(conn, sid)
+    if not record:
+        return None
+    state = record.get("state")
+    owed_expired = state == "expired" and not record.get("auto_gave_up")
     # The parent's own continue holds it and has not run it yet: a refused continue must not hand its promise back.
-    manual_claim = record and record.get("state") == "claimed" and not record.get("auto_claim")
-    waiting = record and (record.get("state") in ("resumable", SUPERSEDED) or owed_expired
-                          or (record.get("state") == "claimed" and record.get("auto_claim")))
+    manual_claim = state == "claimed" and not record.get("auto_claim")
+    waiting = state in ("resumable", SUPERSEDED) or owed_expired or (state == "claimed" and record.get("auto_claim"))
     if not (manual_claim or (waiting and (record.get("auto_promised") or enabled()))):
-        return False
+        return None
     if not _owns_subagent_record({"ancestor_owner_session_ids": record.get("owners") or ()}, parent_agent):
-        return False
+        return None
     note = "dismissed by its parent"
-    if manual_claim:  # not a dismiss: the parent's continue goes on, and if it is refused the row ends ``stopped``
-        write(path, lambda conn: _cancel_manual_claim(conn, sid, state="stopped", note=note))
-        return False
+    if manual_claim:  # the parent's continue goes on; if it is refused the hand-back ends the row ``stopped``
+        return "recorded" if _cancel_manual_claim(conn, sid, state="stopped", note=note) else None
     # An automatic continue that claimed it but has not started it yet is cancelled too (``confirm_start``).
-    return bool(write(path, lambda conn: _note(conn, sid, state="stopped", note=note,
-                                               from_states=("resumable", SUPERSEDED), unpin=True,
-                                               unstarted_claim=True) or _cancel_expired(conn, sid, note)))
+    done = _note(conn, sid, state="stopped", note=note, from_states=("resumable", SUPERSEDED), unpin=True,
+                 unstarted_claim=True) or _cancel_expired(conn, sid, note)
+    return "dismissed" if done else None

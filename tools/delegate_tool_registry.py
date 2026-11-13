@@ -323,9 +323,14 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
         record = _active_subagents.get(sid)
     if record is None and action == "stop":
         from tools.delegate_tool_auto_resume import dismiss
-        if dismiss(parent_agent, sid):  # not running, waiting to resume: it never resumes, its pin is released
+        dismissed = dismiss(parent_agent, sid)
+        if dismissed == "dismissed":  # not running, waiting to resume: it never resumes, its pin is released
             return json.dumps({"action": "stop", "subagent_id": sid, "status": "dismissed",
                                "note": "It will not resume automatically; its worktree is no longer kept."})
+        if dismissed == "recorded":  # this conversation's own continue holds it and has not started it yet
+            return json.dumps({"action": "stop", "subagent_id": sid, "status": "stop_recorded",
+                               "note": "Your continue of it is starting: if that continue is refused it ends "
+                                       "stopped and never resumes automatically; if it starts, stop it again."})
     if record is None or not _owns_subagent_record(record, parent_agent):
         return tool_error(
             f"No live subagent '{sid}' in this conversation's spawn tree. It "

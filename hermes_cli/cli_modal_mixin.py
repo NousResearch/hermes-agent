@@ -544,7 +544,7 @@ class CLIModalMixin:
             return "once"
         return _gated_confirm(
             self, command, "destructive_slash_confirm",
-            title=t("cli.modal.destructive_title", command=command),
+            title=t("cli.modal.destructive_title", command=command).replace("⚠️", "⚠"),
             detail=detail,
             choices=[
                 ("once", t("cli.modal.approve_once"), t("cli.modal.approve_once_detail")),

@@ -205,6 +205,8 @@ class TestCliApprovalUi:
             fragments = cli._get_approval_display_fragments()
 
         rendered = "".join(text for _style, text in fragments)
+        assert t("cli.tui.approval_title").replace("⚠️", "⚠") in rendered
+        assert "⚠️" not in rendered
 
         # All four choices visible even with a huge command.
         for key in ("approval_once", "approval_session", "approval_always", "approval_deny"):

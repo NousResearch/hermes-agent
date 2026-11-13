@@ -70,18 +70,16 @@ def _conversation_without_handoff(n_exchanges=12):
     """Build message list with no compaction handoff in it."""
     msgs = [{"role": "system", "content": "You are a helpful assistant."}]
     for i in range(n_exchanges):
-        msgs.append({"role": "user", "content": f"Question {i}"})
+        # Exercise summary isolation with an eligible window, not a size-efficiency no-op.
+        msgs.append({"role": "user", "content": f"Question {i}: " + "historical context " * 250})
         msgs.append({"role": "assistant", "content": f"Answer {i}"})
     return msgs
 
 def _conversation_with_handoff(n_exchanges=12):
     """Build message list WITH a compaction handoff in protected head."""
     from agent.context_compressor import SUMMARY_PREFIX
-    msgs = [{"role": "system", "content": "You are a helpful assistant."}]
-    msgs.append({"role": "user", "content": SUMMARY_PREFIX + "\nPrevious summary."})
-    for i in range(n_exchanges):
-        msgs.append({"role": "user", "content": f"Question {i}"})
-        msgs.append({"role": "assistant", "content": f"Answer {i}"})
+    msgs = _conversation_without_handoff(n_exchanges)
+    msgs.insert(1, {"role": "user", "content": SUMMARY_PREFIX + "\nPrevious summary."})
     return msgs
 
 def test_stale_previous_summary_cleared_when_no_handoff():
@@ -93,9 +91,10 @@ def test_stale_previous_summary_cleared_when_no_handoff():
     messages = _conversation_without_handoff()
 
     with patch.object(c, "_generate_summary",
-                      return_value="[CONTEXT COMPACTION] Fresh summary."):
+                      return_value="[CONTEXT COMPACTION] Fresh summary.") as summarize:
         result = c.compress(messages)
 
+    summarize.assert_called_once()
     assert c._previous_summary is None, (
         "compress() must clear stale _previous_summary when no handoff "
         f"summary exists in current messages. Got: {c._previous_summary!r}"
@@ -114,9 +113,10 @@ def test_previous_summary_preserved_when_handoff_found():
     messages = _conversation_with_handoff()
 
     with patch.object(c, "_generate_summary",
-                      return_value="[CONTEXT COMPACTION] Updated summary."):
+                      return_value="[CONTEXT COMPACTION] Updated summary.") as summarize:
         c.compress(messages)
 
+    summarize.assert_called_once()
     # When a handoff IS found, the staleness guard must NOT fire.
     # _previous_summary should be updated, not cleared.
     assert c._previous_summary is not None, (

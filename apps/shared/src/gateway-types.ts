@@ -27,6 +27,8 @@ export interface SessionInfo extends SessionLiveInfo {
     status: string
     user: string
     outcome?: string | null
+    /** Queued-row verbs the owner serves for this row (`prompt.steer_queued` / `prompt.replace_queued`). */
+    controls?: ('replace' | 'steer')[] | null
   }>
 }
 

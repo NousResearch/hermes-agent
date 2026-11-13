@@ -483,6 +483,24 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     [getQueue, claim, cancelServerRow, draft, serverRowAt, syncQueue]
   )
 
+  // Hand the queued row's own text to the running turn (`prompt.steer_queued`): the owner consumes the
+  // row and steers in one write, so it never also runs as its own turn. False when the owner does not
+  // serve it for this row (a local row, an older owner) or refuses it (no running turn): the row stays.
+  const steerQ = useCallback(
+    (i: number) => {
+      const server = serverRowAt(i)
+
+      if (!gw || !server?.controls?.includes('steer')) {
+        return Promise.resolve(false)
+      }
+
+      return gw
+        .request('prompt.steer_queued', { session_id: getUiState().sid, admission_id: server.admission_id })
+        .then(() => true, () => false)
+    },
+    [gw, serverRowAt]
+  )
+
   const removeQ = useCallback(
     (i: number) => {
       const server = serverRowAt(i)
@@ -519,6 +537,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
     queuedDisplay,
     removeQ,
     setQueueEdit,
+    steerQ,
     takeQ
   }
 }

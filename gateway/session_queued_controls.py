@@ -22,9 +22,16 @@ from hermes_state_runtime import (
 # A steer carries plain text and its presentation only. Attachments, finite runs, classic-CLI turns,
 # native envelopes and automation rows are whole turns: neither verb may drop what they carry.
 _TEXT_ONLY = frozenset({'text', 'surface_v1', 'display_v1', 'local_operator_v1'})
+# Desktop and the Ink TUI declare ``clarify_batch`` on EVERY prompt.submit, so every queued row of theirs
+# carries ``cli_turn_v1 == {'clarify_batch': True}``. It only says how a turn's viewers answer a clarify;
+# a steer or replacement carries no turn of its own, so dropping it loses nothing. Any other
+# ``cli_turn_v1`` field (api_text, model_override, turn_author) is turn content and stays refused.
+_CLARIFY_BATCH_ONLY = {'clarify_batch': True}
 # Sessions launched from an interactive local surface (classic CLI, TUI, Desktop, ACP editor): their
 # plain-text rows are prompt.submit input, whose observers settle a ``steered``/``cancelled`` row.
-# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration).
+# ``desktop`` is the label a Desktop chat migrated from main keeps (hermes_state_local_migration); a chat
+# created locally is stored as ``source='local'`` with its surface in ``created_source``
+# (``session_policy.STORED_AS_LOCAL``), so either column may name the surface.
 # cron, kanban, a2a and hosted-room (bot_room) producers read a saved result for every outcome they
 # do not name, so a transfer or replacement would strand them: never offered, refused by name.
 _INTERACTIVE_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'acp'})
@@ -36,16 +43,17 @@ def handlers(connection):
 
 
 def _interactive(authority, session_id):
-    """The session's frozen launch source (a local session's row records it) names a local surface.
+    """The session's frozen launch source or creating surface (a local session's row records them) names
+    a local surface.
     Callers hold the stream lock: one plain read per session, cached (``get_session`` flushes token
     counts, a write). Under WAL it takes the lock-free reader pool, as ``_pending_rows`` does there."""
     sources = authority.launch_sources
     if session_id not in sources:
         with authority.db._read_ctx() as conn:
-            found = conn.execute('SELECT source FROM sessions WHERE id=?', (session_id,)).fetchone()
+            found = conn.execute('SELECT source, created_source FROM sessions WHERE id=?', (session_id,)).fetchone()
         if found is None:
             return False
-        sources[session_id] = found[0]
+        sources[session_id] = found[0] if found[0] in _INTERACTIVE_SOURCES else found[1]
     return sources[session_id] in _INTERACTIVE_SOURCES
 
 
@@ -54,7 +62,10 @@ def queued_controls(authority, row):
     lists none, so its clients show none)."""
     payload = row.get('payload') or {}
     text = payload.get('text')
-    if (row.get('status') != 'queued' or set(payload) - _TEXT_ONLY or not isinstance(text, str) or not text.strip()
+    extra = {key: value for key, value in payload.items() if key not in _TEXT_ONLY}
+    if extra.get('cli_turn_v1') == _CLARIFY_BATCH_ONLY:
+        del extra['cli_turn_v1']
+    if (row.get('status') != 'queued' or extra or not isinstance(text, str) or not text.strip()
             or (payload.get('display_v1') or {}).get('kind') == 'hidden'
             or not _interactive(authority, row['target_session_id'])):
         return []

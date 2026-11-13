@@ -451,7 +451,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     # ── live reasoning flush cadence ──────────────────────────────────────
 
-    _REASONING_FLUSH_CHARS = 3200          # sliding window cap inside one live bubble
+    _REASONING_FLUSH_CHARS = 1500          # sliding window cap (keeps escaped MarkdownV2 < 4096)
     _REASONING_FLUSH_SECONDS = 1.0         # live edit cadence (matches Telegram 1s/chat budget)
     _REASONING_FIRST_BUBBLE_SECONDS = 0.6  # fast initial appearance
     _REASONING_MIN_INITIAL_CHARS = 12      # avoid spawning a bubble on 1-2 stray tokens
@@ -554,6 +554,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         for ln in reversed(lines):
             ln_len = len(ln) + 1
             if selected and total + ln_len > budget:
+                break
+            if not selected and ln_len > budget:
+                selected.append("... " + ln[-(budget - 4):])
+                total = budget
                 break
             selected.append(ln)
             total += ln_len

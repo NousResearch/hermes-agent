@@ -13,6 +13,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# One token source per (profile home, key_cmd): its token is reused until expiry instead of
+# re-running the helper on every catalog probe.
+_KEY_CMD_SOURCES: dict[tuple[str, str], Any] = {}
+
 
 def default_api_key_base_url(api_key: str, default: str, env_url: str) -> str:
     return env_url.rstrip("/") if env_url else default
@@ -42,7 +46,7 @@ def resolve_declared_api_key_provider(provider_id: str) -> dict[str, Any]:
     Raises ``AuthError`` when no enabled entry exists, so an unknown provider still fails.
     """
     from hermes_cli.auth import AuthError
-    from hermes_cli.config import _expand_env_vars, get_env_value_prefer_dotenv, load_config
+    from hermes_cli.config import get_env_value_prefer_dotenv, load_config
     from hermes_cli.config_providers import find_provider_entry, is_provider_enabled
 
     try:
@@ -50,12 +54,11 @@ def resolve_declared_api_key_provider(provider_id: str) -> dict[str, Any]:
     except (OSError, RuntimeError):
         logger.debug("Declared provider %r: config load failed", provider_id, exc_info=True)
         config = {}
-    _stored_key, raw_entry = find_provider_entry(config.get("providers"), provider_id)
-    if not isinstance(raw_entry, dict) or not is_provider_enabled(raw_entry):
+    _stored_key, entry = find_provider_entry(config.get("providers"), provider_id)  # load_config() expanded ${VAR} refs
+    if not isinstance(entry, dict) or not is_provider_enabled(entry):
         raise AuthError(
             f"Provider '{provider_id}' is not an API-key provider.",
             provider=provider_id, code="invalid_provider")
-    entry = _expand_env_vars(raw_entry)
     base_url = str(entry.get("base_url") or entry.get("api") or entry.get("url") or "").strip().rstrip("/")
     if not base_url:
         raise AuthError(
@@ -67,7 +70,9 @@ def resolve_declared_api_key_provider(provider_id: str) -> dict[str, Any]:
     key_cmd = str(entry.get("key_cmd") or "").strip()
     if key_cmd:
         from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
-        token_source = build_command_token_provider(key_cmd, str(entry.get("name") or provider_id))
+        from hermes_constants import hermes_home_key
+        token_source = _KEY_CMD_SOURCES.setdefault(
+            (hermes_home_key(), key_cmd), build_command_token_provider(key_cmd, str(entry.get("name") or provider_id)))
         api_key = materialize_probe_api_key(token_source)
         source = "key_cmd" if api_key else source
     if not api_key:
@@ -96,3 +101,4 @@ def relay_probe_api_key(provider_id: str, relay: str, api_key: str, cred_base_ur
         return api_key
     origin = base_url_origin(relay)
     return api_key if origin[1] and origin == base_url_origin(cred_base_url) else ""
+

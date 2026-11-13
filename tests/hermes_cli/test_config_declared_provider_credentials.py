@@ -86,6 +86,26 @@ def test_key_cmd_token_is_materialized(hermes_home, monkeypatch, tmp_path):
     assert materialize_probe_api_key(creds["api_key"]) == "sk-declared-cmd"
 
 
+def test_key_cmd_runs_once_per_token_not_per_probe(hermes_home, monkeypatch, tmp_path):
+    """Repeated catalog lookups reuse the minted token instead of re-running the helper; another
+    profile with the same key_cmd mints its own."""
+    runs = tmp_path / "runs.txt"
+    helper = tmp_path / "mint_key.py"
+    helper.write_text(f"open({str(runs)!r}, 'a').write('x')\nprint('tok')\n", encoding="utf-8")
+    entry = {"key_cmd": f'"{sys.executable}" "{helper}"'}
+    _write_provider(hermes_home, entry)
+
+    for _ in range(3):
+        assert resolve_api_key_provider_credentials(PROVIDER)["api_key"] == "tok"
+    other = tmp_path / "other-profile"
+    other.mkdir()
+    _write_provider(other, entry)
+    monkeypatch.setenv("HERMES_HOME", str(other))
+    assert resolve_api_key_provider_credentials(PROVIDER)["api_key"] == "tok"
+
+    assert runs.read_text() == "xx"
+
+
 def test_api_field_is_the_base_url(hermes_home):
     """The ``api`` spelling (legacy named-endpoint field) is honoured like ``base_url``."""
     (hermes_home / "config.yaml").write_text(yaml.safe_dump({
@@ -183,3 +203,25 @@ def test_relay_probe_sends_declared_key_only_to_its_own_origin(
     assert seen == (["Bearer route-key-secret"] if same_origin else [None])
     if not same_origin:
         assert seen_a == []
+
+
+def test_relay_probe_keeps_a_registry_providers_key(monkeypatch):
+    """#121387: a registry provider's key still rides its relay probe on another origin; only a
+    declared providers.<id> key is bound to its entry's own origin."""
+    import providers
+
+    calls = []
+
+    class _Profile:
+        auth_type = "api_key"
+
+        def fetch_models(self, api_key=None, base_url=None):
+            calls.append((api_key, base_url))
+            return ["relay-only-model"]
+
+    monkeypatch.setattr(providers, "get_provider_profile", lambda name: _Profile())
+    monkeypatch.setattr(models_mod, "_api_key_credentials", lambda name: ("deepseek-key", "https://api.deepseek.com/v1"))
+    relay = "http://127.0.0.1:9001/deepseek/v1"
+
+    assert models_mod._relay_model_catalog("deepseek", relay) == ["relay-only-model"]
+    assert calls == [("deepseek-key", relay)]

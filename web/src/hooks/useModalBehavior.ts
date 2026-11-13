@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { isImeComposing } from "@/lib/ime";
 
 /**
  * Hook that adds standard modal behaviors when `open` is true:
@@ -23,7 +24,8 @@ export function useModalBehavior({
     const prevActive = document.activeElement as HTMLElement | null;
 
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      // Escape that cancels an IME composition belongs to the field, not the modal.
+      if (e.key === "Escape" && !isImeComposing(e)) {
         e.preventDefault();
         onClose();
       }

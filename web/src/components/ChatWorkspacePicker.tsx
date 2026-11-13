@@ -24,6 +24,7 @@ import { useI18n } from "@/i18n";
 import { api, type ChatWorkspacesResponse } from "@/lib/api";
 import { abbreviateHomePath, workspaceOptions } from "@/lib/chat-workspaces";
 import { cn } from "@/lib/utils";
+import { isImeComposing } from "@/lib/ime";
 
 const CUSTOM_VALUE = "\u0000custom";
 
@@ -148,6 +149,7 @@ export function ChatWorkspacePicker({
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commitDraft}
           onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
             if (e.key === "Enter") commitDraft();
             if (e.key === "Escape") setCustomOpen(false);
           }}

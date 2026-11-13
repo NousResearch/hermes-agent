@@ -46,6 +46,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { isImeComposing, isSubmitEnter } from "@/lib/ime";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -849,7 +850,7 @@ export default function ProfilesPage() {
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") handleCreate();
+                    if (isSubmitEnter(e)) handleCreate();
                   }}
                   aria-invalid={
                     newName.trim() !== "" &&
@@ -1042,6 +1043,7 @@ export default function ProfilesPage() {
                         value={renameTo}
                         onChange={(e) => setRenameTo(e.target.value)}
                         onKeyDown={(e) => {
+                          if (isImeComposing(e)) return;
                           if (e.key === "Enter") handleRenameSubmit();
                           if (e.key === "Escape") setRenamingFrom(null);
                         }}

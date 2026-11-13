@@ -66,6 +66,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
 import { installedHubEntry } from "@/lib/skill-hub-installed";
+import { isSubmitEnter } from "@/lib/ime";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -1045,7 +1046,7 @@ function HubBrowser({
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") void runSearch();
+                  if (isSubmitEnter(e)) void runSearch();
                 }}
               />
             </div>

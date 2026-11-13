@@ -9,6 +9,7 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { isSubmitEnter } from "@/lib/ime";
 
 interface Props {
   provider: OAuthProvider;
@@ -277,7 +278,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                   value={pkceCode}
                   onChange={(e) => setPkceCode(e.target.value)}
                   placeholder={t.oauth.pasteCode}
-                  onKeyDown={(e) => e.key === "Enter" && handleSubmitPkceCode()}
+                  onKeyDown={(e) => isSubmitEnter(e) && handleSubmitPkceCode()}
                   autoFocus
                 />
                 <div className="flex items-center gap-2 justify-between">

@@ -408,6 +408,18 @@ When E2EE is enabled, Hermes:
 - Decrypts incoming messages and encrypts outgoing messages automatically
 - Auto-joins encrypted rooms when invited
 
+### Sender Sessions and Restarts
+
+By default mautrix discards the room's outbound Megolm *sender session* whenever a peer device
+list changes or membership state looks changed (it replays on the full-state sync after every
+start). For a bot this means the first replies after a gateway restart are encrypted under a
+brand-new session whose one-shot key-share can race your client's device refresh, which shows up
+as "Unable to decrypt" until key forwarding repairs it. Set
+`MATRIX_DISABLE_DEVICE_CHANGE_KEY_ROTATION=true` and start Hermes with the membership-replay
+gate (always on) to keep the existing sender session across restarts instead. Trade-off: a
+signed-out device keeps old keys until the scheduled rotation (100 messages / 7 days), and a
+brand-new device may need that rotation to receive keys.
+
 ### Matrix Tools and Controls
 
 Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.

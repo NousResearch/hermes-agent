@@ -563,6 +563,7 @@ export const frOverrides = {
     pressKey: 'Appuyez sur une touche…',
     set: 'défini',
     conflictWith: label => `Également affecté à « ${label} »`,
+    nothingNeedsYou: 'Aucune session ne vous attend',
     categories: {
       composer: 'Compositeur',
       profiles: 'Profils',
@@ -585,6 +586,7 @@ export const frOverrides = {
       'session.newTab': 'Nouvel onglet de session',
       'session.newWindow': 'Nouvelle fenêtre',
       'session.next': 'Session suivante',
+      'session.nextAttention': 'Session suivante qui vous attend',
       'session.prev': 'Session précédente',
       'session.slot.1': 'Basculer vers la session récente 1',
       'session.slot.2': 'Basculer vers la session récente 2',

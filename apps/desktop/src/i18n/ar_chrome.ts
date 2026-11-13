@@ -55,6 +55,7 @@ export const arChrome = {
     pressKey: 'اضغط مفتاحا...',
     set: 'مضبوط',
     conflictWith: label => `مرتبط أيضا بـ “${label}”`,
+    nothingNeedsYou: 'لا توجد جلسة تحتاجك الآن',
     categories: {
       composer: 'المحرّر',
       profiles: 'الملفات الشخصية',
@@ -77,6 +78,7 @@ export const arChrome = {
       'session.newTab': 'علامة تبويب جلسة جديدة',
       'session.newWindow': 'جلسة جديدة في نافذة',
       'session.next': 'الجلسة التالية',
+      'session.nextAttention': 'الجلسة التالية التي تحتاجك',
       'session.prev': 'الجلسة السابقة',
       'session.slot.1': 'الانتقال إلى الجلسة الأخيرة 1',
       'session.slot.2': 'الانتقال إلى الجلسة الأخيرة 2',

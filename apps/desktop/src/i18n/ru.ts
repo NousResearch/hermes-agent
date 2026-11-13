@@ -219,6 +219,7 @@ export const ruOverrides = {
     pressKey: 'Нажмите клавишу…',
     set: 'задано',
     conflictWith: label => `Также назначено на «${label}»`,
+    nothingNeedsYou: 'Сейчас ни один сеанс не ждёт вас',
     categories: {
       composer: 'Композер',
       profiles: 'Профили',
@@ -241,6 +242,7 @@ export const ruOverrides = {
       'session.newTab': 'Новая вкладка сеанса',
       'session.newWindow': 'Новое окно',
       'session.next': 'Следующий сеанс',
+      'session.nextAttention': 'Следующий сеанс, который ждёт вас',
       'session.prev': 'Предыдущий сеанс',
       'session.slot.1': 'Переключить на недавний сеанс 1',
       'session.slot.2': 'Переключить на недавний сеанс 2',

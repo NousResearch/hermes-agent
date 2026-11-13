@@ -224,6 +224,30 @@ export function unreadSessionCount(
   return n
 }
 
+/** The session a "jump to what needs me" press opens: a blocked prompt
+ *  (approval, question) before a finished-but-unread turn, list order within a
+ *  tier. Starts after `currentId` so repeated presses walk every waiting
+ *  session instead of reopening the one already on screen. Cron rows are left
+ *  out for the same reason as the titlebar badge (#93552). */
+export function nextAttentionSessionId(
+  byId: Readonly<Record<string, SessionDotState>>,
+  currentId: null | string,
+  ...lists: Array<readonly { archived?: boolean; id: string }[]>
+): null | string {
+  const rows = lists.flat().filter(row => !row.archived)
+  const tier = (state: SessionDotState | undefined) => (state === 'needs-input' ? 0 : state === 'unread' ? 1 : null)
+  const ordered = [0, 1].flatMap(rank => rows.filter(row => tier(byId[row.id]) === rank).map(row => row.id))
+  const candidates = [...new Set(ordered)]
+
+  if (candidates.length === 0) {
+    return null
+  }
+
+  const at = currentId ? candidates.indexOf(currentId) : -1
+
+  return candidates[(at + 1) % candidates.length]
+}
+
 /** The titlebar badge. Cron sessions are deliberately EXCLUDED: cron runs
  *  finish unwatched by design, so counting them turns the badge into a cron
  *  run counter that is permanently lit (#93552). Their unread state stays

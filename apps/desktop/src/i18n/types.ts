@@ -579,6 +579,8 @@ export interface Translations extends NoticeTranslations {
     pressKey: string
     set: string
     conflictWith: (label: string) => string
+    /** Toast when the jump-to-attention shortcut finds no session waiting. */
+    nothingNeedsYou: string
     categories: Record<string, string>
     actions: Record<string, string>
   }

@@ -100,3 +100,21 @@ def test_project_env_gate_fails_closed_on_import_failure(tmp_path, monkeypatch):
         "delivery gate fell open while agent.file_safety was unimportable at "
         "call time -> project .env deliverable again"
     )
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_project_env_judged_on_canonical_path_in_every_mode(tmp_path, monkeypatch, strict):
+    # The gate judges the resolved path the sender uploads: a symlink with an innocent name, a
+    # case variant, and a file under the trusted cache allowlist are all still refused.
+    monkeypatch.setattr("gateway.media_policy.media_delivery_strict", lambda: strict)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (cache,))
+    (cache / ".ENVRC").write_text("TOKEN=SECRET\n")
+    (cache / "report.txt").write_text("ok\n")
+    link = tmp_path / "notes.txt"
+    link.symlink_to(cache / ".ENVRC")
+
+    for candidate in (cache / ".ENVRC", link):
+        assert validate_media_delivery_path(str(candidate)) is None, candidate
+    assert validate_media_delivery_path(str(cache / "report.txt")) == str((cache / "report.txt").resolve())

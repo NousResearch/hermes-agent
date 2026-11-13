@@ -19,7 +19,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from hermes_dir_acl import make_user_dir, unusable_dir_remedy
-from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
+from gateway.platforms.base_log_safety import _log_safe_path, describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
@@ -1093,16 +1093,6 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
             and _file_is_recently_produced(resolved, window)):
         return str(resolved)
     return None
-
-
-# Control chars + Unicode line separators (NEL, LS, PS) that log aggregators treat as breaks: a
-# model-emitted path must not forge a log line.
-_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
-
-
-def _log_safe_path(path: str) -> str:
-    """Return a single-line, length-bounded path for log output."""
-    return _LOG_UNSAFE_CHARS.sub("?", str(path))[:200]
 
 
 def _validated_delivery_path(raw_path, session_key: str, label: str,

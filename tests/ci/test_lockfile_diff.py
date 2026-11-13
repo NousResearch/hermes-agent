@@ -195,6 +195,25 @@ def test_pnpm_section_ends_at_a_top_level_key_pnpm_does_not_define():
     assert section_keys(empty, "importers") == ["."]
 
 
+def test_pnpm_section_reads_an_explicit_key():
+    # pnpm writes a key over 1024 characters (a long peer suffix on a snapshot) as
+    # ``? key`` / ``: value``; the value's first line follows the ``: ``.
+    from scripts.ci.pnpm_lock import section, section_keys
+
+    explicit = REPIN_HEAD
+    for old, new in (("  ms@2.1.2:\n    resolution:", "  ? ms@2.1.2\n  : resolution:"),
+                     ("  debug@4.3.4:\n    dependencies:", "  ? debug@4.3.4\n  : dependencies:"),
+                     ("  ms@2.1.3: {}", "  ? ms@2.1.3\n  : {}")):
+        assert explicit.count(old) == 1
+        explicit = explicit.replace(old, new)
+    for name in ("snapshots", "packages"):
+        assert section(explicit, name) == section(REPIN_HEAD, name)
+        assert section_keys(explicit, name) == section_keys(REPIN_HEAD, name)
+    assert _mod.diff_pnpm_locks(REPIN_BASE, explicit) == _mod.diff_pnpm_locks(REPIN_BASE, REPIN_HEAD)
+    with pytest.raises(ValueError, match="unreadable snapshots line"):
+        section(explicit.replace("  : dependencies:", "    dependencies:"), "snapshots")
+
+
 @pytest.mark.parametrize(("old", "new"), [
     ("    dependencies:\n      ms:\n        specifier: 2.1.3\n        version: 2.1.3\n",
      "    dependencies: {ms: {specifier: 2.1.3, version: 2.1.3}}\n"),  # a flow map

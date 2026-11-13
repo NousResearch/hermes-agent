@@ -97,8 +97,11 @@ type McpSetupScope = null | string | undefined | { connectionId?: null | string;
 interface McpSetupButtonProps {
   ensureProfile?: () => Promise<null | string>
   entry: McpCatalogEntry
+  /** Setup finished. May run after this button unmounted (an adopted or
+   *  tab-switched setup): the owner must check the result is still its own. */
   onDone?: () => void
-  /** The catalog server now exists on the profile (before its keys/sign-in). */
+  /** The catalog server now exists on the profile (before its keys/sign-in).
+   *  Runs even after the setup was retired; same ownership rule as onDone. */
   onAdded?: () => void
   /** True once the owner retired this setup (New Bot rename/cancel). Unmounting
    *  alone does not stop key setup: an adopted draft keeps its setup. */
@@ -222,6 +225,12 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
         preset: entry.name
       })
 
+      // The server exists now even if this setup was retired: the owner
+      // keeps it for the draft that still holds it.
+      if (add.ok) {
+        onAdded?.()
+      }
+
       if (keysStale(epoch)) {
         return
       }
@@ -232,8 +241,6 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
 
         return
       }
-
-      onAdded?.()
     }
 
     setPhase(isOAuth ? 'oauth' : 'keys')
@@ -294,10 +301,8 @@ export function McpSetupButton({ profile, entry, onDone, onAdded, ensureProfile,
         message: b.tools.configured(entry.name)
       })
 
-      // A button that outlived its dialog has no rows left to mark.
-      if (mounted.current) {
-        onDone?.()
-      }
+      // The owner decides whether the result still belongs to its draft.
+      onDone?.()
     } else {
       failKeys((t.result && (t.result.error || (t.result.result && t.result.result.error))) || b.tools.testFailed)
     }

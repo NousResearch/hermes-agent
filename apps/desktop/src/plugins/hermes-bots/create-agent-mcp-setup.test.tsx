@@ -289,4 +289,70 @@ describe('retired staged MCP owners', () => {
       name: 'linear', profile: 'inbox-triage', env_var: 'SECOND_KEY', value: 'second'
     })
   })
+
+  it('records an add that finishes while the draft is renamed away', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishAdd!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'mcp.servers.add' && !finishAdd
+      ? new Promise(resolve => { finishAdd = () => resolve({ ok: true }) })
+      : base(method, params))
+    await openSetup()
+    await waitFor(() => expect(finishAdd).toBeTypeOf('function'))
+    rename()
+    await act(async () => finishAdd())
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'resumed' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('mcp.servers.test', { name: 'linear', profile: 'inbox-triage' }))
+    expect(mocks.request.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(1)
+  })
+
+  it('keeps a setup that finishes while another tab is open', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishTest!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'mcp.servers.test'
+      ? new Promise(resolve => { finishTest = () => resolve({ ok: true }) })
+      : base(method, params))
+    await openSetup()
+    fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'k' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    await waitFor(() => expect(finishTest).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: 'General' }))
+    await act(async () => finishTest())
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+    expect(screen.queryByRole('button', { name: /Set up/ })).toBeNull()
+    expect(screen.getByRole('checkbox', { name: /linear/ }).getAttribute('data-state')).toBe('checked')
+  })
+
+  it('records setup started on a renamed name, whose click replaced the old draft', async () => {
+    await openSetup()
+    await screen.findByPlaceholderText('LINEAR_API_KEY')
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'other-bot' } })
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    fireEvent.change(await screen.findByPlaceholderText('LINEAR_API_KEY'), { target: { value: 'k' } })
+    fireEvent.click(screen.getByRole('button', { name: /Save.*test/i }))
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('mcp.servers.test', { name: 'linear', profile: 'other-bot' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Set up/ })).toBeNull())
+    expect(screen.getByRole('checkbox', { name: /linear/ }).getAttribute('data-state')).toBe('checked')
+  })
+
+  it('does not mark the reopened dialog when an adopted add finishes later', async () => {
+    const base = mocks.request.getMockImplementation()!
+    let finishAdd!: () => void
+    mocks.request.mockImplementation((method: string, params?: unknown) => method === 'mcp.servers.add' && !finishAdd
+      ? new Promise(resolve => { finishAdd = () => resolve({ ok: true }) })
+      : base(method, params))
+    await openSetup()
+    await waitFor(() => expect(finishAdd).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: 'Create bot' }))
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
+    fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'MCP' }))
+    await act(async () => finishAdd())
+    fireEvent.click(await screen.findByRole('button', { name: /Set up/ }))
+    await screen.findByPlaceholderText('LINEAR_API_KEY')
+    expect(mocks.request.mock.calls.filter(([method]) => method === 'mcp.servers.add')).toHaveLength(2)
+  })
 })

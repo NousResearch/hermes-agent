@@ -325,6 +325,12 @@ function useDraftProfile() {
   // The name the in-flight create is minting; a different name replaces it.
   const flightSlugRef = useRef('')
   const genRef = useRef(0)
+  // Setup results belong to one dialog session (adopting or closing ends it)
+  // and one minted draft (replacing it mints another). The state copy lets a
+  // render capture the session its setup buttons serve.
+  const sessionRef = useRef(0)
+  const [session, setSession] = useState(0)
+  const mintRef = useRef(0)
   const targetRef = useRef('')
   const ownerRef = useRef('')
   const warningRef = useRef<DraftWarning | null>(null)
@@ -377,6 +383,8 @@ function useDraftProfile() {
   /** After a successful create: the next dialog session starts clean, while
    *  the adopted draft's own setup keeps running. */
   const resetDraft = () => {
+    sessionRef.current += 1
+    setSession(sessionRef.current)
     forget()
     setCreatedForCaps(null)
     setCaps(null)
@@ -386,6 +394,7 @@ function useDraftProfile() {
   useEffect(
     () => () => {
       genRef.current += 1
+      sessionRef.current += 1
       warningRef.current = null
       // Closing without adopting abandons the draft's pending setup too.
       setupGenRef.current += 1
@@ -432,6 +441,7 @@ function useDraftProfile() {
     const lease: DraftLease = {
       live: () => generation === genRef.current,
       created: (target, owner) => {
+        mintRef.current += 1
         createdRef.current = slug
         targetRef.current = target
         ownerRef.current = owner
@@ -460,6 +470,29 @@ function useDraftProfile() {
   /** The draft profile minted under `slug`, if that is the current name. */
   const draftFor = (slug: string) => (createdRef.current === slug ? slug : null)
 
+  /** Records MCP setup results for the draft a button rendered for under
+   *  `slug`. They land only while that draft is still current: kept across a
+   *  rename away and back or a tab switch, dropped once the draft is replaced
+   *  or the session ends (adopted, closed), even when the button reporting
+   *  them has unmounted. A button rendered before its draft existed binds to
+   *  the draft its first result comes from. */
+  const setupRecorder = (slug: string) => {
+    const owner = session
+    let mint = createdRef.current === slug ? mintRef.current : null
+
+    return (name: string, patch: Partial<CapabilityCatalog['mcp'][number]>) => {
+      if (sessionRef.current !== owner || createdRef.current !== slug || (mint ?? mintRef.current) !== mintRef.current) {
+        return false
+      }
+
+      mint = mintRef.current
+
+      setCaps(prev => prev && { ...prev, mcp: prev.mcp.map(x => (x.name === name ? { ...x, ...patch } : x)) })
+
+      return true
+    }
+  }
+
   return {
     adoptDraft,
     caps,
@@ -473,6 +506,7 @@ function useDraftProfile() {
     setCaps,
     setCreatedForCaps,
     setupGen,
+    setupRecorder,
     setupRetired
   }
 }
@@ -565,6 +599,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // name clash is fine there, and the remote's own duplicate check rejects
   // real collisions at profiles.create time.
   const taken = slugTaken(roster, slug, createTarget, draft.draftName())
+  const recordSetup = draft.setupRecorder(slug)
 
   const reset = () => {
     setName('')
@@ -648,9 +683,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       })
       .catch(() => setCapsFailed(true))
   }
-
-  const markMcp = (name: string, patch: Partial<CapabilityCatalog['mcp'][number]>) =>
-    setCaps(prev => prev && { ...prev, mcp: prev.mcp.map(x => (x.name === name ? { ...x, ...patch } : x)) })
 
   const toggleCap = (kind: 'mcp' | 'skills' | 'toolsets', name: string, enabled: boolean) => {
     setDirtyCaps(prev => ({
@@ -1225,12 +1257,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                   // A server this draft already added resumes at its keys.
                                   entry={m.addedInDraft === slug ? { ...m, installed: true } : m}
                                   key={draft.setupGen}
-                                  onAdded={() => markMcp(m.name, { addedInDraft: slug })}
+                                  onAdded={() => recordSetup(m.name, { addedInDraft: slug })}
                                   onDone={() => {
                                     // Setup done: mark installed so the row's
                                     // checkbox un-disables, and enable it.
-                                    markMcp(m.name, { installed: true, installedInDraft: slug, enabled: true })
-                                    setDirtyCaps(prev => ({ ...prev, mcp: true }))
+                                    if (recordSetup(m.name, { installed: true, installedInDraft: slug, enabled: true })) {
+                                      setDirtyCaps(prev => ({ ...prev, mcp: true }))
+                                    }
                                   }}
                                   // A renamed-away draft is not this name's profile.
                                   profile={draft.draftFor(slug)}

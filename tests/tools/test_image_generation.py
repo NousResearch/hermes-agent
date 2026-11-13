@@ -477,6 +477,26 @@ class TestManagedKreaRouting:
         assert kwargs["aspect_ratio"] == "portrait"
 
 
+class TestMiniMaxH3Image:
+    """MiniMax H3 Image rejects outputs under 655,360 px and has no seed key."""
+
+    MODELS = ("minimax/h3-image/text-to-image", "minimax/h3-image/highspeed/text-to-image")
+
+    def test_every_aspect_clears_the_pixel_floor_without_seed(self, image_tool):
+        for mid in self.MODELS:
+            for aspect in ("landscape", "square", "portrait"):
+                p = image_tool._build_fal_payload(mid, "a mug", aspect, seed=7)
+                size = p["image_size"]
+                assert 655_360 <= size["width"] * size["height"] <= 20_000_000, (mid, aspect)
+                assert "seed" not in p
+
+    def test_edit_follows_the_input_image(self, image_tool):
+        for mid in self.MODELS:
+            p = image_tool._build_fal_edit_payload(mid, "make it blue", ["https://x/a.png"], "portrait")
+            assert p["image_urls"] == ["https://x/a.png"]
+            assert "image_size" not in p and "seed" not in p
+
+
 class TestManagedPortalRouting:
     """A Portal model under the managed selection reaches the Portal plugin — never FAL."""
 

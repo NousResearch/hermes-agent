@@ -377,6 +377,33 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         edit_supports={"prompt", "image_urls", "num_images", "output_format", "sync_mode"},
         max_reference_images=10,
     ),
+    # MiniMax H3 Image (Nov 2026). Output area must be 655,360..20,000,000 px, so the 16:9 presets
+    # (1024x576) are below the floor: explicit 2K dicts instead, matching the vendor's 2048² default.
+    # Prompt expansion is off: when it fails the request fails, and agent prompts are already
+    # detailed. Edits omit image_size ("auto" follows the first input image). No seed in the schema.
+    **{
+        f"minimax/h3-image/{tier}text-to-image": _model(
+            f"MiniMax H3 Image{label}", speed, strengths, price,
+            sizes={
+                "landscape": {"width": 2048, "height": 1152},
+                "square": {"width": 2048, "height": 2048},
+                "portrait": {"width": 1152, "height": 2048},
+            },
+            defaults={"num_images": 1, "output_format": "png", "enable_prompt_expansion": False},
+            supports={
+                "prompt", "image_size", "num_images", "output_format", "sync_mode", "enable_prompt_expansion",
+            },
+            edit_endpoint=f"minimax/h3-image/{tier}edit",
+            edit_supports={"prompt", "image_urls", "num_images", "output_format", "sync_mode"},
+            max_reference_images=16,
+        )
+        for tier, label, speed, strengths, price in (
+            ("", "", "~18s", "MiniMax flagship, 2K-4K native, 16-image compose/edit",
+             "Token-based: $3.80/1M output image tokens"),
+            ("highspeed/", " Highspeed", "Fast", "Low-latency H3 Image tier, same 16-image edit",
+             "Token-based: $7.60/1M output image tokens"),
+        )
+    },
 }
 
 

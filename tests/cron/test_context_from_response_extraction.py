@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import cron.scheduler
+import hermes_agent.cron.scheduler
 import run_agent
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -25,7 +25,7 @@ def cron_env(tmp_path, monkeypatch):
     (hermes_home / "cron" / "output").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
@@ -35,7 +35,7 @@ def cron_env(tmp_path, monkeypatch):
 
 
 def _write_archive(cron_env, job_id: str, filename: str, body: str) -> None:
-    from cron.jobs import OUTPUT_DIR
+    from hermes_agent.cron.jobs import OUTPUT_DIR
 
     out_dir = OUTPUT_DIR / job_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -54,15 +54,15 @@ def _run_stub_job(monkeypatch, job, answer):
     monkeypatch.setattr(run_agent, "AIAgent", Agent)
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
                         lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
-    return cron.scheduler.run_job(job)
+    return hermes_agent.cron.scheduler.run_job(job)
 
 
 class TestResponseSurvivesLongPrompt:
     """The answer, not the prompt, is the part continuity needs."""
 
     def test_long_prompt_archive_keeps_response(self, cron_env):
-        from cron.jobs import create_job
-        from cron.scheduler import _build_job_prompt
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler import _build_job_prompt
 
         job = create_job(prompt="Run the daily check", schedule="0 8 * * *", context_from="self")
         _write_archive(
@@ -81,8 +81,8 @@ class TestUnusableAnswersFallThrough:
     """A [SILENT] or blank response is not usable continuity."""
 
     def test_silent_response_falls_through_to_older_archive(self, cron_env):
-        from cron.jobs import create_job
-        from cron.scheduler_prompt import _inject_context_from
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler_prompt import _inject_context_from
 
         job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
         _write_archive(
@@ -104,8 +104,8 @@ class TestScriptModeArchives:
     """Archives without a ## Response heading (script-mode) stay whole-document."""
 
     def test_headingless_archive_injects_whole_document(self, cron_env):
-        from cron.jobs import create_job
-        from cron.scheduler_prompt import _inject_context_from
+        from hermes_agent.cron.jobs import create_job
+        from hermes_agent.cron.scheduler_prompt import _inject_context_from
 
         job = create_job(prompt="Report", schedule="0 8 * * *", context_from="self")
         _write_archive(cron_env, job["id"], "2026-09-19_08-00-00.md",
@@ -119,8 +119,8 @@ class TestScriptModeArchives:
 
 
 def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatch, cron_owner):
-    from cron.jobs import create_job, save_job_output
-    from cron.scheduler_prompt import _inject_context_from
+    from hermes_agent.cron.jobs import create_job, save_job_output
+    from hermes_agent.cron.scheduler_prompt import _inject_context_from
 
     answer = "摘要 before heading\r\n\r\n## Response\nsubsection\n**Response Characters:** 4\n## Response\n\nbody\n\n  "
 
@@ -137,8 +137,8 @@ def test_writer_reader_preserve_response_with_nested_frames(cron_env, monkeypatc
 
 def test_truncated_outer_frame_cannot_promote_a_quoted_inner_frame(cron_env, monkeypatch, cron_owner):
     import os
-    from cron.jobs import create_job, save_job_output, OUTPUT_DIR
-    from cron.scheduler_prompt import _inject_context_from
+    from hermes_agent.cron.jobs import create_job, save_job_output, OUTPUT_DIR
+    from hermes_agent.cron.scheduler_prompt import _inject_context_from
 
     quoted = "QUOTED INNER ANSWER"
     suffix = "\nThis tail will be lost."

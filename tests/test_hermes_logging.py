@@ -121,7 +121,7 @@ class TestSetupLogging:
             [hermes_home, profile_home]
         ) is True
 
-        logger = logging.getLogger("cron.scheduler.profile-routing-test")
+        logger = logging.getLogger("hermes_agent.cron.scheduler.profile-routing-test")
         token = set_hermes_home_override(profile_home)
         try:
             logger.info("profile-routed cron record")
@@ -313,7 +313,7 @@ class TestSetupLogging:
             [hermes_home, profile_home]
         ) is True
 
-        logger = logging.getLogger("cron.scheduler.profile-routing-deleted-test")
+        logger = logging.getLogger("hermes_agent.cron.scheduler.profile-routing-deleted-test")
         # The default home's agent.log must exist before the fallback assertion
         # can mean anything (lazy-opening handlers may not have created it yet).
         logger.info("routing fallback default-home probe record")
@@ -368,7 +368,7 @@ class TestSetupLogging:
         profile_home.mkdir(parents=True)
         hermes_logging.setup_logging(hermes_home=hermes_home)
         assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
-        logger = logging.getLogger("cron.scheduler.out-of-band-delete-test")
+        logger = logging.getLogger("hermes_agent.cron.scheduler.out-of-band-delete-test")
 
         def emit(message):
             token = set_hermes_home_override(profile_home)
@@ -426,7 +426,7 @@ class TestSetupLogging:
         profile_home.mkdir(parents=True)
         hermes_logging.setup_logging(hermes_home=hermes_home)
         assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
-        logger = logging.getLogger("cron.scheduler.liveness-rate-limit-test")
+        logger = logging.getLogger("hermes_agent.cron.scheduler.liveness-rate-limit-test")
         calls = []
         real = hermes_logging.named_profile_is_deleted
 

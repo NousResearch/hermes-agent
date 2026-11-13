@@ -12,13 +12,13 @@ import pytest
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
-    """A cron.suggestions module bound to an isolated HERMES_HOME."""
+    """A hermes_agent.cron.suggestions module bound to an isolated HERMES_HOME."""
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     import hermes_constants
     importlib.reload(hermes_constants)
-    import cron.suggestions as s
+    import hermes_agent.cron.suggestions as s
     importlib.reload(s)
     return s
 
@@ -37,7 +37,7 @@ class TestStore:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        import cron.suggestions as suggestions_mod
+        import hermes_agent.cron.suggestions as suggestions_mod
 
         explicit_file = tmp_path / "explicit" / "suggestions.json"
         profile_home = tmp_path / "profile"
@@ -57,7 +57,7 @@ class TestStore:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        import cron.suggestions as suggestions_mod
+        import hermes_agent.cron.suggestions as suggestions_mod
 
         profile_a = tmp_path / "profile-a"
         profile_b = tmp_path / "profile-b"
@@ -132,7 +132,7 @@ class TestStore:
             created.update(kwargs)
             return {"id": "job123", "name": kwargs.get("name"), **kwargs}
 
-        with patch("cron.jobs.create_job", fake_create_job):
+        with patch("hermes_agent.cron.jobs.create_job", fake_create_job):
             job = store.accept_suggestion("1", origin={"platform": "telegram", "chat_id": "5"})
 
         assert job is not None
@@ -145,14 +145,14 @@ class TestStore:
 
     def test_registration_failure_marks_suggestion_accepted(self, store):
         """Retrying an acceptance must not create a duplicate durable job."""
-        from cron.scheduler import CronSchedulerRegistrationError
+        from hermes_agent.cron.scheduler import CronSchedulerRegistrationError
 
         rec = _add(store, key="registration-failed", title="My Job")
         job = {"id": "job123", "name": "My Job"}
         failure = CronSchedulerRegistrationError(job, RuntimeError("private detail"))
 
         with patch(
-            "cron.scheduler.create_job_with_scheduler_registration",
+            "hermes_agent.cron.scheduler.create_job_with_scheduler_registration",
             side_effect=failure,
         ):
             with pytest.raises(CronSchedulerRegistrationError):
@@ -172,7 +172,7 @@ class TestStore:
         _add(store, key="a")
         _add(store, key="b")
         store.dismiss_suggestion("2")  # b dismissed (retained for latch)
-        with patch("cron.jobs.create_job", lambda **k: {"id": "j"}):
+        with patch("hermes_agent.cron.jobs.create_job", lambda **k: {"id": "j"}):
             store.accept_suggestion("1")  # a accepted
         removed = store.clear_resolved()
         assert removed == 1  # only the accepted record pruned
@@ -181,14 +181,14 @@ class TestStore:
 
 class TestCatalog:
     def test_seed_registers_all_entries(self, store):
-        from cron.suggestion_catalog import CATALOG, seed_catalog_suggestions
+        from hermes_agent.cron.suggestion_catalog import CATALOG, seed_catalog_suggestions
 
         created = seed_catalog_suggestions(add_fn=store.add_suggestion)
         assert len(created) == len(CATALOG)
         assert len(store.list_pending()) == min(len(CATALOG), store.MAX_PENDING)
 
     def test_no_catalog_prompt_bakes_in_absolute_script_path(self):
-        from cron.suggestion_catalog import CATALOG, classify_items_script_path
+        from hermes_agent.cron.suggestion_catalog import CATALOG, classify_items_script_path
 
         # Absolute install paths go stale after relocation and don't exist on
         # remote terminal backends (Docker/Modal); prompts must reference
@@ -201,7 +201,7 @@ class TestBlueprintBridge:
         from tools.blueprints import BlueprintSpec, register_blueprint_suggestion
 
         spec = BlueprintSpec(skill_name="morning-brief", schedule="0 8 * * *", deliver="telegram")
-        with patch("cron.suggestions.add_suggestion", store.add_suggestion):
+        with patch("hermes_agent.cron.suggestions.add_suggestion", store.add_suggestion):
             rec = register_blueprint_suggestion(spec)
         assert rec is not None
         assert rec["source"] == "blueprint"
@@ -211,7 +211,7 @@ class TestBlueprintBridge:
 class TestCommandHandler:
     def test_bare_lists_pending(self, store):
         _add(store, key="c1", title="Daily thing")
-        with patch("cron.suggestions.list_pending", store.list_pending):
+        with patch("hermes_agent.cron.suggestions.list_pending", store.list_pending):
             from hermes_cli.suggestions_cmd import handle_suggestions_command
             # Patch the module the handler imports.
             with patch.dict("sys.modules"):

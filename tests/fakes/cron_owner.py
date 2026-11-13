@@ -6,7 +6,7 @@ scheduler fire writes.
 """
 from types import SimpleNamespace
 
-from cron import executions
+from hermes_agent.cron import executions
 from gateway import run, session_cron
 from gateway.config import GatewayConfig
 from gateway.session import SessionStore

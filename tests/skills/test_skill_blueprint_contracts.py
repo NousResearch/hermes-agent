@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from croniter import croniter
 
-from cron.blueprint_catalog import CATALOG, fill_blueprint, get_blueprint
+from hermes_agent.cron.blueprint_catalog import CATALOG, fill_blueprint, get_blueprint
 import itertools
 
 REPO = Path(__file__).resolve().parents[2]
@@ -34,7 +34,7 @@ def test_every_blueprint_skill_is_bundled():
     for slot in bp.slots if slot.name == "interval_h"
 ))
 def test_price_watch_fills_and_persists_with_chosen_cadence(hours, tmp_path, monkeypatch):
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     monkeypatch.setattr(jobs, "CRON_DIR", tmp_path)
     monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "jobs.json")

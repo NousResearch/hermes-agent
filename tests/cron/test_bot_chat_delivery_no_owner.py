@@ -2,13 +2,13 @@
 a later tick admits it to the owner once, under the same delivery id."""
 from unittest.mock import Mock
 
-from cron import scheduler_delivery as delivery
+from hermes_agent.cron import scheduler_delivery as delivery
 from tools import bot_live_delivery as mailbox
 
 
 def test_bot_chat_target_without_live_owner_is_parked_and_admitted_later(tmp_path, monkeypatch):
-    from cron import jobs
-    from cron.bot_chat_legacy import drain_legacy_pending
+    from hermes_agent.cron import jobs
+    from hermes_agent.cron.bot_chat_legacy import drain_legacy_pending
     from gateway import config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

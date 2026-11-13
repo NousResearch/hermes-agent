@@ -91,7 +91,7 @@ def public_host(monkeypatch, local_server):
 
 
 def test_monitor_url_rejects_direct_loopback(public_host):
-    from cron.monitor import _fetch_monitor_url
+    from hermes_agent.cron.monitor import _fetch_monitor_url
 
     port, hits = public_host
     ok, out = _fetch_monitor_url(f"http://127.0.0.1:{port}/secret")
@@ -102,7 +102,7 @@ def test_monitor_url_rejects_direct_loopback(public_host):
 
 
 def test_monitor_url_rejects_redirect_to_loopback(public_host):
-    from cron.monitor import _fetch_monitor_url
+    from hermes_agent.cron.monitor import _fetch_monitor_url
 
     port, hits = public_host
     ok, out = _fetch_monitor_url(f"http://{PUBLIC_HOST}:{port}/redirect")
@@ -113,7 +113,7 @@ def test_monitor_url_rejects_redirect_to_loopback(public_host):
 
 
 def test_monitor_url_public_fetch_still_works_and_is_capped(public_host):
-    from cron.monitor import MAX_URL_BYTES, _fetch_monitor_url
+    from hermes_agent.cron.monitor import MAX_URL_BYTES, _fetch_monitor_url
 
     port, _hits = public_host
     assert _fetch_monitor_url(f"http://{PUBLIC_HOST}:{port}/secret") == (True, "internal-secret")
@@ -123,7 +123,7 @@ def test_monitor_url_public_fetch_still_works_and_is_capped(public_host):
 
 
 def test_monitor_url_does_not_inflate_a_compressed_body(public_host):
-    from cron.monitor import MAX_URL_BYTES, _fetch_monitor_url
+    from hermes_agent.cron.monitor import MAX_URL_BYTES, _fetch_monitor_url
 
     port, _hits = public_host
     tracemalloc.start()
@@ -138,7 +138,7 @@ def test_monitor_url_does_not_inflate_a_compressed_body(public_host):
 
 
 def test_monitor_url_asks_for_an_uncompressed_body(public_host):
-    from cron.monitor import _fetch_monitor_url
+    from hermes_agent.cron.monitor import _fetch_monitor_url
 
     port, _hits = public_host
     assert _fetch_monitor_url(f"http://{PUBLIC_HOST}:{port}/negotiated") == (True, "internal-secret")

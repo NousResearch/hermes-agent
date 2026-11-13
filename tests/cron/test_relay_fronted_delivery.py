@@ -20,9 +20,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cron import scheduler as sched
-from cron.scheduler import _deliver_result, _resolve_delivery_targets
-from cron.scheduler_delivery import _get_home_target_chat_id, _get_home_target_thread_id
+from hermes_agent.cron import scheduler as sched
+from hermes_agent.cron.scheduler import _deliver_result, _resolve_delivery_targets
+from hermes_agent.cron.scheduler_delivery import _get_home_target_chat_id, _get_home_target_thread_id
 from gateway.config import HomeChannel, Platform
 
 
@@ -145,7 +145,7 @@ class TestRelayDeliveryGate:
 
         with patch("gateway.config.load_gateway_config",
                    return_value=gateway_config), \
-             patch("cron.scheduler.load_config",
+             patch("hermes_agent.cron.scheduler.load_config",
                    return_value={"cron": {"wrap_response": False}}), \
              patch("gateway.delivery.DeliveryRouter", return_value=router), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):

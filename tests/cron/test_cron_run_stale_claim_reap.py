@@ -25,7 +25,7 @@ def test_one_shot_cli_path_reaps_dead_owner_row_before_returning_sync(tmp_path, 
     import subprocess as sp
     import sqlite3
 
-    from cron import executions
+    from hermes_agent.cron import executions
     from gateway.session_context import _SESSION_ASYNC_DELIVERY
     from tools import cronjob_tools
 

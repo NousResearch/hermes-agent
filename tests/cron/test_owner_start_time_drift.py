@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-import cron.executions as executions_mod
+import hermes_agent.cron.executions as executions_mod
 
 
 @pytest.fixture(autouse=True)

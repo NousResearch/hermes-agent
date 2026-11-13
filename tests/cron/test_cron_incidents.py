@@ -10,15 +10,15 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from cron import incidents
-import cron.jobs as cron_jobs
-import cron.scheduler as sched
+from hermes_agent.cron import incidents
+import hermes_agent.cron.jobs as cron_jobs
+import hermes_agent.cron.scheduler as sched
 from hermes_time import now as _hermes_now
 
 
 def _point_db(monkeypatch, tmp_path):
     """Point the incident store at a throwaway executions.db (same file shape
-    the scheduler uses). ``cron.executions.EXECUTIONS_FILE`` stays None so the
+    the scheduler uses). ``hermes_agent.cron.executions.EXECUTIONS_FILE`` stays None so the
     incident store falls back to its own override."""
     monkeypatch.setattr(incidents, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
     return incidents
@@ -60,8 +60,8 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated", *, settle=F
         return {"status": "pending"}
 
     with cron_jobs.use_cron_store(tmp_path), \
-         patch("cron.scheduler._hermes_home", tmp_path), \
-         patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+         patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
+         patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
@@ -72,7 +72,7 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated", *, settle=F
                    "provider": "openrouter",
                    "api_mode": "chat_completions",
                }), \
-         patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
+         patch("hermes_agent.cron.delivery_queue.enqueue", side_effect=fake_deliver), \
          patch("run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run_conversation.side_effect = RuntimeError(error)
@@ -351,7 +351,7 @@ def test_mark_incident_alerted_sets_state_never_resurrects(monkeypatch, tmp_path
 def test_best_effort_incident_store_failure_returns_false(monkeypatch, tmp_path):
     """An incident-store error must never break the cron delivery path."""
     _point_db(monkeypatch, tmp_path)
-    with patch("cron.incidents.upsert_incident",
+    with patch("hermes_agent.cron.incidents.upsert_incident",
                side_effect=RuntimeError("db locked")):
         assert sched._upsert_incident_for_failure(_job(), "boom") == (False, None)
 

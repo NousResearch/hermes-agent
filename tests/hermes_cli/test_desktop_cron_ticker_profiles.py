@@ -42,7 +42,7 @@ class _RecordingExternal:
 
 @pytest.fixture()
 def _providers(monkeypatch):
-    import cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler_provider as sp
 
     builtin = _RecordingBuiltin()
     # isinstance(provider, InProcessCronScheduler) gate: register our double
@@ -78,7 +78,7 @@ def test_multi_profile_homes_passed_to_builtin(monkeypatch, _providers, tmp_path
 @pytest.mark.parametrize("gateway_running", [True, False])
 def test_single_profile_ticks_only_without_gateway(monkeypatch, tmp_path, gateway_running):
     """Exercise Desktop startup through the real built-in scheduler loop."""
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     from hermes_constants import get_hermes_home
     import hermes_cli.profiles as profiles_mod
 
@@ -87,11 +87,11 @@ def test_single_profile_ticks_only_without_gateway(monkeypatch, tmp_path, gatewa
     monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda **_kw: [("default", home)])
     monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda _home: gateway_running)
     monkeypatch.setattr(
-        "cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler
+        "hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler
     )
     ticked = []
     monkeypatch.setattr(
-        "cron.scheduler.tick", lambda **_kw: ticked.append(get_hermes_home())
+        "hermes_agent.cron.scheduler.tick", lambda **_kw: ticked.append(get_hermes_home())
     )
     stop = threading.Event()
     # One real scheduler cycle, with no wall-clock wait or job dispatch.
@@ -125,7 +125,7 @@ def test_enumeration_failure_fails_open(monkeypatch, _providers):
 
 def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):
     """External registries are not profile-scoped; keep single-store semantics."""
-    import cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler_provider as sp
 
     external = _RecordingExternal()
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: external)

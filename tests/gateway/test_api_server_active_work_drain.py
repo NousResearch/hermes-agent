@@ -193,7 +193,7 @@ class TestDrainWaitsForApiWork:
 
     @pytest.mark.asyncio
     async def test_drain_still_waits_for_chat_cron_and_api_work(self):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         runner, _adapter = make_restart_runner()
         runner._running_agents = {"session-1": MagicMock()}
@@ -644,7 +644,7 @@ class TestShutdownSettleWindow:
 
         with patch("gateway.status.remove_pid_file"), \
              patch("gateway.status.publish_runtime_status"), \
-             patch("cron.scheduler.mark_job_run"):
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
             await runner.stop()
 
         assert api.interrupt_reasons == [_INTERRUPT_REASON_GATEWAY_SHUTDOWN]
@@ -696,7 +696,7 @@ class TestShutdownSettleWindow:
         try:
             with patch("gateway.status.remove_pid_file"), \
                  patch("gateway.status.publish_runtime_status"), \
-                 patch("cron.scheduler.mark_job_run"):
+                 patch("hermes_agent.cron.scheduler.mark_job_run"):
                 await runner.stop()
         finally:
             monkeypatch.undo()

@@ -10,7 +10,7 @@ from datetime import timedelta
 
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 
 
 @pytest.fixture
@@ -28,13 +28,13 @@ def _park(job_id: str, seconds_ago: float) -> None:
 
 
 def _ledger(job_id: str) -> list[dict]:
-    from cron.executions import list_executions
+    from hermes_agent.cron.executions import list_executions
 
     return list_executions(job_id=job_id)
 
 
 def _live_run(job_id: str) -> str:
-    from cron.executions import create_execution, mark_execution_running
+    from hermes_agent.cron.executions import create_execution, mark_execution_running
 
     record = create_execution(job_id, source="test")
     mark_execution_running(record["id"])
@@ -95,7 +95,7 @@ def test_missed_slots_count_in_the_jobs_pinned_zone(home):
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from cron.missed_runs import count_missed_slots
+    from hermes_agent.cron.missed_runs import count_missed_slots
 
     (home / "config.yaml").write_text("timezone: America/Los_Angeles\n", encoding="utf-8")
     ny = ZoneInfo("America/New_York")
@@ -107,7 +107,7 @@ def test_missed_slots_count_in_the_jobs_pinned_zone(home):
 
 
 def test_a_profile_distribution_carries_the_jobs_missed_run_policy(home):
-    from cron.job_definition import merge_job_definition
+    from hermes_agent.cron.job_definition import merge_job_definition
 
     local = jobs.create_job(prompt="brief", schedule="0 7 * * *", deliver="local", catch_up=True)
     merged = merge_job_definition(dict(local), {"prompt": "brief", "schedule": local["schedule"],
@@ -153,7 +153,7 @@ def test_a_pre_existing_ledger_is_widened_without_losing_rows(home):
     conn.commit()
     conn.close()
 
-    from cron.executions import record_missed_occurrences
+    from hermes_agent.cron.executions import record_missed_occurrences
 
     record_missed_occurrences("j1", count=2, first_instant=None, detail="test")
     assert sorted(r["status"] for r in _ledger("j1")) == ["completed", "missed"]
@@ -163,7 +163,7 @@ def test_a_pre_existing_ledger_is_widened_without_losing_rows(home):
 
 
 def test_removing_a_job_stops_its_live_run(home):
-    from cron.cancellation import CancelRequest
+    from hermes_agent.cron.cancellation import CancelRequest
 
     job = jobs.create_job(prompt="long", schedule="every 1h", deliver="local")
     execution_id = _live_run(job["id"])
@@ -175,10 +175,10 @@ def test_removing_a_job_stops_its_live_run(home):
 
 
 def test_a_cancelled_run_books_cancelled_without_counting_as_a_failure(home):
-    from cron import scheduler
-    from cron.cancellation import request_cancel
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.cancellation import request_cancel
 
-    from cron.executions import create_execution
+    from hermes_agent.cron.executions import create_execution
 
     job = jobs.create_job(prompt="long", schedule="every 1h", deliver="local")
     execution_id = create_execution(job["id"], source="test")["id"]  # the body starts it

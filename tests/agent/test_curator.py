@@ -243,7 +243,7 @@ def _backdate(u, name: str, days: int, *, use_count: int = 1):
 
 
 def _write_cron_job(home: Path, skill_ref: str, monkeypatch):
-    """Write a real jobs.json referencing *skill_ref* and reload ``cron.jobs``.
+    """Write a real jobs.json referencing *skill_ref* and reload ``hermes_agent.cron.jobs``.
 
     Deliberately does NOT stub ``_cron_referenced_skills`` — these cases
     exercise the real protection lookup end to end. ``SKILLS_DIR`` is pinned
@@ -269,7 +269,7 @@ def _write_cron_job(home: Path, skill_ref: str, monkeypatch):
         }]),
         encoding="utf-8",
     )
-    import cron.jobs as cron_jobs
+    import hermes_agent.cron.jobs as cron_jobs
     importlib.reload(cron_jobs)
     return cron_jobs
 

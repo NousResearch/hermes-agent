@@ -96,7 +96,7 @@ def test_the_workspace_probe_runs_no_git_on_the_host(tmp_path, no_spawn):
 
 
 def test_a_cron_script_does_not_run_on_the_host(tmp_path, no_spawn):
-    from cron.scheduler_script import _run_job_script
+    from hermes_agent.cron.scheduler_script import _run_job_script
 
     with bind_state(A):
         ok, out = _run_job_script("job.py")

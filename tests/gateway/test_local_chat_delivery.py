@@ -136,7 +136,7 @@ async def test_a_classic_cli_resume_with_no_heartbeat_leaves_the_tick_to_the_pol
 @pytest.mark.parametrize('live_adapters', [False, True], ids=['no-local-adapter-yet', 'in-gateway-ticker'])
 @pytest.mark.parametrize('viewer', [False, True], ids=['unviewed', 'viewed'])
 async def test_cron_result_for_a_local_origin_is_a_note_not_a_turn(tmp_path, monkeypatch, live_adapters, viewer):
-    from cron import scheduler_delivery as sd
+    from hermes_agent.cron import scheduler_delivery as sd
     from tests.gateway.test_session_end_delegations import _record_turns
     from tests.gateway.test_unviewed_completion_notes import _target
     runner, authority, ref, actor = await _local(tmp_path, monkeypatch)
@@ -162,7 +162,7 @@ async def test_cron_result_for_a_local_origin_is_a_note_not_a_turn(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_cron_result_for_a_local_origin_without_its_owner_is_an_error(tmp_path, monkeypatch):
-    from cron import scheduler_delivery as sd
+    from hermes_agent.cron import scheduler_delivery as sd
     from gateway.session_cron import unbind_owner
     runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
     unbind_owner(authority)  # a standalone `hermes cron run`: no gateway in this process

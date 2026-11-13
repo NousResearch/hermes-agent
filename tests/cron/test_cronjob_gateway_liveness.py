@@ -34,10 +34,10 @@ def hermes_env(tmp_path, monkeypatch):
 
     import hermes_constants
     importlib.reload(hermes_constants)
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
+    import hermes_agent.cron.jobs
+    importlib.reload(hermes_agent.cron.jobs)
+    import hermes_agent.cron.scheduler
+    importlib.reload(hermes_agent.cron.scheduler)
 
     return home
 
@@ -275,7 +275,7 @@ class TestRuntimeLockFirstLiveness:
         """A satellite needs its own fresh heartbeat as well as a live multiplexer."""
         from unittest.mock import patch
 
-        from cron.jobs import record_ticker_heartbeat
+        from hermes_agent.cron.jobs import record_ticker_heartbeat
         import hermes_cli.cron as cron_cli
 
         record_ticker_heartbeat(success=True)

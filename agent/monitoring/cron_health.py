@@ -10,15 +10,15 @@ from typing import Any, Callable, Optional
 
 from agent.monitoring.events import CronExecutionEvent
 from agent.monitoring.gateway_health import GatewayMetric, _contains_any, _safe_instance_id
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     _compute_grace_seconds,
     get_ticker_heartbeat_age,
     get_ticker_success_age,
     load_jobs,
 )
-from cron.occurrences import get_catch_up_occurrence_count
-from cron.scheduler import get_running_job_ids
-from cron.store_health import degraded_records
+from hermes_agent.cron.occurrences import get_catch_up_occurrence_count
+from hermes_agent.cron.scheduler import get_running_job_ids
+from hermes_agent.cron.store_health import degraded_records
 from hermes_time import now as _now
 
 logger = logging.getLogger(__name__)

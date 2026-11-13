@@ -22,8 +22,8 @@ from pathlib import Path
 
 import pytest
 
-import cron.jobs as jobs_mod
-from cron.jobs import (
+import hermes_agent.cron.jobs as jobs_mod
+from hermes_agent.cron.jobs import (
     _jobs_lock,
     claim_job_for_fire,
     create_job,
@@ -81,7 +81,7 @@ class TestBoundedJobsLock:
         try:
             start = time.monotonic()
             entered = False
-            with caplog.at_level("ERROR", logger="cron.jobs"):
+            with caplog.at_level("ERROR", logger="hermes_agent.cron.jobs"):
                 with _jobs_lock():
                     entered = True
             elapsed = time.monotonic() - start
@@ -142,7 +142,7 @@ class TestHonestRunSkipMessages:
         from tools.cronjob_tools import _execute_job_now
 
         job = create_job(name="paused job", schedule="0 7 * * *", prompt="x")
-        from cron.jobs import pause_job
+        from hermes_agent.cron.jobs import pause_job
 
         pause_job(job["id"])
         res = _execute_job_now(get_job(job["id"]))

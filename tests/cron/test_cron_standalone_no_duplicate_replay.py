@@ -14,7 +14,7 @@ import time
 import httpx
 import pytest
 
-import cron.scheduler_delivery as sd
+import hermes_agent.cron.scheduler_delivery as sd
 from gateway import delivery_ledger as dl
 from gateway.config import GatewayConfig, Platform
 from gateway.delivery import DeliveryRouter, DeliverySendError, DeliveryTarget

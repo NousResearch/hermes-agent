@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     advance_next_runs,
     claim_dispatch,
     claim_job_for_fire,
@@ -25,11 +25,11 @@ from cron.jobs import (
 
 @pytest.fixture()
 def clock(tmp_path, monkeypatch):
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     state = {"now": datetime.fromisoformat("2026-10-28T09:00:00-07:00")}
-    monkeypatch.setattr("cron.jobs._hermes_now", lambda: state["now"])
+    monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: state["now"])
     return state
 
 
@@ -181,7 +181,7 @@ def test_quota_hold_on_a_manual_run_delays_a_queued_run_now_without_spending_the
     """A manual run hits a provider quota window while another run-now is queued: the hold delays
     that queued run-now to the window boundary, where it still fires as an extra run. It spends no
     repeat run and the scheduled slot after the window stays put."""
-    monkeypatch.setattr("cron.quota_hold._hermes_now", lambda: clock["now"])
+    monkeypatch.setattr("hermes_agent.cron.quota_hold._hermes_now", lambda: clock["now"])
     job = create_job("digest", "every 60m", name="digest", repeat=3)
     slot = job["next_run_at"]  # 10:00
     clock["now"] += timedelta(minutes=20)

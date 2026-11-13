@@ -32,10 +32,10 @@ def hermes_env(tmp_path, monkeypatch):
     import importlib
     import hermes_constants
     importlib.reload(hermes_constants)
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
+    import hermes_agent.cron.jobs
+    importlib.reload(hermes_agent.cron.jobs)
+    import hermes_agent.cron.scheduler
+    importlib.reload(hermes_agent.cron.scheduler)
 
     return home
 
@@ -45,20 +45,20 @@ def hermes_env(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("prompt", [None, "", "   ", "\n\t "])
 def test_create_job_rejects_empty_payload(hermes_env, prompt):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     with pytest.raises(ValueError, match="nothing to run"):
         create_job(prompt=prompt, schedule="every 5m")
 
 def test_create_job_rejects_blank_script_and_blank_skills(hermes_env):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     with pytest.raises(ValueError, match="nothing to run"):
         create_job(prompt="  ", schedule="every 5m", script="   ", skills=["", "  "])
 
 def test_create_job_no_agent_error_still_wins(hermes_env):
     """no_agent=True without a script keeps its own, more specific message."""
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     with pytest.raises(ValueError, match="no_agent=True requires a script"):
         create_job(prompt=None, schedule="every 5m", no_agent=True)
@@ -68,7 +68,7 @@ def test_create_job_no_agent_error_still_wins(hermes_env):
 # ---------------------------------------------------------------------------
 
 def test_valid_shapes_are_accepted(hermes_env):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
 
@@ -101,7 +101,7 @@ def test_valid_shapes_are_accepted(hermes_env):
 # ---------------------------------------------------------------------------
 
 def test_update_job_rejects_clearing_the_only_payload(hermes_env):
-    from cron.jobs import create_job, get_job, update_job
+    from hermes_agent.cron.jobs import create_job, get_job, update_job
 
     job = create_job(prompt="check the news", schedule="every 5m", deliver="local")
 
@@ -113,7 +113,7 @@ def test_update_job_rejects_clearing_the_only_payload(hermes_env):
 
 def test_update_job_rejects_toggling_no_agent_on_without_a_script(hermes_env):
     """create_job enforces no_agent ⇒ script; update_job must too."""
-    from cron.jobs import create_job, get_job, update_job
+    from hermes_agent.cron.jobs import create_job, get_job, update_job
 
     job = create_job(prompt="check the news", schedule="every 5m", deliver="local")
 
@@ -124,7 +124,7 @@ def test_update_job_rejects_toggling_no_agent_on_without_a_script(hermes_env):
 
 @pytest.mark.parametrize("blank", [None, "", "   "])
 def test_update_job_rejects_removing_script_from_a_no_agent_job(hermes_env, blank):
-    from cron.jobs import create_job, get_job, update_job
+    from hermes_agent.cron.jobs import create_job, get_job, update_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -138,7 +138,7 @@ def test_update_job_rejects_removing_script_from_a_no_agent_job(hermes_env, blan
 
 def test_update_job_rejects_swapping_script_for_prompt_on_a_no_agent_job(hermes_env):
     """A prompt does not rescue no_agent — there is no agent to read it."""
-    from cron.jobs import create_job, update_job
+    from hermes_agent.cron.jobs import create_job, update_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -150,7 +150,7 @@ def test_update_job_rejects_swapping_script_for_prompt_on_a_no_agent_job(hermes_
 
 def test_update_job_allows_dropping_script_when_no_agent_is_turned_off(hermes_env):
     """Both fields in one update: the merged record is a valid prompt job."""
-    from cron.jobs import create_job, get_job, update_job
+    from hermes_agent.cron.jobs import create_job, get_job, update_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -164,7 +164,7 @@ def test_update_job_allows_dropping_script_when_no_agent_is_turned_off(hermes_en
     assert stored["prompt"] == "check the news"
 
 def test_update_job_allows_swapping_the_script_of_a_no_agent_job(hermes_env):
-    from cron.jobs import create_job, get_job, update_job
+    from hermes_agent.cron.jobs import create_job, get_job, update_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -176,7 +176,7 @@ def test_update_job_allows_swapping_the_script_of_a_no_agent_job(hermes_env):
 
 def test_update_job_allows_clearing_prompt_when_script_remains(hermes_env):
     """The merged record still has a script — that is a valid agent job."""
-    from cron.jobs import create_job, get_job, update_job
+    from hermes_agent.cron.jobs import create_job, get_job, update_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -187,7 +187,7 @@ def test_update_job_allows_clearing_prompt_when_script_remains(hermes_env):
     assert get_job(job["id"])["script"] == "w.sh"
 
 def test_update_job_allows_swapping_prompt_for_skill(hermes_env):
-    from cron.jobs import create_job, get_job, update_job
+    from hermes_agent.cron.jobs import create_job, get_job, update_job
 
     job = create_job(prompt="check the news", schedule="every 5m", deliver="local")
     update_job(job["id"], {"prompt": "", "skills": ["daily-report"]})
@@ -198,7 +198,7 @@ def test_update_job_allows_swapping_prompt_for_skill(hermes_env):
 
 def test_pause_job_still_works_on_an_already_empty_job(hermes_env):
     """Bookkeeping updates must not be blocked, or the fix can't pause the job."""
-    from cron.jobs import get_job, pause_job
+    from hermes_agent.cron.jobs import get_job, pause_job
 
     job = _legacy_empty_job(hermes_env)
 
@@ -220,7 +220,7 @@ def _legacy_empty_job(hermes_env):
     snapshots — is realistic) then hand-blanked on disk, which is exactly how
     such a record comes into existence today.
     """
-    from cron.jobs import create_job, load_jobs, save_jobs
+    from hermes_agent.cron.jobs import create_job, load_jobs, save_jobs
 
     job = create_job(prompt="used to say something", schedule="every 5m", deliver="local")
     jobs = load_jobs()
@@ -232,7 +232,7 @@ def _legacy_empty_job(hermes_env):
 
 
 def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env, cron_owner):
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     job = _legacy_empty_job(hermes_env)
 
@@ -255,8 +255,8 @@ def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env, cron_owner):
 def test_run_one_job_does_not_resurrect_the_paused_job(hermes_env, cron_owner):
     """The real caller runs post-run bookkeeping (mark_job_run) after run_job
     returns. That must not undo the pause, or the job re-fires every tick."""
-    from cron import scheduler
-    from cron.jobs import get_due_jobs, get_job
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.jobs import get_due_jobs, get_job
 
     job = _legacy_empty_job(hermes_env)
 
@@ -270,7 +270,7 @@ def test_run_one_job_does_not_resurrect_the_paused_job(hermes_env, cron_owner):
 
 def _legacy_no_agent_scriptless_job(hermes_env, script_value=None):
     """Plant a no_agent job whose script went missing after creation."""
-    from cron.jobs import create_job, load_jobs, save_jobs
+    from hermes_agent.cron.jobs import create_job, load_jobs, save_jobs
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -286,8 +286,8 @@ def _legacy_no_agent_scriptless_job(hermes_env, script_value=None):
 @pytest.mark.parametrize("script_value", [None, "", "   "])
 def test_run_job_pauses_a_legacy_no_agent_job_without_a_script(hermes_env, script_value):
     """Erroring alone left it enabled, so it re-fired every tick."""
-    from cron import scheduler
-    from cron.jobs import get_job
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.jobs import get_job
 
     job = _legacy_no_agent_scriptless_job(hermes_env, script_value)
 
@@ -305,8 +305,8 @@ def test_run_job_pauses_a_legacy_no_agent_job_without_a_script(hermes_env, scrip
 
 def test_run_one_job_does_not_resurrect_the_paused_no_agent_job(hermes_env):
     """Post-run bookkeeping must not put it back in the due queue."""
-    from cron import scheduler
-    from cron.jobs import get_due_jobs, get_job
+    from hermes_agent.cron import scheduler
+    from hermes_agent.cron.jobs import get_due_jobs, get_job
 
     job = _legacy_no_agent_scriptless_job(hermes_env)
 
@@ -319,7 +319,7 @@ def test_run_one_job_does_not_resurrect_the_paused_no_agent_job(hermes_env):
 
 def test_run_job_does_not_block_a_valid_no_agent_job(hermes_env):
     """The guard sits after the no_agent short-circuit, which must still run."""
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     script = hermes_env / "scripts" / "w.sh"
     script.write_text("echo hello\n")
@@ -370,7 +370,7 @@ def _cronjob(**kwargs):
 
 def test_tool_update_rejects_the_2026_08_03_destructive_shape(hermes_env):
     """The exact call that wiped 43 jobs must now fail closed."""
-    from cron.jobs import create_job, get_job
+    from hermes_agent.cron.jobs import create_job, get_job
 
     job = create_job(
         prompt="Check for agent-browser updates with a 14-day safety buffer.",
@@ -395,7 +395,7 @@ def test_tool_update_rejects_the_2026_08_03_destructive_shape(hermes_env):
 
 def test_tool_update_rejects_the_destructive_shape_on_a_script_job(hermes_env):
     """script:"" + prompt:"" + skills:[] empties an agent script job too."""
-    from cron.jobs import create_job, get_job
+    from hermes_agent.cron.jobs import create_job, get_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -413,7 +413,7 @@ def test_tool_update_rejects_the_destructive_shape_on_a_script_job(hermes_env):
 
 def test_tool_update_rejects_the_destructive_shape_on_a_no_agent_job(hermes_env):
     """no_agent job: the more specific no_agent diagnosis reports first."""
-    from cron.jobs import create_job, get_job
+    from hermes_agent.cron.jobs import create_job, get_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -437,7 +437,7 @@ def test_tool_update_blank_name_is_a_no_op(hermes_env):
     same bulk-empty update still silently erases the name (which is exactly
     what made 43 corrupted jobs unidentifiable in jobs.json).
     """
-    from cron.jobs import create_job, get_job
+    from hermes_agent.cron.jobs import create_job, get_job
 
     (hermes_env / "scripts" / "w.sh").write_text("echo hi\n")
     job = create_job(
@@ -451,7 +451,7 @@ def test_tool_update_blank_name_is_a_no_op(hermes_env):
     assert get_job(job["id"])["name"] == "Daily Wiki Backup"
 
 def test_tool_update_still_renames_when_a_real_name_is_given(hermes_env):
-    from cron.jobs import create_job, get_job
+    from hermes_agent.cron.jobs import create_job, get_job
 
     job = create_job(prompt="check the news", schedule="every 5m",
                      name="old", deliver="local")

@@ -12,8 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import hermes_yaml as yaml
 
-from cron.scheduler import _deliver_result
-from cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
+from hermes_agent.cron.scheduler import _deliver_result
+from hermes_agent.cron.scheduler_preflight import SharedRouteAdapters, _primary_profile_routes_for_current_home
 from gateway.config import Platform, PlatformConfig
 from gateway.profile_routing import ProfileRoute
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -54,7 +54,7 @@ def _run(job, adapters):
     config.platforms = {Platform.DISCORD: PlatformConfig(enabled=True)}
     config.get_home_channel = lambda p: None
     with patch("gateway.config.load_gateway_config", return_value=config), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
         error = _deliver_result(job, "hello", adapters=adapters, loop=loop)
@@ -146,7 +146,7 @@ def test_guild_scoped_route_authorizes_cron_target_even_when_satellite_has_no_pl
 def test_live_native_adapter_without_platform_block_is_not_treated_as_disabled():
     """#89302: a live native adapter handed in by the gateway is the authorization; an absent
     ``platforms.<p>`` block in the firing profile means "no config", not "disabled"."""
-    from cron.scheduler_delivery import _resolve_target_transport
+    from hermes_agent.cron.scheduler_delivery import _resolve_target_transport
 
     config = MagicMock()
     config.platforms = {}
@@ -173,8 +173,8 @@ def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
     (``platform 'discord' not configured/enabled``)."""
     import threading
 
-    from cron.scheduler_provider import InProcessCronScheduler
-    from cron.scheduler_preflight import SharedRouteAdapters
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_preflight import SharedRouteAdapters
 
     root = tmp_path / "root"
     sat_home = root / "profiles" / "sat"
@@ -194,7 +194,7 @@ def test_multiplex_tick_routes_desktop_served_satellite_with_only_local_adapter(
         stop.set()
 
     provider = InProcessCronScheduler()
-    with patch("cron.scheduler.tick", side_effect=_tick_and_stop):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=_tick_and_stop):
         thread = threading.Thread(
             target=provider.start,
             args=(stop,),

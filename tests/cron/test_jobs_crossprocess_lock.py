@@ -21,11 +21,11 @@ import time
 
 import pytest
 
-from cron import jobs
+from hermes_agent.cron import jobs
 
 
 # Repo root (parent of the ``cron`` package) so the child process can import it.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(jobs.__file__)))
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(jobs.__file__))))
 
 
 @pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")

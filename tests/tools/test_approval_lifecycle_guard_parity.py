@@ -23,7 +23,7 @@ class TestLifecycleGuardLaunchctlParity:
     layer already treats as gateway lifecycle.
 
     These two layers are not interchangeable. In ``tools/terminal_tool.py``
-    under ``_HERMES_GATEWAY == "1"``, the ``cron.lifecycle_guard`` block is
+    under ``_HERMES_GATEWAY == "1"``, the ``hermes_agent.cron.lifecycle_guard`` block is
     documented as applying unconditionally ("force=True cannot help here"),
     while ``detect_dangerous_command`` below it is explicitly skipped when
     ``force=True``. A verb covered only by the approval layer is therefore
@@ -35,7 +35,7 @@ class TestLifecycleGuardLaunchctlParity:
     """
 
     def test_hard_block_covers_every_lifecycle_verb(self):
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        from hermes_agent.cron.lifecycle_guard import contains_gateway_lifecycle_command
 
         for cmd in GATEWAY_LIFECYCLE_LAUNCHCTL:
             assert contains_gateway_lifecycle_command(cmd) is True, cmd
@@ -48,7 +48,7 @@ class TestLifecycleGuardLaunchctlParity:
         ``load``/``restart``, which the approval layer leaves alone). What must
         never happen is the reverse: a command stopped only by the layer that
         ``force=True`` skips, leaving no cover inside the gateway."""
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        from hermes_agent.cron.lifecycle_guard import contains_gateway_lifecycle_command
 
         for cmd in GATEWAY_LIFECYCLE_LAUNCHCTL:
             dangerous, _, _ = detect_dangerous_command(cmd)
@@ -62,7 +62,7 @@ class TestLifecycleGuardLaunchctlParity:
     def test_unrelated_labels_are_not_blocked(self):
         """The label anchor must still scope this to the gateway — unrelated
         services, including other Hermes ones, stay runnable."""
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        from hermes_agent.cron.lifecycle_guard import contains_gateway_lifecycle_command
 
         for cmd in (
             "launchctl bootout gui/501/com.example.unrelated",

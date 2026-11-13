@@ -1,6 +1,6 @@
 """Windows cron scripts overlay the committed generation, never the stale in-tree venv.
 
-``cron/scheduler_script.py::_windows_cron_python_invocation`` answers "which interpreter and
+``hermes_agent/cron/scheduler_script.py::_windows_cron_python_invocation`` answers "which interpreter and
 which site-packages?" for a cron script child. On a PM-managed install it read the dependency
 tree through ``pm.environments.selected_venv``, which falls back to ``base_venv`` and answers
 the leftover pre-PM ``<root>/venv`` when no generation is recorded. That tree is built for
@@ -40,7 +40,7 @@ def test_managed_install_uses_the_committed_generation_not_the_in_tree_venv(
     tmp_path, monkeypatch,
 ):
     """The committed generation wins; the leftover pre-PM venv never reaches the child."""
-    from cron import scheduler_script as sched_script
+    from hermes_agent.cron import scheduler_script as sched_script
 
     stale = _write_venv(tmp_path / "repo" / "venv")
     committed = _write_venv(tmp_path / "installs" / "gen" / "venv")

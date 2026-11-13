@@ -21,7 +21,7 @@ def test_cron_home_target_resolves_a_dotenv_reference(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSET_IN_TEST", raising=False)
     from hermes_cli.plugins import discover_plugins
     discover_plugins()
-    from cron.scheduler_delivery import _get_home_target_chat_id
+    from hermes_agent.cron.scheduler_delivery import _get_home_target_chat_id
 
     scope = build_profile_secret_scope(home)
     token = set_secret_scope(scope, profile_home=str(home))

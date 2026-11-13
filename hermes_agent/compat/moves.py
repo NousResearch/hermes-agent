@@ -7,6 +7,7 @@ value changes. Plain dicts and no imports, because a process from an older relea
 MOVES: dict[str, str] = {
     "acp_adapter": "hermes_agent.acp_adapter",
     "batch_runner": "hermes_agent.batch_runner",
+    "cron": "hermes_agent.cron",
     "hermes_startup_watchdog": "hermes_agent.hermes_startup_watchdog",
     "hermes_state": "hermes_agent.hermes_state",
     "hermes_state_api_content": "hermes_agent.hermes_state_api_content",

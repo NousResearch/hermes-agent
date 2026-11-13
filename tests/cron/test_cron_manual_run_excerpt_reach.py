@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cron.scheduler import _deliver_result
+from hermes_agent.cron.scheduler import _deliver_result
 from gateway.config import Platform, PlatformConfig
 from tools.cronjob_tools import _manual_run_completion
 
@@ -29,9 +29,9 @@ def _run_and_complete(deliver):
         return {"success": True, "message_id": "7"} if chat_id == GOOD else {"error": "chat not found"}
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _send), \
-         patch("cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
+         patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "THE REPORT")
     refreshed = {**stored, "last_delivery_error": error}
     with patch("tools.cronjob_tools.get_job", return_value=refreshed), \
@@ -76,9 +76,9 @@ def test_a_partial_standalone_split_send_counts_as_reached(monkeypatch):
         return await _send_telegram("tok", chat_id, text)
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _send), \
-         patch("cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
+         patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "status line ok\n" * 700)
     assert error and bot.send_message.await_count == 3
     with patch("tools.cronjob_tools.get_job", return_value={**stored, "last_delivery_error": error}), \
@@ -117,9 +117,9 @@ def test_a_report_whose_delivery_answer_was_lost_is_not_echoed(monkeypatch, lost
         return results[-1]
 
     with patch("gateway.config.load_gateway_config", return_value=config), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
          patch("tools.send_message_tool._send_to_platform", _send), \
-         patch("cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
+         patch("hermes_agent.cron.jobs.update_job", side_effect=lambda _id, values: stored.update(values)):
         error = _deliver_result(job, "THE REPORT")
     assert error
     if lost == "ack":

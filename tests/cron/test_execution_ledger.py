@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 def _point_ledger(monkeypatch, tmp_path):
-    from cron import executions
+    from hermes_agent.cron import executions
 
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", tmp_path / "cron" / "executions.db")
     return executions
@@ -136,7 +136,7 @@ def test_foreign_process_cannot_start_or_finish_execution(monkeypatch, tmp_path)
 
 
 def test_execution_ledger_follows_the_current_profile_home(monkeypatch, tmp_path):
-    from cron import executions
+    from hermes_agent.cron import executions
 
     current_home = {"path": tmp_path / "default"}
     monkeypatch.setattr(executions, "EXECUTIONS_FILE", None)
@@ -258,7 +258,7 @@ def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
         [
             sys.executable,
             "-c",
-            "from cron.executions import create_execution, mark_execution_running; "
+            "from hermes_agent.cron.executions import create_execution, mark_execution_running; "
             "r=create_execution('restart-job', source='builtin'); "
             "mark_execution_running(r['id']); print(r['id'])",
         ],
@@ -274,7 +274,7 @@ def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
         [
             sys.executable,
             "-c",
-            "import json; from cron.executions import recover_interrupted_executions, list_executions; "
+            "import json; from hermes_agent.cron.executions import recover_interrupted_executions, list_executions; "
             "print(recover_interrupted_executions()); "
             "print(json.dumps(list_executions(job_id='restart-job'))) ",
         ],
@@ -298,7 +298,7 @@ def test_restart_marks_interrupted_execution_unknown_without_requeue(tmp_path):
 
 
 def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch):
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     class BrokenPool:
         def submit(self, _callable):
@@ -328,7 +328,7 @@ def test_generic_submit_failure_finishes_attempt_and_releases_guard(monkeypatch)
 
 
 def test_run_one_job_records_running_then_terminal(monkeypatch):
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
 
     events = []
     run_execution_ids = []
@@ -363,17 +363,17 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
 
 
 def test_provider_start_recovers_interrupted_records_before_tick(monkeypatch):
-    import cron.scheduler_provider as provider
+    import hermes_agent.cron.scheduler_provider as provider
 
     events = []
     stop = __import__("threading").Event()
     stop.set()
     monkeypatch.setattr(
-        "cron.executions.recover_interrupted_executions",
+        "hermes_agent.cron.executions.recover_interrupted_executions",
         lambda: events.append("recover") or 0,
         raising=False,
     )
-    monkeypatch.setattr("cron.jobs.record_ticker_heartbeat", lambda **_kwargs: events.append("heartbeat"))
+    monkeypatch.setattr("hermes_agent.cron.jobs.record_ticker_heartbeat", lambda **_kwargs: events.append("heartbeat"))
 
     provider.InProcessCronScheduler().start(stop, interval=1)
 
@@ -387,7 +387,7 @@ def test_external_provider_start_recovers_interrupted_records(monkeypatch):
     provider._client = type("Client", (), {"arm": lambda self, **kwargs: None})()
     events = []
     monkeypatch.setattr(
-        "cron.executions.recover_interrupted_executions",
+        "hermes_agent.cron.executions.recover_interrupted_executions",
         lambda: events.append("recover") or 0,
     )
     monkeypatch.setattr(provider, "reconcile", lambda: events.append("reconcile"))
@@ -476,7 +476,7 @@ def test_early_return_still_closes_connection(monkeypatch, tmp_path):
 
 
 def test_job_listing_exposes_latest_execution(monkeypatch, tmp_path):
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     monkeypatch.setattr(jobs, "CRON_DIR", tmp_path / "cron")
     monkeypatch.setattr(jobs, "JOBS_FILE", tmp_path / "cron" / "jobs.json")

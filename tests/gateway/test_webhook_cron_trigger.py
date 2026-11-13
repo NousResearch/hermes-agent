@@ -206,7 +206,7 @@ class TestExecuteJobForEvent:
         assert "not found" in result["error"]
 
     def test_ambiguous_ref_returns_error(self):
-        from cron.jobs import AmbiguousJobReference
+        from hermes_agent.cron.jobs import AmbiguousJobReference
         from tools import cronjob_tools
 
         with patch.object(

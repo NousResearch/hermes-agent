@@ -27,7 +27,7 @@ def ticker_env(tmp_path, monkeypatch):
         def start(self, stop_event, **kwargs):
             started["kwargs"] = kwargs
 
-    import cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler_provider as sp
 
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _Provider())
     return tmp_path, started
@@ -121,7 +121,7 @@ def test_ticker_fails_open_when_ownership_probe_raises(ticker_env, monkeypatch, 
 def test_gated_ticker_resumes_after_the_gateway_stops(ticker_env, gateway, monkeypatch):
     """A gateway live at backend start must not silence Desktop cron for good: the multiplex
     ticker still starts, and its per-tick gate stands down only while that gateway runs."""
-    import cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler_provider as sp
     from hermes_cli import profiles
     import hermes_logging
     from hermes_cli import web_server
@@ -148,7 +148,7 @@ def test_fail_open_ticker_uses_the_same_profile_gate(ticker_env, gateway, monkey
     """With profile enumeration broken, the built-in ticker still ticks this backend's own store
     through ``profile_gate``, standing down per tick only while a gateway owns it, including one
     that comes back."""
-    import cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler_provider as sp
     from hermes_cli import profiles
     from hermes_cli import web_server
 
@@ -178,7 +178,7 @@ def test_fail_open_ticker_uses_the_same_profile_gate(ticker_env, gateway, monkey
 def test_fail_open_ticker_yields_to_the_multiplexer_serving_this_profile(tmp_path, monkeypatch):
     """A named profile served by the live default multiplexer has no gateway.pid of its own; the
     fail-open gate must still stand down for it, as the multiplex gate does."""
-    import cron.scheduler_provider as sp
+    import hermes_agent.cron.scheduler_provider as sp
     from hermes_cli import profiles
     import hermes_constants
     from hermes_cli import web_server
@@ -214,18 +214,18 @@ def test_gated_out_fail_open_tick_leaves_the_gateway_store_status_alone(tmp_path
     """Through the real built-in loop: while the gateway owns the store, the fail-open ticker
     neither ticks nor records a successful tick or clears the gateway's recorded tick error
     (#32612, #32895)."""
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli import profiles
     import hermes_constants
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
     from hermes_cli import web_server
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(profiles, "profiles_to_serve", _enumeration_fails)
     monkeypatch.setattr(profiles, "_check_gateway_running", lambda _home: True)
-    monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler)
+    monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", InProcessCronScheduler)
     ticked, beats, cleared = [], [], []
-    monkeypatch.setattr("cron.scheduler.tick", lambda **_kw: ticked.append(True))
+    monkeypatch.setattr("hermes_agent.cron.scheduler.tick", lambda **_kw: ticked.append(True))
     monkeypatch.setattr(jobs, "record_ticker_heartbeat", lambda success=False: beats.append(success))
     monkeypatch.setattr(jobs, "clear_ticker_error", lambda: cleared.append(True))
     stop = threading.Event()

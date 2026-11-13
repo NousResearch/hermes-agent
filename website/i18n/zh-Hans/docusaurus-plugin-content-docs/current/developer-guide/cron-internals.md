@@ -12,8 +12,8 @@ cron 子系统提供定时任务执行能力——从简单的单次延迟到带
 
 | 文件 | 用途 |
 |------|---------|
-| `cron/jobs.py` | 任务模型、存储、对 `jobs.json` 的原子读写 |
-| `cron/scheduler.py` | 调度器循环——到期任务检测、执行、重复计数跟踪 |
+| `hermes_agent/cron/jobs.py` | 任务模型、存储、对 `jobs.json` 的原子读写 |
+| `hermes_agent/cron/scheduler.py` | 调度器循环——到期任务检测、执行、重复计数跟踪 |
 | `tools/cronjob_tools.py` | 面向模型的 `cronjob` 工具注册与处理器 |
 | `gateway/run.py` | Gateway 集成——在长运行循环中触发 cron tick |
 | `hermes_cli/cron.py` | CLI `hermes cron` 子命令 |

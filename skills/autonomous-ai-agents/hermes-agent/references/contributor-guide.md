@@ -11,7 +11,8 @@ hermes-agent/
 ├── toolsets.py           # Toolset definitions
 ├── cli.py                # Interactive CLI (HermesCLI)
 ├── hermes_agent/         # the Python package
-│   └── hermes_state.py       # SQLite session store
+│   ├── hermes_state.py       # SQLite session store
+│   └── cron/                 # Job scheduler
 ├── agent/                # Prompt builder, context compression, memory, model routing, credential pooling, skill dispatch
 ├── hermes_cli/           # CLI subcommands, config, setup, commands
 │   ├── commands.py       # Slash command registry (CommandDef)
@@ -21,7 +22,6 @@ hermes-agent/
 │   └── registry.py       # Central tool registry
 ├── gateway/              # Messaging gateway
 │   └── platforms/        # Platform adapters (telegram, discord, etc.)
-├── cron/                 # Job scheduler
 ├── tests/                # Extensive pytest suite (run via scripts/run_tests.sh)
 └── website/              # Docusaurus docs site
 ```

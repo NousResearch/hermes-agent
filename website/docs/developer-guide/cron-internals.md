@@ -12,9 +12,9 @@ The cron subsystem provides scheduled task execution — from simple one-shot de
 
 | File | Purpose |
 |------|---------|
-| `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
-| `cron/jobs_time.py` | Per-job `timezone` / `grace_minutes` knobs: validation, tolerant reads, due-scan zone |
-| `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
+| `hermes_agent/cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
+| `hermes_agent/cron/jobs_time.py` | Per-job `timezone` / `grace_minutes` knobs: validation, tolerant reads, due-scan zone |
+| `hermes_agent/cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
 | `tools/cronjob_tools.py` | Model-facing `cronjob_manage` tool registration and handler |
 | `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
 | `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
@@ -88,7 +88,7 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 
 ### `last_status` literals
 
-`last_status` is written by `cron.jobs.mark_job_run` when a run finishes and, for a
+`last_status` is written by `hermes_agent.cron.jobs.mark_job_run` when a run finishes and, for a
 queued delivery, rewritten once by the delivery write-back below. Every renderer
 (`hermes cron list`/`doctor`, the `cronjob_manage` tool, the web dashboard badge, the
 Desktop routine inspector) maps each literal explicitly — a consumer must never test
@@ -105,14 +105,14 @@ Desktop routine inspector) maps each literal explicitly — a consumer must neve
 ### Queued delivery lifecycle and write-back
 
 An agent run with a delivery target and an `execution_id` does not send inline: it
-hands the content to `cron/delivery_queue.py` (the profile's `cron/deliveries.db`,
+hands the content to `hermes_agent/cron/delivery_queue.py` (the profile's `cron/deliveries.db`,
 keyed by `execution_id`) and books `last_status = "delivery_queued"` with ledger
 `delivery_outcome = "queued"`. A gateway's housekeeping tick drains the queue through
 its live adapters (`scheduler.drain_delivery_queue`); each row is claimed at most once
 (`pending → delivering → delivered | failed | suppressed`). A row whose claiming gateway
 died mid-send is fenced `unknown` and never retried.
 
-`cron/delivery_outcome.py::settle_queued_delivery` then writes the terminal outcome
+`hermes_agent/cron/delivery_outcome.py::settle_queued_delivery` then writes the terminal outcome
 back onto the run that queued it:
 
 | Queue row | Ledger `delivery_outcome` | Job `last_status` / `last_delivery_error` |
@@ -173,7 +173,7 @@ Recurring jobs are **at-most-once per occurrence, and every occurrence is
 accounted for**: it either runs (one execution row carrying its
 `scheduled_instant`), or its skip is logged with a reason. An occurrence is never
 dropped silently. The mechanics, in the order the due scan applies them
-(`cron/jobs.py::_evaluate_due_job`):
+(`hermes_agent/cron/jobs.py::_evaluate_due_job`):
 
 1. **Pre-dispatch advance is provisional.** `tick()` advances `next_run_at` past
    the due occurrence *before* dispatch so a crash mid-run cannot re-fire it on
@@ -187,7 +187,7 @@ dropped silently. The mechanics, in the order the due scan applies them
    provably gone (this process and the job is not in its running set; another
    process past the 300 s fire-claim lease or with a dead pid) puts
    `scheduled_at` back as `next_run_at`, drops the stamp, and logs a WARNING
-   (`cron/occurrences.py::unclaimed_pending_slot`). This happens at most once
+   (`hermes_agent/cron/occurrences.py::unclaimed_pending_slot`). This happens at most once
    per lost occurrence — the restored instant then meets the ordinary rules
    below like any other overdue slot, so there is never a replay of N slots.
 3. **Already fired → never twice.** `completed_occurrence()` consults the
@@ -241,7 +241,7 @@ drain) stops a run that still holds its claim.
 
 In gateway mode, the cron **trigger** (the part that decides *when* a due job
 fires — "Axis B") is selected through a pluggable `CronScheduler` provider. The
-gateway calls `resolve_cron_scheduler()` (`cron/scheduler_provider.py`) and runs
+gateway calls `resolve_cron_scheduler()` (`hermes_agent/cron/scheduler_provider.py`) and runs
 the resolved provider's `start()` in a dedicated background thread, alongside a
 separate gateway-housekeeping thread.
 
@@ -257,7 +257,7 @@ The active provider is chosen by the `cron.provider` config key:
 If a named provider is missing, fails to load, or reports `is_available() ==
 False`, the resolver falls back to the built-in with a warning — **cron is
 never left without a trigger.** The built-in provider lives in core
-(`cron/scheduler_provider.py`), not in `plugins/`, so the fallback can't be
+(`hermes_agent/cron/scheduler_provider.py`), not in `plugins/`, so the fallback can't be
 accidentally removed.
 
 What "firing" *means* (job execution + delivery) is unchanged and shared by all
@@ -366,7 +366,7 @@ The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` re
 
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. On platforms where Python's monotonic clock excludes suspend (macOS and Linux), time the host spends asleep does not count toward that idle period; Windows behavior is unchanged. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 
-On timeout or ownership cancellation, `cron.scheduler_script` uses the shared
+On timeout or ownership cancellation, `hermes_agent.cron.scheduler_script` uses the shared
 `agent.deadline.kill_process_tree` hard-kill path. On POSIX it briefly stops and
 rescans the live tree before signalling descendants and their parent, including
 children in separate sessions with no inherited output pipes. This closes the

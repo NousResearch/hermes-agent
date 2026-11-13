@@ -8,7 +8,7 @@ import pytest
 
 @pytest.fixture
 def served_root(tmp_path, monkeypatch):
-    from cron import jobs
+    from hermes_agent.cron import jobs
 
     root = tmp_path / "home"
     home = root / "profiles" / "probe"
@@ -37,7 +37,7 @@ def served_root(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("mode", ["missing", "fresh", "stale", "disabled", "excluded", "local", "external", "unrelated_pid"])
 def test_status_preserves_profile_health_contract(served_root, capsys, monkeypatch, mode):
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli import cron
 
     if mode in {"fresh", "stale", "local"}:
@@ -113,7 +113,7 @@ def test_host_record_rung_names_the_roster_and_a_runnable_restart(served_root, c
 @pytest.mark.parametrize("heartbeat", ["missing", "fresh", "stale"])
 def test_satellite_list_and_create_require_own_heartbeat(served_root, capsys, monkeypatch, heartbeat):
     from argparse import Namespace
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli import cron
 
     # A fresh host heartbeat must not hide the satellite's missing or stale heartbeat.
@@ -157,7 +157,7 @@ def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch
 
 def test_desktop_serve_ticker_is_not_reported_as_no_gateway(tmp_path, monkeypatch, capsys):
     """Desktop `serve` ticks cron in-process; a fresh ticker heartbeat is not a missing gateway."""
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli import cron
 
     home = tmp_path / "home"
@@ -201,7 +201,7 @@ def test_in_process_ticker_heartbeat_counts_only_while_its_writer_lives(tmp_path
     import subprocess
     import sys
 
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli import cron
 
     home = tmp_path / "home"
@@ -228,7 +228,7 @@ def test_named_profile_output_names_the_profile_and_trusts_its_own_ticker(served
     answers "is a scheduler ticking THIS home": a fresh heartbeat written into probe's store counts
     even when the default multiplexer's record does not list probe — the serve/Desktop backend ticks
     every local profile without any gateway record (#121881, #99631)."""
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli import cron
 
     served_root.joinpath("gateway_state.json").write_text(json.dumps({"served_profiles": ["other"]}))
@@ -253,7 +253,7 @@ def test_named_profile_output_names_the_profile_and_trusts_its_own_ticker(served
 
 @pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", ""])
 def test_doctor_bounds_persisted_fire_errors(served_root, capsys, detail):
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli.cron import cron_doctor
 
     jobs.create_job(prompt="probe", schedule="every 1h")
@@ -275,7 +275,7 @@ def test_doctor_bounds_persisted_fire_errors(served_root, capsys, detail):
 
 @pytest.mark.parametrize("dispatch", ["catch_up", "late", "forward_error"])
 def test_doctor_reports_persisted_dispatch_health(served_root, capsys, dispatch):
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from hermes_cli.cron import cron_doctor
 
     job = jobs.create_job(prompt="probe", schedule="every 1h")

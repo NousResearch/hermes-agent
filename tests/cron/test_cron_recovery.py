@@ -3,7 +3,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from cron import jobs, scheduler
+from hermes_agent.cron import jobs, scheduler
 from gateway import run, session_cron
 from gateway.session import SessionStore
 from gateway.session_authority import SessionAuthority
@@ -13,7 +13,7 @@ from hermes_agent.hermes_state_runtime import begin_runtime_epoch, claim_session
 
 
 def test_lost_ack_reconciles_frozen_delivery_once(tmp_path, monkeypatch):
-    from cron import scheduler_authority, delivery_queue
+    from hermes_agent.cron import scheduler_authority, delivery_queue
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
     with jobs.use_cron_store(tmp_path / 'cron'):
@@ -90,12 +90,12 @@ def test_recovered_receipt_settles_the_departed_firers_execution_row(tmp_path, m
     import os
     import subprocess
     import sys
-    from cron import scheduler_authority, executions
+    from hermes_agent.cron import scheduler_authority, executions
     with jobs.use_cron_store(tmp_path / 'cron'):
         job = jobs.create_job(prompt='original', schedule='every 1h', deliver='local')
         authority, db = _owner(tmp_path, monkeypatch)
         firer = subprocess.run([sys.executable, '-c', (
-            'import sys; from cron.executions import create_execution, mark_execution_running;'
+            'import sys; from hermes_agent.cron.executions import create_execution, mark_execution_running;'
             f'r = create_execution({job["id"]!r}, source="direct"); mark_execution_running(r["id"]);'
             'print(r["id"])')], env={**os.environ, 'HERMES_HOME': str(tmp_path)},
             capture_output=True, text=True, check=True, timeout=60)
@@ -132,7 +132,7 @@ def test_owner_refused_fire_is_booked_failed_and_retires_its_journal(tmp_path, m
     """A definite pre-admission refusal (the job's workdir was removed) is an ordinary failed
     run: it must not raise CronExecutionUnknown, keep a journal, or pause the job on every
     later tick after the operator fixes the configuration."""
-    from cron import scheduler_authority
+    from hermes_agent.cron import scheduler_authority
     workdir = tmp_path / 'work'
     workdir.mkdir()
     with jobs.use_cron_store(tmp_path / 'cron'):
@@ -163,7 +163,7 @@ def test_admission_journal_survives_power_loss(tmp_path, monkeypatch):
     """The journal is the only evidence that a lost reply may have been admitted, so its rename
     is made durable (directory fsync), not left in the page cache until the next flush."""
     import utils
-    from cron import scheduler_authority
+    from hermes_agent.cron import scheduler_authority
     synced = []
     real = utils.fsync_directory
     monkeypatch.setattr(utils, 'fsync_directory', lambda path: (synced.append(str(path)), real(path)))

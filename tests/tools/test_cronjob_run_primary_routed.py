@@ -30,20 +30,20 @@ def keeper_job(tmp_path, monkeypatch):
                             "thread_id": "14", "profile": "keeper"}],
     }}), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(keeper_home))  # what `hermes -p keeper` sets
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
     return create_job(prompt="infra report", schedule="0 9 * * *", name="infra", deliver=ROUTED_TARGET)
 
 
 def _run(job_id, *, gateway_serves_profile):
     from tools.cronjob_tools import cronjob
     with patch("hermes_cli.cron._builtin_gateway_liveness", return_value=gateway_serves_profile), \
-         patch("cron.scheduler.run_one_job", return_value=True) as m_run:
+         patch("hermes_agent.cron.scheduler.run_one_job", return_value=True) as m_run:
         out = json.loads(cronjob(action="run", job_id=job_id))
     return out, m_run
 
 
 def test_routed_run_is_queued_for_the_gateway_that_serves_the_profile(keeper_job, monkeypatch):
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
     out, m_run = _run(keeper_job["id"], gateway_serves_profile=True)
 
     assert out["success"] is True
@@ -63,7 +63,7 @@ def test_routed_run_is_queued_for_the_gateway_that_serves_the_profile(keeper_job
 def test_routed_run_without_a_serving_gateway_fails_before_the_turn(keeper_job, gateway_serves_profile):
     """False = no scheduler; None = the probe could not tell. Neither may queue a run that nothing
     would pick up."""
-    from cron.jobs import get_job
+    from hermes_agent.cron.jobs import get_job
     out, m_run = _run(keeper_job["id"], gateway_serves_profile=gateway_serves_profile)
 
     assert out["success"] is False

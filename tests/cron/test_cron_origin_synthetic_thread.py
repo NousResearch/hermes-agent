@@ -113,11 +113,11 @@ class TestNearHorizonSlackThreadKept:
     def test_create_handler_stores_thread_for_near_oneshot(self, tmp_path, monkeypatch, make_cron_provider):
         """Production entry point: the cronjob_manage create handler passes the schedule
         into origin capture, so the stored job carries the asking thread."""
-        from cron import jobs
+        from hermes_agent.cron import jobs
         from tools import cronjob_tools
 
         provider = make_cron_provider()
-        monkeypatch.setattr("cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
+        monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
         with jobs.use_cron_store(tmp_path / "cron"), _session_env(_TOP_LEVEL_SLACK):
             result = json.loads(cronjob_tools.registry.dispatch("cronjob_manage", {
                 "action": "create", "schedule": _run_at_in(1), "prompt": "remind me"}))

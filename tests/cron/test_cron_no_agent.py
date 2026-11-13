@@ -29,10 +29,10 @@ def hermes_env(tmp_path, monkeypatch):
     import importlib
     import hermes_constants
     importlib.reload(hermes_constants)
-    import cron.jobs
-    importlib.reload(cron.jobs)
-    import cron.scheduler
-    importlib.reload(cron.scheduler)
+    import hermes_agent.cron.jobs
+    importlib.reload(hermes_agent.cron.jobs)
+    import hermes_agent.cron.scheduler
+    importlib.reload(hermes_agent.cron.scheduler)
 
     return home
 
@@ -43,7 +43,7 @@ def hermes_env(tmp_path, monkeypatch):
 
 
 def test_create_job_no_agent_requires_script(hermes_env):
-    from cron.jobs import create_job
+    from hermes_agent.cron.jobs import create_job
 
     with pytest.raises(ValueError, match="no_agent=True requires a script"):
         create_job(prompt=None, schedule="every 5m", no_agent=True)
@@ -53,7 +53,7 @@ def test_script_must_be_a_file_under_scripts_dir_not_a_shell_command(hermes_env)
     """``script`` names a file under HERMES_HOME/scripts/. A command line (``echo hi``) is
     refused at creation instead of firing every tick as "Script not found" delivered as the
     payload; a real file whose name contains a space is still a path."""
-    from cron.jobs import create_job, update_job
+    from hermes_agent.cron.jobs import create_job, update_job
 
     with pytest.raises(ValueError, match="scripts"):
         create_job(prompt=None, schedule="every 5m", script="echo CRON_PAYLOAD", no_agent=True, deliver="local")
@@ -65,7 +65,7 @@ def test_script_must_be_a_file_under_scripts_dir_not_a_shell_command(hermes_env)
 
 
 def test_update_job_roundtrips_no_agent_flag(hermes_env):
-    from cron.jobs import create_job, update_job, get_job
+    from hermes_agent.cron.jobs import create_job, update_job, get_job
 
     script_path = hermes_env / "scripts" / "w.sh"
     script_path.write_text("echo hi\n")
@@ -94,8 +94,8 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
 
 def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     """Happy path: script exits 0 with output, delivered verbatim."""
-    from cron.jobs import create_job
-    from cron.scheduler import run_job
+    from hermes_agent.cron.jobs import create_job
+    from hermes_agent.cron.scheduler import run_job
 
     script_path = hermes_env / "scripts" / "alert.sh"
     script_path.write_text("#!/usr/bin/env bash\necho 'RAM 92% on host'\n")
@@ -116,8 +116,8 @@ def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
     executes for no_agent jobs — delivery home channels stayed unresolved.
     run_job must load .env at the top of the no_agent branch."""
     from hermes_cli import env_loader
-    from cron.jobs import create_job
-    from cron.scheduler import run_job
+    from hermes_agent.cron.jobs import create_job
+    from hermes_agent.cron.scheduler import run_job
 
     loaded_homes: list = []
 
@@ -154,7 +154,7 @@ def test_no_agent_script_gets_owning_profiles_declared_secret_never_launch_resid
     process env. B's script sees its own secret and not A's (#114209)."""
     from agent.secret_scope import (
         build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope)
-    from cron.scheduler_script import _run_job_script
+    from hermes_agent.cron.scheduler_script import _run_job_script
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     (hermes_env / ".env").write_text("LAUNCH_ONLY_TOKEN=launch-secret\n", encoding="utf-8")
@@ -183,7 +183,7 @@ def test_no_agent_script_gets_owning_profiles_declared_secret_never_launch_resid
 def test_no_agent_script_of_launch_profile_keeps_its_own_env_credential(hermes_env, monkeypatch):
     """Single-profile documented flow: the launch profile's own script still inherits the
     credential its .env put in the process env — nothing is stripped for a non-routed job."""
-    from cron.scheduler_script import _run_job_script
+    from hermes_agent.cron.scheduler_script import _run_job_script
 
     (hermes_env / ".env").write_text("LAUNCH_ONLY_TOKEN=launch-secret\n", encoding="utf-8")
     monkeypatch.setenv("LAUNCH_ONLY_TOKEN", "launch-secret")
@@ -220,7 +220,7 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     expanduser() ValueError and report a generic invalid-path message, so
     a bare "Blocked" assertion could not tell the fixed code from the
     unfixed code; on Windows the unfixed code crashes outright."""
-    from cron.scheduler_script import _run_job_script
+    from hermes_agent.cron.scheduler_script import _run_job_script
 
     ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
@@ -260,7 +260,7 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
 )
 def test_no_agent_failure_never_blamed_on_a_provider(error):
     """A script job's failure must never be reported as a provider/fallback failure."""
-    from cron.scheduler import _summarize_cron_failure_for_delivery
+    from hermes_agent.cron.scheduler import _summarize_cron_failure_for_delivery
 
     job = {"name": "nightly-job", "no_agent": True, "script": "nightly.sh"}
     msg = _summarize_cron_failure_for_delivery(job, error)
@@ -281,7 +281,7 @@ def test_no_agent_failure_never_blamed_on_a_provider(error):
 )
 def test_agent_job_provider_classification_unchanged(error, expected):
     """Regression guard: agent-mode jobs keep the provider-shaped summaries."""
-    from cron.scheduler import _summarize_cron_failure_for_delivery
+    from hermes_agent.cron.scheduler import _summarize_cron_failure_for_delivery
 
     job = {"name": "daily-digest", "no_agent": False}
     assert expected in _summarize_cron_failure_for_delivery(job, error)
@@ -301,8 +301,8 @@ def test_run_job_no_agent_uses_configured_interpreter(hermes_env):
     import stat as _stat
     import sys
 
-    from cron.jobs import create_job
-    from cron.scheduler import run_job
+    from hermes_agent.cron.jobs import create_job
+    from hermes_agent.cron.scheduler import run_job
 
     # A wrapper that re-execs the real interpreter with an env marker.
     wrapper = hermes_env / "venv" / "bin" / "python3"
@@ -349,7 +349,7 @@ def test_a_routed_profile_script_never_receives_a_launch_only_name(hermes_env, m
     from agent.secret_sources import registry as reg_module
     from agent.secret_sources.base import FetchResult
     from agent.secret_sources.registry import ApplyReport, SourceReport
-    from cron.scheduler_script import _run_job_script
+    from hermes_agent.cron.scheduler_script import _run_job_script
     from hermes_cli import env_loader
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
@@ -403,7 +403,7 @@ def test_a_routed_profile_script_keeps_administrator_managed_values_over_its_own
     import os
 
     from agent import secret_scope
-    from cron.scheduler_script import _run_job_script
+    from hermes_agent.cron.scheduler_script import _run_job_script
     from hermes_cli import env_loader, managed_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
 

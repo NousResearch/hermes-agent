@@ -13,7 +13,7 @@ from datetime import timedelta
 
 import pytest
 
-from cron import executions, jobs, scheduler, scheduler_authority
+from hermes_agent.cron import executions, jobs, scheduler, scheduler_authority
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def store(tmp_path):
 
 
 def _cancelled_run(job: dict) -> str:
-    from cron.cancellation import finish_cancelled_run, request_cancel
+    from hermes_agent.cron.cancellation import finish_cancelled_run, request_cancel
 
     fire = executions.create_execution(job["id"], source="test")["id"]
     executions.mark_execution_running(fire)
@@ -93,8 +93,8 @@ def test_a_missed_row_does_not_hide_a_live_run(store):
 
 
 def test_stopping_a_ladder_rerun_does_not_spend_another_repeat(store):
-    from cron.cancellation import finish_cancelled_run, request_cancel
-    from cron.unreachable_retry import STATE_KEY
+    from hermes_agent.cron.cancellation import finish_cancelled_run, request_cancel
+    from hermes_agent.cron.unreachable_retry import STATE_KEY
 
     job = jobs.create_job(prompt="ping", schedule="every 1h", deliver="local", repeat=2)
     stored = jobs.load_jobs()
@@ -116,7 +116,7 @@ def test_stopping_a_ladder_rerun_does_not_spend_another_repeat(store):
 def test_removal_before_the_run_starts_books_cancelled_not_claim_loss(store, monkeypatch):
     """remove_job writes the marker and drops the claim; the worker's first claim check must book
     the operator's stop, not "Fire claim ownership lost before execution started"."""
-    from cron.cancellation import request_cancel
+    from hermes_agent.cron.cancellation import request_cancel
 
     job = jobs.create_job(prompt="long", schedule="every 1h", deliver="local")
     fire = executions.create_execution(job["id"], source="test")["id"]
@@ -136,7 +136,7 @@ def test_overlapping_cancel_requests_keep_the_first_reason(store, monkeypatch):
     """Both callers can pass the existence check before either publishes its marker."""
     from pathlib import Path
 
-    from cron.cancellation import CancelRequest, request_cancel
+    from hermes_agent.cron.cancellation import CancelRequest, request_cancel
 
     real_exists = Path.exists
     monkeypatch.setattr(

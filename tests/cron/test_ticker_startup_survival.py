@@ -29,14 +29,14 @@ def _run_ticker(provider, stop, **kwargs):
 def test_ticker_survives_a_corrupt_ledger_at_startup(tmp_path, monkeypatch):
     """A real corrupt ``executions.db`` (sqlite ``file is not a database``) used to escape
     ``start()`` before the guarded loop and end the thread: gateway up, no job ever fires."""
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "cron").mkdir()
     (tmp_path / "cron" / "executions.db").write_bytes(b"not a sqlite database" * 64)
     ticks = []
     stop = threading.Event()
-    with patch("cron.scheduler.tick", side_effect=lambda **kw: ticks.append(1)):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=lambda **kw: ticks.append(1)):
         thread = _run_ticker(InProcessCronScheduler(), stop)
         _wait_until(lambda: len(ticks) >= 2)
         alive = thread.is_alive()
@@ -50,7 +50,7 @@ def test_multiplex_ticker_survives_a_raising_gate_without_ticking_ungated(tmp_pa
     """A ``profile_gate`` that raises (Desktop stand-down probe) must fail the CYCLE: thread alive,
     error logged, and — critically — zero ticks, since an unfiltered home list would tick the very
     profiles the gate stands down for (#100489)."""
-    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
 
     home = tmp_path / "default"
     (home / "cron").mkdir(parents=True)
@@ -60,7 +60,7 @@ def test_multiplex_ticker_survives_a_raising_gate_without_ticking_ungated(tmp_pa
     def broken_gate(name, h):
         raise RuntimeError("gate boom")
 
-    with patch("cron.scheduler.tick", side_effect=lambda **kw: ticks.append(1)), caplog.at_level("ERROR"):
+    with patch("hermes_agent.cron.scheduler.tick", side_effect=lambda **kw: ticks.append(1)), caplog.at_level("ERROR"):
         thread = _run_ticker(InProcessCronScheduler(), stop,
                              profile_homes=[("default", home)], profile_gate=broken_gate)
         _wait_until(lambda: sum("gate boom" in r.getMessage() for r in caplog.records) >= 2)
@@ -75,7 +75,7 @@ def test_housekeeping_restarts_a_dead_ticker(monkeypatch):
     """The supervisor is the outer layer: a ticker that ended without a stop request is respawned
     on the next housekeeping tick; one that ended BECAUSE of the stop request is not."""
     import gateway.run as gateway_run
-    from cron.scheduler_thread import SupervisedTickerThread
+    from hermes_agent.cron.scheduler_thread import SupervisedTickerThread
 
     class _OneTick:
         def __init__(self):
@@ -111,7 +111,7 @@ def test_supervisor_leaves_a_returning_external_provider_alone():
     """An external provider's start() (Chronos) arms remote one-shots and RETURNS by design; the
     supervisor must not read that as a dead ticker and re-run start() every housekeeping tick
     (each rerun re-reconciles against NAS and logs a spurious "died without a stop request")."""
-    from cron.scheduler_thread import SupervisedTickerThread
+    from hermes_agent.cron.scheduler_thread import SupervisedTickerThread
 
     starts = []
     stop = threading.Event()

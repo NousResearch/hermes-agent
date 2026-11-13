@@ -37,7 +37,7 @@ def _cron_api(**kwargs):
 def _active_cron_provider_name() -> str:
     """Resolved cron scheduler provider name ('builtin', 'chronos', …); 'builtin' on failure."""
     try:
-        from cron.scheduler_provider import resolve_cron_scheduler
+        from hermes_agent.cron.scheduler_provider import resolve_cron_scheduler
         return resolve_cron_scheduler().name or "builtin"
     except Exception:
         return "builtin"
@@ -64,7 +64,7 @@ def _builtin_gateway_liveness() -> Optional[bool]:
         from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
         if find_gateway_pids():
             return True
-        from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
+        from hermes_agent.cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
         if not _ticker_age_is_fresh(get_ticker_heartbeat_age()):
             return False
         # A served named profile's heartbeat is the host multiplexer's, whose process the served
@@ -116,7 +116,7 @@ def _next_run_overdue_seconds(next_run_at: Any) -> Optional[float]:
     Parses through the scheduler's own ``_parse_aware`` so the CLI and the ticker agree on
     the instant (mixed UTC offsets, DST folds, legacy naive stamps read as system-local).
     """
-    from cron.jobs import _parse_aware
+    from hermes_agent.cron.jobs import _parse_aware
     from hermes_time import now
     dt = _parse_aware(next_run_at)
     if dt is None:
@@ -179,7 +179,7 @@ _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[complete
 
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
-    from cron.jobs import effective_job_state
+    from hermes_agent.cron.jobs import effective_job_state
     _store_report, jobs = _probe_then_list_jobs(include_disabled=True, brief=True)
     if jobs is None:
         return
@@ -320,7 +320,7 @@ def cron_tick():
 
     No gateway runs here by definition, and none is started: agent jobs are skipped with a logged
     reason until the gateway is up (headless surfaces refuse rather than spawn)."""
-    from cron.scheduler import CronTickYielded, tick
+    from hermes_agent.cron.scheduler import CronTickYielded, tick
     from hermes_cli.observability.shared_metrics_process import begin_process
 
     begin_process("cron")
@@ -344,7 +344,7 @@ def cron_tick():
 
 def cron_runs(job_id: Optional[str] = None, limit: int = 20):
     """Show indexed durable cron execution history."""
-    from cron.executions import list_executions
+    from hermes_agent.cron.executions import list_executions
     records = list_executions(job_id=job_id, limit=limit)
     if not records:
         print("No cron execution attempts recorded.")
@@ -366,7 +366,7 @@ def cron_incidents(args) -> int:
 
     Acking closes an incident so its failure ping stays silent until the error signature changes.
     """
-    from cron.incidents import ack_incident, list_incidents
+    from hermes_agent.cron.incidents import ack_incident, list_incidents
     action = getattr(args, "incident_action", "list")
     if action == "ack":
         incident_id = getattr(args, "incident_id", None)
@@ -416,15 +416,15 @@ _FD_EXHAUSTION_HINT = ("  Hint: the ticker hit file-descriptor exhaustion (EMFIL
 
 
 def _ticker_age_is_fresh(age: Optional[float]) -> bool:
-    from cron.jobs import TICKER_INTERVAL_SECONDS
+    from hermes_agent.cron.jobs import TICKER_INTERVAL_SECONDS
     return age is not None and age <= TICKER_INTERVAL_SECONDS * 3 + 20
 
 
 def _store_unwritable_report() -> Optional[dict]:
     """Probe the active cron store (never a marker inside it): ``None`` when it accepts writes.
     Runs before any job read: loading jobs re-secures the dir, which can mask a mode problem."""
-    from cron.jobs import _current_cron_store
-    from cron.store_health import probe_report
+    from hermes_agent.cron.jobs import _current_cron_store
+    from hermes_agent.cron.store_health import probe_report
     return probe_report(_current_cron_store().cron_dir)
 
 
@@ -433,7 +433,7 @@ def _probe_then_list_jobs(*, include_disabled: bool, brief: bool = False):
     BEFORE reading jobs: loading re-secures the dir mode (masking a mode problem), and on an
     unwritable store the read itself can fail (it creates cron/output). Jobs is ``None`` only
     when that read failed on a store already reported unwritable."""
-    from cron.jobs import list_jobs
+    from hermes_agent.cron.jobs import list_jobs
     if (report := _store_unwritable_report()) is not None:
         _print_store_unwritable(report, brief=brief)
     try:
@@ -461,10 +461,10 @@ def _print_ticker_health(pids: list, restart_command: str = "hermes gateway rest
     the liveness heartbeat and the last-successful-tick marker before saying "will fire".
     """
     # See #32612, #32895.
-    from cron.jobs import (
+    from hermes_agent.cron.jobs import (
         get_ticker_heartbeat_age, get_ticker_last_error, get_ticker_success_age)
-    from cron.scheduler import _is_fd_exhaustion_text as _cron_is_fd_exhaustion_text
-    from cron.scheduler import stale_code_yield_labels
+    from hermes_agent.cron.scheduler import _is_fd_exhaustion_text as _cron_is_fd_exhaustion_text
+    from hermes_agent.cron.scheduler import stale_code_yield_labels
     hb_age = get_ticker_heartbeat_age()
     ok_age = get_ticker_success_age()
     last_error = get_ticker_last_error()
@@ -570,7 +570,7 @@ def cron_status():
                 # `hermes serve` / the Desktop backend ticks every local profile in-process: no
                 # gateway argv, lock or host record — only the heartbeat it writes here (#121881).
                 with contextlib.suppress(Exception):
-                    from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
+                    from hermes_agent.cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
                     in_process_ticker = (_ticker_age_is_fresh(get_ticker_heartbeat_age())
                                          and ticker_heartbeat_writer_alive())
         if host is not None:
@@ -600,7 +600,7 @@ def cron_status():
             # When scheduling last worked before the host went away: without this, a
             # 7h-overdue job still reads as a normal upcoming "Next run" (#114309).
             with contextlib.suppress(Exception):
-                from cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
+                from hermes_agent.cron.jobs import TICKER_INTERVAL_SECONDS, get_ticker_heartbeat_age
                 hb_age = get_ticker_heartbeat_age()
                 if hb_age is not None and hb_age > TICKER_INTERVAL_SECONDS * 3 + 20:
                     print(color("  Scheduler last ticked "
@@ -627,7 +627,7 @@ def _print_active_jobs_summary(jobs) -> None:
     if not jobs:
         print("  No active jobs")
         return
-    from cron.jobs import _parse_aware
+    from hermes_agent.cron.jobs import _parse_aware
 
     # Stored stamps carry mixed UTC offsets (an interval job keeps last_run_at's offset, a cron
     # job its configured zone), so order by instant, never by ISO text; display the stored stamp.
@@ -665,7 +665,7 @@ def _print_active_jobs_summary(jobs) -> None:
 
 def _scripts_dir_for_cron() -> Path:
     """Scripts dir for cron jobs — via ``CRON_DIR`` so monkeypatched cron storage is honoured."""
-    from cron.jobs import CRON_DIR
+    from hermes_agent.cron.jobs import CRON_DIR
     return CRON_DIR.parent / "scripts"
 
 
@@ -738,12 +738,12 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
     if workdir and not Path(workdir).expanduser().exists():
         issues.append(f"workdir not found: {workdir}")
     if job.get("timezone"):
-        from cron.jobs_time import zone_for_job
+        from hermes_agent.cron.jobs_time import zone_for_job
         if zone_for_job(job) is None:
             issues.append(f"timezone {job['timezone']!r} is not a valid IANA zone; "
                           "the job falls back to the profile timezone")
     if job.get("grace_minutes") is not None:
-        from cron.jobs_time import normalize_grace_minutes
+        from hermes_agent.cron.jobs_time import normalize_grace_minutes
         try:
             normalize_grace_minutes(job.get("grace_minutes"))
         except ValueError as exc:
@@ -756,7 +756,7 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
 
 def cron_doctor() -> int:
     """Run read-only cron health checks and return a shell-friendly status."""
-    from cron.jobs import list_jobs
+    from hermes_agent.cron.jobs import list_jobs
     jobs = list_jobs(include_disabled=False)
     findings = [(job, issues) for job in jobs if (issues := _cron_doctor_issues_for_job(job))]
     if not findings:
@@ -809,7 +809,7 @@ def _print_job_details(job_data: dict[str, Any]) -> None:
 
 
 def cron_create(args):
-    # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
+    # The gateway-lifecycle guard lives in hermes_agent.cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].
     result = _cron_api(
         action="create", schedule=args.schedule, prompt=args.prompt,
@@ -836,7 +836,7 @@ def cron_create(args):
 
 
 def cron_edit(args):
-    from cron.jobs import AmbiguousJobReference, resolve_job_ref
+    from hermes_agent.cron.jobs import AmbiguousJobReference, resolve_job_ref
     try:
         job = resolve_job_ref(args.job_id)
     except AmbiguousJobReference as exc:
@@ -937,7 +937,7 @@ def cron_resume(args) -> int:
         return 1
     if not run_at and not run_now:
         return _job_action("resume", args.job_id, "Resumed")
-    from cron.jobs import AmbiguousJobReference, _hermes_now, rearm_oneshot
+    from hermes_agent.cron.jobs import AmbiguousJobReference, _hermes_now, rearm_oneshot
     try:
         job = rearm_oneshot(args.job_id, _hermes_now().isoformat() if run_now else run_at)
     except (AmbiguousJobReference, ValueError) as exc:
@@ -957,7 +957,7 @@ def cron_notepad(args) -> int:
     A running cron agent updates its own notepad via its terminal tool; the scheduler injects
     non-empty notepads into the job prompt on each run.
     """
-    from cron import notepad
+    from hermes_agent.cron import notepad
     job_id = str(getattr(args, "job_id", "") or "")
     action = getattr(args, "notepad_action", None) or "list"
     key = getattr(args, "key", None)

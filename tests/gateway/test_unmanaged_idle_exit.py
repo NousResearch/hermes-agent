@@ -81,11 +81,11 @@ async def test_queued_work_clients_adapters_and_cron_each_keep_it_up(tmp_path, m
         runner.config.platforms[Platform.TELEGRAM] = SimpleNamespace(enabled=True)
         assert "messaging" in run_idle_exit.busy_reason(runner, window=0.2)
         runner.config.platforms.clear()
-        from cron.jobs import create_job, use_cron_store
+        from hermes_agent.cron.jobs import create_job, use_cron_store
         with use_cron_store(home):
             create_job("ping", "every 1h", name="j")
         assert "cron jobs scheduled" in run_idle_exit.busy_reason(runner, window=0.2)
-        monkeypatch.setattr("cron.jobs.load_jobs", lambda: (_ for _ in ()).throw(OSError("unreadable")))
+        monkeypatch.setattr("hermes_agent.cron.jobs.load_jobs", lambda: (_ for _ in ()).throw(OSError("unreadable")))
         assert "idle probe failed" in run_idle_exit.busy_reason(runner, window=0.2)
     finally:
         db.close()

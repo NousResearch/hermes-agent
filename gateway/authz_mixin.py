@@ -224,7 +224,7 @@ class GatewayAuthorizationMixin:
         profile_adapters = self._profile_adapters_map()
         if profile_name in profile_adapters:
             adapters = profile_adapters[profile_name]
-            from cron.scheduler_preflight import has_credential_platform
+            from hermes_agent.cron.scheduler_preflight import has_credential_platform
             if has_credential_platform(adapters) or not self._is_shared_bot_satellite(profile_name):
                 return adapters
             # Its own LOCAL adapter stays layered over the borrowed primary bots.

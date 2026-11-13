@@ -22,7 +22,7 @@ def _git_repo(path):
 
 
 def test_profiles_sharing_a_repo_prune_it_once_per_interval(tmp_path, monkeypatch):
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
     from hermes_cli import worktree_ops
     from hermes_cli.worktree_registry import record_worktree_repo
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -43,7 +43,7 @@ def test_profiles_sharing_a_repo_prune_it_once_per_interval(tmp_path, monkeypatc
     pruned = []
     monkeypatch.setattr(worktree_ops, "_prune_stale_worktrees", lambda repo: pruned.append(repo))
     monkeypatch.setattr(sched, "_last_worktree_maintenance_at", None)
-    from cron import scheduler_worktree_maintenance as claims
+    from hermes_agent.cron import scheduler_worktree_maintenance as claims
     monkeypatch.setattr(claims, "_last_worktree_prune_at", {})
 
     class _InlineThread:

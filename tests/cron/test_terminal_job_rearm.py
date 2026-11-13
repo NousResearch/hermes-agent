@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from cron.jobs import (
+from hermes_agent.cron.jobs import (
     advance_next_run,
     advance_next_runs,
     claim_job_for_fire,
@@ -25,9 +25,9 @@ from cron.jobs import (
 
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
 
@@ -70,7 +70,7 @@ def test_wedged_claimed_oneshot_remains_triggerable(tmp_cron_dir):
 
 def test_paused_job_run_override_remains_allowed(tmp_cron_dir):
     job = create_job("paused", "every 1h")
-    from cron.jobs import pause_job
+    from hermes_agent.cron.jobs import pause_job
 
     pause_job(job["id"])
     triggered = trigger_job(job["id"])
@@ -152,7 +152,7 @@ class TestRecurringJobStuckInErrorStateIsRecoverable:
         """Reproduce the exact state _mark_job_run_locked produces when
         compute_next_run() fails for a recurring job (e.g. croniter
         missing): state=error, enabled stays True, next_run_at=None."""
-        with mock.patch("cron.jobs.compute_next_run", return_value=None):
+        with mock.patch("hermes_agent.cron.jobs.compute_next_run", return_value=None):
             mark_job_run(job_id, success=True)
 
     def test_due_scan_self_heals_next_run_at(self, tmp_cron_dir):
@@ -208,7 +208,7 @@ class TestRecurringJobStuckInErrorStateIsRecoverable:
         )
 
     def test_pause_job_now_works_on_error_state(self, tmp_cron_dir):
-        from cron.jobs import pause_job
+        from hermes_agent.cron.jobs import pause_job
 
         job = create_job("recurring", "every 5m")
         self._force_error_state(job["id"])

@@ -303,7 +303,7 @@ def test_one_due_answer_walks_the_provider_ladder_once(portal, monkeypatch):
 
 
 def _cron_model() -> str:
-    from cron.scheduler import _load_cron_job_config
+    from hermes_agent.cron.scheduler import _load_cron_job_config
 
     return _load_cron_job_config({"id": "j", "name": "j", "prompt": "x"}, "j", "j").model
 

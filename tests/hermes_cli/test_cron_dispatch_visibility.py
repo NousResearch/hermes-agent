@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
-from cron.jobs import create_job, load_jobs, save_jobs
+from hermes_agent.cron.jobs import create_job, load_jobs, save_jobs
 from hermes_cli.cron import (
     _dispatch_display,
     _format_lateness,
@@ -19,9 +19,9 @@ from hermes_cli.cron import (
 
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
 def _stamp_last_dispatch(job_id, stamp):

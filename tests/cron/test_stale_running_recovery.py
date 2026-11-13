@@ -16,8 +16,8 @@ from datetime import timedelta
 
 import pytest
 
-import cron.executions as executions_mod
-from cron.executions import _hermes_now, _transaction, recover_interrupted_executions
+import hermes_agent.cron.executions as executions_mod
+from hermes_agent.cron.executions import _hermes_now, _transaction, recover_interrupted_executions
 
 
 @pytest.fixture(autouse=True)

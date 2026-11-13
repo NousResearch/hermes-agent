@@ -397,7 +397,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
     from gateway.run import (Dict, Platform, _cron_profile_gate, _cron_tick_profile_homes, _start_gateway_housekeeping, asyncio, logger, threading)
     # The event loop is passed so cron delivery can use live adapters (E2EE support).
-    from cron.scheduler_provider import (
+    from hermes_agent.cron.scheduler_provider import (
         InProcessCronScheduler, resolve_cron_scheduler, scheduler_for_profile_mode)
     cron_stop = threading.Event()
     # ONE gateway process per host multiplexes every profile, so its cron ticker owns EVERY
@@ -439,7 +439,7 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         cron_start_kwargs["can_dispatch"] = lambda: not (
             runner._draining or runner._external_drain_active)
     # Supervised: a ticker that dies without a stop request is respawned by housekeeping (#111010).
-    from cron.scheduler_thread import SupervisedTickerThread
+    from hermes_agent.cron.scheduler_thread import SupervisedTickerThread
     cron_thread = SupervisedTickerThread(
         cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
     from gateway.runtime_ownership import process_ownership

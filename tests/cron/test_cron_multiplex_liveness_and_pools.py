@@ -13,7 +13,7 @@ Two invariants that a host-wide, process-lifetime view of cron state gets wrong:
 
 from __future__ import annotations
 
-import cron.scheduler as sched
+import hermes_agent.cron.scheduler as sched
 from hermes_constants import (
     hermes_home_key,
     reset_hermes_home_override,
@@ -62,7 +62,7 @@ class TestPerProfileJobLiveness:
 
     def test_stale_oneshot_liveness_is_scoped_to_its_own_home(self, tmp_path):
         """The store's stale-entry recovery consumer asks per home, not host-wide."""
-        from cron.jobs import _job_running_in_this_process
+        from hermes_agent.cron.jobs import _job_running_in_this_process
 
         home_a, home_b = _two_homes(tmp_path)
         job_id = "daily-brief"
@@ -82,7 +82,7 @@ class TestPerProfileJobLiveness:
 class TestPoolReaping:
     def test_pool_of_an_unticked_home_is_reaped(self, tmp_path):
         """(b) Republishing the ticked set without a home drops that home's pool."""
-        from cron.scheduler_ownership import register_ticked_homes
+        from hermes_agent.cron.scheduler_ownership import register_ticked_homes
 
         home_a, home_b = _two_homes(tmp_path)
         try:

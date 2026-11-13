@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from cron import executions, jobs, scheduler, scheduler_authority
-from cron.scheduler_bookkeeping import finish_interrupted_run
+from hermes_agent.cron import executions, jobs, scheduler, scheduler_authority
+from hermes_agent.cron.scheduler_bookkeeping import finish_interrupted_run
 from hermes_cli import gateway_client
 
 

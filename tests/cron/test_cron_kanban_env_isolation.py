@@ -202,8 +202,8 @@ class TestRunJobKanbanIsolation:
     def _install_stubs(monkeypatch, observed: dict, agent_cls=None):
         import sys
 
-        import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
+        import hermes_agent.cron.scheduler as sched
+        from hermes_agent.cron import scheduler_delivery as sched_delivery
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         class FakeAgent:
@@ -263,7 +263,7 @@ class TestRunJobKanbanIsolation:
         }
 
     def test_agent_runs_as_non_dispatcher(self, monkeypatch, worker_env):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         observed: dict = {}
         self._install_stubs(monkeypatch, observed)
@@ -276,7 +276,7 @@ class TestRunJobKanbanIsolation:
     def test_environment_is_left_untouched(self, monkeypatch, worker_env):
         """The whole point of the ContextVar: os.environ must not be mutated, so
         the worker's claim heartbeat and the gateway watchers keep working."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         before = {
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")
@@ -299,7 +299,7 @@ class TestRunJobKanbanIsolation:
 
 
     def test_context_reset_even_when_job_raises(self, monkeypatch, worker_env):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
         from agent.delegation_context import is_dispatcher_owned_worker_context
 
         class ExplodingAgent:
@@ -329,7 +329,7 @@ class TestRunJobKanbanIsolation:
         SHARED read lock, so they interleave. With an os.environ snapshot/clear/
         restore this permanently destroyed the worker's identity; a ContextVar is
         per-thread and cannot."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         before = {
             k: v for k, v in os.environ.items() if k.startswith("HERMES_KANBAN_")

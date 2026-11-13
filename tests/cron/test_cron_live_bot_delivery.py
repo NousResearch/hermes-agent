@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 from unittest.mock import Mock
 
-from cron import scheduler_delivery as delivery
+from hermes_agent.cron import scheduler_delivery as delivery
 from tools import bot_live_delivery as mailbox
 
 
@@ -79,7 +79,7 @@ def test_live_delivery_retry_keeps_receipt_across_owner_loss(tmp_path, monkeypat
 
 
 def test_result_records_pending_until_terminal_receipt(tmp_path, monkeypatch):
-    from cron import jobs
+    from hermes_agent.cron import jobs
     from gateway import config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

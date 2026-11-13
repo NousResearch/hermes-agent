@@ -30,8 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from cron.scheduler import _deliver_result
-from cron.scheduler_delivery import _send_media_via_adapter
+from hermes_agent.cron.scheduler import _deliver_result
+from hermes_agent.cron.scheduler_delivery import _send_media_via_adapter
 
 
 @pytest.fixture()

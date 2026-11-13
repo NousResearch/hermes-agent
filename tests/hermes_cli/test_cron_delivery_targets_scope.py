@@ -6,7 +6,7 @@ The dashboard/desktop ``serve`` backend flips multi-profile hosting
 profile home; after that ``get_secret`` fails closed for an unscoped read.
 
 ``GET /api/cron/delivery-targets`` calls
-``cron.scheduler_delivery.cron_delivery_targets()``, which resolves each
+``hermes_agent.cron.scheduler_delivery.cron_delivery_targets()``, which resolves each
 platform's home chat id through ``get_secret``. It ran outside any profile
 scope, so under multi-profile hosting every poll raised ``UnscopedSecretError``
 (caught and logged as an error) and the response silently lost every configured
@@ -37,7 +37,7 @@ def test_delivery_targets_route_binds_profile_scope(tmp_path, monkeypatch):
         seen["chat"] = secret_scope.get_secret("TELEGRAM_HOME_CHANNEL")
         return []
 
-    from cron import scheduler_delivery
+    from hermes_agent.cron import scheduler_delivery
 
     monkeypatch.setattr(scheduler_delivery, "cron_delivery_targets", _fake_targets)
 

@@ -1,4 +1,4 @@
-"""Tests for cron.jobs.rewrite_skill_refs — the curator integration that
+"""Tests for hermes_agent.cron.jobs.rewrite_skill_refs — the curator integration that
 keeps scheduled cron jobs pointing at the right skill names after a
 consolidation / pruning pass.
 
@@ -28,7 +28,7 @@ def cron_env(tmp_path, monkeypatch):
     (hermes_home / "cron" / "output").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
-    import cron.jobs as jobs_mod
+    import hermes_agent.cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "HERMES_DIR", hermes_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", hermes_home / "cron")
     monkeypatch.setattr(jobs_mod, "JOBS_FILE", hermes_home / "cron" / "jobs.json")
@@ -43,7 +43,7 @@ class TestRewriteSkillRefsConsolidation:
     """Consolidated skills should be replaced with their umbrella target."""
 
     def test_single_skill_replaced(self, cron_env):
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         job = create_job(prompt="", schedule="every 1h", skills=["legacy-skill"])
         report = rewrite_skill_refs(
@@ -58,7 +58,7 @@ class TestRewriteSkillRefsConsolidation:
         assert loaded["skill"] == "umbrella-skill"
 
     def test_multiple_skills_one_consolidated(self, cron_env):
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         job = create_job(
             prompt="",
@@ -72,7 +72,7 @@ class TestRewriteSkillRefsConsolidation:
         assert loaded["skills"] == ["keep-a", "umbrella", "keep-b"]
 
     def test_umbrella_already_in_list_dedupes(self, cron_env):
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         # Job already loads the umbrella AND the legacy sub-skill
         job = create_job(
@@ -87,7 +87,7 @@ class TestRewriteSkillRefsConsolidation:
         assert loaded["skills"] == ["umbrella"]
 
     def test_rewrite_report_records_mapping(self, cron_env):
-        from cron.jobs import create_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, rewrite_skill_refs
 
         job = create_job(
             prompt="",
@@ -114,7 +114,7 @@ class TestRewriteSkillRefsPruning:
     """Pruned skills should be dropped outright (no forwarding target)."""
 
     def test_pruned_skill_dropped(self, cron_env):
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         job = create_job(
             prompt="",
@@ -129,7 +129,7 @@ class TestRewriteSkillRefsPruning:
         assert loaded["skill"] == "keep"
 
     def test_all_skills_pruned_leaves_empty_list(self, cron_env):
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         job = create_job(prompt="", schedule="every 1h", skills=["gone"])
         rewrite_skill_refs(consolidated={}, pruned=["gone"])
@@ -143,7 +143,7 @@ class TestRewriteSkillRefsMixed:
     """Consolidation + pruning in the same pass."""
 
     def test_mixed_consolidation_and_pruning(self, cron_env):
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         job = create_job(
             prompt="",
@@ -162,7 +162,7 @@ class TestRewriteSkillRefsMixed:
         """Defensive: if a skill appears in both lists (shouldn't happen
         in practice), prefer consolidation — it has a forwarding target,
         which is the more useful outcome."""
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         job = create_job(prompt="", schedule="every 1h", skills=["ambiguous"])
         rewrite_skill_refs(
@@ -178,7 +178,7 @@ class TestRewriteSkillRefsMultipleJobs:
     """Multiple jobs, some affected, some not."""
 
     def test_only_affected_jobs_reported(self, cron_env):
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         j1 = create_job(prompt="", schedule="every 1h", skills=["legacy"])
         j2 = create_job(prompt="", schedule="every 1h", skills=["untouched"])
@@ -203,7 +203,7 @@ class TestRewriteSkillRefsMultipleJobs:
     def test_legacy_skill_field_also_rewritten(self, cron_env):
         """Old jobs may have the legacy single-skill ``skill`` field
         set instead of ``skills``. Both paths should be rewritten."""
-        from cron.jobs import create_job, get_job, rewrite_skill_refs
+        from hermes_agent.cron.jobs import create_job, get_job, rewrite_skill_refs
 
         # Create via the legacy ``skill`` argument
         job = create_job(
@@ -223,7 +223,7 @@ class TestRewriteSkillRefsPersistence:
 
 
     def test_noop_does_not_rewrite_file(self, cron_env):
-        from cron.jobs import create_job, rewrite_skill_refs, JOBS_FILE
+        from hermes_agent.cron.jobs import create_job, rewrite_skill_refs, JOBS_FILE
 
         create_job(prompt="", schedule="every 1h", skills=["keep"])
         mtime_before = JOBS_FILE.stat().st_mtime_ns

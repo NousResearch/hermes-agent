@@ -1,5 +1,5 @@
 """Tests for #60432: the gateway shutdown drain was structurally blind to
-in-flight cron work. Cron jobs run through cron/scheduler.py's own thread
+in-flight cron work. Cron jobs run through hermes_agent/cron/scheduler.py's own thread
 pool, entirely outside ``GatewayRunner._running_agents`` -- the dict every
 other active-work check on this class reads. A shutdown (``/update``,
 ``/restart``, SIGUSR1 -- they all funnel through the same ``stop()``) could
@@ -7,7 +7,7 @@ report ``active_at_start=0`` and immediately kill tool subprocesses while a
 cron job's terminal command was still running.
 
 These tests cover the gateway side of the fix:
-  - _active_cron_job_count() reads cron.scheduler's in-flight job set
+  - _active_cron_job_count() reads hermes_agent.cron.scheduler's in-flight job set
   - _drain_active_agents() waits for cron work the same way it already
     waits for chat sessions
   - the final tool-subprocess kill marks any still-in-flight cron job
@@ -28,7 +28,7 @@ from tools import browser_session_lifecycle as bt_lifecycle
 
 @pytest.fixture(autouse=True)
 def _reset_cron_running_set():
-    import cron.scheduler as sched
+    import hermes_agent.cron.scheduler as sched
 
     sched._running_job_ids.clear()
     sched._running_fire_owners.clear()
@@ -55,7 +55,7 @@ class TestDrainWaitsForCronWork:
         """Before this fix, a cron-only workload made active_at_start=0
         and the drain returned instantly -- this is the exact repro from
         the issue (a `sleep 1800` cron job in flight during /update)."""
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         runner, _adapter = make_restart_runner()
         sched._running_job_ids.add(sched._inflight_key("job-1"))
@@ -77,7 +77,7 @@ class TestDrainWaitsForCronWork:
 class TestKillToolSubprocessesMarksCronInterrupted:
     @pytest.mark.asyncio
     async def test_in_flight_cron_job_marked_interrupted_on_forced_kill(self, monkeypatch):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
         from tools import terminal_tool_lifecycle
@@ -108,7 +108,7 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         monkeypatch.setattr(sched, "mark_running_jobs_interrupted", _spy)
 
         with patch("gateway.status.remove_pid_file"), patch("gateway.status.publish_runtime_status"), \
-             patch("cron.scheduler.mark_job_run"):
+             patch("hermes_agent.cron.scheduler.mark_job_run"):
             await runner.stop()
 
         assert marked_calls, "mark_running_jobs_interrupted was never called during shutdown"

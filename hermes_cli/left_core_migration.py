@@ -354,7 +354,7 @@ def _route_slots(home: Path) -> list[dict]:
     delegation backend route (:func:`_delegation_backend_routes`) and its chain, every MoA preset's reference
     models and aggregator (``normalize_moa_config``), the cron-wide ``cron.model_provider``, each cron job's pin
     and the user's own ``providers:`` / ``custom_providers:`` endpoints (``get_compatible_custom_providers``)."""
-    from cron.scheduler_preflight import cron_default_provider
+    from hermes_agent.cron.scheduler_preflight import cron_default_provider
     from gateway import config_loader
     from hermes_cli.config_providers import get_compatible_custom_providers
     from hermes_cli.fallback_config import get_fallback_chain

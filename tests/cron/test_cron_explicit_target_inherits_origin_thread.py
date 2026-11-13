@@ -6,7 +6,7 @@ from. Its delivery target is usually written as an explicit ``platform:chat_id``
 names no thread. Only Slack inherited the origin thread for a chat-only target, so on every
 other topic-capable platform the report fell into the chat's top-level/General lane:
 
-    WARNING cron.scheduler: Job 'ba51c5f0dd27': origin has thread_id=631677 but delivery
+    WARNING hermes_agent.cron.scheduler: Job 'ba51c5f0dd27': origin has thread_id=631677 but delivery
     target lost it (deliver=telegram:167384518, target={... 'thread_id': None ...})
 
 Production evidence (Telegram DM topics, job fired daily for weeks): 38 occurrences in
@@ -21,7 +21,7 @@ the top-level lane deliberately.
 
 import pytest
 
-from cron import scheduler_delivery as sd
+from hermes_agent.cron import scheduler_delivery as sd
 
 
 def _job(deliver, origin):

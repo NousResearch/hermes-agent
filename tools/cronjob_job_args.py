@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 
-from cron.jobs import effective_job_state
+from hermes_agent.cron.jobs import effective_job_state
 
 import hermes_time
 
@@ -33,7 +33,7 @@ def _first_fire_within_thread_horizon(
     else:
         parsed = None
         with contextlib.suppress(Exception):
-            from cron.jobs import parse_schedule
+            from hermes_agent.cron.jobs import parse_schedule
 
             parsed = parse_schedule(schedule)
     if not isinstance(parsed, dict) or parsed.get("kind") != "once":
@@ -122,7 +122,7 @@ def _local_delivery_notice(job: dict[str, Any], user_deliver: Optional[str]) -> 
     if (user_deliver or "").strip().lower() == "local":
         return None
     try:
-        from cron.scheduler import _resolve_delivery_targets
+        from hermes_agent.cron.scheduler import _resolve_delivery_targets
         targets = _resolve_delivery_targets(job)
         if targets:
             # _origin_from_env() dropped a non-push origin (api_server) and the job rerouted to a
@@ -261,7 +261,7 @@ def _validate_bot_chat_deliver(deliver: Optional[str]) -> Optional[str]:
     if not deliver:
         return None
     try:
-        from cron.scheduler_delivery import parse_bot_chat_deliver_token
+        from hermes_agent.cron.scheduler_delivery import parse_bot_chat_deliver_token
         from hermes_cli.profiles import normalize_profile_name, profile_exists
     except Exception:
         return None  # best-effort; resolution re-checks at fire time
@@ -456,7 +456,7 @@ def _apply_continuity(
 def _validate_context_from_refs(refs: list[Any]) -> Optional[str]:
     """Error string if any non-"self" ref names a missing job ("self" resolves to the job's
     own id at run time, so it can't be checked — the job doesn't exist yet at create)."""
-    from cron.jobs import get_job as _get_job
+    from hermes_agent.cron.jobs import get_job as _get_job
     for ref_id in refs:
         if isinstance(ref_id, str) and ref_id.strip().lower() == "self":
             continue

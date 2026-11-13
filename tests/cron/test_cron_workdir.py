@@ -67,9 +67,9 @@ def _run_owned_job(job, tmp_path):
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     """Isolate cron job storage into a temp dir so tests don't stomp on real jobs."""
-    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
-    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
-    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+    monkeypatch.setattr("hermes_agent.cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("hermes_agent.cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("hermes_agent.cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
 
@@ -80,18 +80,18 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 class TestNormalizeWorkdir:
 
     def test_empty_string_returns_none(self):
-        from cron.jobs import _normalize_workdir
+        from hermes_agent.cron.jobs import _normalize_workdir
         assert _normalize_workdir("") is None
         assert _normalize_workdir("   ") is None
 
     def test_absolute_existing_dir_returns_resolved_str(self, tmp_path):
-        from cron.jobs import _normalize_workdir
+        from hermes_agent.cron.jobs import _normalize_workdir
         result = _normalize_workdir(str(tmp_path))
         assert result == str(tmp_path.resolve())
 
     @pytest.mark.platforms("linux")
     def test_tilde_expands(self, tmp_path, monkeypatch):
-        from cron.jobs import _normalize_workdir
+        from hermes_agent.cron.jobs import _normalize_workdir
         # expanduser keys off USERPROFILE on native Windows, HOME elsewhere.
         home_var = "USERPROFILE" if sys.platform == "win32" else "HOME"
         monkeypatch.setenv(home_var, str(tmp_path))
@@ -99,18 +99,18 @@ class TestNormalizeWorkdir:
         assert result == str(tmp_path.resolve())
 
     def test_relative_path_rejected(self):
-        from cron.jobs import _normalize_workdir
+        from hermes_agent.cron.jobs import _normalize_workdir
         with pytest.raises(ValueError, match="absolute path"):
             _normalize_workdir("some/relative/path")
 
     def test_missing_dir_rejected(self, tmp_path):
-        from cron.jobs import _normalize_workdir
+        from hermes_agent.cron.jobs import _normalize_workdir
         missing = tmp_path / "does-not-exist"
         with pytest.raises(ValueError, match="does not exist"):
             _normalize_workdir(str(missing))
 
     def test_file_not_dir_rejected(self, tmp_path):
-        from cron.jobs import _normalize_workdir
+        from hermes_agent.cron.jobs import _normalize_workdir
         f = tmp_path / "file.txt"
         f.write_text("hi")
         with pytest.raises(ValueError, match="not a directory"):
@@ -123,7 +123,7 @@ class TestNormalizeWorkdir:
 
 class TestCreateJobWorkdir:
     def test_workdir_stored_when_set(self, tmp_cron_dir):
-        from cron.jobs import create_job, get_job
+        from hermes_agent.cron.jobs import create_job, get_job
         job = create_job(
             prompt="hello",
             schedule="every 1h",
@@ -134,7 +134,7 @@ class TestCreateJobWorkdir:
 
 
     def test_create_rejects_invalid_workdir(self, tmp_cron_dir):
-        from cron.jobs import create_job
+        from hermes_agent.cron.jobs import create_job
         with pytest.raises(ValueError):
             create_job(
                 prompt="hello",
@@ -145,13 +145,13 @@ class TestCreateJobWorkdir:
 
 class TestUpdateJobWorkdir:
     def test_set_workdir_via_update(self, tmp_cron_dir):
-        from cron.jobs import create_job, get_job, update_job
+        from hermes_agent.cron.jobs import create_job, get_job, update_job
         job = create_job(prompt="x", schedule="every 1h")
         update_job(job["id"], {"workdir": str(tmp_cron_dir)})
         assert get_job(job["id"])["workdir"] == str(tmp_cron_dir.resolve())
 
     def test_clear_workdir_with_none(self, tmp_cron_dir):
-        from cron.jobs import create_job, get_job, update_job
+        from hermes_agent.cron.jobs import create_job, get_job, update_job
         job = create_job(
             prompt="x", schedule="every 1h", workdir=str(tmp_cron_dir)
         )
@@ -160,7 +160,7 @@ class TestUpdateJobWorkdir:
 
 
     def test_update_rejects_invalid_workdir(self, tmp_cron_dir):
-        from cron.jobs import create_job, update_job
+        from hermes_agent.cron.jobs import create_job, update_job
         job = create_job(prompt="x", schedule="every 1h")
         with pytest.raises(ValueError):
             update_job(job["id"], {"workdir": "nope/relative"})
@@ -180,7 +180,7 @@ class TestTickWorkdirPartition:
     """Workdir is per execution, so it must not force a global serial lane."""
 
     def test_workdir_jobs_overlap_on_parallel_pool(self, tmp_path, monkeypatch):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
         import threading
 
         workdir_a = tmp_path / "a"
@@ -231,8 +231,8 @@ class TestRunJobTerminalCwd:
         """Patch enough of run_job's deps that it executes without real creds."""
         import os
         import sys
-        import cron.scheduler as sched
-        from cron import scheduler_delivery as sched_delivery
+        import hermes_agent.cron.scheduler as sched
+        from hermes_agent.cron import scheduler_delivery as sched_delivery
 
         class FakeAgent:
             def __init__(self, **kwargs):
@@ -296,7 +296,7 @@ class TestRunJobTerminalCwd:
         check it's unchanged by run_job.
         """
         import os
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         # Pin TERMINAL_CWD to a sentinel via monkeypatch so we control both
         # the before-value and the after-value regardless of cross-test state.
@@ -330,7 +330,7 @@ class TestRunJobTerminalCwd:
         self, monkeypatch, tmp_path
     ):
         import os
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
         from tools.terminal_tool import get_session_cwd
 
         baseline = str(tmp_path / "baseline")
@@ -362,7 +362,7 @@ class TestRunJobTerminalCwd:
     def test_agent_prerun_script_receives_configured_workdir(
         self, monkeypatch, tmp_path
     ):
-        import cron.scheduler as sched
+        import hermes_agent.cron.scheduler as sched
 
         workdir = tmp_path / "project"
         workdir.mkdir()
@@ -395,7 +395,7 @@ class TestRunJobTerminalCwd:
 def test_build_job_prompt_inline_script_receives_configured_workdir(monkeypatch, tmp_path):
     """Callers that skip the wake-gate (no cached ``prerun_script``) run the script inline from
     ``_build_job_prompt``; that path must honour the job's workdir too."""
-    from cron import scheduler_prompt, scheduler_script
+    from hermes_agent.cron import scheduler_prompt, scheduler_script
 
     workdir = tmp_path / "project"
     workdir.mkdir()

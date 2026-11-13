@@ -9,7 +9,7 @@ import pytest
 
 
 def test_pending_delivery_is_claimed_and_sent_once(tmp_path, monkeypatch):
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     queue.enqueue("exec-1", {"id": "job-1"}, "brief")
@@ -31,7 +31,7 @@ def test_pending_deliveries_are_claimed_in_instant_order_across_dst_fall_back(
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     new_york = ZoneInfo("America/New_York")
@@ -49,7 +49,7 @@ def test_pending_deliveries_are_claimed_in_instant_order_across_dst_fall_back(
 
 
 def test_terminal_delivery_retention_is_bounded(tmp_path, monkeypatch):
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     monkeypatch.setattr(queue, "MAX_TERMINAL_DELIVERIES", 2, raising=False)
@@ -77,7 +77,7 @@ def test_terminal_delivery_retention_is_bounded(tmp_path, monkeypatch):
 
 
 def test_failure_delivery_lane_survives_durable_handoff(tmp_path, monkeypatch):
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     queue.enqueue(
@@ -97,7 +97,7 @@ def test_failure_delivery_lane_survives_durable_handoff(tmp_path, monkeypatch):
 
 
 def test_legacy_queue_schema_adds_failure_lane_before_enqueue(tmp_path, monkeypatch):
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     db = tmp_path / "deliveries.db"
     with sqlite3.connect(db) as conn:
@@ -130,7 +130,7 @@ def test_legacy_queue_schema_adds_failure_lane_before_enqueue(tmp_path, monkeypa
 def test_wait_timeout_marks_inflight_delivery_unknown_without_retry(
     tmp_path, monkeypatch
 ):
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     queue.enqueue("exec-inflight", {"id": "job-inflight"}, "result")
@@ -153,7 +153,7 @@ def test_wait_timeout_marks_inflight_delivery_unknown_without_retry(
 def test_dead_delivery_owner_becomes_unknown_and_is_not_retried(
     tmp_path, monkeypatch
 ):
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     queue.enqueue("exec-1", {"id": "job-1"}, "brief")
@@ -171,7 +171,7 @@ def test_dead_delivery_owner_becomes_unknown_and_is_not_retried(
 def test_delivery_failure_is_terminal_not_retried_and_redacted(
     tmp_path, monkeypatch
 ):
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     queue.enqueue("exec-1", {"id": "job-1"}, "brief")
@@ -192,7 +192,7 @@ def test_wait_timeout_leaves_unclaimed_delivery_queued_for_next_gateway(
 ):
     """A row nobody claimed was never attempted: it is not uncertain, so a
     gateway outage longer than the worker's wait budget must not lose it."""
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     job = {"id": "job-3", "deliver": "origin"}
@@ -213,7 +213,7 @@ def test_wait_timeout_leaves_unclaimed_delivery_queued_for_next_gateway(
 def test_same_gateway_recovers_terminalization_failure_without_resending(
     tmp_path, monkeypatch
 ):
-    import cron.delivery_queue as queue
+    import hermes_agent.cron.delivery_queue as queue
 
     monkeypatch.setattr(queue, "DELIVERY_DB", tmp_path / "deliveries.db")
     queue.enqueue("exec-4", {"id": "job-4"}, "result")

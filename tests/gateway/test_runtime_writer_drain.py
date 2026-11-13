@@ -15,7 +15,7 @@ def test_live_runtime_writers_prevent_final_lock_release(tmp_path, monkeypatch, 
     from gateway import run
     from gateway.run_bootstrap import _start_gateway_start_cron_and_housekeeping
     from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
-    from cron import scheduler_provider
+    from hermes_agent.cron import scheduler_provider
 
     home = tmp_path / 'runtime'
     home.mkdir()

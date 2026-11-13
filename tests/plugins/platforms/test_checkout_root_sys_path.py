@@ -24,7 +24,7 @@ MODULES = [
     "plugins.platforms.slack.adapter",
     "plugins.platforms.raft.adapter",
     "gateway.platforms.base",
-    "cron.scheduler",
+    "hermes_agent.cron.scheduler",
     "tools.cronjob_tools",
 ]
 
@@ -54,7 +54,7 @@ def test_import_keeps_installed_package_ahead_of_checkout(module, tmp_path):
     assert result.returncode == 0, result.stderr[-3000:]
 
 
-@pytest.mark.parametrize("module", ["plugins.platforms.slack.adapter", "cron.scheduler"])
+@pytest.mark.parametrize("module", ["plugins.platforms.slack.adapter", "hermes_agent.cron.scheduler"])
 def test_standalone_file_load_still_resolves_repo_siblings(module, tmp_path):
     """Loaded by file path with the checkout absent from sys.path, the appended root still lets the
     module resolve its repo siblings (the shim's real purpose)."""

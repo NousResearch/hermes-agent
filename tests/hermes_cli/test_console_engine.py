@@ -206,7 +206,7 @@ def test_sessions_export_zero_limit_disables_guard(
 
 
 def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home):
-    from cron.jobs import create_job, get_job
+    from hermes_agent.cron.jobs import create_job, get_job
 
     job = create_job(prompt="say hello", schedule="every 1h", name="alpha")
     engine = HermesConsoleEngine()

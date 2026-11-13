@@ -26,7 +26,7 @@ def test_cron_manage_profile_reads_that_profiles_store(tmp_path, monkeypatch):
                         "name": "botA-only-job",
                         "prompt": "scoped hello",
                         "enabled": True,
-                        # what cron/scheduler_delivery.py persists for unconfirmed sends
+                        # what hermes_agent/cron/scheduler_delivery.py persists for unconfirmed sends
                         "last_delivery_unverified": ["telegram:123"],
                     }
                 ]

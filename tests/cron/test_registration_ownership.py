@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cron import jobs, scheduler as sched
+from hermes_agent.cron import jobs, scheduler as sched
 from tools import cronjob_tools as tools
 
 
@@ -60,7 +60,7 @@ def test_live_direct_run_survives_stale_sweep(tmp_path, monkeypatch):
         assert not saved.get("fire_claim")
         outputs = (tmp_path / "cron" / "output").rglob("*.md")
         assert any("direct-run-ok" in output.read_text() for output in outputs)
-        from cron.executions import latest_executions
+        from hermes_agent.cron.executions import latest_executions
         assert latest_executions([job["id"]])[job["id"]]["status"] == "completed"
 
 

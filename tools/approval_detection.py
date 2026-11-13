@@ -1768,15 +1768,15 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     ``_deobfuscate_shell_word_for_detection`` is deliberately scoped to command-position words
     (widening it would let quoted prose like ``git commit -m "rm -rf /"`` match), and the spliced
     verb is an ARGUMENT, so ``launchctl kick"start" -k gui/501/ai.hermes.gateway`` auto-approved.
-    Delegates to ``cron.lifecycle_guard`` (shlex-tokenized, anchored on a hermes-gateway
+    Delegates to ``hermes_agent.cron.lifecycle_guard`` (shlex-tokenized, anchored on a hermes-gateway
     identifier). Runs last so an ordinary pattern match keeps its more specific reason; this layer
-    only prompts — the non-bypassable block still lives in ``cron.lifecycle_guard``.
+    only prompts — the non-bypassable block still lives in ``hermes_agent.cron.lifecycle_guard``.
 
     ``_normalize_command_for_detection`` strips backslash escapes, so ``kick\\start`` already reaches the
     launchctl pattern above. See #80269.
     """
     try:
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+        from hermes_agent.cron.lifecycle_guard import contains_gateway_lifecycle_command
     except Exception:
         return False
     return contains_gateway_lifecycle_command(command)

@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from cron import scheduler_delivery as delivery
+from hermes_agent.cron import scheduler_delivery as delivery
 from gateway import hosted_rooms
 from hermes_constants import get_hermes_home
 

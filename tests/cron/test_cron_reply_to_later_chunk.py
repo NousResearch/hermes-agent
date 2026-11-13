@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cron.scheduler import _deliver_result
+from hermes_agent.cron.scheduler import _deliver_result
 from gateway import rich_sent_store
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
@@ -88,8 +88,8 @@ def _deliver(live_result=None, standalone_result=None, release=None):
 
     live = live_result is not None
     with patch("gateway.config.load_gateway_config", return_value=_gateway_config()), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
-         patch("cron.scheduler_delivery._record_delivery_verification"), \
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
+         patch("hermes_agent.cron.scheduler_delivery._record_delivery_verification"), \
          patch("gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
@@ -117,7 +117,7 @@ def test_reply_to_a_later_chunk_of_a_cron_delivery_is_framed(lane):
 def test_chunks_of_a_partial_send_and_a_send_past_the_confirm_wait_are_tagged(monkeypatch):
     """Ids are tagged when the send itself finishes: a partial split send raises with the landed
     chunks, and a slow one is still running when the scheduler stops waiting (60 s)."""
-    from cron import scheduler_delivery as sd
+    from hermes_agent.cron import scheduler_delivery as sd
     from gateway.delivery import PartialDeliveryError
 
     partial = SimpleNamespace(success=False, message_id=None, error="flood", raw_response={
@@ -181,9 +181,9 @@ def test_a_partial_standalone_split_send_frames_replies_to_its_landed_chunks(mon
         return await _send_telegram("tok", chat_id, text)
 
     with patch("gateway.config.load_gateway_config", return_value=cfg), \
-         patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
+         patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}), \
          patch("tools.send_message_tool._send_to_platform", send), \
-         patch("cron.jobs.update_job"):
+         patch("hermes_agent.cron.jobs.update_job"):
         assert _deliver_result(job, "status line ok\n" * 700)
     assert bot.send_message.await_count == 3
     pointer = reply_pointer("status line ok", replied_to=("telegram", "-100123", "502"))

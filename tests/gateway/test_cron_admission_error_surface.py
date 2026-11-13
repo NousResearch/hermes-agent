@@ -15,7 +15,7 @@ _SURFACE = {'layer': 'gateway', 'code': 'cron_session_read_only', 'retryable': F
 
 async def _typed_turn_in_cron_session(owner, monkeypatch):
     """Run a person's message through a cron session's real executor: ``(row, response, outcome, captured)``."""
-    from cron import scheduler
+    from hermes_agent.cron import scheduler
     from gateway.config import Platform
     from gateway.session import SessionSource
     from gateway.session_contract import SessionRef

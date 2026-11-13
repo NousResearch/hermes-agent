@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 pytest.importorskip("croniter")
 
-import cron.jobs as J
+import hermes_agent.cron.jobs as J
 
 
 @pytest.fixture

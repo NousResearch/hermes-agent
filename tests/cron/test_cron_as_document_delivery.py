@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cron.scheduler import _deliver_result
-from cron.scheduler_delivery_media import _send_media_via_adapter
+from hermes_agent.cron.scheduler import _deliver_result
+from hermes_agent.cron.scheduler_delivery_media import _send_media_via_adapter
 from gateway.config import Platform, PlatformConfig
 from hermes_constants import get_hermes_home
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import concurrent.futures
 
-import cron.scheduler as sched
+import hermes_agent.cron.scheduler as sched
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 

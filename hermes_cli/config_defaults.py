@@ -1837,7 +1837,7 @@ DEFAULT_CONFIG = {
         # (for externally managed cleanup).
         "output_retention": 50,
         # Timeout (seconds) for a no-agent cron script. Env: HERMES_CRON_SCRIPT_TIMEOUT. Keep in
-        # sync with cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
+        # sync with hermes_agent.cron.scheduler._DEFAULT_SCRIPT_TIMEOUT.
         "script_timeout_seconds": 3600,
         # Timeout (seconds) for SessionDB() init inside cron jobs: state.db open/migrate has no
         # timeout of its own against a wedged sqlite3.connect, and an unbounded hang wedges the
@@ -1845,7 +1845,7 @@ DEFAULT_CONFIG = {
         "session_db_timeout_seconds": 10,
         # Timeout (seconds) per media attachment send during gateway delivery; large attachments
         # (long TTS audio, big exports) need more than 30s. Env: HERMES_CRON_MEDIA_SEND_TIMEOUT.
-        # Keep in sync with cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
+        # Keep in sync with hermes_agent.cron.scheduler._DEFAULT_MEDIA_SEND_TIMEOUT.
         "media_send_timeout_seconds": 300,
         # Managed systemd gateway with no user session (containers, no linger): false runs
         # cron jobs as a direct external subprocess (warns once; no cgroup isolation), true
@@ -1855,7 +1855,7 @@ DEFAULT_CONFIG = {
         # before one reminder ping (the run is still recorded; `hermes cron incidents` shows it).
         # A green run or a different error alerts again immediately; `hermes cron incidents ack`
         # silences a signature for good. 0 = re-alert on every failing run. Keep in sync with
-        # cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
+        # hermes_agent.cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
         "failure_repeat_alert_hours": 6,
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,

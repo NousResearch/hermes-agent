@@ -3,13 +3,13 @@
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from cron.scheduler import _build_job_prompt
+from hermes_agent.cron.scheduler import _build_job_prompt
 
 _FIRE = datetime(2026, 10, 31, 19, 5, tzinfo=timezone(timedelta(hours=-7), "PDT"))
 
 
 def _prompt(job):
-    with patch("cron.scheduler_prompt._hermes_now", return_value=_FIRE), patch(
+    with patch("hermes_agent.cron.scheduler_prompt._hermes_now", return_value=_FIRE), patch(
         "tools.skills_tool.skill_view", return_value='{"success": false, "error": "not found"}'
     ):
         return _build_job_prompt(job)

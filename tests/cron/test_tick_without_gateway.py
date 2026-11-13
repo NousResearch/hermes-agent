@@ -10,9 +10,9 @@ import os
 
 import pytest
 
-import cron.jobs as J
-import cron.scheduler as S
-from cron import scheduler_authority
+import hermes_agent.cron.jobs as J
+import hermes_agent.cron.scheduler as S
+from hermes_agent.cron import scheduler_authority
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ def test_tick_without_gateway_skips_agent_jobs_without_spawning_or_drift(cron_ho
     _make_due(other["id"])
     due_before = {j["id"]: j["next_run_at"] for j in J.load_jobs()}
 
-    with caplog.at_level("WARNING", logger="cron.scheduler_authority"):
+    with caplog.at_level("WARNING", logger="hermes_agent.cron.scheduler_authority"):
         ran = S.tick(verbose=False, headless=True)
 
     assert ran == 0 and spawned == []
@@ -117,7 +117,7 @@ def test_tick_holds_agent_jobs_while_gateway_is_starting_or_silent(cron_home, mo
     _make_due(agent["id"])
     due_before = J.load_jobs()[0]["next_run_at"]
     started = time.monotonic()
-    with caplog.at_level("WARNING", logger="cron.scheduler_gateway_gate"):
+    with caplog.at_level("WARNING", logger="hermes_agent.cron.scheduler_gateway_gate"):
         ran = S.tick(verbose=False, headless=True)
     elapsed = time.monotonic() - started
     for handle in keep:

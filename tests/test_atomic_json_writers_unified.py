@@ -1,6 +1,6 @@
 """Invariant for the non-secret atomic JSON writers that used to inline ``utils._atomic_write``.
 
-Contract under test for ``gateway/session_persistence``, ``cron/suggestions`` and
+Contract under test for ``gateway/session_persistence``, ``hermes_agent/cron/suggestions`` and
 ``agent/shell_hooks``: a failed replace leaves the previous file byte-identical AND leaves no temp
 file behind (the interrupt-safe cleanup only the canonical helper guarantees). A hand-rolled copy
 that skips the cleanup, or writes through the target instead of a sibling temp, fails this.
@@ -45,7 +45,7 @@ def test_sessions_json_failed_replace_keeps_old_bytes_and_no_temp(tmp_path, monk
 
 
 def test_suggestions_failed_replace_keeps_old_bytes_and_no_temp(tmp_path, monkeypatch, broken_replace):
-    from cron import suggestions
+    from hermes_agent.cron import suggestions
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     target = suggestions._current_suggestions_file()

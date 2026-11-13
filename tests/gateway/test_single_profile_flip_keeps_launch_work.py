@@ -124,7 +124,7 @@ async def test_default_profiles_mcp_connections_survive_the_flip(standalone_host
 
 
 def test_default_cron_fire_and_kanban_tick_after_the_flip_keep_env_injected_credentials(standalone_host):
-    from cron.scheduler import _fire_secret_scope
+    from hermes_agent.cron.scheduler import _fire_secret_scope
     from gateway.kanban_watchers_dispatcher import _default_profile_secret_scope
     runner, home = standalone_host
     _mkprofile(home, "daily-news-bot")

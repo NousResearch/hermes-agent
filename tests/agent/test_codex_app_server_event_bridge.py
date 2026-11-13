@@ -324,3 +324,26 @@ def test_real_progress_keeps_watchdog_alive_but_silence_still_aborts(monkeypatch
     assert agent._last_activity_ts == last_activity
     assert watchdog._tick() is False
     abort.assert_called_once()
+
+
+def test_hermes_tool_display_args_are_redacted_but_execution_args_are_not():
+    """#72298: a secret typed by a Hermes tool run through the hermes-tools MCP server must be
+    masked in every display callback, exactly like the native tool-progress path."""
+    from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
+
+    secret = "sk-ant-api03-" + "A1b2C3d4E5" * 4
+    agent = _make_stub_agent()
+    agent.tool_start_callback = MagicMock(name="tool_start_callback")
+    agent.tool_complete_callback = MagicMock(name="tool_complete_callback")
+    item = {"type": "mcpToolCall", "id": "mcp-1", "server": HERMES_TOOLS_MCP_SERVER_NAME,
+            "tool": "browser_type", "arguments": {"ref": "@e3", "text": secret}}
+    bridge = make_codex_app_server_event_bridge(agent)
+    bridge(_item_started(item))
+    bridge(_item_completed({**item, "result": {"ok": True}}))
+
+    shown = [repr(c) for cb in (agent.tool_progress_callback, agent.tool_start_callback,
+                                agent.tool_complete_callback) for c in cb.call_args_list]
+    assert agent.tool_start_callback.call_args.args[1] == "browser_type"
+    assert agent.tool_start_callback.call_args.args[2]["ref"] == "@e3"
+    assert all(secret not in s for s in shown), shown
+    assert item["arguments"]["text"] == secret

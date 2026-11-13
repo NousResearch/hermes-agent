@@ -713,9 +713,11 @@ def _parse_chat_messages(messages: list[Any]) -> tuple:
     """Chat ``messages`` -> ``(system_prompt, conversation_messages, error_response_or_None)``.
 
     System messages -> ephemeral system prompt layered ON TOP of core, flattened to text
-    (Anthropic rejects images there, OpenAI text models ignore them)."""
+    (Anthropic rejects images there, OpenAI text models ignore them). Trailing empty assistant
+    turns are dropped: some clients (Open WebUI) send the slot the reply will fill (#154758)."""
     from gateway.platforms.api_server import (
-        _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content)
+        _content_has_visible_payload, _multimodal_validation_error, _normalize_chat_content,
+        _normalize_multimodal_content)
     system_prompt = None
     conversation_messages: list[dict[str, str]] = []
     for idx, msg in enumerate(messages):
@@ -730,6 +732,9 @@ def _parse_chat_messages(messages: list[Any]) -> tuple:
             except ValueError as exc:
                 return None, None, _multimodal_validation_error(exc, param=f"messages[{idx}].content")
             conversation_messages.append({"role": role, "content": content})
+    while (conversation_messages and conversation_messages[-1]["role"] == "assistant"
+           and not _content_has_visible_payload(conversation_messages[-1]["content"])):
+        conversation_messages.pop()
     return system_prompt, conversation_messages, None
 
 

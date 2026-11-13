@@ -262,16 +262,24 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
-        total_mib, free_mib, name, raw_id, used_mib, util = next(
-            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
+        rows = list(csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
+        total_mib, free_mib, name, raw_id, used_mib, util = rows[0]
+        # Sum every visible GPU: nvidia-smi emits one row per card and the local
+        # runtime can span the whole box, so the budget must see the combined
+        # pool, not just card 0. name/pci/util are per-card and stay from card 0.
+        total_mib, free_mib, used_mib = int(total_mib), int(free_mib), int(used_mib)
+        for row in rows[1:]:
+            total_mib += int(row[0])
+            free_mib += int(row[1])
+            used_mib += int(row[4])
         pci_id = None
         with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
             pci_id = int(raw_id, 16)
         data = {
             "gpu_name": name.strip(),
-            "total_bytes": int(total_mib) << 20,
-            "free_bytes": int(free_mib) << 20,
-            "used_bytes": int(used_mib) << 20,
+            "total_bytes": total_mib << 20,
+            "free_bytes": free_mib << 20,
+            "used_bytes": used_mib << 20,
             "gpu_util_percent": int(util),
             "gpu_pci_id": pci_id,
         }

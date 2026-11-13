@@ -398,6 +398,31 @@ class TestKeychainMirrorCommand:
         assert json.loads(bytes.fromhex(hex_blob)) == payload
 
 
+class _FakeKeychain:
+    """``subprocess.run`` stand-in for ``security``: remembers what an add-generic-password stored, so the
+    write's read-back (``_find_claude_code_keychain_item``) sees it."""
+
+    def __init__(self, item, returncode=0, stderr=""):
+        self.item, self.returncode, self.stderr, self.calls = item, returncode, stderr, []
+
+    def run(self, argv, **kwargs):
+        self.calls.append((argv, kwargs))
+        if self.returncode == 0 and self.item is not None:
+            hex_blob = (kwargs.get("input") or "").split(" -X ", 1)[1].strip() if argv == ["security", "-i"] \
+                else argv[argv.index("-X") + 1]
+            self.item = (self.item[0], json.loads(bytes.fromhex(hex_blob)))
+        return MagicMock(returncode=self.returncode, stderr=self.stderr)
+
+    def find(self):
+        return self.item
+
+    def written(self):
+        argv, kwargs = self.calls[-1]
+        hex_blob = kwargs["input"].split(" -X ", 1)[1].strip() if argv == ["security", "-i"] \
+            else argv[argv.index("-X") + 1]
+        return json.loads(bytes.fromhex(hex_blob))
+
+
 class TestFindClaudeCodeKeychainItem:
     """``_find_claude_code_keychain_item`` parses one ``find-generic-password -g`` call. ``security``
     prints plain-ASCII attributes quoted but UNescaped, anything else as ``0x<HEX>  "<echo>"``."""
@@ -439,16 +464,163 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
     def test_only_the_item_holding_the_spent_pair_is_updated(self, monkeypatch):
         """A different pair in the Keychain is another login or a rotation Claude Code already made;
         overwriting it would be the bug in the other direction."""
-        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
-        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
-        run = MagicMock(return_value=MagicMock(returncode=0))
-        monkeypatch.setattr(subprocess, "run", run)
+        kc = _FakeKeychain(("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}}))
+        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", kc.find)
+        monkeypatch.setattr(subprocess, "run", kc.run)
 
         _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="not-R0")
-        run.assert_not_called()
+        assert kc.calls == []
 
         _mirror_claude_code_credentials_to_keychain("A1", "R1", 1, spent_refresh_token="R0")
-        (argv,), kwargs = run.call_args
-        assert argv == ["security", "-i"]
-        assert json.loads(bytes.fromhex(kwargs["input"].split(" -X ", 1)[1].strip()))["claudeAiOauth"] == {
-            "accessToken": "A1", "refreshToken": "R1", "expiresAt": 1}
+        assert kc.calls[-1][0] == ["security", "-i"]
+        written = kc.written()["claudeAiOauth"]
+        assert (written["accessToken"], written["refreshToken"], written["expiresAt"]) == ("A1", "R1", 1)
+
+
+def _keychain_payload_written(kc):
+    return kc.written()
+
+
+class TestRefreshWriteKeepsClaudeCodeLoggedIn:
+    """A Hermes rotation of the borrowed Claude Code login must leave Claude Code logged in.
+
+    Claude Code (macOS) gates on ``user:inference`` in ``claudeAiOauth.scopes``, and treats
+    ~/.claude/.credentials.json as a plaintext fallback it copies into the Keychain wholesale (then
+    deletes) whenever a Keychain read comes back empty. A 3-field file Hermes created therefore
+    replaced the Keychain login and logged Claude Code out.
+    """
+
+    _ITEM = ("user", {
+        "claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0", "expiresAt": 1,
+                          "scopes": ["user:inference", "user:profile"], "subscriptionType": "max",
+                          "rateLimitTier": "default_claude_max_20x"},
+        "mcpOAuth": {"srv": {"accessToken": "m"}},
+    })
+
+    def _setup(self, tmp_path, monkeypatch, item=_ITEM):
+        from agent import anthropic_credentials as ac
+        path = tmp_path / ".claude" / ".credentials.json"
+        monkeypatch.setattr(ac, "claude_code_credentials_path", lambda: path)
+        kc = _FakeKeychain(item)
+        monkeypatch.setattr(ac, "_find_claude_code_keychain_item", kc.find)
+        monkeypatch.setattr(subprocess, "run", kc.run)
+        return ac, path, kc
+
+    @pytest.mark.platforms("macos")
+    def test_keychain_login_is_rotated_in_place_and_no_plaintext_file_is_created(self, tmp_path, monkeypatch):
+        ac, path, run = self._setup(tmp_path, monkeypatch)
+
+        ac._write_claude_code_credentials("A1", "R1", 42, spent_refresh_token="R0")
+
+        assert not path.exists()
+        written = _keychain_payload_written(run)
+        assert written["claudeAiOauth"] == {
+            "accessToken": "A1", "refreshToken": "R1", "expiresAt": 42,
+            "scopes": ["user:inference", "user:profile"], "subscriptionType": "max",
+            "rateLimitTier": "default_claude_max_20x"}
+        assert written["mcpOAuth"] == {"srv": {"accessToken": "m"}}
+
+    @pytest.mark.platforms("macos")
+    def test_granted_scopes_from_the_token_response_heal_a_record_without_scopes(self, tmp_path, monkeypatch):
+        broken = ("user", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0", "expiresAt": 1}})
+        ac, path, run = self._setup(tmp_path, monkeypatch, item=broken)
+
+        ac._write_claude_code_credentials(
+            "A1", "R1", 42, scopes=["user:inference", "user:profile"], spent_refresh_token="R0")
+
+        assert not path.exists()
+        assert _keychain_payload_written(run)["claudeAiOauth"]["scopes"] == ["user:inference", "user:profile"]
+
+    @pytest.mark.platforms("macos")
+    def test_record_without_scopes_gets_claude_code_login_scopes(self, tmp_path, monkeypatch):
+        """No scopes stored and none in the token response: a record without ``user:inference`` reads as
+        logged out to Claude Code, so the write restores Claude Code's /login scopes."""
+        broken = ("user", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0", "expiresAt": 1,
+                                             "subscriptionType": "max"}})
+        ac, _path, run = self._setup(tmp_path, monkeypatch, item=broken)
+
+        ac._write_claude_code_credentials("A1", "R1", 42, spent_refresh_token="R0")
+
+        record = _keychain_payload_written(run)["claudeAiOauth"]
+        assert "user:inference" in record["scopes"]
+        assert record["scopes"] == list(ac._CLAUDE_CODE_LOGIN_SCOPES)
+        assert record["subscriptionType"] == "max"
+
+    @pytest.mark.platforms("macos")
+    def test_keychain_write_failure_is_a_failed_commit(self, tmp_path, monkeypatch):
+        ac, path, run = self._setup(tmp_path, monkeypatch)
+        run.returncode, run.stderr = 45, "boom"
+
+        with pytest.raises(ac.CredentialPersistError):
+            ac._write_claude_code_credentials("A1", "R1", 42, spent_refresh_token="R0")
+        assert not path.exists()
+
+    @pytest.mark.platforms("macos")
+    def test_file_write_carries_the_keychain_metadata_when_the_keychain_holds_another_pair(
+            self, tmp_path, monkeypatch):
+        """Keychain holds a different pair (not ours to overwrite): the file is the commit target, and it
+        must still be a complete login record so a later adoption by Claude Code keeps it logged in."""
+        ac, path, run = self._setup(tmp_path, monkeypatch)
+
+        ac._write_claude_code_credentials("A1", "R1", 42, spent_refresh_token="other")
+
+        record = json.loads(path.read_text())["claudeAiOauth"]
+        assert record["scopes"] == ["user:inference", "user:profile"]
+        assert record["subscriptionType"] == "max"
+        assert (record["accessToken"], record["refreshToken"], record["expiresAt"]) == ("A1", "R1", 42)
+        assert run.calls == []  # the mirror leaves the other login alone
+
+    @pytest.mark.platforms("macos")
+    def test_existing_file_keeps_its_metadata_and_is_mirrored(self, tmp_path, monkeypatch):
+        ac, path, run = self._setup(tmp_path, monkeypatch)
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "A0", "refreshToken": "R0", "expiresAt": 1,
+            "scopes": ["user:inference"], "subscriptionType": "pro"}, "other": 1}))
+
+        ac._write_claude_code_credentials("A1", "R1", 42, spent_refresh_token="R0")
+
+        data = json.loads(path.read_text())
+        assert data["other"] == 1
+        assert data["claudeAiOauth"] == {"accessToken": "A1", "refreshToken": "R1", "expiresAt": 42,
+                                         "scopes": ["user:inference"], "subscriptionType": "pro"}
+        assert _keychain_payload_written(run)["claudeAiOauth"]["refreshToken"] == "R1"
+
+
+def test_token_state_carries_granted_scopes():
+    from agent.anthropic_credentials import _oauth_token_state
+    state = _oauth_token_state({"access_token": "a", "refresh_token": "r", "expires_in": 60,
+                                "scope": "user:inference user:profile"})
+    assert state["scopes"] == ["user:inference", "user:profile"]
+    assert "scopes" not in _oauth_token_state({"access_token": "a"})
+
+
+class TestLongKeychainPayloads:
+    """``security -i`` reads commands into a 4 KiB line buffer. A longer line stored a TRUNCATED item
+    (unparsable JSON, so Claude Code reported "Not logged in") and ran the rest as an unknown command."""
+
+    _BIG = {"claudeAiOauth": {"accessToken": "A" * 120, "refreshToken": "R" * 120, "expiresAt": 1,
+                              "scopes": ["user:inference"]},
+            "mcpOAuth": {f"srv{i}": {"accessToken": "m" * 60} for i in range(40)}}
+
+    def test_long_payload_goes_on_argv_hex_encoded_and_round_trips(self):
+        argv, line = _keychain_mirror_command("user", self._BIG)
+        assert line == ""
+        assert argv[:2] == ["security", "add-generic-password"] and "-w" not in argv
+        assert argv[argv.index("-a") + 1] == "user" and argv[argv.index("-s") + 1] == "Claude Code-credentials"
+        assert json.loads(bytes.fromhex(argv[argv.index("-X") + 1])) == self._BIG
+
+    def test_short_payload_still_uses_stdin(self):
+        argv, line = _keychain_mirror_command("user", {"claudeAiOauth": {"accessToken": "a"}})
+        assert argv == ["security", "-i"] and len(line) <= 4032
+
+    @pytest.mark.platforms("macos")
+    def test_write_whose_read_back_differs_is_a_failed_commit(self, tmp_path, monkeypatch):
+        from agent import anthropic_credentials as ac
+        item = ("user", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0", "expiresAt": 1}})
+        monkeypatch.setattr(ac, "claude_code_credentials_path", lambda: tmp_path / ".credentials.json")
+        monkeypatch.setattr(ac, "_find_claude_code_keychain_item", lambda: item)  # read-back never changes
+        monkeypatch.setattr(subprocess, "run", MagicMock(return_value=MagicMock(returncode=0, stderr="")))
+
+        with pytest.raises(ac.CredentialPersistError):
+            ac._write_claude_code_credentials("A1", "R1", 42, spent_refresh_token="R0")

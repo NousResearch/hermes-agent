@@ -50,16 +50,21 @@ def _session_source(runner: Any, unit: dict[str, Any]) -> Any:
     return runner._build_process_event_source({"session_key": str(unit.get("origin_session") or "")})
 
 
-def _stand_in_parent(runner: Any, db: Any, record: dict[str, Any], source: Any, route: dict[str, str]) -> Any:
+def _stand_in_parent(runner: Any, db: Any, record: dict[str, Any], source: Any, route: dict[str, str],
+                     policy: Any = None) -> Any:
     """A parent agent for the continue only, on the route the parent conversation's next turn would run on
-    (``_resolve_session_agent_runtime``: its ``/model``, channel override or launch policy), with the parent's session
-    id and the profile's own store. It runs no turn. Its toolsets are the child's own, so the rebuild keeps every tool
-    it had."""
+    (``_resolve_session_agent_runtime``: its ``/model``, channel override or launch policy; its own ``/fast`` tier,
+    never the runner-wide one the last turn of another conversation left), with the parent's session id and the
+    profile's own store. It runs no turn. Its toolsets are the child's own, so the rebuild keeps every tool it had."""
     from run_agent import AIAgent
-    model, runtime = runner._resolve_session_agent_runtime(source=source, session_key=route["session_key"] or None)
+    key = route["session_key"] or None
+    model, runtime = runner._resolve_session_agent_runtime(source=source, session_key=key)
     runner._pre_agent_fallback_notice = None  # a turn's notice; this agent runs none
-    turn = runner._resolve_turn_agent_config("", model, runtime)
+    tier = (policy.current_service_tier(runner, key) if policy else
+            runner._resolve_session_service_tier(source=source, session_key=key))
+    turn = runner._resolve_turn_agent_config("", model, runtime, tier=tier)
     parent = AIAgent(model=turn["model"], **turn["runtime"], request_overrides=turn.get("request_overrides"),
+                     service_tier=tier,
                      quiet_mode=True, verbose_logging=False, session_id=route["session_id"], platform="gateway",
                      gateway_session_key=route["session_key"] or None, skip_memory=True, skip_context_files=True,
                      session_db=db, enabled_toolsets=record.get("toolsets") or None)
@@ -81,7 +86,7 @@ def _continue_as_parent(runner: Any, db: Any, record: dict[str, Any], unit: dict
         return {"error": f"{STAND_IN_FAILED}: {type(exc).__name__}: {exc}"}
     with policy_scope(policy, authority=active_authority(runner) if policy else None):
         try:
-            parent = _stand_in_parent(runner, db, record, source, route)
+            parent = _stand_in_parent(runner, db, record, source, route, policy)
         except Exception as exc:  # health: allow BLE001 -- as above
             logger.warning("automatic resume of %s: no stand-in parent", record["subagent_id"], exc_info=True)
             return {"error": f"{STAND_IN_FAILED}: {type(exc).__name__}: {exc}"}

@@ -63,7 +63,7 @@ async def test_desktop_steer_ends_the_wait(monkeypatch, probe, caplog, waits_in)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("how", ["authority.interrupt", "messaging /stop"])
+@pytest.mark.parametrize("how", ["authority.interrupt", "messaging /stop", "messaging /new"])
 async def test_a_stop_ends_the_refine_path_wait(monkeypatch, probe, caplog, how):
     from gateway.platforms.event import MessageEvent
 
@@ -76,7 +76,7 @@ async def test_a_stop_ends_the_refine_path_wait(monkeypatch, probe, caplog, how)
         if how == "authority.interrupt":
             await authority.interrupt(actor, ref, authority._handle(ref).execution_generation)
         else:
-            await probe.adapter.handle_message(MessageEvent(text="/stop", source=probe.source, message_id="S"))
+            await probe.adapter.handle_message(MessageEvent(text=how.split()[1], source=probe.source, message_id="S"))
         try:
             await async_wait_until(lambda: bg.refine.review.interrupted, timeout=FAST, what="review superseded")
             ok = True

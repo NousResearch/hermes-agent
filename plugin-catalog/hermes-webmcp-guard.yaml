@@ -2,7 +2,7 @@ name: hermes-webmcp-guard
 title: Hermes WebMCP Guard
 repo: https://github.com/NifasathA/hermes-webmcp-guard
 sha: 9f5fead8f5c30f2fe65c833944d8f18c0591c722
-description: "Permission-aware, ephemeral WebMCP capabilities with origin allowlists, schema validation, conservative risk classification, exact one-call approvals, and safe revocation. Disclosure — connects only to operator-configured Chrome DevTools WebSocket endpoints and invokes website-provided WebMCP tools; those websites may make their own network requests. It does not launch a browser, read credentials, execute arbitrary JavaScript, or persist website capabilities."
+description: "Permission-aware, ephemeral WebMCP capabilities with origin allowlists, schema validation, conservative risk classification, exact one-call approvals, and safe revocation. Disclosure — connects only to Chrome DevTools WebSocket endpoints you configure and calls the tools the websites on your allowed origins expose; those websites may make their own network requests and their tool output reaches your model. Calls the plugin classifies as write or sensitive ask you first, but the classification uses the website's own tool names, so a site on an allowed origin can present a state-changing tool under a read-style name that runs without a prompt; allow only origins you trust. It does not launch a browser, read credentials, execute arbitrary JavaScript, or persist website capabilities."
 maintainer: NifasathA
 tier: community
 category: web

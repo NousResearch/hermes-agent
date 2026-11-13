@@ -302,3 +302,23 @@ class TestStripHelpers:
         stripped = strip_inert_heredoc_bodies(cmd)
         assert "sleep 7 " + AMP not in stripped
         assert "echo after" in stripped
+
+    @pytest.mark.parametrize(
+        ("opener", "delimiter"),
+        [("python3 - <<'PY'", "PY"), ("osascript <<'EOF'", "EOF")],
+    )
+    def test_strict_view_keeps_code_consumer_bodies_visible(self, opener, delimiter):
+        # #127698: a python/osascript body is executable payload, not data — a
+        # security scanner must be able to see it (mask_code_consumers=False).
+        cmd = opener + NL + "os.system('x')" + NL + delimiter
+        assert strip_inert_heredoc_bodies(cmd, mask_code_consumers=False) == cmd
+
+    def test_strict_view_still_masks_cat_body(self):
+        cmd = "cat <<'EOF'" + NL + "payload text" + NL + "EOF"
+        assert "payload" not in strip_inert_heredoc_bodies(cmd, mask_code_consumers=False)
+
+    def test_default_view_still_masks_code_consumers(self):
+        # The lenient default is unchanged: the #63788 guidance fix keeps treating a
+        # python bitwise-and inside a quoted body as payload, not a background operator.
+        cmd = "python3 - <<'PY'" + NL + "z = a " + AMP + " b" + NL + "PY"
+        assert (" " + AMP + " ") not in strip_inert_heredoc_bodies(cmd)

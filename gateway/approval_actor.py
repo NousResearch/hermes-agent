@@ -38,7 +38,7 @@ _ADMIN_ONLY = "\0admin-only:"
 
 
 def may_answer(authority: dict, actor_id: Any, admin_ids: Any = (), extra: Any = None,
-               commands: tuple[str, ...] = ()) -> bool:
+               commands: tuple[str, ...] = (), *, admitted: bool = True) -> bool:
     """Whether *actor_id* may answer the prompt whose recorded ``authority`` this is.
 
     ``approvers`` narrowed (``[]`` or ids): the requester, a listed approver or an admin; that explicit
@@ -52,7 +52,19 @@ def may_answer(authority: dict, actor_id: Any, admin_ids: Any = (), extra: Any =
     relay answer passes the policy of the chat it arrived in (:func:`runner_answer_policy`) as
     *admin_ids*. A bare id list in *admin_ids* names admins with no slash floor. With ``approvers``
     narrowed, an entry with no requester recorded (a turn merged from two senders) is answered by
-    approvers and admins only, never by anyone."""
+    approvers and admins only, never by anyone.
+
+    ``admitted=False`` marks an answer whose sender no allowlist admitted (a relayed Discord sender the
+    connector never delivered a message from, ``gateway.relay.admitted_authors``): under ``"*"`` the
+    sender must then pass the slash floor AND be the requester or an admin, as with ``approvers`` narrowed."""
+    return _refusal(authority, actor_id, admin_ids, extra, commands, admitted) is None
+
+
+def _refusal(authority: dict, actor_id: Any, admin_ids: Any, extra: Any, commands: tuple[str, ...],
+             admitted: bool) -> Optional[str]:
+    """:func:`may_answer`'s decision: ``None`` when allowed, else what the refusal names, taken from
+    the check that failed: the answer's admin-only command when the slash policy refused it, else the
+    requester."""
     from gateway.slash_access import SlashAccessPolicy, _coerce_id_list, policy_for_chat_type
 
     actor = str(actor_id or "").strip()
@@ -64,9 +76,14 @@ def may_answer(authority: dict, actor_id: Any, admin_ids: Any = (), extra: Any =
         policy = SlashAccessPolicy(False, frozenset(str(a) for a in admin_ids), frozenset())
     approvers = _coerce_id_list(authority.get("approvers"))
     if "*" in approvers:
-        return not (commands and policy.enabled) or any(policy.can_run(actor or None, c) for c in commands)
+        if commands and policy.enabled and not any(policy.can_run(actor or None, c) for c in commands):
+            return _ADMIN_ONLY + commands[0]
+        if admitted:
+            return None
     requester = str(authority.get("requester_id") or "")
-    return bool(actor) and (actor == requester or actor in approvers or actor in policy.admin_user_ids)
+    if actor and (actor == requester or actor in approvers or actor in policy.admin_user_ids):
+        return None
+    return str(authority.get("requester_name") or requester or _NO_REQUESTER)
 
 
 def approval_commands(choice: Optional[str] = None) -> tuple[str, ...]:
@@ -76,16 +93,6 @@ def approval_commands(choice: Optional[str] = None) -> tuple[str, ...]:
     if choice is None:
         return ("approve", "deny")
     return ("deny",) if choice == "deny" else ("approve",)
-
-
-def _refusal_name(authority: dict, commands: tuple[str, ...]) -> str:
-    """What a refusal names: the answer's admin-only command under ``approvers: ["*"]`` (the slash
-    policy refused it), else the requester."""
-    from gateway.slash_access import _coerce_id_list
-
-    if commands and "*" in _coerce_id_list(authority.get("approvers")):
-        return _ADMIN_ONLY + commands[0]
-    return str(authority.get("requester_name") or authority.get("requester_id") or _NO_REQUESTER)
 
 
 def runner_answer_policy(source: Any):
@@ -98,7 +105,8 @@ def runner_answer_policy(source: Any):
 
 def answerable_request_ids(session_key: str, actor_id: Any, *, admin_ids: Any = (),
                            request_id: Optional[str] = None, resolve_all: bool = False,
-                           extra: Any = None, choice: Optional[str] = None) -> tuple[list[str], Optional[str]]:
+                           extra: Any = None, choice: Optional[str] = None,
+                           admitted: bool = True) -> tuple[list[str], Optional[str]]:
     """The pending approvals ``resolve_gateway_approval`` would select (the one matching
     *request_id*, every one with *resolve_all*, else the oldest) and whether *actor_id* may
     answer them: ``(request_ids, None)``, or ``([], requester_name)`` for the first selected one
@@ -114,33 +122,35 @@ def answerable_request_ids(session_key: str, actor_id: Any, *, admin_ids: Any = 
         pending = pending[:1]
     commands = approval_commands(choice)
     for entry in pending:
-        if not may_answer(entry, actor_id, admin_ids, extra, commands):
-            return [], _refusal_name(entry, commands)
+        refused = _refusal(entry, actor_id, admin_ids, extra, commands, admitted)
+        if refused is not None:
+            return [], refused
     return [str(p.get("request_id")) for p in pending], None
 
 
 def approval_refusal(session_key: str, actor_id: Any, *, admin_ids: Any = (),
                      request_id: Optional[str] = None, extra: Any = None,
-                     choice: Optional[str] = None) -> Optional[str]:
+                     choice: Optional[str] = None, admitted: bool = True) -> Optional[str]:
     """``None`` when *actor_id* may answer the approval a click resolves (the one matching
     *request_id*, else the oldest); otherwise the requester's display name for an "only X can
     answer this" reply. Nothing pending is never refused: the resolver then reports "nothing
     pending" exactly as before. Adapters pass their platform ``extra`` block instead of *admin_ids*,
     and the clicked *choice* so the slash floor checks that answer's own command."""
     return answerable_request_ids(session_key, actor_id, admin_ids=admin_ids,
-                                  request_id=request_id, extra=extra, choice=choice)[1]
+                                  request_id=request_id, extra=extra, choice=choice, admitted=admitted)[1]
 
 
 def _authority_refusal(authority: Any, actor_id: Any, admin_ids: Any, extra: Any,
-                       commands: tuple[str, ...] = ()) -> Optional[str]:
-    # An empty authority ({}) records no restriction: anyone admitted answers, as on main.
-    if not authority or not isinstance(authority, dict) or may_answer(authority, actor_id, admin_ids, extra, commands):
-        return None
-    return _refusal_name(authority, commands)
+                       commands: tuple[str, ...] = (), admitted: bool = True) -> Optional[str]:
+    # An empty authority ({}) records no restriction: anyone admitted answers, as on main. An
+    # unadmitted sender (``may_answer``'s ``admitted``) needs a recorded requester to match.
+    if not authority or not isinstance(authority, dict):
+        return None if admitted else _NO_REQUESTER
+    return _refusal(authority, actor_id, admin_ids, extra, commands, admitted)
 
 
 def slash_confirm_refusal(session_key: str, confirm_id: str, actor_id: Any, *, admin_ids: Any = (),
-                          extra: Any = None) -> Optional[str]:
+                          extra: Any = None, admitted: bool = True) -> Optional[str]:
     """:func:`approval_refusal` for the slash-command confirmation (``/reload-mcp``) a click or typed
     reply would resolve: the same rule, read from the pending confirm, with the confirmed command as
     the slash floor (answering runs it). Nothing pending (or another confirm id) is never refused: the
@@ -149,18 +159,23 @@ def slash_confirm_refusal(session_key: str, confirm_id: str, actor_id: Any, *, a
     from tools.slash_confirm import get_pending
 
     pending = get_pending(session_key) or {}
+    if pending.get("confirm_id") != confirm_id:
+        return None
     command = str(pending.get("command") or "")
     cmd_def = resolve_command(command)
-    return _authority_refusal(pending.get("authority") if pending.get("confirm_id") == confirm_id else None,
-                              actor_id, admin_ids, extra, (cmd_def.name if cmd_def else command.lstrip("/"),))
+    return _authority_refusal(pending.get("authority"), actor_id, admin_ids, extra,
+                              (cmd_def.name if cmd_def else command.lstrip("/"),), admitted)
 
 
 def clarify_refusal(clarify_id: str, actor_id: Any, *, admin_ids: Any = (),
-                    extra: Any = None) -> Optional[str]:
+                    extra: Any = None, admitted: bool = True) -> Optional[str]:
     """:func:`approval_refusal` for the agent's clarify question a tap (choice or "Other") answers."""
     from tools.clarify_gateway import get_pending
 
-    return _authority_refusal(getattr(get_pending(clarify_id), "authority", None), actor_id, admin_ids, extra)
+    pending = get_pending(clarify_id)
+    if pending is None:
+        return None
+    return _authority_refusal(getattr(pending, "authority", None), actor_id, admin_ids, extra, (), admitted)
 
 
 def refusal_text(requester: str) -> str:

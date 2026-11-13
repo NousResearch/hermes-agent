@@ -80,7 +80,7 @@ it.each([
       { seq: 2, kind: 'turn.failed', payload: { member_id: 'helper', discussion_event_id: 'discussion', reason_code: reason, error } }
     ]
 
-    const status = memberStatus('helper', [], memberOutcomes(events), 1)
+    const status = memberStatus('helper', [], memberOutcomes(events))
     const text = labels.statusFailed + (expected ? ' · ' + expected : '')
     expect(memberStatusText(status, labels)).toBe(text)
     const view = render(<MemberStatusChip avatar={null} labels={labels} name="Helper" status={status} />)

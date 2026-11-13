@@ -1,0 +1,16 @@
+name: proof-lens
+repo: https://github.com/invisiblemonsters/proof-lens
+sha: 64c913e8489e8dcf2ee4d84e5a1e85cbd6a8b2c8
+description: "Verify a DRAT refutation and profile its proof depth as a Desktop pane. Pick a CNF and a trace; every accepted line is re-derived by unit propagation (RUP only), and the pane reports the empty clause's certificate depth plus a histogram of derived clauses by depth. Deletions are ignored rather than replayed (sound, strictly more permissive than a deletion-aware checker). Disclosure — reads only the two files chosen in the browser file dialog; all work runs in the renderer; no network calls, no shell commands, no stored files."
+maintainer: invisiblemonsters
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/invisiblemonsters/proof-lens/blob/64c913e8489e8dcf2ee4d84e5a1e85cbd6a8b2c8/README.md
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

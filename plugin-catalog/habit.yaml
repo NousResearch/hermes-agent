@@ -1,15 +1,15 @@
 name: habit
 repo: https://github.com/scottleimroth/habit
-sha: a37b3e7349c1947cba899cad1f7356267faed62b
+sha: 21abbc574ab7e4961621385c6e605b6b74037394
 title: Habit
-description: "Learns which commands you already approve, proposes an allowlist entry after a few matching approvals (the exact command, or any-container docker stop|restart), and only writes it to Hermes's command_allowlist after you run /habit accept. Wipes, download-and-execute pipes, git push and secret paths are never proposed, and /habit undo or /habit uninstall take every entry back. Disclosure — learns from your approval answers in a local plugin database; in enforce mode (off by default) it proposes command_allowlist entries (the exact approved command, or `docker stop|restart *` / `docker compose stop|restart *` for any container or service) and writes them to this profile's config.yaml through Hermes's config load/save only when you run /habit accept (owner_ids-locked on messaging gateways); an accepted entry waves through every command it matches, including ones Hermes flags as dangerous; /habit undo and /habit uninstall remove only the entries Habit added; no network calls, no credentials, no background process."
+description: "Learns which commands you already approve, proposes an allowlist entry after a few matching approvals (the exact command, or any-container docker stop|restart), tells you once in the chat where you approved, and only writes it to Hermes's command_allowlist after you run /habit accept. Wipes, download-and-execute pipes, git push and secret paths are never proposed, and /habit undo or /habit uninstall take every entry back. Disclosure — learns from your approval answers to dangerous shell commands in a local plugin database (plugin approval rules and other non-command prompts are never learned, and only the owner's approvals count); in enforce mode (off by default) it proposes command_allowlist entries (the exact approved command, or `docker stop|restart *` / `docker compose stop|restart *` for any container or service) and writes them to this profile's config.yaml through Hermes's config load/save only when you run /habit accept (owner_ids-locked on messaging gateways); when it creates a proposal it posts one message into the conversation where you approved through ctx.post_message (once per proposal, from a short-lived thread, never retried; turn off with notify: false; in-process only); an accepted entry waves through every command it matches, including ones Hermes flags as dangerous; /habit undo and /habit uninstall remove only the entries Habit added; no network calls, no credentials, no background process."
 maintainer: scottleimroth
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/scottleimroth/habit/blob/a37b3e7349c1947cba899cad1f7356267faed62b/README.md
-version: "0.1.3"
-image: https://raw.githubusercontent.com/scottleimroth/habit/a37b3e7349c1947cba899cad1f7356267faed62b/docs/banner.png
+docs_url: https://github.com/scottleimroth/habit/blob/21abbc574ab7e4961621385c6e605b6b74037394/README.md
+version: "0.1.6"
+image: https://raw.githubusercontent.com/scottleimroth/habit/21abbc574ab7e4961621385c6e605b6b74037394/docs/banner.png
 platforms:
   - linux
 capabilities:

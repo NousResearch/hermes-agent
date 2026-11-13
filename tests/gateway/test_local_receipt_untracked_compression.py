@@ -353,7 +353,7 @@ async def test_the_resume_hint_the_tui_prints_opens_the_session(tmp_path, monkey
     """The TUI's exit epilogue prints ``_short_resume_id`` (``local-`` + 16 hex); in-TUI ``/resume``
     sends that hint as ``session_id``."""
     from gateway.session_local import create_local_session
-    from hermes_cli.main_tui_launch import _short_resume_id
+    from hermes_cli.chat_launch import _short_resume_id
 
     authority, connection = await _owner(tmp_path, monkeypatch, 'first')
     try:

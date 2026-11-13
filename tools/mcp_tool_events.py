@@ -363,6 +363,12 @@ async def _subscribe_event(session, args: dict, server_name: str) -> dict:
         **({"deliver_extra": deliver_extra} if deliver_extra else {}),
         "created_at": (existing or {}).get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "mcp_event": {"server": server_name, "name": args["name"], "arguments": arguments}}
+    # MCP servers sign with Standard Webhooks, so a new route is pinned to the timestamp-bound family; an
+    # existing route keeps its pin or its absence, so a resubscribe still republishes identical bytes.
+    if existing is None:
+        route["signature"] = "generic"
+    elif "signature" in existing:
+        route["signature"] = existing["signature"]
     if existing is None:
         await asyncio.to_thread(drop_state, route_name)  # a fresh subscription replays nothing stale
     # The route must exist before subscribing: the server verifies the callback with a signed challenge.

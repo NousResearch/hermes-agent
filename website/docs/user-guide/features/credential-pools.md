@@ -278,6 +278,8 @@ Custom endpoint pools are stored in `auth.json` under `credential_pool` with a `
 }
 ```
 
+A key added for a custom endpoint (`hermes auth add`, or the dashboard's credential pool) records the endpoint address it was entered for, and is only ever sent to that origin (scheme, host and port). If you change the endpoint's address, its pooled keys stay behind: the Desktop and dashboard editors ask for the new address's key (or an explicit blank for none) rather than reuse them. Keys added before addresses were recorded are bound to the endpoint's address the first time they are used. A built-in provider's keys (for example `DEEPSEEK_API_KEY` for a `providers.deepseek` entry) serve the entry only on that provider's own address, unless the entry names the variable as its `key_env` (for example `key_env: DEEPSEEK_API_KEY`); Hermes logs one warning per entry when it withholds them. This also covers a delegated subagent (`delegation.provider: deepseek`) and auxiliary tasks on that entry. A key added to a built-in provider's pool without an address belongs to that provider's own address, never to a same-named entry's. An origin is scheme, host and port only: two endpoints on the same host that differ only by path (`https://gw.example/tenantA/v1` and `https://gw.example/tenantB/v1`) count as one origin, so their pooled keys can serve each other.
+
 ## Auto-Discovery
 
 Hermes automatically discovers credentials from multiple sources and seeds the pool on startup:

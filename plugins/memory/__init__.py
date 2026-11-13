@@ -338,6 +338,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
             return loaded()
         except Exception:
             pass
+    collector = None
     if hasattr(loaded, "register"):
         collector = _ProviderCollector(entry_point.name, register_skills=register_skills)
         collector.collect(loaded.register, source=getattr(loaded, "__file__", None))
@@ -355,6 +356,8 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
         return collector.provider
 
     provider = _instantiate_subclass(loaded)
+    if collector is not None:
+        collector.provider = provider  # tool wrappers must gate the subclass fallback too
     if provider is None:
         logger.debug("Memory provider entry point '%s' loaded no provider", entry_point.name)
     return provider
@@ -372,6 +375,7 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
     if mod is None:
         return None
 
+    collector = None
     if hasattr(mod, "register"):
         collector = _ProviderCollector(name, register_skills=register_skills)
         try:
@@ -391,7 +395,38 @@ def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True)
         if collector.provider:
             return collector.provider
 
-    return _instantiate_subclass(mod)
+    provider = _instantiate_subclass(mod)
+    if collector is not None:
+        collector.provider = provider  # ctx tools registered before subclass fallback still need a claim
+    return provider
+
+
+class _ClaimGatedHandler:
+    """A registry tool handler a memory provider's ``register(ctx)`` registered, refused for a caller
+    whose profile is not the one the collected provider instance is bound to (#147659).
+
+    A callable object, not a closure: ``__wrapped__`` keeps the plugin's handler visible to the
+    registry's ownership lookup and signature-based kwarg narrowing, which a closure defined here
+    would attribute to this module."""
+
+    def __init__(self, collector, name, handler, is_async):
+        self._collector, self._name, self.__wrapped__, self._is_async = collector, name, handler, is_async
+
+    def __call__(self, *args, **kwargs):
+        from agent.memory_caller_scope import refused_tool_message, serves_caller
+
+        provider = self._collector.provider
+        if provider is None or serves_caller(provider, f"tool {self._name}"):
+            return self.__wrapped__(*args, **kwargs)
+        from tools.registry import tool_error
+
+        refusal = tool_error(refused_tool_message(self._name))
+        if not self._is_async:
+            return refusal
+
+        async def _refused():
+            return refusal
+        return _refused()
 
 
 class _ProviderCollector:
@@ -445,6 +480,16 @@ class _ProviderCollector:
 
     def register_memory_provider(self, provider):
         self.provider = provider
+
+    def register_tool(self, name, toolset, schema, handler, *args, **kwargs):
+        """Forward to the real ``PluginContext.register_tool`` with the handler gated on this
+        provider's instance claim: a provider refused for the calling profile (another profile's
+        manager bound this same instance) must not answer through its registry tools either, or a
+        process-wide singleton serves the refused profile the owner's store (#147659)."""
+        # After handler: check_fn, requires_env, is_async (PluginContext.register_tool order).
+        is_async = kwargs.get("is_async", args[2] if len(args) > 2 else False)
+        return self.__getattr__("register_tool")(
+            name, toolset, schema, _ClaimGatedHandler(self, name, handler, bool(is_async)), *args, **kwargs)
 
     def register_skill(self, *args, **kwargs):
         """Forward skills to the plugin registry, tracking qualified name + path so

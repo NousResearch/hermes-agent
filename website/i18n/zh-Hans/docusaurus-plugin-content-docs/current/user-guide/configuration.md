@@ -58,6 +58,26 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # 保存到 .env
 机密（API 密钥、bot token、密码）放入 `.env`。其他所有内容（模型、终端后端、压缩设置、内存限制、工具集）放入 `config.yaml`。当两者都设置时，`config.yaml` 对非机密设置优先。
 :::
 
+### Hermes 写入的凭据
+
+当 Hermes 自身为某个配置字段写入凭据时，值保存到当前 profile 的 `.env`，`config.yaml` 中只写入对它的引用。适用于对下列字段执行的 `hermes config set`、dashboard / 桌面端的模型与辅助模型选择器，以及 `hermes model` 的自定义端点和辅助模型流程：
+
+| 字段 | `.env` 中的变量名 | `config.yaml` 中保存 |
+|---|---|---|
+| `model.api_key`（`hermes config set`） | `HERMES_MODEL_API_KEY` | `${HERMES_MODEL_API_KEY}` |
+| dashboard 中选择的自定义端点的 `model.api_key` | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `${...}` |
+| `auxiliary.<task>.api_key` | `AUXILIARY_<TASK>_API_KEY` | `${AUXILIARY_<TASK>_API_KEY}` |
+| `delegation.api_key` | `HERMES_DELEGATION_API_KEY` | `${HERMES_DELEGATION_API_KEY}` |
+| 新增的 `custom_providers` 条目 | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_<HASH>_API_KEY` | `key_env: <该变量名>` |
+| `custom_providers.<N>.api_key`（`hermes config set`） | 该条目的 `HERMES_CUSTOM_..._API_KEY`（没有 `base_url` 的条目按名称：`HERMES_PROVIDER_<NAME>_<HASH>_API_KEY`） | `${...}` |
+| `providers.<name>.api_key`（`hermes config set`）、dashboard 自定义端点条目 | `HERMES_PROVIDER_<NAME>_<HASH>_API_KEY` | `${...}` |
+
+路径部分只在不是 `/v1` 时才加入变量名。不全是小写的插件任务键（如 `My_Task`）也会追加 `_<HASH>`，因此不会与 `my_task` 共用变量。`<HASH>` 是由完整端点 URL（或提供商名称）计算出的 8 位十六进制字符，因此名称相近的端点（如 `my-host.com` 与 `my.host.com`）不会共用同一个变量。若 `config.yaml` 中另一个端点已读取某个变量且其值不同，Hermes 会拒绝覆盖它。以引用形式输入的值（`hermes config set model.api_key '${MY_KEY}'`）按原样保存。这些变量总会从终端和子进程环境中移除，即使 `env_passthrough` 列出了它们或启用了 `inherit_credentials`。使用远程配置后端时（不同主机之间不共享 `.env`），值按原样保存。
+
+正在运行的网关会在每轮开始时重新读取 `.env`，因此下一条消息无需重启即可使用新保存的密钥。只在启动时读取 `.env`、且不由网关轮次驱动的进程，需要执行 `/reload` 或重启后才会读取新密钥；在此之前，刚保存密钥的辅助任务会把未展开的 `${VAR}` 文本当作密钥发送。
+
+`config.yaml` 中已有的内联凭据仍然有效，不会被迁移，但不推荐使用。可用 `hermes config set <字段> <值>` 手动迁移，它会把值改写为引用。
+
 ## 环境变量替换
 
 可以在 `config.yaml` 中使用 `${VAR_NAME}` 语法引用环境变量：
@@ -654,8 +674,9 @@ auxiliary:
   compression:
     model: glm-4.7
     base_url: https://api.z.ai/api/coding/paas/v4
+    api_key: ${GLM_API_KEY}
 ```
-指向自定义 OpenAI 兼容端点。使用 `OPENAI_API_KEY` 进行认证。
+指向自定义 OpenAI 兼容端点，使用 `api_key` 认证。未设置时，Hermes 仅在与主端点源完全相同时重用主模型的密钥，`OPENAI_API_KEY` 仅发送到 OpenAI 主机或与之配对的 `OPENAI_BASE_URL`。
 
 ### 三个旋钮的交互方式
 
@@ -839,7 +860,7 @@ Hermes 中的每个模型槽位 —— 辅助任务、压缩、回退 —— 使
 | `model` | 请求的模型 | provider 的默认值 |
 | `base_url` | 自定义 OpenAI 兼容端点（覆盖 provider） | 未设置 |
 
-当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 或 `OPENAI_API_KEY` 进行认证）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
+当设置 `base_url` 时，Hermes 忽略 provider 并直接调用该端点（使用 `api_key` 认证；`OPENAI_API_KEY` 仅用于 OpenAI 主机或与之配对的 `OPENAI_BASE_URL`）。当仅设置 `provider` 时，Hermes 使用该 provider 的内置认证和基础 URL。
 
 辅助任务的可用 providers：`auto`、`main`，以及[provider 注册表](../reference/environment-variables.md)中的任何 provider —— `openrouter`、`nous`、`openai-codex`、`anthropic`、`gemini`、`qwen-oauth`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`alibaba`、`bedrock`、`huggingface`、`arcee`、`xiaomi`、`kilocode`、`opencode-zen`、`opencode-go`、`ai-gateway`、`azure-foundry` —— 或您 `custom_providers` 列表中任何命名的自定义 provider（例如 `provider: "beans"`）。
 
@@ -868,7 +889,7 @@ auxiliary:
     provider: "auto"           # "auto"、"openrouter"、"nous"、"codex"、"main" 等
     model: ""                  # 例如 "openai/gpt-4o"、"google/gemini-2.5-flash"
     base_url: ""               # 自定义 OpenAI 兼容端点（覆盖 provider）
-    api_key: ""                # base_url 的 API 密钥（回退到 OPENAI_API_KEY）
+    api_key: ""                # base_url 的 API 密钥（OPENAI_API_KEY 回退：仅限 OpenAI 主机）
     timeout: 120               # 秒 —— LLM API 调用超时；视觉负载需要宽裕的超时
     download_timeout: 30       # 秒 —— 图像 HTTP 下载；慢速连接请增加
 
@@ -1022,7 +1043,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` 优先于 `provider`，因此这是将辅助任务路由到特定端点的最明确方式。对于直接端点覆盖，Hermes 使用配置的 `api_key` 或回退到 `OPENAI_API_KEY`；它不会为该自定义端点重用 `OPENROUTER_API_KEY`。两者都未设置时，只有当 `base_url` 与主端点的源（scheme、主机和端口）完全相同时，才会重用主模型的密钥。主端点是会话当前运行的端点（`/model` 切换后即为切换后的端点），并且只与它自己的密钥配对，绝不会使用另一个端点的密钥。
+`base_url` 优先于 `provider`，因此这是将辅助任务路由到特定端点的最明确方式。对于直接端点覆盖，Hermes 使用配置的 `api_key`；它不会为该自定义端点重用 `OPENROUTER_API_KEY`。未设置时，只有当 `base_url` 与主端点的源（scheme、主机和端口）完全相同时，才会重用主模型的密钥。主端点是会话当前运行的端点（`/model` 切换后即为切换后的端点），并且只与它自己的密钥配对，绝不会使用另一个端点的密钥。`OPENAI_API_KEY` 是最后的回退，仅发送到 OpenAI 主机（`*.openai.com`、`*.openai.azure.com`）或与之配对的 `OPENAI_BASE_URL`；其他端点需要自己的 `api_key`。
 
 **使用 OpenAI API 密钥进行视觉：**
 ```yaml

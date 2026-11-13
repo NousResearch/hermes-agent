@@ -1,0 +1,32 @@
+name: weightscope
+repo: https://github.com/dukemawex/hermes-plugin-weightscope
+sha: 760e10ce0d4d8bc9d27d8216e8f4bac9d7ebed6c
+subdir: weightscope
+title: WeightScope
+description: >-
+  Offline-by-default safetensors checkpoint inspector: per-tensor and per-layer
+  weight diffs (L2, relative change, cosine, NaN/Inf) via tools ckpt_summary and
+  ckpt_diff, plus `hermes weightscope` and `/weightscope`. Optional remote GPU
+  worker, and an opt-in `demo --fetch` of two pinned public SmolLM2-135M
+  checkpoints. Disclosure — reads only the checkpoint paths you pass; writes
+  recent diff headlines under the plugin data dir (optional) and, with
+  `demo --fetch`, caches 513.2 MiB of pinned public Hugging Face weights plus
+  an SVG heatmap; network is off unless you set remote_url (HTTPS to that
+  worker only, bearer token from a named Hermes secret, no checkpoint upload)
+  or pass `demo --fetch` (HTTPS to huggingface.co / official HF CDNs, no
+  token); no telemetry, no shell, no background processes, no model execution.
+  Numeric differences are not a safety, quality, or alignment verdict.
+maintainer: dukemawex
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/dukemawex/hermes-plugin-weightscope/blob/760e10ce0d4d8bc9d27d8216e8f4bac9d7ebed6c/weightscope/README.md
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - ckpt_summary
+    - ckpt_diff
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

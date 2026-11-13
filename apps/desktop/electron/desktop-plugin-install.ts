@@ -425,6 +425,23 @@ async function headSha(gitBin: string, cloneRoot: string, revision = 'HEAD'): Pr
   return stdout.trim().toLowerCase()
 }
 
+/** Detach the clone at `sha` (a full commit or tag-object SHA) and return the commit checked out (a tag
+ *  pin's peeled commit). A shallow default-branch clone lacks it when the pin sits on another branch. */
+async function checkoutCommit(gitBin: string, cloneRoot: string, sha: string): Promise<string> {
+  if ((await headSha(gitBin, cloneRoot)) !== sha) {
+    await runGitOrThrow(gitBin, ['fetch', '--depth', '1', 'origin', sha], cloneRoot)
+    await runGitOrThrow(gitBin, ['checkout', '--detach', sha], cloneRoot)
+  }
+
+  const head = await headSha(gitBin, cloneRoot)
+
+  if (head !== (await headSha(gitBin, cloneRoot, `${sha}^{commit}`))) {
+    throw new Error(`HEAD is not ${sha}.`)
+  }
+
+  return head
+}
+
 /** Detach the clone at `sha`, the commit the install dialog showed: a branch that moved after review must
  *  not put down a tree nobody inspected. A source that no longer has it is refused. */
 /** Returns the commit checked out (a tag pin's peeled commit). */
@@ -436,19 +453,7 @@ async function checkoutReviewedCommit(gitBin: string, cloneRoot: string, sha: st
   }
 
   try {
-    if ((await headSha(gitBin, cloneRoot)) !== reviewed) {
-      await runGitOrThrow(gitBin, ['fetch', '--depth', '1', 'origin', reviewed], cloneRoot)
-      await runGitOrThrow(gitBin, ['checkout', '--detach', reviewed], cloneRoot)
-    }
-
-    // A catalog pin may name an annotated tag: HEAD is the commit it peels to.
-    const head = await headSha(gitBin, cloneRoot)
-
-    if (head !== (await headSha(gitBin, cloneRoot, `${reviewed}^{commit}`))) {
-      throw new Error(`HEAD is not ${reviewed}.`)
-    }
-
-    return head
+    return await checkoutCommit(gitBin, cloneRoot, reviewed)
   } catch (err) {
     throw new ReviewedCommitUnavailable(
       `The commit you reviewed (${reviewed.slice(0, 12)}) could not be checked out; the source may have changed ` +
@@ -482,13 +487,37 @@ function insecureSchemeWarnings(gitUrl: string): { warnings: string[]; insecure:
   return { warnings: [], insecure: false }
 }
 
-export async function probePluginRepo(gitBin: string, identifier: string): Promise<PluginProbeResult> {
+export interface PluginProbeOptions {
+  /** A catalog pick's pinned commit: the repository is read there, as the install will check it out. The
+   *  default branch may have moved, dropped the plugin folder, or never held the pin at all. */
+  ref?: string
+}
+
+export async function probePluginRepo(
+  gitBin: string,
+  identifier: string,
+  { ref }: PluginProbeOptions = {}
+): Promise<PluginProbeResult> {
   try {
+    const pin = ref?.trim().toLowerCase()
+
+    if (pin !== undefined && !COMMIT_SHA.test(pin)) {
+      throw new Error('A catalog pin must be a full 40-character commit SHA.')
+    }
+
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
     const { warnings, insecure } = insecureSchemeWarnings(gitUrl)
     const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
 
     try {
+      if (pin) {
+        await checkoutCommit(gitBin, cloneRoot, pin).catch(err => {
+          throw new Error(
+            `The catalog's pinned commit (${pin.slice(0, 12)}) could not be checked out. ${err instanceof Error ? err.message : String(err)}`
+          )
+        })
+      }
+
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
       const detected = await detectPluginComponents(pluginRoot)
       const repoFallback = repoNameFromUrl(gitUrl)

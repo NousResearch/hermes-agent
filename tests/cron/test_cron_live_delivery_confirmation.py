@@ -264,7 +264,8 @@ class TestLiveDeliveryIsAFinalNotification:
         media.write_bytes(b"\x89PNG\r\n\x1a\n")
         sent = []
 
-        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None,
+                            force_document=False):
             sent.append({"media": list(media_files), "metadata": metadata})
             return []
 
@@ -304,7 +305,8 @@ class TestNotifyIsConfigurable:
         media.write_bytes(b"\x89PNG\r\n\x1a\n")
         sent = []
 
-        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None):
+        def fake_send_media(adapter, chat_id, media_files, metadata, loop, job, platform=None,
+                            force_document=False):
             sent.append(metadata)
             return []
 

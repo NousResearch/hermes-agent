@@ -207,16 +207,17 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     require_ledger_owner()
+    from tools.delegate_tool_auto_resume import KEEP_WAITING_UNITS_SQL as keep
     cutoff = time.time() - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
-            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?", (cutoff,))
+            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?" + keep, (cutoff,))
         terminal_count = conn.execute(
             "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')").fetchone()[0]
         if terminal_count > _MAX_RETAINED_COMPLETED:
-            conn.execute("""DELETE FROM async_delegations WHERE delegation_id IN (
+            conn.execute(f"""DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing')
+                     WHERE state NOT IN ('running','finalizing'){keep}
                      ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
                               updated_at ASC LIMIT ?
                    )""", (terminal_count - _MAX_RETAINED_COMPLETED,))
@@ -235,7 +236,7 @@ def _persist_completion(event: dict[str, Any], result: dict[str, Any], *, delive
     offered (restart recovery must not resurrect it)."""
     event, result = redact_completion_event(event), redact_child_result(result)
     if remote := worker_ledger():
-        return remote.complete(event, result)
+        return remote.complete(event, result, delivery)
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
@@ -343,7 +344,8 @@ def recover_abandoned_delegations() -> int:
                     "last tool before re-running side effects.")
                 n_tasks = len(task.get("task_indexes") or task.get("goals") or [0])
                 finished = any(r.get("status") != "unknown" for r in recovered_results or ())
-                silent = len(promised) >= n_tasks and not finished  # every child will resume: no wake
+                silent = len(promised) >= n_tasks and not finished  # the scheduler reports each child: no wake
+                diagnostics.update({"waiting_to_resume": promised} if silent else {})
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
@@ -815,11 +817,14 @@ def failed_delegations_for_session(
         task, result = _json_object(task_json), redact_child_result(_json_object(result_json))
         goals = task.get("goals") if isinstance(task.get("goals"), list) and task["goals"] else [task.get("goal") or ""]
         tasks = result["results"] if isinstance(result.get("results"), list) else [] if task.get("is_batch") else [result]
+        from tools.delegate_tool_auto_resume import waiting_on_resume
+        if waiting_on_resume(result):  # every child waits on its automatic resume (or its one give-up failure)
+            continue
         if not tasks and str(state).lower() in _FAILED_TASK_STATES:  # crash, stall or owner exit: no per-task rows
             tasks = [{"task_index": i, "error": result.get("error")} for i in task.get("task_indexes") or [0]]
         for entry in tasks:
             status = str(entry.get("status") or state or "").lower()
-            if status not in _FAILED_TASK_STATES:
+            if status not in _FAILED_TASK_STATES or waiting_on_resume(entry):
                 continue
             index = entry.get("task_index") if isinstance(entry.get("task_index"), int) else 0
             error = entry.get("error") or result.get("error")

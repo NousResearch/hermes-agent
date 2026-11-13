@@ -330,10 +330,11 @@ def file_leaks(tenants: dict[str, Tenant], launch: str = "default") -> list[str]
     memories, cron output) for any other tenant's canary. A foreign secret anywhere in the raw bytes
     is a leak, deleted SQLite pages still in the WAL included. The launch home's ``profiles/`` subtree
     belongs to those tenants, and the launch index's routing rows are each checked against their own
-    profile for the non-secret canaries (a secondary profile's routing row carries its own workdir)."""
-    def foreign_to(owner: str, *, secret: bool) -> list[tuple[str, str, bytes]]:
+    profile for every canary (a secondary profile's routing row carries its own workdir, and the
+    launch profile's secret in it is a leak the launch-owned raw scan cannot see)."""
+    def foreign_to(owner: str, *, secrets_only: bool = False) -> list[tuple[str, str, bytes]]:
         return [(u.name, kind, value.encode()) for u in tenants.values() if u.name != owner
-                for kind, value in u.canaries().items() if (kind in u.secrets()) == secret]
+                for kind, value in u.canaries().items() if not secrets_only or kind in u.secrets()]
 
     problems: list[str] = []
     for t in tenants.values():
@@ -347,11 +348,11 @@ def file_leaks(tenants: dict[str, Tenant], launch: str = "default") -> list[str]
             except OSError:
                 continue
             problems += [f"{t.name}: {rel} contains {who}'s {kind}"
-                         for who, kind, value in foreign_to(t.name, secret=True) if value in raw]
+                         for who, kind, value in foreign_to(t.name, secrets_only=True) if value in raw]
             for owner, data in [(None, raw)] if parts is None else parts:
                 where = f"{t.name}: {rel}" if owner in (None, t.name) else f"{t.name}: {owner}'s routing row in {rel}"
                 problems += [f"{where} contains {who}'s {kind}"
-                             for who, kind, value in foreign_to(owner or t.name, secret=False) if value in data]
+                             for who, kind, value in foreign_to(owner or t.name) if value in data]
     return list(dict.fromkeys(problems))
 
 

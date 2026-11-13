@@ -4,6 +4,24 @@ import stripAnsi from 'strip-ansi'
 import { OSC, osc } from '../termio/osc.js'
 import { TerminalWriteContext } from '../useTerminalNotification.js'
 
+// Status markers the TUI puts in titles, mapped to readable ASCII for GNU Screen.
+const SCREEN_TITLE_GLYPHS: Record<string, string> = { '⏳': '*', '⚠': '!', '✓': '+', '·': '-', '…': '...' }
+
+/**
+ * GNU Screen keeps one byte per character of an OSC title, so `✓` (U+2713) reaches the outer
+ * terminal as 0x13 (XOFF) and `⏳` as a stray `ó` (openai/codex#50375). Inside Screen (`STY`),
+ * map the status glyphs and replace any other non-printable-ASCII character with `?`.
+ */
+export function terminalTitleText(title: string, env: NodeJS.ProcessEnv = process.env): string {
+  const clean = stripAnsi(title)
+
+  if (!env['STY']) {
+    return clean
+  }
+
+  return Array.from(clean, ch => SCREEN_TITLE_GLYPHS[ch] ?? (ch >= ' ' && ch <= '~' ? ch : '?')).join('')
+}
+
 /**
  * Declaratively set the terminal tab/window title.
  *
@@ -36,15 +54,15 @@ export function useTerminalTitle(title: string | TerminalTitlePair | null): void
     }
 
     if (typeof title === 'string') {
-      writeRaw(osc(OSC.SET_TITLE_AND_ICON, stripAnsi(title)))
+      writeRaw(osc(OSC.SET_TITLE_AND_ICON, terminalTitleText(title)))
 
       return
     }
 
     // Separate tab (OSC 1) and window (OSC 2) titles so narrow tab bars
     // show the short session name instead of a truncated tail.
-    const tab = stripAnsi(title.tab ?? '')
-    const window = stripAnsi(title.window ?? '')
+    const tab = terminalTitleText(title.tab ?? '')
+    const window = terminalTitleText(title.window ?? '')
 
     if (tab && window) {
       writeRaw(osc(OSC.SET_ICON, tab) + osc(OSC.SET_TITLE, window))

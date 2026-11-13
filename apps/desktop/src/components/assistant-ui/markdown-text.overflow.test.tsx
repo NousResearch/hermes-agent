@@ -108,6 +108,40 @@ describe('MarkdownTextContent overflow containment', () => {
   })
 })
 
+describe('MarkdownTextContent table cells', () => {
+  // #145797: message bodies set `overflow-wrap: anywhere`, and a cell that
+  // inherits it turns every letter into a break opportunity. Auto table layout
+  // then shrinks short-label columns to a letter or two (`Investig/ación`,
+  // a hex id over four lines) instead of letting the table scroll in its card.
+  it('wraps cells between words instead of inheriting wrap-anywhere', async () => {
+    const text = [
+      '| Sesión | ID | Resumen |',
+      '| --- | --- | --- |',
+      '| Revisión independiente | `a070870466f38f8f` | Revisión de planificación del cambio |'
+    ].join('\n')
+
+    const { container } = render(
+      <div className="wrap-anywhere">
+        <MarkdownTextContent isRunning={false} text={text} />
+      </div>
+    )
+
+    await waitFor(() => expect(container.querySelector('td')).toBeTruthy())
+
+    const cells = Array.from(container.querySelectorAll('td'))
+
+    expect(cells).toHaveLength(3)
+
+    for (const cell of cells) {
+      expect(cell.className).toContain('wrap-break-word')
+      expect(cell.className).not.toContain('wrap-anywhere')
+    }
+
+    // A wide table still scrolls inside its own card, not the transcript.
+    expect(container.querySelector('.aui-md-table')!.className).toContain('overflow-x-auto')
+  })
+})
+
 async function renderWideReply() {
   const longToken = 'x'.repeat(500)
 

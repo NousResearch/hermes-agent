@@ -59,6 +59,21 @@ def _python_copy_command(output_placeholder: str = "{output_path}") -> str:
     )
 
 
+def _python_echo_command(argument_placeholder: str) -> str:
+    """Return a shell command that writes ``[<argument_placeholder>]`` to {output_path}.
+
+    The brackets keep the file non-empty when the placeholder renders as an
+    empty string, so a "no value" case still satisfies the runner's
+    "produced no output" check and can be asserted on.
+    """
+    interpreter = sys.executable
+    return (
+        f'"{interpreter}" -c "import sys; '
+        f"open(sys.argv[1], 'w', encoding='utf-8').write('[' + sys.argv[2] + ']')\" "
+        f'{{output_path}} {argument_placeholder}'
+    )
+
+
 def _shell_command(*args: str) -> str:
     """Return a shell command string for subprocess.Popen(shell=True)."""
     if os.name == "nt":
@@ -376,6 +391,28 @@ class TestGenerateCommandTts:
         # BOM-less alike (repo policy: reads utf-8-sig).
         assert out.read_text(encoding="utf-8-sig") == "hello world"
 
+    def test_instructions_reach_the_command_placeholder(self, tmp_path):
+        out = tmp_path / "clip.mp3"
+        config = {"command": _python_echo_command("{instructions}")}
+        _generate_command_tts(
+            "hello world",
+            str(out),
+            "py-echo",
+            config,
+            {},
+            instructions="Speak slowly, with a heavy, melancholic tone.",
+        )
+        assert out.read_text(encoding="utf-8-sig") == "[Speak slowly, with a heavy, melancholic tone.]"
+
+    def test_missing_instructions_render_as_an_empty_string(self, tmp_path):
+        """A caller that supplies no style guidance still renders the placeholder,
+        so a template carrying ``{instructions}`` cannot leak the literal token
+        into the command line."""
+        out = tmp_path / "clip.mp3"
+        config = {"command": _python_echo_command("{instructions}")}
+        _generate_command_tts("hello world", str(out), "py-echo", config, {})
+        assert out.read_text(encoding="utf-8-sig") == "[]"
+
 
     @pytest.mark.platforms("posix")  # POSIX-only timeout semantics
     def test_timeout_raises_runtime(self, tmp_path):
@@ -424,6 +461,32 @@ class TestTextToSpeechToolWithCommandProvider:
         assert data["provider"] == "py-copy"
         assert data["voice_compatible"] is False
         assert Path(data["file_path"]).exists()
+
+    def test_instructions_forwarded_to_the_command(self, tmp_path):
+        """``text_to_speech(instructions=…)`` reaches a command provider.
+
+        Style guidance used to be dropped for every command-type provider
+        (only OpenAI-style backends received it), so a local voice-design
+        server could never be told how to speak.
+        """
+        cfg = {
+            "provider": "py-echo",
+            "providers": {
+                "py-echo": {
+                    "type": "command",
+                    "command": _python_echo_command("{instructions}"),
+                    "output_format": "mp3",
+                },
+            },
+        }
+        out = tmp_path / "clip.mp3"
+
+        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+            result = text_to_speech_tool(
+                text="hi", output_path=str(out), instructions="sad, quiet, slow")
+        data = json.loads(result)
+        assert data["success"] is True, data
+        assert out.read_text(encoding="utf-8-sig") == "[sad, quiet, slow]"
 
     def test_voice_compatible_opt_in_toggles_flag(self, tmp_path):
         """voice_compatible=true is reflected in the response when the

@@ -37,6 +37,42 @@ def test_exhausted_error_message_is_redacted_on_disk_even_with_redaction_disable
     assert row["last_error_message"].startswith("Invalid API key:")
 
 
+def test_string_error_body_reason_is_redacted_on_disk(tmp_path, monkeypatch):
+    """A body whose ``error`` is a bare string makes the whole message the reason too."""
+    from agent.agent_runtime_helpers import extract_api_error_context
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+    (home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {"anthropic": [
+        {"id": "k1", "label": "a", "auth_type": "api_key", "priority": 0, "source": "manual",
+         "access_token": "sk-ant-stored"},
+        {"id": "k2", "label": "b", "auth_type": "api_key", "priority": 1, "source": "manual",
+         "access_token": "sk-ant-other"},
+    ]}}))
+    err = RuntimeError("401")
+    err.body = {"error": f"Incorrect API key provided: {_KEY}"}
+    context = extract_api_error_context(err)
+    assert _KEY in context["reason"]
+
+    pool = cp.load_pool("anthropic")
+    assert pool.select().id == "k1"
+    pool.mark_exhausted_and_rotate(status_code=401, error_context=context)
+
+    raw = (home / "auth.json").read_text()
+    assert _KEY not in raw
+    row = json.loads(raw)["credential_pool"]["anthropic"][0]
+    assert row["last_error_reason"].startswith("Incorrect API key provided:")
+
+
+def test_terminal_reason_codes_survive_redaction():
+    for code in cp._TERMINAL_AUTH_REASONS:
+        normalized = cp._normalize_error_context({"reason": code})
+        assert normalized["reason"] == code
+        assert CredentialPool._is_terminal_auth_failure(None, 401, normalized)
+
+
 def test_mark_dead_refresh_grant_redacts_exception_text(monkeypatch):
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
     pool = CredentialPool.__new__(CredentialPool)

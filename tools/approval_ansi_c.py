@@ -60,35 +60,62 @@ def expand_ansi_c_quotes(command: str) -> str:
     return "".join(out)
 
 
+def _is_shell_comment_start(command: str, index: int) -> bool:
+    """Whether the ``#`` at *index* starts a comment: it must begin a word. An escaped separator
+    (``echo \\ #``) is part of the previous word, so its ``#`` is literal and what follows runs."""
+    if command[index] != "#" or index == 0:
+        return command[index] == "#"
+    prev = command[index - 1]
+    if not (prev.isspace() or prev in ";&|()<>"):
+        return False
+    j = index - 2
+    while j >= 0 and command[j] == "\\":
+        j -= 1
+    return (index - 2 - j) % 2 == 0
+
+
+def _skip_continuations(command: str, i: int) -> int:
+    while command.startswith("\\\n", i):
+        i += 2
+    return i
+
+
 def _step(command: str, i: int, stack: list[list], out: list[str]) -> int:
     ch, context = command[i], stack[-1]
+    if command.startswith("\\\n", i):
+        # A line continuation is removed before tokenizing (also inside double quotes), so it can
+        # sit between `$` and the quote that makes it `$'`.
+        return i + 2
     if ch == "\\":
         out.append(command[i:i + 2])
         return i + 2
-    if command.startswith("$$", i):
+    # Offset of the character the shell sees right after a `$`.
+    after = _skip_continuations(command, i + 1) if ch == "$" else i + 1
+    following = command[after:after + 1]
+    if ch == "$" and following == "$":
         # `$$` is the PID; a `'`/`"`/`(` after it starts a new token, not `$'`/`$"`/`$(`.
         out.append("$$")
-        return i + 2
+        return after + 1
     if context[0] == '"':
         if ch == '"':
             stack.pop()
-        elif command.startswith("$(", i) or ch == "`":
+        elif (ch == "$" and following == "(") or ch == "`":
             stack.append(["(" if ch == "$" else "`", 0])
-            out.append(command[i:i + 1 + (ch == "$")])
-            return i + 1 + (ch == "$")
+            out.append("$(" if ch == "$" else "`")
+            return after + 1 if ch == "$" else i + 1
         out.append(ch)
         return i + 1
-    if ch == "$" and command.startswith("$'", i) and (end := _ansi_c_span_end(command, i)) is not None:
-        out.append(_single_quoted(command[i + 2:end - 1]))
+    if ch == "$" and following == "'" and (end := _ansi_c_span_end(command, after - 1)) is not None:
+        out.append(_single_quoted(command[after + 1:end - 1]))
         return end
-    if ch == "$" and command.startswith('$"', i):
-        return i + 1
+    if ch == "$" and following == '"':
+        return after
     if ch == "'":
         end = command.find("'", i + 1)
         end = len(command) if end < 0 else end + 1
         out.append(command[i:end])
         return end
-    if ch == "#" and (i == 0 or command[i - 1].isspace() or command[i - 1] in ";&|()<>"):
+    if ch == "#" and _is_shell_comment_start(command, i):
         end = command.find("\n", i)
         end = len(command) if end < 0 else end
         out.append(command[i:end])

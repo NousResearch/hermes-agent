@@ -14,7 +14,7 @@ import shlex
 import tempfile
 import unicodedata
 
-from tools.approval_ansi_c import expand_ansi_c_quotes
+from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 
 logger = logging.getLogger("tools.approval")
 
@@ -1403,11 +1403,6 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
     return word
 
 
-def _is_shell_comment_start(command: str, index: int) -> bool:
-    return command[index] == "#" and (index == 0 or command[index - 1].isspace()
-                                      or command[index - 1] in ";&|()<>")
-
-
 def _iter_shell_command_starts(command: str):
     starts = [0]
 
@@ -1710,6 +1705,14 @@ def _command_detection_variants(command: str):
                 if marked_payload != payload and fresh(marked_payload):
                     yield marked_payload
                 pending.append(payload)
+    # Payloads parsed from NORMALIZED text lost their escapes before their own quote expansion ran
+    # (`bash -c "$'\\x72\\x6d' -rf /"` reached the patterns as `$'x72x6d'`). Parse the raw argument
+    # too and treat it as new shell input; each payload is a strict substring, so recursion ends.
+    for _, payload in _execution_flag_findings(_mask_quoted_newlines(command)):
+        if payload and payload != command:
+            for variant in _command_detection_variants(payload):
+                if fresh(variant):
+                    yield variant
     # Subshell `(cmd)` / brace-group `{ cmd; }` openers put `cmd` at a real command position the flat `_CMDPOS`
     # patterns can't see (adding `(`/`{` there would match quoted prose like `--title "(reboot)"`). Insert a newline
     # at each start the QUOTE-AWARE tokenizer found instead; this covers every `_CMDPOS` rule in one place.

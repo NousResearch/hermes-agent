@@ -221,6 +221,24 @@ describe('a row without a reachable owner', () => {
     expect(() => botConnectionRoute(orphan)).toThrow(/no connection owner/)
   })
 
+  it('keeps an explicit connection owner when a roster row loses its source flags', async () => {
+    hostMock.requestProfile.mockResolvedValue({ from: 'connection-a' })
+
+    const row = { connectionId: 'connection-a', name: 'default' } as RosterRow
+
+    expect(botConnectionRoute(row)).toMatchObject({ connectionId: 'connection-a', profile: 'default' })
+    await expect(requestForBot(row, 'session.list', {})).resolves.toEqual({ from: 'connection-a' })
+    expect(hostMock.request).not.toHaveBeenCalled()
+  })
+
+  it('refuses a remote row with no connection id instead of using the active gateway', async () => {
+    const row = { connectionKind: 'remote', name: 'default' } as RosterRow
+
+    expect(resolveBotConnectionRoute(row)).toMatchObject({ status: 'owner_removed', route: null })
+    await expect(requestForBot(row, 'session.list', {})).rejects.toThrow(/no connection owner/)
+    expect(hostMock.request).not.toHaveBeenCalled()
+  })
+
   it('a passive meta lookup on an orphaned row reads as "no route", never a throw', () => {
     const orphan = { name: 'ops', remoteSource: true } as RosterRow
 

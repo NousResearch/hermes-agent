@@ -64,6 +64,9 @@ from hermes_cli.models_local import (
     _ollama_probe_cache_key,
     _root_for_ollama_native_api,
     fetch_ollama_cloud_models)
+from hermes_cli.models_openrouter import (
+    _openrouter_model_supports_tools,
+    append_live_free_routers)
 
 logger = logging.getLogger(__name__)
 
@@ -598,17 +601,6 @@ def _openrouter_model_is_free(pricing: Any) -> bool:
     return _zero_priced(pricing, ("prompt", "completion"), "0")
 
 
-def _openrouter_model_supports_tools(item: Any) -> bool:
-    """True when ``supported_parameters`` advertises ``tools`` (hermes-agent is tool-calling-first).
-    Permissive when the field is absent/malformed: some OpenRouter-compatible gateways (Nous Portal,
-    private mirrors) don't populate it, and the picker must not silently empty for them.
-
-    Ported from Kilo-Org/kilocode#9068.
-    """
-    params = item.get("supported_parameters") if isinstance(item, dict) else None
-    return "tools" in params if isinstance(params, list) else True
-
-
 # Reasoning-capability cache slots, one set per catalog (OpenRouter, Nous Portal). The logic
 # lives in models_reasoning_caps and reads/writes these by name so tests can reset them here.
 # ``*_cache``: model id → parsed caps for the process lifetime; ``*_failed_at``: monotonic time
@@ -710,6 +702,10 @@ def fetch_openrouter_models(
         else:
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
         curated.append((preferred_id, desc))
+
+    # The manifest is a hand-curated subset and lags the live catalog: tail free SKUs and
+    # OpenRouter's own routers that only exist live (see models_openrouter.py).
+    append_live_free_routers(curated, live_items, _openrouter_model_supports_tools, _openrouter_model_is_free)
 
     if not curated:
         return list(cached or fallback)

@@ -1449,6 +1449,8 @@ def register(ctx):
 
 Fires for supported platform-native events only **after** the gateway's normal, profile-scoped authorization check succeeds. The callback receives plain dictionaries; raw SDK objects, adapter handles, bot clients, and callback contexts are never part of this stable contract.
 
+Callbacks may be synchronous or asynchronous. An `async def` callback is awaited on the gateway's event loop, so it can await platform actions that use the adapter's live client. Async callbacks use the existing `plugins.hook_callback_timeout` (30 seconds by default); a timed-out coroutine is cancelled and later observers still run. Keep callbacks short: synchronous work still blocks the loop, and this timeout does not guarantee meeting a platform's own response deadline.
+
 Telegram message reactions were the first supported event; message edits, deletes, and thread lifecycle events followed:
 
 ```python

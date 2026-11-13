@@ -33,6 +33,8 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_custom_credentials import (
+    _normalize_api_key, declared_custom_credential_identity, declared_custom_key_for_base_url, fast_catalog_provider)
 from agent.errors import InvalidProviderResponseError
 from agent.auxiliary_fallback_recovery import reapply_repairs
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
@@ -4396,7 +4398,7 @@ def _main_route_target(runtime: dict[str, Any], task: Optional[str]) -> tuple[st
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
-        fast_model = _get_aux_model_for_provider(main_provider, prefer_fast=True)
+        fast_model = _get_aux_model_for_provider(fast_catalog_provider(runtime, main_provider), prefer_fast=True)
         if fast_model and fast_model != main_model:
             logger.debug("Auxiliary task %s: preferring fast model %s over main model %s",
                          task, fast_model, main_model)
@@ -4734,13 +4736,6 @@ class _ResolveRequest(NamedTuple):
 _ResolveResult = tuple[Optional[Any], Optional[str]]
 
 
-def _normalize_api_key(raw: Any) -> str | Callable[[], str]:
-    """A key_cmd/Entra callable passes through uncalled; strings are stripped; anything else is ''."""
-    if callable(raw) and not isinstance(raw, str):
-        return raw
-    return raw.strip() if isinstance(raw, str) else ""
-
-
 def _log_once_debug(seen: set, key: Any, msg: str, *args: Any) -> None:
     """Debug-log ``msg`` the first time ``key`` is seen so per-call retries stay silent."""
     if key not in seen:
@@ -4936,10 +4931,13 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
+            # Only THIS route's credentials (main same-origin, owning providers: entry) beat env keys (#145452).
             from hermes_cli.runtime_provider import openai_env_key_authoritative_for  # SECURITY #91308: gated as main
             paired = any(openai_env_key_authoritative_for(u, _scoped_key_env("OPENAI_BASE_URL"))  # requested URL too:
                          for u in (req.explicit_base_url, custom_base))  # _to_openai_base_url rewrites its path
             custom_key = (_normalize_api_key(req.explicit_api_key) or _read_main_api_key_if_same_origin(custom_base)
+                          or declared_custom_key_for_base_url(req.explicit_base_url, req.original_provider or provider)
+                          or declared_custom_key_for_base_url(custom_base, req.original_provider or provider)
                           or (_scoped_key_env("OPENAI_API_KEY") if paired else "")
                           or "no-key-required")  # local servers don't need auth
         if not custom_base:
@@ -5654,7 +5652,9 @@ def _borrowed_main_credential_key(provider: str, base_url: Optional[str], api_ke
     # Same normalization as the client build, which treats a blank explicit key as keyless.
     if _normalize_api_key(api_key):
         return ()
-    borrowed = _read_main_api_key_if_same_origin(_to_openai_base_url(base_url).strip())
+    custom_base = _to_openai_base_url(base_url).strip()  # the providers: entry's key is borrowed the same way
+    borrowed = (_read_main_api_key_if_same_origin(custom_base) or declared_custom_credential_identity(base_url, provider)
+                or declared_custom_credential_identity(custom_base, provider))  # raw URL first, as the build does
     return (_runtime_cache_discriminator("api_key", borrowed),)
 
 

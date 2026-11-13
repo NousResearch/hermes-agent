@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ 无法上传调试报告：{error}"
     header: "**调试报告已上传：**"
     auto_delete: "⏱ 粘贴内容将在 6 小时后自动删除。"
-    full_logs_hint: "如需上传完整日志，请在 CLI 中使用 `hermes debug share`。"
+    full_logs_hint: "如需上传完整日志，请在 CLI 中使用 `hermes debug share --nous`。"
     share_hint: "请将这些链接分享给 Hermes 团队以获得支持。"
     report_label: "报告"
     local_refused: "`/debug local` 会把报告留在运行 Hermes 的机器上，因此无法在聊天中使用。发送 `/debug upload` 可上传摘要报告。"
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "显示 Hermes Agent 版本"
   debug:
-    description: "调试报告（系统信息 + 日志）：先显示隐私声明；/debug upload 分享链接"
+    description: "调试报告（版本、配置键名、错误计数；不含日志文本）：先显示隐私声明；/debug upload 分享链接"
   quit:
     description: "退出 CLI（加 --delete 可同时删除会话历史）"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts 切换仅 TTS 模式——代理的回复会朗读出来，但你仍然用打字输入提示词。"
   t344: "/reload-skills 重新扫描 ~/.hermes/skills/，让直接放入的技能无需重启会话即可出现。"
   t345: "/indicator kaomoji|emoji|unicode|ascii 选择代理运行期间 TUI 忙碌指示器的样式。"
-  t346: "/debug 上传支持包（系统信息 + 日志）并返回可分享的链接——在聊天中也能用。"
+  t346: "/debug upload 上传摘要（版本、配置键名、错误计数；不含日志文本）并返回可分享的链接——在聊天中也能用。"
   t347: "hermes -z \"<prompt>\" 是最纯粹的一次性调用：只在 stdout 输出最终答案，别无其他——非常适合在脚本中做管道处理。"
   t348: "hermes chat --pass-session-id 把会话 ID 注入系统提示词，让代理可以引用自己的会话。"
   t349: "hermes chat --image path/to/pic.png 为单次 -q 查询附加本地图片，无需单独上传步骤。"

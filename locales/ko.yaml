@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ 디버그 보고서 업로드 실패: {error}"
     header: "**디버그 보고서가 업로드되었습니다:**"
     auto_delete: "⏱ 페이스트는 6시간 후 자동 삭제됩니다."
-    full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
+    full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share --nous`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
     local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Hermes Agent 버전 표시"
   debug:
-    description: "디버그 보고서(시스템 정보 + 로그): 먼저 개인정보 안내를 표시하며 /debug upload로 링크 공유"
+    description: "디버그 보고서(버전, 설정 키 이름, 오류 개수; 로그 텍스트 없음): 먼저 개인정보 안내를 표시하며 /debug upload로 링크 공유"
   quit:
     description: "CLI 종료 (--delete를 붙이면 세션 기록도 삭제)"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts는 음성 합성 전용 모드를 전환해요 — 에이전트는 소리로 답하지만 프롬프트는 계속 타이핑해요."
   t344: "/reload-skills는 ~/.hermes/skills/를 다시 스캔해서 세션을 재시작하지 않고도 드롭인 스킬이 나타나게 해요."
   t345: "/indicator kaomoji|emoji|unicode|ascii는 에이전트가 실행 중일 때 표시되는 TUI 작업 표시기 스타일을 골라요."
-  t346: "/debug는 지원 번들(시스템 정보 + 로그)을 업로드하고 공유 가능한 링크를 돌려줘요 — 채팅에서도 동작해요."
+  t346: "/debug upload는 요약(버전, 설정 키 이름, 오류 개수; 로그 텍스트 없음)을 업로드하고 공유 가능한 링크를 돌려줘요 — 채팅에서도 동작해요."
   t347: "hermes -z \"<prompt>\"는 가장 순수한 일회성 실행이에요: stdout에 최종 답변만 출력하고 다른 건 없어요 — 스크립트 파이프에 이상적이에요."
   t348: "hermes chat --pass-session-id는 세션 ID를 시스템 프롬프트에 주입해서 에이전트가 자기 세션을 참조할 수 있게 해요."
   t349: "hermes chat --image path/to/pic.png는 별도 업로드 단계 없이 단일 -q 질의에 로컬 이미지를 첨부해요."

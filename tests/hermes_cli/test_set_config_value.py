@@ -1138,3 +1138,84 @@ class TestProviderSwitchClearsBaseUrl:
         assert "Cleared" not in out
         # Unknown host: kept, but the user is told the old route still applies (from #113725).
         assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])
+
+
+class TestAuxiliaryProviderSwitchClearsStaleRoute:
+    """``config set auxiliary.<task>.provider X`` must drop the previous provider's route exactly
+    like the ``model.provider`` switch does (#141832): a leftover ``base_url`` overrides the new
+    provider (config_defaults: "base_url overrides provider"), so the aux call would post X's
+    credential to the old provider's endpoint — the hazard #113719/#40862 guarded for ``model``."""
+
+    def _seed(self, tmp_path, aux):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(
+            {"model": {"provider": "openai"}, "auxiliary": aux}))
+
+    def test_switch_drops_stale_aux_route(self, _isolated_hermes_home, capsys):
+        target = "anthropic"
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "openai-api", "base_url": "https://api.openai.com/v1",
+            "api_mode": "chat_completions"}})
+        set_config_value("auxiliary.vision.provider", target)
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": target}
+        out = capsys.readouterr().out
+        assert "Cleared" in out and "openai-api" in out
+        assert "auxiliary.vision.base_url (https://api.openai.com/v1)" in out
+
+    def test_route_owned_by_target_is_kept(self, _isolated_hermes_home, capsys):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "opencode-go", "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses"}})
+        set_config_value("auxiliary.vision.provider", "openai-codex")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "openai-codex",
+                          "base_url": "https://chatgpt.com/backend-api/codex",
+                          "api_mode": "codex_responses"}
+        out = capsys.readouterr().out
+        assert "Cleared" not in out
+
+    def test_switch_drops_old_endpoints_key(self, _isolated_hermes_home, capsys):
+        # An aux api_key/key_env is passed to whatever provider the block names, so once the
+        # route is gone the old endpoint's key would be sent to the new provider.
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "openai-api", "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-openai-old", "key_env": "OLD_KEY"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic"}
+        assert "auxiliary.vision.api_key" in capsys.readouterr().out
+
+    def test_key_set_before_first_provider_is_kept(self, _isolated_hermes_home):
+        # No previous provider and no route: the key just set belongs to the provider set next.
+        # The key itself lives in .env; config.yaml keeps its reference (#77471).
+        self._seed(_isolated_hermes_home, {"vision": {"provider": "auto"}})
+        set_config_value("auxiliary.vision.api_key", "sk-new")
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic", "api_key": "${AUXILIARY_VISION_API_KEY}"}
+        assert "AUXILIARY_VISION_API_KEY=sk-new" in _read_env(_isolated_hermes_home)
+
+    # llm.example.com: unknown host, kept with a warning; api.openai.com: dropped, "Cleared" notice.
+    @pytest.mark.parametrize("host", ["llm.example.com", "api.openai.com"])
+    def test_notice_masks_url_credentials(self, _isolated_hermes_home, capsys, host):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "custom", "base_url": f"https://bob:hunter2secret@{host}/v1"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        out = capsys.readouterr().out
+        assert "auxiliary.vision.base_url" in out and "hunter2secret" not in out
+
+    def test_auto_block_with_dropped_route_loses_its_key(self, _isolated_hermes_home):
+        # auto + base_url + api_key is a live custom route (the resolver pairs them); once the switch
+        # drops that base_url, the key belongs to the dropped endpoint, not the provider being set.
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "auto", "base_url": "https://api.openai.com/v1", "api_key": "sk-old"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic"}
+
+    def test_kept_route_keeps_its_key(self, _isolated_hermes_home):
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "opencode-go", "base_url": "https://chatgpt.com/backend-api/codex", "key_env": "CODEX_KEY"}})
+        set_config_value("auxiliary.vision.provider", "openai-codex")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision["key_env"] == "CODEX_KEY"

@@ -309,7 +309,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/deny` | Reject a pending dangerous command. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
-| `/debug [upload]` | Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads the summary report (system info + log tails) and returns a shareable link. |
+| `/debug [upload]` | Bare `/debug` shows the privacy notice and uploads nothing; `/debug upload` uploads an allowlisted summary (versions, config key names, error counts; no log or message text) to a public paste and returns a shareable link; full logs go only to private storage via `hermes debug share --nous`. |
 | `/help` | Show messaging help. |
 | `/<skill-name>` | Invoke any installed skill by name. |
 

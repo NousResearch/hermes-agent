@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ デバッグレポートのアップロードに失敗しました: {error}"
     header: "**デバッグレポートをアップロードしました:**"
     auto_delete: "⏱ ペーストは 6 時間後に自動削除されます。"
-    full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
+    full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share --nous` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
     local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug upload` を送信してください。"
@@ -1709,7 +1709,7 @@ slash:
   version:
     description: "Hermes Agent のバージョンを表示"
   debug:
-    description: "デバッグレポート（システム情報 + ログ）: まずプライバシー通知を表示し、/debug upload でリンクを共有"
+    description: "デバッグレポート（バージョン、設定キー名、エラー件数。ログ本文なし）: まずプライバシー通知を表示し、/debug upload でリンクを共有"
   quit:
     description: "CLI を終了（--delete でセッション履歴も削除）"
 cli:
@@ -3920,7 +3920,7 @@ tips:
   t343: "/voice tts は TTS のみのモードを切り替えます。エージェントの応答は音声で読み上げられ、プロンプトはこれまで通りタイプします。"
   t344: "/reload-skills は ~/.hermes/skills/ を再スキャンするため、セッションを再起動せずに追加したスキルが現れます。"
   t345: "/indicator kaomoji|emoji|unicode|ascii で、エージェント実行中に表示される TUI のビジーインジケーターのスタイルを選べます。"
-  t346: "/debug はサポートバンドル（システム情報とログ）をアップロードして共有用リンクを返します。チャットでも使えます。"
+  t346: "/debug upload はサマリー（バージョン、設定キー名、エラー件数。ログ本文なし）をアップロードして共有用リンクを返します。チャットでも使えます。"
   t347: "hermes -z \"<prompt>\" は最も純粋なワンショット実行です。最終回答だけを stdout に出力するため、スクリプトでのパイプ処理に理想的です。"
   t348: "hermes chat --pass-session-id はセッション ID をシステムプロンプトに注入し、エージェントが自身のセッションを参照できるようにします。"
   t349: "hermes chat --image path/to/pic.png は、別途アップロードせずに 1 回の -q クエリにローカル画像を添付します。"

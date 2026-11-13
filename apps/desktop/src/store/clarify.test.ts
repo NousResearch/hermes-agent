@@ -12,6 +12,7 @@ import {
   skipClarifyRequest
 } from './clarify'
 import { $gateway } from './gateway'
+import { answerParkedCard, yieldParkedCardsToMessage } from './parked-card-answers'
 import { rememberServerRequest, resetServerRequestsForTests } from './server-requests'
 import { $activeSessionId } from './session'
 
@@ -126,6 +127,70 @@ describe('skipClarifyRequest', () => {
 
     await expect(skipClarifyRequest('session-a')).resolves.toBe(true)
     expect(hasClarifyRequest('session-a')).toBe(false)
+  })
+})
+
+describe('composer text while a card is parked', () => {
+  const request = vi.fn(async () => ({ ok: true }))
+
+  const choiceCard = (requestId: string): ClarifyRequest => ({
+    questions: [
+      {
+        choices: ['staging (Recommended)', 'production'],
+        multiSelect: false,
+        qid: 'q0',
+        question: 'Which deployment target?'
+      }
+    ],
+    requestId,
+    sessionId: 'session-a'
+  })
+
+  beforeEach(() => {
+    $clarifyRequests.set({})
+    resetServerRequestsForTests()
+    request.mockClear()
+    $gateway.set({ request } as unknown as ReturnType<typeof $gateway.get>)
+  })
+
+  afterEach(() => {
+    $clarifyRequests.set({})
+    $gateway.set(null)
+  })
+
+  it('takes text that names an offered choice, label and case aside', () => {
+    setClarifyRequest(choiceCard('req-a'))
+
+    expect(answerParkedCard('session-a', 'production')).toBe(true)
+
+    setClarifyRequest(choiceCard('req-b'))
+
+    // The offered label carries the recommendation suffix; the words typed into the composer do not.
+    expect(answerParkedCard('session-a', 'STAGING')).toBe(true)
+  })
+
+  it('yields the card to a message naming no choice, so the words run as the next turn', () => {
+    const respond = vi.fn()
+
+    rememberServerRequest({ fail: vi.fn(), id: 'req-a', method: 'clarify', params: {}, respond })
+    setClarifyRequest(choiceCard('req-a'))
+
+    // A direction is not one of the offered answers: locking it as one would lose the instruction.
+    expect(answerParkedCard('session-a', 'forget the backups, wire R2 instead')).toBe(false)
+    expect(yieldParkedCardsToMessage('session-a')).toBe(true)
+
+    expect(respond).toHaveBeenCalledWith({})
+    expect(hasClarifyRequest('session-a')).toBe(false)
+  })
+
+  it('takes any words for an open-ended question', () => {
+    setClarifyRequest({
+      questions: [{ choices: null, multiSelect: false, qid: 'q0', question: 'How large will the backup get?' }],
+      requestId: 'req-open',
+      sessionId: 'session-a'
+    })
+
+    expect(answerParkedCard('session-a', 'about 40 GB within six months')).toBe(true)
   })
 })
 

@@ -29,7 +29,7 @@ from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_atomic import _atomic_output_path
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
-from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
+from hermes_cli.config_backend import drop_other_access, require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
@@ -43,6 +43,7 @@ from hermes_cli.backup_restore import (
     _import_db_member,
     _restore_auth_json,
     _restore_destination_epoch,
+    _restore_snapshot_entry,
     _safe_restore_db,
     _set_config_path_value,
     _validate_backup_zip,
@@ -1035,6 +1036,8 @@ def _import_members_exclusive(
                     db_shrunk.append((rel, before, after))
             else:
                 _extract_member_atomically(zf, member, target, new_file_mode)
+            if target.name == "config.yaml":  # extraction keeps the live file's mode
+                drop_other_access(target)
             if target.name in _SECRET_FILE_NAMES:
                 os.chmod(target, 0o600)
             restored += 1
@@ -1544,35 +1547,6 @@ def _snapshot_epochs_restorable(files, entry_paths) -> bool:
                 logger.error("%s", exc)
                 return False
     return True
-
-
-def _restore_snapshot_entry(rel: str, src: Path, dst: Path) -> bool:
-    """Publish one quick-snapshot file over ``dst``; False (logged) when refused or failed."""
-    try:
-        if dst.suffix == ".db":
-            # Restore through SQLite backup API so live connections
-            # (gateway, dashboard, another CLI session) see the
-            # restored data instead of continuing to serve stale
-            # cached pages from a replaced inode (issue #65942).
-            if not _safe_restore_db(src, dst):
-                # Refused, failed, or source failed its integrity check:
-                # dst left as it was. Count as a failure, not a restore.
-                logger.error("Failed to restore %s: refused or source integrity check failed (see previous log)", rel)
-                return False
-        elif rel == "auth.json":
-            # Refresh tokens for these OAuth providers rotate on use. A historical
-            # snapshot can therefore contain a spent pair even though the current
-            # auth.json has the live successor. Restore the historical auth state
-            # while retaining that live single-use grant under the auth-store lock.
-            if not _restore_auth_json(src, dst):
-                logger.error("Failed to restore %s safely", rel)
-                return False
-        else:
-            shutil.copy2(src, dst)
-        return True
-    except (OSError, PermissionError) as exc:
-        logger.error("Failed to restore %s: %s", rel, exc)
-        return False
 
 
 def quick_snapshot_dir(snapshot_id: str, hermes_home: Optional[Path] = None) -> Optional[Path]:

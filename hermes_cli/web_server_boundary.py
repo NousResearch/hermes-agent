@@ -7,10 +7,13 @@ DNS-rebinding Host check and gate decision. ``hermes_cli.web_server`` and
 ``hermes_cli.web_server_chat`` re-export these names, so ``web_server.<name>`` keeps working.
 """
 
+import logging
 import os
 import re
 import urllib.parse
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 # Accepted Host values for loopback binds. DNS rebinding TTL-flips an attacker
 # hostname to 127.0.0.1 so the browser treats it as same-origin; validating Host
@@ -27,14 +30,48 @@ _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
 
 def _dashboard_public_hosts() -> frozenset[str]:
-    """Return the exact hostname declared by ``dashboard.public_url``.
+    """Return the hostnames a dashboard request may present in its Host header: the
+    exact hostname declared by ``dashboard.public_url`` plus every alias the operator
+    declared in ``dashboard.trusted_hosts``.
 
     One source of truth for OAuth redirects, Host and WS Origin validation.
     Malformed or unset values fail closed as an empty set.
     """
     from hermes_cli.dashboard_auth.prefix import resolve_public_url
 
-    return public_url_hosts(resolve_public_url())
+    return public_url_hosts(resolve_public_url()) | _configured_trusted_hosts()
+
+
+def _configured_trusted_hosts() -> frozenset[str]:
+    """``dashboard.trusted_hosts``: exact Host aliases a proxy or tunnel serves the
+    dashboard under (Tailscale MagicDNS short names, split-horizon DNS, an nginx/Caddy
+    public hostname when the backend bound to its LAN IP).
+
+    Each entry is normalized to its hostname (a port suffix is allowed and stripped);
+    a malformed entry is dropped, never sanitized — the allowlist is only as strong as
+    the exact names it lists. No wildcard or suffix matching: the rebinding defence
+    (GHSA-ppp5-vxwm-4cf7) still requires the client to name a declared host.
+    """
+    try:
+        from hermes_cli.config import load_config
+        section = load_config().get("dashboard")
+    except Exception:
+        _log.warning("dashboard.trusted_hosts could not be read; failing closed")
+        return frozenset()
+    raw = section.get("trusted_hosts", []) if isinstance(section, dict) else []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        _log.warning("dashboard.trusted_hosts must be a list of hostnames; ignoring %r", raw)
+        return frozenset()
+    hosts: set[str] = set()
+    for entry in raw:
+        host = _host_header_hostname(entry) if isinstance(entry, str) else ""
+        if host:
+            hosts.add(host)
+        else:
+            _log.warning("dashboard.trusted_hosts entry %r is not a valid hostname; dropped", entry)
+    return frozenset(hosts)
 
 
 def public_url_hosts(public_url: str) -> frozenset[str]:

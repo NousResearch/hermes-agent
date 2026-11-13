@@ -1,4 +1,4 @@
-#!/command/with-contenv sh
+#!/command/with-contenv /bin/sh
 # shellcheck shell=sh
 # Container-boot reconciliation of per-profile gateway s6 services.
 #
@@ -22,6 +22,17 @@
 # which executes the slot's run/finish/log scripts as root.
 set -e
 
+# Runs as root: resolve commands from system directories only. The reconciler
+# itself gets the inherited PATH (plus the hermes user's ~/.local/bin, appended)
+# after the drop.
+hermes_path="${PATH:-/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin}"
+case ":$hermes_path:" in
+    *:/opt/data/.local/bin:*) ;;
+    *) hermes_path="$hermes_path:/opt/data/.local/bin" ;;
+esac
+PATH=/command:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 GATEWAY_SCANDIR=/run/hermes-service
 
 if [ -L "$GATEWAY_SCANDIR" ]; then
@@ -33,5 +44,6 @@ chown hermes:hermes "$GATEWAY_SCANDIR"
 chmod 0755 "$GATEWAY_SCANDIR"
 
 # Skip the drop when already non-root.
-[ "$(id -u)" = 0 ] || exec /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
-exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
+[ "$(/usr/bin/id -u)" = 0 ] || exec /usr/bin/env PATH="$hermes_path" /opt/hermes/.venv/bin/python -m hermes_cli.container_boot
+exec /command/s6-setuidgid hermes /usr/bin/env PATH="$hermes_path" \
+    /opt/hermes/.venv/bin/python -m hermes_cli.container_boot

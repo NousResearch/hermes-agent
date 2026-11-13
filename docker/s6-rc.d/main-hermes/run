@@ -1,4 +1,4 @@
-#!/command/with-contenv sh
+#!/command/with-contenv /bin/sh
 # shellcheck shell=sh
 # Main hermes service.
 #
@@ -20,8 +20,14 @@
 #      (e.g. for gateway-server containers); having the slot already
 #      wired in keeps that change small.
 #
-# For now this service is a no-op: it sleeps forever, doing nothing.
+# For now this service is a no-op: it sleeps forever, as hermes, doing nothing.
 # The dashboard runs as a real s6 service alongside it (see
 # ../dashboard/run) and per-profile gateways register dynamically via
 # /run/hermes-service/ at runtime (Phase 4; see ../profile-gateways/run).
-exec sleep infinity
+
+# Runs as root: resolve commands from system directories only, and drop to
+# hermes like every other service (skip the drop when already non-root).
+PATH=/command:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+[ "$(/usr/bin/id -u)" = 0 ] || exec /bin/sleep infinity
+exec /command/s6-setuidgid hermes /bin/sleep infinity

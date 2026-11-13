@@ -37,11 +37,6 @@ def _run(home: Path, backend_env: str | None) -> str:
     if shutil.which("sh") is None:
         pytest.skip("sh not available")
     root = home.parent
-    bin_dir = root / "bin"  # s6-setuidgid is not a valid sh function name: stub it on PATH
-    bin_dir.mkdir(exist_ok=True)
-    stub = bin_dir / "s6-setuidgid"
-    stub.write_text('#!/bin/sh\nshift\ncase "$*" in *docker_config_migrate.py*) echo MIGRATE_RAN ;; *) exec "$@" ;; esac\n')
-    stub.chmod(0o755)
     venv_bin = root / "install" / ".venv" / "bin"
     venv_bin.mkdir(parents=True, exist_ok=True)
     python = venv_bin / "python"  # a wrapper, not a symlink: a moved venv symlink loses its site-packages
@@ -49,7 +44,9 @@ def _run(home: Path, backend_env: str | None) -> str:
     python.chmod(0o755)
     script = (
         "set -eu\n"
-        + f'PATH="{bin_dir}:$PATH"\nHERMES_HOME="{home}"\nINSTALL_DIR="{root / "install"}"\n'
+        # The hook's privilege drop, stubbed: the migration is replaced by a marker.
+        + 'drop_to_hermes() { case "$*" in *docker_config_migrate.py*) echo MIGRATE_RAN ;; *) "$@" ;; esac; }\n'
+        + f'HERMES_HOME="{home}"\nINSTALL_DIR="{root / "install"}"\n'
         + _block()
     )
     proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=60,

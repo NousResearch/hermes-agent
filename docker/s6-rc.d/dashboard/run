@@ -1,10 +1,21 @@
-#!/command/with-contenv sh
+#!/command/with-contenv /bin/sh
 # shellcheck shell=sh
 # Dashboard service. Always declared so s6 has a supervised slot; if
 # HERMES_DASHBOARD isn't truthy the run script exits cleanly and the
 # companion finish script returns 125 (s6's "permanent failure, do
 # not restart" marker), so s6-svstat reports the slot as down. See
 # also docker/s6-rc.d/dashboard/finish.
+
+# Runs as root: resolve commands from system directories only. The dashboard
+# gets the inherited PATH (plus the hermes user's ~/.local/bin, appended) and
+# resolves `hermes` after the drop.
+hermes_path="${PATH:-/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin}"
+case ":$hermes_path:" in
+    *:/opt/data/.local/bin:*) ;;
+    *) hermes_path="$hermes_path:/opt/data/.local/bin" ;;
+esac
+PATH=/command:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
 case "${HERMES_DASHBOARD:-}" in
     1|true|TRUE|True|yes|YES|Yes) ;;
@@ -49,6 +60,7 @@ case "${HERMES_DASHBOARD_INSECURE:-}" in
 esac
 
 # Skip the drop when already non-root.
-[ "$(id -u)" = 0 ] || exec hermes dashboard --host "$dash_host" --port "$dash_port" --no-open
-exec s6-setuidgid hermes hermes dashboard \
-    --host "$dash_host" --port "$dash_port" --no-open
+[ "$(/usr/bin/id -u)" = 0 ] || exec /usr/bin/env PATH="$hermes_path" \
+    hermes dashboard --host "$dash_host" --port "$dash_port" --no-open
+exec /command/s6-setuidgid hermes /usr/bin/env PATH="$hermes_path" \
+    hermes dashboard --host "$dash_host" --port "$dash_port" --no-open

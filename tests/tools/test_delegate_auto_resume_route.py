@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tests.tools.test_delegate_auto_resume import _AlwaysLimited, _enable, _repo
-from tests.tools.test_delegate_continue import _completion, _parent
+from tests.tools.test_delegate_auto_resume import _settled, _AlwaysLimited, _enable, _repo
+from tests.tools.test_delegate_continue import _parent
 from tests.tools.test_delegate_resumable import _db_rows
 
 KEY = "agent:main:telegram:dm:42"
@@ -32,7 +32,7 @@ def _limited_child_of_session(tmp_path):
         with patch("run_agent.AIAgent", side_effect=model):
             out = json.loads(delegate_task(tasks=[{"goal": "task on the session's route"}], background=True,
                                            parent_agent=parent))
-            _completion(out["delegation_id"])
+            _settled(out["delegation_id"])
     finally:
         clear_session_vars(tokens)
     return parent, model, out["subagent_ids"][0]

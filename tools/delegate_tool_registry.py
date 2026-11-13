@@ -297,6 +297,9 @@ def _list_payload(parent_agent: Any) -> dict[str, Any]:
             "accepting_steer": bool(r.get("accepting_steer", False)),
             "live_transcript": getattr(r.get("agent"), "_live_transcript_path", None),
         })
+    from tools.delegate_tool_auto_resume import waiting_entries
+    live = {e["subagent_id"] for e in entries}
+    entries += [w for w in waiting_entries(parent_agent) if w["subagent_id"] not in live]
     payload: dict[str, Any] = {"action": "list", "count": len(entries), "subagents": entries}
     if not entries:
         payload["note"] = (

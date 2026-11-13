@@ -212,8 +212,14 @@ def _failure_recovery_lines(r: dict) -> list[str]:
 
 
 def _auto_resume_lines(r: dict) -> list[str]:
-    """The promise a stop notice makes for a child ``delegation.auto_resume`` will continue (``auto_resume``)."""
-    if not isinstance(r.get("auto_resume"), dict) or not r.get("subagent_id"):
+    """A mixed unit's line for a child ``delegation.auto_resume`` will continue (``auto_resume``); a give-up's
+    terminal failure carries its own reason in ``error``."""
+    if not r.get("subagent_id"):
+        return []
+    if r.get("auto_gave_up"):
+        lines = [f"Last transcript tail:\n{r['transcript_tail']}"] if r.get("transcript_tail") else []
+        return lines or ["Not resumed automatically any more; continue it by hand or re-dispatch it."]
+    if not isinstance(r.get("auto_resume"), dict):
         return []
     from tools.delegate_tool_auto_resume import notice_line
     return [notice_line(str(r["subagent_id"]), r["auto_resume"])]

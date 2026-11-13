@@ -281,7 +281,9 @@ def record_start(run: Any) -> None:
     origin = getattr(child, "_delegate_run_origin", None)
     origin = origin if origin in ("continue", "auto") else "spawn"
     auto = {"auto_attempts": int(earlier.get("auto_attempts") or 0), "auto_off": earlier.get("auto_off")
-            or ("the parent continued it itself" if origin == "continue" else None)}
+            or ("the parent continued it itself" if origin == "continue" else None),
+            # The automatic-resume deadline counts from the FIRST stop, across every resumed run.
+            "auto_first_stopped_at": earlier.get("auto_first_stopped_at")}
     durable: dict[str, Any] = {"db": path, "cwd": cwd, "start_main": start_trees[0] if start_trees else None,
                                "baselines": dict(earlier.get("repo_baselines") or {}), "lock": threading.RLock(),
                                "auto": auto}
@@ -414,9 +416,15 @@ def stamp_entry(run: Any, entry: dict[str, Any]) -> None:
         entry["resume_mode"] = mode
         if getattr(run.child, "_delegation_unit_id", None) and not durable["auto"]["auto_off"]:
             from tools.delegate_tool_auto_resume import promise
-            if auto := promise({**durable["auto"], "resume_mode": mode, "next_attempt_at": next_at}):
+            from tools.delegate_tool_auto_resume import gave_up, gave_up_line
+            candidate = {**durable["auto"], "resume_mode": mode, "next_attempt_at": next_at}
+            if auto := promise(candidate):
                 entry["auto_resume"] = auto
                 durable["promised"] = True  # only a stop that promised a resume may be resumed automatically
+            elif reason := gave_up(candidate):  # this stop's own completion is the one terminal failure
+                entry["auto_gave_up"] = reason
+                entry["error"] = f"{entry.get('error') or entry.get('status')}; {gave_up_line(run.subagent_id, reason)}"
+                durable["gave_up"] = reason
 
 
 def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
@@ -436,6 +444,8 @@ def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
         if isinstance(session_id, str) and session_id:
             record["session_id"] = session_id
         record["auto_promised"] = bool(durable.get("promised"))
+        if durable.get("gave_up"):
+            record["auto_gave_up"] = record["auto_note"] = durable["gave_up"]
         _finish(conn, sid, record, entry, live_cause or record.get("stop_cause"), cwd=cwd)
 
     with durable["lock"]:
@@ -455,6 +465,8 @@ def _finish(conn, sid: str, record: dict[str, Any], entry: dict[str, Any], cause
               "next_attempt_at": next_at, "failure_reason": entry.get("failure_reason"),
               "failure_resets_at": entry.get("failure_resets_at"), "usage_limit": entry.get("usage_limit"),
               "stopped_at": time.time()}
+    if state == "resumable" and not record.get("auto_first_stopped_at"):
+        record["auto_first_stopped_at"] = record["stopped_at"]
     if isinstance(entry.get("worktree"), dict):
         record["worktree"] = {**(record.get("worktree") or {}), **entry["worktree"]}
     record["pin_paths"] = (_pin_paths(record) if pins is None else pins) if state == "resumable" else []

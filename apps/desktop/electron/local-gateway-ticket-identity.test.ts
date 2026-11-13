@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 
 import { expect, test } from 'vitest'
 
-import { type GatewayEndpoint, isStaleLocalGatewayError, mintLocalGatewayTicket, nativeGatewayHttpHeaders, reservedHome } from './local-gateway'
+import { type GatewayEndpoint, isStaleLocalGatewayError, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, reservedHome } from './local-gateway'
 import { shortSocketTmpDir } from './local-gateway.test-helpers'
 
 // A gateway ticket names a profile home by the identity the gateway reserved for it: its
@@ -99,5 +99,33 @@ test.skipIf(process.platform === 'win32')('a linked profile mints for the home t
   } finally {
     await gateway.close()
     await Promise.all([root, target, links].map(dir => fs.rm(dir, { recursive: true, force: true })))
+  }
+})
+
+// A profile the host gateway does not serve (`gateway.standalone: true` runs its own gateway; a parked
+// one has none) is refused by name. That refusal is not a stale owner: a redial that forgot the shared
+// descriptor for it re-ensured on every refused request and failed the served profiles' requests too.
+test.skipIf(process.platform === 'win32')('a profile the gateway does not serve is refused by name without forgetting the shared descriptor', async () => {
+  const root = await shortSocketTmpDir('gw-unserved-')
+  const solo = path.join(root, 'profiles', 'solo')
+  await fs.mkdir(solo, { recursive: true, mode: 0o700 })
+  const gateway = await controlSocket(root, [root])
+  const descriptor = { gatewayEndpoint: endpointFor(root), baseUrl: ORIGIN }
+  let forgets = 0
+
+  const dial = (url: string) => redialLocalGateway({
+    ensure: async () => descriptor,
+    forget: () => { forgets += 1 },
+    use: d => nativeGatewayHttpHeaders(d, url)
+  })
+
+  try {
+    const refused = await dial(`${ORIGIN}/api/sessions?profile=solo`).catch(error => error)
+    expect([refused.message, isStaleLocalGatewayError(refused), forgets]).toEqual([`The gateway does not serve profile 'solo' (${solo})`, false, 0])
+    expect(await dial(`${ORIGIN}/api/sessions`)).toEqual({ 'X-Hermes-Gateway-Ticket': 'grant-2' })
+    expect(gateway.requests.map(request => request.profile_id)).toEqual([solo, root])
+  } finally {
+    await gateway.close()
+    await fs.rm(root, { recursive: true, force: true })
   }
 })

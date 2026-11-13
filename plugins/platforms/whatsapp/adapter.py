@@ -355,7 +355,7 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
 
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, bridge_manifest_hash
 from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
@@ -697,9 +697,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 session, f"http://127.0.0.1:{self._bridge_port}", self._bridge_token, aiohttp.ClientTimeout(total=2))
 
     def _ensure_bridge_deps(self, bridge_dir: Path) -> bool:
-        """npm install when node_modules is missing OR package.json hash != stamp file. False = fatal error set."""
-        _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"  # holds the package.json hash of the last install
-        _pkg_hash = _file_content_hash(bridge_dir / "package.json")
+        """pnpm install when node_modules is missing OR the manifest hash != stamp file. False = fatal error set."""
+        _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"  # holds the package.json + pnpm-lock.yaml hash of the last install
+        _pkg_hash = bridge_manifest_hash(bridge_dir)
         try:
             if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8-sig").strip() == _pkg_hash and bool(_pkg_hash):
                 return True
@@ -710,15 +710,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
             import pm
 
-            _npm_bin = find_node_executable("npm")
+            _pnpm_bin = find_node_executable("pnpm")
             env = with_hermes_node_path()
-            if _npm_bin is None:
-                env = pm.ensure("npm").env
-                installed = pm.installed_package("npm")
+            if _pnpm_bin is None:
+                env = pm.ensure("pnpm").env
+                installed = pm.installed_package("pnpm")
                 if installed is None or installed.binary is None:
-                    raise pm.InstallError("npm", "ensured but no selected binary was recorded")
-                _npm_bin = str(installed.binary)
-            install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
+                    raise pm.InstallError("pnpm", "ensured but no selected binary was recorded")
+                _pnpm_bin = str(installed.binary)
+            install_result = subprocess.run([_pnpm_bin, "install", "--frozen-lockfile", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_PNPM_INSTALL_TIMEOUT", 300),
                                             env=env, **_RUN_TEXT, check=False)
             if install_result.returncode == 0:
                 print(f"[{self.name}] Dependencies installed")
@@ -726,12 +726,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if _pkg_hash:
                         _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                 return True
-            print(f"[{self.name}] npm install failed: {install_result.stderr}")
+            print(f"[{self.name}] pnpm install failed: {install_result.stderr}")
             detail = f" ({install_result.stderr.strip()[-500:]})" if install_result.stderr else ""
         except Exception as e:
             print(f"[{self.name}] Failed to install dependencies: {e}")
             detail = f" ({e})"
-        self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. "
+        self._set_fatal_error("whatsapp_pnpm_install_failed", f"WhatsApp bridge pnpm install failed{detail}. "
                               "Run `hermes whatsapp`, then restart `hermes gateway`.", retryable=False)
         return False
 

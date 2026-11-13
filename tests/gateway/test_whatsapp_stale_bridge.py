@@ -122,12 +122,13 @@ _TEST_TOKEN = "test-bridge-token-with-enough-entropy-0123456789"
 
 
 def _setup_bridge_dir(tmp_path: Path) -> Path:
-    """Create a real bridge dir with bridge.js + bridge_auth.js + package.json + creds + this session's token."""
+    """Create a real bridge dir with bridge.js + bridge_auth.js + package.json + pnpm-lock.yaml + creds + this session's token."""
     bridge_dir = tmp_path / "whatsapp-bridge"
     bridge_dir.mkdir()
     (bridge_dir / "bridge.js").write_text("// current bridge code\n", encoding="utf-8")
     (bridge_dir / "bridge_auth.js").write_text("// current auth code\n", encoding="utf-8")
     (bridge_dir / "package.json").write_text('{"name": "bridge"}\n', encoding="utf-8")
+    (bridge_dir / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
     session_path = tmp_path / "session"
     session_path.mkdir()
     (session_path / "creds.json").write_text("{}", encoding="utf-8")
@@ -136,14 +137,12 @@ def _setup_bridge_dir(tmp_path: Path) -> Path:
 
 
 def _fresh_node_modules(bridge_dir: Path) -> None:
-    """Create node_modules with a stamp matching the current package.json."""
-    from plugins.platforms.whatsapp.adapter import _file_content_hash
+    """Create node_modules with a stamp matching the current manifests."""
+    from gateway.platforms.whatsapp_common import bridge_manifest_hash
 
     nm = bridge_dir / "node_modules"
     nm.mkdir()
-    (nm / ".hermes-pkg-hash").write_text(
-        _file_content_hash(bridge_dir / "package.json")
-    )
+    (nm / ".hermes-pkg-hash").write_text(bridge_manifest_hash(bridge_dir))
 
 
 

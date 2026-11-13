@@ -16,7 +16,7 @@ def _missing_package(monkeypatch):
     monkeypatch.setattr(pm, "installed_package", lambda package: None)
 
 
-@pytest.mark.parametrize("executable", ["npm", "node"])
+@pytest.mark.parametrize("executable", ["pnpm", "node"])
 def test_dashboard_reports_prepared_bridge_binary_missing(tmp_path, monkeypatch, executable):
     from hermes_cli.web_routers import messaging
     from gateway.platforms import whatsapp_common
@@ -26,7 +26,7 @@ def test_dashboard_reports_prepared_bridge_binary_missing(tmp_path, monkeypatch,
     bridge_dir.mkdir()
     (bridge_dir / "bridge.js").write_text("", encoding="utf-8")
     monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: bridge_dir)
-    if executable == "npm":
+    if executable == "pnpm":
         operation = lambda: messaging._ensure_whatsapp_bridge_dependencies(bridge_dir)
     else:
         monkeypatch.setattr(messaging, "_ensure_whatsapp_bridge_dependencies", lambda path: None)
@@ -37,7 +37,7 @@ def test_dashboard_reports_prepared_bridge_binary_missing(tmp_path, monkeypatch,
         pytest.fail(f"Unexpected dashboard error: {caught.value!r}")
 
 
-@pytest.mark.parametrize("executable", ["npm", "node"])
+@pytest.mark.parametrize("executable", ["pnpm", "node"])
 def test_cli_reports_prepared_bridge_binary_missing(tmp_path, monkeypatch, capsys, executable):
     from hermes_cli import main, main_platform_setup as setup
     from gateway.platforms import whatsapp_common
@@ -46,7 +46,7 @@ def test_cli_reports_prepared_bridge_binary_missing(tmp_path, monkeypatch, capsy
     bridge_dir = tmp_path / "bridge"
     bridge_dir.mkdir()
     (bridge_dir / "bridge.js").write_text("", encoding="utf-8")
-    if executable == "npm":
+    if executable == "pnpm":
         if setup._whatsapp_install_bridge(bridge_dir) is not False:
             pytest.fail("CLI continued despite missing npm binary")
     else:

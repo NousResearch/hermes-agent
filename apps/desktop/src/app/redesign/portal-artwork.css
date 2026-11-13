@@ -12,8 +12,8 @@
    Geometry is Figma's, in frame pixels, with the frame's centre on the window's and one frame pixel
    to one window pixel in Figma's 1280×880 window (the frame sits 5px inside it, as in Figma). Other
    windows scale it to cover that window as `background-size: cover` would: a wider window crops the
-   top and bottom, a taller one the sides, a larger one scales it all up. A docked leading panel (the chat sidebar or a page nav, wide only) shifts the figure
-   artworks right by Figma's own amount (03 · Workspace/Session), keeping the figure on the stage. */
+   top and bottom, a taller one the sides, a larger one scales it all up. A wide window shifts the
+   figure artworks right by Figma's docked-sidebar amount (03 · Workspace/Session). */
 :root[data-shell='portal'] {
   --artwork-unit: max(calc(100vw / 1280), calc(100vh / 880));
   --artwork-docked: 0;
@@ -28,8 +28,12 @@
     var(--artwork-image)
       calc(50vw + (var(--artwork-x) + var(--artwork-shift) * var(--artwork-docked) - 635) * var(--artwork-unit))
       calc(50vh + (var(--artwork-y) - 435) * var(--artwork-unit)) / calc(var(--artwork-w) * var(--artwork-unit))
-      calc(var(--artwork-h) * var(--artwork-unit)) var(--artwork-repeat) fixed;
-  --artwork-blend: var(--artwork-over-blend), var(--artwork-image-blend);
+      calc(var(--artwork-h) * var(--artwork-unit)) var(--artwork-repeat) fixed,
+    linear-gradient(var(--portal-surface-canvas), var(--portal-surface-canvas));
+  /* The ground is the stack's own last layer, not the painter's background-color: Window Glass
+     clears the shell's colour (styles.css), and an artwork blended against nothing paints its
+     blend colour over the whole canvas (light Ascend turned solid blue). */
+  --artwork-blend: var(--artwork-over-blend), var(--artwork-image-blend), normal;
   /* The veil a stage painter lays over the art: a conversation's unless its zone holds a new chat. */
   --artwork-veil: var(--portal-surface-stage-veil-conversation);
   /* Figma's NOISE on the panels: the sidebar kind's in both themes, the stage's in light only. */
@@ -42,18 +46,19 @@
   --artwork-stage-noise: url('../../assets/portal-noise-light-stage.svg') 0 0 / 128px repeat;
 }
 
-/* Wide (breakpoints.ts): the chat sidebar docks beside a visible chat (its zone opens the window's
-   row), or a page docks its nav. */
+/* Wide (breakpoints.ts): the figure sits where Figma puts it beside a docked sidebar
+   (03 · Workspace/Session) on EVERY screen, panel or not. Following the panel moved the picture
+   150px each time a page with a nav followed one without, or the sidebar folded. Only the veil
+   still follows the chat sidebar. */
 @media (min-width: 1024px) {
+  :root[data-shell='portal'] {
+    --artwork-docked: 1;
+  }
+
   :root[data-shell='portal']:has([data-tree-group][data-zone-pane='sessions'][data-window-start]):not(
       :has([data-route-covered])
     ) {
-    --artwork-docked: 1;
     --artwork-sidebar-docked: 1;
-  }
-
-  :root[data-shell='portal']:has([data-page-surface] [data-page-panel]) {
-    --artwork-docked: 1;
   }
 }
 
@@ -171,8 +176,8 @@
 
 /* ── Painters ─────────────────────────────────────────────────────────────────────────────── */
 
-/* The canvas: the shell root spans the window and never scrolls. Under Glass its colour clears
-   (styles.css) and the art lies on the native material. A route overlay page covers the chat, so it
+/* The canvas: the shell root spans the window and never scrolls. The art is a picture on its own
+   ground, so under Glass the canvas stays that picture; the native material does not show through. A route overlay page covers the chat, so it
    and its band repaint the canvas; a workspace page's band is the zone's own, transparent onto it. */
 :root[data-shell='portal'] [data-contrib-shell],
 :root[data-shell='portal'] [data-overlay-surface][data-page-surface],

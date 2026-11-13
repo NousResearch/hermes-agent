@@ -150,12 +150,15 @@ def cua_driver_child_env(base_env: Optional[dict[str, str]] = None) -> dict[str,
         env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
     return env
 
-def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
-    """``((command, args), child_env)`` spawning ``cua-driver mcp`` INSIDE the terminal backend when the Bot
-    Desktop is placed there (the driver in the sandbox image drives the sandbox's own screen); None on a
-    gateway-hosted desktop, where the local driver is used. Placement is the authority: a ``terminal``
-    placement gets its screen started here and a ``refused`` one raises — the host driver is never the
-    fallback for a sandbox whose screen is down."""
+def sandbox_invocation(argv: list[str], *, interactive: bool, extra_env: Optional[dict[str, str]] = None
+                       ) -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
+    """``((command, args), child_env)`` running ``argv`` INSIDE the terminal backend when the Bot Desktop is
+    placed there (the driver in the sandbox image drives the sandbox's own screen); None on a gateway-hosted
+    desktop, where the local driver is used. Placement is the authority, whatever the cua-driver permission
+    mode: a ``terminal`` placement gets its screen started here and a ``refused`` one raises — the host driver
+    is never the fallback for a sandbox whose screen is down. ``extra_env`` is exported inside the sandbox
+    (the host process environment never reaches the sandbox driver); ``interactive`` keeps stdin open for a
+    long-lived stdio process (``mcp``, ``serve``) and is False for a one-shot (``call``, ``status``)."""
     from tools.bot_desktop import placement, runtime as _bd_runtime
     if _bd_runtime.tool_placement() == placement.GATEWAY:
         return None
@@ -166,10 +169,15 @@ def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, 
     env = _bd_runtime._sandbox_env(create=True)
     if env is None:
         raise RuntimeError("the terminal backend's sandbox is not running, so there is nowhere to run cua-driver")
-    command, args = sandbox_host.cua_mcp_invocation(env, _bd_runtime._profile_name(),
-                                                    {**published, _CUA_TELEMETRY_ENV_VAR: "0"})
+    command, args = sandbox_host.cua_invocation(env, {**published, _CUA_TELEMETRY_ENV_VAR: "0", **(extra_env or {})},
+                                                argv, interactive=interactive)
     _bd_runtime.touch_activity()
     return (command, args), {"PATH": os.environ.get("PATH", "")}
+
+
+def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
+    """``sandbox_invocation`` for ``cua-driver mcp`` (the standard-mode MCP server)."""
+    return sandbox_invocation(["cua-driver", "mcp", "--no-overlay"], interactive=True)
 
 
 def sanitized_cua_driver_env() -> dict[str, str]:

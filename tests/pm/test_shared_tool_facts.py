@@ -4,12 +4,14 @@ import shutil
 
 from pm import cli, environments, install, lock as pm_lock, paths
 from pm._uv import _toolchain
+from pm.build_operations import verified_tools
 from pm.lock import Facts, Lockfile
 from pm.registry import get_package
-from pm.store import Store, current_target
+from pm.store import Store, current_target, tree_digest
+from scripts.bundles.native import prune_staged_store
 
 
-def _publish(root, name, version, sha, target):
+def _publish(root, name, version, sha, target, *, digest=False):
     """A real store entry with an executable binary, recorded like an install does."""
     package = get_package(name)
     entry = root / package.store_entry(version, target)
@@ -18,8 +20,11 @@ def _publish(root, name, version, sha, target):
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_bytes(b"fixture")
     binary.chmod(0o755)
+    if name == "python" and target.startswith("win32"):
+        shutil.copy2(binary, entry / "python3.exe")
     Facts(root / "facts.json").record(name, version, entry.name, package.env(entry, target), root,
-                                      target=target, artifacts=[sha], digest="f" * 64)
+                                      target=target, artifacts=[sha],
+                                      digest=tree_digest(entry) if digest else "f" * 64)
     return entry, binary
 
 
@@ -113,3 +118,25 @@ def test_gc_keeps_pins_of_a_checkout_that_only_recorded_them(tmp_path, monkeypat
     cli._gc_store(Store(root), Facts(root / "facts.json"))
     assert pinned.is_dir()
 
+
+def test_cache_hit_on_this_checkouts_pin_selects_it_for_builds(tmp_path, monkeypatch):
+    """A, B, then A prepare one build store: A's cache hit on its own pin in the history must be
+    what build admission and the staged-store prune read, not B's last selection."""
+    root = tmp_path / "build-tools"
+    root.mkdir()
+    target = current_target()
+    package = get_package("python")
+    locks = {owner: _pin(tmp_path / f"{owner}.json", "python", version, sha * 64, target)
+             for owner, version, sha in (("A", "1.0", "1"), ("B", "2.0", "2"))}
+    for owner, version, sha in (("A", "1.0", "1"), ("B", "2.0", "2")):
+        monkeypatch.setattr(pm_lock, "install_owner", lambda owner=owner: owner)
+        _publish(root, "python", version, sha * 64, target, digest=True)
+
+    monkeypatch.setattr(pm_lock, "install_owner", lambda: "A")
+    entry = install._install(package, locks["A"], Facts(root / "facts.json"), Store(root), target)
+    assert entry.name == package.store_entry("1.0", target)
+
+    assert verified_tools(["python"], source_store=root, target=target,
+                          lock=locks["A"]).entries["python"].version == "1.0"
+    prune_staged_store(root, ["python"])
+    assert entry.is_dir()

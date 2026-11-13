@@ -387,12 +387,13 @@ def _entry_current(package, lockfile, facts, store, entry, previous, version, pi
     return recorded == pin and not package.verify(entry, target)
 
 
-def _refresh_recorded_env(package, facts, store, entry, previous, target) -> None:
+def _refresh_recorded_env(package, facts, store, entry, previous, target, *, select=False) -> None:
     """An entry's env is derived from the package code, not its bytes: when the code changes it (a
     variable renamed or retired), re-record it so stores installed earlier match what admission
-    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched."""
+    compares against. The recorded digest still vouches for the bytes, so nothing is re-fetched.
+    ``select`` re-records it regardless, making this pin the store's selection again."""
     env = package.env(entry, target)
-    if facts.env_for(package.name, store.root) != env:
+    if select or facts.env_for(package.name, store.root) != env:
         facts.record(package.name, previous["version"], previous["entry"], env, store.root,
                      target=previous.get("target"), artifacts=previous.get("artifacts"),
                      digest=previous.get("digest"))
@@ -500,7 +501,10 @@ def _install(
         if (_entry_current(package, lockfile, selected_facts, store, entry, previous, version, pin, target)
                 and not _fresh_copy):
             if facts is not None:
-                _refresh_recorded_env(package, selected_facts, store, entry, previous, target)
+                # A hit on another pin's history row re-selects it: build admission and the
+                # staged-store prune read the selected row, not this lock's pin.
+                _refresh_recorded_env(package, selected_facts, store, entry, previous, target,
+                                      select=(facts.get(package.name) or {}).get("entry") != entry_name)
             _remove_downloads(store, artifacts)
             return entry
         if not artifacts:

@@ -753,16 +753,40 @@ class LineAdapter(BasePlatformAdapter):
             self._media_temp_paths.add(resolved)
         return token
 
+    def _refresh_public_base_url(self) -> str:
+        """Re-read ``LINE_PUBLIC_URL`` on use; the tunnel hostname can change under a live gateway.
+
+        The value is snapshotted in ``__init__``, but quick tunnels (``cloudflared``,
+        ngrok) hand out a NEW hostname whenever they restart, and a long-running
+        gateway outlives them. Outbound media URLs then point at a host that no
+        longer resolves, and LINE's own fetch of the file fails without any error
+        on this side — no delivery failure, no log line — so images silently stop
+        arriving while text keeps working. A miss (unset) never wipes a value
+        supplied by config.
+        """
+        try:
+            current = str(_get_scoped_secret("LINE_PUBLIC_URL") or "").rstrip("/")
+        except Exception:  # unscoped under multiplex: keep what we have
+            return self.public_base_url
+        if current and current != self.public_base_url:
+            logger.info(
+                "LINE: public base URL changed (%s -> %s); new media links use the new host",
+                self.public_base_url or "unset",
+                current,
+            )
+            self.public_base_url = current
+        return self.public_base_url
+
     def _media_url(self, token: str, filename: str) -> str:
-        if self.public_base_url:
-            base = self.public_base_url
-        elif getattr(self, "_shared_ingress_base", None):
-            base = self._shared_ingress_base  # default listener's /p/<profile> prefix (multiplex secondary)
-        else:
-            # Wildcard/dual-stack binds have no fetchable hostname (the _missing_public_url
-            # guard should have fired); fall back to localhost so the URL is well-formed.
-            host = "127.0.0.1" if self._missing_public_url() else self.webhook_host
-            base = f"https://{host}" if self.webhook_port == 443 else f"https://{host}:{self.webhook_port}"
+        base = self._refresh_public_base_url()
+        if not base:
+            if getattr(self, "_shared_ingress_base", None):
+                base = self._shared_ingress_base  # default listener's /p/<profile> prefix (multiplex secondary)
+            else:
+                # Wildcard/dual-stack binds have no fetchable hostname (the _missing_public_url
+                # guard should have fired); fall back to localhost so the URL is well-formed.
+                host = "127.0.0.1" if self._missing_public_url() else self.webhook_host
+                base = f"https://{host}" if self.webhook_port == 443 else f"https://{host}:{self.webhook_port}"
         return f"{base}{DEFAULT_MEDIA_PATH_PREFIX}/{token}/{_urlquote(filename, safe='')}"
 
     def _serve_file(self, path: Path) -> str:

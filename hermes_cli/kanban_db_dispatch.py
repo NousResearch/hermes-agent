@@ -437,6 +437,33 @@ def _sigkill(kill, pid: int) -> bool:
         return False
 
 
+def _signal_worker_tree(kill, pid: int, sig: int) -> bool:
+    """Signal a worker's whole process group, then the pid itself.
+
+    Kanban workers are spawned with ``start_new_session=True``, so the recorded pid
+    leads its own group: signalling only that pid leaves the real managed worker
+    child alive (observed 2026-11-12: launcher reaped, child kept working for
+    minutes after its card was blocked). Returns True when a signal landed.
+    """
+    delivered = False
+    try:
+        pgid = os.getpgid(int(pid))
+    except (ProcessLookupError, OSError):
+        pgid = None
+    if pgid and pgid > 1 and pgid != os.getpgrp():
+        try:
+            os.killpg(pgid, sig)
+            delivered = True
+        except (ProcessLookupError, OSError):
+            pass
+    try:
+        kill(int(pid), sig)
+        delivered = True
+    except (ProcessLookupError, OSError):
+        pass
+    return delivered
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
@@ -478,7 +505,7 @@ def _terminate_reclaimed_worker(
 
     info["termination_attempted"] = True
     try:
-        kill(int(pid), signal.SIGTERM)
+        _signal_worker_tree(kill, pid, signal.SIGTERM)
     except OSError:
         # Already gone = successful termination (Windows reports an absent pid as a bare OSError, not
         # ProcessLookupError). Leaving terminated=False would make the reclaim defer forever.
@@ -489,7 +516,7 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     if _worker_alive(pid, started_at):
-        if not _sigkill(kill, pid):
+        if not _signal_worker_tree(kill, pid, getattr(signal, "SIGKILL", signal.SIGTERM)):
             return info
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)

@@ -248,8 +248,14 @@ _SPECS = [
     ], aliases=["ls"], help="List tasks"),
     _cmd("show", [_TASK_ID, _json_flag(), *_run_state_args("filter listed runs by task_runs column")],
          help="Show a task with comments + events"),
-    _cmd("assign", [_TASK_ID, _arg("profile", help="Profile name (or 'none' to unassign)")],
-         help="Assign or reassign a task"),
+    _cmd("assign", [
+        _TASK_ID,
+        _arg("profile", help="Profile name (or 'none' to unassign)"),
+        _arg("--clear-breaker", action="store_true",
+             help="Also reset consecutive_failures. Omitted by default: resetting it "
+                  "releases a breaker-blocked card to the dispatcher, which then "
+                  "promotes and runs it."),
+    ], help="Assign or reassign a task"),
     _cmd("set-model", [
         _TASK_ID,
         _arg("model", nargs="?", help="Model to pin the worker to (or 'none' to clear the override)"),
@@ -263,6 +269,8 @@ _SPECS = [
         _arg("profile", help="New profile name (or 'none' to unassign)"),
         _arg("--reclaim", action="store_true",
              help="Release any active claim before reassigning (required if task is running)"),
+        _arg("--clear-breaker", action="store_true",
+             help="Also reset consecutive_failures (rearmer un circuit breaker)."),
         _RECLAIM_REASON,
     ], help="Reassign a task to a different profile, optionally reclaiming first"),
     _cmd("diagnostics", [

@@ -573,7 +573,22 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     with kbc.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+        clear_breaker = bool(getattr(args, "clear_breaker", False))
+        ok = kb.assign_task(
+            conn, args.task_id, profile, reset_breaker=clear_breaker,
+        )
+        if ok and not clear_breaker:
+            # A breaker-blocked card used to be re-armed silently by a plain
+            # assignment (see run-658 regression). Keep the recovery path, but make
+            # it a deliberate choice the operator can see.
+            task = kb.get_task(conn, args.task_id)
+            if task is not None and task.status == "blocked" and task.consecutive_failures:
+                print(
+                    f"note: {args.task_id} is blocked by the circuit breaker "
+                    f"({task.consecutive_failures} failure(s)); "
+                    f"pass --clear-breaker to let it run again.",
+                    file=sys.stderr,
+                )
     return _ok_or_err(ok, f"no such task: {args.task_id}",
                       f"Assigned {args.task_id} to {profile or '(unassigned)'}")
 
@@ -609,7 +624,11 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     reclaim = bool(getattr(args, "reclaim", False))
     with kbc.connect_closing() as conn:
-        ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))
+        ok = kb.reassign_task(
+            conn, args.task_id, profile, reclaim_first=reclaim,
+            reason=getattr(args, "reason", None),
+            reset_breaker=bool(getattr(args, "clear_breaker", False)),
+        )
     return _ok_or_err(
         ok,
         f"cannot reassign {args.task_id} (unknown id, or still running — pass --reclaim to release first)",
@@ -981,7 +1000,9 @@ def _commented(conn, reason: Optional[str], author, prefix: str, op):
 
 def _cmd_block(args: argparse.Namespace) -> int:
     reason = _joined_words(args.reason)
-    kind = getattr(args, "kind", None)
+    # A human block defaults to needs_input: an untyped block is neither routed
+    # to a human explicitly nor distinguishable from a breaker trip later on.
+    kind = getattr(args, "kind", None) or "needs_input"
     author = _profile_author()
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""

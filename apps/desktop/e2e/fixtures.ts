@@ -21,7 +21,6 @@
  */
 
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
@@ -32,6 +31,7 @@ import { type MockServerOptions, startMockServer } from '../../../tests-js/scrip
 
 import { resolveElectronBinary } from './electron-binary'
 import { stopSandboxGatewayDaemons } from './run-tmp-reaper'
+import { sandboxBaseDir } from './sandbox-root'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -114,7 +114,13 @@ export interface Sandbox {
 export function createSandbox(prefix: string): Sandbox {
   // Canonical path: the backend resolves HERMES_HOME, so a symlinked tmpdir (macOS /var, a
   // symlinked scratch dir) would otherwise make every HERMES_HOME match against the sandbox miss.
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `hermes-e2e-${prefix}-${Math.random()}`)))
+  // The base is not always `os.tmpdir()`: a sandbox under `<hermes home>/profiles/<bot>/…` reads as
+  // that bot's profile home and the gateway parks it (see sandbox-root.ts).
+  const base = sandboxBaseDir()
+
+  fs.mkdirSync(base, { recursive: true })
+
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(base, `hermes-e2e-${prefix}-${Math.random()}`)))
   const hermesHome = path.join(root, 'hermes-home')
   const userDataDir = path.join(root, 'electron-user-data')
 

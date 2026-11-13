@@ -26,6 +26,7 @@ import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts
 import { startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { buildAppEnv, createSandbox, launchDesktop, type MockBackendFixture, waitForAppReady } from './fixtures'
+import { insideHermesProfileHome } from './sandbox-root'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
 const CLOUD_ID = 'cloud-123'
@@ -237,6 +238,13 @@ test.describe('remote-gateway bot in the roster', () => {
     test.setTimeout(300_000)
     mock = await startMockServer()
     sandbox = createSandbox('cloud-roster')
+
+    // A sandbox under `<hermes home>/profiles/<bot>/…` reads as that bot's profile home, and the
+    // gateway then parks the sandbox profile ("Gateway inaccessible (profile_parked). only one
+    // profile exists (nothing to multiplex)") instead of booting it — the app never reaches ready.
+    // createSandbox avoids that base; fail loudly here rather than burning the boot timeout.
+    expect(insideHermesProfileHome(sandbox.root), 'sandbox root must not be inside a profile home').toBe(false)
+
     // `multiplex_profiles` is what keeps an isolated sandbox backend from
     // parking its only profile ("Gateway inaccessible (profile_parked)"); the
     // version stamp keeps the boot migration from treating a test-written
@@ -258,9 +266,9 @@ test.describe('remote-gateway bot in the roster', () => {
     writeMockProviderConfig(scribeHome, mock.url, undefined, '_config_version: 53\n')
     writeEnvFile(scribeHome, undefined, mock.url)
 
-    // Belt and braces: the gateway singleton resolves its home off `$HOME` for
-    // some launchers. Give that root the same two-profile install so whichever
-    // home the ensure path picks, the multiplex gate sees two profiles.
+    // The sandbox's HERMES_HOME is pinned by buildAppEnv (this is the home `hermes gateway ensure`
+    // resolves). The copy under $HOME/.hermes only covers paths that resolve off HOME instead; it is
+    // not the fix for the parked-profile failure (see sandbox-root.ts for that).
     const homeAnchored = path.join(sandbox.root, '.hermes')
 
     fs.mkdirSync(homeAnchored, { recursive: true })
@@ -322,10 +330,18 @@ test.describe('remote-gateway bot in the roster', () => {
 
     // Same list: the local row is beside it, and the primary section leads
     // (D7 — "cloud-123" sorts before "This device" alphabetically).
-    const text = await page.locator('[data-slot="bots-roster"]').innerText()
-    expect(text.indexOf('This device')).toBeGreaterThanOrEqual(0)
-    expect(text.indexOf('cloud-123')).toBeGreaterThanOrEqual(0)
-    expect(text.indexOf('This device'), 'primary section first').toBeLessThan(text.indexOf('cloud-123'))
+    // innerText is RENDERED text: section headings carry `uppercase`, so compare case-insensitively.
+    const text = (await page.locator('[data-slot="bots-roster"]').innerText()).toLowerCase()
+    expect(text).toContain('this device')
+    expect(text).toContain('cloud-123')
+    expect(text.indexOf('this device'), 'primary section first').toBeLessThan(text.indexOf('cloud-123'))
+
+    // …and the DOM agrees: one section per gateway, primary first.
+    const sectionOrder = await page
+      .locator('[data-slot="bots-roster"] [data-roster-section]')
+      .evaluateAll(elements => elements.map(element => element.getAttribute('data-roster-section')))
+
+    expect(sectionOrder).toEqual(['gateway:local', 'gateway:cloud-123'])
 
     await page.screenshot({ path: outPath('1-healthy-both-gateways.png') })
   })
@@ -334,11 +350,22 @@ test.describe('remote-gateway bot in the roster', () => {
     test.setTimeout(180_000)
     await cloud.close()
 
-    // One ~5 s roster poll (plus enumeration headroom) is the acceptance window.
-    await expect(page.getByText('Unavailable', { exact: true }).first()).toBeVisible({ timeout: 60_000 })
+    // One ~5 s roster poll (plus enumeration headroom) is the acceptance window. The status label is
+    // rendered sr-only behind the amber disconnect glyph, so assert on the section heading's text
+    // content (its `sr-only` label) per section — NOT on globe text, which would also pass if the
+    // local section went unavailable.
+    const roster = page.locator('[data-slot="bots-roster"]')
+    const cloudHeading = page.locator('[data-roster-section="gateway:cloud-123"]')
+    const localHeading = page.locator('[data-roster-section="gateway:local"]')
+
+    await expect(cloudHeading).toContainText(/unavailable/i, { timeout: 60_000 })
+    await expect(localHeading).not.toContainText(/unavailable/i)
+    // The row stays, keeps its gateway identity, and every local row is untouched.
     await expect(cloudRow(page)).toBeVisible()
+    await expect(cloudRow(page).locator(`[data-gateway-badge="${CLOUD_NAME}"]`)).toBeVisible()
     await expect(page.locator(`[data-slot="bots-roster"] [data-roster-key="local::default"]`)).toBeVisible()
-    // The local section heading is still a plain (no Unavailable) heading.
+    await expect(page.locator(`[data-slot="bots-roster"] [data-roster-key="local::scribe"]`)).toBeVisible()
+    await expect(roster).toBeVisible()
     await page.screenshot({ path: outPath('2-cloud-gateway-unavailable.png') })
   })
 
@@ -348,7 +375,10 @@ test.describe('remote-gateway bot in the roster', () => {
     await new Promise(resolve => setTimeout(resolve, 1_500))
     cloud = await startCloudGateway(cloudPort)
 
-    await expect(page.getByText('Unavailable', { exact: true })).toHaveCount(0, { timeout: 90_000 })
+    const cloudHeading = page.locator('[data-roster-section="gateway:cloud-123"]')
+
+    await expect(cloudHeading).not.toContainText(/unavailable/i, { timeout: 90_000 })
+    await expect(page.locator('[data-slot="bots-roster"]')).not.toContainText(/unavailable/i)
     await expect(cloudRow(page)).toBeVisible()
     await expect(cloudRow(page).locator(`[data-gateway-badge="${CLOUD_NAME}"]`)).toBeVisible()
     await page.screenshot({ path: outPath('3-recovered.png') })

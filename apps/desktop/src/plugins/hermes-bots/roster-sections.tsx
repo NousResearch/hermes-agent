@@ -248,6 +248,9 @@ interface RosterSectionHeaderProps {
   onDoubleClick?: () => void
   onToggle: () => void
   status?: { available: boolean; label: string }
+  /** Roster section this heading folds, when it folds one (`gateway:<id>`).
+   *  Exposed on the button so a test can address ONE section's health. */
+  sectionKey?: string
   tip?: string
 }
 
@@ -260,6 +263,7 @@ export function RosterSectionHeader({
   label,
   onDoubleClick,
   onToggle,
+  sectionKey,
   status,
   tip
 }: RosterSectionHeaderProps) {
@@ -270,6 +274,7 @@ export function RosterSectionHeader({
         'flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-[0.6875rem] font-semibold uppercase tracking-wider text-(--ui-text-quaternary) transition-colors hover:bg-(--chrome-action-hover) hover:text-(--ui-text-secondary)',
         action ? 'flex-1' : 'mt-1'
       )}
+      data-roster-section={sectionKey}
       onClick={onToggle}
       onDoubleClick={onDoubleClick}
     >
@@ -333,6 +338,7 @@ export function GatewaySectionHeading({ collapsed, count, onToggle, option }: Ga
       gatewayKind={kind}
       label={label}
       onToggle={onToggle}
+      sectionKey={`gateway:${option?.connectionId || ''}`}
       status={status}
       tip={`${label} · ${status.label}`}
     />

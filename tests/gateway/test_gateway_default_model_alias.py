@@ -153,3 +153,15 @@ def test_the_fallback_baseline_of_a_frozen_alias_session_is_its_frozen_backing_m
                      model="myalias")
     monkeypatch.setattr(run, "_load_gateway_config", lambda: {"model": {"default": "myalias"}})  # alias removed live
     assert turn_model(policy, None) == "some-vendor/some-model-id"
+
+
+def test_a_following_session_whose_profile_moved_to_an_alias_runs_the_alias(tmp_path, monkeypatch):
+    """A superseded launch provider no longer blocks expansion: the session now runs the profile's alias."""
+    from dataclasses import replace
+    from gateway.session_policy import build_policy
+    from gateway.session_worker_construct import policy_alias_request
+    monkeypatch.setenv("DEMO_API_KEY", "sk-alias-host")
+    policy = replace(build_policy({"cwd": str(tmp_path), "toolsets": [], "provider": "openrouter"},
+                                  _ALIAS_CONFIG, profile_terminal=False), model="myalias")
+    moved = {**_ALIAS_CONFIG, "model": {"default": "myalias", "provider": "custom"}}  # followed profile's route
+    assert policy_alias_request(policy, moved, "myalias", None)[0] == "some-vendor/some-model-id"

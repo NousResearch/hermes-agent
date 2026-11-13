@@ -195,10 +195,15 @@ def policy_alias_request(policy, frozen, model, key):
     creator did not route explicitly (a ``model.default: myalias`` session; an explicit ``-m`` alias was already
     resolved at create), else None. A launch provider, URL or bound key is the user's route and keeps it."""
     from hermes_cli.default_model_alias import alias_runtime_request
-    request = json.loads(policy.request_json)
-    if key or request.get('provider') or request.get('base_url'):
-        return None
-    return alias_runtime_request(model, frozen)
+    from hermes_cli.route_identity import normalize_route_base_url
+    request, route = json.loads(policy.request_json), frozen.get('model') or {}
+    # A launch pick counts while the route still carries it (``route_runtime``'s launch-URL rule): a following
+    # session whose profile moved on runs the profile's default, alias included. ``key`` is already None then.
+    picked_provider = str(request.get('provider') or '').strip().lower()
+    held = ((picked_provider and picked_provider == str(route.get('provider') or '').strip().lower())
+            or (request.get('base_url') and normalize_route_base_url(request['base_url'])
+                == normalize_route_base_url(route.get('base_url'))))
+    return None if key or held else alias_runtime_request(model, frozen)
 
 
 def model_route_runtime(policy, frozen, model, key, *, fallback=True):

@@ -440,3 +440,151 @@ def test_reap_kills_descendants_of_killed_roots_but_spares_a_failed_roots_subtre
     assert result["killed"] == [111] and result["failed"] == [444]
     assert (1111, 9) in sent, "surviving child of the killed backend was not swept"
     assert not any(pid == 4444 for pid, _ in sent), "child of a root we could not kill was swept"
+
+
+def test_lock_owned_serve_pids_sees_login_home_locks_under_a_custom_root(tmp_path, monkeypatch):
+    """Docker / wrapper shape: ``HERMES_HOME=/opt/data`` (outside ``~/.hermes``) resolves both the
+    process home and the default root to the custom root, but the Desktop still writes its SSH locks
+    under the login account's literal ``~/.hermes/desktop-ssh``. Those locks must be seen — otherwise
+    every new ``serve`` reaps every live SSH backend of the Desktop at boot."""
+    import hermes_constants
+
+    custom_root = tmp_path / "opt-data"
+    custom_root.mkdir()
+    login_home = tmp_path / "home" / "hermes"
+    oid = "f" * 32
+    nonce = "d" * 16
+    (login_home / ".hermes" / "desktop-ssh" / oid).mkdir(parents=True)
+    (login_home / ".hermes" / "desktop-ssh" / oid / "backend.lock.json").write_text(
+        json.dumps(_valid_lock_payload(7777, oid, nonce))
+    )
+    monkeypatch.setenv("HERMES_HOME", str(custom_root))
+    # The native home is the login account's ~/.hermes; the custom root sits outside it.
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home",
+                        lambda: login_home / ".hermes")
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None, raising=False)
+    assert hermes_constants.get_default_hermes_root() == custom_root  # both pre-fix roots miss it
+
+    assert _lock_owned_serve_pids() == {7777}
+
+
+def _reap_with(scanned, *, roots_visible):
+    """Run the reap over *scanned* (all ppid 1, all stale, none lock-owned) and return the TERMed pids."""
+    terms: list[int] = []
+    live = {pid for pid, _ in scanned}
+
+    def fake_kill(pid, sig):
+        if sig == 0:
+            if pid in live:
+                return
+            raise ProcessLookupError()
+        if sig in (15, 9):
+            if sig == 15:
+                terms.append(pid)
+            live.discard(pid)
+
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=scanned),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill", side_effect=fake_kill),
+    ):
+        os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None, signal_term=15, signal_kill=9,
+            lock_owned_pids_fn=lambda: set(),
+            process_age_seconds_fn=lambda _pid: 600.0,
+            lock_roots_visible_fn=lambda: roots_visible,
+        )
+    return result, terms
+
+
+_SSH_SERVE = "hermes serve --isolated --host 127.0.0.1 --port 0 --ssh-owner-nonce 53d82b21b0fd3597"
+_LOCAL_SERVE = "hermes serve --host 127.0.0.1 --port 0"
+
+
+def test_reap_spares_ssh_backend_when_no_lock_dir_is_visible():
+    """Fail-safe: with no lock dir visible the scan cannot tell a live SSH backend from a corpse,
+    so a ``--ssh-owner-nonce`` backend is spared; a plain Desktop-local orphan is still reaped."""
+    result, terms = _reap_with([(555, _SSH_SERVE), (666, _LOCAL_SERVE)], roots_visible=False)
+    assert set(result["matched"]) == {666}
+    assert terms == [666]
+
+
+def test_reap_still_kills_unclaimed_ssh_backend_when_lock_dir_is_visible():
+    """With the lock dir visible, an SSH backend without a valid claim is a real orphan (retired or
+    disproved lock) and keeps being reaped — the guard only covers the blind case."""
+    result, terms = _reap_with([(555, _SSH_SERVE), (666, _LOCAL_SERVE)], roots_visible=True)
+    assert set(result["matched"]) == {555, 666}
+    assert set(terms) == {555, 666}
+
+
+def test_reap_spares_ssh_backend_when_visibility_probe_raises():
+    """An indeterminate visibility answer must never widen the reap."""
+    def boom():
+        raise OSError("EACCES")
+
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes",
+              return_value=[(555, _SSH_SERVE)]),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill") as kill,
+    ):
+        os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None, signal_term=15, signal_kill=9,
+            lock_owned_pids_fn=lambda: set(),
+            process_age_seconds_fn=lambda _pid: 600.0,
+            lock_roots_visible_fn=boom,
+        )
+    assert result["matched"] == []
+    kill.assert_not_called()
+
+
+def test_ssh_owned_serve_cmdline_reads_both_flag_forms():
+    from hermes_cli.dashboard_procs import _ssh_owned_serve_cmdline
+
+    assert _ssh_owned_serve_cmdline(_SSH_SERVE)
+    assert _ssh_owned_serve_cmdline(
+        "hermes serve --isolated --host 127.0.0.1 --port 0 --ssh-owner-nonce=53d82b21b0fd3597")
+    assert not _ssh_owned_serve_cmdline(_LOCAL_SERVE)
+    assert not _ssh_owned_serve_cmdline("hermes serve --host 127.0.0.1 --port 0 --ssh-owner-nonce")
+
+
+def test_any_remote_lock_root_visible_follows_real_dirs(tmp_path, monkeypatch):
+    """Visibility comes from the real roots: none on disk -> not visible; a listable one -> visible;
+    one that exists but cannot be listed -> not visible."""
+    from hermes_cli import dashboard_procs
+
+    root = tmp_path / ".hermes" / "desktop-ssh"
+    monkeypatch.setattr(dashboard_procs, "_remote_lock_roots", lambda _base: [root])
+    assert dashboard_procs._any_remote_lock_root_visible() is False
+    root.mkdir(parents=True)
+    assert dashboard_procs._any_remote_lock_root_visible() is True
+    monkeypatch.setattr(dashboard_procs.os, "access", lambda *_a, **_k: False)
+    assert dashboard_procs._any_remote_lock_root_visible() is False
+
+
+def test_reap_end_to_end_spares_ssh_backend_only_while_lock_dir_is_missing(tmp_path, monkeypatch):
+    """No injected visibility: the default probe looks at the real (tmp) lock root."""
+    from hermes_cli import dashboard_procs
+
+    root = tmp_path / ".hermes" / "desktop-ssh"
+    monkeypatch.setattr(dashboard_procs, "_remote_lock_roots", lambda _base: [root])
+    scanned = [(555, _SSH_SERVE)]
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=scanned),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("os.kill") as kill,
+    ):
+        os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
+        blind = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None, signal_term=15, signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 600.0,
+        )
+        assert blind["matched"] == [] and not kill.called
+        root.mkdir(parents=True)  # lock dir visible, no claim for 555 -> a real orphan
+        seen = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None, signal_term=15, signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 600.0,
+        )
+    assert seen["matched"] == [555]

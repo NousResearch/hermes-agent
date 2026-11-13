@@ -30,8 +30,15 @@ import {
 } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override'
+import { dismissProfileSwitchFailure, invalidateProfileSwitch, trackProfileSwitch } from '@/store/profile-switch-state'
 import { exitProjectScope } from '@/store/project-scope'
-import { $connection, clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
+import {
+  $connection,
+  $selectedStoredSessionId,
+  clearComposerSelectionOwner,
+  setComposerSelectionOwner,
+  setConnection
+} from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -338,11 +345,17 @@ export function currentNewChatIntent(): number {
   return newChatIntentRevision
 }
 
+/** Revoke delayed draft work without changing the draft's captured destination. */
+export function invalidateNewChatIntent(): void {
+  newChatIntentRevision += 1
+  invalidateProfileSwitch()
+}
+
 /** Capture the registry source a new-chat profile intent lands on — by
  *  default the active one; callers that dial a different door (a profile
  *  pick, see profilePickConnectionId) pass the source that door uses. */
 export function captureNewChatSource(connectionId: null | string = activeGatewayConnectionId()): void {
-  newChatIntentRevision += 1
+  invalidateNewChatIntent()
   legacyNewChatProfile = null
   $newChatConnectionId.set(connectionId)
 }
@@ -365,7 +378,7 @@ export function isLegacyNewChatProfile(profile: string): boolean {
 }
 
 /**
- * The registry source a PROFILE PICK dials, mirroring activateOnCurrentSource:
+ * The registry source a PROFILE PICK dials, mirroring runRailSwitch:
  * a live remote registry source keeps its connection id. Named picks on the
  * explicit `local` source (and the window primary) take the legacy
  * profile-only path (null) so the main process can resolve a per-profile
@@ -452,8 +465,16 @@ export function resolveActiveSourceOwnerRoute(profile: string): AgentProfileRout
 export const $freshSessionRequest = atom(0)
 
 export function requestFreshSession(): void {
+  invalidateNewChatIntent()
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
+
+// Opening a stored conversation also leaves the failed draft's retry behind.
+$selectedStoredSessionId.listen(storedId => {
+  if (storedId) {
+    invalidateNewChatIntent()
+  }
+})
 
 // Route profile-scoped REST settings (config/env/skills/tools/model/…) to the
 // profile the live gateway is currently on, and drop cached settings from the
@@ -484,9 +505,18 @@ $activeGatewayProfile.subscribe(value => {
 })
 
 // Target profile while a gateway swap is mid-flight (spawning/reconnecting that
-// profile's backend), else null. Drives the chat's "waking up <profile>" loader
-// so a lazy spawn doesn't read as a hang. Single-profile users never swap.
+// profile's backend), else null. Behavioural (transcript suppression, the
+// gone-session verdict, tile retire calm) and the chat's switch indicator.
+// Single-profile users never swap.
 export const $gatewaySwapTarget = atom<string | null>(null)
+
+// A new swap supersedes an earlier rail failure: its strip names a switch the
+// user has since moved on from.
+$gatewaySwapTarget.listen(target => {
+  if (target) {
+    dismissProfileSwitchFailure()
+  }
+})
 
 // Profile whose wake resolved PAINT-FIRST while the active-profile gate was
 // still unsatisfied (#89843): on a shared-remote connection every profile is
@@ -663,7 +693,7 @@ export async function ensureGatewayProfile(
     )
   }
 
-  if (routeAgrees()) {
+  if (!gatewaySwitch && routeAgrees()) {
     return
   }
 
@@ -983,7 +1013,7 @@ export function selectProfile(name: string): void {
   $newChatProfile.set(target)
   $newChatRoute.set(null)
   // Clearing the agent route must NOT discard the registry identity: the pick
-  // is made on the source the user is looking at (activateOnCurrentSource
+  // is made on the source the user is looking at (runRailSwitch
   // dials exactly that pair), so the draft's exact owner is that pair — or the
   // legacy profile-only path when that is the door the pick takes.
   captureNewChatSource(profilePickConnectionId(target))
@@ -1006,19 +1036,32 @@ export function selectProfile(name: string): void {
   // call instead (#79886). Decided now: the source is the one picked from.
   const shouldRememberStartupProfile = remembersProfilePick(target)
 
-  void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
-    .then(([, shouldRemember]) => {
-      if (shouldRemember) {
-        return window.hermesDesktop?.profile?.remember(target)
-      }
+  runRailSwitch(target, `Failed to switch to profile "${target}"`, async () => {
+    if (await shouldRememberStartupProfile) {
+      await window.hermesDesktop?.profile?.remember(target)
+    }
+  })
+}
 
-      return undefined
-    })
-    .catch((error: unknown) => {
-      if (!notifyRemoteOverrideAuthFailure(target, error)) {
-        notifyError(error, `Failed to switch to profile "${target}"`)
-      }
-    })
+// Activate a rail pick and surface the outcome: the pending pick drives the
+// rail square's spinner, a rejection leaves a retryable failure in the chat's
+// switch indicator beside the toast. Retry re-runs only the activation — the
+// fresh draft and pins from the original pick still stand.
+function runRailSwitch(target: string, failedTitle: string, onActivated?: () => Promise<void>): void {
+  const connectionId = profilePickConnectionId(target)
+
+  const attempt = (): void => {
+    const activation = connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
+    void trackProfileSwitch(target, activation, attempt)
+      .then(onActivated)
+      .catch((error: unknown) => {
+        if (!notifyRemoteOverrideAuthFailure(target, error)) {
+          notifyError(error, failedTitle)
+        }
+      })
+  }
+
+  attempt()
 }
 
 // Whether a pick becomes the profile this window starts in next time.
@@ -1059,20 +1102,7 @@ async function isLocalDesktopProfile(target: string): Promise<boolean> {
   }
 }
 
-// Route a profile pick at the source the user is LOOKING at. $profiles is the
-// active gateway's list, so a pick made while a remote registry source is live
-// names one of THAT source's profiles and must keep its connection id. Named
-// picks on the primary and explicit "local" source stay on the legacy
-// profile-only path so the main process can resolve a per-profile remote
-// override before falling back to a local backend. Default on `local` stays
-// on that source — see profilePickConnectionId.
-function activateOnCurrentSource(target: string): Promise<void> {
-  const connectionId = profilePickConnectionId(target)
-
-  return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
-}
-
-// The hover twin of activateOnCurrentSource: warm the pair the click will dial.
+// The hover twin of runRailSwitch: warm the pair the click will dial.
 // The bare name resolves on the legacy door, so hovering a remote source's
 // `default` warmed This device's instead.
 export function prewarmProfilePick(name: string): void {
@@ -1112,11 +1142,7 @@ export function newSessionInProfile(name: string): void {
   leaveForeignProjectScope(target)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
-  void activateOnCurrentSource(target).catch((error: unknown) => {
-    if (!notifyRemoteOverrideAuthFailure(target, error)) {
-      notifyError(error, `Failed to open profile "${target}"`)
-    }
-  })
+  runRailSwitch(target, `Failed to open profile "${target}"`)
 }
 
 /** Pin the next new chat to an exact registry agent; session.create reads this route. */

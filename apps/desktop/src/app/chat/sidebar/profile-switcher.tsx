@@ -39,6 +39,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { ErrorIcon } from '@/components/ui/error-state'
 import { edgeMask, scrollEdges } from '@/components/ui/fade-scroll'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'
@@ -94,6 +95,7 @@ import {
   refreshProfileRemoteOverrides
 } from '@/store/profile-remote-override'
 import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import { $profileSwitchFailure, $profileSwitchPending } from '@/store/profile-switch-state'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -238,6 +240,10 @@ export function ProfileRail() {
   // Route key of the at-rest square whose switch is dialing (spinner on that
   // square, not in the statusbar — the previous source stays painted).
   const [pendingRoute, setPendingRoute] = useState<null | string>(null)
+  // A local named pick (selectProfile) rides the shared multiplexer, so its
+  // pending/failed state lives with the action, not in this component.
+  const switchPending = useStore($profileSwitchPending)
+  const switchFailure = useStore($profileSwitchFailure)
   const scrollRef = useRef<HTMLDivElement>(null)
   const scrollContentRef = useRef<HTMLDivElement>(null)
   const [scrollMask, setScrollMask] = useState<string | undefined>()
@@ -504,6 +510,7 @@ export function ProfileRail() {
                   active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                   color={resolveProfileColor(profile.name, colors)}
                   connectionId={namedProfileConnectionId}
+                  failed={switchFailure?.profile === normalizeProfileKey(profile.name)}
                   key={profile.name}
                   label={profileLabel(profile)}
                   name={profile.name}
@@ -517,6 +524,7 @@ export function ProfileRail() {
                   onRecolor={color => setProfileColor(profile.name, color)}
                   onRename={() => setPendingRename(profile)}
                   onSelect={() => selectProfile(profile.name)}
+                  pending={switchPending === normalizeProfileKey(profile.name)}
                   remoteHost={remoteOverrides[normalizeProfileKey(profile.name)]?.host ?? null}
                 />
               ))}
@@ -565,6 +573,7 @@ export function ProfileRail() {
             glyph={isAll ? 'layers' : 'home'}
             label={onDefault ? p.showAllProfiles : p.switchToProfile(profileLabel(homeProfile))}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(homeProfile.name))}
+            pending={switchPending === normalizeProfileKey(homeProfile.name)}
             profile={homeProfile.name}
           />
         ) : (
@@ -1409,6 +1418,9 @@ interface ProfileSquareProps {
   active: boolean
   color: null | string
   connectionId: null | string
+  // The last rail pick of this profile was rejected (#81094): marked until the
+  // next switch or a dismiss, mirroring the chat's failure strip.
+  failed: boolean
   label: string
   name: string
   onSelect: () => void
@@ -1419,9 +1431,45 @@ interface ProfileSquareProps {
   // is superseded by the fleet rail there.
   onConnectRemote?: () => void
   onDelete: () => void
+  // A rail pick of this profile is activating — same spinner as a rest square.
+  pending: boolean
   // hostname[:port] of this profile's remote override, or null when the
   // profile runs locally. Drives the "remote" badge on the square.
   remoteHost: null | string
+}
+
+interface ProfileSquareContentProps
+  extends Pick<ProfileSquareProps, 'active' | 'failed' | 'label' | 'pending' | 'remoteHost'> {
+  summary: ProfileDotSummary | null
+}
+
+function ProfileSquareContent({ active, failed, label, pending, remoteHost, summary }: ProfileSquareContentProps) {
+  return (
+    <>
+      {pending ? <Loader2 aria-hidden="true" className="size-3 animate-spin" /> : profileShortLabel(label)}
+      {/* The remote globe stays at the top, separate from switch/session status. */}
+      {remoteHost && (
+        <span
+          aria-hidden="true"
+          className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
+          data-slot="profile-remote-badge"
+        >
+          <Codicon name="globe" size="0.5rem" />
+        </span>
+      )}
+      {/* Failed picks take precedence over the inactive profile's session rollup. */}
+      {failed && (
+        <span aria-hidden="true" className="absolute -bottom-0.5 -right-0.5 grid place-items-center">
+          <ErrorIcon size="0.5rem" />
+        </span>
+      )}
+      {!failed && !active && summary && (
+        <span className="absolute -bottom-0.5 -right-0.5">
+          <ProfileStatusDot summary={summary} />
+        </span>
+      )}
+    </>
+  )
 }
 
 // Hold this long without moving (a drag would have started first) to open the
@@ -1439,6 +1487,7 @@ function ProfileSquare({
   active,
   color,
   connectionId,
+  failed,
   label,
   name,
   onConnectRemote,
@@ -1447,6 +1496,7 @@ function ProfileSquare({
   onRecolor,
   onRename,
   onSelect,
+  pending,
   remoteHost
 }: ProfileSquareProps) {
   const { t } = useI18n()
@@ -1464,6 +1514,7 @@ function ProfileSquare({
   // profile's own row dots (#91710).
   const summary = useProfileStatus(name, connectionId)
   const statusText = !active && summary ? profileStatusLabel(p, summary) : null
+  const failedText = failed ? t.composer.switchProfileFailed(label) : null
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: name,
@@ -1505,11 +1556,13 @@ function ProfileSquare({
               <ContextMenuTrigger asChild>
                 <TooltipTrigger asChild>
                   <button
+                    aria-busy={pending || undefined}
                     className={cn(
-                      'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100',
+                      'relative grid size-5 shrink-0 cursor-grab touch-none select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none transition-opacity hover:opacity-100 aria-busy:opacity-100',
                       active ? 'opacity-100' : 'opacity-55',
                       isDragging && 'z-10 cursor-grabbing opacity-100'
                     )}
+                    data-switch-failed={failed ? '' : undefined}
                     ref={setNodeRef}
                     style={{
                       backgroundColor: profileColorSoft(hue, active ? 30 : 22),
@@ -1524,7 +1577,7 @@ function ProfileSquare({
                     {...attributes}
                     {...listeners}
                     aria-label={
-                      [remoteHost ? `${label} — ${p.remoteOverride.badge(remoteHost)}` : label, statusText]
+                      [remoteHost ? `${label} — ${p.remoteOverride.badge(remoteHost)}` : label, statusText, failedText]
                         .filter(Boolean)
                         .join(', ') || label
                     }
@@ -1565,32 +1618,20 @@ function ProfileSquare({
                     onPointerMove={notePointerMove}
                     onPointerUp={clearPress}
                   >
-                    {profileShortLabel(label)}
-                    {/* The "remote" badge: a tiny globe pinned to the corner of an
-                        overridden profile's square, so which profiles leave this
-                        machine is visible at a glance (#91349). */}
-                    {remoteHost && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute -right-0.5 -top-0.5 grid size-2 place-items-center rounded-full bg-(--ui-panel-background)"
-                        data-slot="profile-remote-badge"
-                      >
-                        <Codicon name="globe" size="0.5rem" />
-                      </span>
-                    )}
-                    {/* The profile's session rollup (#91710): bottom-right so it
-                        never fights the remote globe. */}
-                    {!active && summary && (
-                      <span className="absolute -bottom-0.5 -right-0.5">
-                        <ProfileStatusDot summary={summary} />
-                      </span>
-                    )}
+                    <ProfileSquareContent
+                      active={active}
+                      failed={failed}
+                      label={label}
+                      pending={pending}
+                      remoteHost={remoteHost}
+                      summary={summary}
+                    />
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
             </PopoverAnchor>
             <TooltipContent>
-              {[remoteHost ? `${label} · ${p.remoteOverride.badge(remoteHost)}` : label, statusText]
+              {[remoteHost ? `${label} · ${p.remoteOverride.badge(remoteHost)}` : label, statusText, failedText]
                 .filter(Boolean)
                 .join(' · ')}
             </TooltipContent>

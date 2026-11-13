@@ -625,12 +625,6 @@ function abandonPick(): void {
   $pendingConnectionId.set(null)
 }
 
-function rollbackRehome(rehomed: boolean, profile: string, landed: () => boolean): void {
-  if (rehomed && !landed()) {
-    rehomeNewChatDraft(profile)
-  }
-}
-
 function openSessionKey(): string {
   return `${$activeSessionId.get() ?? ''}\u0000${$selectedStoredSessionId.get() ?? ''}`
 }
@@ -726,16 +720,18 @@ export async function selectConnection(connectionId: string, options: SelectConn
   const ahead = rehomeAhead(draftIntent)
   const openedSession = openSessionKey()
   const activation = new AbortController()
-  let rehomed = false
+  let undoRehome = (): void => undefined
   pendingTarget = targetKey
 
   abandonInFlight = () => {
     activation.abort()
-    rollbackRehome(rehomed, currentProfile, targetIsActive)
+
+    if (!targetIsActive()) {
+      undoRehome()
+    }
   }
 
   $pendingConnectionId.set(connectionId)
-  let undoRehome = (): void => undefined
 
   // Runs inside the activation's serialized section, synchronously right
   // before the target is published, so the center is already a fresh draft on
@@ -782,7 +778,6 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
       tentativeRehome = rehome
       undoRehome = () => undoDraftRehome(rehome)
-      rehomed = true
     }
 
     return true
@@ -849,9 +844,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // the click, even when a newer pick superseded this one (its re-home is
     // still the draft until that pick takes its turn). A draft the user
     // started since the re-home is newer than this pick and is left alone.
-    if (rehomed) {
-      undoRehome()
-    }
+    undoRehome()
 
     // A newer pick owns the outcome; this one's failure is moot.
     if (revision !== switchRevision) {

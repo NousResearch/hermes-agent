@@ -2923,7 +2923,10 @@ export interface Translations extends NoticeTranslations {
 
   composer: {
     message: string
-    wakingProfile: (profile: string) => string
+    switchingProfile: (profile: string) => string
+    switchingProfileSlow: string
+    switchProfileFailed: (profile: string) => string
+    willSendTo: (profile: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string

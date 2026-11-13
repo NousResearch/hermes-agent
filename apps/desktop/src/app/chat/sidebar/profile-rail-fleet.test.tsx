@@ -71,6 +71,7 @@ vi.mock('@/i18n', () => ({
         switchToProfile: (name: string) => `Switch to ${name}`,
         title: 'Profiles'
       },
+      composer: { switchProfileFailed: (name: string) => `Couldn’t switch to ${name}` },
       settings: { connections: { kindCloud: 'Cloud', kindLocal: 'This device', kindRemote: 'Remote', kindSsh: 'SSH' } }
     }
   })
@@ -149,6 +150,7 @@ const activeGatewayProfile = $activeGatewayProfile as ReturnType<typeof atom<str
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
 const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
+const { $profileSwitchFailure, $profileSwitchPending } = await import('@/store/profile-switch-state')
 
 const registry: DesktopConnectionsRegistry = {
   connections: [
@@ -333,6 +335,30 @@ describe('ProfileRail overflow', () => {
     expect(mask.mock.calls.at(-1)?.[0]).toContain('transparent')
     fireEvent.click(screen.getByRole('button', { name: 'agent1' }))
     expect(selectProfile).toHaveBeenCalledWith('agent1')
+  })
+})
+
+describe('ProfileRail local profile switch', () => {
+  it('marks the picked square busy while it activates, then failed when the switch rejects', () => {
+    profiles.set([
+      { is_default: true, name: 'default' },
+      { is_default: false, name: 'ops' }
+    ])
+    render(<ProfileRail />)
+    const square = () => screen.getByRole('button', { name: /^ops/ })
+
+    act(() => $profileSwitchPending.set('ops'))
+    expect(square().getAttribute('aria-busy')).toBe('true')
+
+    act(() => {
+      $profileSwitchPending.set(null)
+      $profileSwitchFailure.set({ profile: 'ops', retry: vi.fn() })
+    })
+    expect(square().getAttribute('aria-busy')).toBeNull()
+    expect(square().getAttribute('aria-label')).toContain('Couldn’t switch to ops')
+
+    act(() => $profileSwitchFailure.set(null))
+    expect(square().getAttribute('aria-label')).toBe('ops')
   })
 })
 

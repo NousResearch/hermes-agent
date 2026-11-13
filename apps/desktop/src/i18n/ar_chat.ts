@@ -3,7 +3,10 @@ import type { TranslationOverrides } from './define-locale'
 export const arChat = {
   composer: {
     message: 'الرسالة',
-    wakingProfile: profile => `جار إيقاظ ${profile}`,
+    switchingProfile: profile => `جارٍ التبديل إلى ${profile}…`,
+    switchingProfileSlow: 'لا يزال الاتصال جاريًا. الرسائل التي ترسلها الآن ستنتظر ثم تُرسل إلى هذا الوكيل.',
+    switchProfileFailed: profile => `تعذّر التبديل إلى ${profile}`,
+    willSendTo: profile => `سيُرسل إلى ${profile}`,
     placeholderStarting: 'جار بدء Hermes...',
     placeholderReconnecting: 'جار إعادة الاتصال...',
     placeholderFollowUp: 'اكتب متابعة...',

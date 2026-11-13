@@ -562,7 +562,7 @@ def _give_up(record: dict[str, Any], reason: str) -> bool:
         if conn.execute(
                 "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_gave_up', ?, '$.auto_off', ?, "
                 "'$.auto_note', ?), updated_at=? WHERE subagent_id=? AND state IN ('resumable','expired') "
-                "AND json_extract(record_json, '$.auto_gave_up') IS NULL",
+                f"AND {OWED_SQL}",  # a cancel since the tick read it cleared the debt: nothing to report
                 (reason, reason, reason, time.time(), sid)).rowcount != 1:
             return None
         got = conn.execute(f"SELECT {', '.join(cols)} FROM async_delegations WHERE delegation_id=?",
@@ -653,8 +653,10 @@ KEEP_WAITING_UNITS_SQL = (
 
 
 def waiting_on_resume(entry: dict[str, Any]) -> bool:
-    """A ledger result entry (or boot result) for a child still waiting on its promised automatic resume."""
-    return isinstance(entry.get("auto_resume"), dict) or bool(entry.get("waiting_to_resume"))
+    """A ledger result entry (or boot result) for a child still waiting on its promised automatic resume, or an
+    automatic attempt that never started (``unstarted_auto``: not an outcome the parent is told about)."""
+    return (isinstance(entry.get("auto_resume"), dict) or bool(entry.get("waiting_to_resume"))
+            or bool(entry.get("unstarted_auto")))
 
 
 # ── parent actions ─────────────────────────────────────────────────────────

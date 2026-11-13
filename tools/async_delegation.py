@@ -1168,7 +1168,8 @@ def completion_event(record: dict[str, Any], result: dict[str, Any], status: str
         result = {**result, **_stall_meta(record)}
     is_batch = bool(record.get("is_batch"))
     children = result.get("results") or ([] if is_batch else [result])
-    waiting = [r for r in children if isinstance(r.get("auto_resume"), dict)]
+    from tools.delegate_tool_auto_resume import waiting_on_resume
+    waiting = [r for r in children if waiting_on_resume(r)]
     silent = bool(children) and len(waiting) == len(children)  # every child will resume: the parent hears nothing
     if waiting and not silent:  # a mixed unit: the promised child reads as waiting, not failed
         result = {**result, "results": [{**r, "status": "waiting_to_resume"} if r in waiting else r

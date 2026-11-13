@@ -1181,7 +1181,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "monitor": {
                 "type": "string",
-                "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears."
+                "description": "Optional change-detector that gates the agent: an http(s) URL (fetched each tick) or a script path (same rules as `script`, run each tick) — cheap, no LLM. Output identical to the previous tick skips the agent run entirely; changed output wakes the agent with a diff injected into the prompt. First tick always runs (baseline). Output must be deterministic (no timestamps) or every tick looks changed. Incompatible with no_agent. On update, '' clears. NO-TOKEN INVARIANT: a monitor is a cost gate, not a capability gate — it never makes the agent run cheaper than no_agent. If the action needed on change is fixed (alert, copy, ping, file write), write that action into a script and use no_agent=True with that script as `script`: an agent run is billed per FIRE, not per change, so a monitor-gated agent job still pays full context on every tick it wakes. Use monitor only when the change must be REASONED about, never as a substitute for a scripted reaction."
             },
             "no_agent": {
                 "type": "boolean",

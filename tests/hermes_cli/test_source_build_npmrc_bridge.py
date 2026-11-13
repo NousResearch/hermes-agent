@@ -92,6 +92,47 @@ def test_a_utf16_npmrc_reads_as_npm_reads_it_instead_of_failing_the_build(bridge
     assert npm_registry({"NPM_CONFIG_USERCONFIG": str(npmrc)}) == NPM_PUBLIC_REGISTRY
 
 
+def test_a_utf8_bom_does_not_hide_the_first_setting(bridge):
+    """Windows PowerShell 5.1's ``Set-Content -Encoding UTF8`` starts the file with a BOM."""
+    from hermes_cli.source_build import source_build_env
+    from pm.index_config import npm_registry
+
+    npmrc = bridge / "npmrc"
+    npmrc.write_text("registry=https://bom.invalid/\n", encoding="utf-8-sig")
+
+    env = source_build_env()
+
+    assert env["npm_config_registry"] == "https://bom.invalid/"
+    assert npm_registry({"NPM_CONFIG_USERCONFIG": str(npmrc)}) == "https://bom.invalid/"
+
+
+def test_a_mixed_case_key_is_exported_lowercased_as_npm_exports_it(bridge):
+    from hermes_cli.source_build import source_build_env
+
+    (bridge / "npmrc").write_text("Electron_Mirror=https://mirror.invalid/electron/\n", encoding="utf-8")
+
+    env = source_build_env()
+
+    assert env["npm_config_electron_mirror"] == "https://mirror.invalid/electron/"
+
+
+@pytest.mark.platforms("posix")
+def test_a_lowercase_userconfig_gets_no_uppercase_twin(bridge, tmp_path, monkeypatch):
+    """npm 12 reads ``NPM_CONFIG_USERCONFIG`` and pnpm 12 the lowercase name, so a twin naming
+    ``$HERMES_HOME/npmrc`` beside the user's choice splits the two installers."""
+    from hermes_cli.source_build import source_build_env
+
+    (bridge / "npmrc").write_text("registry=https://hermes-file.invalid/\n", encoding="utf-8")
+    selected = tmp_path / "selected-npmrc"
+    selected.write_text("registry=https://selected.invalid/\n", encoding="utf-8")
+    monkeypatch.setenv("npm_config_userconfig", str(selected))
+
+    env = source_build_env()
+
+    assert [value for key, value in env.items() if key.upper() == "NPM_CONFIG_USERCONFIG"] == [str(selected)]
+    assert env["npm_config_registry"] == "https://selected.invalid/"
+
+
 def test_inline_comments_are_not_part_of_the_value(bridge):
     from hermes_cli.source_build import source_build_env
     from pm.index_config import npm_registry
@@ -182,3 +223,19 @@ def test_hermes_home_npmrc_steers_pm_downloads_as_it_steers_builds(bridge, monke
     explicit = bridge.parent / "explicit-npmrc"
     explicit.write_text("registry=https://explicit.invalid/\n", encoding="utf-8")
     assert npm_registry({"npm_config_userconfig": str(explicit)}) == "https://explicit.invalid/"
+
+
+@pytest.mark.parametrize("name", ["NPM_CONFIG_USERCONFIG", "npm_config_userconfig"])
+def test_an_empty_userconfig_reads_as_unset_for_install_children_too(bridge, monkeypatch, name):
+    """npm and pnpm read an empty userconfig as unset and fall back to ``~/.npmrc``; the children
+    must get the file the bridge and PM's downloads read instead."""
+    from hermes_cli.source_build import source_build_env
+
+    (bridge / "npmrc").write_text("disturl=https://hermes-file.invalid/node\n", encoding="utf-8")
+    (bridge.parent / "user" / ".npmrc").write_text("disturl=https://home-dir.invalid/node\n", encoding="utf-8")
+    monkeypatch.setenv(name, "")
+
+    env = source_build_env()
+
+    assert env["npm_config_disturl"] == "https://hermes-file.invalid/node"
+    assert [value for key, value in env.items() if key.upper() == "NPM_CONFIG_USERCONFIG"] == [str(bridge / "npmrc")]

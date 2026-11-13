@@ -50,7 +50,10 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False, ve
     env.pop("ESBUILD_BINARY_PATH", None)
     npmrc = user_npmrc(env)
     if npmrc == hermes_npmrc():
-        env.setdefault("NPM_CONFIG_USERCONFIG", str(npmrc))
+        # Any twin left is empty, which npm and pnpm read as unset (pnpm checks the lowercase
+        # one first), or already names this file: one variable replaces them all.
+        env = {name: value for name, value in env.items() if name.upper() != "NPM_CONFIG_USERCONFIG"}
+        env["NPM_CONFIG_USERCONFIG"] = str(npmrc)
     # pnpm reads the npmrc that user_npmrc selects (an explicit userconfig, else Hermes's, else
     # ~/.npmrc) only for its registry and auth. npm also handed every other key to the processes it
     # spawned as npm_config_<key>; keep doing that, since it is how node-pre-gyp (run by

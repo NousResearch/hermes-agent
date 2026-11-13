@@ -34,6 +34,9 @@ def turn_exit_code(
     if kanban_worker:
         reason = result.get("failure_reason")
         if reason in transient_reasons:
+            if reason in {"timeout", "server_error", "overloaded"}:
+                from hermes_cli.kanban_db import KANBAN_PROVIDER_UNAVAILABLE_EXIT_CODE
+                return KANBAN_PROVIDER_UNAVAILABLE_EXIT_CODE
             from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
             return KANBAN_RATE_LIMIT_EXIT_CODE
         if reason in terminal_reasons:

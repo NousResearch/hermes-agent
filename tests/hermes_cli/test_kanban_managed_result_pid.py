@@ -38,8 +38,10 @@ def _dead_pid() -> int:
     return proc.pid
 
 
-@pytest.mark.parametrize("bound_claim, expected", [("own", "rate_limited"), ("foreign", "crashed")])
-def test_managed_exit_75_requeues_rate_limited_not_crashed(conn, bound_claim, expected):
+@pytest.mark.parametrize("code, kind", [(75, "rate_limited"), (76, "provider_unavailable")])
+@pytest.mark.parametrize("bound_claim", ["own", "foreign"])
+def test_managed_provider_exit_retains_kind_and_requires_own_claim(conn, code, kind, bound_claim):
+    expected = kind if bound_claim == "own" else "crashed"
     host = kb._claimer_id().split(":", 1)[0]
     tid = kb.create_task(conn, title="managed", assignee="w")
     task = kb.claim_task(conn, tid, claimer=f"{host}:owner")
@@ -52,11 +54,12 @@ def test_managed_exit_75_requeues_rate_limited_not_crashed(conn, bound_claim, ex
         kb._append_event(conn, tid, "worker_bound", {"pid": interpreter, "claim_lock": claim, "started_at": "x"},
                          run_id=task.current_run_id)
         kb._append_event(conn, tid, "worker_result", {"pid": interpreter, "claim_lock": task.claim_lock,
-                         "exit_code": kb.KANBAN_RATE_LIMIT_EXIT_CODE, "last_output": ""}, run_id=task.current_run_id)
+                         "exit_code": code, "last_output": ""}, run_id=task.current_run_id)
 
     crashed = kbd.detect_crashed_workers(conn)
 
     outcome = conn.execute("SELECT outcome FROM task_runs WHERE id=?", (task.current_run_id,)).fetchone()[0]
     assert outcome == expected
     assert (tid in kbd.detect_crashed_workers._last_rate_limited) is (expected == "rate_limited")
+    assert (tid in kbd.detect_crashed_workers._last_provider_unavailable) is (expected == "provider_unavailable")
     assert (tid in crashed) is (expected == "crashed")

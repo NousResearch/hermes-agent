@@ -111,6 +111,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, reason) in res.respawn_guarded
             ],
             "rate_limited": res.rate_limited,
+            "provider_unavailable": res.provider_unavailable,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
         }, ascii=True)
@@ -148,6 +149,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     for tid, reason in res.respawn_guarded:
         print(f"Guarded ({reason}): {tid}")
+    if res.provider_unavailable:
+        print(f"Provider unavailable (requeued, no failure counted): {', '.join(res.provider_unavailable)}")
     if res.rate_limited:
         print(f"Rate-limited (released to ready, no failure counted): {', '.join(res.rate_limited)}")
     if res.skipped_locked:

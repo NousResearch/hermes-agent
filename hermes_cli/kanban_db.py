@@ -29,6 +29,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_worker_outcomes import (
+    KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_PROVIDER_UNAVAILABLE_EXIT_CODE,
+    KANBAN_TERMINAL_PROVIDER_EXIT_CODE,
+)
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
 from utils import unlink_files_older_than
@@ -234,7 +238,7 @@ def notify_task_updated(
 # DispatchResult counters whose non-zero value means the tick did something.
 _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
-    "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
+    "timed_out", "auto_blocked", "rate_limited", "provider_unavailable", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
     "skipped_nonspawnable",
 )
@@ -305,14 +309,6 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
 # fork -> /proc window can report a fresh worker dead.
 DEFAULT_CRASH_GRACE_SECONDS = 30
 
-# Worker exit "provider rate-limited": released WITHOUT counting a failure (the
-# breaker must never trip on a throttle). 75 == BSD EX_TEMPFAIL.
-KANBAN_RATE_LIMIT_EXIT_CODE = 75
-
-# Worker exit "provider rejected the configuration": credential revoked (401/403), model gone
-# (404), TLS chain broken — a retry cannot fix it, so the dispatcher parks the card blocked on
-# the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
-KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
 
 
 def _resolve_crash_grace_seconds() -> int:
@@ -2023,7 +2019,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
+        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited', 'provider_unavailable'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
     payload = _json_dict(_row_get(row, "payload"))

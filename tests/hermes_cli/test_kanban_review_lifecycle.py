@@ -615,6 +615,7 @@ def test_dispatch_json_exposes_suppression_reasons(
         lambda *args, **kwargs: kbd.DispatchResult(
             respawn_guarded=[("active-pr-task", "active_pr")],
             rate_limited=["quota-task"],
+            provider_unavailable=["offline-task"],
             skipped_locked=True,
             memory_pressure="elevated",
         ),
@@ -627,6 +628,7 @@ def test_dispatch_json_exposes_suppression_reasons(
     payload = json.loads(capsys.readouterr().out)
     assert payload["respawn_guarded"] == [{"task_id": "active-pr-task", "reason": "active_pr"}]
     assert payload["rate_limited"] == ["quota-task"]
+    assert payload["provider_unavailable"] == ["offline-task"]
     assert payload["skipped_locked"] is True
     assert payload["memory_pressure"] == "elevated"
 

@@ -418,9 +418,10 @@ folded away (the Agents rail button, ⌘B) or the window is too narrow for panel
 page in the stage instead, so every section stays reachable.
 
 Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`,
-following the Figma conversation (`491:40346`): one centred column shared with the
-docked composer (`--portal-column-conversation`, read as `--portal-conversation-*` in `app/chat/stage.css`), prose
-20px inside it, 30px turn gaps and 20px output gaps. User bubbles hug their text at
+following the Figma conversation (`491:40346`; width from "Prod - Desktop" chat 16292:16175): one
+centred 440px column shared with the docked composer (`--portal-column-conversation`, read as
+`--portal-conversation-*` in `app/chat/stage.css`), prose flush with the composer's edges
+(`--portal-column-conversation-inset`), 30px turn gaps and 20px output gaps. User bubbles hug their text at
 the right edge up to 380px, with 6px corners, 6/10px insets and a 5% (light 2%)
 fill and no border; their time and restore actions sit beside the bubble. Base text
 is 13px at 1.6 leading before user scaling. A pinned prompt keeps 12px of clearance
@@ -462,9 +463,12 @@ Usage collection belongs to a consenting connection/profile, not merely the
 foreground UI. Changing scope revokes the old metrics binding immediately;
 events during rebinding are discarded, never replayed under later consent.
 
-The redesigned composer is 480 × 148 on an empty landing. In a populated native
-conversation it keeps the 148px base height, spans the shared 640px column and
-docks 30px above the stage floor, with model/effort as quiet right-aligned text above the input and attachment, microphone, and labeled Send
+The redesigned composer is 440 × 148 on an empty landing (msg 16292:15670). In a populated native
+conversation it keeps the 148px base height, spans the shared 440px column and
+docks 30px above the stage floor. Its card is navy, white .05 / blue .10 / black .80 flattened onto
+the stage (white on light), with no shadow, and its resting prompt is the card's heading line in
+full ink (16292:15681); Figma's dim second line ("Prompt suggestions or processing...") is template
+copy and is not built, with model/effort as quiet right-aligned text above the input and attachment, microphone, and labeled Send
 controls below. Browser touch targets keep their larger accessibility sizing.
 Gateway menus distinguish connection from inference
 readiness. Simple mode keeps reconnect and lazy recent activity; Advanced adds
@@ -612,7 +616,6 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-raw-shadow-4` | `rgb(0 0 0 / 0.04)` | ″ | Shadow inks. |
 | `--portal-raw-shadow-8` | `rgb(0 0 0 / 0.08)` | ″ |  |
 | `--portal-raw-shadow-20` | `rgb(0 0 0 / 0.2)` | ″ |  |
-| `--portal-raw-shadow-25` | `rgb(0 0 0 / 0.25)` | ″ |  |
 | `--portal-raw-shadow-50` | `rgb(0 0 0 / 0.5)` | ″ |  |
 | `--portal-raw-highlight-5` | `rgb(255 255 255 / 0.05)` | ″ | The workspace frame's top highlight (16292:14463): white at .05. |
 | `--portal-raw-shadow-navy-10` | `rgb(18 20 38 / 0.1)` | ″ | Light's workspace frame shadow ink (16292:23801): a navy at .1. |
@@ -644,6 +647,8 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-surface-brand` | `var(--portal-raw-blue)` | ″ | Brand. The fill is the same in every theme and mode; thin rings, underlines and small blue text use the brand ink, which lightens on dark canvases for contrast. |
 | `--portal-text-on-brand` | `var(--portal-raw-white)` | ″ |  |
 | `--portal-text-brand` | `var(--portal-raw-blue-ink-dark)` | `var(--portal-raw-blue)` |  |
+| `--portal-composer-fill` | `color-mix( in srgb, var(--portal-raw-pure-white) 8%, color-mix( in srgb, var(--portal-raw-blue) 10%, color-mix(in srgb, var(--portal-raw-black) 80%, var(--ui-chat-surface-background)) ) )` | `color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background))` | The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts it to #171635 on Wing; the opaque card takes white .08 to land there. Light draws it white (16292:27185). Its resting prompt is the card's heading line at full ink (16292:15681). |
+| `--portal-composer-prompt-ink` | `var(--portal-text-primary)` | ″ |  |
 | `--portal-surface-brand-selected` | `var(--portal-raw-brand-25)` | `var(--portal-raw-brand-12)` | Brand selection: selected destinations, segments, scope chips, choice tiles and the DEFAULT / RUNNING chips (856:3444, 1036:7318). |
 | `--portal-spectrum-red` | `var(--portal-raw-spectrum-red)` | ″ |  |
 | `--portal-spectrum-yellow` | `var(--portal-raw-spectrum-yellow)` | ″ |  |
@@ -794,10 +799,11 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-workspace-inset-start` | `0.3125rem` | ″ | The workspace frame's gaps, where the artwork shows, measured in Figma's 1280×880 window (Content 16292:14463 at x 65–1265, y 60–865): 5px past a 60px rail (and before the developer rail), 15px to the window's end (the "inset" column 18521:22266 and the frame's 5px edge) and to its floor (the "Spacer" 18521:17513). 0 for all three puts the panels back on the edges. |
 | `--portal-workspace-inset-end` | `0.9375rem` | ″ |  |
 | `--portal-workspace-inset-bottom` | `0.9375rem` | ″ |  |
-| `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer. |
+| `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer: both 440 wide, the transcript flush with the composer's edges (chat 16292:16175). |
 | `--portal-column-catalog` | `61.25rem` | ″ |  |
-| `--portal-column-conversation` | `40rem` | ″ |  |
-| `--portal-column-landing` | `30rem` | ″ | The landing's composer before the first message (906). |
+| `--portal-column-conversation` | `27.5rem` | ″ |  |
+| `--portal-column-conversation-inset` | `0px` | ″ |  |
+| `--portal-column-landing` | `27.5rem` | ″ | The landing's composer before the first message, as wide as a conversation's (16292:14822). |
 | `--portal-tool-panel-width` | `26.25rem` | ″ | The developer tool panel's default width (Files, Terminal, Review and Browser share one width, redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. |
 | `--page-content-inset` | `1rem` | ″ | Full-width pages without a panel pad their catalog column by this much on each side. |
 | `--portal-scroll-edge-fade` | `1.5rem` | ″ | How far a sideways scroller's trailing edge fades while more follows (portal-pages.css). |
@@ -852,7 +858,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-focus-ring-inset` | `calc(-1 * var(--portal-focus-ring-width))` | ″ |  |
 | `--portal-focus-ring-offset` | `var(--portal-focus-ring-outset)` | ″ |  |
 | `--portal-shadow-floating` | `0 8px 24px var(--portal-raw-shadow-50)` | `0 1px 2px var(--portal-raw-shadow-4), 0 8px 24px var(--portal-raw-shadow-8)` | Menus, popovers, dialogs (878:6044): one soft drop shadow. |
-| `--portal-shadow-composer` | `0 4px 4px var(--portal-raw-shadow-25)` | ″ | The composer card on dark (906:19844); light draws none. |
+| `--portal-shadow-composer` | `none` | ″ | The composer card casts none (msg 16292:15670). |
 | `--portal-shadow-workspace` | `0 -4px 30px var(--portal-raw-shadow-20)` | `0 8px 12px var(--portal-raw-shadow-navy-10)` | The workspace frame lifted off the artwork (16292:14463): a soft shadow up and around it. |
 | `--portal-shadow-workspace-highlight` | `inset 0 1px 2px var(--portal-raw-highlight-5)` | `none` | ...and its inner highlight along the top (inner shadow, 16292:14463): white .05, 1px down, 2px soft. |
 | `--portal-control-radius` | `var(--portal-radius-control)` | ″ | Names in use before the role names; Phase B moves their readers to the role and deletes them. |

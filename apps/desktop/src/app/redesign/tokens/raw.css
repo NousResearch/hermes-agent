@@ -33,7 +33,6 @@
   --portal-raw-shadow-4: rgb(0 0 0 / 0.04);
   --portal-raw-shadow-8: rgb(0 0 0 / 0.08);
   --portal-raw-shadow-20: rgb(0 0 0 / 0.2);
-  --portal-raw-shadow-25: rgb(0 0 0 / 0.25);
   --portal-raw-shadow-50: rgb(0 0 0 / 0.5);
   /* The workspace frame's top highlight (16292:14463): white at .05. */
   --portal-raw-highlight-5: rgb(255 255 255 / 0.05);

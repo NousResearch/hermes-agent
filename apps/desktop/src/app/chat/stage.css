@@ -1,11 +1,11 @@
-/* The redesigned chat stage (Figma 906:19804, conversation 491:40634).
-   The transcript and the docked composer share ONE centred column: the
-   composer is the column's full width (640), the transcript insets 20px inside
-   it (600). Both resolve 100cqw against this container, so they measure the
-   same box even though one lives in the scroller and the other overlays it. */
+/* The redesigned chat stage (Figma 906:19804, conversation 16292:16175).
+   The transcript and the docked composer share ONE centred column, both its
+   full width (440). Both resolve 100cqw against this container, so they
+   measure the same box even though one lives in the scroller and the other
+   overlays it. */
 :root[data-shell='portal'] [data-chat-surface] {
   --portal-conversation-width: var(--portal-column-conversation);
-  --portal-conversation-inset: 1.25rem;
+  --portal-conversation-inset: var(--portal-column-conversation-inset);
   --portal-conversation-gutter: 1rem;
   --portal-conversation-column: min(var(--portal-conversation-width), 100cqw - 2 * var(--portal-conversation-gutter));
   --portal-landing-composer-width: var(--portal-column-landing);

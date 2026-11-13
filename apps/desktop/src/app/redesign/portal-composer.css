@@ -11,11 +11,13 @@
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-root'] {
   /* Opaque: the transcript scrolls underneath the docked card. */
-  --composer-fill: color-mix(in srgb, var(--ui-base) 5%, var(--ui-chat-surface-background));
+  --composer-fill: var(--portal-composer-fill);
 }
 
-:root[data-shell='portal']:not(.dark) [data-redesigned-composer] [data-slot='composer-root'] {
-  --composer-fill: color-mix(in srgb, var(--ui-base) 2%, var(--ui-chat-surface-background));
+/* The resting prompt is the card's heading line (16292:15681), not a dim hint. The shared composer
+   pins its hint's ink with !important (styles.css), so the redesign's line must too. */
+:root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
+  color: var(--portal-composer-prompt-ink) !important;
 }
 
 :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {

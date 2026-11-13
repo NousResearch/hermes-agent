@@ -36,8 +36,8 @@
 
   /* Menus, popovers, dialogs (878:6044): one soft drop shadow. */
   --portal-shadow-floating: 0 8px 24px var(--portal-raw-shadow-50);
-  /* The composer card on dark (906:19844); light draws none. */
-  --portal-shadow-composer: 0 4px 4px var(--portal-raw-shadow-25);
+  /* The composer card casts none (msg 16292:15670). */
+  --portal-shadow-composer: none;
   /* The workspace frame lifted off the artwork (16292:14463): a soft shadow up and around it. */
   --portal-shadow-workspace: 0 -4px 30px var(--portal-raw-shadow-20);
   /* ...and its inner highlight along the top (inner shadow, 16292:14463): white .05, 1px down, 2px soft. */

@@ -8,6 +8,20 @@
   --portal-surface-brand: var(--portal-raw-blue);
   --portal-text-on-brand: var(--portal-raw-white);
   --portal-text-brand: var(--portal-raw-blue-ink-dark);
+  /* The composer card (msg 16292:15670): white .05 / blue .10 / black .80 at .94, flattened onto the
+     stage so the transcript never shows through. Figma's card lets 6% of the art through, which lifts
+     it to #171635 on Wing; the opaque card takes white .08 to land there. Light draws it white
+     (16292:27185). Its resting prompt is the card's heading line at full ink (16292:15681). */
+  --portal-composer-fill: color-mix(
+    in srgb,
+    var(--portal-raw-pure-white) 8%,
+    color-mix(
+      in srgb,
+      var(--portal-raw-blue) 10%,
+      color-mix(in srgb, var(--portal-raw-black) 80%, var(--ui-chat-surface-background))
+    )
+  );
+  --portal-composer-prompt-ink: var(--portal-text-primary);
   /* Brand selection: selected destinations, segments, scope chips, choice tiles and the DEFAULT /
      RUNNING chips (856:3444, 1036:7318). */
   --portal-surface-brand-selected: var(--portal-raw-brand-25);
@@ -280,6 +294,7 @@
   --portal-text-chrome: color-mix(in srgb, var(--ui-base) 48%, transparent);
   /* Light's settings cards are near-white on the page (#F9F9FA, 16292:26032). */
   --portal-settings-card: color-mix(in srgb, var(--portal-raw-pure-white) 70%, transparent);
+  --portal-composer-fill: color-mix(in srgb, var(--portal-raw-pure-white) 98%, var(--ui-chat-surface-background));
   --portal-surface-control: var(--portal-raw-ink-3);
   --portal-surface-control-hover: var(--portal-raw-ink-5);
   --portal-surface-control-pressed: var(--portal-raw-ink-8);

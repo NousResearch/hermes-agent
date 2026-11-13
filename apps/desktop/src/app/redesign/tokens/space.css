@@ -77,12 +77,14 @@
   --portal-workspace-inset-end: 0.9375rem;
   --portal-workspace-inset-bottom: 0.9375rem;
   /* The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and
-     tables (919:9281: 980), and the conversation shared by the transcript and the docked composer. */
+     tables (919:9281: 980), and the conversation shared by the transcript and the docked composer:
+     both 440 wide, the transcript flush with the composer's edges (chat 16292:16175). */
   --portal-column-form: 52.5rem;
   --portal-column-catalog: 61.25rem;
-  --portal-column-conversation: 40rem;
-  /* The landing's composer before the first message (906). */
-  --portal-column-landing: 30rem;
+  --portal-column-conversation: 27.5rem;
+  --portal-column-conversation-inset: 0px;
+  /* The landing's composer before the first message, as wide as a conversation's (16292:14822). */
+  --portal-column-landing: 27.5rem;
   /* The developer tool panel's default width (Files, Terminal, Review and Browser share one width,
      redesign/developer-tool-panel.ts): room for an 80-column terminal beside the conversation. */
   --portal-tool-panel-width: 26.25rem;

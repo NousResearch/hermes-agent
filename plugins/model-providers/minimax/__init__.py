@@ -40,12 +40,16 @@ class MiniMaxProfile(ProviderProfile):
 minimax = MiniMaxProfile(
     name="minimax", aliases=("mini-max",), api_mode="anthropic_messages", env_vars=("MINIMAX_API_KEY",),
     base_url="https://api.minimax.io/anthropic", auth_type="api_key", default_aux_model="MiniMax-M3",
+    # The vendor serves the model catalog under /anthropic/v1/models; the generic {base}/models probe
+    # hits a 404 and silently disabled live discovery for every MiniMax release (#152406).
+    models_url="https://api.minimax.io/anthropic/v1/models",
 )
 
 minimax_cn = MiniMaxProfile(
     name="minimax-cn", aliases=("minimax-china", "minimax_cn"), api_mode="anthropic_messages",
     env_vars=("MINIMAX_CN_API_KEY",), base_url="https://api.minimaxi.com/anthropic", auth_type="api_key",
     default_aux_model="MiniMax-M3",
+    models_url="https://api.minimaxi.com/anthropic/v1/models",
 )
 
 minimax_oauth = MiniMaxProfile(
@@ -54,6 +58,7 @@ minimax_oauth = MiniMaxProfile(
     signup_url="https://api.minimax.io/",
     env_vars=(),  # OAuth — tokens in auth.json, not env
     base_url="https://api.minimax.io/anthropic", auth_type="oauth_external", default_aux_model="MiniMax-M2.7",
+    models_url="https://api.minimax.io/anthropic/v1/models",
 )
 
 register_provider(minimax)

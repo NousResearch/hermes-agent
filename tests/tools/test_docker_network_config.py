@@ -101,8 +101,10 @@ def _reuse_guard_harness(
             else:
                 Result.stdout = "existing-container-id\trunning\n"
         elif len(cmd) > 1 and cmd[1] == "inspect":
-            # Two probes share `inspect`: image identity (must match for reuse) and network mode.
-            Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
+            if '.Config.Labels "hermes-reuse-owners"' in cmd[3]:
+                Result.stdout = candidate_labels.get(docker_env.OWNER_LABEL, "")
+            else:
+                Result.stdout = f"{existing_image}\n" if ".Config.Image" in cmd[3] else f"{existing_mode}\n"
         elif len(cmd) > 2 and cmd[1:3] == ["image", "inspect"]:
             Result.returncode = 1  # never in the local store: the replacement must go through `pull`
         elif len(cmd) > 1 and cmd[1] == "pull":
@@ -130,6 +132,7 @@ def _reuse_guard_harness(
         network=network,
         extra_args=extra_args,
         persist_across_processes=True,
+        shared_container_key="legacy-network-guard",
         image_pinned=image_pinned,
     )
     return commands

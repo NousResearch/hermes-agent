@@ -112,8 +112,8 @@ def test_runtime_configuration_controls_persistent_reuse(monkeypatch, tmp_path, 
             elif fmt == "{{.HostConfig.NetworkMode}}":
                 stdout = record["network"]
             else:
-                assert fmt == '{{index .Config.Labels "hermes-runtime-fingerprint"}}'
-                stdout = record["labels"]["hermes-runtime-fingerprint"]
+                assert fmt.startswith('{{index .Config.Labels "')
+                stdout = record["labels"].get(fmt.split('"')[1], "")
         elif cmd[1:3] == ["image", "inspect"]:
             if "{{.Id}}" in cmd:
                 code = 1 if change.startswith("missing-image") else 0

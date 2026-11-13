@@ -16,7 +16,7 @@ from hermes_state_wal import _detect_network_fs, apply_wal_with_fallback
 
 def _mountinfo(tmp_path, lines):
     p = tmp_path / "mountinfo"
-    p.write_text("\n".join(lines) + "\n")
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(p)
 
 

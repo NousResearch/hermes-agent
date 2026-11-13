@@ -7,7 +7,7 @@ import type { RosterGroupRow } from './roster-pane-derivation'
 import { GatewayKindGlyph, GatewaySectionHeading, RosterSectionHeader } from './roster-sections'
 import type { ResolvedRosterGatewaySection } from './roster-sections'
 import type { BotMeta, GroupChat, RosterRow } from './types'
-import type { $botSections, SectionDialogState } from './user-sections'
+import type { $botSections, SectionBlock, SectionDialogState } from './user-sections'
 import {
   deleteBotSection,
   GROUP_DRAG_PREFIX,
@@ -72,6 +72,67 @@ export function rosterSectionRenderers({
   // `keyPrefix` keeps row keys unique across the gateway buckets.
   type UserSectionRow = { bot: RosterRow; kind?: 'bot' } | RosterGroupRow
 
+  // One section block: its heading, then its rows or the empty slot, as one
+  // drop target. `keyPrefix` names the bucket it is drawn in; '' is the top
+  // level.
+  const renderSectionBlock = (block: SectionBlock<UserSectionRow>, keyPrefix = '') => {
+    const key = `${keyPrefix}${block.id ? `user-section:${block.id}` : UNASSIGNED_SECTION_KEY}`
+    const collapsed = rosterSectionCollapsed(key)
+    const order = userSections.findIndex(section => section.id === block.id)
+
+    return (
+      <SectionDropZone
+        isSource={
+          Boolean(dragging) &&
+          block.rows.some(row =>
+            row.kind === 'group' ? groupDragKey(row.name) === dragging : botRosterKey(row.bot) === dragging
+          )
+        }
+        key={key}
+        nested={Boolean(keyPrefix)}
+        onDropBot={rosterKey => {
+          // `block.id` is null for Unassigned, which is exactly the value
+          // both movers want for "clear the assignment".
+          if (rosterKey.startsWith(GROUP_DRAG_PREFIX)) {
+            moveGroupChatsToSection([rosterKey.slice(GROUP_DRAG_PREFIX.length)], block.id)
+
+            return
+          }
+
+          const bot = roster.find(row => botRosterKey(row) === rosterKey)
+
+          if (bot) {
+            void moveBotsToSection([bot], block.id)
+          }
+        }}
+      >
+        <UserSectionHeader
+          canMoveDown={order >= 0 && order < userSections.length - 1}
+          canMoveUp={order > 0}
+          collapsed={collapsed}
+          count={block.rows.length}
+          id={block.id}
+          name={block.name}
+          onDelete={() => block.id && removeSection(block.id)}
+          onMove={delta => block.id && moveBotSection(block.id, delta)}
+          onRename={() => block.id && setSectionDialog({ id: block.id, mode: 'rename', name: block.name })}
+          onToggle={() => toggleRosterSection(key)}
+        />
+        {collapsed ? null : block.rows.length ? (
+          <div className="grid min-w-0 gap-0.5">
+            {block.rows.map(row => (row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot, `${key}:`)))}
+          </div>
+        ) : (
+          // Empty section: a quiet dashed slot that says what it is for,
+          // and doubles as a roomy drop target.
+          <div className="mx-1 mb-1 rounded-md border border-dashed border-(--ui-stroke-secondary) px-2 py-2 text-center text-[0.6875rem] text-(--ui-text-quaternary)">
+            {b.sections.emptyHint}
+          </div>
+        )}
+      </SectionDropZone>
+    )
+  }
+
   const renderUserSections = (rows: UserSectionRow[], keyPrefix = '') => {
     // No sections made: the plain list, exactly as before this feature.
     if (!userSections.length) {
@@ -79,78 +140,39 @@ export function rosterSectionRenderers({
     }
 
     const nested = Boolean(keyPrefix)
-    const blocks = groupRowsBySection(rows, userSections, allMeta, groupRooms)
 
     return (
-      blocks
+      groupRowsBySection(rows, userSections, allMeta, groupRooms)
         // An empty Unassigned is not worth a heading; an empty NAMED section
         // is, because it is somewhere the user made and is about to drop into.
         // Inside a gateway bucket the same empty section would repeat under
-        // every connection, so there it only appears while a drag is in flight
-        // (as the drop target it exists for); the row menu files into it
-        // regardless.
-        .filter(block => block.rows.length || (block.id && (!nested || dragging)))
-        .map(block => {
-          const key = `${keyPrefix}${block.id ? `user-section:${block.id}` : UNASSIGNED_SECTION_KEY}`
-          const collapsed = rosterSectionCollapsed(key)
-          const order = userSections.findIndex(section => section.id === block.id)
-
-          return (
-            <SectionDropZone
-              isSource={
-                Boolean(dragging) &&
-                block.rows.some(row =>
-                  row.kind === 'group' ? groupDragKey(row.name) === dragging : botRosterKey(row.bot) === dragging
-                )
-              }
-              key={key}
-              nested={nested}
-              onDropBot={rosterKey => {
-                // `block.id` is null for Unassigned, which is exactly the value
-                // both movers want for "clear the assignment".
-                if (rosterKey.startsWith(GROUP_DRAG_PREFIX)) {
-                  moveGroupChatsToSection([rosterKey.slice(GROUP_DRAG_PREFIX.length)], block.id)
-
-                  return
-                }
-
-                const bot = roster.find(row => botRosterKey(row) === rosterKey)
-
-                if (bot) {
-                  void moveBotsToSection([bot], block.id)
-                }
-              }}
-            >
-              <UserSectionHeader
-                canMoveDown={order >= 0 && order < userSections.length - 1}
-                canMoveUp={order > 0}
-                collapsed={collapsed}
-                count={block.rows.length}
-                id={block.id}
-                name={block.name}
-                onDelete={() => block.id && removeSection(block.id)}
-                onMove={delta => block.id && moveBotSection(block.id, delta)}
-                onRename={() => block.id && setSectionDialog({ id: block.id, mode: 'rename', name: block.name })}
-                onToggle={() => toggleRosterSection(key)}
-              />
-              {collapsed ? null : block.rows.length ? (
-                <div className="grid min-w-0 gap-0.5">
-                  {block.rows.map(row =>
-                    row.kind === 'group' ? renderGroupRow(row) : renderBotRow(row.bot, `${key}:`)
-                  )}
-                </div>
-              ) : (
-                // Empty section: a quiet dashed slot that says what it is for,
-                // and doubles as a roomy drop target.
-                <div className="mx-1 mb-1 rounded-md border border-dashed border-(--ui-stroke-secondary) px-2 py-2 text-center text-[0.6875rem] text-(--ui-text-quaternary)">
-                  {b.sections.emptyHint}
-                </div>
-              )}
-            </SectionDropZone>
-          )
-        })
+        // every connection, so a bucket draws only the sections it has rows
+        // for; a section with rows in no bucket is drawn once, below them all
+        // (renderEmptyUserSections).
+        .filter(block => block.rows.length || (block.id && !nested))
+        .map(block => renderSectionBlock(block, keyPrefix))
     )
   }
+
+  // The named sections no gateway bucket drew: those without a row among
+  // `rows`, which is everything the buckets list. Each gets its one heading
+  // at the top level, so a section is on screen from the moment it is made
+  // (#155196) and takes a row dragged from any bucket; filing one seats the
+  // section inside that row's bucket, and it leaves this list.
+  //
+  // They are NOT repeated inside the buckets while a drag is in flight, as
+  // empty sections used to be. This block is already the drop target, so a
+  // copy per bucket would only show the same empty section several times;
+  // and hiding this one mid-drag to make room for those copies would pull the
+  // slot that reads "Drag bots here" from under the pointer. The list holds
+  // still under a drag: what is on screen at rest is what can be dropped on.
+  // A section seated in another gateway's bucket takes the drop there (filing
+  // does not ask which gateway the bot runs on), and the row menu files into
+  // any section regardless.
+  const renderEmptyUserSections = (rows: UserSectionRow[]) =>
+    groupRowsBySection(rows, userSections, allMeta, groupRooms)
+      .filter(block => block.id && !block.rows.length)
+      .map(block => renderSectionBlock(block))
 
   const renderGatewaySection = (section: ResolvedRosterGatewaySection) => {
     const sectionId = `gateway:${section.id}`
@@ -205,5 +227,11 @@ export function rosterSectionRenderers({
     </div>
   )
 
-  return { renderUserSections, renderGatewaySection, renderGroupChatSection, renderHiddenGatewaySection }
+  return {
+    renderUserSections,
+    renderEmptyUserSections,
+    renderGatewaySection,
+    renderGroupChatSection,
+    renderHiddenGatewaySection
+  }
 }

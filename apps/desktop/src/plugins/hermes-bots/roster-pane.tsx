@@ -469,21 +469,26 @@ export function BotsPane() {
     />
   )
 
-  const { renderUserSections, renderGatewaySection, renderGroupChatSection, renderHiddenGatewaySection } =
-    rosterSectionRenderers({
-      b,
-      userSections,
-      roster,
-      allMeta,
-      groupRooms,
-      dragging,
-      rosterSectionCollapsed,
-      toggleRosterSection,
-      setSectionDialog,
-      renderBotRow,
-      renderGroupRow,
-      sortedGroupRows
-    })
+  const {
+    renderUserSections,
+    renderEmptyUserSections,
+    renderGatewaySection,
+    renderGroupChatSection,
+    renderHiddenGatewaySection
+  } = rosterSectionRenderers({
+    b,
+    userSections,
+    roster,
+    allMeta,
+    groupRooms,
+    dragging,
+    rosterSectionCollapsed,
+    toggleRosterSection,
+    setSectionDialog,
+    renderBotRow,
+    renderGroupRow,
+    sortedGroupRows
+  })
 
   return (
     <div className="flex h-full flex-col">
@@ -537,6 +542,7 @@ export function BotsPane() {
         renderGroupChatSection,
         renderGatewaySection,
         renderUserSections,
+        renderEmptyUserSections,
         renderHiddenGatewaySection
       })}
       {renderRosterDialogs({

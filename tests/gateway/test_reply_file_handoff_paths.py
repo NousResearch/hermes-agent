@@ -57,13 +57,17 @@ async def test_file_segment_remains_known_as_delivered():
     c = GatewayStreamConsumer(adapter, '4242')
     c.on_delta(text)
     c.on_segment_break()
+    # After a tool round the agent streams the same reply again, led by a "\n\n" paragraph break.
+    again = '\n\n' + text
+    for i in range(0, len(again), 1500):
+        c.on_delta(again[i:i + 1500])
     c.finish(text)
     await c.run()
     from gateway.run_turn import GatewayTurnMixin
     confirmed = GatewayTurnMixin._run_agent_stream_confirmed_final_delivery(c, text)
     if not confirmed:
         await adapter._send_with_retry('4242', text)
-    assert len(adapter._bot.files) == 1
+    assert adapter._bot.files == [text.encode()]
 
 @pytest.mark.asyncio
 async def test_completed_commentary_reply_also_hands_off():

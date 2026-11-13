@@ -154,8 +154,11 @@ class StreamCeilingMixin:
         file as the turn's delivery (the gateway's normal final send then does nothing)."""
         if not text.strip():
             return False
-        ids = await send_reply_as_file(self.adapter, self.chat_id, text, reply_to=self._initial_reply_to_id,
-                                       metadata=dict(self.metadata or {}))
+        # A later segment repeating a reply already delivered (the agent re-streams it after a tool round,
+        # led by a paragraph break) is not uploaded again; its previews are only removed.
+        delivered = self._shown_as(text, self._delivered_segment_texts)
+        ids = [] if delivered else await send_reply_as_file(
+            self.adapter, self.chat_id, text, reply_to=self._initial_reply_to_id, metadata=dict(self.metadata or {}))
         if ids is None:
             return False
         stale = sorted(self._ceiling_ids - set(ids))
@@ -168,7 +171,8 @@ class StreamCeilingMixin:
         self._delivered_final_text = self._display_payload(text)
         # Durable record: a segment reset clears the final flags, and a final equal to this file must
         # still read as delivered (else the gateway's fallback uploads it a second time).
-        self._delivered_segment_texts.append(self._delivered_final_text)
+        if not delivered:
+            self._delivered_segment_texts.append(self._delivered_final_text)
         return True
 
     async def _handoff_at_final(self, tick: Any) -> bool:

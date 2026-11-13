@@ -1,13 +1,13 @@
 import { DEFAULT_REASONING_EFFORT, type ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useRef } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { cachedProfileModelOptions, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { $daybreakByProfile, daybreakKey, setDaybreak, syncDaybreak } from '@/store/daybreak'
 import {
@@ -86,8 +86,11 @@ export function useModelMenuController({
   // peek: with no model in the session store yet, currentPickerSelection falls
   // back to the catalog's reported current, and a non-reactive read would
   // never repaint that fallback once the catalog resolved.
+  const queryClient = useQueryClient()
+
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
+    placeholderData: () => cachedProfileModelOptions(queryClient, profile, ownerConnectionId),
     queryFn: (): Promise<ModelOptionsResult> =>
       requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
   })

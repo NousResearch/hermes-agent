@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { registry } from '@/contrib/registry'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { queryClient } from '@/lib/query-client'
 import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -360,6 +361,40 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}, host:
 
   return select
 }
+
+describe('a new session catalog', () => {
+  it('lists the profile catalog at once while its own slow fetch is still in flight', async () => {
+    queryClient.setQueryData(modelOptionsQueryKey('default', 'earlier-session'), {
+      providers: [{ models: ['gemini-3.1-pro'], name: 'Google', slug: 'google' }]
+    })
+    const request = vi.fn(() => new Promise<never>(() => {}))
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ModelMenuCloseContext.Provider value={closeMenu}>
+          <DropdownMenu open>
+            <DropdownMenuContent>
+              <ModelCatalogMenu
+                controller={{
+                  applyPreset: vi.fn(),
+                  current: { effort: '', fast: false, model: '', provider: '' },
+                  presetFor: () => ({}),
+                  select: vi.fn(),
+                  setOptions: vi.fn()
+                }}
+                request={request}
+                sessionId="new-session"
+              />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </ModelMenuCloseContext.Provider>
+      </QueryClientProvider>
+    )
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(request).toHaveBeenCalledWith('model.options', expect.objectContaining({ session_id: 'new-session' }))
+  })
+})
 
 // Curation is ONE global preference, so it belongs to the catalog rather than
 // to whichever surface mounted it. If a host had to opt in, the composer and

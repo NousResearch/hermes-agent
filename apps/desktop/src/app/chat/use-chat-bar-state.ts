@@ -1,11 +1,16 @@
 import type { ModelOptionsResult } from '@hermes/shared'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type * as React from 'react'
 import { useMemo } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { quickModelOptions } from '@/lib/chat-runtime'
-import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import {
+  cachedProfileModelOptions,
+  currentModelCapabilities,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
 
 import type { ChatBarState } from './composer/types'
 
@@ -40,12 +45,20 @@ export function useChatBarState({
   reasoningMenuContent,
   requestModelOptionsForOwner
 }: ChatBarStateOptions): ChatBarState {
+  const queryClient = useQueryClient()
+
   const modelOptionsQuery = useQuery<ModelOptionsResult>({
     queryKey: modelOptionsQueryKey(
       modelOptionsProfile || activeGatewayProfile,
       activeSessionId,
       modelOptionsOwnerConnectionId
     ),
+    placeholderData: () =>
+      cachedProfileModelOptions(
+        queryClient,
+        modelOptionsProfile || activeGatewayProfile,
+        modelOptionsOwnerConnectionId
+      ),
     queryFn: () =>
       requestModelOptions({
         gateway: gateway || undefined,

@@ -353,6 +353,7 @@ def test_large_codex_lifecycle_only_stream_hits_attempt_progress_budget(tmp_path
     def stream_attempt():
         time.sleep(0.7)
         yield SimpleNamespace(type="response.created")
+        yield SimpleNamespace(type="response.output_item.done", item=SimpleNamespace(type="reasoning", summary=[]))
         while getattr(agent, "_active_codex_stream_request_token", None) is not None:
             time.sleep(0.02)
         raise ConnectionError("retired lifecycle-only stream")
@@ -367,7 +368,7 @@ def test_large_codex_lifecycle_only_stream_hits_attempt_progress_budget(tmp_path
 
 
 @pytest.mark.parametrize(
-    "mode", ["initial_gap", "stall", "retry_gap", "retry_no_event"]
+    "mode", ["initial_gap", "stall", "retry_gap", "retry_no_event", "encrypted_reasoning"]
 )
 def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
     tmp_path, monkeypatch, mode
@@ -376,7 +377,9 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
-    _shorten_implicit_idle_watchdog(monkeypatch, h)
+    _shorten_implicit_idle_watchdog(
+        monkeypatch, h, **({"progress_timeout": 2.0} if mode == "encrypted_reasoning" else {})
+    )
     monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "2")
     monkeypatch.setenv("HERMES_CODEX_TTFB_STRICT", "1")
     monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "5")
@@ -386,6 +389,18 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
 
     def stream_attempt():
         attempts["count"] += 1
+        if mode == "encrypted_reasoning":
+            from threading import Event
+
+            yield SimpleNamespace(type="response.created")
+            for index in range(2):
+                yield SimpleNamespace(type="response.output_item.done", item=SimpleNamespace(
+                    type="reasoning", id=f"rs-{index}", summary=[], encrypted_content="opaque-reasoning"))
+                Event().wait(1.3)  # health: allow HX013 -- model events must span the first-progress deadline
+            yield SimpleNamespace(type="response.output_text.delta", delta="done")
+            yield SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", id="resp-encrypted", usage=None))
+            return
         if mode == "initial_gap":
             yield SimpleNamespace(type="response.created")
             yield SimpleNamespace(type="response.in_progress")
@@ -424,12 +439,12 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
 
     _install_codex_event_stream(agent, monkeypatch, stream_attempt, closes)
 
-    if mode in {"initial_gap", "retry_gap"}:
+    if mode in {"initial_gap", "retry_gap", "encrypted_reasoning"}:
         response = h.interruptible_api_call(
             agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
         )
         assert response.output_text == "done"
-        assert attempts["count"] == (1 if mode == "initial_gap" else 2)
+        assert attempts["count"] == (2 if mode == "retry_gap" else 1)
     else:
         error_match = "no parsed stream event" if mode == "retry_no_event" else "no SSE events"
         with pytest.raises(TimeoutError, match=error_match):

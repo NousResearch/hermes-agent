@@ -23,6 +23,7 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { getUiState, patchUiState } from '../../uiStore.js'
 import { canonicalReasoning, canonicalUsage } from '../canonicalSessionCommands.js'
 import { runCanonicalSessionControl } from '../canonicalSessionControls.js'
+import { printCompressionSummary } from '../compressionSummary.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 import { usageTotalsSections } from '../usagePanel.js'
 
@@ -323,6 +324,10 @@ export const sessionCommands: SlashCommand[] = [
 
             if (r.usage) {
               patchUiState(state => ({ ...state, usage: { ...state.usage, ...r.usage } }))
+            }
+
+            if (printCompressionSummary(r.summary, ctx.transcript.sys)) {
+              return
             }
 
             if (r.summary?.headline) {

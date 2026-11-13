@@ -13,6 +13,7 @@
     "./billing-policy": "./src/billing-policy.ts",
     "./charge-settlement": "./src/charge-settlement.ts",
     "./circular-buffer": "./src/circular-buffer.ts",
+    "./locale-registry": "./src/locale-registry.ts",
     "./color": "./src/color.ts",
     "./format": "./src/format.ts",
     "./fuzzy": "./src/fuzzy.ts",

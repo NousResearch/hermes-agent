@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import type { MessagingPlatform } from "@/lib/api";
 import ChannelsPage from "./ChannelsPage";
+import { formatTranslation, I18nContext, resolveTranslations } from "@/i18n/runtime";
 
 const getMessagingPlatforms = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api", () => ({ api: { getMessagingPlatforms } }));
@@ -63,4 +64,23 @@ it("keeps the plain Disabled state and a live toggle when the user turned it off
   expect(container.textContent).toContain("Disabled");
   expect(container.textContent).not.toContain("Team Gateway");
   expect(toggle().disabled).toBe(false);
+});
+
+it("keeps the relay restriction and its accessible explanation when displaying Chinese", async () => {
+  getMessagingPlatforms.mockResolvedValue({
+    env_path: "/profile/.env", gateway_start_command: "hermes gateway start",
+    platforms: [slack({ disabled_by_relay: true })],
+  });
+  await act(async () => {
+    root.render(
+      <I18nContext.Provider value={{ format: formatTranslation, locale: "zh", t: resolveTranslations("zh"), setLocale: async () => {} }}>
+        <ChannelsPage />
+      </I18nContext.Provider>,
+    );
+  });
+  const button = container.querySelector<HTMLButtonElement>('[aria-label="启用 Slack"]');
+  expect(button?.disabled).toBe(true);
+  expect(container.textContent).toContain("由 Team Gateway 管理");
+  const note = document.getElementById(button?.getAttribute("aria-describedby") ?? "");
+  expect(note?.textContent).toContain("每次启动都会关闭 Slack 的直接连接");
 });

@@ -1537,7 +1537,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'tool.generating':
         if (ev.payload?.name) {
-          turnController.pushTrail(`drafting ${ev.payload.name}…`)
+          turnController.pushTrail({ kind: 'draft', name: ev.payload.name })
         }
 
         return

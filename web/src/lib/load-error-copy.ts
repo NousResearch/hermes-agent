@@ -10,7 +10,7 @@ export function loadErrorCopy(
   const loadFailed = t.loadFailed ?? en.common.loadFailed!;
   const loadFailedDetails = t.loadFailedDetails ?? en.common.loadFailedDetails!;
   return {
-    title: loadFailed.replace("{what}", what),
-    details: detail ? loadFailedDetails.replace("{detail}", detail) : null,
+    title: loadFailed.replace("{what}", () => what),
+    details: detail ? loadFailedDetails.replace("{detail}", () => detail) : null,
   };
 }

@@ -77,7 +77,7 @@ export function ChatSessionList({
   workspaceCwd,
   onWorkspaceChange,
 }: ChatSessionListProps) {
-  const { t } = useI18n();
+  const { format, locale, t } = useI18n();
   const [, setSearchParams] = useSearchParams();
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -107,12 +107,12 @@ export function ChatSessionList({
       })
       .catch((e: Error) => {
         if (reqRef.current !== myReq) return;
-        setError(e.message || "failed to load sessions");
+        setError(e.message || t.sessions.loadFailed);
       })
       .finally(() => {
         if (reqRef.current === myReq) setLoading(false);
       });
-  }, [scopeKey]);
+  }, [scopeKey, t.sessions.loadFailed]);
 
   const reload = useCallback(() => setReloadNonce((n) => n + 1), []);
 
@@ -200,11 +200,7 @@ export function ChatSessionList({
       );
     }
     if (!sessions || sessions.length === 0) {
-      return (
-        <div className="px-2 py-6 text-center text-xs text-text-secondary">
-          {t.sessions.noSessions}
-        </div>
-      );
+      return <div className="px-2 py-6 text-center text-xs text-text-secondary">{t.sessions.noSessions}</div>;
     }
     return (
       <div className="flex flex-col gap-0.5">
@@ -223,15 +219,17 @@ export function ChatSessionList({
                   : "text-text-secondary hover:bg-midground/5 hover:text-foreground",
               )}
             >
-              <span className="w-full truncate text-sm font-medium">
-                {rowLabel(s, t.sessions.untitledSession)}
-              </span>
+              <span className="w-full truncate text-sm font-medium">{rowLabel(s, t.sessions.untitledSession)}</span>
               <span className="flex w-full items-center gap-1.5 text-[0.6875rem] text-text-tertiary">
-                <span>{timeAgo(s.last_active)}</span>
+                <span>{timeAgo(s.last_active, locale)}</span>
                 {s.message_count > 0 && (
                   <>
                     <span aria-hidden>·</span>
-                    <span>{s.message_count} msgs</span>
+                    <span>
+                      {format(t.sessions.messageCount, {
+                        count: s.message_count,
+                      })}
+                    </span>
                   </>
                 )}
                 {s.source && s.source !== "cli" && (
@@ -246,19 +244,12 @@ export function ChatSessionList({
         })}
       </div>
     );
-  }, [activeSessionId, error, loading, pick, reload, sessions, t]);
+  }, [activeSessionId, error, format, loading, locale, pick, reload, sessions, t]);
 
   return (
-    <aside
-      className={cn(
-        "flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden",
-        className,
-      )}
-    >
+    <aside className={cn("flex h-full w-full min-w-0 shrink-0 flex-col overflow-hidden", className)}>
       <div className="flex items-center justify-between gap-2 px-2 pb-2">
-        <span className="text-display text-xs tracking-wider text-text-tertiary">
-          {t.sessions.title}
-        </span>
+        <span className="text-display text-xs tracking-wider text-text-tertiary">{t.sessions.title}</span>
         <Button
           ghost
           size="icon"
@@ -272,26 +263,14 @@ export function ChatSessionList({
       </div>
 
       {onWorkspaceChange && (
-        <ChatWorkspacePicker
-          profile={profile}
-          value={workspaceCwd ?? ""}
-          onChange={onWorkspaceChange}
-        />
+        <ChatWorkspacePicker profile={profile} value={workspaceCwd ?? ""} onChange={onWorkspaceChange} />
       )}
 
-      <Button
-        outlined
-        size="sm"
-        onClick={startNew}
-        prefix={<MessageSquarePlus />}
-        className="mx-2 mb-2 justify-center"
-      >
+      <Button outlined size="sm" onClick={startNew} prefix={<MessageSquarePlus />} className="mx-2 mb-2 justify-center">
         {t.sessions.newChat}
       </Button>
 
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-1">
-        {content}
-      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-1">{content}</div>
     </aside>
   );
 }

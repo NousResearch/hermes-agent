@@ -7,6 +7,23 @@
 
 export const contentEn = {
   content: {
+    thinkingVerbs: {
+      pondering: 'pondering',
+      contemplating: 'contemplating',
+      musing: 'musing',
+      cogitating: 'cogitating',
+      ruminating: 'ruminating',
+      deliberating: 'deliberating',
+      mulling: 'mulling',
+      reflecting: 'reflecting',
+      processing: 'processing',
+      reasoning: 'reasoning',
+      analyzing: 'analyzing',
+      computing: 'computing',
+      synthesizing: 'synthesizing',
+      formulating: 'formulating',
+      brainstorming: 'brainstorming'
+    },
     // Keyed by tool name (untranslated identifier) → progress verb.
     verbs: {
       browser: 'browsing',

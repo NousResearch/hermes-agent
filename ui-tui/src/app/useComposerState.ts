@@ -535,7 +535,13 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
           }
 
           if (!quiet) {
-            sys(r?.message || 'No image found in clipboard')
+            sys(
+              r?.reason === 'extract_failed'
+                ? t('clipboard.extractionFailed')
+                : r?.reason === 'empty' || !r?.message
+                  ? t('clipboard.noImage')
+                  : r.message
+            )
           }
 
           return null
@@ -748,7 +754,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
               })
           ).catch((e: Error) => {
             if (current()) {
-              sys(`error: ${e.message}`)
+              sys(t('errors.rpc', e.message))
             }
 
             return null

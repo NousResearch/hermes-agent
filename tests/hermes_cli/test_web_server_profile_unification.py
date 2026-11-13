@@ -77,6 +77,61 @@ class TestProfileScopedConfig:
         assert _cfg(isolated_profiles["worker_beta"]).get("timezone") == "Pluto/Far"
         assert _cfg(isolated_profiles["default"]).get("timezone") != "Pluto/Far"
 
+
+
+    def test_config_revision_is_lightweight_and_profile_scoped(self, client, isolated_profiles):
+        before = client.get(
+            "/api/config/revision", params={"profile": "worker_beta"}
+        ).json()
+        assert before["path"] == str(
+            isolated_profiles["worker_beta"] / "config.yaml"
+        )
+
+        resp = client.put(
+            "/api/config",
+            json={
+                "config": {"display": {"language": "zh"}},
+                "profile": "worker_beta",
+            },
+        )
+        assert resp.status_code == 200
+
+        after = client.get(
+            "/api/config/revision", params={"profile": "worker_beta"}
+        ).json()
+        assert after["revision"] != before["revision"]
+        assert client.get("/api/config/revision").json()["path"] == str(
+            isolated_profiles["default"] / "config.yaml"
+        )
+
+    def test_config_revision_tracks_backend_changes_without_a_local_file(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        from hermes_cli import config_backend
+
+        config_path = isolated_profiles["worker_beta"] / "config.yaml"
+        config_path.unlink()
+
+        class VersionedBackend(config_backend.FileBackend):
+            revision = "first"
+
+            def version(self, home):
+                assert home == isolated_profiles["worker_beta"]
+                return ("etag", self.revision)
+
+            def cache_version(self, home, version):
+                return version
+
+        backend = VersionedBackend()
+        monkeypatch.setattr(config_backend, "get_config_backend", lambda: backend)
+        before = client.get("/api/config/revision", params={"profile": "worker_beta"})
+        assert before.status_code == 200
+        backend.revision = "second"
+        after = client.get("/api/config/revision", params={"profile": "worker_beta"})
+        assert after.status_code == 200
+        assert after.json()["revision"] != before.json()["revision"]
+        assert not config_path.exists()
+
     def test_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/config", params={"profile": "ghost"})
         assert resp.status_code == 404

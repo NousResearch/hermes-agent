@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { completeMcpDashboardOAuth } from "./mcp-dashboard-oauth";
+import { completeMcpDashboardOAuth, McpDashboardOAuthError } from "./mcp-dashboard-oauth";
 
 describe("completeMcpDashboardOAuth", () => {
   it("opens the authorization URL in the dashboard browser and polls to approval", async () => {
@@ -39,10 +39,7 @@ describe("completeMcpDashboardOAuth", () => {
       sleep: async () => {},
     });
 
-    expect(open).toHaveBeenCalledWith(
-      "about:blank",
-      "_blank",
-    );
+    expect(open).toHaveBeenCalledWith("about:blank", "_blank");
     expect(authWindow.opener).toBeNull();
     expect(authWindow.location.href).toBe("https://idp.example/authorize");
     expect(status).toHaveBeenCalledTimes(2);
@@ -71,14 +68,16 @@ describe("completeMcpDashboardOAuth", () => {
 
   it("fails before starting when the browser blocks the popup", async () => {
     const start = vi.fn();
-    await expect(
-      completeMcpDashboardOAuth({
-        serverName: "reports",
-        start,
-        status: vi.fn(),
-        open: vi.fn().mockReturnValue(null),
-      }),
-    ).rejects.toThrow("popup was blocked");
+    const result = completeMcpDashboardOAuth({
+      serverName: "reports",
+      start,
+      status: vi.fn(),
+      open: vi.fn().mockReturnValue(null),
+    });
+    await expect(result).rejects.toMatchObject({
+      name: McpDashboardOAuthError.name,
+      code: "popup-blocked",
+    });
     expect(start).not.toHaveBeenCalled();
   });
 
@@ -95,36 +94,35 @@ describe("completeMcpDashboardOAuth", () => {
       };
     });
 
-    await expect(
-      completeMcpDashboardOAuth({
-        serverName: "reports",
-        start: async () => ({
-          flow_id: "flow-closed",
-          server_name: "reports",
-          status: "authorization_required",
-          authorization_url: "https://idp.example/authorize",
-          error: null,
-        }),
-        status,
-        open: vi.fn().mockReturnValue(authWindow),
-        sleep: async () => {},
+    const result = completeMcpDashboardOAuth({
+      serverName: "reports",
+      start: async () => ({
+        flow_id: "flow-closed",
+        server_name: "reports",
+        status: "authorization_required",
+        authorization_url: "https://idp.example/authorize",
+        error: null,
       }),
-    ).rejects.toThrow("authorization window was closed");
+      status,
+      open: vi.fn().mockReturnValue(authWindow),
+      sleep: async () => {},
+    });
+    await expect(result).rejects.toMatchObject({
+      name: McpDashboardOAuthError.name,
+      code: "authorization-window-closed",
+    });
   });
 
   it("retries a transient status failure", async () => {
     const authWindow = { location: { href: "" }, opener: {}, closed: false } as unknown as Window;
-    const status = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("temporary network failure"))
-      .mockResolvedValueOnce({
-        flow_id: "flow-retry",
-        server_name: "reports",
-        status: "approved",
-        authorization_url: "https://idp.example/authorize",
-        error: null,
-        tools: [],
-      });
+    const status = vi.fn().mockRejectedValueOnce(new Error("temporary network failure")).mockResolvedValueOnce({
+      flow_id: "flow-retry",
+      server_name: "reports",
+      status: "approved",
+      authorization_url: "https://idp.example/authorize",
+      error: null,
+      tools: [],
+    });
 
     const result = await completeMcpDashboardOAuth({
       serverName: "reports",

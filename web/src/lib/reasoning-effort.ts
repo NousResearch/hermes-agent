@@ -1,8 +1,4 @@
-import {
-  DEFAULT_REASONING_EFFORT,
-  REASONING_EFFORT_VALUES,
-  type ReasoningEffortValue,
-} from "@hermes/shared";
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES, type ReasoningEffortValue } from '@hermes/shared'
 
 /**
  * Pure reasoning-effort helpers shared by the dashboard ReasoningPicker.
@@ -16,32 +12,24 @@ import {
  */
 
 export interface EffortOption {
-  value: string;
-  label: string;
+  value: string
+  labelKey: ReasoningEffortValue
 }
 
-const EFFORT_LABELS: Record<ReasoningEffortValue, string> = {
-  none: "Off (no thinking)",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-  ultra: "Ultra",
-};
-
 /** `none` first, then the seven levels ascending — the shared value order. */
-export const EFFORT_OPTIONS: ReadonlyArray<EffortOption> = REASONING_EFFORT_VALUES.map(
-  (value) => ({ value, label: EFFORT_LABELS[value] }),
-);
+export const EFFORT_OPTIONS: ReadonlyArray<EffortOption> = REASONING_EFFORT_VALUES.map(value => ({
+  value,
+  labelKey: value
+}))
 
-export const VALID_EFFORTS: ReadonlySet<string> = new Set(REASONING_EFFORT_VALUES);
+export const VALID_EFFORTS: ReadonlySet<string> = new Set(REASONING_EFFORT_VALUES)
 
 /** Normalize a raw `agent.reasoning_effort` config value to a selectable
  *  option. Empty/unknown → `medium` (Hermes' default when unset). */
 export function normalizeEffort(raw: unknown): string {
-  const value = String(raw ?? "").trim().toLowerCase();
-  if (!value) return DEFAULT_REASONING_EFFORT;
-  return VALID_EFFORTS.has(value) ? value : DEFAULT_REASONING_EFFORT;
+  const value = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+  if (!value) return DEFAULT_REASONING_EFFORT
+  return VALID_EFFORTS.has(value) ? value : DEFAULT_REASONING_EFFORT
 }

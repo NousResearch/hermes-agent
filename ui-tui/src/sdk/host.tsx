@@ -4,9 +4,10 @@ import { Component, type ReactNode } from 'react'
 
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiTheme } from '../app/uiStore.js'
+import { t as tr } from '../i18n/index.js'
 import { recordParentLifecycle } from '../lib/parentLog.js'
 
-import { getWidgetApp } from './registry.js'
+import { getWidgetApp, widgetUsage } from './registry.js'
 import type { ActiveWidget, AmbientZone, WidgetApp, WidgetInput } from './types.js'
 
 /**
@@ -45,7 +46,7 @@ export function launchWidget(id: string, arg = ''): null | string {
   const app = getWidgetApp(id)
 
   if (!app) {
-    return `unknown widget app: ${id}`
+    return tr('widget.unknownApp', id)
   }
 
   if (isAmbient(app)) {
@@ -61,7 +62,7 @@ export function launchWidget(id: string, arg = ''): null | string {
   const state = app.init(arg)
 
   if (state === null) {
-    return app.usage ?? `usage: /${id}`
+    return widgetUsage(app)
   }
 
   place(app, state)

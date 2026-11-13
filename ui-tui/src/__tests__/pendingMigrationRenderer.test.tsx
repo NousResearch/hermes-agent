@@ -33,16 +33,22 @@ it('moves compression queues across cached successors without changing attempted
   }
 
   let instance = renderSync(<Harness />, options)
+  // These arrivals have a defined order across different destination queues.
+  const now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
 
   try {
     const original = captureDestination()
     const attempted = queue.stage('attempted')
     const settle = attempted.settle
+    clock.mockReturnValue(now + 1)
     const waiting = queue.enqueue('waiting')
     queue.setQueueEdit(1)
     patchUiState({ sid: 'next' })
     expect(queue.queueRef.current).toEqual([]) // cache successor before migration
+    clock.mockReturnValue(now + 2)
     const ownNext = queue.enqueue('already next')
+    clock.mockRestore()
     patchUiState({ sid: 'old' })
     pending.migratePendingInputs(original, 'next')
     patchUiState({ sid: 'next' })
@@ -89,6 +95,7 @@ it('moves compression queues across cached successors without changing attempted
     pending.migratePendingInputs(cold, 'cold successor')
     expect(queue.queueRef.current.map(item => item.text)).toEqual(['cold source'])
   } finally {
+    clock.mockRestore()
     instance.unmount()
     resetUiState()
     vi.unstubAllEnvs()

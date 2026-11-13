@@ -308,6 +308,7 @@ describe('status-chrome timers under an occluding overlay', () => {
     // store-driven re-render can land well after one 20ms scheduler turn.
     await vi.waitFor(() => expect(rule.output()).toContain('6m 0s'), { interval: 10, timeout: 5_000 })
 
+    await vi.waitFor(() => expect(rule.output()).toContain('6m 0s'), { timeout: 2000 })
     const resumed = rule.output()
 
     // Caught up to real elapsed time, not stuck on the pre-overlay values.

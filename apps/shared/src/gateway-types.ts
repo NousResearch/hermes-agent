@@ -1,6 +1,7 @@
 /** Typed results and events of the gateway's JSON-RPC methods, as a client reads them. */
 import type { UsageModelData } from './billing-types.js'
 import type {
+  CompressionSummary,
   ConnectionRequestPayload,
   GatewayEvent,
   GatewayEventMap,
@@ -31,6 +32,7 @@ export interface SessionInfo extends SessionLiveInfo {
 }
 
 export interface SlashCategory {
+  key?: string
   name: string
   pairs: [string, string][]
 }
@@ -85,6 +87,8 @@ export type AnyGatewayEvent = {
 }[AnyGatewayEventName]
 
 export interface GatewayCompletionItem {
+  meta_key?: string
+  meta_vars?: Record<string, string | number>
   display: string
   /** Completion class, set by the gateway. `skill` covers skill commands and
    *  skill bundles — the only kind offered for an inline `/skill` reference. */
@@ -96,6 +100,7 @@ export interface GatewayCompletionItem {
 // ── Commands / completion ────────────────────────────────────────────
 
 export interface CommandsCatalogResponse {
+  description_keys?: Record<string, string>
   canon?: Record<string, string>
   categories?: SlashCategory[]
   pairs?: [string, string][]
@@ -355,6 +360,18 @@ export interface SessionUsageResponse {
 }
 
 export interface SessionStatusResponse {
+  details?: {
+    agent_running: boolean
+    created: string
+    last_activity: string
+    model: string
+    path: string
+    project?: string
+    provider: string
+    session_id: string
+    title?: string
+    tokens: number
+  }
   output?: string
 }
 
@@ -366,12 +383,7 @@ export interface SessionCompressResponse {
   info?: SessionInfo
   messages?: TranscriptMessage[]
   removed?: number
-  summary?: {
-    headline?: string
-    noop?: boolean
-    note?: null | string
-    token_line?: string
-  }
+  summary?: Partial<CompressionSummary>
   usage?: Usage
 }
 
@@ -439,6 +451,7 @@ export interface ShellExecResponse {
 }
 
 export interface ClipboardPasteResponse {
+  reason?: string
   attached?: boolean
   count?: number
   height?: number

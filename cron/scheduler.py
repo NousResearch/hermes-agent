@@ -1765,6 +1765,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
         elif not requested and (aliased := alias_runtime_request(model, jc.cfg)):
             model, runtime_kwargs = aliased  # ``model.default: myalias``: its own endpoint+key (#154786)
+            requested = runtime_kwargs["requested"]  # a fallback notice names the provider actually tried
         return resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during

@@ -2265,17 +2265,18 @@ def _resolve_runtime_agent_kwargs() -> dict:
     ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own)."""
     from hermes_cli.runtime_provider import format_runtime_provider_error, _get_model_config
 
-    # Capture primary provider/model from config before the try block so we
-    # can include it in the fallback notice if the primary fails (#74349).
+    # Primary provider/model captured before the try: the fallback notice names them (#74349).
     _model_cfg = _get_model_config()
     _primary_model = (_model_cfg.get("default") or "").strip()
     _primary_provider = (_model_cfg.get("provider") or "").strip()
 
     from hermes_cli.default_model_alias import resolve_default_runtime  # a model.default alias (#154786)
     try:
-        runtime, fallback_entry, alias_model = resolve_default_runtime(_load_gateway_config())
+        runtime, fallback_entry, alias = resolve_default_runtime(_load_gateway_config())
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
+    if alias is not None:  # a fallback notice names the alias's own provider/model, the route that failed
+        _primary_provider, _primary_model = alias.provider or _primary_provider, alias.model
 
     if fallback_entry is not None:
         # The entry's model is the one this agent must send (#112600). Carry the fallback notice so the
@@ -2292,7 +2293,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         {k: v for k, v in capabilities.items() if isinstance(k, str) and isinstance(v, bool)}
         if isinstance(capabilities, dict) else {})
 
-    return {**_runtime_agent_kwargs(runtime), "capabilities": capabilities, **({"model": alias_model} if alias_model else {})}
+    return {**_runtime_agent_kwargs(runtime), "capabilities": capabilities, **({"model": alias.model} if alias else {})}
 
 
 def _runtime_agent_kwargs(runtime: dict) -> dict:

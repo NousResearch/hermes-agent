@@ -97,3 +97,20 @@ def test_every_config_default_surface_expands_the_alias(monkeypatch, surface):
     model, runtime = surface()
     assert (model, runtime["base_url"], runtime["api_key"]) == (
         "some-vendor/some-model-id", "http://127.0.0.1:9999/v1", "sk-alias-host")
+
+
+@pytest.mark.parametrize("fallback", [True, False], ids=["turn", "session-control"])
+def test_a_canonical_session_on_a_default_alias_runs_the_alias_route(tmp_path, monkeypatch, fallback):
+    """``session.create`` with no model (``hermes --tui``, Desktop) freezes ``model.default`` = the alias into its
+    policy; the policy route (in-process turn and managed worker) must expand it like every other surface."""
+    from dataclasses import replace
+    from gateway.session_policy import build_policy
+    from gateway.session_worker_construct import model_route_runtime
+    monkeypatch.setenv("DEMO_API_KEY", "sk-alias-host")
+    policy = build_policy({"cwd": str(tmp_path), "toolsets": []}, _ALIAS_CONFIG, profile_terminal=False)
+    policy = replace(policy, model=run._resolve_gateway_model(policy.config()))  # session_local's no-model step
+    frozen, model = policy.effective()
+    assert model == "myalias"
+    model, runtime, _ = model_route_runtime(policy, frozen, model, None, fallback=fallback)
+    assert (model, runtime["base_url"], runtime["api_key"]) == (
+        "some-vendor/some-model-id", "http://127.0.0.1:9999/v1", "sk-alias-host")

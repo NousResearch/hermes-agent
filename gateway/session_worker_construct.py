@@ -190,6 +190,23 @@ def route_runtime(policy, frozen, model, key, *, fallback=True):
             explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
 
 
+def model_route_runtime(policy, frozen, model, key, *, fallback=True):
+    """``(model, runtime, fallback_entry)``: ``route_runtime`` unless the policy's model is a configured alias
+    of its frozen config (a ``model.default: myalias`` session; an explicit ``-m`` alias was already resolved
+    at create). The alias's own model, endpoint and key then travel together, never the bare name on the
+    default provider (#154786). A launch URL means the route was chosen explicitly and keeps it."""
+    from hermes_cli.default_model_alias import alias_runtime_request
+    aliased = None if json.loads(policy.request_json).get('base_url') else alias_runtime_request(model, frozen)
+    if aliased is None:
+        return (model, *route_runtime(policy, frozen, model, key, fallback=fallback))
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback
+    alias_model, request = aliased
+    with frozen_runtime_config(frozen):
+        if not fallback:
+            return alias_model, resolve_runtime_provider(**request), None
+        return (alias_model, *resolve_runtime_with_fallback(frozen, **request))
+
+
 def worker_route(policy, construct):
     """Child side: the ``api_key`` / ``base_url`` / ``api_mode`` overrides for the worker's agent, resolved
     as the in-process turn resolves its route (``route_runtime`` with the launch key, if one was bound),
@@ -205,9 +222,10 @@ def worker_route(policy, construct):
     frozen, model = policy.effective()
     if 'fallback_model' in construct:
         frozen = {**frozen, 'fallback_providers': construct['fallback_model'] or [], 'fallback_model': None}
-    runtime, fallback_entry = route_runtime(policy, frozen, model, construct['api_key'])
+    route_model, runtime, fallback_entry = model_route_runtime(policy, frozen, model, construct['api_key'])
     if fallback_entry is not None:
         return {}
+    aliased = {'model': route_model} if route_model != model else {}
     api_mode = runtime.get('api_mode')
     # A built-in provider's chat_completions is the resolver's default unless model.api_mode set it: None
     # leaves the agent's model-aware upgrade (GPT-5 on OpenRouter to Responses). A custom route's mode
@@ -216,6 +234,9 @@ def worker_route(policy, construct):
     if (api_mode == 'chat_completions' and runtime.get('provider') != 'custom'
             and not (frozen.get('model') or {}).get('api_mode')):
         api_mode = None
+    if aliased:  # the alias's own key and provider, never the launch key bound for the default route
+        return {**aliased, 'api_key': runtime.get('api_key'), 'provider': runtime.get('provider'),
+                'base_url': runtime.get('base_url'), 'api_mode': api_mode}
     return {'api_key': construct['api_key'] or runtime.get('api_key'), 'base_url': runtime.get('base_url'),
             'api_mode': api_mode}
 

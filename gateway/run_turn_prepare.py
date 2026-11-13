@@ -48,18 +48,19 @@ def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str
     so tests that bind the method onto bare namespaces still reach it."""
     from gateway.run import _runtime_agent_kwargs
     from gateway.session_policy import route_launch_key
-    from gateway.session_worker_construct import route_runtime
+    from gateway.session_worker_construct import model_route_runtime
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
     # A follow_profile_config session's route is the profile's current one, model and endpoint from one read.
     frozen, model = policy.effective(authority)
     provider = (frozen.get('model') or {}).get('provider')
-    runtime, fallback_entry = route_runtime(policy, frozen, model, route_launch_key(authority, policy, frozen),
-                                            fallback=fallback)
+    configured = model  # a ``model.default`` alias resolves to its own model/endpoint/key (#154786)
+    model, runtime, fallback_entry = model_route_runtime(
+        policy, frozen, model, route_launch_key(authority, policy, frozen), fallback=fallback)
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
         runner._pre_agent_fallback_notice = pre_agent_fallback_notice(
-            provider or '', model or '',
+            provider or '', configured or '',
             runtime.get('provider') or fallback_entry.get('provider') or 'unknown',
             fallback_entry.get('model') or 'default')
         return fallback_entry['model'], _runtime_agent_kwargs(runtime)

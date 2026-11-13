@@ -70,16 +70,17 @@ def alias_runtime_request(name: str, config: Any) -> Optional[tuple[str, dict]]:
     return (route.model, runtime_request(route)) if route is not None else None
 
 
-def resolve_default_runtime(config: dict) -> tuple[dict, Optional[dict], str]:
-    """``(runtime, fallback_entry, alias_model)`` for a profile's config default: the shared
+def resolve_default_runtime(config: dict) -> tuple[dict, Optional[dict], Optional[Any]]:
+    """``(runtime, fallback_entry, alias_route)`` for a profile's config default: the shared
     ``resolve_runtime_with_fallback`` walk, on the alias entry's own model/endpoint/key when
     ``model.default`` names one (resolved against *config* itself), else the plain default route.
-    ``alias_model`` is the alias's backing model id ("" when the default is not an alias)."""
+    ``alias_route`` is the alias's ``StartupModelRoute`` (None when the default is not an alias), so
+    callers name the alias's model and provider, not the bare alias, in notices."""
     from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
     route = default_alias_route(config)
     if route is None:
         runtime, fallback_entry = resolve_runtime_with_fallback(config)
-        return runtime, fallback_entry, ""
+        return runtime, fallback_entry, None
     with frozen_runtime_config(config):
         runtime, fallback_entry = resolve_runtime_with_fallback(config, **runtime_request(route))
-    return runtime, fallback_entry, route.model
+    return runtime, fallback_entry, route

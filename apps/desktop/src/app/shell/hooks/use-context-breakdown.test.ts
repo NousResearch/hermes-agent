@@ -306,6 +306,21 @@ describe('useContextBreakdown invalidation (#94001 follow-up)', () => {
     expect(requestGateway).toHaveBeenCalledTimes(2)
   })
 
+  it('clears stale data while an invalidated breakdown is still loading', async () => {
+    const requestGateway = vi.fn()
+      .mockResolvedValueOnce(PRE_COMPRESSION_BREAKDOWN)
+      .mockImplementationOnce(() => new Promise(() => {})) as unknown as GatewayRequester
+
+    const { result } = renderHook(() => useContextBreakdown({
+      busy: false, enabled: true, requestGateway, sessionId: 's1'
+    }))
+
+    await flushAsync()
+    expect(result.current.breakdown).toEqual(PRE_COMPRESSION_BREAKDOWN)
+    act(() => invalidateContextBreakdown('s1'))
+    expect(result.current.breakdown).toBeNull()
+  })
+
   it('does not refetch a different session when an unrelated session is invalidated', async () => {
     const requestGateway = vi.fn(async () => PRE_COMPRESSION_BREAKDOWN) as unknown as GatewayRequester
 

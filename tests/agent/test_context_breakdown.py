@@ -69,6 +69,22 @@ def test_context_used_never_exceeds_model_window():
                                             last_real_prompt_tokens=150_000))
     assert seeded["context_used"] <= seeded["context_max"]
 
+def test_a_sized_window_is_reported_before_anything_is_counted():
+    """A model switch (``update_model``) adopts the new window and zeroes the old model's occupancy.
+
+    The status bar reads ``context_max`` off these fields and merges them into what it already shows,
+    so omitting the window on zero occupancy left the PREVIOUS model's window and percentage on
+    screen until the next response. Occupancy itself is not fabricated: it stays absent until a
+    reading exists (the existing ``test_get_usage_does_not_substitute_cumulative_total...`` contract).
+    """
+    from agent.context_breakdown import context_usage_fields
+
+    fields = context_usage_fields(MagicMock(context_length=200_000, last_prompt_tokens=0,
+                                            last_real_prompt_tokens=None))
+    assert fields == {"context_max": 200_000}
+    # A compressor that does not know its window still reports nothing: no fabricated max.
+    assert context_usage_fields(MagicMock(context_length=0, last_prompt_tokens=900)) == {}
+
 def test_empty_transcript_still_reports_the_conversation_category():
     """Zero conversation tokens is a measurement, not an absence (#87903).
 

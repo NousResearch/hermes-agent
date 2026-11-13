@@ -46,6 +46,30 @@ describe('mergeUsageStable (#41480 status-bar flicker)', () => {
     expect(cleared.active_subagents).toBe(0)
   })
 
+  it('drops the previous window’s occupancy when a patch states a window without a reading', () => {
+    // 1M -> 500k: a committed model switch publishes the new window alone (the compressor's reading
+    // was priced against the old model and `update_model` zeroed it), so the merged bar must not
+    // pair the old figures with the new window — it shows `—` until the new window is measured.
+    const switched = mergeUsageStable({ ...baseUsage, context_source: 'provider_usage' }, { context_max: 500_000 })
+    expect(switched.context_max).toBe(500_000)
+    expect(switched.calls).toBe(3)
+
+    for (const key of ['context_estimated', 'context_percent', 'context_source', 'context_used'] as const) {
+      expect(switched).not.toHaveProperty(key)
+    }
+
+    // The same window restated without a reading is still not a reading (a same-size switch).
+    expect(mergeUsageStable(baseUsage, { context_max: 200_000 })).not.toHaveProperty('context_used')
+
+    // A patch that carries its own reading keeps it; one that says nothing about the window changes nothing.
+    expect(mergeUsageStable(baseUsage, { context_max: 200_000, context_percent: 3, context_used: 5_000 })).toMatchObject({
+      context_max: 200_000,
+      context_percent: 3,
+      context_used: 5_000
+    })
+    expect(mergeUsageStable(baseUsage, { total: 1700 })).toMatchObject({ context_used: 24_000 })
+  })
+
   it('treats a key present on only one side as a change', () => {
     expect(usageChanged(baseUsage, { ...baseUsage, cost_usd: 0.01 })).toBe(true)
     expect(usageChanged({ ...baseUsage, cost_usd: 0.01 }, baseUsage)).toBe(true)

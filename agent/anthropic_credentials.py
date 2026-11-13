@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, base_url_hostname
 from agent.secret_scope import get_secret as _get_secret
+from hermes_cli.auth import has_usable_secret
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,13 @@ def _getenv(name: str, default: str = "") -> str:
 
 
 def _first_env(*names: str) -> str:
-    """First non-blank (stripped) value among *names*, else ''."""
-    return next((v for v in (_getenv(n).strip() for n in names) if v), "")
+    """First non-blank, non-placeholder value among *names*, else ''.
+
+    A placeholder (``sk-ant...gQAA`` copied off a console page) must not shadow the later
+    sources of ``resolve_anthropic_token``.  Only env values are filtered: the pool and the
+    borrowed credential file are machine-written, so they cannot hold a typed-in example.
+    """
+    return next((v for v in (_getenv(n).strip() for n in names) if has_usable_secret(v)), "")
 
 
 def _is_oauth_token(key: str) -> bool:

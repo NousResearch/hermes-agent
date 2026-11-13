@@ -20,7 +20,7 @@ class TestProfileHookKeywordCompat:
     without ``**context`` must not start raising TypeError on every request."""
 
     def test_hook_without_var_kwargs_still_called(self, transport):
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         class OldSignature(ProviderProfile):
             def build_api_kwargs_extras(self, *, reasoning_config=None, supports_reasoning=False,

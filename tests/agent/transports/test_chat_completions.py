@@ -9,7 +9,7 @@ from openai import OpenAI
 
 from hermes_agent.agent.transports import get_transport
 from hermes_agent.agent.transports.types import NormalizedResponse
-from providers import get_provider_profile
+from hermes_agent.providers import get_provider_profile
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ class TestChatCompletionsBasic:
 
     @pytest.mark.parametrize("provider", ["nous", "openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile(provider)
         kw = transport.build_kwargs(
@@ -275,7 +275,7 @@ class TestChatCompletionsBuildKwargs:
 
 
     def test_openrouter_provider_prefs(self, transport):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile("openrouter")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -292,7 +292,7 @@ class TestChatCompletionsBuildKwargs:
 
     def test_nous_tags(self, transport):
         from hermes_agent.agent.portal_tags import nous_portal_tags
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, provider_profile=profile)
@@ -300,7 +300,7 @@ class TestChatCompletionsBuildKwargs:
 
 
     def test_nous_omits_disabled_reasoning_for_unknown_model(self, transport):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -316,7 +316,7 @@ class TestChatCompletionsBuildKwargs:
         assert "reasoning" not in kw.get("extra_body", {})
 
     def test_ollama_num_ctx(self, transport):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -327,7 +327,7 @@ class TestChatCompletionsBuildKwargs:
         assert kw["extra_body"]["options"]["num_ctx"] == 32768
 
     def test_custom_think_false(self, transport):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -339,7 +339,7 @@ class TestChatCompletionsBuildKwargs:
         assert kw["extra_body"]["think"] is False
 
     def test_custom_omits_think_on_mistral(self, transport):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         profile = get_provider_profile("custom")
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -371,7 +371,7 @@ class TestChatCompletionsBuildKwargs:
 
     def test_gemini_ultra_thinking_raises_first_request_max_tokens(self, transport):
         from hermes_agent.agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile("gemini")
         kw = transport.build_kwargs(
@@ -402,7 +402,7 @@ class TestChatCompletionsBuildKwargs:
         assert kw38["extra_body"]["thinking_config"]["thinkingLevel"] == "medium"
 
     def test_gemini_without_thinking_keeps_explicit_max_tokens(self, transport):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile("gemini")
         kw = transport.build_kwargs(
@@ -434,7 +434,7 @@ class TestChatCompletionsBuildKwargs:
 
     def test_omit_temperature(self, transport):
         """Omit temperature is set via ProviderProfile with OMIT_TEMPERATURE sentinel."""
-        from providers.base import ProviderProfile, OMIT_TEMPERATURE
+        from hermes_agent.providers.base import ProviderProfile, OMIT_TEMPERATURE
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
             model="gpt-4o", messages=msgs,
@@ -687,7 +687,7 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
     """
 
     def _nous_profile(self):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         return get_provider_profile("nous")
 
     def test_tags_stripped_when_endpoint_is_native_gemini(self, transport):
@@ -792,7 +792,7 @@ class TestPromptCacheKeyCapability:
         return captured
 
     def test_profile_capability_emits_content_key_in_nonstream_request_body(self, transport):
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         kwargs = transport.build_kwargs(
             model="cache-model",
@@ -855,7 +855,7 @@ class TestPromptCacheKeyCapability:
 
     @pytest.mark.parametrize("provider", [None, "anthropic", "custom"])
     def test_default_off_never_leaks_unknown_body_field(self, transport, provider):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         kwargs = transport.build_kwargs(
             model="strict-model",
@@ -871,7 +871,7 @@ class TestPromptCacheKeyCapability:
         assert "prompt_cache_key" not in body
 
     def test_explicit_top_level_and_extra_body_overrides_are_preserved(self, transport):
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
         top_level = transport.build_kwargs(
@@ -934,7 +934,7 @@ class TestPromptCacheKeyCapability:
         to the same pck_<sha256[:24]> shape the Responses transport uses
         (opencode#44571 parity — clamp on every chat protocol).
         """
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
         long_key = "sess-" + "x" * 200
@@ -951,7 +951,7 @@ class TestPromptCacheKeyCapability:
         assert body["prompt_cache_key"] == kwargs["prompt_cache_key"]
 
     def test_overlong_caller_extra_body_key_is_bounded(self, transport):
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
         long_key = "sess-" + "y" * 200
@@ -982,7 +982,7 @@ class TestPromptCacheKeyCapability:
     def test_whitespace_only_caller_key_is_dropped(self, transport):
         """_bounded_prompt_cache_key returns None for blank keys — the field
         must be removed rather than sent empty."""
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         profile = ProviderProfile(name="cache-capable", supports_prompt_cache_key=True)
         kwargs = transport.build_kwargs(

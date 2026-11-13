@@ -151,8 +151,8 @@ def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path
 
 MODEL_PROVIDER_PLUGIN = '''
 import os
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 class HostModel(ProviderProfile):
     def build_extra_body(self, *, session_id=None, **context):
@@ -164,7 +164,7 @@ register_provider(HostModel(name="hostmodel", base_url="https://hostmodel.exampl
 
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_model_provider_profile_data_is_local_and_overrides_run_in_the_host(tmp_path, monkeypatch):
-    import providers
+    from hermes_agent import providers
 
     home = _home_with_plugins(tmp_path, monkeypatch, {})
     plugin_dir = home / "plugins" / "model-providers" / "hostmodel"

@@ -5,7 +5,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 from unittest.mock import patch, MagicMock
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 class _FakeModelHandler(BaseHTTPRequestHandler):
@@ -200,7 +200,7 @@ class TestModelPickerBaseUrlIntegration:
         mock_profile.fetch_models.return_value = ["model-a"]
 
         with (
-            patch("providers.get_provider_profile", return_value=mock_profile),
+            patch("hermes_agent.providers.get_provider_profile", return_value=mock_profile),
             patch("hermes_cli.auth.resolve_api_key_provider_credentials",
                   return_value={"api_key": "sk-test", "base_url": "https://custom.proxy.com"}),
         ):
@@ -215,7 +215,7 @@ class TestModelPickerBaseUrlIntegration:
 def test_profiles_without_model_listing_never_hit_the_network():
     """SDK-backed profiles (bedrock, vertex) still carry a base_url the generic fetch_models
     would happily GET ``/models`` against; the flag must short-circuit first."""
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
 
     flagged = [p for p in list_providers() if not p.supports_model_listing]
     assert {p.name for p in flagged} >= {"bedrock", "vertex"}

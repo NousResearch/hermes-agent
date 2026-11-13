@@ -852,7 +852,7 @@ def _default_on(dir_path, source: str) -> bool:
     if not path.is_dir():
         return False
     if source != "bundled":
-        from providers import _declares_model_provider_kind
+        from hermes_agent.providers import _declares_model_provider_kind
         root = _plugins_dir()
         if path.name.startswith(("_", ".")) or path.parent not in (root, root / "model-providers"):
             return False

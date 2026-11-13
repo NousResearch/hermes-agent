@@ -243,7 +243,7 @@ def test_status_enables_a_user_model_provider_only_where_provider_discovery_impo
     ``plugins/<name>/`` one only when it declares exactly ``kind: model-provider``. A provider in a
     category directory, or flat with a differently-cased kind, never loads, so status must not call
     it enabled. A non-provider under ``model-providers/`` is imported but never registered."""
-    import providers
+    from hermes_agent import providers
 
     for rel, kind in (("flatprov", "model-provider"), ("model-providers/subprov", "model-provider"),
                       ("model-providers/subcaps", "MODEL-PROVIDER"), ("custom/nestedprov", "model-provider"),

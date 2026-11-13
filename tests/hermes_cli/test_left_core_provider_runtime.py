@@ -265,8 +265,8 @@ def test_a_piped_cli_front_end_prints_the_outcome_and_what_another_process_kept(
 
 
 _INSTALLED_PROVIDER = """
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 register_provider(ProviderProfile(name="copilot", display_name="Stand-in", auth_type="api_key",
                                   env_vars=("COPILOT_GITHUB_TOKEN",), base_url="https://copilot.stand-in.test/v1"))
@@ -278,7 +278,7 @@ def test_a_provider_installed_during_resolution_resolves_in_that_same_call(tmp_p
     see the new profile, not answer "installed but not loaded: run hermes plugins enable"."""
     import sys
 
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
     home = _copilot_home(tmp_path, monkeypatch)
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "stand-in-token")
     monkeypatch.setattr(providers, "_HOME_LAYERS", {})

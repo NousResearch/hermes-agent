@@ -20,8 +20,8 @@ def _plugin(home: Path, name: str, url: str, env: tuple, aliases: tuple) -> None
     plugin = home / "plugins" / "model-providers" / name
     plugin.mkdir(parents=True)
     (plugin / "__init__.py").write_text(textwrap.dedent(f"""
-        from providers import register_provider
-        from providers.base import ProviderProfile
+        from hermes_agent.providers import register_provider
+        from hermes_agent.providers.base import ProviderProfile
 
         register_provider(ProviderProfile(
             name={name!r}, auth_type="api_key", env_vars={env!r}, base_url={url!r},
@@ -31,7 +31,7 @@ def _plugin(home: Path, name: str, url: str, env: tuple, aliases: tuple) -> None
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
     from hermes_cli import auth_plugin_providers as app
     from hermes_cli.auth import PROVIDER_REGISTRY
 

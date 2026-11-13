@@ -18,9 +18,9 @@ CARRIER = "hermes.native_assistant"
 
 @pytest.fixture
 def make_profile(request, monkeypatch):
-    import providers
+    from hermes_agent import providers
     from hermes_agent.agent import provider_route_hooks
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     monkeypatch.setattr(provider_route_hooks, "_WARNED", set(), raising=False)
 

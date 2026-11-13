@@ -49,8 +49,8 @@ ARGS_ENV_VAR = "FAKE_ACP_ARGS"
 _PLUGIN_INIT = f'''"""Fake external_process provider: drives an ACP agent CLI through agent.acp_client.ACPClient."""
 
 from agent.acp_client import ACPClient
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class FakeACPClient(ACPClient):

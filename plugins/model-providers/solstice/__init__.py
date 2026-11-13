@@ -12,8 +12,8 @@ from dataclasses import replace
 from typing import Any
 
 from hermes_cli.auth_oauth_pkce_plugin import OAuthPKCEConfig, pkce_auth_handler, pkce_refresh_credential
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 from .auth import broker_token_request, discover_client
 

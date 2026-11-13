@@ -9,13 +9,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 @pytest.fixture
 def plugin(monkeypatch):
     """Register a profile the way discovery does (providers layer + auth mirror) on registry copies."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli import auth
 
     monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))

@@ -71,7 +71,7 @@ def _provider_default_routes(provider: str) -> set[str]:
         add(getattr(provider_def, "base_url", ""))
 
     with suppress(Exception):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
         add(getattr(get_provider_profile(provider), "base_url", ""))
 
     with suppress(Exception):
@@ -739,7 +739,7 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict
     elif "default_headers" not in client_kwargs:
         # Static profile.default_headers (Vercel AI Gateway attribution, Kimi UA on non-kimi.com endpoints).
         with suppress(Exception):
-            from providers import get_provider_profile as _gpf
+            from hermes_agent.providers import get_provider_profile as _gpf
             _ph = _gpf(agent.provider)
             if _ph and _ph.default_headers:
                 client_kwargs["default_headers"] = dict(_ph.default_headers)

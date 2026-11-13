@@ -11,13 +11,13 @@ import stat
 
 import pytest
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 @pytest.fixture
 def plugin(monkeypatch):
     """Register *profile* the way plugin discovery does (providers registry + auth mirror), no leaks."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli import auth
     from hermes_cli.auth_plugin_providers import PLUGIN_MIRRORED_PROVIDERS, register_plugin_provider
 
@@ -121,7 +121,7 @@ def test_any_external_process_plugin_counts_as_signed_in_when_its_binary_resolve
     """The Desktop ``explicit_only`` filter (``build_model_options_payload`` behind
     ``hermes_agent/tui_gateway/methods_complete.py::model.options``) keeps an out-of-tree ACP row exactly like the
     bundled one: binary resolves → auth evidence; missing binary → hidden."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli import auth
     from hermes_cli.inventory import _external_process_signed_in, _filter_explicit_provider_rows
 

@@ -36,7 +36,7 @@ _GENERIC_ENDPOINT = ResponsesEndpointQuirks()
 def responses_endpoint_quirks(base_url: Any) -> ResponsesEndpointQuirks:
     """Quirks for *base_url*; the generic wire when no registered profile claims it (or none is installed).
     Pure function of the URL and the registry, so every turn replays the same bytes for the same history."""
-    from providers import profile_for_host
+    from hermes_agent.providers import profile_for_host
 
     profile = profile_for_host(str(base_url or ""))
     if profile is None:
@@ -1257,7 +1257,7 @@ class _OutputScan:
 
 def _untrusted_completed_issuers() -> frozenset:
     """Issuer kinds whose reasoning-only ``completed`` status is not final (once per normalized response)."""
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
 
     declared = (p.responses_issuer_kind for p in list_providers()
                 if p.responses_issuer_kind and not p.responses_trusts_completed_status)

@@ -797,8 +797,8 @@ class TestProfileCatalogAuthoritative:
 
     @pytest.fixture
     def relay_profile(self, monkeypatch):
-        import providers
-        from providers.base import ProviderProfile
+        from hermes_agent import providers
+        from hermes_agent.providers.base import ProviderProfile
 
         profile = ProviderProfile(
             name="relay-owned-catalog", auth_type="api_key",

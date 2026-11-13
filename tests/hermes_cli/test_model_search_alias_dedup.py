@@ -30,7 +30,7 @@ class TestPickerMergeAliasDedup:
                 },
             ),
             patch(
-                "providers.base.ProviderProfile.fetch_models",
+                "hermes_agent.providers.base.ProviderProfile.fetch_models",
                 return_value=["k3", "kimi-for-coding"],
             ),
         ):

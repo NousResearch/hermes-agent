@@ -59,7 +59,7 @@ def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
     under the home's scope, so the launch home keeps its shell value and a routed home never gets it."""
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, get_secret, reset_secret_scope, set_secret_scope
     from hermes_cli.plugin_host_profiles import is_hosted_profile
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
     names = {name for p in list_providers() if p.ambient_credentials and is_hosted_profile(p) for name in p.env_vars}
     if not names:
         return {}

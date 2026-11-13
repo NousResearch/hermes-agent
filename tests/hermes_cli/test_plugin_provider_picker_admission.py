@@ -14,7 +14,7 @@ import pytest
 
 
 def _register(monkeypatch, profile):
-    import providers
+    from hermes_agent import providers
     from hermes_cli import auth
 
     monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
@@ -30,7 +30,7 @@ def _register(monkeypatch, profile):
 
 @pytest.mark.parametrize("auth_type", ["external_process", "oauth_external", "oauth_device_code", "api_key"])
 def test_plugin_profiles_are_admitted_by_slug_not_auth_type(auth_type):
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
     from hermes_cli.models_catalog_static import CANONICAL_PROVIDERS, _plugin_provider_enters_picker
 
     assert _plugin_provider_enters_picker(ProviderProfile(name="acme-plugin", auth_type=auth_type)) is True
@@ -43,7 +43,7 @@ def test_external_process_plugin_authenticated_flag_tracks_binary_and_catalog_us
         monkeypatch, tmp_path):
     """The row's authenticated flag is the real binary-resolves gate (not a hardcoded slug), and the
     profile's fallback_models is its catalog when the subprocess probe yields nothing."""
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
     from hermes_cli import models, models_catalog_static
 
     exe = tmp_path / "acme-acp"

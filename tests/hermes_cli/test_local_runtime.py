@@ -298,7 +298,7 @@ def test_llamacpp_aliases_route_to_custom_profile():
     """Design + maintainer direction: llamacpp fits the EXISTING provider
     mechanism — the aliases already resolve to the keyless custom profile;
     no parallel provider plugin exists."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     for alias in ("llamacpp", "llama.cpp", "llama-cpp"):
         profile = get_provider_profile(alias)

@@ -15,8 +15,8 @@ from typing import Any
 
 from hermes_agent.agent.lmstudio_reasoning import resolve_lmstudio_effort
 from hermes_agent.agent.reasoning_effort import generic_nested_reasoning
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class LMStudioProfile(ProviderProfile):

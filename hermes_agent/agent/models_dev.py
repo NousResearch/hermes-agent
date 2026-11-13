@@ -138,7 +138,7 @@ _MODELS_DEV_TO_PROVIDER: Optional[dict[str, list[str]]] = None
 def _profile_models_dev_ids() -> dict[str, str]:
     """``{name: models_dev_id}`` declared by registered provider profiles the static map lacks.
     Read at lookup time (never merged into ``PROVIDER_TO_MODELS_DEV``)."""
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
     return {p.name: p.models_dev_id for p in list_providers()
             if p.models_dev_id and p.name not in PROVIDER_TO_MODELS_DEV}
 
@@ -868,7 +868,7 @@ def _provider_model_capabilities(provider: str, model: str) -> dict[str, Any]:
     """Exact-model declaration from the registered ``ProviderProfile.model_capabilities`` (canonical
     ``model_overrides`` schema). The ONE plugin seam: every consumer that reads models.dev through this
     module (picker badges, image routing, ``/api/model/info``, context lookup) sees it (#102115)."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile(provider)
     return profile.model_capabilities.get(model, {}) if profile is not None else {}

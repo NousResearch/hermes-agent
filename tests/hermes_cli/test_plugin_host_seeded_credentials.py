@@ -11,8 +11,8 @@ from hermes_cli import plugins as plugins_mod
 
 SEEDING_PLUGIN = '''
 import os
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 class Seeds(ProviderProfile):
     def seed_pool_credentials(self, *, suppressed_sources, explicitly_configured):
@@ -49,7 +49,7 @@ def _shutdown():
 
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_hosted_profile_seeds_the_pool_from_a_shell_exported_ambient_token(tmp_path, monkeypatch):
-    import providers
+    from hermes_agent import providers
     from hermes_agent.agent.credential_pool import load_pool
 
     _install(tmp_path, monkeypatch)
@@ -77,11 +77,11 @@ def test_hosted_profile_skips_a_suppressed_source(tmp_path, monkeypatch):
 
 
 def test_a_routed_home_host_never_inherits_the_launch_shell_token(tmp_path, monkeypatch):
-    import providers
+    from hermes_agent import providers
     from hermes_cli.plugin_host import _hosted_ambient_credentials
     from hermes_cli.plugin_host_profiles import _profile_proxy
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     launch, coder, writer = tmp_path / "launch", tmp_path / "coder", tmp_path / "writer"
     for home in (launch, coder, writer):

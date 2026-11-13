@@ -17,8 +17,8 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 _PLUGIN = textwrap.dedent(
     """
-    from providers import register_provider
-    from providers.base import ProviderProfile
+    from hermes_agent.providers import register_provider
+    from hermes_agent.providers.base import ProviderProfile
 
     register_provider(ProviderProfile(name="aliased-fake", aliases=("aliasy",), auth_type="api_key",
                                       env_vars=("ALIASED_FAKE_KEY",), base_url="https://aliased.invalid/v1"))
@@ -34,7 +34,7 @@ def _install(home: Path) -> None:
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
     from hermes_cli import auth_plugin_providers as app
     from hermes_cli.auth import PROVIDER_REGISTRY
 

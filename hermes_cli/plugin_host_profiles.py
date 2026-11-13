@@ -34,7 +34,7 @@ def load_hosted_profiles(plugin_dir: Path, module_name: str) -> tuple[list[Any],
     """ProviderProfile proxies for a model-provider plugin whose code runs in the plugin host, plus
     ``{profile name: reason}`` for its profiles that cannot cross the host boundary (the caller
     loads those in-process)."""
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
     payload = _cached_extraction(Path(plugin_dir), module_name)
     if payload.get("error"):
         raise PluginHostUnavailable(str(payload["error"]))

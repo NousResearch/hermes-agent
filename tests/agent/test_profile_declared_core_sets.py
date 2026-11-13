@@ -10,7 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 ACME = ProviderProfile(name="acme-cloud", aliases=("acme",), base_url="https://api.acme.test/v1",
                        ambient_credentials=True, message_carrier_opaque="acme_sig",
@@ -28,7 +28,7 @@ def test_ambient_credential_profile_keeps_identity_when_catalog_fails():
 
     with patch("hermes_cli.providers.get_provider", side_effect=_catalog_down), \
             patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=None), \
-            patch("providers.get_provider_profile", side_effect=_PROFILES.get):
+            patch("hermes_agent.providers.get_provider_profile", side_effect=_PROFILES.get):
         assert ac._preserve_provider_with_base_url("acme-cloud") is True
         assert ac._preserve_provider_with_base_url("plain-key") is False
 
@@ -45,7 +45,7 @@ def test_ack_detector_transition_cue_names_only_acp_agents():
     def ack(text):
         return looks_like_codex_intermediate_ack(agent, "go", text, [], require_workspace=False)
 
-    with patch("providers.list_providers", return_value=[acp, nous, PLAIN]):
+    with patch("hermes_agent.providers.list_providers", return_value=[acp, nous, PLAIN]):
         assert ack("Launching it on acme-acp via acpx.") is True
         assert ack("Relaunching the session on acme.") is True
         assert ack("Launching it on acmecli via acpx.") is True
@@ -60,9 +60,9 @@ def test_declared_message_carriers_are_unpriced():
 
     plain = {"role": "assistant", "content": "ok"}
     carried = {**plain, "acme_sig": "S" * 4000, "acme_thoughts": "T" * 4000}
-    with patch("providers.list_providers", return_value=[ACME, PLAIN]):
+    with patch("hermes_agent.providers.list_providers", return_value=[ACME, PLAIN]):
         assert {"acme_sig", "acme_thoughts"} <= unpriced_replay_fields()
         assert estimate_messages_tokens_rough([carried]) == estimate_messages_tokens_rough([plain])
-    with patch("providers.list_providers", return_value=[PLAIN]):
+    with patch("hermes_agent.providers.list_providers", return_value=[PLAIN]):
         fresh = {**plain, "acme_sig": "s" * 4000, "acme_thoughts": "t" * 4000}  # new strings: no memo hit
         assert estimate_messages_tokens_rough([fresh]) > estimate_messages_tokens_rough([plain])

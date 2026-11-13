@@ -553,7 +553,7 @@ def _take_protocol_streams():
 
 def capture_profiles(path: str, module_name: str) -> list[Any]:
     """Import a model-provider plugin and return the profiles it passes to ``register_provider``."""
-    import providers
+    from hermes_agent import providers
     providers.list_providers()  # bundled + known profiles register before the capture window
     captured: list[Any] = []
     original = providers.register_provider
@@ -567,7 +567,7 @@ def capture_profiles(path: str, module_name: str) -> list[Any]:
 
 def _host_unsupported_reason(profile: Any) -> str | None:
     """Why *profile* cannot run behind the plugin host (it then loads in-process), or None."""
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
     if type(profile).create_client is not ProviderProfile.create_client:
         return "it overrides create_client(), which returns a live SDK client"
     return None
@@ -582,7 +582,7 @@ def _extraction_entry(profile: Any) -> dict[str, Any]:
 
 def describe_profile(profile: Any) -> dict[str, Any]:
     """Profile data (instance fields) plus the methods and callable fields that must run here."""
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
     fields: dict[str, Any] = {}
     calls: dict[str, Any] = {}
     for name, value in vars(profile).items():

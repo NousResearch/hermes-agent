@@ -1456,7 +1456,7 @@ def _plugin_aliases() -> dict[str, str]:
     """``_PROVIDER_ALIASES`` extended with aliases declared in plugins/model-providers/<name>/."""
     aliases = dict(_PROVIDER_ALIASES)
     try:
-        from providers import list_providers as _lp
+        from hermes_agent.providers import list_providers as _lp
         for _pp in _lp():
             for _alias in _pp.aliases:
                 aliases.setdefault(_alias, _pp.name)
@@ -1576,7 +1576,7 @@ _NO_AUTO_DETECT_PROVIDERS = frozenset({"lmstudio"})
 
 def _credential_profile(provider_id: str) -> Any:
     """The provider's registered profile (credential seams), or None."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     return get_provider_profile(provider_id)
 
 
@@ -1584,7 +1584,7 @@ def _env_key_auto_detected(
     scoped_key_env: Callable[[str], str], oauth_active: Optional[str]) -> Optional[str]:
     """First registry api_key provider (registry order) with a usable env key, warning when it
     preempts a logged-in OAuth provider so a stale key in ~/.hermes/.env never switches silently."""
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
 
     ambient = {p.name for p in list_providers() if p.ambient_credentials}  # never per-pid lookups: a miss walks the ladder
     for pid, pconfig in _canonical_registry_rows():
@@ -2081,7 +2081,7 @@ def _external_process_spec(
     so out-of-tree providers describe their binary."""
     base_url = _provider_env_base_url(pconfig) or pconfig.inference_base_url
     try:
-        from providers import get_provider_profile as _get_provider_profile
+        from hermes_agent.providers import get_provider_profile as _get_provider_profile
         profile = _get_provider_profile(pconfig.id)
     except Exception:
         profile = None

@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import model_setup_flows as flows
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 class _Profile(ProviderProfile):

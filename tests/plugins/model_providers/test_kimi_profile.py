@@ -23,7 +23,7 @@ def kimi_profile():
     assertions below collapse.
     """
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("kimi-coding")
     assert profile is not None, "kimi-coding provider profile must be registered"
@@ -110,7 +110,7 @@ class TestKimiModelDiscovery:
         """Malformed user URLs must fall through safely, never authorize K3."""
         from unittest.mock import patch
 
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         with patch.object(
             ProviderProfile,
@@ -134,7 +134,7 @@ def test_moonshot_profiles_exclude_brotli(name):
     """#28043: httpx/brotlicffi mis-decodes Moonshot's br-encoded SSE stream,
     so both Moonshot profiles must negotiate gzip instead of brotli."""
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile(name)
     assert profile is not None

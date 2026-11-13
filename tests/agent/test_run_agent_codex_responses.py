@@ -62,8 +62,8 @@ RELAY_BASE_URL = "https://api.acme-relay.test"
 
 def _build_relay_agent(monkeypatch, *, model="gpt-5.4"):
     """A third-party Responses relay whose profile binds replayed message-item ids to a connection."""
-    import providers
-    from providers.base import ProviderProfile
+    from hermes_agent import providers
+    from hermes_agent.providers.base import ProviderProfile
 
     _patch_agent_bootstrap(monkeypatch)
     relay = ProviderProfile(name="acme-relay", base_url=RELAY_BASE_URL, api_mode="codex_responses",

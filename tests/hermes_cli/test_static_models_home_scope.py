@@ -20,8 +20,8 @@ SLUG = "acme-static"
 
 def _plugin(models: tuple) -> str:
     return textwrap.dedent(f"""
-        from providers import register_provider
-        from providers.base import ProviderProfile
+        from hermes_agent.providers import register_provider
+        from hermes_agent.providers.base import ProviderProfile
 
         register_provider(ProviderProfile(
             name="{SLUG}", display_name="Acme Static", auth_type="api_key", env_vars=("ACME_STATIC_KEY",),
@@ -31,7 +31,7 @@ def _plugin(models: tuple) -> str:
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    import providers
+    import hermes_agent.providers as providers  # noqa: PLR0402
     from hermes_cli import auth_plugin_providers as app
     from hermes_cli.auth import PROVIDER_REGISTRY
 

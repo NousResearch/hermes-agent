@@ -2,8 +2,8 @@
 
 Regression for https://github.com/NousResearch/hermes-agent/issues/119681
 """
-from providers import get_provider_profile, register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import get_provider_profile, register_provider
+from hermes_agent.providers.base import ProviderProfile
 from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
 
@@ -12,7 +12,7 @@ def test_bare_named_custom_provider_gets_custom_profile(monkeypatch):
 
     Regression for https://github.com/NousResearch/hermes-agent/issues/119681
     """
-    import providers
+    from hermes_agent import providers
     get_provider_profile("custom")
     monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
     monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
@@ -43,7 +43,7 @@ def test_named_custom_route_keeps_final_reasoning_effort():
 
 
 def test_named_custom_fallback_does_not_override_registered_routes(monkeypatch):
-    import providers
+    from hermes_agent import providers
     get_provider_profile("custom")
     monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
     monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
@@ -61,7 +61,7 @@ def test_bare_named_custom_memo_caches_the_helper_result(monkeypatch):
     Uncached it walks the provider registry per call (~2.5ms; #120901 review),
     which lands inside per-model prefix loops.
     """
-    import providers
+    from hermes_agent import providers
     from hermes_constants import get_hermes_home, hermes_home_key
 
     home, hkey = get_hermes_home(), hermes_home_key()
@@ -80,7 +80,7 @@ def test_bare_named_custom_memo_caches_the_helper_result(monkeypatch):
 
 def test_bare_named_custom_memo_invalidates_on_config_change(monkeypatch):
     """A config edit re-arms the memo: the signature is the same signal load_config uses."""
-    import providers
+    from hermes_agent import providers
     from hermes_constants import get_hermes_home, hermes_home_key
 
     home, hkey = get_hermes_home(), hermes_home_key()
@@ -98,7 +98,7 @@ def test_bare_named_custom_memo_invalidates_on_config_change(monkeypatch):
 
 def test_bare_named_custom_memo_is_keyed_by_home(monkeypatch):
     """Two home keys never borrow each other's answers (multiplex isolation)."""
-    import providers
+    from hermes_agent import providers
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home()

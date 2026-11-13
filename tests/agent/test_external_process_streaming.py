@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.agent.turn_api_call import _should_stream
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 # ProviderProfile's positional constructor slots as released (main before the provider seams).
@@ -56,7 +56,7 @@ def test_streaming_capability_preserves_positional_plugin_construction():
 ])
 def test_external_process_can_opt_into_streaming(monkeypatch, auth, capability, url, disabled, consumers, expected):
     profile = ProviderProfile(name="streaming-process", auth_type=auth, supports_streaming=capability)
-    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile)
+    monkeypatch.setattr("hermes_agent.providers.get_provider_profile", lambda name: profile)
     agent = SimpleNamespace(
         provider=profile.name, base_url=url,
         _disable_streaming=disabled, _has_stream_consumers=lambda: consumers,
@@ -72,7 +72,7 @@ def test_discovered_process_provider_delivers_progress_before_completion(tmp_pat
     Only native I/O is replaced, not routing, callbacks, accumulation or cleanup.
     """
     from hermes_constants import get_hermes_home
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     from hermes_agent.run_agent import AIAgent
     from hermes_agent.agent.turn_api_call import perform_api_call
 
@@ -81,8 +81,8 @@ def test_discovered_process_provider_delivers_progress_before_completion(tmp_pat
     (plugin / "plugin.yaml").write_text(
         "name: streaming-fixture\nkind: model-provider\nversion: 0.1.0\ndescription: test fixture\n")
     (plugin / "__init__.py").write_text(
-        "from providers import register_provider\n"
-        "from providers.base import ProviderProfile\n"
+        "from hermes_agent.providers import register_provider\n"
+        "from hermes_agent.providers.base import ProviderProfile\n"
         "register_provider(ProviderProfile(name='streaming-fixture', "
         "auth_type='external_process', base_url='process://fixture', supports_streaming=True))\n")
     profile = get_provider_profile("streaming-fixture")

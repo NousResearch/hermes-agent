@@ -5,7 +5,7 @@ DeepSeek-style chat_completions profiles (all route through
 import pytest
 
 from hermes_agent.agent.reasoning_effort import DEEPSEEK_V4_EFFORTS
-from providers import get_provider_profile
+from hermes_agent.providers import get_provider_profile
 
 REASONING_MATRIX = (
     None,

@@ -267,7 +267,7 @@ def _is_external_process_provider(provider: str) -> bool:
     except Exception:
         pass
     try:
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile(name)
     except Exception:

@@ -23,7 +23,7 @@ def _profile(name, *env_vars, auth_type="api_key"):
 
 def test_every_api_key_provider_var_is_declared_in_core():
     import hermes_cli.config as cfg
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
 
     expected = {v for p in list_providers() if p.auth_type == "api_key" for v in p.env_vars}
     assert expected, "no api_key provider profiles registered"
@@ -32,7 +32,7 @@ def test_every_api_key_provider_var_is_declared_in_core():
 
 
 def test_bundled_profiles_match_discovery_and_leave_the_registry_alone():
-    import providers
+    from hermes_agent import providers
 
     before = dict(providers._REGISTRY)
     bundled = {p.name: p for p in providers.bundled_profiles()}
@@ -70,7 +70,7 @@ def table(monkeypatch):
 
 
 def test_fill_runs_on_first_read_core_wins_provider_replaces_platform_first_provider_wins(table, monkeypatch):
-    import providers
+    from hermes_agent import providers
 
     calls = []
     profiles = [_profile("alpha", "CORE_KEY", "PLUG_KEY", "ALPHA_API_KEY", "ALPHA_BASE_URL"),
@@ -87,7 +87,7 @@ def test_fill_runs_on_first_read_core_wins_provider_replaces_platform_first_prov
 
 
 def test_discovery_completion_adds_registered_plugin_providers(table, monkeypatch):
-    import providers
+    from hermes_agent import providers
 
     from hermes_cli import config_defaults
 
@@ -123,8 +123,8 @@ def _marker_plugin(root: Path, name: str, marker: Path, env_var: str) -> None:
     plugin.joinpath("__init__.py").write_text(textwrap.dedent(f"""
         from pathlib import Path
         Path({str(marker)!r}).write_text("imported")
-        from providers import register_provider
-        from providers.base import ProviderProfile
+        from hermes_agent.providers import register_provider
+        from hermes_agent.providers.base import ProviderProfile
         register_provider(ProviderProfile(name={name!r}, env_vars=({env_var!r},), auth_type="api_key"))
     """))
 
@@ -140,9 +140,9 @@ def test_cold_discovery_completion_reads_no_config_and_scans_no_home_plugins(tmp
         import json, sys
         import hermes_cli.config as cfg
         import hermes_cli.config_backend as cb
-        import providers
+        from hermes_agent import providers
         from hermes_cli.config_backend import ConfigBackendUnavailable
-        from providers.base import ProviderProfile
+        from hermes_agent.providers.base import ProviderProfile
 
         reads = []
         def refuse(*a, **k):
@@ -184,7 +184,7 @@ _SAFE_CATALOG = """
         _bind_safe_worker_policy(safe_mode=True, ignore_user_config=True, config={})
     else:
         _bind_worker_config({})
-    import providers
+    from hermes_agent import providers
     providers._BUNDLED_PLUGINS_DIR = Path(sys.argv[2])
     import hermes_cli.config as cfg
     present = "MARKPLUG_API_KEY" in cfg.OPTIONAL_ENV_VARS

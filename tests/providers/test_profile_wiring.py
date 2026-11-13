@@ -6,7 +6,7 @@ and asserts the output is identical. This catches any behavioral drift between t
 
 import pytest
 from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
-from providers import get_provider_profile
+from hermes_agent.providers import get_provider_profile
 
 
 @pytest.fixture

@@ -51,7 +51,7 @@ def _should_stream(agent: Any) -> bool:
     _base = str(agent.base_url or "").lower()
     if _base.startswith(("acp://", "acp+tcp://")):
         return False
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
     from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     profile = get_provider_profile(agent.provider)

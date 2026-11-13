@@ -387,14 +387,14 @@ def test_doctor_never_copies_a_plugin_into_its_own_temp_dir(
 def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path: Path) -> None:
     """`kind: model-provider` registers a ProviderProfile at import and has no register(ctx);
     doctor must judge it by that contract and leave the live registry untouched."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "acme-provider"
     plugin.mkdir()
     (plugin / "plugin.yaml").write_text("name: acme-provider\nkind: model-provider\n", encoding="utf-8")
     (plugin / "__init__.py").write_text(
-        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "from hermes_agent.providers import register_provider\nfrom hermes_agent.providers.base import ProviderProfile\n"
         "register_provider(ProviderProfile(name='acme-doctor-probe', auth_type='external_process',\n"
         "                                  process_command='acme', aliases=('acme-alias',)))\n",
         encoding="utf-8")
@@ -416,14 +416,14 @@ def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path
 def test_doctor_loads_a_model_provider_plugin_from_its_category(tmp_path: Path) -> None:
     """``plugins/model-providers/<name>`` is the runtime layout; the provider loader must get the
     staged plugin directory, not the category around it."""
-    import providers
+    from hermes_agent import providers
     from hermes_cli.plugin_dev import doctor_plugin
 
     plugin = tmp_path / "model-providers" / "acme-provider"
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text("name: acme-provider\nkind: model-provider\n", encoding="utf-8")
     (plugin / "__init__.py").write_text(
-        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "from hermes_agent.providers import register_provider\nfrom hermes_agent.providers.base import ProviderProfile\n"
         "register_provider(ProviderProfile(name='acme-category-probe', auth_type='external_process',\n"
         "                                  process_command='acme'))\n",
         encoding="utf-8")

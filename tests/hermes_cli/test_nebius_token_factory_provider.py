@@ -38,7 +38,7 @@ def test_nebius_provider_registry_and_credentials(monkeypatch):
 
 
 def test_nebius_model_catalog_prefers_live_profile_fetch(monkeypatch):
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None
@@ -71,7 +71,7 @@ def test_nebius_model_catalog_prefers_live_profile_fetch(monkeypatch):
 
 
 def test_nebius_model_catalog_falls_back_to_profile_models(monkeypatch):
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None
@@ -90,7 +90,7 @@ def test_nebius_model_catalog_falls_back_to_profile_models(monkeypatch):
 
 
 def test_nebius_reasoning_models_emit_top_level_reasoning_effort():
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None
@@ -107,7 +107,7 @@ def test_nebius_effort_clamp_is_monotonic():
     """Regression: the hand-rolled map sent ultra->medium while xhigh->high,
     inverting the ladder. The canonical clamp_effort keeps stronger requests
     at least as strong on the wire (all of xhigh/max/ultra clamp to high)."""
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None
@@ -126,7 +126,7 @@ def test_nebius_effort_clamp_is_monotonic():
 
 
 def test_nebius_reasoning_defaults_to_medium_for_known_reasoning_model():
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None
@@ -140,7 +140,7 @@ def test_nebius_reasoning_defaults_to_medium_for_known_reasoning_model():
 
 
 def test_nebius_reasoning_skips_disabled_and_non_reasoning_models():
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None
@@ -157,7 +157,7 @@ def test_nebius_reasoning_skips_disabled_and_non_reasoning_models():
 
 def test_nebius_transport_emits_top_level_reasoning_effort():
     from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile("nebius-token-factory")
     assert profile is not None

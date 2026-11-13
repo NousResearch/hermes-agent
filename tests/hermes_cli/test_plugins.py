@@ -733,7 +733,7 @@ class TestPluginLoading:
         # today, so a pip-only provider is not activatable via
         # get_provider_profile() — and it must not leak into sys.modules
         # through the providers path either (no double import).
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         assert get_provider_profile("fakeprovider") is None
         assert "fakeprovider" not in sys.modules

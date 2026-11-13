@@ -9,8 +9,8 @@ import re
 from typing import Any
 
 from hermes_agent.agent.reasoning_effort import EFFORT_LADDER, SOLAR_EFFORTS, clamp_effort
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 # Deny-list on purpose: new Solar models are assumed reasoning-capable; only these known
 # non-reasoning families ignore reasoning_effort. ``solar-mini`` covers its dated ids

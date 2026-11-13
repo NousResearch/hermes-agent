@@ -7,8 +7,8 @@ import httpx
 import openai
 import pytest
 
-import providers
-from providers.base import ProviderProfile
+from hermes_agent import providers
+from hermes_agent.providers.base import ProviderProfile
 
 from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialPool, PooledCredential
 from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error

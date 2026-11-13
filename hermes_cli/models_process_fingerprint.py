@@ -12,7 +12,7 @@ def process_catalog_identity(provider: str) -> tuple[Any | None, list[str]]:
     Such a provider discovers models through the launched program, so the command / argv env
     overrides and the resolved binary identify the catalog the way an API key identifies an HTTP one.
     """
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     profile = get_provider_profile(provider)
     if profile is None or profile.auth_type != "external_process":

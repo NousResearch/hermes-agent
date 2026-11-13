@@ -519,7 +519,7 @@ class TestPerResponseRunNonceIsolation:
             reset_conversation_context,
             set_conversation_context,
         )
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         profile = get_provider_profile(profile_name)
         keys = []

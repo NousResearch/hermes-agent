@@ -6,8 +6,8 @@
 registry window (#102123). ``providers._sync_auth_registry`` now re-admits into both snapshots.
 """
 
-from providers import register_provider
-from providers.base import ProviderProfile
+from hermes_agent.providers import register_provider
+from hermes_agent.providers.base import ProviderProfile
 
 
 def _profile(name: str) -> ProviderProfile:
@@ -27,7 +27,7 @@ def test_late_registered_provider_reaches_picker_catalog(monkeypatch):
     slug = "zz-late-plugin-provider"
     assert slug not in {r["id"] for r in list_available_providers()}
 
-    import providers as registry
+    import hermes_agent.providers as registry
     registry.list_providers()  # discovery done: a registration now is a post-discovery one
     monkeypatch.setitem(registry._REGISTRY, slug, _profile(slug))  # keeps the registry scoped
     register_provider(_profile(slug))

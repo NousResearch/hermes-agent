@@ -46,7 +46,7 @@ def _pair():
 
 def _wire(model, base_url="https://ollama.com/v1"):
     from hermes_agent import model_tools  # registers provider profiles
-    import providers
+    from hermes_agent import providers
 
     messages = _pair()
     kwargs = ChatCompletionsTransport().build_kwargs(

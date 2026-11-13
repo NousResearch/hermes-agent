@@ -25,7 +25,7 @@ def zai_profile():
     # ``model_tools`` triggers plugin discovery on import, which is what
     # registers the Z.AI profile in the global provider registry.
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("zai")
     assert profile is not None, "zai provider profile must be registered"

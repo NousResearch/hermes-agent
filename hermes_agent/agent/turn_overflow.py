@@ -454,7 +454,7 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
 def _request_rejection_hint(status_code: Optional[int], base_url: str) -> tuple[str, ...]:
     """Every registered profile's ``request_rejection_hint`` for this endpoint, whatever route reached
     it (a free tier is commonly reached as ``custom``)."""
-    from providers import list_providers
+    from hermes_agent.providers import list_providers
     return tuple(line for profile in list_providers()
                  for line in profile.request_rejection_hint(status_code=status_code, base_url=base_url))
 

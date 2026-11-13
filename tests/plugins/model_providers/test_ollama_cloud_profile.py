@@ -25,7 +25,7 @@ def ollama_cloud_profile():
     # ``model_tools`` triggers plugin discovery on import, which is what
     # registers the Ollama Cloud profile in the global provider registry.
     from hermes_agent import model_tools
-    import providers
+    from hermes_agent import providers
 
     profile = providers.get_provider_profile("ollama-cloud")
     assert profile is not None, "ollama-cloud provider profile must be registered"

@@ -62,7 +62,7 @@ def _agent(session_id, session_db=None, key=None):
 
 
 def _sticky_key(session_id):
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     return get_provider_profile("openrouter").build_extra_body(session_id=session_id)[
         "session_id"
@@ -70,7 +70,7 @@ def _sticky_key(session_id):
 
 
 def _grok_headers(session_id):
-    from providers import get_provider_profile
+    from hermes_agent.providers import get_provider_profile
 
     _extra_body, top_level = get_provider_profile("openrouter").build_api_kwargs_extras(
         model="x-ai/grok-4",
@@ -424,7 +424,7 @@ class TestProviderStickyKeys:
         assert headers["x-grok-conv-id"] == headers_next["x-grok-conv-id"] == scope
 
     def test_nous_sticky_key_follows_the_declared_scope(self):
-        from providers import get_provider_profile
+        from hermes_agent.providers import get_provider_profile
 
         scope = declared_conversation_scope(_agent(RUN_1, None, CHAT_KEY))
         token = set_affinity_scope(scope)

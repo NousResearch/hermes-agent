@@ -7,7 +7,7 @@
 
 import pytest
 
-from providers.base import ProviderProfile
+from hermes_agent.providers.base import ProviderProfile
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ def catalog(monkeypatch):
 
 
 def _use_profiles(monkeypatch, *profiles):
-    import providers
+    from hermes_agent import providers
 
     monkeypatch.setattr(providers, "list_providers", lambda: list(profiles))
     # The new profile list stands for a registration, which moves the generation.

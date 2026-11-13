@@ -4,7 +4,7 @@ The provider list shown by ``hermes model`` (CLI/TUI) and the desktop Settings â
 (Accounts + API keys) **must be the same set**; providers added after those lists were written
 silently went missing from the GUI. ``auth_type`` / ``api_key_env_vars`` / ``base_url_env_var``
 come from :data:`hermes_cli.auth.PROVIDER_REGISTRY` (credential truth); ``display_name`` /
-``description`` / ``signup_url`` from the provider's :class:`providers.base.ProviderProfile`, falling
+``description`` / ``signup_url`` from the provider's :class:`hermes_agent.providers.base.ProviderProfile`, falling
 back to the ``CANONICAL_PROVIDERS`` entry's ``label`` / ``tui_desc`` and the ``OPTIONAL_ENV_VARS``
 signup URL (many profiles leave these blank, and openai-api, tencent-tokenplan, xai-oauth have no
 profile at all â€” the fallbacks are load-bearing).
@@ -73,7 +73,7 @@ def provider_catalog() -> list[ProviderDescriptor]:
     # virtual provider (auth_type "virtual"), which has no credential and no network endpoint.
     HERMES_OVERLAYS = _safe_import("hermes_cli.providers", "HERMES_OVERLAYS", {})
     try:
-        from providers import list_providers
+        from hermes_agent.providers import list_providers
         profiles = {p.name: p for p in list_providers()}
     except Exception:
         profiles = {}

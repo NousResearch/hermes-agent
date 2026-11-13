@@ -8,9 +8,9 @@ import pytest
 
 @pytest.fixture
 def slot_profile(request, monkeypatch):
-    import providers
+    from hermes_agent import providers
     from hermes_agent.agent import provider_route_hooks
-    from providers.base import ProviderProfile
+    from hermes_agent.providers.base import ProviderProfile
 
     state = {"calls": 0, "fail": False}
 

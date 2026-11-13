@@ -360,7 +360,7 @@ def test_plugin_verdict_steers_and_retryable_false_is_honoured(monkeypatch):
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 def test_streamed_attempt_is_judged_by_the_routes_provider_profile(monkeypatch, is_async):
     """An explicit route (no auto-routing tag) still gets its profile's verdict on a failed stream negotiation."""
-    import providers
+    from hermes_agent import providers
 
     hook = lambda *_a, **_k: {"reason": "server_error", "retryable": False, "should_fallback": True}
     monkeypatch.setattr(providers, "get_provider_profile", lambda name: SimpleNamespace(classify_api_error=hook))

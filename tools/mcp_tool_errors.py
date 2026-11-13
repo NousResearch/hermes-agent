@@ -44,14 +44,19 @@ def _handshake_answered_with_unsupported_version(exc: BaseException) -> bool:
 
 def _is_method_not_found_error(exc: BaseException) -> bool:
     """True if *exc* is a JSON-RPC ``method not found`` (-32601; ``ping`` is optional in MCP). The
-    substring fallback includes "Unknown method: <name>" — without it the ping→list_tools keepalive
-    fallback never latches and reconnect-loops.
+    substring fallback includes "Unknown method: <name>" and "Method not supported: ping" — without
+    it the ping→list_tools keepalive fallback never latches and reconnect-loops.
 
     The substring fallback matters when a server reports method-not-found without a structural ``-32601``
     code (e.g. surfaced as a plain exception string). Besides the canonical "method not found", many
-    JSON-RPC implementations phrase it as "Unknown method: <name>" — agentmemory's MCP server is one such
-    case (#50028).
+    JSON-RPC implementations phrase it differently — "Unknown method: <name>" (agentmemory's MCP
+    server, #50028) or "Method not supported: <name>" (the google-workspace MCP server). The
+    "not supported" phrasing stays ``ping``-scoped so a genuine "method not supported" for another
+    method never misroutes into the ping fallback.
     """
+    msg = str(_unwrap_exception_group(exc)).lower()
+    if ("method not supported" in msg) and ("ping" in msg):
+        return True
     return _jsonrpc_matches(
         exc, (_core._JSONRPC_METHOD_NOT_FOUND,),
         (str(_core._JSONRPC_METHOD_NOT_FOUND), "method not found", "unknown method", "not found: ping"))

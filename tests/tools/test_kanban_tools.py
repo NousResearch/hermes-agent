@@ -645,6 +645,40 @@ def test_heartbeat_extends_claim_expires(worker_env):
     )
 
 
+def test_auto_heartbeat_from_env_does_not_append_task_event(worker_env):
+    """Automatic worker heartbeats from environment should touch last_heartbeat_at
+    and extend the claim, but must NOT append empty heartbeat rows to task_events."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    kt._auto_heartbeat_last_attempt = 0
+    with kbc.connect_closing() as conn:
+        before_events = [e for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"]
+        assert len(before_events) == 0
+        task_before = kb.get_task(conn, worker_env)
+        assert task_before.last_heartbeat_at is None
+
+    # Trigger automatic worker heartbeat from env
+    assert kt.heartbeat_current_worker_from_env() is True
+
+    with kbc.connect_closing() as conn:
+        task_after = kb.get_task(conn, worker_env)
+        assert task_after.last_heartbeat_at is not None
+        auto_events = [e for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"]
+        # Automatic tick must NOT append an event to task_events
+        assert len(auto_events) == 0
+
+    # Explicit tool call kanban_heartbeat with a note DOES append an event
+    out = kt._handle_heartbeat({"note": "explicit note"})
+    assert json.loads(out).get("ok") is True
+
+    with kbc.connect_closing() as conn:
+        explicit_events = [e for e in kb.list_events(conn, worker_env) if e.kind == "heartbeat"]
+        assert len(explicit_events) == 1
+        assert explicit_events[0].payload == {"note": "explicit note"}
+
+
 def _expire_claim(conn, tid):
     conn.execute("UPDATE tasks SET claim_expires = 1 WHERE id = ?", (tid,))
     conn.commit()

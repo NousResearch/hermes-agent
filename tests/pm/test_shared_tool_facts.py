@@ -16,8 +16,9 @@ def _publish(root, name, version, sha, target, *, digest=False):
     package = get_package(name)
     entry = root / package.store_entry(version, target)
     if name == "chromium":  # its binary is found inside the entry, behind its completion marker
-        (entry / "chrome-linux64").mkdir(parents=True)
-        (entry / "chrome-linux64" / "chrome").write_bytes(b"fixture")
+        exe = "chrome.exe" if target.startswith("win32") else "chrome"
+        (entry / "chrome").mkdir(parents=True)
+        (entry / "chrome" / exe).write_bytes(b"fixture")
         (entry / "INSTALLATION_COMPLETE").write_text("")
     binary = package.binary(entry, target)
     assert binary is not None

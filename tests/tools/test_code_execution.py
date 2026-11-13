@@ -855,6 +855,7 @@ class _FakeFileRpcEnvironment:
                 capture_output=True,
                 cwd=cwd,
                 timeout=timeout,
+                check=False,
             )
             return {"output": result.stdout, "returncode": result.returncode}
 

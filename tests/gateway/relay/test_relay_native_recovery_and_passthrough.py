@@ -157,7 +157,8 @@ def _multiplexed_runner(tmp_path, homes):
 
 
 @pytest.mark.asyncio
-async def test_multiplexed_stamped_admission_queued_across_a_restart_runs_in_its_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize('legacy_owner', [False, True], ids=['current', 'missing-transport-upgrade'])
+async def test_multiplexed_stamped_admission_queued_across_a_restart_runs_in_its_profile(tmp_path, monkeypatch, legacy_owner):
     from gateway.run_runtime import initialize_gateway_runtime, recover_gateway_native_sessions
     from gateway.runtime_ownership import process_ownership
     from gateway.session_authority import SessionAuthority
@@ -194,6 +195,11 @@ async def test_multiplexed_stamped_admission_queued_across_a_restart_runs_in_its
                     await async_wait_until(lambda: any(f.get('type') == 'inbound_ack' for f in connector.outgoing),
                                            timeout=10, what='the frame committed and acked')
                 assert [r['status'] for r in _rows(runner.session_authorities.for_home(work))] == ['queued']
+                if legacy_owner:
+                    entry = next(e for e in runner.session_store.list_sessions() if e.origin.chat_id == 'chan-w')
+                    entry.transport_profile = None
+                    runner.session_store._save_entry(entry.session_key)
+                    assert runner.session_store.lookup_by_session_key(entry.session_key).transport_profile is None
         finally:
             _close(runner)
         assert not turns
@@ -213,6 +219,11 @@ async def test_multiplexed_stamped_admission_queued_across_a_restart_runs_in_its
                 assert (reply.get('scope_id'), reply.get('user_id'), reply.get('profile')) == ('guild-w', 'owner-w', 'work')
                 assert [r['status'] for r in _rows(runner.session_authorities.for_home(work))] == ['terminal']
                 assert not _rows(runner.session_authorities.for_home(root))
+                entry = next(e for e in runner.session_store.list_sessions() if e.origin and e.origin.chat_id == 'chan-w')
+                assert entry.transport_profile == 'default'
+                from gateway.session import SessionStore
+                reloaded = SessionStore(runner.config.sessions_dir, runner.config)
+                assert reloaded.lookup_by_session_key(entry.session_key).transport_profile == 'default'
         finally:
             _close(runner)
 

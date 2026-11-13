@@ -281,3 +281,92 @@ class _ProviderSwitchAgent(_CompressionThenFailureAgent):
         }
 
 
+
+
+class _SessionDB:
+    """The two reads the split guard makes: which rows exist and the compression chain."""
+
+    def __init__(self, rows, chain):
+        self.rows, self.chain = set(rows), list(chain)
+
+    def get_session(self, session_id):
+        return {"id": session_id} if session_id in self.rows else None
+
+    def get_compression_chain(self, session_id):
+        return self.chain if session_id == self.chain[0] else [session_id]
+
+
+class _ProfileSessionStore(_SessionStore):
+    def __init__(self, db):
+        super().__init__()
+        self.db = db
+
+    def _db_for_key(self, session_key):
+        assert session_key == SESSION_KEY
+        return self.db
+
+
+def test_session_change_that_is_not_compression_keeps_the_route(monkeypatch):
+    """#154994: the agent came back on another session the store already holds (an async
+    subagent's), not a compression child. Rerouting would persist a route outside the
+    conversation's lineage, refused ``admission_conflict`` on every later request."""
+    _install_compression_failure_agent(monkeypatch)
+    db = _SessionDB(rows={"session-before-compression", "session-after-compression"},
+                    chain=["session-before-compression"])
+    session_store = _ProfileSessionStore(db)
+    runner = _runner(session_store)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1")
+
+    _run_compression_failure_turn(runner, source)
+
+    assert session_store.entry.session_id == "session-before-compression"
+    assert session_store.save_calls == 0
+    assert session_store.peer_records == []
+    runner._sync_telegram_topic_binding.assert_not_called()
+
+
+def test_real_compression_split_still_syncs_with_the_guard(monkeypatch):
+    _install_compression_failure_agent(monkeypatch)
+    db = _SessionDB(rows={"session-before-compression", "session-after-compression"},
+                    chain=["session-before-compression", "session-after-compression"])
+    session_store = _ProfileSessionStore(db)
+    runner = _runner(session_store)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1")
+
+    result = _run_compression_failure_turn(runner, source)
+
+    assert result["session_id"] == "session-after-compression"
+    assert session_store.entry.session_id == "session-after-compression"
+    assert session_store.save_calls == 1
+    assert session_store.peer_records == [("session-after-compression", SESSION_KEY, source)]
+
+
+class _RefusingPeerStore(_SessionStore):
+    def __init__(self):
+        super().__init__()
+        self.saved_ids = []
+
+    def _save(self):
+        super()._save()
+        self.saved_ids.append(self.entry.session_id)
+
+    def _record_gateway_session_peer(self, session_id, session_key, source):
+        from hermes_state_runtime import RuntimeStoreError
+        raise RuntimeStoreError("admission_conflict")
+
+
+def test_failed_split_publication_rolls_the_route_back(monkeypatch):
+    """#154994: the route was saved before the peer record refused, and stayed on the new id."""
+    _install_compression_failure_agent(monkeypatch)
+    session_store = _RefusingPeerStore()
+    runner = _runner(session_store)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="user-1")
+
+    try:
+        _run_compression_failure_turn(runner, source)
+    except Exception as exc:  # the refusal still surfaces as the turn's error
+        assert "admission_conflict" in str(exc)
+
+    assert session_store.entry.session_id == "session-before-compression"
+    assert session_store.saved_ids == ["session-after-compression", "session-before-compression"]
+    runner._sync_telegram_topic_binding.assert_not_called()

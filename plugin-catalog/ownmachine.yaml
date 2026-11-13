@@ -3,7 +3,7 @@ title: OwnMachine
 repo: https://github.com/rbur0425/ownmachine
 sha: fa71c33a3fd706d9931725565fccf89a98254d69
 subdir: plugin
-description: A persistent private macOS or ARM64 Omarchy VM workspace for Hermes with SSH/MCP and human-controlled browser access.
+description: "A persistent private macOS or ARM64 Omarchy VM workspace for Hermes with SSH/MCP and human-controlled browser access. Disclosure — Runs OpenSSH, using your own SSH config, agent and keys, to an operator-configured Mac host and streams VM screenshots, accessibility text and computer_use input to a guest macOS or ARM64 Omarchy Linux VM through a fixed-command MCP relay; `/ownmachine setup --run` executes remote provisioning stages on the Mac over a separate setup SSH alias; the opt-in `remind later --mode tomorrow` writes a helper script into the Hermes `scripts/` directory and creates a one-shot no-agent cron job through the profile's local gateway; it keeps a shared control database in an operator-chosen directory. Licensed PolyForm Noncommercial 1.0.0."
 maintainer: rbur0425
 tier: community
 category: desktop

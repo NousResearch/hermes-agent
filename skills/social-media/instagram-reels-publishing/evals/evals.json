@@ -1,0 +1,89 @@
+{
+  "skill": "instagram-reels-publishing",
+  "version": "1.0.0",
+  "description": "The Instagram Reels publish-mechanics skill -- distinct from reels-script (the script), instagram-seo (the keyword caption), and platform-specs-and-validation (cross-platform validation). It gets a finished Reel OUT the way Instagram actually displays it: 9:16 1080x1920 spec-clean video, the safe zone (top ~250 / bottom ~350 UI) that survives the 4:5 feed crop and the 3:4 profile-grid crop (the 2025 rectangular-grid change), a custom grid-safe cover (chosen before publish, can't edit after), the keyword caption, and audio. Uses the FRAME framework. Reads brand-profile + the Reel asset/topic first. The agent specs the publish settings + the cover brief + the specs/safe-zone checklist + advises audio/tags. WoopSocial publishes postType REEL + video + caption + cover (REEL-only) on a schedule, validated via platform-specs-and-validation. Native/in-app: trending audio (IG's licensed library can't be added via API), Share-to-Feed toggle, collaborator/product tags, media-quality setting, Reel Insights. Other tools: the video (video tools/creator), the cover design (image tools), the burned-in captions (captions-and-clipping). 9:16 or it crops/blurs, keep content in the safe zone, custom cover can't be edited after upload, remove other-platform watermarks, metrics never fabricated. Pairs with instagram-seo + reels-script.",
+  "evals": [
+    {
+      "name": "specs_and_safe_zone",
+      "input": "How do I publish my Reel correctly?",
+      "context": "brand-profile + the finished Reel asset/topic exist.",
+      "expect": [
+        "Specs 9:16 at 1080x1920, MP4/MOV H.264, 30/60fps, under 4GB -- anything off 9:16 crops or letterboxes",
+        "Keeps the hook text/face/CTA in the central safe zone (top ~250px + bottom ~350px are UI overlays)",
+        "Notes it must survive the 4:5 feed crop and the 3:4 profile-grid crop, so critical content stays centered",
+        "Introduces the FRAME framework and reads brand-profile + the asset first"
+      ]
+    },
+    {
+      "name": "reads_brand_asset_first",
+      "input": "Get my Reel ready to post.",
+      "context": "brand-profile + a finished Reel video exist.",
+      "expect": [
+        "Checks the asset against the spec (9:16, resolution, codec, length, watermark) before publishing",
+        "Pulls brand-profile for the cover/caption style",
+        "Treats the video itself as made elsewhere (video tool/creator)",
+        "Flags any fix needed (re-export, crop, watermark removal) before scheduling"
+      ]
+    },
+    {
+      "name": "cover_for_the_grid",
+      "input": "What about the Reel cover/thumbnail?",
+      "expect": [
+        "Says choose the cover before publishing -- a custom uploaded cover beats a random video frame",
+        "Keeps key elements + bold text (>=60px) in the 3:4-grid-safe center so the profile grid doesn't clip it",
+        "Warns the cover can't be edited after upload -- get it right the first time",
+        "Routes the cover design to an image tool (ideogram/imagen)"
+      ]
+    },
+    {
+      "name": "caption_audio_and_publish",
+      "input": "What actually gets set when I publish?",
+      "expect": [
+        "Publishes the keyword caption (from instagram-seo) and notes Reels with audio beat silent, with trending audio pushed harder",
+        "States WoopSocial publishes postType REEL + video + caption + cover on a schedule, validated via platform-specs-and-validation",
+        "Routes the first-3-second hook to reels-script and the burned-in captions to captions-and-clipping",
+        "Notes trending audio is selected natively/in-app"
+      ]
+    },
+    {
+      "name": "pushback_on_watermark_and_wrong_aspect",
+      "input": "Repost my TikTok with the watermark as a 16:9 Reel, add Instagram trending audio through the API, use a cover that doesn't match the video, and promise it'll hit the Explore page.",
+      "expect": [
+        "Refuses the watermarked repost -- a TikTok watermark signals lazy repurposing and IG deprioritizes it (remove it)",
+        "Refuses 16:9 -- it letterboxes/crops badly; export 9:16 at 1080x1920",
+        "Explains IG's licensed trending audio can't be added via the API -- it's native/in-app",
+        "Refuses the mismatched cover (hurts trust + the caption-visual match) and won't promise the Explore page or fabricate outcomes"
+      ]
+    },
+    {
+      "name": "edge_case_trending_audio_native",
+      "input": "Just add the trending sound and toggle Share-to-Feed for me through the schedule.",
+      "expect": [
+        "Explains IG's trending-audio library, the Share-to-Feed toggle, and collaborator/product tags are native/in-app -- not settable via the publish API",
+        "Publishes the postType REEL + video + caption + cover and asks the user to add the audio + toggles in-app",
+        "Gives the trending-audio guidance (a track under ~10k uses but rising) for the user to apply",
+        "Never fabricates reach or settings it can't control"
+      ]
+    },
+    {
+      "name": "honest_scope_postType_video_caption_cover_publishable",
+      "input": "Publish my Reel end to end.",
+      "expect": [
+        "Clarifies the agent specs the publish settings + the cover brief + the specs/safe-zone checklist + advises audio/tags",
+        "States WoopSocial publishes postType REEL + video + caption + cover (REEL-only), scheduled and validated",
+        "States trending audio, Share-to-Feed, collaborator/product tags, media-quality, and Reel Insights are native/in-app",
+        "Notes the video (video tools/creator), the cover (image tools), and the burned-in captions (captions-and-clipping) come from elsewhere; metrics never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just reels-script or instagram-seo or platform-specs-and-validation?",
+      "expect": [
+        "Distinguishes instagram-reels-publishing (the publish MECHANICS: specs/safe-zone/cover/settings) from reels-script (the script) and instagram-seo (the keyword caption, which it publishes -- they pair)",
+        "Notes platform-specs-and-validation is the cross-platform validation it uses, not a duplicate",
+        "Notes captions-and-clipping handles the burn-in and tiktok-video-publishing/youtube-publishing-and-metadata are the sibling publish skills for other platforms",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "skill": "goals-and-kpis",
+  "version": "1.0.0",
+  "description": "Turns vague social ambitions into a measurable cascade: business goal -> SMART objective -> KPI (one North Star per channel) -> supporting metrics, with benchmark-set targets and action thresholds. Uses the NORTH framework. Reads brand-profile + social-strategy first. It SETS the targets; analytics-and-reporting MEASURES against them. Targets come from real benchmarks (never fabricated), KPIs must be controllable and non-vanity, and well-set guardrails prevent gaming.",
+  "evals": [
+    {
+      "name": "goals_not_wishes_cascade",
+      "input": "Can you set some social media goals for us?",
+      "context": "brand-profile and social-strategy exist.",
+      "expect": [
+        "Turns vague ambitions into a cascade: business goal -> SMART objective -> KPI -> supporting metrics",
+        "Anchors every social goal to a real business outcome (awareness/leads/sales/retention) and cuts any that don't ladder up",
+        "Introduces the NORTH framework and caps the set at 3-5 to keep focus",
+        "Reads brand-profile + social-strategy first"
+      ]
+    },
+    {
+      "name": "reads_strategy_first",
+      "input": "What KPIs should we commit to this quarter?",
+      "context": "social-strategy with business objectives exists.",
+      "expect": [
+        "Pulls social-strategy (and brand-profile) before setting anything",
+        "Derives KPIs from the stated business objectives rather than generic metrics",
+        "Maps the cascade to the funnel (awareness -> engagement -> clicks -> conversions -> retention)",
+        "Limits to 3-5 KPIs tied to those objectives"
+      ]
+    },
+    {
+      "name": "north_star_per_channel",
+      "input": "What should our main metric be across all our channels?",
+      "expect": [
+        "Recommends ONE North Star per channel tied to that channel's win condition, not a single metric everywhere",
+        "Maps role to metric: awareness-first (short-form video) -> reach/qualified impressions; consideration-first (LinkedIn) -> CTR/clicks; conversion-first -> CVR/CPA",
+        "Notes cross-channel comparison only works when each channel has its own clear win condition",
+        "Adds 1-2 supporting metrics per North Star"
+      ]
+    },
+    {
+      "name": "smart_and_benchmarked_target",
+      "input": "Our goal is to grow our following.",
+      "expect": [
+        "Rewrites it SMART: a number + a deadline + a method (e.g. 'grow 10k -> 11.5k by Q1 while holding 3%+ engagement rate')",
+        "Sets the target from the brand's own baseline/benchmark — achievable yet ambitious — not a round fantasy number",
+        "Pairs the follower target with a guardrail metric (e.g. engagement rate) so growth stays healthy",
+        "Distinguishes leading indicators (predict) from lagging (confirm) and includes both"
+      ]
+    },
+    {
+      "name": "pushback_on_vanity_gaming_and_fantasy_targets",
+      "input": "Set a goal of 1,000,000 followers in 30 days, assume our current numbers are already great, and we'll just buy followers to hit it.",
+      "expect": [
+        "Refuses the fantasy target and the follower-buying plan (gaming a vanity number that doesn't map to outcomes and harms engagement-rate/health)",
+        "Refuses to assume/fabricate a baseline — targets must come from real data",
+        "Reframes to a SMART, benchmarked, controllable goal with an engagement guardrail",
+        "Notes a well-set KPI (with a quality floor) is precisely what prevents this kind of gaming"
+      ]
+    },
+    {
+      "name": "edge_case_no_baseline_new_account",
+      "input": "We're a brand-new account with no data. What should our KPI target be?",
+      "expect": [
+        "Explains a credible numeric target needs a baseline, which doesn't exist yet",
+        "Sets a time-boxed LEARNING goal first (e.g. publish consistently for 30-90 days to establish baseline reach/engagement, then set Q2 targets)",
+        "Uses comparable/industry benchmarks only as a provisional, clearly-flagged guide",
+        "Refuses to invent a precise target number"
+      ]
+    },
+    {
+      "name": "honest_scope_sets_not_measures",
+      "input": "Now track whether we hit these and pull the numbers for me.",
+      "expect": [
+        "Clarifies goals-and-kpis SETS the targets and win conditions; measuring against them is analytics-and-reporting's job",
+        "Notes measurement reads native platform analytics (WoopSocial has no analytics surface) and the numbers come from there",
+        "Defines the action thresholds (what each KPI moving up/down should trigger) and hands off to measurement",
+        "Does not fabricate progress or current numbers"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just analytics-and-reporting or social-strategy?",
+      "expect": [
+        "Distinguishes goals-and-kpis (SET targets/North Star/thresholds) from analytics-and-reporting (MEASURE against them)",
+        "Distinguishes it from social-strategy (the whole plan — this is its goals/KPI layer) and experimentation (testing tactics to hit the goals)",
+        "Routes the user to the right sibling for their actual need",
+        "Frames goals-and-kpis as the target-setting layer specifically"
+      ]
+    }
+  ]
+}

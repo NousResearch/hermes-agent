@@ -1,0 +1,83 @@
+{
+  "skill": "content-pillars",
+  "version": "1.0.0",
+  "description": "Scenario tests for content-pillars. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-derive-pillars",
+      "input": "Help me figure out my content pillars.",
+      "expect": [
+        "reads brand-profile (or runs it first if missing) rather than brainstorming blind",
+        "mines positioning, POV, audience pains, and proof for candidates",
+        "selects 3-5 pillars that each pass the ownable/relevant/strategic/sustainable test",
+        "identifies exactly one signature pillar",
+        "writes a content-pillars.md following the template"
+      ]
+    },
+    {
+      "name": "rejects-generic-buckets",
+      "input": "My pillars are educational, behind-the-scenes, and promotional. Flesh those out.",
+      "expect": [
+        "explains that those are intents/formats, not pillars (themes)",
+        "converts them into real ownable themes derived from the brand",
+        "does NOT accept the generic buckets as the pillar set"
+      ]
+    },
+    {
+      "name": "ownability-required",
+      "input": "Give me content pillars for my business.",
+      "expect": [
+        "for each pillar, states a specific reason THIS brand can own it",
+        "rejects pillars that 'anyone could post' as not ownable",
+        "ties each pillar back to something real in the brand profile"
+      ]
+    },
+    {
+      "name": "sustainability-test",
+      "input": "Are these three pillars good?",
+      "context": "One proposed pillar is very narrow (a single product feature).",
+      "expect": [
+        "applies the 10+ ideas sustainability test",
+        "flags the narrow pillar as a topic, not a pillar, or broadens it to the audience problem it solves",
+        "keeps only pillars that can sustain ongoing content"
+      ]
+    },
+    {
+      "name": "too-many-narrow-to-3-5",
+      "input": "I want to post about 10 different topics. Make them all pillars.",
+      "expect": [
+        "narrows to the 3-5 strongest, clustering overlapping topics",
+        "explains that too many pillars means no focus",
+        "produces a coherent, ownable set"
+      ]
+    },
+    {
+      "name": "balance-and-signature",
+      "input": "Build my pillars — and I want most of it to sell our product.",
+      "expect": [
+        "keeps a conversion/product pillar to the minority",
+        "ensures supporting pillars carry audience value and connection",
+        "identifies a non-promotional signature pillar as the differentiator"
+      ]
+    },
+    {
+      "name": "personal-brand-adaptation",
+      "input": "I'm a solo creator — what should my content pillars be?",
+      "expect": [
+        "frames pillars as person-led (what they're known for, journey, craft)",
+        "ties pillars to the individual, not a faceless topic list",
+        "still produces ownable, sustainable themes"
+      ]
+    },
+    {
+      "name": "existing-pillars-loaded",
+      "input": "Plan my month.",
+      "context": "A current content-pillars.md already exists.",
+      "expect": [
+        "loads the existing pillars rather than re-deriving them",
+        "summarizes them and proceeds (hands off to batch-content-plan)",
+        "only re-runs the exercise if the user asks to revisit"
+      ]
+    }
+  ]
+}

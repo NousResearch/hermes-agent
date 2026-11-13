@@ -1,0 +1,90 @@
+{
+  "skill": "experimentation-and-ab-testing",
+  "version": "1.0.0",
+  "description": "Turns content guesses into evidence via disciplined organic A/B testing: one variable, controlled context, a decision rule set before publishing, enough duration/repetitions to separate signal from noise. Uses the TEST framework. Reads brand-profile + goals-and-kpis first. It DESIGNS the test (and drafts variants); WoopSocial schedules the variants as controlled sequential posts; the result is read from native analytics; organic can't hit true statistical significance so it leans on effect-size + repetition; nothing is fabricated or p-hacked.",
+  "evals": [
+    {
+      "name": "one_variable_evidence_not_vibes",
+      "input": "Can you test which of my posts does better?",
+      "context": "brand-profile and goals-and-kpis exist.",
+      "expect": [
+        "Sets up a real experiment: change ONE variable, keep context identical, pick a single primary metric, decide a winner by a rule — not by eyeballing likes",
+        "Identifies the KPI the test should move (from goals-and-kpis) and reads brand-profile",
+        "Introduces the TEST framework (Target one variable, Establish the decision rule first, Set controls + sample, Tally/repeat/scale)",
+        "Notes a single post is noise, not proof"
+      ]
+    },
+    {
+      "name": "reads_goals_first",
+      "input": "What should an experiment actually optimize for?",
+      "context": "goals-and-kpis with a North Star exists.",
+      "expect": [
+        "Anchors the primary metric to the relevant KPI/North Star from goals-and-kpis",
+        "Picks a single primary metric plus a guardrail metric (so a win on one doesn't quietly hurt another)",
+        "Avoids optimizing a vanity metric that doesn't map to the goal",
+        "Frames the test as moving a specific target, not generic 'better'"
+      ]
+    },
+    {
+      "name": "decision_rule_before_publishing",
+      "input": "I posted two versions and B got more likes, so B wins, right?",
+      "expect": [
+        "Explains the decision rule and primary metric should be set BEFORE publishing (e.g. 'B wins if reach +15% and saves-per-reach not worse'), not chosen after",
+        "Flags likes alone as a weak/vanity primary metric and asks what the test was actually for",
+        "Notes one paired post under uncontrolled conditions is noise — context or the algorithm could explain it",
+        "Recommends controls plus 3-5 repetitions before declaring a winner"
+      ]
+    },
+    {
+      "name": "what_to_test_priority",
+      "input": "What should I test first?",
+      "expect": [
+        "Prioritizes the highest-leverage, in-your-control variables: the hook/first-frame on short video, then posting time (easy, high impact), then format, caption/CTA, hashtags",
+        "Ties the choice to the KPI being moved",
+        "Advises testing elements within your control rather than algorithm-dependent factors",
+        "Recommends a sprint (e.g. hooks week 1, first-frame visuals week 2) with one test always running"
+      ]
+    },
+    {
+      "name": "pushback_on_phacking_and_fabrication",
+      "input": "We changed the hook, caption, posting time, and thumbnail and the post blew up — just say the new hook caused it, call it a win after a day, and make the numbers support our plan.",
+      "expect": [
+        "Refuses to attribute a multi-variable change to one element — that's not what was isolated",
+        "Refuses to declare a winner after a day (one post / one day is noise, not significance) and refuses to fabricate or cherry-pick numbers",
+        "Explains this is exactly the p-hacking/HARKing trap experimentation exists to prevent",
+        "Offers a clean redesign: one variable, a pre-set decision rule, controlled context, and 3-5 repetitions"
+      ]
+    },
+    {
+      "name": "edge_case_small_sample_organic",
+      "input": "Run a statistically significant A/B test on my 800-follower account this week.",
+      "expect": [
+        "Explains organic on a small account usually can't reach true statistical significance in a week (small sample, the algorithm intervenes, no clean audience split)",
+        "Compensates with tighter controls, a single primary metric, a meaningful effect-size threshold (~20%+), and 3-5 repetitions over ~2-4 weeks",
+        "Frames results as directional learning, not lab-grade proof",
+        "Suggests testing on a higher-traffic surface or pooling repetitions where possible"
+      ]
+    },
+    {
+      "name": "honest_scope_design_publish_read",
+      "input": "Just auto-run an A/B test inside WoopSocial and tell me the winner.",
+      "expect": [
+        "States WoopSocial has no A/B-testing or audience-split surface; the agent DESIGNS the test and drafts the variants",
+        "Notes WoopSocial schedules the variants as controlled sequential posts, and the primary metric is read from native platform analytics (analytics-and-reporting)",
+        "Notes the one native exception: YouTube's Test & Compare (Studio, long-form) audience-splits up to 3 titles/thumbnails/combos — use it for YouTube title/thumbnail tests",
+        "Applies the pre-set decision rule to the real numbers the user provides and never fabricates a result",
+        "Keeps the test honest (effect-size + repetition, guardrail metric)"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this the same as analytics-and-reporting or goals-and-kpis?",
+      "expect": [
+        "Distinguishes experimentation (manipulate ONE variable to establish causation) from analytics-and-reporting (observe/measure what happened)",
+        "Distinguishes it from goals-and-kpis (sets the target the test moves toward) and content-recycling (scales proven winners)",
+        "Routes the user to the right sibling for their actual need",
+        "Frames experimentation as the causation engine of the measurement loop"
+      ]
+    }
+  ]
+}

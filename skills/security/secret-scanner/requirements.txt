@@ -1,0 +1,2 @@
+detect-secrets>=1.5.0
+trufflehog>=3.60.0

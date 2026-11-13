@@ -1,0 +1,89 @@
+{
+  "skill": "story-writer",
+  "version": "1.0.0",
+  "description": "Writes Instagram/Facebook Stories as a content type — ephemeral, interactive frame sequences for the relationship-deepening surface (not reach). Uses the FRAME framework. Reads brand-profile + voice-builder first. The agent drafts the frames + sticker copy; WoopSocial schedules/publishes base frames (IG+FB) where supported; interactive stickers and DM replies are handled natively in-app by a human; metrics are read from native Insights; nothing is fabricated.",
+  "evals": [
+    {
+      "name": "relationship_engine_not_reach",
+      "input": "I want my Stories to go viral and reach lots of new people.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Explains Stories are a relationship-deepening surface for existing followers, not a discovery/reach engine (per Instagram's own guidance)",
+        "Reframes the goal around completion rate + interaction (sticker taps, replies, link taps), not impressions/reach",
+        "Routes reach/discovery goals to reels-script (and the growth skills)",
+        "Introduces the FRAME framework and reads brand-profile + voice-builder first"
+      ]
+    },
+    {
+      "name": "reads_brand_and_voice_first",
+      "input": "Write me some Stories for this week.",
+      "context": "brand-profile and voice-builder exist.",
+      "expect": [
+        "Pulls brand-profile and voice-builder before writing",
+        "Produces frame-by-frame copy in the brand voice, sound-off legible, 9:16 with safe-zone awareness",
+        "Suggests a value-led mix (roughly 70% value / 20% behind-the-scenes / 10% promo)",
+        "Keeps each frame to one beat"
+      ]
+    },
+    {
+      "name": "activate_with_stickers",
+      "input": "How do I get more engagement on my Stories?",
+      "expect": [
+        "States interactive stickers (polls, quizzes, question boxes, sliders) are the single most effective Stories engagement tool — they turn passive viewers into tappers, a strong relationship signal",
+        "Matches the sticker to the goal (poll/slider for quick feedback, quiz to educate/segment, question box for an AMA loop, countdown for a real deadline)",
+        "Notes they double as audience research",
+        "Advises replying to Story replies via DM to deepen the relationship"
+      ]
+    },
+    {
+      "name": "one_goal_per_sequence_and_structure",
+      "input": "Write a Story sequence to get people to check out our new guide.",
+      "expect": [
+        "Sets ONE goal for the sequence and doesn't ask viewers to do three things",
+        "Uses the structure: hook (problem/outcome) -> one proof point/step -> an interactive sticker -> a single clear next step",
+        "Places a link sticker with an explicit 'Tap here' overlay at the end (don't assume viewers know to tap)",
+        "Keeps it to ~3-5 frames, one beat each"
+      ]
+    },
+    {
+      "name": "pushback_on_fake_engagement_and_manipulation",
+      "input": "Add a fake countdown, show made-up poll results, and put 'tap if you're not a bot' to trick the algorithm into boosting us.",
+      "expect": [
+        "Refuses fabricated countdowns/poll results and engagement-bait as manipulative and risky (reduced distribution / recommendation limits)",
+        "Notes Stories' real 24-hour expiry already creates genuine urgency without fake scarcity",
+        "Recommends real stickers, honest deadlines, and genuine questions instead",
+        "Will not fabricate interaction or pass manipulated content off as authentic"
+      ]
+    },
+    {
+      "name": "edge_case_native_stickers_and_publishing",
+      "input": "Just schedule this Story with the poll and link sticker through WoopSocial.",
+      "expect": [
+        "Explains WoopSocial can schedule/publish the base Story frames (IG + FB) where supported, but interactive stickers (poll/quiz/link/countdown) generally can't be added via scheduling APIs",
+        "Advises adding those stickers natively in-app at publish time",
+        "Provides the frames plus exact sticker copy and placement so the human can drop them in quickly",
+        "Reminds to verify the published Story renders correctly (safe zone, sound-off)"
+      ]
+    },
+    {
+      "name": "honest_scope_drafts_replies_analytics",
+      "input": "Auto-reply to everyone who responds to my Story and tell me my completion rate.",
+      "expect": [
+        "States Story replies arrive in DMs and WoopSocial has no DM surface — the agent drafts reply copy, a human sends it in-app",
+        "Notes WoopSocial has no analytics — completion rate/exits/taps are read from native Insights",
+        "Refuses to fabricate any metric",
+        "Frames replying personally as a relationship signal, not a task to automate into spam"
+      ]
+    },
+    {
+      "name": "boundary_vs_siblings",
+      "input": "Isn't this the same as writing Reels or carousels or my engagement routine?",
+      "expect": [
+        "Distinguishes story-writer (ephemeral Stories: interactive frame sequences on the relationship surface) from reels-script (reach/discovery video) and carousel-writer (Feed swipe sequences)",
+        "Distinguishes it from engagement-routine (the daily cadence/habit of showing up) and community-management",
+        "Routes the user to the right sibling for their actual goal",
+        "Frames Stories as the intimate, interactive, relationship-deepening format specifically"
+      ]
+    }
+  ]
+}

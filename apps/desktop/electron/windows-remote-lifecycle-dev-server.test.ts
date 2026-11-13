@@ -56,7 +56,13 @@ function ownedWindowsSsh(lock: null | Record<string, unknown>) {
       }
 
       if (script.includes('Get-Command hermes')) {
-        return JSON.stringify({ os: 'Windows', arch: 'AMD64', hermesHome: HERMES_HOME, hermesPath: HERMES_PATH, python: 'C:\\h\\python.exe' })
+        return JSON.stringify({
+          os: 'Windows',
+          arch: 'AMD64',
+          hermesHome: HERMES_HOME,
+          hermesPath: HERMES_PATH,
+          python: 'C:\\h\\python.exe'
+        })
       }
 
       if (script.includes('.hermes-update-in-progress')) {
@@ -64,7 +70,12 @@ function ownedWindowsSsh(lock: null | Record<string, unknown>) {
       }
 
       if (op('inspect')) {
-        return JSON.stringify({ path: HERMES_PATH, version: 'Hermes Agent v1', runtimeBootstrapOwnership: 1, supported: true })
+        return JSON.stringify({
+          path: HERMES_PATH,
+          version: 'Hermes Agent v1',
+          runtimeBootstrapOwnership: 1,
+          supported: true
+        })
       }
 
       if (op('read-lock')) {
@@ -105,7 +116,9 @@ const spawnOf = (ssh: ReturnType<typeof ownedWindowsSsh>) =>
 
 const writtenLocks = (ssh: ReturnType<typeof ownedWindowsSsh>) =>
   ssh.execs
-    .filter(({ script }) => script.includes("'hermes_cli.windows_ssh_runtime' 'write-lock'") && !script.includes("'spawn'"))
+    .filter(
+      ({ script }) => script.includes("'hermes_cli.windows_ssh_runtime' 'write-lock'") && !script.includes("'spawn'")
+    )
     .map(({ stdinData }) => JSON.parse(stdinData))
 
 for (const [label, devServer, expected] of [

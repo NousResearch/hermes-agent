@@ -180,7 +180,14 @@ describe('composer hint', () => {
 
 function slashHarness(messages: unknown[] = rows) {
   const gw = gateway(messages)
-  const composer = { appendPaste: vi.fn(async () => {}), appendText: vi.fn(), attachImagePath: vi.fn(), attachImagePaths: vi.fn(async () => {}), enqueue: vi.fn(), setInput: vi.fn() }
+  const composer = {
+    appendPaste: vi.fn(async () => {}),
+    appendText: vi.fn(),
+    attachImagePath: vi.fn(),
+    attachImagePaths: vi.fn(async () => {}),
+    enqueue: vi.fn(),
+    setInput: vi.fn()
+  }
   const send = vi.fn()
   const sys = vi.fn()
 
@@ -292,7 +299,14 @@ const targets = [
 ]
 
 function mountBrowse(native = false, cols = 100) {
-  const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onPaste: vi.fn(), onType: vi.fn() }
+  const handlers = {
+    onBack: vi.fn(),
+    onClose: vi.fn(),
+    onEdit: vi.fn(),
+    onFork: vi.fn(),
+    onPaste: vi.fn(),
+    onType: vi.fn()
+  }
 
   const req: RewindOverlay = {
     messages: rows.map(row => ({ role: row.role as 'assistant' | 'user', text: row.text })),
@@ -400,15 +414,32 @@ describe('RewindBrowse keys', () => {
       { role: 'assistant' as const, text: `reply ${i + 1}` }
     ]).flat()
 
-    const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onPaste: vi.fn(), onType: vi.fn() }
-    const manyTargets = Array.from({ length: 12 }, (_, i) => ({ rowId: 100 + 2 * i, text: `PROMPT ${i + 1}`, turn: i + 1 }))
+    const handlers = {
+      onBack: vi.fn(),
+      onClose: vi.fn(),
+      onEdit: vi.fn(),
+      onFork: vi.fn(),
+      onPaste: vi.fn(),
+      onType: vi.fn()
+    }
+    const manyTargets = Array.from({ length: 12 }, (_, i) => ({
+      rowId: 100 + 2 * i,
+      text: `PROMPT ${i + 1}`,
+      turn: i + 1
+    }))
     const stdin = new FakeInput()
     const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 24 })
     let screen = ''
     stdout.on('data', chunk => (screen += chunk.toString()))
 
     const instance = renderSync(
-      <RewindBrowse cols={100} native {...handlers} req={{ messages: many, onSubmit: vi.fn(), targets: manyTargets, ...handlers }} t={DEFAULT_THEME} />,
+      <RewindBrowse
+        cols={100}
+        native
+        {...handlers}
+        req={{ messages: many, onSubmit: vi.fn(), targets: manyTargets, ...handlers }}
+        t={DEFAULT_THEME}
+      />,
       { patchConsole: false, stdin: stdin as any, stdout: stdout as any }
     )
 
@@ -509,7 +540,10 @@ describe('default browse finds paste and image prompts', () => {
   })
 
   it('a resumed row is found by its row id, whatever its text', () => {
-    const resumed = [{ role: 'user', rowId: 11, text: 'shown differently' }, { role: 'user', rowId: 15, text: 'x' }]
+    const resumed = [
+      { role: 'user', rowId: 11, text: 'shown differently' },
+      { role: 'user', rowId: 15, text: 'x' }
+    ]
 
     expect(rewindFocusIndex(resumed, { rowId: 15, text: 'stored text', turn: 1 })).toBe(1)
   })
@@ -540,7 +574,7 @@ describe('Enter on an image prompt', () => {
     expect(composer.attachImagePaths).toHaveBeenCalledWith(['/cache/native-inputs/a.png'], { followTyping: true })
   })
 
-  it("on a remote gateway whose files this machine cannot read, the notes stay in the text and it says so", async () => {
+  it('on a remote gateway whose files this machine cannot read, the notes stay in the text and it says so', async () => {
     vi.stubEnv('HERMES_TUI_GATEWAY_URL', 'ws://gateway.example:9119')
 
     const vision =
@@ -580,15 +614,32 @@ describe('native pager paging', () => {
       { role: 'assistant' as const, text: `reply ${i + 1}` }
     ]).flat()
 
-    const handlers = { onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onFork: vi.fn(), onPaste: vi.fn(), onType: vi.fn() }
-    const manyTargets = Array.from({ length: 30 }, (_, i) => ({ rowId: 100 + 2 * i, text: `PROMPT ${i + 1}`, turn: i + 1 }))
+    const handlers = {
+      onBack: vi.fn(),
+      onClose: vi.fn(),
+      onEdit: vi.fn(),
+      onFork: vi.fn(),
+      onPaste: vi.fn(),
+      onType: vi.fn()
+    }
+    const manyTargets = Array.from({ length: 30 }, (_, i) => ({
+      rowId: 100 + 2 * i,
+      text: `PROMPT ${i + 1}`,
+      turn: i + 1
+    }))
     const stdin = new FakeInput()
     const stdout = Object.assign(new PassThrough(), { columns: 100, isTTY: false, rows: 24 })
     const frames: string[] = []
     stdout.on('data', chunk => frames.push(stripAnsi(chunk.toString())))
 
     const instance = renderSync(
-      <RewindBrowse cols={100} native {...handlers} req={{ messages: many, onSubmit: vi.fn(), targets: manyTargets, ...handlers }} t={DEFAULT_THEME} />,
+      <RewindBrowse
+        cols={100}
+        native
+        {...handlers}
+        req={{ messages: many, onSubmit: vi.fn(), targets: manyTargets, ...handlers }}
+        t={DEFAULT_THEME}
+      />,
       { patchConsole: false, stdin: stdin as any, stdout: stdout as any }
     )
 

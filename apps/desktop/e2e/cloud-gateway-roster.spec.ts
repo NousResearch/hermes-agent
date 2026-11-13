@@ -185,7 +185,19 @@ async function startCloudGateway(port: number): Promise<FakeGateway> {
   }
 }
 
-function writeConnectionsRegistry(sandboxRoot: string, cloudUrl: string): void {
+function cloudConnectionEntry(cloudUrl: string) {
+  return {
+    id: CLOUD_ID,
+    kind: 'remote',
+    label: CLOUD_NAME,
+    name: CLOUD_NAME,
+    url: cloudUrl,
+    authMode: 'token',
+    token: { encoding: 'plain', value: CLOUD_TOKEN }
+  }
+}
+
+function writeConnectionsRegistry(sandboxRoot: string, connections: unknown[]): void {
   const userDataDir = path.join(sandboxRoot, 'electron-user-data')
 
   fs.writeFileSync(
@@ -196,22 +208,33 @@ function writeConnectionsRegistry(sandboxRoot: string, cloudUrl: string): void {
         primary: 'local',
         launchMode: 'primary',
         lastUsed: 'local',
-        connections: [
-          { id: 'local', kind: 'local', label: 'This device' },
-          {
-            id: CLOUD_ID,
-            kind: 'remote',
-            label: CLOUD_NAME,
-            name: CLOUD_NAME,
-            url: cloudUrl,
-            authMode: 'token',
-            token: { encoding: 'plain', value: CLOUD_TOKEN }
-          }
-        ]
+        connections
       },
       null,
       2
     ),
+    { encoding: 'utf8', mode: 0o600 }
+  )
+}
+
+/** Register the cloud gateway the way `hermes cloud create` does — by appending
+ *  its entry to the machine's shared store (`<HERMES_HOME>/gateway-connections.json`,
+ *  the file the Desktop and the Webapp both write and the watcher re-reads every
+ *  1.5 s), NOT to the userData registry the boot import consumed. This is what
+ *  proves acceptance item 1: an entry appearing while the app runs shows up in
+ *  the roster on the next poll with no restart. */
+function appendCloudConnectionToStore(hermesHome: string, cloudUrl: string): void {
+  const storePath = path.join(hermesHome, 'gateway-connections.json')
+  const doc = JSON.parse(fs.readFileSync(storePath, 'utf8'))
+  const connections = Array.isArray(doc.connections) ? doc.connections : []
+
+  if (!connections.some((entry: { id?: string }) => entry?.id === CLOUD_ID)) {
+    connections.push(cloudConnectionEntry(cloudUrl))
+  }
+
+  fs.writeFileSync(
+    storePath,
+    JSON.stringify({ ...doc, connections, revision: Number(doc.revision || 0) + 1 }, null, 2),
     { encoding: 'utf8', mode: 0o600 }
   )
 }
@@ -280,7 +303,9 @@ test.describe('remote-gateway bot in the roster', () => {
     writeMockProviderConfig(homeAnchoredScribe, mock.url, undefined, '_config_version: 53\n')
     writeEnvFile(homeAnchoredScribe, undefined, mock.url)
     cloud = await startCloudGateway(cloudPort)
-    writeConnectionsRegistry(sandbox.root, cloud.url)
+    // Boot the app with ONLY the built-in local source: the cloud entry is
+    // registered later, while the app runs, in the first test.
+    writeConnectionsRegistry(sandbox.root, [{ id: 'local', kind: 'local', label: 'This device' }])
     ;({ app, page } = await launchDesktop(buildAppEnv(sandbox)))
     await waitForAppReady({ app, page } as MockBackendFixture, 120_000)
     await expect(page.locator('[data-slot="statusbar"]').getByText('ready', { exact: true })).toBeVisible({
@@ -298,6 +323,28 @@ test.describe('remote-gateway bot in the roster', () => {
     if (!process.env.HERMES_E2E_KEEP) {
       sandbox?.cleanup()
     }
+  })
+
+  test('registered while running: the cloud bot joins the list on the next poll', async () => {
+    test.setTimeout(180_000)
+    await openBots(page)
+
+    // Before: only the built-in local source, no cloud row anywhere.
+    await expect(cloudRow(page)).toHaveCount(0)
+    await expect(page.locator('[data-slot="bots-roster"]')).not.toContainText(/cloud-123/i)
+
+    const before = await page.evaluate(() => (window as any).hermesDesktop.getAgentRoster())
+
+    expect(before.sources.some((entry: any) => entry.connectionId === CLOUD_ID)).toBe(false)
+
+    // `hermes cloud create` appends the entry to the shared store; the Desktop
+    // re-reads it on its own ~5 s roster poll. Acceptance: visible in the SAME
+    // list, with its gateway identity, without restarting the app.
+    appendCloudConnectionToStore(sandbox.hermesHome, cloud.url)
+
+    await expect(cloudRow(page)).toBeVisible({ timeout: 30_000 })
+    await expect(cloudRow(page).locator(`[data-gateway-badge="${CLOUD_NAME}"]`)).toBeVisible()
+    await expect(page.locator('[data-slot="bots-roster"]')).toContainText(/cloud-123/i)
   })
 
   test('healthy gateway: the row and its gateway identity are in the same list', async () => {

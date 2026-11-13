@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 _SHELL_INTERPRETERS = frozenset({
     "bash", "sh", "zsh", "dash", "fish", "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
@@ -86,18 +86,16 @@ _DURATION_OR_NICE_ARG = re.compile(
 
 def _token_basename(token: str) -> str:
     base = os.path.basename(str(token or "").strip()).lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
-    return base
+    return base.removesuffix(".exe")
 
-def _entry_argv(command: Any, args: Any) -> List[str]:
+def _entry_argv(command: Any, args: Any) -> list[str]:
     """Flatten ``command`` + ``args`` into a single argv list for shape checks.
 
     ``command`` may be a bare binary or a multi-token string (rare for MCP
     configs, but shlex-split so a hand-written form still peels correctly).
     ``args`` is the normal list form used by stdio MCP configs.
     """
-    argv: List[str] = []
+    argv: list[str] = []
     text = str(command or "").strip()
     if text:
         try:
@@ -160,7 +158,7 @@ def _wrapper_option_takes_operand(wrapper: str, option: str, operand: str) -> bo
         return True
     return False
 
-def _skip_wrapper_args(argv: List[str], idx: int, wrapper: str) -> int:
+def _skip_wrapper_args(argv: list[str], idx: int, wrapper: str) -> int:
     """Consume wrapper operands by arity, expanding env's command-bearing -S."""
     while idx < len(argv):
         token = argv[idx]
@@ -207,7 +205,7 @@ def _skip_wrapper_args(argv: List[str], idx: int, wrapper: str) -> int:
     return idx
 
 
-def _shell_and_script(command: Any, args: Any) -> Tuple[Optional[str], str]:
+def _shell_and_script(command: Any, args: Any) -> tuple[str | None, str]:
     """Locate a shell interpreter in the entry argv after peeling wrappers.
 
     Returns ``(interpreter_basename, script_text)`` when a shell from

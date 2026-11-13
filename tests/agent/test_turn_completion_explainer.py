@@ -129,6 +129,59 @@ def test_explanation_persistence_turn_lease_cause_is_specific():
     assert "hermes doctor" not in lower
 
 
+@pytest.mark.parametrize("failure", ["owner_unavailable", "worker_receipt_timeout"])
+def test_explanation_persistence_owner_unavailable_never_blames_disk(failure):
+    """A worker that reaches no persistence owner must not be told the drive is full or that
+    another Hermes process holds the database.
+
+    Workers never write SQLite; they persist by RPC to the gateway owner, which fails while that
+    owner is draining for an update, restarting, or stalled. Both failure strings mean "the owner
+    did not answer" and carry neither a sqlite code nor a disk marker, so before this bucket they
+    classified as "unknown" and rendered the default disk/other-process text -- which sent a
+    reader after a phantom second DB writer. Drive the real path: classify -> key -> catalog.
+    """
+    from agent.runtime_session_store import WorkerPersistenceError
+    from agent.turn_explainers import _persistence_explanation_key
+    from hermes_state import classify_persistence_error
+    from hermes_state_errors import PERSISTENCE_ERROR_CAUSES
+
+    cause = classify_persistence_error(WorkerPersistenceError(failure))
+    assert cause == "owner_unavailable"
+    assert cause in PERSISTENCE_ERROR_CAUSES
+    # RPC-wrapped form: the exception type is lost in transit, the token survives.
+    assert classify_persistence_error(failure) == "owner_unavailable"
+    assert _persistence_explanation_key(cause) == "explainer.persistence.owner_unavailable"
+
+    out = AIAgent._format_turn_completion_explanation("session_persistence_failed", cause)
+    lower = out.lower()
+    assert out.strip() != ""
+    # Names the three owner-side conditions the error cannot distinguish.
+    assert "gateway" in lower
+    assert "draining" in lower and "restarting" in lower and "event loop" in lower
+    assert "not implicated" in lower
+    assert "gateway status" in lower
+    # The exact false diagnosis: drive full / a second process holding state.db.
+    assert "out of room" not in lower
+    assert "another hermes process" not in lower
+    assert "free some space" not in lower
+    assert "close other hermes windows" not in lower
+    # And it must not be the generic last-resort body.
+    assert out != AIAgent._format_turn_completion_explanation("session_persistence_failed", "unknown")
+
+
+def test_classify_persistence_error_owner_rpc_failures_are_not_storage():
+    """Both owner-side tokens are their own cause and outrank nothing else (pure strings)."""
+    from hermes_state import classify_persistence_error
+
+    assert classify_persistence_error("owner_unavailable") == "owner_unavailable"
+    assert classify_persistence_error("worker_receipt_timeout") == "owner_unavailable"
+    # Storage buckets are untouched by the additive markers.
+    assert classify_persistence_error("database is locked") == "locked"
+    assert classify_persistence_error("disk I/O error") == "disk"
+    assert classify_persistence_error("database disk image is malformed") == "corrupt"
+    assert classify_persistence_error("database or disk is full") == "disk"
+
+
 def test_explanation_persistence_disk_cause_keeps_disk_wording():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "disk"

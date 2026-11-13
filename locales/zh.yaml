@@ -3559,6 +3559,7 @@ explainer:
     compression: "本回合已停止，因为另一个进程正在压缩此会话。你的消息应已保存——请在压缩完成后重新发送。"
     compression_closed: "本回合已停止，因为此会话已被上下文压缩轮换，且无法接管其实时后续会话。存储本身没有问题——请刷新客户端（或开始新回合）以获取新的会话 ID，然后重新发送你的消息。"
     turn_lease: "本回合已停止，因为另一个 Hermes 进程接管了此会话。你的回复未保存——请等待另一个进程完成后重新发送。"
+    owner_unavailable: "本回合已停止，因为此 Hermes 工作进程无法联系到拥有会话存储的进程（网关）——它正在为更新而排空、正在重启，或事件循环已停滞——因此这条消息未保存。磁盘和其他 Hermes 进程没有问题：请重新发送你的消息；如果持续失败，请运行 `hermes {profile_arg}gateway status`。"
     session_row_missing: "此会话在聊天仍打开时被从存储中删除，且 Hermes 无法重新创建它，因此这条消息未保存。请重新发送；如果持续失败，请运行 `hermes {profile_arg}doctor`。"
     locked: "本回合已停止，因为会话存储正忙（另一个 Hermes 进程正在写入状态数据库）。你的消息应已保存——请稍后重新发送。"
     replaced: "会话数据库文件在 Hermes 运行期间被替换，因此这条消息未保存（副本保留在 {home}/sessions/ 中）。请停止 Hermes（`hermes {profile_arg}gateway stop`），运行 `hermes {profile_arg}doctor`——不要运行 `hermes {profile_arg}doctor --fix`，那会就地修复错误的文件——然后重新启动并再次发送你的消息。高级恢复步骤见日志。"

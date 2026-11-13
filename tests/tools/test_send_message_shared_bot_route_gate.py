@@ -395,8 +395,9 @@ def test_cron_shared_view_is_built_from_one_route_read(tmp_path, monkeypatch):
         good = scheduler_preflight.shared_route_adapters_for_current_home({Platform.TELEGRAM: primary})
         assert len(reads) == 1
         monkeypatch.setattr(scheduler_preflight, "_primary_routes",
-                            lambda home: (_ for _ in ()).throw(OSError("unreadable")))
+                            lambda home: reads.append(home) or (_ for _ in ()).throw(OSError("unreadable")))
         failed = scheduler_preflight.shared_route_adapters_for_current_home({Platform.TELEGRAM: primary})
+        assert len(reads) == 2  # the failed read is not retried for the dispatch table
     finally:
         reset_hermes_home_override(token)
     assert good.get(Platform.TELEGRAM, {"chat_id": chat, "thread_id": own}) is primary

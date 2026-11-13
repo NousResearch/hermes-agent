@@ -223,6 +223,9 @@ def _delivery_platform_routed_from_primary_gateway(platform_name: str) -> bool:
 _CHAT_SCOPED_THREAD_PLATFORMS = frozenset({"telegram", "slack", "matrix", "mattermost"})
 
 
+_READ_DISPATCH_ROUTES = object()  # default: read the primary home's table; None means the read failed
+
+
 class SharedRouteAdapters:
     """Read-only adapter map for a credentialless satellite profile. ``get(platform, target)``
     resolves the PRIMARY adapter iff the inbound route matcher (``ProfileRoute.matches``) accepts
@@ -236,10 +239,10 @@ class SharedRouteAdapters:
     See #101113.
     """
 
-    def __init__(self, primary_adapters, routes, dispatch_routes=None) -> None:
+    def __init__(self, primary_adapters, routes, dispatch_routes=_READ_DISPATCH_ROUTES) -> None:
         self._primary = dict(primary_adapters or {})
         self._routes = list(routes or [])
-        if dispatch_routes is None:
+        if dispatch_routes is _READ_DISPATCH_ROUTES:
             dispatch_routes = _primary_route_tables_for_current_home()[1]
         self._dispatch_routes = None if dispatch_routes is None else list(dispatch_routes)
 

@@ -303,8 +303,14 @@ class PluginDispatchMixin:
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
         for cb in callbacks:
             try:
+                # The declared modify protocol is the only way to rewrite args.
+                # A callback must not change another guard's input in place.
+                callback_kwargs = kwargs
+                if hook_name == "pre_tool_call":
+                    from copy import deepcopy
+                    callback_kwargs = dict(kwargs, args=deepcopy(kwargs.get("args", {})))
                 if use_timeout:
-                    ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
+                    ret = self._run_hook_callback_bounded(hook_name, cb, callback_kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if failed is not None:
                             failed.append(cb)
@@ -312,7 +318,7 @@ class PluginDispatchMixin:
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
-                    ret = self._invoke_hook_callback(cb, kwargs)
+                    ret = self._invoke_hook_callback(cb, callback_kwargs)
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:  # health: allow BLE001 -- moved from invoke_hook: plugin callbacks are untrusted; each failure is reported and isolated

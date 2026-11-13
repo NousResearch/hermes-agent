@@ -465,6 +465,28 @@ advertising `send_media` — a legacy connector never sees the op (the gateway's
 media sends degrade to their pre-media text fallbacks). Size cap 25 MB
 (connector `mediaStore.ts` MEDIA_MAX_BYTES; uploads over it are rejected 413).
 
+**Upload filenames.** `X-Media-Filename` stays raw for printable ASCII names
+without `%`, preserving compatibility with existing relays. All other names
+(including Latin-1, controls and literal `%`) use the RFC 8187 / RFC 5987
+ext-value form `UTF-8''` followed by percent-encoded UTF-8, for example
+`UTF-8''%D0%BE%D1%82%D1%87%D1%91%D1%82.pdf` for `отчёт.pdf`.
+Names are truncated to 255 Unicode code points before encoding, preserving
+complete characters and UTF-8 sequences; the header value is at most 3067 ASCII
+bytes (7 prefix bytes plus 255 × 4 × 3).
+
+Receivers must check for the `UTF-8''` prefix, percent-decode the suffix once
+and decode the resulting bytes as UTF-8. Otherwise keep the raw header value
+unchanged, including legacy Latin-1 values. For example, in Python:
+
+```python
+from urllib.parse import unquote
+
+name = unquote(value[7:], encoding="utf-8", errors="strict") if value.startswith("UTF-8''") else value
+```
+
+Do not decode raw values or decode twice: `a%2F.txt` is sent as
+`UTF-8''a%252F.txt` and must remain the literal filename `a%2F.txt`.
+
 **Inbound media (Phase 2 media ingress).** An inbound event's `media_urls`
 carry fetchable references: platform-public URLs pass through (Discord CDN);
 auth-gated/expiring platform URLs (Telegram file API, Slack `url_private`,

@@ -8,6 +8,19 @@ const PROMPT = '[data-slot="aui_user-message-root"]'
 // descendant on each write. See the @property block there before changing it.
 const CLIP = '--sticky-prompt-clip'
 
+// The Webapp host scales the whole document with CSS `zoom`
+// (lib/browser-zoom.ts). With zoom set, getBoundingClientRect() reports
+// RENDERED pixels while `clip-path: inset(<length>)` and a computed `top`
+// resolve in LAYOUT pixels. Mixing the two overshoots the clip by
+// distance x (zoom - 1) — a blank band under the pinned bubble that grows as
+// you scroll — and can make the pinned-prompt test bail entirely. Convert at
+// both boundaries. Identity at zoom === 1.
+function layoutScale(): number {
+  const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom)
+
+  return Number.isFinite(zoom) && zoom > 0 ? zoom : 1
+}
+
 interface StickyPromptClipOptions {
   contentRef: RefObject<HTMLElement | null>
   scrollRef: RefObject<HTMLElement | null>
@@ -55,6 +68,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
   const measure = () => {
     frame = 0
     const viewportTop = viewport.getBoundingClientRect().top
+    const scale = layoutScale()
     const next = new Map<HTMLElement, number>()
     let activePrompt: HTMLElement | null = null
     let exclusionBottom = viewportTop
@@ -69,7 +83,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
       }
 
       const promptRect = prompt.getBoundingClientRect()
-      const stickyTop = Number.parseFloat(getComputedStyle(prompt).top) || 0
+      const stickyTop = (Number.parseFloat(getComputedStyle(prompt).top) || 0) * scale
 
       if (promptRect.top > viewportTop + stickyTop + 1 || promptRect.bottom <= viewportTop) {
         continue
@@ -104,7 +118,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
         const rect = element.getBoundingClientRect()
 
         if (rect.height > 0 && rect.top < exclusionBottom) {
-          next.set(element, Math.min(rect.height, exclusionBottom - rect.top))
+          next.set(element, Math.min(rect.height, exclusionBottom - rect.top) / scale)
         }
       }
 

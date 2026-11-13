@@ -46,11 +46,17 @@ _ROLLBACK_MAX_RESTARTS = 20
 _ROLLBACK_LOCK_HOLD_SECONDS = 0.25
 
 
-def _uses_wal(src: Path) -> bool:
-    # Header byte 18 (file format write version) is 2 for WAL; reading it takes no lock.
-    with open(src, "rb") as handle:
-        header = handle.read(19)
-    return len(header) == 19 and header[18] == 2
+def _uses_wal(conn: sqlite3.Connection) -> bool:
+    # A raw header read's close() cancels every same-process POSIX lock on the
+    # source, including another thread's live write transaction. Ask SQLite.
+    try:
+        return conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    except sqlite3.OperationalError as exc:
+        if getattr(exc, "sqlite_errorcode", None) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+            raise
+        # An exclusive holder can prevent even the mode query. The stepped copy
+        # is safe for either mode and retains the backup callback's busy deadline.
+        return False
 
 
 class _CopyRate:
@@ -178,7 +184,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
             else:
                 busy_deadline = now + max(0.0, timeout_seconds)
 
-        if _uses_wal(src):
+        if _uses_wal(conn):
             # One step: SQLite restarts a multi-step backup whenever another connection writes the
             # source, and a WAL reader never blocks a writer however long the copy takes.
             # Run off the main thread so a SIGTERM is serviced during the copy (_OffThreadCopy).

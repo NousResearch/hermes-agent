@@ -160,6 +160,26 @@ local_runtime:
                         # yourself (the default probe is :8080 only)
 ```
 
+To retain a per-model launch limit across boot, idle refits and context growth, set
+`model_settings` in the **shared model root's** `config.yaml` (the directory containing
+`models/`, not a named profile's config). Keys are exact model IDs from the GGUF filenames:
+
+```yaml
+local_runtime:
+  model_settings:
+    Qwen3.6-35B-A3B-UD-Q4_K_M:
+      context_cap: 32768
+      batch_posture: backend-default
+```
+
+`context_cap` is a positive token ceiling, bounded further by the model's native window;
+it may be below the automatic 64K floor. `backend-default` omits batch and microbatch flags
+and prices llama.cpp's default microbatch of 512. MTP, vision assets, KV caching and sampling
+keep their model-specific policies. Unconfigured models retain automatic fitting and prefill
+batches. Limits take effect the next time Hermes regenerates the model presets.
+Invalid settings or unreadable shared configuration prevent a new managed server boot;
+an idle refit that fails validation leaves the previously admitted presets untouched.
+
 Running `llama-server` yourself on a fixed port works with the same
 `model.provider: llamacpp` selection — either list the port in
 `local_runtime.detect_ports`, or define the endpoint explicitly under

@@ -63,6 +63,16 @@ def _drafts(preset) -> bool:
     return preset.keys.get("spec-type") == "draft-dflash"
 
 
+def _resident_prices(gguf, budget, window):
+    prices = {}
+    for name, engine in (("mtp", None), ("draft", "b11671")):
+        entry = presets.preset_for_model(gguf, budget, set(), engine_tag=engine)
+        path = gguf.parent / f"admitted-{name}.ini"
+        presets.write_presets([entry], path)
+        prices[name] = presets.resident_footprint(gguf, budget, window, preset_path=path)
+    return prices
+
+
 def test_the_draft_replaces_mtp_on_one_slot_when_it_fits(model):
     gguf, draft, _ = model
 
@@ -183,13 +193,15 @@ def test_growth_counts_the_outgoing_draft_as_freed_memory(model, monkeypatch):
     budget = _discrete(28)
     running = presets.preset_for_model(path, budget, set(), engine_tag="b11671")
     assert _drafts(running) and running.window < NATIVE
+    preset_path = path.parent / "running.ini"
+    presets.write_presets([running], preset_path)
     monkeypatch.setattr(bootstrap, "staged_models", lambda: [path])
-    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True))
+    monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(
+        is_idle=lambda m: True, preset_path=preset_path))
     monkeypatch.setattr(growth, "is_managed_endpoint", lambda url: True)
     monkeypatch.setattr(gguf_module, "read_gguf_header", presets.read_gguf_header)
     monkeypatch.setattr(estimator, "profile_from_gguf", presets.profile_from_gguf)
     monkeypatch.setattr(hardware, "probe_budget", lambda **kw: budget)
-    monkeypatch.setattr(presets, "read_preset_decisions", lambda *a: {BUILD.model_id: running})
     freed = []
     monkeypatch.setattr(bootstrap, "_launch_budget", lambda b, own_bytes=0: freed.append(own_bytes) or b)
     monkeypatch.setattr(bootstrap, "refresh_local_runtime", lambda: False)
@@ -197,9 +209,9 @@ def test_growth_counts_the_outgoing_draft_as_freed_memory(model, monkeypatch):
     growth.maybe_grow_window(BUILD.model_id, base_url="http://127.0.0.1:1/v1",
                              session_tokens=running.window, current_window=running.window)
 
-    drafting = presets.resident_footprint(path, budget, running.window, drafting=True)
+    drafting = presets.resident_footprint(path, budget, running.window, preset_path=preset_path)
     assert freed == [drafting]
-    assert drafting > presets.resident_footprint(path, budget, running.window)
+    assert drafting > _resident_prices(path, budget, running.window)["mtp"]
 
 
 def test_a_spilled_model_never_takes_the_draft(model):
@@ -228,8 +240,8 @@ def test_the_residency_price_is_the_launch_the_model_runs(model):
     larger = set()
     for state in (150 * MIB, 600 * MIB):  # MTP's own layers outweigh the draft, then the reverse
         use(state=state)
-        mtp = presets.resident_footprint(gguf, ROOMY, NATIVE)
-        drafting = presets.resident_footprint(gguf, ROOMY, NATIVE, drafting=True)
+        prices = _resident_prices(gguf, ROOMY, NATIVE)
+        mtp, drafting = prices["mtp"], prices["draft"]
         larger.add("draft" if drafting > mtp else "mtp")
 
         assert presets._launch_footprint(gguf, ROOMY, engine_tag="b11671") == max(mtp, drafting)
@@ -241,11 +253,41 @@ def test_the_residency_price_is_the_launch_the_model_runs(model):
 def test_two_models_stay_resident_where_two_drafted_launches_fit(model):
     gguf, _, _ = model
     gguf.touch()
-    held = max(presets.resident_footprint(gguf, ROOMY, NATIVE),
-               presets.resident_footprint(gguf, ROOMY, NATIVE, drafting=True))
+    held = max(_resident_prices(gguf, ROOMY, NATIVE).values())
     card = replace(ROOMY, usable_vram_bytes=2 * held + GIB)
 
     assert presets.admitted_residency_count(gguf.parent, card, 4, engine_tag="b11671") == 2
+
+
+def test_persistent_limits_keep_dflash_and_price_its_recorded_default_batches(model):
+    from hermes_cli.config import atomic_config_write
+    from hermes_cli.local_runtime.context_policy import RUNTIME_OVERHEAD_BYTES
+    from hermes_cli.local_runtime.estimator import footprint_bytes
+
+    original, _, _ = model
+    gguf = original.parent / "models" / original.name
+    gguf.parent.mkdir()
+    gguf.touch()
+    config = gguf.parent.parent / "config.yaml"
+    settings = {"context_cap": 32768, "batch_posture": "backend-default"}
+    atomic_config_write(config, {"local_runtime": {"model_settings": {BUILD.model_id: settings}}})
+    running = presets.preset_for_model(gguf, ROOMY, set(), requested_window=NATIVE, engine_tag="b11671")
+    assert _drafts(running) and running.window == 32768
+    assert running.keys["parallel"] == "1"
+    assert "batch-size" not in running.keys and "ubatch-size" not in running.keys
+    path = original.parent / "admitted.ini"
+    presets.generate_presets(gguf.parent, ROOMY, path, engine_tag="b11671")
+    assert presets.read_preset_decisions(path)[BUILD.model_id].window == running.window
+    profile = presets.profile_from_gguf(presets.read_gguf_header(gguf))
+    overhead = (RUNTIME_OVERHEAD_BYTES + ENTRY.draft.size_bytes
+                + profile.recurrent_state_bytes * (ENTRY.draft_depth + 1)
+                + presets._DRAFT_CONTEXT_BYTES + 512 * profile.n_vocab * 4)
+    expected = footprint_bytes(profile, running.window, overhead_bytes=overhead)
+    assert presets._launch_footprint(gguf, ROOMY, engine_tag="b11671") == max(
+        expected, _resident_prices(gguf, ROOMY, running.window)["mtp"])
+    atomic_config_write(config, {"local_runtime": {"model_settings": {
+        BUILD.model_id: {"context_cap": NATIVE, "batch_posture": "auto"}}}})
+    assert presets.resident_footprint(gguf, ROOMY, running.window, preset_path=path) == expected
 
 
 def _staged(monkeypatch, *entries):

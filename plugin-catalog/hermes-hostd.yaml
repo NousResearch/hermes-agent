@@ -1,6 +1,6 @@
 name: hostd-client
 repo: https://github.com/violetSoftware/hermes-hostd-plugin
-sha: 9aacb5a08e8098f6e5bf69375ae84ac72b9f6b21
+sha: 3c325c9d3143edf81a019dfa6155587e6d9e7ad5
 version: "0.1.0rc2"
 title: Hermes Hostd
 description: Request command execution from a separately managed hermes-hostd daemon over HTTP or VSOCK, with host-side approval.

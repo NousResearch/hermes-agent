@@ -321,6 +321,96 @@ def _exited_status(code: int) -> int:
 
 
 
+def test_infrastructure_exit_requeues_without_counting_failure_and_uses_cooldown(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="persistence failure", assignee="a", max_retries=1)
+        for i in range(3):
+            pid = 72000 + i
+            kb.claim_task(conn, tid, claimer=f"{host}:infra{i}")
+            conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+            conn.commit()
+            _kbd._record_worker_exit(pid, _exited_status(_kb.KANBAN_INFRASTRUCTURE_EXIT_CODE))
+
+            assert tid not in kbd.detect_crashed_workers(conn)
+            assert tid in getattr(_kbd.detect_crashed_workers, "_last_infrastructure_failed", [])
+            task = kb.get_task(conn, tid)
+            assert task.status == ("blocked" if i == 2 else "ready")
+            if i == 2:
+                assert task.block_kind == "needs_input"
+            assert task.consecutive_failures == 0
+            assert task.last_failure_error and "local persistence" in task.last_failure_error
+
+            run = conn.execute(
+                "SELECT outcome, metadata, ended_at FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            assert run["outcome"] == "infrastructure_failure"
+            run_metadata = json.loads(run["metadata"])
+            assert run_metadata["infrastructure"] is True
+            if i == 2:
+                assert run_metadata["retry_status"] == "blocked"
+                assert run_metadata["manual_review_required"] is True
+            monkeypatch.setattr(_kb.time, "time", lambda: run["ended_at"] + 100)
+            assert kbd.check_respawn_guard(conn, tid) == "infrastructure_cooldown"
+
+
+
+def test_infrastructure_streak_is_broken_by_provider_rate_limit(kanban_home, monkeypatch):
+    """Three total infra exits are not three consecutive infra exits.
+
+    An intervening provider quota exit is a separate retry policy and must
+    break the infrastructure streak without spending the task failure budget.
+    """
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="mixed worker exits", assignee="a", max_retries=1)
+        exit_codes = (
+            _kb.KANBAN_INFRASTRUCTURE_EXIT_CODE,
+            _kb.KANBAN_INFRASTRUCTURE_EXIT_CODE,
+            _kb.KANBAN_RATE_LIMIT_EXIT_CODE,
+            _kb.KANBAN_INFRASTRUCTURE_EXIT_CODE,
+        )
+        for i, code in enumerate(exit_codes):
+            pid = 72500 + i
+            kb.claim_task(conn, tid, claimer=f"{host}:mixed{i}")
+            conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (pid, tid))
+            conn.commit()
+            _kbd._record_worker_exit(pid, _exited_status(code))
+
+            assert tid not in kbd.detect_crashed_workers(conn)
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready"
+            assert task.consecutive_failures == 0
+            assert task.block_kind != "needs_input"
+
+        rows = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id = ? ORDER BY id",
+            (tid,),
+        ).fetchall()
+        assert [row["outcome"] for row in rows] == [
+            "infrastructure_failure", "infrastructure_failure",
+            "rate_limited", "infrastructure_failure",
+        ]
+        assert "manual_review_required" not in json.loads(rows[-1]["metadata"])
+
+
+
 def test_rate_limit_exit_requeues_without_counting_failure(
     kanban_home, monkeypatch,
 ):
@@ -567,14 +657,15 @@ def test_infrastructure_spawn_refusal_never_charges_the_card(
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
     monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
 
-    def spawn_via_real_boundary(task, workspace, board=None):
-        kbd._restart_safe_worker_argv(task, ["hermes", "chat"])  # raises: real probe verdict, real _degrade()
-        raise AssertionError("unreachable")
+    def spawn_via_infrastructure_boundary(task, workspace, board=None):
+        raise process_registry.RestartSafeScopeUnavailable(
+            "user service bus unavailable; enable-linger is required"
+        )
 
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="bus is down", assignee="a")
         for _ in range(3):
-            res = kbd.dispatch_once(conn, spawn_fn=spawn_via_real_boundary, failure_limit=2)
+            res = kbd.dispatch_once(conn, spawn_fn=spawn_via_infrastructure_boundary, failure_limit=2)
             assert res.auto_blocked == []
         row = conn.execute(
             "SELECT status, block_kind, consecutive_failures, last_failure_error FROM tasks WHERE id = ?", (tid,),

@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_time import safe_strftime
@@ -151,7 +151,8 @@ JUDGE_SYSTEM_PROMPT = (
     "- The agent has delegated subagents still running (stated below as "
     "active delegations) and the response says it is waiting on them with "
     "nothing else dispatchable — return ``wait_for_seconds`` between 600 and "
-    "1800. Their results wake the agent on their own; re-poking it now only "
+    "1800 and ``wait_on_delegations: true``. Use that exact boolean only for "
+    "delegation dependencies, never a rate-limit cooldown. Their results wake the agent; re-poking it only "
     "produces a status recap.\n"
     "Picking WAIT parks the loop without burning a turn; it resumes "
     "automatically when the pid exits or the time elapses. Do NOT pick WAIT "
@@ -420,6 +421,8 @@ def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> tuple[bool, int, s
 class GoalState:
     """Serializable goal state stored per session."""
     goal: str
+    goal_instance: str = ''
+    wait_generation: str = ''
     status: str = "active"          # active | paused | done | cleared
     turns_used: int = 0
     max_turns: int = DEFAULT_MAX_TURNS
@@ -443,9 +446,10 @@ class GoalState:
     waiting_on_pid: Optional[int] = None
     waiting_on_session: Optional[str] = None
     waiting_until: float = 0.0
-    # Live delegation batches when a timed WAIT was set because of them; the barrier lifts as soon
-    # as that count drops (a batch returned), not only when the timer runs out.
+    # Legacy diagnostic count: never completion proof (a restart empties the in-memory roster).
+    # New dependency waits pin host-owned immutable delegation identities instead.
     waiting_on_delegations: int = 0
+    waiting_workers: list[dict[str, Any]] = field(default_factory=list)
     waiting_reason: Optional[str] = None
     waiting_since: float = 0.0
     contract: GoalContract = field(default_factory=GoalContract)
@@ -463,6 +467,8 @@ class GoalState:
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         return cls(
             goal=data.get("goal", ""),
+            goal_instance=data.get('goal_instance', ''),
+            wait_generation=data.get('wait_generation', ''),
             status=data.get("status", "active"),
             max_turns=int(data.get("max_turns") or DEFAULT_MAX_TURNS),
             last_verdict=data.get("last_verdict"),
@@ -472,6 +478,7 @@ class GoalState:
             waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
             waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
             waiting_reason=data.get("waiting_reason"),
+            waiting_workers=data.get('waiting_workers') or [],
             contract=GoalContract.from_dict(data.get("contract")),
             gates=[
                 GoalGate.from_dict(g) for g in (data.get("gates") or [])
@@ -488,10 +495,12 @@ class GoalState:
         return "\n".join(f"- {i}. {text}" for i, text in enumerate(self.subgoals, start=1))
 
     def clear_wait(self) -> None:
+        self.wait_generation = ''
         self.waiting_on_pid = None
         self.waiting_on_session = None
         self.waiting_until = 0.0
         self.waiting_on_delegations = 0
+        self.waiting_workers = []
         self.waiting_reason = None
         self.waiting_since = 0.0
 
@@ -641,16 +650,11 @@ def load_goal(session_id: str) -> Optional[GoalState]:
     if db is None:
         return None
     try:
-        raw = db.get_meta(_meta_key(session_id))
+        from hermes_cli.goals_waits import read_state
+        with db._read_ctx() as conn:
+            return read_state(conn, session_id)
     except Exception as exc:
-        logger.debug("GoalManager: get_meta failed: %s", exc)
-        return None
-    if not raw:
-        return None
-    try:
-        return GoalState.from_json(raw)
-    except Exception as exc:
-        logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
+        logger.warning("GoalManager: could not load stored goal for %s: %s", session_id, exc)
         return None
 
 
@@ -663,7 +667,9 @@ def save_goal(session_id: str, state: GoalState) -> None:
         _warn_dropped_write("GoalManager", "goal", session_id)
         return
     try:
-        db.set_meta(_meta_key(session_id), state.to_json())
+        from hermes_cli.goals_waits import persist_state
+        incarnation = db._execute_write(lambda conn: persist_state(conn, session_id, state))
+        cast(Any, state)._control_incarnation = incarnation
     except Exception as exc:
         logger.debug("GoalManager: set_meta failed: %s", exc)
 
@@ -821,6 +827,8 @@ def _parse_judge_response(raw: str) -> tuple[str, str, bool, Optional[dict[str, 
         verdict = "continue"
     if verdict != "wait":
         return verdict, reason, False, None
+    if 'wait_on_delegations' in data and type(data['wait_on_delegations']) is not bool:
+        return 'continue', 'wait_on_delegations must be a boolean', True, None
 
     def _first_int(*keys: str) -> Optional[int]:
         for k in keys:
@@ -841,7 +849,10 @@ def _parse_judge_response(raw: str) -> tuple[str, str, bool, Optional[dict[str, 
         return "wait", reason, False, {"pid": pid}
     seconds = _first_int("wait_for_seconds", "seconds", "wait_seconds")
     if seconds is not None:
-        return "wait", reason, False, {"seconds": seconds}
+        directive = {'seconds': seconds}
+        if 'wait_on_delegations' in data:
+            directive['delegations'] = data['wait_on_delegations']
+        return "wait", reason, False, directive
     return "continue", f"{reason} (wait verdict had no target — continuing)", False, None
 
 
@@ -1098,10 +1109,14 @@ class GoalManager:
         self.session_id = session_id
         self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
+        from hermes_cli.goals_waits import observed_token
+        self._persisted_token = observed_token(self._state) if self._state is not None else None
 
     def refresh(self) -> None:
         """Re-read state from the DB (another writer, e.g. a tool, moved it)."""
         self._state = load_goal(self.session_id)
+        from hermes_cli.goals_waits import observed_token
+        self._persisted_token = observed_token(self._state) if self._state is not None else None
 
     # --- introspection ------------------------------------------------
 
@@ -1147,7 +1162,15 @@ class GoalManager:
     # --- mutation -----------------------------------------------------
 
     def _save(self) -> Optional[GoalState]:
-        save_goal(self.session_id, self._state)
+        if getattr(self, '_evaluation_token', None) is not None:
+            from hermes_cli.goals_evaluation import save_evaluation
+            save_evaluation(self)
+        else:
+            save_goal(self.session_id, self._state)
+        from hermes_cli.goals_waits import state_token
+        self._persisted_token = state_token(self._state) if self._state is not None else None
+        if self._state is not None:
+            self._state._persisted_raw = self._state.to_json()
         return self._state
 
     def _require_goal(self) -> GoalState:
@@ -1170,11 +1193,12 @@ class GoalManager:
         return _decision("paused", False, None, verdict, reason, message)
 
     def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
+        import uuid
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
         self._state = GoalState(
-            goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
+            goal=goal, goal_instance=uuid.uuid4().hex, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             contract=contract if contract is not None else GoalContract(),
         )
@@ -1361,8 +1385,10 @@ class GoalManager:
     # --- /goal wait barrier -------------------------------------------
 
     def _park(self, reason: str, **barrier) -> GoalState:
+        import uuid
         state = self._require_active()
         state.clear_wait()
+        state.wait_generation = uuid.uuid4().hex
         for k, v in barrier.items():
             setattr(state, k, v)
         state.waiting_reason = (reason or "").strip() or None
@@ -1390,11 +1416,9 @@ class GoalManager:
         return self._park(reason, waiting_on_session=session_id)
 
     def wait_for_seconds(self, seconds: int, reason: str = "", *, on_delegations: int = 0) -> GoalState:
-        """Park until ``seconds`` from now (backoff/cooldown waits with no process to track). With
-        ``on_delegations`` the wait is FOR those live delegation batches: it also lifts as soon as
-        fewer are live (a batch result came back), so the loop re-judges with the result in hand
-        instead of sleeping out a 20-minute timer (independent review: results arrived with 1,199 s
-        left on the timer and nothing re-judged)."""
+        """Park until ``seconds`` from now. ``on_delegations`` preserves legacy count metadata,
+        not completion evidence. The judge's explicit worker waits pin durable identities through
+        ``goals_workers.park_workers``; plain cooldowns cannot be released by a count drop."""
         self._require_active()
         seconds = int(seconds)
         if seconds <= 0:
@@ -1425,11 +1449,6 @@ class GoalManager:
             still = _pid_alive(s.waiting_on_pid)
         elif s.waiting_until:
             still = time.time() < s.waiting_until
-            if still and s.waiting_on_delegations > 0:
-                # Set because of live delegations: lift the moment one of them returned.
-                live = count_active_delegations(self.session_id)
-                if live < s.waiting_on_delegations:
-                    still = False
         else:
             return False
         if still and s.waiting_since and s.waiting_until == 0.0 and time.time() - s.waiting_since > _MAX_BARRIER_WAIT_S:
@@ -1470,7 +1489,12 @@ class GoalManager:
                 logger.info("goal judge: wait_on_pid %s is not alive on this host; continuing", pid)
                 return None
         else:
-            self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason, on_delegations=active_delegations)
+            if wait_directive.get('delegations') is True:
+                from hermes_cli.goals_workers import park_workers
+                if not park_workers(self, int(wait_directive['seconds']), reason):
+                    return None
+            else:
+                self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason)
             tgt = f"{wait_directive['seconds']}s"
         return _decision("active", False, None, "wait", reason, f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}")
 
@@ -1482,6 +1506,15 @@ class GoalManager:
         )
 
     def evaluate_after_turn(
+        self, last_response: str, *, user_initiated: bool = True,
+        background_processes: Optional[list[dict[str, Any]]] = None,
+        active_delegations: int = 0,
+    ) -> dict[str, Any]:
+        from hermes_cli.goals_evaluation import evaluate
+        return evaluate(self, last_response, user_initiated=user_initiated,
+                        background_processes=background_processes, active_delegations=active_delegations)
+
+    def _evaluate_after_turn(
         self, last_response: str, *, user_initiated: bool = True,
         background_processes: Optional[list[dict[str, Any]]] = None,
         active_delegations: int = 0,
@@ -1508,9 +1541,12 @@ class GoalManager:
                 return self._budget_pause(state, "gate_failed", gate_decision.get("reason", ""), note=" (a quality gate is still failing)")
             return gate_decision
 
+        from hermes_cli.goals_workers import workers
+        self._judge_workers = workers(self.session_id)
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
-            contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            contract=state.contract if state.has_contract() else None,
+            active_delegations=max(active_delegations, len(self._judge_workers)),
         )
         state.last_verdict = verdict
         state.last_reason = reason

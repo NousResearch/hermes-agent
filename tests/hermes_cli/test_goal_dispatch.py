@@ -80,7 +80,8 @@ def test_surface_goal_state_matches_cli(surface, command, monkeypatch):
         if state:
             from dataclasses import asdict
             state = asdict(state)
-            for key in ('created_at', 'updated_at', 'waiting_since'):
+            # Separate goals/waits have different private identities, like their timestamps.
+            for key in ('created_at', 'updated_at', 'waiting_since', 'goal_instance', 'wait_generation'):
                 state.pop(key, None)
         snapshots.append(state)
     assert snapshots[0] == snapshots[1]

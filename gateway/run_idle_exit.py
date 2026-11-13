@@ -130,6 +130,12 @@ def _ledger_busy(runner) -> str | None:
             return f"admissions pending in {authority.profile_id}"
         if db._read_all("SELECT 1 FROM worker_executions WHERE status != 'terminal' LIMIT 1"):
             return f"managed worker live in {authority.profile_id}"
+        from gateway.run_goal_waits import has_goal_duty
+        from gateway.session_authorities import owner_scope
+        if not getattr(authority, 'retiring', False):
+            with owner_scope(authority):
+                if has_goal_duty(authority):
+                    return f"parked goal duty in {authority.profile_id}"
         service = getattr(authority, "hosted_room_service", None)
         if service is not None:
             status = service.status()

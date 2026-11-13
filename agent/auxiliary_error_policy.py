@@ -71,7 +71,10 @@ def same_key_retry(verdict: ClassifiedError) -> bool:
 
 def resend_cannot_help(verdict: ClassifiedError) -> bool:
     """A cancelled task or a policy refusal: no stripped field or stream flag changes the answer."""
-    return verdict.reason in POLICY_REFUSAL_REASONS or bool(verdict.error_context.get("interrupted"))
+    terminal_hook = verdict.error_context.get("hook_declines_fallback") and not (
+        verdict.retryable or verdict.should_compress or verdict.should_rotate_credential)
+    return (verdict.reason in POLICY_REFUSAL_REASONS or bool(verdict.error_context.get("interrupted"))
+            or bool(terminal_hook))
 
 
 def benches_provider(verdict: ClassifiedError) -> bool:
@@ -84,7 +87,9 @@ def fallback_label(failure: Failure, *, rung_spent: bool = False) -> Optional[st
     verdict = failure.verdict
     reason, context = verdict.reason, verdict.error_context
     structured = "structured provider error" if context.get("statusless_structured") else None
-    if context.get("hook_declines_fallback"):
+    # A ChatGPT grant never authorizes spending another provider's API credit, even
+    # when the SDK classified a generic status or transport error without a profile hook.
+    if verdict.provider == "openai-chatgpt" or context.get("hook_declines_fallback"):
         return None
     if benches_provider(verdict):
         return PAYMENT_ERROR
@@ -115,3 +120,15 @@ def stream_negotiation_reraises(verdict: ClassifiedError) -> bool:
     return (verdict.reason in _PROVIDER_REFUSALS or verdict.reason is _R.ssl_cert_verification
             or verdict.status_code == 429 or benches_provider(verdict) or "welcome_refusal" in verdict.error_context
             or resend_cannot_help(verdict))
+
+
+def plugin_refresh_kwargs(client: Any, provider: str) -> dict[str, Any]:
+    """Bind a plugin OAuth refresh to the credential that sent the failed request."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(provider)
+    if profile is None or profile.refresh_credential is None:
+        return {}
+    leaf = getattr(client, "_real_client", client)
+    return {"failed_api_key": getattr(client, "api_key", ""),
+            "credential_id": getattr(leaf, "_hermes_aux_credential_id", None)}

@@ -1565,6 +1565,11 @@ class _CodexCompletionsAdapter:
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
         issuer_kind = resp_kwargs.pop("_issuer_kind", None)
         issuer_model = str(resp_kwargs.get("model") or model)
+        is_chatgpt = getattr(self._client, "_hermes_aux_effective_provider", "") == "openai-chatgpt"
+        if is_chatgpt:
+            from agent.chatgpt_responses import prepare_chatgpt_request, validate_chatgpt_base_url
+            validate_chatgpt_base_url(self._client.base_url)
+            resp_kwargs = prepare_chatgpt_request(resp_kwargs)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         deadline_hit = False
@@ -1574,6 +1579,10 @@ class _CodexCompletionsAdapter:
             from agent.sdk_transform_bypass import bypass_sdk_request_transform
             # Keep bulk wire payload out of the SDK's GIL-holding request transform.
             stream_kwargs = bypass_sdk_request_transform({**resp_kwargs, "stream": True})
+            if is_chatgpt:
+                from hermes_cli.auth_chatgpt import assert_active_access_token
+                assert_active_access_token(getattr(self._client, "api_key", ""),
+                                           credential_id=getattr(self._client, "_hermes_aux_credential_id", None))
             event_stream = self._client.responses.create(**stream_kwargs)
             guard.adopt_stream(event_stream)
             # The timer may fire while responses.create() is blocked; if the cancelled attempt
@@ -1584,10 +1593,13 @@ class _CodexCompletionsAdapter:
                 # Some Codex-compatible hosts accept ``stream=True`` but return a completed
                 # Responses object (not iterable) — don't hand it to the consumer.
                 if hasattr(event_stream, "output"):
+                    if is_chatgpt:
+                        raise RuntimeError("ChatGPT auxiliary Responses requires a response.completed stream event")
                     final = event_stream
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=issuer_model, on_event=guard.on_event
+                        event_stream, model=issuer_model, on_event=guard.on_event,
+                        **({"require_completed": True} if is_chatgpt else {}),
                     )
             finally:
                 guard.release_stream(event_stream)
@@ -1604,6 +1616,10 @@ class _CodexCompletionsAdapter:
                     tc.function.name = wire_aliases[tc.function.name]
         except Exception as exc:
             if not guard.timed_out.is_set():
+                from agent.chatgpt_responses import recheck_chatgpt_auth_error
+                recheck_chatgpt_auth_error(
+                    exc, self._client, getattr(self._client, "_hermes_aux_credential_id", None),
+                    enabled=is_chatgpt)
                 logger.debug("Codex auxiliary Responses API call failed: %s", exc)
                 raise
             deadline_hit = True
@@ -3717,16 +3733,13 @@ _CREDENTIAL_REFRESHERS: dict[str, Callable[..., bool]] = {
 }
 
 
-def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "") -> bool:
+def _refresh_provider_credentials(provider: str, *, failed_api_key: str = "", credential_id: str | None = None) -> bool:
     """Refresh short-lived credentials for OAuth-backed auxiliary providers."""
     normalized = _normalize_aux_provider(provider)
     refresher = _CREDENTIAL_REFRESHERS.get(normalized)
     if refresher is None:
-        from providers import get_provider_profile
-        profile = get_provider_profile(normalized)
-        if profile is None:
-            return False
-        refresher = lambda: profile.refresh_runtime_credentials(reason="auxiliary_unauthorized")
+        from agent.auxiliary_plugin_oauth import refresh_plugin_oauth_credentials
+        refresher = lambda: refresh_plugin_oauth_credentials(normalized, failed_api_key, credential_id)
     try:
         if not (refresher(failed_api_key) if normalized == "anthropic" else refresher()):
             return False
@@ -5090,30 +5103,6 @@ def _resolve_azure_foundry_branch(req: _ResolveRequest) -> _ResolveResult:
                           "runtime resolution failed (run: hermes doctor for diagnostics)")
 
 
-def _api_key_profile_supplied_client(provider: str, **client_kwargs: Any) -> Any | None:
-    """Registered profile's own client for an ``api_key`` aux route, or ``None``.
-
-    Same registration seam as ``agent_runtime_helpers._provider_supplied_client`` (main agent)
-    and the ``external_process`` branch below: a profile whose wire protocol is not
-    OpenAI-over-HTTP overrides ``ProviderProfile.create_client()`` to supply its transport.
-    A profile that raises is logged and skipped — a third-party plugin can only fail to
-    provide a client, never take the auxiliary resolution down."""
-    try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(provider)
-    except Exception:
-        return None
-    if profile is None:
-        return None
-    try:
-        return profile.create_client(**client_kwargs)
-    except Exception:
-        logger.warning("resolve_provider_client: provider profile %r failed to create an "
-                       "auxiliary client; falling back to the standard client path",
-                       provider, exc_info=True)
-        return None
-
-
 def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: Callable) -> _ResolveResult:
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
@@ -5148,6 +5137,7 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
         base_url = _to_openai_base_url(req.explicit_base_url.strip().rstrip("/"))
     final_model = _normalize_resolved_model(req.model or _get_aux_model_for_provider(provider), provider)
     # Consulted before the built-in gemini/OpenAI ladder so a registered native transport wins (#112384).
+    from agent.auxiliary_client_registry import _api_key_profile_supplied_client
     profile_client = _api_key_profile_supplied_client(provider, api_key=api_key, base_url=base_url)
     if profile_client is not None:
         logger.debug("resolve_provider_client: %s native client from provider profile (%s)", provider, final_model)
@@ -7648,6 +7638,8 @@ def _ladder_credential_rungs(
             and not client_is_nous):
         refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
                           if auth_refresh_provider == "anthropic" else {})
+        from agent.auxiliary_error_policy import plugin_refresh_kwargs
+        refresh_kwargs.update(plugin_refresh_kwargs(client, auth_refresh_provider))
         if _refresh_provider_credentials(auth_refresh_provider, **refresh_kwargs):
             if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                 # The stale client is cached under the route label (e.g. "auto"), not the

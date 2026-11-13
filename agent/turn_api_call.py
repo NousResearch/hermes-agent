@@ -44,17 +44,20 @@ class ApiCallVerdict:
 
 
 def _should_stream(agent: Any) -> bool:
-    """Prefer streaming for liveness even without display consumers. Process providers
-    must opt in; ACP transports and explicit session/provider disables stay non-streaming."""
+    """Honor mandatory-streaming providers first; otherwise prefer streaming for liveness.
+    Process providers must opt in; ACP transports and explicit disables stay non-streaming."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(agent.provider)
+    if profile is not None and profile.requires_streaming:
+        return True
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()
     if _base.startswith(("acp://", "acp+tcp://")):
         return False
-    from providers import get_provider_profile
     from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
-    profile = get_provider_profile(agent.provider)
     streaming = getattr(profile, "supports_streaming", None)
     if streaming is False:
         return False

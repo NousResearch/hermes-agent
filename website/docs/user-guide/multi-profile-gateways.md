@@ -898,14 +898,23 @@ its parent channel or guild is consulted. A `chat_id` route on the thread's id
 can therefore qualify it even when dispatch hands the thread to another profile.
 Don't route a thread id to one profile while its parent channel, or a
 `thread_id` route on it, names another.
-If the primary's route table cannot be read, cron delivery through the shared
-bot is refused for every target until it can.
+If the primary's route table cannot be read, cron's own shared-bot view refuses
+every target until it can. A routed profile that enables the platform in its own
+config still falls back to the running gateway's check, which applies the same
+rule to the routes the gateway has loaded.
 A Google Chat send without a thread replies under the space's last inbound
 thread, so once a route pins any thread of a space to another profile, a
 routed profile's thread-less sends to that space are refused; name the thread
 explicitly.
 Webhook deliveries never qualify through the turn's conversation, because they
 have no inbound conversation.
+Reactions are checked against the chat and the thread named in the target, not
+against the topic the reacted-to message is in. A profile routed to a chat can
+therefore react to any message in it, including one in a topic routed to another
+profile, and a profile routed to one topic names that topic in a `send_message`
+reaction target (`telegram:<chat>:<topic>`). A plugin's
+`ctx.platform_actions.add_reaction` names no thread; when it targets the turn's
+own message, the turn's topic or thread is used.
 
 ## Start, stop, or restart all gateways at once
 

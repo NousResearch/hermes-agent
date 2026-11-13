@@ -192,3 +192,53 @@ def test_rebuild_collects_unleased_old_generations_before_build_lock(
             repair=operation == "repair",
             explicit=operation == "update",
         )
+
+
+def _corrupt_runtime_selection(install, record):
+    """A superseded, unleased PM runtime generation under an unreadable-shape selection."""
+    runtime = install.state / "pm-runtime"
+    generation = runtime / "generations" / "superseded"
+    generation.mkdir(parents=True)
+    (generation / "pm-runtime.json").write_text("{}", encoding="utf-8")
+    (generation / ".lease-managed").touch()
+    (runtime / "selected.json").write_text(record, encoding="utf-8")
+    return generation
+
+
+@pytest.mark.parametrize("record", ["[]", '{"generation": 5}'])
+def test_malformed_runtime_selection_is_skipped_not_raised(
+    tmp_path, monkeypatch, record
+):
+    from pm.generation_lifecycle import collect_unused
+
+    install = make_install(tmp_path, monkeypatch)
+    install.publish("new")
+    runtime = _corrupt_runtime_selection(install, record)
+    collect_unused(install.repo)
+    assert runtime.is_dir()  # an unknown selection never authorizes deletion
+    assert install.envs["new"].is_dir()
+
+
+@pytest.mark.parametrize("record", ["[]", '{"generation": 5}'])
+def test_malformed_runtime_selection_does_not_block_dependency_sync(
+    tmp_path, monkeypatch, record
+):
+    from pm import install as engine
+
+    fixture = make_install(tmp_path, monkeypatch)
+    fixture.publish("new")
+    runtime = _corrupt_runtime_selection(fixture, record)
+    monkeypatch.setattr(engine.paths, "repo_root", lambda: fixture.repo)
+    monkeypatch.setattr(engine, "_feature_policy", lambda *a, **kw: ([], False))
+    monkeypatch.setattr(engine, "get_package", lambda name: None)
+
+    class ReachedBuild(Exception):
+        pass
+
+    def build_lock(**kwargs):
+        raise ReachedBuild
+
+    monkeypatch.setattr(engine, "_venv_install_lock", build_lock)
+    with pytest.raises(ReachedBuild):
+        engine.sync_venv(explicit=True)
+    assert runtime.is_dir()

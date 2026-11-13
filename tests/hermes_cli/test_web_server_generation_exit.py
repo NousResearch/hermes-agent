@@ -80,3 +80,30 @@ def test_manual_dashboard_and_current_generation_do_not_retire(tmp_path, monkeyp
     )
     thread.join(timeout=10)
     assert not server.should_exit
+
+
+@pytest.mark.parametrize("record", ["[]", '{"generation": 5}'])
+def test_malformed_runtime_selection_does_not_kill_dashboard_watchdog(
+    tmp_path, monkeypatch, record
+):
+    import threading
+
+    install = make_install(tmp_path, monkeypatch)
+    runtime = install.state / "pm-runtime"
+    (runtime / "generations" / "superseded").mkdir(parents=True)
+    (runtime / "selected.json").write_text(record, encoding="utf-8")
+    probes = []
+    probe = install.observer.probe
+    install.observer.probe = lambda: probes.append(probe()) or probes[-1]
+    failures = []
+    monkeypatch.setattr(threading, "excepthook", failures.append)
+    thread = start_generation_watchdog(
+        SimpleNamespace(should_exit=False),
+        observer=install.observer,
+        owned=True,
+        poll_s=0,
+        max_polls=2,
+    )
+    thread.join(timeout=10)
+    assert not failures
+    assert probes == ["", ""]  # the watchdog keeps polling after maintenance

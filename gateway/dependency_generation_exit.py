@@ -36,7 +36,11 @@ async def dependency_generation_watcher(
         if not runner._running or runner._restart_task_started:
             return  # an operator's stop or restart owns the handoff
         seen = seen + 1 if reason else 0
-        if not draining and seen >= 2 and not runner._draining:
+        # An operator's reversible drain (.drain_request.json) keeps the process up: never
+        # confirm our one-way drain, nor restart, while it is engaged; resume once cancelled.
+        if not draining and seen >= 2 and not (
+            runner._draining or runner._external_drain_active
+        ):
             runner._dependency_restart_pending = True
             runner._draining = draining = True
             open_restart_wait(runner)
@@ -50,7 +54,7 @@ async def dependency_generation_watcher(
                     "cannot prove dependency restart is idle; retaining gateway"
                 )
                 pending = True
-            if not pending:
+            if not pending and not runner._external_drain_active:
                 # No await between the final check and request_restart: admission is
                 # already closed and the loop cannot start a new turn in this gap.
                 if runner.request_restart(via_service=True):

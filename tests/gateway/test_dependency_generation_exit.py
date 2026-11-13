@@ -33,6 +33,12 @@ def make_runner():
         GatewayShutdownMixin._active_work_count, runner
     )
     runner.request_restart = Mock()
+    # The operator's reversible drain (.drain_request.json) through its real entry/exit.
+    runner._external_drain_active = False
+    runner._update_runtime_status = Mock()
+    runner._serving_state = lambda: "running"
+    for name in ("_enter_external_drain", "_exit_external_drain"):
+        setattr(runner, name, MethodType(getattr(GatewayShutdownMixin, name), runner))
     return runner
 
 
@@ -179,6 +185,99 @@ async def test_operator_stop_wins_when_a_generation_probe_is_already_in_flight(
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)
         runner._running = False
+        release.set()
+        await asyncio.wait_for(task, timeout=10)
+        runner.request_restart.assert_not_called()
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_an_operator_drain_keeps_the_process_up_and_its_cancel_resumes_the_handoff(
+    tmp_path, monkeypatch
+):
+    install, runner = make_install(tmp_path, monkeypatch), make_runner()
+    install.publish("new")
+    runner._enter_external_drain()
+    await dependency_generation_watcher(
+        runner, observer=install.observer, owned=True, poll_s=0, max_polls=3
+    )
+    assert not runner._draining
+    assert not getattr(runner, "_dependency_restart_pending", False)
+    runner._mark_api_runs_shutdown_requested.assert_not_called()
+    runner.request_restart.assert_not_called()
+    runner._exit_external_drain()
+    runner._update_runtime_status.assert_called_with("running")  # admission reopened
+    await dependency_generation_watcher(
+        runner, observer=install.observer, owned=True, poll_s=0, max_polls=2
+    )
+    runner.request_restart.assert_called_once_with(via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_an_operator_drain_arriving_during_the_generation_drain_holds_the_restart(
+    tmp_path, monkeypatch
+):
+    install, runner = make_install(tmp_path, monkeypatch), make_runner()
+    install.publish("new")
+    busy = [True]
+    runner._active_work_count = lambda: int(busy[0])
+    probes, original = [], install.observer.probe
+
+    def probe():
+        probes.append(1)
+        return original()
+
+    monkeypatch.setattr(install.observer, "probe", probe)
+    task = asyncio.create_task(
+        dependency_generation_watcher(
+            runner, observer=install.observer, owned=True, poll_s=0
+        )
+    )
+    try:
+        assert await async_wait_until(lambda: runner._draining, timeout=10)
+        runner._enter_external_drain()
+        busy[0] = False
+        seen = len(probes)
+        assert await async_wait_until(lambda: len(probes) >= seen + 3, timeout=10)
+        runner.request_restart.assert_not_called()
+        assert not task.done()
+        runner._exit_external_drain()
+        assert runner._draining  # the owned drain is not reopened by the cancel
+        assert ("running",) not in [c.args for c in runner._update_runtime_status.call_args_list]
+        await asyncio.wait_for(task, timeout=10)
+        runner.request_restart.assert_called_once_with(via_service=True)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_an_operator_drain_wins_when_a_generation_probe_is_already_in_flight(
+    tmp_path, monkeypatch
+):
+    install, runner = make_install(tmp_path, monkeypatch), make_runner()
+    install.publish("new")
+    runner._dependency_restart_pending = runner._draining = True
+    entered, release = asyncio.Event(), threading.Event()
+    loop, original = asyncio.get_running_loop(), install.observer.probe
+
+    def probe():
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(10)
+        return original()
+
+    monkeypatch.setattr(install.observer, "probe", probe)
+    task = asyncio.create_task(
+        dependency_generation_watcher(
+            runner, observer=install.observer, owned=True, poll_s=0, max_polls=1
+        )
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        runner._enter_external_drain()
         release.set()
         await asyncio.wait_for(task, timeout=10)
         runner.request_restart.assert_not_called()

@@ -57,6 +57,7 @@ def actor(role):
         runner = SimpleNamespace(
             _running=True,
             _draining=False,
+            _external_drain_active=False,
             _restart_task_started=False,
             _active_work_count=lambda: int(busy()),
             adapters={},

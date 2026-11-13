@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -605,6 +606,36 @@ def _split_volume_spec(spec: str) -> tuple[str, str] | None:
     return match.group("host"), match.group("container")
 
 
+def _merge_readonly_mount_args(volume_args: list[str], readonly_args: list[str]) -> list[str]:
+    """Merge generated ``-v`` pairs without overriding explicit modes or sources.
+
+    Compare sources literally: resolving aliases could hide a different (e.g. unsanitized
+    skills) tree. Container destinations are POSIX paths even on Windows hosts.
+    """
+    result = list(volume_args)
+    existing: dict[str, set[str]] = {}
+    for arg in volume_args:
+        parsed = _split_volume_spec(arg)
+        if parsed:
+            target = posixpath.normpath("/" + parsed[1].lstrip("/"))
+            existing.setdefault(target, set()).add(parsed[0])
+    for flag, spec in zip(readonly_args[::2], readonly_args[1::2]):
+        parsed = _split_volume_spec(spec)
+        if parsed:
+            source, target = parsed
+            target = posixpath.normpath("/" + target.lstrip("/"))
+            if target in existing:
+                if existing[target] != {source}:
+                    raise ValueError(
+                        f"Conflicting Docker mount for {target}: automatic and configured "
+                        "mounts have different host sources. Remove the conflicting "
+                        "docker_volumes entry or use the same host source.")
+                continue
+            existing[target] = {source}
+        result.extend([flag, spec])
+    return result
+
+
 def _container_mount_taken(volume_args: list[str], mount: str) -> bool:
     target = mount.rstrip("/") or "/"
     for arg in volume_args:
@@ -710,7 +741,7 @@ class DockerEnvironment(BaseEnvironment):
                 mount, cwd)
             cwd = mount
             self.cwd = mount
-        volume_args.extend(_readonly_skill_mount_args())
+        volume_args = _merge_readonly_mount_args(volume_args, _readonly_skill_mount_args())
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)

@@ -272,11 +272,14 @@ def _foreground_gateway_profile(argv: Sequence[str], hermes_home: Path) -> str |
     import shlex
 
     from gateway.status import looks_like_gateway_command_line
-    from hermes_cli._parser import gateway_run_no_supervise, scan_profile_flag
+    from hermes_cli._parser import gateway_run_no_supervise, scan_profile_flag_quietly
     args = _strip_container_argv_prefix(argv)
     if not looks_like_gateway_command_line(shlex.join(["hermes", *args])):
         return None
-    profile, consumed, index = scan_profile_flag(args)
+    scanned = scan_profile_flag_quietly(args)
+    if scanned is None:  # an invalid -p: the CMD exits 2 itself and runs no gateway
+        return None
+    profile, consumed, index = scanned
     if index is not None:  # stripped before argparse, as main._apply_profile_override does
         args = args[:index] + args[index + consumed:]
     # Bare `gateway` also runs, but only `gateway run` takes `--no-supervise`.

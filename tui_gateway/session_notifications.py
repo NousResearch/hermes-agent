@@ -154,6 +154,16 @@ _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
 def _notif_release_turn(session: dict) -> None:
     with session["history_lock"]:
         session["running"] = False
+        session.pop("_notif_turn_claim", None)
+
+
+def _notif_release_claim(session: dict, claim) -> None:
+    """Release ``running`` only while it is still ``claim``'s: admission that refused (or a turn that ended) already
+    released it, and a user prompt may own ``running`` since — clearing it would run two turns on one agent."""
+    with session["history_lock"]:
+        if claim is not None and session.get("_notif_turn_claim") is claim:
+            session["running"] = False
+            session.pop("_notif_turn_claim", None)
 
 
 def _notif_claim_turn(session: dict) -> bool:
@@ -164,6 +174,7 @@ def _notif_claim_turn(session: dict) -> bool:
         if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
             return False
         session["running"] = True
+        session["_notif_turn_claim"] = object()  # this claim's identity; every release of it pops the token
         return True
 
 
@@ -387,6 +398,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         return  # not due, or the gateway's wakeup scanner owns the routed chat — stays due there
     if not _notif_claim_turn(session):
         return  # busy — stays due, next poll retries
+    claim = session.get("_notif_turn_claim")
     if not (wakeup := mgr.fire_tick()):
         _notif_release_turn(session)
         return
@@ -399,15 +411,17 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         else:
             _emit("message.start", sid)
             if not _run_prompt_submit(rid, sid, session, wakeup):
-                # Refused at admission (another surface owns the chat): no turn will settle this tick.
+                # Refused at admission (another surface owns the chat): no turn will settle this tick. Admission
+                # already released ``running``; only the loop state rolls back here.
                 _notif_abandon_loop_tick(sid, session, mgr)
     except Exception as exc:
         _notif_log_failure("loop wakeup dispatch failed", exc)
+        _notif_release_claim(session, claim)  # still ours unless admission released it before raising
         _notif_abandon_loop_tick(sid, session, mgr)
 
 
 def _notif_abandon_loop_tick(sid: str, session: dict, mgr) -> None:
-    _notif_release_turn(session)
+    """Roll the fired tick back to the countdown. Never touches ``running``: it may be another turn's by now."""
     with contextlib.suppress(Exception):
         mgr.abandon_tick()
     _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"

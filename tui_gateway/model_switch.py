@@ -252,33 +252,34 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
 
 
 def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot):
-    """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts."""
-    with session.get("history_lock") or contextlib.nullcontext():
-        _require_transcript_owner(session)  # the marker below writes the chat's transcript
-    try:
-        agent.switch_model(
-            new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
-            base_url=result.base_url, api_mode=result.api_mode,
-            capabilities=getattr(result, "runtime_capabilities", None))
-    except Exception as exc:
-        # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
-        # restart, persist, marker, override, config write) or the session pins a broken model.
-        # Abort the commit: do NOT restart the slash worker, persist runtime, append the switch marker, set
-        # a session model_override, or persist to config — all of which would otherwise leave the session
-        # pinned to a broken model and kill the conversation on the next turn (#50163). A failed switch is a
-        # no-op; surface a clean error to the client.
-        logger.warning("In-place model switch failed for TUI agent: %s", exc)
-        raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
-                         f"staying on {getattr(agent, 'model', current_model)}.") from exc
-    _restart_slash_worker(sid, session)
-    _persist_live_session_runtime(session)
-    _persist_live_session_system_prompt(session)
-    _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
-    _emit_session_info(sid, session)
-    if snapshot is not None:
-        session["one_turn_model_restore"] = snapshot
-    else:
-        session.pop("one_turn_model_restore", None)
+    """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts. The transcript
+    claim is held for the whole commit (the marker writes the chat's transcript), so the idle reaper cannot
+    release the lease between the ownership check and the marker."""
+    with _transcript_claim(session):
+        try:
+            agent.switch_model(
+                new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
+                base_url=result.base_url, api_mode=result.api_mode,
+                capabilities=getattr(result, "runtime_capabilities", None))
+        except Exception as exc:
+            # The in-place swap rolled the agent back and re-raised. Abort the whole commit (worker
+            # restart, persist, marker, override, config write) or the session pins a broken model.
+            # Abort the commit: do NOT restart the slash worker, persist runtime, append the switch marker, set
+            # a session model_override, or persist to config — all of which would otherwise leave the session
+            # pinned to a broken model and kill the conversation on the next turn (#50163). A failed switch is a
+            # no-op; surface a clean error to the client.
+            logger.warning("In-place model switch failed for TUI agent: %s", exc)
+            raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
+                             f"staying on {getattr(agent, 'model', current_model)}.") from exc
+        _restart_slash_worker(sid, session)
+        _persist_live_session_runtime(session)
+        _persist_live_session_system_prompt(session)
+        _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
+        _emit_session_info(sid, session)
+        if snapshot is not None:
+            session["one_turn_model_restore"] = snapshot
+        else:
+            session.pop("one_turn_model_restore", None)
 
 
 LARGE_MODEL_NOTICE_KEY = "model.large_notice"

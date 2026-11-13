@@ -249,6 +249,7 @@ def _manual_compress_turn(sid: str, session: dict):
             raise CompressionBusy(busy_message("compress", bool(session.get("_manual_compress_active"))))
         _require_transcript_owner(session)  # the commit archives and rewrites the chat's transcript
         session["running"] = session["_manual_compress_active"] = True
+        session.pop("_notif_turn_claim", None)
     try:
         yield
     finally:

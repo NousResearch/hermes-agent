@@ -1695,9 +1695,9 @@ class TestDedupTTL(unittest.TestCase):
 class TestGroupMentionAtAll(unittest.TestCase):
     """Tests for @_all (Feishu @everyone) group mention routing."""
 
-    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "allowlist", "FEISHU_ALLOWED_USERS": "ou_allowed"}, clear=True)
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "allowlist", "FEISHU_ALLOWED_USERS": "ou_allowed", "FEISHU_IGNORE_AT_ALL": "false"}, clear=True)
     def test_at_all_still_requires_policy_gate(self):
-        """@_all bypasses mention gating but NOT the allowlist policy."""
+        """When ignore_at_all is false, @_all bypasses mention gating but NOT the allowlist policy."""
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
@@ -1709,6 +1709,24 @@ class TestGroupMentionAtAll(unittest.TestCase):
         # Allowlisted user — should pass.
         allowed_sender = SimpleNamespace(open_id="ou_allowed", user_id=None)
         self.assertTrue(_admits_group(adapter, message, allowed_sender, ""))
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "allowlist", "FEISHU_ALLOWED_USERS": "ou_allowed"}, clear=True)
+    def test_at_all_ignored_by_default_requires_bot_mention(self):
+        """By default (ignore_at_all=true), @_all does not bypass mention gating."""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        message_all_only = SimpleNamespace(content='{"text":"@_all attention"}', mentions=[])
+        allowed_sender = SimpleNamespace(open_id="ou_allowed", user_id=None)
+        # Even allowlisted user is not admitted because bot was not mentioned
+        self.assertFalse(_admits_group(adapter, message_all_only, allowed_sender, ""))
+
+        # When bot is explicitly mentioned alongside @_all, allowlisted user is admitted
+        bot_mention = SimpleNamespace(key="@_user_1", id=SimpleNamespace(open_id="ou_bot", user_id=""), name="Hermes")
+        message_with_bot = SimpleNamespace(content='{"text":"@_all @Hermes attention"}', mentions=[bot_mention])
+        self.assertTrue(_admits_group(adapter, message_with_bot, allowed_sender, ""))
 
     # ------------------------------------------------------------- env toggle
 
@@ -2529,3 +2547,44 @@ def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark
     assert tracker.created == ["Typing"]
     assert tracker.deleted == ["r_typing"]
     assert adapter._pending_processing_reactions["om_msg"] == "r_typing"
+
+
+def test_mentions_self_ignores_at_all_by_default(fake_lark_requests):
+    """Feishu @_all placeholder (@所有人) must not be treated as a direct bot mention by default."""
+    adapter = _plain_feishu_adapter()
+    adapter._bot_open_id = "ou_test_bot"
+    adapter._bot_name = "test_bot"
+    assert adapter._ignore_at_all is True
+
+    # 1. Plain text message with @_all
+    msg_all = SimpleNamespace(message_type="text", content=json.dumps({"text": "@_all standup at 10am"}), mentions=[])
+    assert adapter._mentions_self(msg_all) is False
+
+    # 2. Rich post message with <at user_id="@_all">
+    post_payload = {
+        "zh_cn": {
+            "title": "Meeting",
+            "content": [[{"tag": "at", "user_id": "@_all"}, {"tag": "text", "text": " all hands"}]],
+        }
+    }
+    msg_post = SimpleNamespace(message_type="post", content=json.dumps(post_payload), mentions=[])
+    assert adapter._mentions_self(msg_post) is False
+
+    # 3. Message with @_all AND explicit bot mention -> True
+    msg_bot = SimpleNamespace(
+        message_type="text",
+        content=json.dumps({"text": "@_all @bot please check"}),
+        mentions=[SimpleNamespace(key="@_user_1", id=SimpleNamespace(open_id=adapter._bot_open_id, user_id=""), name=adapter._bot_name)],
+    )
+    assert adapter._mentions_self(msg_bot) is True
+
+
+def test_mentions_self_respects_ignore_at_all_false(fake_lark_requests, monkeypatch):
+    """When ignore_at_all is configured to False, @_all is treated as a self mention (opt-in legacy behavior)."""
+    monkeypatch.setenv("FEISHU_IGNORE_AT_ALL", "false")
+    adapter = _plain_feishu_adapter()
+    assert adapter._ignore_at_all is False
+
+    msg_all = SimpleNamespace(message_type="text", content=json.dumps({"text": "@_all team meeting"}), mentions=[])
+    assert adapter._mentions_self(msg_all) is True
+

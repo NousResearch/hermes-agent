@@ -772,7 +772,31 @@ def _seed_fork_pins(forks: Mapping[tuple[str, tuple[str, ...]], list], name: str
             for pin in pins]
 
 
-def core_lock_upgrades(core_lock: Path, seed_lock: Path) -> list[str]:
+CORE_LOCK_RECORD = "core-uv.lock"
+
+
+def _registry_pins(lock: Path) -> tuple[dict, dict]:
+    """``(name -> pins, (name, resolution-markers) -> pins)`` for a lock's index packages."""
+    import tomllib
+
+    from packaging.utils import canonicalize_name
+    from packaging.version import InvalidVersion, Version
+
+    pins: dict[str, list[Version]] = {}
+    forks: dict[tuple[str, tuple[str, ...]], list[Version]] = {}
+    for package in tomllib.loads(lock.read_text(encoding="utf-8-sig")).get("package", []):
+        if "registry" not in package.get("source", {}):
+            continue
+        try:
+            name, pinned = canonicalize_name(package["name"]), Version(package["version"])
+        except (KeyError, InvalidVersion):
+            continue
+        pins.setdefault(name, []).append(pinned)
+        forks.setdefault((name, tuple(package.get("resolution-markers", []))), []).append(pinned)
+    return pins, forks
+
+
+def core_lock_upgrades(core_lock: Path, seed_lock: Path, *, python: Path | None = None) -> list[str]:
     """``uv lock -P`` requirements moving a seeded generation onto core's newer pins.
 
     uv keeps every seeded pin that still resolves, so a core uv.lock bump (a security fix in a
@@ -780,28 +804,22 @@ def core_lock_upgrades(core_lock: Path, seed_lock: Path) -> list[str]:
     core's lock holds at a version newer than every pin the seed has for it moves: a package
     only a plugin brings is not core's to pin, and one a plugin moved above core's pin stays
     where the plugin needs it. Path, git and URL sources follow core's manifest already.
+    When the seed's generation recorded the core lock it was built from, only a pin core moved
+    since then counts, so a plugin holding a package below core's pin keeps it. A fork the
+    installing *python* never selects is skipped: ``-P`` unpins the name in every fork.
     """
     import tomllib
 
+    from packaging.markers import Marker
     from packaging.utils import canonicalize_name
     from packaging.version import InvalidVersion, Version
 
-    def entries(lock: Path) -> list[dict]:
-        return tomllib.loads(lock.read_text(encoding="utf-8-sig")).get("package", [])
-
-    seeded: dict[str, list[Version]] = {}
-    forks: dict[tuple[str, tuple[str, ...]], list[Version]] = {}
-    for package in entries(seed_lock):
-        if "registry" not in package.get("source", {}):
-            continue
-        try:
-            name, pinned = canonicalize_name(package["name"]), Version(package["version"])
-        except (KeyError, InvalidVersion):
-            continue
-        seeded.setdefault(name, []).append(pinned)
-        forks.setdefault((name, tuple(package.get("resolution-markers", []))), []).append(pinned)
+    seeded, forks = _registry_pins(seed_lock)
+    record = seed_lock.with_name(CORE_LOCK_RECORD)
+    built_from = _registry_pins(record) if record.is_file() else None
+    target = _target_environment(python) if python is not None else None
     upgrades = []
-    for package in entries(core_lock):
+    for package in tomllib.loads(core_lock.read_text(encoding="utf-8-sig")).get("package", []):
         name = canonicalize_name(package.get("name", ""))
         if "registry" not in package.get("source", {}) or name not in seeded:
             continue
@@ -809,12 +827,19 @@ def core_lock_upgrades(core_lock: Path, seed_lock: Path) -> list[str]:
             version = Version(package["version"])
         except (KeyError, InvalidVersion):
             continue
+        markers = package.get("resolution-markers", [])
+        if target is not None and markers and not any(Marker(marker).evaluate(target) for marker in markers):
+            continue
+        if built_from is not None and name in built_from[0]:
+            before = _seed_fork_pins(built_from[1], name, markers) or built_from[0][name]
+            if not all(version > pinned for pinned in before):
+                continue
         # A platform fork compares against the seed's same fork, so a bump to one fork still moves.
-        prior = _seed_fork_pins(forks, name, package.get("resolution-markers", [])) or seeded[name]
+        prior = _seed_fork_pins(forks, name, markers) or seeded[name]
         if all(version > pinned for pinned in prior):
             # A name core forks by platform carries each fork's markers, or the exact pins clash.
-            markers = " or ".join(f"({marker})" for marker in package.get("resolution-markers", []))
-            upgrades.append(f"{name}=={version}" + (f"; {markers}" if markers else ""))
+            joined = " or ".join(f"({marker})" for marker in markers)
+            upgrades.append(f"{name}=={version}" + (f"; {joined}" if joined else ""))
     return upgrades
 
 

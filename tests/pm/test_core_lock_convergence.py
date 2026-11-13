@@ -206,3 +206,48 @@ def test_a_bump_to_one_python_fork_moves_it_on_a_host_narrowed_generation(update
     installed = subprocess.run([str(venv_python(environment)), "-I", "-c", "import pkgb; print(pkgb.__version__)"],
                                check=True, capture_output=True, text=True, timeout=60).stdout.strip()
     assert installed == ("1.3" if sys.version_info >= (3, 14) else "2.0")
+
+
+def test_a_plugin_holding_a_core_pin_lower_keeps_it_while_core_does_not_move(update):
+    """A plugin may hold a core transitive below core's pin, within core's ranges (pm/AGENTS.md)."""
+    _core, home, plugin, enable, sync, ship = update
+    ship("pkgb", "1.3")
+    sync()
+    plugin("holdback", "pkgb>=1.2,<1.3")
+    enable("holdback")
+    assert _versions(sync(), "pkgb") == ["1.2"]
+
+    # Each rebuild seeds from 1.2 while core's lock, which did not move, holds 1.3.
+    for enabled in (("holdback", "unrelated"), ("holdback", "unrelated", "another")):
+        plugin(enabled[-1], "pkgc>=1,<2")
+        enable(*enabled)
+        assert _versions(sync(), "pkgb") == ["1.2"]
+        assert yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["plugins"]["enabled"] == list(enabled)
+
+
+def test_a_bump_to_a_fork_this_python_never_installs_leaves_its_fork_on_cores_pin(update):
+    """``-P`` unpins a name in every fork: a bump to the other fork must not float the host's."""
+    from pm.environments import runtime_facts_path, venv_python
+    from pm.lock import Facts
+
+    core, _home, plugin, enable, sync, ship = update
+    wheels = core.parent / "wheels"
+    _fixtures._wheel(wheels, "pkgb", "2.0")
+    manifest = core / "pyproject.toml"
+    forked = json.dumps(["pkgb>=1.2,<2; python_version >= '3.14'", "pkgb>=2,<3; python_version < '3.14'"])
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace('dependencies=["pkga==1.0"]', f"dependencies={forked}"),
+                        encoding="utf-8")
+    subprocess.run([shutil.which("uv"), "lock", "--offline"], cwd=core, check=True, capture_output=True, timeout=120)
+    plugin("unrelated", "pkgc>=1,<2")
+    enable("unrelated")
+    assert sorted(_versions(sync(), "pkgb")) == ["1.2", "2.0"]
+
+    on_314 = sys.version_info >= (3, 14)
+    ship("pkgb", "2.1" if on_314 else "1.3")  # core moves only the fork this interpreter doesn't run
+    _fixtures._wheel(wheels, "pkgb", "1.9" if on_314 else "2.9")  # a release core's lock never took
+    sync()
+
+    environment = Path(Facts(runtime_facts_path(core), strict=True).get("venv")["environment"])
+    installed = subprocess.run([str(venv_python(environment)), "-I", "-c", "import pkgb; print(pkgb.__version__)"],
+                               check=True, capture_output=True, text=True, timeout=60).stdout.strip()
+    assert installed == ("1.2" if on_314 else "2.0")

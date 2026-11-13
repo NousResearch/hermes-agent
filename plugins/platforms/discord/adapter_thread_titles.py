@@ -13,11 +13,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-try:
-    import discord
-except ImportError:  # the adapter does not start without discord.py
-    discord = None
-
 _MAX_RECORDS = 2000
 
 
@@ -77,8 +72,8 @@ class SemanticThreadRenames:
 
 class DiscordThreadTitlesMixin:
     _semantic_thread_renames: SemanticThreadRenames
+    _get_discord_module: Callable[[], Any]
     _is_forum_parent: Callable[[Any], bool]
-    _get_effective_topic: Callable[..., str | None]
 
     async def _on_platform_raw_thread_update(self, payload: Any) -> None:
         # discord.py updates the cached thread before cached callbacks run, so batched updates
@@ -103,8 +98,20 @@ class DiscordThreadTitlesMixin:
             return f"{parent_name} / {thread_name}"
         return thread_name
 
+    def _get_effective_topic(self, channel: Any, is_thread: bool = False) -> str | None:
+        """Return the channel topic, falling back to the parent forum's topic for forum threads."""
+        topic = getattr(channel, "topic", None)
+        if not topic and is_thread:
+            parent = getattr(channel, "parent", None)
+            if parent and self._is_forum_parent(parent):
+                topic = getattr(parent, "topic", None)
+        return topic
+
     def _guild_channel_labels(self, channel: Any) -> tuple[str, str | None]:
         """``(chat_name, chat_topic)`` for a guild channel or thread, as a message posted there gets them."""
+        discord = self._get_discord_module()
+        if discord is None:
+            raise RuntimeError("Discord dependency unavailable")
         if isinstance(channel, discord.Thread):
             return self._format_thread_chat_name(channel), self._get_effective_topic(channel, is_thread=True)
         name, guild = getattr(channel, "name", str(channel.id)), getattr(channel, "guild", None)

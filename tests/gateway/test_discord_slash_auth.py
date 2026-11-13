@@ -229,6 +229,23 @@ def test_pairing_approved_user_passes_message_gate_without_allowlist(adapter, mo
     ) is True
 
 
+def test_slash_authorization_uses_discord_bound_after_lazy_install(adapter, monkeypatch):
+    """Regression for #137083: the slash mixin must not retain import-time None."""
+    from plugins.platforms.discord import adapter as adapter_module
+    from plugins.platforms.discord import adapter_slash_auth
+
+    # Model the mixin importing before discord.py was lazy-installed. The
+    # adapter's binding is live, while the mixin's old module global is stale.
+    monkeypatch.setattr(adapter_module, "discord", sys.modules["discord"])
+    monkeypatch.setattr(adapter_slash_auth, "discord", None, raising=False)
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+
+    allowed, reason = adapter._evaluate_slash_authorization(_make_interaction("100200300"))
+
+    assert allowed is True
+    assert reason is None
+
+
 # ---------------------------------------------------------------------------
 # Role allowlist (DISCORD_ALLOWED_ROLES) parity
 # ---------------------------------------------------------------------------

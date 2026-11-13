@@ -1,15 +1,14 @@
 """Slash-command authorization verdict for the Discord adapter: the on_message gates, side-effect free."""
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 
-try:
+if TYPE_CHECKING:
     import discord
-except ImportError:  # the adapter does not start without discord.py
-    discord = None
 
 
 class DiscordSlashAuthMixin:
+    _get_discord_module: Callable[[], Any]
     _get_parent_channel_id: Callable[[Any], Optional[str]]
     _discord_channel_keys_from_channel: Callable[..., set]
     _get_allowed_channels: Callable[[], set]
@@ -27,6 +26,12 @@ class DiscordSlashAuthMixin:
         Shared with side-effect-free callers (``/skill`` autocomplete returns [] per keystroke).
         Fail closed on malformed payloads: with an allowlist, a missing channel id/user REJECTS.
         """
+        # The adapter can lazy-install discord.py after this mixin was imported.
+        # Use the owning adapter instance, including directory-plugin imports.
+        discord = self._get_discord_module()
+
+        if discord is None:
+            return (False, "discord dependency unavailable")
         chan_obj = getattr(interaction, "channel", None)
         in_dm = isinstance(chan_obj, discord.DMChannel) if chan_obj is not None else False
         channel_ids: set = set()

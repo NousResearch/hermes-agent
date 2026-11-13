@@ -217,3 +217,32 @@ def test_a_dotenv_value_equal_to_an_earlier_bridged_one_reaches_child_programs(t
     load_yaml_layer(tmp_path, {})
 
     assert drop_bridge_markers(dict(os.environ)).get("TELEGRAM_REACTIONS") == "false"
+
+
+def test_a_vault_value_equal_to_an_earlier_bridged_one_reaches_child_programs(tmp_path, monkeypatch):
+    """The vault twin of the .env move: a secret source skips a name the env already holds, so it
+    publishes nothing, yet the value is the operator's from then on and must survive the child-env scrub."""
+    from pathlib import Path
+
+    import agent.secret_sources.bitwarden as bw_module
+    from agent.secret_sources import registry as reg_module
+    from gateway.bridged_env import drop_bridge_markers
+    from hermes_cli import env_loader
+
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME", {})
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {})
+    env_loader.reset_secret_source_cache()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.test-token")
+    monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
+    monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", lambda **_kw: ({"TELEGRAM_REACTIONS": "false"}, []))
+    reg_module._reset_registry_for_tests()
+    (tmp_path / "config.yaml").write_text("telegram:\n  reactions: false\n", encoding="utf-8")
+    load_yaml_layer(tmp_path, {})
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  bitwarden:\n    enabled: true\n    project_id: p\n    access_token_env: BWS_ACCESS_TOKEN\n",
+        encoding="utf-8")
+    env_loader._apply_external_secret_sources(tmp_path)
+    load_yaml_layer(tmp_path, {})
+
+    assert drop_bridge_markers(dict(os.environ)).get("TELEGRAM_REACTIONS") == "false"

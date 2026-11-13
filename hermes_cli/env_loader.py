@@ -1049,6 +1049,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     for name in supplied:
         if name in os.environ:
             values[name] = os.environ[name]
+            _release_bridge_claim(name)  # a value a source supplies is the operator's, even one it skipped
     _record_secret_source_writes(home_key, report, supplied, environ_before)
     if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values

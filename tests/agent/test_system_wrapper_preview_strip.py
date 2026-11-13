@@ -76,7 +76,8 @@ def test_cron_run_session_previews_the_job_prompt(db):
     from cron import scheduler_prompt
     db.create_session("cronrun", source="cron")
     db.append_message("cronrun", role="user",
-                      content=scheduler_prompt._CRON_HINT + "You are a one-shot delivery watcher for the monitor script.")
+                      content=scheduler_prompt._CRON_HINT + scheduler_prompt._run_time_line()
+                      + "You are a one-shot delivery watcher for the monitor script.")
     preview = _preview(db, "cronrun")
     assert preview.startswith("You are a one-shot delivery watcher")
     assert "IMPORTANT" not in preview
@@ -102,7 +103,8 @@ def test_cron_skill_session_previews_the_job_prompt_not_the_slug(db):
         '[IMPORTANT: The user has invoked the "personal-brain-vault" skill, indicating they '
         "want you to follow its instructions. The full skill content is loaded below.]\n\n"
         + _LONG_BODY + "\n" + _SINGLE_SKILL_INSTRUCTION
-        + scheduler_prompt._CRON_HINT + "Summarize what landed in the vault today and what changed."))
+        + scheduler_prompt._CRON_HINT + scheduler_prompt._run_time_line()
+        + "Summarize what landed in the vault today and what changed."))
     preview = _preview(db, "cronskill")
     assert preview.startswith("Summarize what landed in the vault")
     assert "personal-brain-vault" not in preview

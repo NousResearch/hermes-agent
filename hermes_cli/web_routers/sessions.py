@@ -686,6 +686,7 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     from agent.history_commentary import project_history_commentary
     from agent.message_metadata import withheld_prompt_text
     from agent.prompt_builder import STEER_DISPLAY_KIND
+    from agent.system_wrappers import cron_prompt_display_text
     from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, untyped_failed_turn_display_kind
 
     # inline_images=False (#116511): render content through the gateway's ``_coerce_message_text``
@@ -722,6 +723,10 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
         # A pre_llm_call veto stores a placeholder; the transcript shows what the user typed.
         if message.get("role") == "user" and (typed := withheld_prompt_text(message)) is not None:
             message = {**message, "display_content": typed}
+        # A cron run's first row is the scheduler's hint + run time + job prompt: show the prompt.
+        if message.get("role") == "user" and "display_content" not in message and (
+                job_prompt := cron_prompt_display_text(message.get("content"))):
+            message = {**message, "display_content": job_prompt}
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue

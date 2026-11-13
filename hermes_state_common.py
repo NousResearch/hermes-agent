@@ -17,7 +17,7 @@ from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_
 from agent.skill_commands import (AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT,
     SKILL_SCAFFOLD_SQL_LIKE, _SINGLE_SKILL_INSTRUCTION, describe_skill_invocation)
 from agent.system_wrappers import (BOT_CHAT_DELIVERY_PREFIX, CONTEXT_BLOCK_HEADING,
-    CRON_HINT_PREFIX, FENCE, SYSTEM_WRAPPER_PREFIXES, WRAPPER_END_FLATTENED,
+    CRON_HINT_PREFIX, CRON_RUN_TIME_PREFIX, FENCE, SYSTEM_WRAPPER_PREFIXES, WRAPPER_END_FLATTENED,
     strip_system_wrappers)
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
@@ -144,16 +144,32 @@ _PREVIEW_FORCE_USER_REMAINDER_SQL = _sql_after_marker(_SUMMARY_END_MARKER)
 _PREVIEW_WRAPPED_SQL = _sql_starts_with("m.content", SYSTEM_WRAPPER_PREFIXES)
 
 
+def _sql_bind(expression: str, body) -> str:
+    """``body(t)`` evaluated with *expression* bound once as ``t``: a correlated derived table, so chaining
+    cuts grows the per-row SQL linearly instead of re-copying every input into each CASE arm."""
+    return f"(SELECT {body('t')} FROM (SELECT {expression} AS t))"
+
+
 def _sql_strip_wrapper(expression: str) -> str:
     """``expression`` with a leading flattened wrapper paragraph cut off. Scoped to text that
     actually opens with a wrapper prefix; unchanged when the terminator is absent (a truncated
     excerpt or a reworded build site — never guess)."""
     term = _sql_literal(WRAPPER_END_FLATTENED)
-    cut = f"SUBSTR({expression}, INSTR({expression}, {term}) + {len(WRAPPER_END_FLATTENED)})"
-    openers = " OR ".join(
-        f"SUBSTR({expression}, 1, {len(p)}) = {_sql_literal(p)}" for p in SYSTEM_WRAPPER_PREFIXES)
-    return (f"(CASE WHEN ({openers})"
-        f" AND INSTR({expression}, {term}) > 0 THEN {cut} ELSE {expression} END)")
+
+    def body(t: str) -> str:
+        openers = " OR ".join(f"SUBSTR({t}, 1, {len(p)}) = {_sql_literal(p)}" for p in SYSTEM_WRAPPER_PREFIXES)
+        return (f"CASE WHEN ({openers}) AND INSTR({t}, {term}) > 0"
+                f" THEN SUBSTR({t}, INSTR({t}, {term}) + {len(WRAPPER_END_FLATTENED)}) ELSE {t} END")
+    return _sql_bind(expression, body)
+
+
+def _sql_skip_to_run_time(expression: str) -> str:
+    """A cron-hint *expression* from its ``[CURRENT RUN TIME: …]`` line on (the scheduler puts that line
+    right after the hint), so the next wrapper cut drops both; unchanged for rows without the line."""
+    hint, run_time = _sql_literal(CRON_HINT_PREFIX), _sql_literal(CRON_RUN_TIME_PREFIX)
+    return _sql_bind(expression, lambda t: (
+        f"CASE WHEN SUBSTR({t}, 1, {len(CRON_HINT_PREFIX)}) = {hint} AND INSTR({t}, {run_time}) > 0"
+        f" THEN SUBSTR({t}, INSTR({t}, {run_time})) ELSE {t} END"))
 
 
 def _sql_strip_context_block(expression: str) -> str:
@@ -164,26 +180,34 @@ def _sql_strip_context_block(expression: str) -> str:
     with the block heading; unchanged when a fence is missing (never guess)."""
     fence = _sql_literal(FENCE)
     heading = _sql_literal(CONTEXT_BLOCK_HEADING)
-    after_open = f"SUBSTR({expression}, INSTR({expression}, {fence}) + {len(FENCE)})"
-    return (f"(CASE WHEN SUBSTR({expression}, 1, {len(CONTEXT_BLOCK_HEADING)}) = {heading}"
-        f" AND INSTR({expression}, {fence}) > 0 AND INSTR({after_open}, {fence}) > 0"
-        f" THEN LTRIM(SUBSTR({expression}, INSTR({expression}, {fence}) + {len(FENCE)}"
-        f" + INSTR({after_open}, {fence}) + {len(FENCE)}), {_SQL_WHITESPACE})"
-        f" ELSE {expression} END)")
+
+    def body(t: str) -> str:
+        after_open = f"SUBSTR({t}, INSTR({t}, {fence}) + {len(FENCE)})"
+        return (f"CASE WHEN SUBSTR({t}, 1, {len(CONTEXT_BLOCK_HEADING)}) = {heading}"
+                f" AND INSTR({t}, {fence}) > 0 AND INSTR({after_open}, {fence}) > 0"
+                f" THEN LTRIM(SUBSTR({t}, INSTR({t}, {fence}) + {len(FENCE)}"
+                f" + INSTR({after_open}, {fence}) + {len(FENCE)}), {_SQL_WHITESPACE})"
+                f" ELSE {t} END")
+    return _sql_bind(expression, body)
+
+
+def _sql_strip_cron_frame(expression: str) -> str:
+    """Hint, run-time line, then any previous-run context block: each cut is a no-op when absent."""
+    return _sql_strip_context_block(_sql_strip_wrapper(_sql_skip_to_run_time(expression)))
 
 
 # A cron job with skills embeds the volatile prompt (cron hint + job prompt) after the skill body
 # behind ``_SINGLE_SKILL_INSTRUCTION``; without this cut the 63-char head window only ever reaches
 # the skill body and the row previews as the bare ``/skill`` slug. Cut sequence (innermost first):
-# the cron hint leading the instruction, then the fenced previous-run context block sitting
+# the cron hint (and its run-time line) leading the instruction, then the fenced previous-run context block sitting
 # between the hint and the job prompt. Scoped to rows carrying the cron hint so interactive
 # ``/skill`` sessions keep their existing ``/work — typed instruction`` preview.
 _PREVIEW_CRON_SKILL_SQL = (f"(m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
     f" AND INSTR(m.content, {_sql_literal(CRON_HINT_PREFIX)}) > 0"
     f" AND INSTR(m.content, {_sql_literal(_SINGLE_SKILL_INSTRUCTION)}) > 0)")
-_PREVIEW_CRON_SKILL_CUT_SQL = _sql_strip_context_block(_sql_strip_wrapper(
+_PREVIEW_CRON_SKILL_CUT_SQL = _sql_strip_cron_frame(
     f"SUBSTR({_PREVIEW_CONTENT_SQL}, INSTR({_PREVIEW_CONTENT_SQL},"
-    f" {_sql_literal(_SINGLE_SKILL_INSTRUCTION)}) + {len(_SINGLE_SKILL_INSTRUCTION)})"))
+    f" {_sql_literal(_SINGLE_SKILL_INSTRUCTION)}) + {len(_SINGLE_SKILL_INSTRUCTION)})")
 
 # Pure compaction rows are ineligible; force-user-leading and merged carriers only when authentic content survives.
 # A display_kind="hidden" row is model-facing scaffolding the gateway never paints; the preview must not paint it either.
@@ -200,7 +224,7 @@ _PREVIEW_RAW_SELECT = (
     f"CASE WHEN {_PREVIEW_STANDALONE_SUMMARY_SQL} THEN {_PREVIEW_FORCE_USER_REMAINDER_SQL}"
     f" WHEN {_PREVIEW_MERGED_SUMMARY_SQL} THEN {_PREVIEW_MERGED_PRIOR_UNWRAPPED_SQL}"
     f" WHEN {_PREVIEW_CRON_SKILL_SQL} THEN SUBSTR({_PREVIEW_CRON_SKILL_CUT_SQL}, 1, {_PREVIEW_HEAD_CHARS})"
-    f" WHEN {_PREVIEW_WRAPPED_SQL} THEN SUBSTR({_sql_strip_wrapper(_PREVIEW_CONTENT_SQL)}, 1, {_PREVIEW_HEAD_CHARS})"
+    f" WHEN {_PREVIEW_WRAPPED_SQL} THEN SUBSTR({_sql_strip_cron_frame(_PREVIEW_CONTENT_SQL)}, 1, {_PREVIEW_HEAD_CHARS})"
     f" WHEN {_PREVIEW_SCAFFOLDED_SQL} AND LENGTH(m.content) > {_PREVIEW_SCAFFOLD_WINDOW * 2}"
     f" THEN SUBSTR({_PREVIEW_CONTENT_SQL}, 1, {_PREVIEW_SCAFFOLD_WINDOW}) || '{SKILL_EXCERPT_JOINT}'"
     f" || SUBSTR({_PREVIEW_CONTENT_SQL}, -{_PREVIEW_SCAFFOLD_WINDOW})"

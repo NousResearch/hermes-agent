@@ -19,10 +19,12 @@ from __future__ import annotations
 
 # Byte-prefix of ``cron.scheduler_prompt._CRON_HINT``.
 CRON_HINT_PREFIX = "[IMPORTANT: You are running as a scheduled cron job."
-# Byte-prefix of the bot-chat delivery message built by ``_deliver_to_bot_chat``.
+# Byte-prefix of ``cron.scheduler_prompt._run_time_line``: the one-line fire time that follows the hint.
+CRON_RUN_TIME_PREFIX = "[CURRENT RUN TIME: "
+# Byte-prefix of the bot-chat delivery message built by ``cron.scheduler_delivery.bot_chat_message``.
 BOT_CHAT_DELIVERY_PREFIX = '[Cronjob "'
 
-SYSTEM_WRAPPER_PREFIXES = (CRON_HINT_PREFIX, BOT_CHAT_DELIVERY_PREFIX)
+SYSTEM_WRAPPER_PREFIXES = (CRON_HINT_PREFIX, CRON_RUN_TIME_PREFIX, BOT_CHAT_DELIVERY_PREFIX)
 
 # ``cron.scheduler_prompt._prepend_context_block`` frames a previous/upstream run's output as a
 # fenced block that sits AHEAD of the job prompt (after the cron hint). Pinned to the build site
@@ -51,6 +53,16 @@ def is_system_wrapper(text: str) -> bool:
     """True when *text* opens with a machine-authored wrapper (unflattened or flattened form)."""
     stripped = (text or "").lstrip()
     return stripped.startswith(SYSTEM_WRAPPER_PREFIXES)
+
+
+def cron_prompt_display_text(text: str) -> str | None:
+    """The job prompt a cron run's first user row was built from, or None when *text* does not open
+    with the cron hint. Transcripts show only that prompt; the bot-chat banner is NOT cut here,
+    because in a Bot Chat transcript it is the attribution the reader needs."""
+    if not isinstance(text, str) or not text.lstrip().startswith(CRON_HINT_PREFIX):
+        return None
+    cut = strip_system_wrappers(text)
+    return cut if cut != (text or "").strip() else None
 
 
 def strip_system_wrappers(text: str) -> str:

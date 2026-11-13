@@ -741,13 +741,6 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     if not (body := (text if text is not None else kind).strip()):
         return
     out_kind = kind if text is not None else "status"
-    # Auto-compaction arrives as a generic "lifecycle" status; re-tag so drivers can show a
-    # summarizing indicator — otherwise idle/preflight compaction looks like a hung turn.
-    # See #97239.
-    if out_kind == "lifecycle":
-        from agent.conversation_compression import is_compaction_progress_status
-        if is_compaction_progress_status(body):
-            out_kind = "compacting"
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 

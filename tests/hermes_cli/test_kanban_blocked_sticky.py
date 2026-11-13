@@ -175,3 +175,35 @@ def test_created_with_initial_status_blocked_is_not_promoted_by_recompute_ready(
         assert promoted == 0
         assert kb.get_task(conn, child_id).status == "blocked"
 
+
+# ---------------------------------------------------------------------------
+# Regression: block_task from todo status (PR #62342)
+# ---------------------------------------------------------------------------
+
+
+def test_block_todo_child_stays_blocked_after_parent_completes(kanban_home: Path) -> None:
+    """A dependency-gated child in ``todo`` that is explicitly blocked must stay blocked.
+
+    Before this PR, ``block_task``'s SQL guard was
+    ``WHERE status IN ('running', 'ready')``, so blocking a ``todo`` task matched
+    0 rows and returned False. A user could not pre-block a gated child to stop it
+    auto-dispatching the moment its parent finished — the only workaround was to
+    start the task purely to be allowed to block it.
+    """
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+        assert kb.get_task(conn, child).status == "todo"
+
+        # Block from todo — the path this PR enables.
+        assert kb.block_task(conn, child, reason="pre-block: waiting on external input")
+        assert kb.get_task(conn, child).status == "blocked"
+
+        # Completing the parent would normally promote the child.
+        kb.claim_task(conn, parent)
+        kb.complete_task(conn, parent, result="parent done")
+
+        # The sticky block must hold.
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0, "blocked todo child must not auto-promote after parent completes"
+        assert kb.get_task(conn, child).status == "blocked"

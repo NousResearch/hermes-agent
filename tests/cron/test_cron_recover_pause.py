@@ -3,6 +3,8 @@ pause), and a verified terminal receipt lifts the pause its own ``CronExecutionU
 from contextlib import asynccontextmanager
 import json
 
+import pytest
+
 from cron import executions, jobs, scheduler, scheduler_authority
 from hermes_cli import gateway_client
 
@@ -80,3 +82,49 @@ def test_terminal_receipt_lifts_the_unknown_pause_it_caused(tmp_path, monkeypatc
         jobs.pause_job(job['id'], reason='operator hold')
         scheduler_authority.reconcile_pending()
         assert jobs.get_job(job['id'])['paused_reason'] == 'operator hold'
+
+
+def _receipt_booked_then_died(fire, job_id):
+    # Recovery booked the owner's verified receipt, then its process died before it unlinked the
+    # journal: the next tick finds a terminal row with the journal still on disk.
+    assert executions.recover_receipted_execution(fire, job_id, success=True) is not None
+
+
+def _firer_booked_failed(fire, job_id):
+    # The firer booked the attempt's terminal outcome itself (fire claim ownership lost) and died.
+    with executions._transaction() as conn:
+        conn.execute("UPDATE executions SET status='failed', error=?, process_id=?, pid=? WHERE id=?",
+                     ('Fire claim ownership lost; stale result was discarded.', 'old-owner', 999999, fire))
+
+
+@pytest.mark.parametrize('book_terminal', [_receipt_booked_then_died, _firer_booked_failed],
+                         ids=['receipt-booked-then-died', 'firer-booked-failed'])
+def test_terminal_row_retiring_the_journal_lifts_the_unknown_pause(tmp_path, monkeypatch, book_terminal):
+    """A journal whose attempt is already terminal on the ledger is retired without replaying the
+    receipt; the pause its unverified admission recorded on that journal must be lifted with it, or
+    nothing can ever lift it and the recurring schedule stays paused for good. An operator's own
+    later pause is still never lifted."""
+    calls = []
+    _peer(monkeypatch, lambda method: calls.append(method))
+    with jobs.use_cron_store(tmp_path / 'cron'):
+        job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')
+        fire = executions.create_execution(job['id'], source='test')['id']
+        journal = _unknown_fire(monkeypatch, job, fire)
+        status = 'completed' if book_terminal is _receipt_booked_then_died else 'failed'
+        book_terminal(fire, job['id'])
+        scheduler_authority.reconcile_pending()
+        saved = jobs.get_job(job['id'])
+        assert (saved['state'], saved['enabled'], saved['paused_reason']) == ('scheduled', True, None)
+        assert executions.get_execution(fire)['status'] == status
+        assert not journal.exists()
+
+        second = executions.create_execution(job['id'], source='test')['id']
+        journal = _unknown_fire(monkeypatch, job, second)
+        jobs.resume_job(job['id'])
+        jobs.pause_job(job['id'], reason='operator hold')
+        book_terminal(second, job['id'])
+        scheduler_authority.reconcile_pending()
+        assert jobs.get_job(job['id'])['paused_reason'] == 'operator hold'
+        assert executions.get_execution(second)['status'] == status
+        assert not journal.exists()
+        assert calls == []

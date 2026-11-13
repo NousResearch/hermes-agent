@@ -33,7 +33,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
-import { botConnectionRoute, botRouteKey, requestForBot } from './routing'
+import { aliasLookFor, botConnectionRoute, botRouteKey, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
 import type { BotMeta, RosterRow } from './types'
 
@@ -274,8 +274,8 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
       }
 
       // A title alone only corrects an existing record. Minting one would
-      // shadow a configured alias's appearance (botRosterMeta prefers the
-      // direct key), and the row already carries its backend's title.
+      // shadow the rest of a configured alias's record (botRosterMeta prefers
+      // the direct key), and the row already carries its backend's title.
       if (!server && !next[key]) {
         continue
       }
@@ -388,8 +388,11 @@ export async function duplicateBot(source: RosterRow, roster: RosterRow[]) {
 
   // Same look: avatar shape/color/image and a "(copy)" title so the two
   // are tellable apart in the roster until the user renames. Do not copy
-  // chat or created. Those belong to the original bot.
-  const meta = $botMeta.get()[botMetaKey(bot)]
+  // chat or created. Those belong to the original bot. A configured alias's
+  // look carries over too: the row shows it without its own record holding it.
+  const own = $botMeta.get()[botMetaKey(bot)]
+  const aliasLook = aliasLookFor(bot, $botMeta.get())
+  const meta = own || Object.keys(aliasLook).length ? { ...aliasLook, ...own } : undefined
 
   if (meta) {
     const { chat, created, ...look } = meta

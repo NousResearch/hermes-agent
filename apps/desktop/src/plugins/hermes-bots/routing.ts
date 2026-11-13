@@ -412,30 +412,33 @@ export function aliasMetaFor<T extends BotMeta>(
   return key ? metaByName[key] : undefined
 }
 
-const layeredCache = new WeakMap<BotMeta, WeakMap<BotMeta, BotMeta>>()
+/** The look a configured alias gives the backend row it claims. Only these
+ *  fields are inherited: membership, sections, pin and hide belong to the
+ *  row's own record (its backend's), so a write derived from the result never
+ *  carries an alias-only value to that backend. */
+const ALIAS_LOOK_FIELDS = ['color', 'custom', 'image', 'imageKind', 'shape'] as const
 
-/** A row's own record over its configured alias's. The own record holds what
- *  the row's backend reports (sections, groups); the alias keeps owning the
- *  look it was given, so a later alias edit still shows. Never copied into the
- *  own record: a copy would freeze the alias's look and outlive the alias.
- *  Memoized per record pair so renders that compare by reference stay stable. */
-function layered<T extends BotMeta>(own: null | T | undefined, alias: T | undefined): null | T | undefined {
-  if (!own || !alias) {
-    return own || alias || own
+/** The look the configured alias claiming this row gives it ({} when none). */
+export function aliasLookFor(bot: Partial<RosterRow> | null | undefined, metaByName: Record<string, BotMeta>): BotMeta {
+  const alias = aliasMetaFor(bot, metaByName)
+  const look: BotMeta = {}
+
+  for (const field of ALIAS_LOOK_FIELDS) {
+    if (alias?.[field] !== undefined) {
+      Object.assign(look, { [field]: alias[field] })
+    }
   }
 
-  const byAlias = layeredCache.get(own) || new WeakMap<BotMeta, BotMeta>()
-  layeredCache.set(own, byAlias)
-  const cached = byAlias.get(alias) as T | undefined
+  return look
+}
 
-  if (cached) {
-    return cached
-  }
+/** A row's own record with its alias's look underneath, read at lookup time and
+ *  never copied into the own record: a copy would freeze the alias's look and
+ *  outlive the alias. Own fields win. */
+function withAliasLook<T extends BotMeta>(bot: RosterRow, own: T, metaByName: Record<string, BotMeta>): T {
+  const look = aliasLookFor(bot, metaByName)
 
-  const merged = { ...alias, ...own }
-  byAlias.set(alias, merged)
-
-  return merged
+  return Object.keys(look).length ? { ...look, ...own } : own
 }
 
 // Bot metadata is scoped to the active gateway until the server exposes a
@@ -454,16 +457,12 @@ export function botRosterMeta(bot: RosterRow, metaByName: Record<string, BotMeta
     const route = resolved.status === 'resolved' ? resolved.route : null
     const direct = route ? metaByName?.[botRouteKey(route)] : null
 
-    return layered(direct, aliasMetaFor(bot, metaByName))
+    return direct ? withAliasLook(bot, direct, metaByName) : aliasMetaFor(bot, metaByName) || direct
   }
 
   const own = metaByName?.[bot?.name]
 
-  if (own) {
-    return own
-  }
-
-  return aliasMetaFor(bot, metaByName) || own
+  return own ? withAliasLook(bot, own, metaByName) : aliasMetaFor(bot, metaByName) || own
 }
 
 type TranscriptEntry = { from?: GroupMessageAuthor } | null | undefined

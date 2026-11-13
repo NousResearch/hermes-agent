@@ -519,21 +519,41 @@ describe("a bot is named by its own backend, never by another bot's cached recor
 
     try {
       $botMeta.set({ 'vps::kody': { color: '#00ff00' } })
-      mergeServerMeta([{ ...vps, ui_meta: { 'hermes-bots': { sectionId: 's1', sectionName: 'S1' } } } as RosterRow])
+      // A roster answer issued before the alias edit below lands after it.
+      const issuedAt = Date.now() - 1_000
+      $botMeta.set({ ...$botMeta.get(), 'vps::kody': { color: '#0000ff' } })
+      mergeServerMeta(
+        [{ ...vps, ui_meta: { 'hermes-bots': { sectionId: 's1', sectionName: 'S1' } } } as RosterRow],
+        issuedAt
+      )
+
       // The direct record holds the backend's fields only, never a copy of the alias.
       expect($botMeta.get()['vps::default']).toEqual({ sectionId: 's1', sectionName: 'S1' })
+      expect(botRosterMeta(vps, $botMeta.get())).toMatchObject({ color: '#0000ff', sectionId: 's1' })
 
-      // A later alias edit (or one racing an in-flight roster answer) still shows on the row.
-      $botMeta.set({ ...$botMeta.get(), 'vps::kody': { color: '#0000ff' } })
-      const shown = botRosterMeta(vps, $botMeta.get())
-
-      expect(shown).toMatchObject({ color: '#0000ff', sectionId: 's1' })
-      // Stable identity while neither record changes: renders compare by reference.
-      expect(botRosterMeta(vps, $botMeta.get())).toBe(shown)
+      // A later alias edit still shows on the row.
+      $botMeta.set({ ...$botMeta.get(), 'vps::kody': { color: '#ff00ff' } })
+      expect(botRosterMeta(vps, $botMeta.get())).toMatchObject({ color: '#ff00ff' })
 
       // Once the alias stops claiming the row, nothing of it lingers there.
       indexAliasRoutes([])
       expect(botRosterMeta(vps, $botMeta.get())).toEqual({ sectionId: 's1', sectionName: 'S1' })
+    } finally {
+      indexAliasRoutes([])
+    }
+  })
+
+  it("only an alias's look shows through a row's own record, never its groups, pin or hide", () => {
+    indexAliasRoutes([{ connectionId: 'vps', mode: 'remote', profile: 'kody', targetProfile: 'default' }])
+
+    try {
+      $botMeta.set({
+        'vps::default': { group: 'B', sectionId: 's1' },
+        'vps::kody': { color: '#00ff00', groups: ['A'], hidden: true, pinned: true, sectionId: 's9' }
+      })
+
+      // A membership write derived from this view must not carry alias group A to the row's backend.
+      expect(botRosterMeta(vps, $botMeta.get())).toEqual({ color: '#00ff00', group: 'B', sectionId: 's1' })
     } finally {
       indexAliasRoutes([])
     }

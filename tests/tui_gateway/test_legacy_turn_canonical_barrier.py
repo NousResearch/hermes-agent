@@ -2,6 +2,7 @@
 durable ledger: an ``unknown`` admission is never replayed, queued input runs in FIFO order."""
 
 import pytest
+from types import SimpleNamespace
 
 from hermes_state import SessionDB
 from hermes_state_runtime import (
@@ -29,7 +30,9 @@ def test_legacy_submit_refuses_while_canonical_ledger_holds_work(monkeypatch, tm
     monkeypatch.setattr(server, "_restart_completed_failed_agent_build", lambda *_a: False)
     turns = []
     monkeypatch.setattr(server, "_run_after_agent_ready", lambda *a: turns.append(a[1]))
-    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+    # Stub only this gateway namespace, not subprocess's Windows reader threads.
+    monkeypatch.setattr(server, "threading", SimpleNamespace(
+        **{**vars(server.threading), "Thread": _InlineThread}))
     created = server.handle_request({"id": "c", "method": "session.create", "params": {"source": "desktop"}})
     sid, key = created["result"]["session_id"], created["result"]["stored_session_id"]
     db.create_session(key, "cli")

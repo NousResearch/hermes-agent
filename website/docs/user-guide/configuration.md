@@ -2753,21 +2753,27 @@ The master `streaming.enabled` switch is `false` by default — nothing streams 
 
 ## Group Chat Session Isolation
 
-Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
-and messaging gateway:
+Limit running work across CLI, TUI/dashboard, and the messaging gateway,
+without charging idle Desktop/TUI session ownership against the cap:
 
 ```yaml
 max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
 ```
 
-A slot is taken when a session runs its **first turn**, not when a chat window
-is opened. Opening, resuming or reconnecting to a chat costs nothing until you
-send a message, so idle desktop tabs (and the background resumes a flaky
-websocket triggers) cannot starve the messaging gateway that shares this cap.
+An ordinary Desktop/TUI session takes a capacity slot while a **turn is running**
+and releases that capacity at settlement, retaining its exclusive ownership lease.
+Opening, resuming or reconnecting an idle chat does not consume running capacity.
+CLI gateway proxies likewise retain idle ownership; actual gateway execution
+accounts for running capacity. Direct CLI sessions retain their slot until their
+lease is released. Hosted-room sessions preserve their separate turn-handoff
+release behavior.
 
-When the cap is reached, Hermes returns a direct limit message naming which
-surfaces hold the slots. Existing active sessions keep their normal behavior.
-Run `hermes status --full` to see the current slot usage and every holder.
+When the cap is reached, new work receives a limit message naming the surfaces
+holding capacity. Already accepted Desktop/TUI queued prompts remain FIFO-queued
+and retry through the existing notification poller; a refusal must not consume
+an accepted prompt. Idle ownership still prevents simultaneous writers to the
+same session, even when `max_concurrent_sessions` is unlimited.
+Run `hermes status --full` to inspect the current lease holders.
 
 This is the only cap on concurrent gateway turns: the gateway runs each turn body
 on its own thread, so with the default (unset) every accepted turn starts
@@ -2777,9 +2783,15 @@ The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
 `gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when
 both are set.
 
-The cap is enforced with a local runtime lease file and is best-effort: Hermes
-fails open if the registry cannot be read or locked so users are not stranded.
-It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
+Capacity and ownership are coordinated with a local runtime lease file. Admission
+fails closed when ownership or coordination cannot be safely verified: no work is
+started without a valid ownership decision. Retry after registry access is
+restored. This deliberately favors exclusive ownership over temporary availability;
+CLI and messaging-gateway coordination failures report
+`SESSION_COORDINATION_UNAVAILABLE`. Capacity-release storage errors do not skip
+turn cleanup: the existing backend heartbeat retries ordinary Desktop/TUI idle
+transitions without dropping ownership.
+The registry is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
 mounted across multiple machines. A lease whose owning process exists but whose
 liveness cannot be proved (for example an unreadable `/proc` entry inside a
 container after `hermes update` restarts the backend) still counts toward the

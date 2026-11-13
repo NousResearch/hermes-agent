@@ -154,6 +154,7 @@ _KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
 def _notif_release_turn(session: dict) -> None:
     with session["history_lock"]:
         session["running"] = False
+        _release_hosted_room_turn_slot(session)
 
 
 def _notif_claim_turn(session: dict) -> bool:
@@ -161,7 +162,8 @@ def _notif_claim_turn(session: dict) -> bool:
     After the user's Stop no automatic turn starts: the cancel latch holds notifications
     (requeued by the callers) until the next user prompt clears it."""
     with _session_turn_admission(session) as admitted:
-        if not admitted or session.get("running") or session.get("_turn_cancel_requested"):
+        if (not admitted or session.get("running") or session.get("_queued_prompt_capacity_wait")
+                or session.get("_turn_cancel_requested")):
             return False
         session["running"] = True
         return True
@@ -824,7 +826,9 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
-            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+            # Accepted user FIFO retries before automatic wakes, on this poller's existing cadence.
+            for what, fire in (("queued prompt", lambda s, sess: _retry_capacity_queued_prompt(s, sess, stop_event=stop_event)),
+                               ("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
                 try:
                     fire(sid, session)
                 except Exception as tick_exc:

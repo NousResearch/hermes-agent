@@ -52,9 +52,12 @@ def _flush_agent(db, key):
     return agent
 
 
-def _run_turn(session, db, key, text, reply):
+def _run_turn(session, db, key, text, reply, on_admitted):
     """The turn body the real ``_run_prompt_submit`` runs once the agent is ready: adopt the
     staged row, crash-persist the user turn, flush the reply (mirrors test_submit_time_user_row)."""
+    # This runner stub must honor the successful-admission commit before adoption.
+    with session["history_lock"]:
+        on_admitted()
     agent = _flush_agent(db, key)
     server._adopt_submit_user_row(session, agent, text, text)
     user_msg, _pending = _stage_turn_user_message(agent, text, text, None, None, None, None)
@@ -81,7 +84,7 @@ def _accept_busy_then_run_both_turns(monkeypatch, tmp_path, queued_text="queued 
         session["running"] = False
         server._clear_inflight_turn(session)
     monkeypatch.setattr(server, "_run_prompt_submit",
-                        lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B"))
+                        lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B", kw["on_admitted"]))
     assert server._drain_queued_prompt("r2", sid, session) is True
     return db, sid, key
 
@@ -222,7 +225,7 @@ def test_partial_drain_never_puts_a_later_prompt_before_an_earlier_one(monkeypat
             session["running"] = False
             server._clear_inflight_turn(session)
         monkeypatch.setattr(server, "_run_prompt_submit",
-                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B"))
+                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B", kw["on_admitted"]))
         assert server._drain_queued_prompt("r3", sid, session) is True  # drains B only
         # The crash: the queue (and C's turn intent) is gone with the process.
         session["queued_prompt"] = None
@@ -265,7 +268,7 @@ def test_drain_after_in_place_compaction_leaves_one_active_queued_row(monkeypatc
             session["running"] = False
             server._clear_inflight_turn(session)
         monkeypatch.setattr(server, "_run_prompt_submit",
-                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B"))
+                            lambda rid, s, sess, text, **kw: _run_turn(sess, db, key, text, "reply B", kw["on_admitted"]))
         assert server._drain_queued_prompt("r2", sid, session) is True
 
         rows = [(r["role"], r["content"]) for r in _active_rows(db, key)]

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tui_gateway import prompt_turn, session_notifications
+from tui_gateway import prompt_turn, server, session_notifications
 from tui_gateway.method_ctx import rebind
 from tui_gateway.session_lifecycle import _session_turn_admission
 
@@ -21,15 +21,21 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
     event = pending('owned', 'refused-notification') if kind == 'async_delegation' else {
         'type': 'completion', 'session_id': 'owned-process', 'session_key': 'owned'}
     session = {'history_lock': threading.RLock(), '_closing': True, 'running': True}
-    emitted = []
-    namespace = dict(time=time, logger=logging.getLogger(__name__),
+    emitted, failures, backoffs = [], [], []
+    # Keep release/admission and retry bookkeeping real; only remove wall-clock waiting.
+    namespace = dict(time=SimpleNamespace(time=time.time, sleep=backoffs.append),
+        logger=logging.getLogger(__name__),
         _emit=lambda *args: emitted.append(args),
         _session_turn_admission=_session_turn_admission,
+        _release_hosted_room_turn_slot=server._release_hosted_room_turn_slot,
+        _NOTIF_REFUSAL_BACKOFF_S=session_notifications._NOTIF_REFUSAL_BACKOFF_S,
+        _NOTIF_REFUSAL_BACKOFF_MAX_S=session_notifications._NOTIF_REFUSAL_BACKOFF_MAX_S,
         _ensure_active_session_slot=lambda *args: None,
-        _notif_log_failure=lambda *args: None)
+        _notif_log_failure=lambda *args: failures.append(args))
     for module, names in [(prompt_turn, ('_admit_prompt_turn', '_run_prompt_submit')),
                           (session_notifications, ('_notif_submit', '_notif_claim_turn', '_notif_release_turn',
-                           '_notif_dispatch_event', '_notif_dispatch_completions', '_async_delegation_display_metadata'))]:
+                           '_notif_refusal_backoff', '_notif_dispatch_event', '_notif_dispatch_completions',
+                           '_async_delegation_display_metadata'))]:
         for name in names:
             namespace[name] = rebind(getattr(module, name), namespace)
     # Also bind the retry helper when present; old code must fail on the receipt, not an absent test import.
@@ -53,6 +59,8 @@ def test_refused_notification_retains_result_without_spending_attempts(tmp_path,
             assert process_registry.completion_queue.get_nowait() == event
             assert session['running'] is False
         assert not any(e[0] == 'message.start' for e in emitted), emitted
+        assert failures == [], failures
+        assert len(backoffs) == 10
         accepted = []
         def accept(*args, **kwargs):
             accepted.append((args, kwargs))

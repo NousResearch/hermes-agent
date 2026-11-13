@@ -690,12 +690,14 @@ def _run_after_agent_ready(
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
+            _release_hosted_room_turn_slot(session)
         _emit("session.info", sid, _session_info(session.get("agent"), session))
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
             session["running"] = False
             _clear_inflight_turn(session)
+            _release_hosted_room_turn_slot(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.
             _emit("error", sid, {"message": (
                 "Turn cancelled before the agent was ready"
@@ -781,7 +783,8 @@ def _unstage_refused_images(session) -> int:
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+    *, internal_hosted_submit=False):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
@@ -798,10 +801,18 @@ def _lock_in_submit_turn(
                 rid, 4004,
                 "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
             ), fields
+        if (refusal := _activate_active_session_slot(session)) is not None:
+            return _slot_refusal(rid, sid, session, text, params, refusal,
+                                 internal_hosted_submit=internal_hosted_submit), fields
         if has_truncation:
-            err, fields = _truncate_history_for_submit(
-                rid, sid, session, params, requested_rebind_ids)
+            try:
+                err, fields = _truncate_history_for_submit(
+                    rid, sid, session, params, requested_rebind_ids)
+            except Exception:
+                _release_hosted_room_turn_slot(session)
+                raise
             if err is not None:
+                _release_hosted_room_turn_slot(session)
                 return err, {}
         session["running"] = True
         session["_turn_cancel_requested"] = False
@@ -893,7 +904,7 @@ def _(rid, params: dict) -> dict:
     # prompt in a queue whose drain already ran.
     while True:
         with session["history_lock"]:
-            if not session.get("running"):
+            if not _session_prompt_busy(session):
                 break
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
@@ -916,7 +927,8 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+        internal_hosted_submit=internal_hosted_submit)
     if err is not None:
         return err
     if turn_isolation:

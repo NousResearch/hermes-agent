@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -25,6 +25,10 @@ from hermes_constants import get_default_hermes_root, get_hermes_home, named_pro
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
+
+# The backend orphan heartbeat retries failed idle writes in their bound homes.
+_PENDING_IDLE_LEASES: dict[tuple[str, str], ActiveSessionLease] = {}
+_PENDING_IDLE_LOCK = threading.Lock()
 
 
 class ActiveSessionRegistryError(RuntimeError):
@@ -275,6 +279,7 @@ def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
             (lambda: _registry_pid(entry.get("pid")) <= 0, "an invalid pid"),
             (lambda: not _optional_isinstance(entry.get("surface"), str), "an invalid surface"),
             (lambda: not _optional_isinstance(entry.get("track_liveness"), bool), "an invalid liveness marker"),
+            (lambda: "capacity_active" in entry and not isinstance(entry["capacity_active"], bool), "an invalid capacity marker"),
             (lambda: not _optional_isinstance(entry.get("metadata"), dict), "invalid metadata"),
             (lambda: not _valid_process_start(entry.get("process_start_time")), "an invalid process start time"),
         ):
@@ -466,11 +471,78 @@ class ActiveSessionLease:
     state_path: Optional[Path] = None
     lock_path: Optional[Path] = None
     track_liveness: bool = False
+    # Retain the last admitted running/idle state when transfer repairs a lost row.
+    # Missing markers on genuinely legacy rows still count as active.
+    capacity_active: bool = True
+    capacity_limit: Optional[int] = None
+    _capacity_lock: Any = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
 
     def release(self) -> None:
         if self.released or not self.enabled:
             return
         release_active_session(self)
+
+    def set_capacity_active(self, active: bool, *, config: Any = None) -> Optional[str]:
+        """Activate/deactivate running capacity without dropping exclusive ownership."""
+        with self._capacity_lock:
+            if not active and self.enabled and not self.released:
+                state_path, _ = _lease_paths(self)
+                with _PENDING_IDLE_LOCK:
+                    _PENDING_IDLE_LEASES[(_registry_key(state_path), self.lease_id)] = self
+                self.capacity_active = False
+            return self._persist_capacity_active(active, config=config)
+
+    def _persist_capacity_active(
+        self, active: bool, *, config: Any = None, retry_idle: bool = False,
+    ) -> Optional[str]:
+        if not self.enabled:
+            return None  # an inert compute-host borrow is accounted for by its parent
+        state_path, lock_path = _lease_paths(self)
+        with _FileLock(lock_path, timeout=0.0 if retry_idle else None):
+            if retry_idle:
+                with _PENDING_IDLE_LOCK:
+                    if _PENDING_IDLE_LEASES.get((_registry_key(state_path), self.lease_id)) is not self:
+                        return None
+            entries = _prune_dead(_read_entries(state_path, strict=True), strict=True,
+                                  target_session_id=self.session_id)
+            own = next((entry for entry in entries if entry.get("lease_id") == self.lease_id), None)
+            if self.released or own is None or _registry_pid(own.get("pid")) != os.getpid():
+                _forget_pending_idle(self)
+                return ActiveSessionRefusal("This session no longer owns its active-session lease.", SESSION_NOT_OWNED)
+            if active and not own.get("capacity_active", True):
+                running = [entry for entry in entries if entry.get("capacity_active", True)]
+                maximum = resolve_max_concurrent_sessions(config)
+                if maximum is not None and len(running) >= maximum:
+                    return ActiveSessionRefusal(
+                        active_session_limit_message(len(running), maximum, running), MAX_CONCURRENT_SESSIONS)
+            own["capacity_active"] = bool(active)
+            own["updated_at"] = time.time()
+            _write_entries(state_path, entries)
+            self.capacity_active = bool(active)
+            if active:
+                self.capacity_limit = resolve_max_concurrent_sessions(config)
+            _forget_pending_idle(self)
+        return None
+
+
+def _forget_pending_idle(lease: ActiveSessionLease) -> None:
+    state_path, _ = _lease_paths(lease)
+    with _PENDING_IDLE_LOCK:
+        _PENDING_IDLE_LEASES.pop((_registry_key(state_path), lease.lease_id), None)
+
+
+def _retry_pending_idle_leases() -> None:
+    with _PENDING_IDLE_LOCK:
+        pending = list(_PENDING_IDLE_LEASES.values())
+    for lease in pending:
+        if not lease._capacity_lock.acquire(blocking=False):
+            continue
+        try:
+            lease._persist_capacity_active(False, retry_idle=True)
+        except Exception:
+            logger.debug("Idle capacity retry failed for lease %s", lease.lease_id, exc_info=True)
+        finally:
+            lease._capacity_lock.release()
 
 
 def _clean_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -540,6 +612,7 @@ def _lease_entry(
 def try_acquire_active_session(
     *, session_id: str, surface: str, config: Any, metadata: Optional[dict[str, Any]] = None,
     registry_home: str | Path | None = None, track_liveness: bool = False,
+    capacity_active: bool = True,
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot: ``(lease, None)`` or ``(None, ActiveSessionRefusal)``.
 
@@ -566,10 +639,13 @@ def try_acquire_active_session(
         lease_id=lease_id, session_id=key, surface=str(surface), metadata=metadata,
         track_liveness=track_liveness,
     )
+    entry["capacity_active"] = bool(capacity_active)
     state_path, lock_path = _lease_paths(registry_home=registry_home)
     lease = ActiveSessionLease(
         lease_id=lease_id, session_id=key, surface=str(surface), state_path=state_path,
         lock_path=lock_path, track_liveness=track_liveness,
+        capacity_active=bool(capacity_active),
+        capacity_limit=max_sessions,
     )
     with _FileLock(lock_path):
         # A capacity cap could degrade open; exclusivity cannot: "could not
@@ -609,8 +685,19 @@ def try_acquire_active_session(
                 # its own session permanently (pruning only removes entries
                 # whose PROCESS is dead). Re-entrancy, not concurrency.
                 if _is_same_writer(existing, metadata):
+                    # Reclaiming a reference must neither silently free running work nor
+                    # reactivate an idle owner without the normal capacity check.
+                    entry["capacity_active"] = existing.get("capacity_active", True)
+                    if capacity_active and not entry["capacity_active"]:
+                        running = [e for e in entries if e.get("capacity_active", True)]
+                        if max_sessions is not None and len(running) >= max_sessions:
+                            return refuse(active_session_limit_message(len(running), max_sessions, running),
+                                          MAX_CONCURRENT_SESSIONS, "Active session limit reached on reclaim")
+                        entry["capacity_active"] = True
                     entries[index] = entry
                     _write_entries(state_path, entries)
+                    lease.capacity_active = entry["capacity_active"]
+                    _forget_pending_idle(lease)
                     return lease, None
                 return refuse(
                     session_already_owned_message(key, existing), SESSION_NOT_OWNED,
@@ -619,12 +706,13 @@ def try_acquire_active_session(
                 )
 
         # Capacity second, and only when an operator asked for one.
-        if max_sessions is not None and len(entries) >= max_sessions:
+        running = [e for e in entries if e.get("capacity_active", True)]
+        if capacity_active and max_sessions is not None and len(running) >= max_sessions:
             return refuse(
-                active_session_limit_message(len(entries), max_sessions, entries),
+                active_session_limit_message(len(running), max_sessions, running),
                 MAX_CONCURRENT_SESSIONS,
                 "Active session limit reached: active=%d max=%d surface=%s",
-                len(entries), max_sessions, surface,
+                len(running), max_sessions, surface,
             )
         entries.append(entry)
         _write_entries(state_path, entries)
@@ -650,6 +738,7 @@ def release_active_session(lease: ActiveSessionLease) -> None:
         if loaded is not None:
             _drop_lease(state_path, loaded[1], lease.lease_id)
         lease.released = True
+        _forget_pending_idle(lease)
 
 
 def transfer_active_session(
@@ -678,6 +767,11 @@ def transfer_active_session(
         if loaded is None:
             return False
         entries = loaded[1]
+        # Transfer is an ownership claim too: inspect the destination under
+        # the same lock, before changing either the row or the lease object.
+        if any(str(e.get("session_id") or "") == new_session_id
+               and str(e.get("lease_id") or "") != lease.lease_id for e in entries):
+            return False
         own = next((e for e in entries if str(e.get("lease_id") or "") == lease.lease_id), None)
         if own is not None:
             own["session_id"] = new_session_id
@@ -685,10 +779,17 @@ def transfer_active_session(
             if metadata:
                 own["metadata"] = _clean_metadata(metadata)
         elif lease.track_liveness:
-            entries.append(_lease_entry(
+            # A lost row is no longer counted. Restoring running work must not
+            # bypass the last admission policy if new work filled its old slot.
+            if (lease.capacity_active and lease.capacity_limit is not None
+                    and sum(e.get("capacity_active", True) for e in entries) >= lease.capacity_limit):
+                return False
+            recovered = _lease_entry(
                 lease_id=lease.lease_id, session_id=new_session_id, surface=lease.surface,
                 metadata=metadata, track_liveness=True,
-            ))
+            )
+            recovered["capacity_active"] = lease.capacity_active
+            entries.append(recovered)
         else:
             return False
         _write_entries(state_path, entries)
@@ -751,6 +852,7 @@ def release_orphaned_leases(live_lease_ids: set[str]) -> int:
     only authority on its own leases — exact, no heartbeat on the turn path, no threshold.
     Sweeps the root home and every profile home (a multiplexed server leases across them).
     """
+    _retry_pending_idle_leases()
     root = get_default_hermes_root()
     homes = [root]
     try:

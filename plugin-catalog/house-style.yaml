@@ -32,7 +32,7 @@ description: >-
 maintainer: Sahil-SS9
 tier: community
 category: tools
-requires_hermes: ">=0.23.0"
+requires_hermes: ">=0.23.2"
 docs_url: https://github.com/Sahil-SS9/house-style#readme
 platforms: []
 capabilities:

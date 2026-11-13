@@ -628,9 +628,30 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
             }
         )
     filled = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
+    fidelity = parsed.get("fidelity") if isinstance(parsed, dict) else None
+    truncated = parsed.get("fidelity_errors") or [] if isinstance(parsed, dict) else []
+    if truncated:
+        # A page-side mask rewrote or dropped characters: the fill did not land.
+        # Refuse with the offending field tokens named (lengths only, never values).
+        return json.dumps(
+            {
+                "success": False,
+                "error_type": "fill_truncated",
+                "error": (
+                    "Fill truncated by the page (input mask or sanitizer): "
+                    + ", ".join(sorted(truncated))
+                    + " landed shorter than the saved value. Nothing was "
+                    "submitted; verify the field in the visible window."
+                ),
+                "truncated_fields": sorted(truncated),
+                "fidelity": fidelity or {},
+            }
+        )
 
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
+    if meta.kind != "login" and fidelity:
+        out["fidelity"] = fidelity  # token -> landed length, never values
     if meta.kind == "login":
         out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault action=enter_code with this handle"
                        + (" (a code will be generated automatically)." if meta.has_otp else "."))

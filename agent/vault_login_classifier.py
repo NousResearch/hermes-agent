@@ -327,6 +327,8 @@ _FILL_JS_TEMPLATE = """(() => {
   })(document);
   const find = (selector) => roots.flatMap((r) => Array.from(r.querySelectorAll(selector)));
   let filled = 0;
+  const fidelity = {};   // token -> landed length (never the value)
+  const fidelityErrors = [];  // tokens that landed shorter than the value written
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
     const el = find('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
@@ -346,8 +348,14 @@ _FILL_JS_TEMPLATE = """(() => {
       el.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
       if (el.value.length > 0) filled += 1;
+      // Landed fidelity: a page mask may legitimately ADD characters (card numbers
+      // get spaced, 16 -> 19); one that DROPS or rewrites characters (cvc 3 -> 2,
+      // or the value replaced by mask characters) means the field did not accept
+      // the value we wrote. Record lengths only — never the value itself.
+      fidelity[f.token] = el.value.length;
+      if (el.value.length < String(f.value || "").length) fidelityErrors.push(f.token);
     } catch (e) { /* skip */ }
   }
   find("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
-  return JSON.stringify({ filled });
+  return JSON.stringify({ filled, fidelity, fidelity_errors: fidelityErrors });
 })()"""

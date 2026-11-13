@@ -30,7 +30,9 @@ from agent.vault_login_classifier import (
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    classify_checkout_control,
     classify_login_control,
+    select_checkout_fills,
     select_password_fill,
 )
 from agent.vault_store import (
@@ -830,3 +832,40 @@ class TestTwoFactor:
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
         assert out["error_type"] == "no_code_field"
+
+
+class TestFillLandedFidelity:
+    """Regression: a page-side mask that rewrites or drops characters must fail
+    the fill instead of reporting success.
+
+    Upstream's fill success criterion was ``el.value.length > 0`` — any
+    non-empty value counted as filled, so a checkout page whose mask rewrote
+    the CVC to mask characters still reported ``filled_fields: 4``.
+    """
+
+    def test_fill_js_records_fidelity(self):
+        js = build_fill_js([{"index": 0, "token": "cc-csc", "value": "123"}],
+                           expected_origin="https://example.com")
+        assert "fidelity[f.token] = el.value.length" in js
+        assert "fidelity_errors: fidelityErrors" in js
+        assert "el.value.length < String(f.value || \"\").length" in js
+
+    def test_select_checkout_fills_unchanged_shape(self):
+        controls = [
+            classify_checkout_control(LoginControl(
+                autocomplete="", form_index=None, index=i, label=label, name=name, type="text"))
+            for i, (name, label) in enumerate(
+                [("cardNumber", "Card number"), ("holderName", "Name on card"),
+                 ("month", "Expiry month"), ("year", "Expiry year"), ("securityCode", "Security code")]
+            )
+        ]
+        assert all(c is not None for c in controls)
+        fills = select_checkout_fills(
+            controls,
+            {"card_number": "4111111111111111", "cardholder_name": "TEST NAME",
+             "exp_month": "12", "exp_year": "2030", "cvc": "123"},
+            {"card_number": "cc-number", "cardholder_name": "cc-name",
+             "exp_month": "cc-exp-month", "exp_year": "cc-exp-year", "cvc": "cc-csc"},
+        )
+        tokens = sorted(f["token"] for f in fills)
+        assert tokens == ["cc-csc", "cc-exp-month", "cc-exp-year", "cc-name", "cc-number"]

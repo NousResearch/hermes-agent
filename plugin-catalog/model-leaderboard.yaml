@@ -1,21 +1,45 @@
 name: model-leaderboard
 repo: https://github.com/e-is/hermes-model-leaderboard
-sha: 516e2f8d4dd0790f2c486d1fe0b444de5c2b3c10
-description: 'Model leaderboard for Hermes Desktop: a full /model-leaderboard page that ranks any OpenRouter model for a chosen Hermes profile — context window, prices, Artificial Analysis indices and curated SWE-bench Verified / LiveCodeBench — with per-profile criteria, six score views (cards, table, score bars, histograms, heatmap, quality-vs-cost Pareto frontier), an OpenRouter news feed (new models, price changes, promos) and a documented REST surface under /api/plugins/model-leaderboard/. Disclosure — outbound HTTPS to OpenRouter''s public model API (catalogue and pricing) on a 60 s poll and a forced refresh every 10 minutes while the page is visible, and to Hugging Face''s public model API (safetensors metadata, for parameter counts) on demand and cached; reads the installed Hermes profiles'' own config.yaml files once, to seed the tracked list from the models those profiles declare; keeps its state in <hermes home>/plugin-data/model-leaderboard/ (seeded from the JSON shipped with the plugin), which LLM_DASH_DATA / LLM_DASH_CACHE_TTL can move or tune; the optional "Auto-fill criteria" action runs on the host LLM facade (ctx.llm.complete_structured), so it spends the user''s configured model tokens; ships one read-only skill (model-leaderboard:refresh-benchmarks) whose only write is a POST to its own /benchmarks route; no API keys of its own, no writes outside its data directory.'
+sha: 513d48e5d6312cdc1d47d26b063b26f3269e6fa1
+description: 'Model leaderboard for Hermes Desktop: a full /model-leaderboard page that ranks any OpenRouter
+  model for a chosen Hermes profile — context window, prices, Artificial Analysis indices and curated
+  SWE-bench Verified / LiveCodeBench — with per-profile criteria, six score views (cards, table, score
+  bars, histograms, heatmap, quality-vs-cost Pareto frontier), an OpenRouter news feed (new models, price
+  changes, promos) and a documented REST surface under /api/plugins/model-leaderboard/. Disclosure — outbound
+  HTTPS to OpenRouter''s public model API (catalogue and pricing) on a 60 s poll and a forced refresh
+  every 10 minutes while the page is visible, and to Hugging Face''s public model API (safetensors metadata,
+  for parameter counts) on demand and cached; reads the installed Hermes profiles'' own config.yaml files
+  once, to seed the tracked list from the models those profiles declare; an index the catalogue does not
+  publish for a variant is borrowed from its exact alias or from a published member of the same model
+  family and shown as inherited (⤵) — no network call for that; keeps its state in <hermes home>/plugin-data/model-leaderboard/
+  (seeded from the JSON shipped with the plugin), which LLM_DASH_DATA / LLM_DASH_CACHE_TTL can move or
+  tune; the optional "Auto-fill criteria" action runs on the host LLM facade (ctx.llm.complete_structured),
+  so it spends the user''s configured model tokens; prices the models at the context size each profile
+  declares (the profile''s Hermes compaction settings, or a fixed 32k-1M volume) using OpenRouter''s published
+  context-price tiers; ships one read-only skill (model-leaderboard:refresh-benchmarks) whose only write
+  is a POST to its own /benchmarks route; ships an OPTIONAL harvester (scripts/harvest_aa.py) that the
+  plugin never runs — a user or a cron does — to fill the intelligence index from Artificial Analysis:
+  it calls their free data API with the user''s own key (ARTIFICIAL_ANALYSIS_API_KEY, 100 requests/day
+  on the free tier, attribution to artificialanalysis.ai required) or, without a key, reads their public
+  leaderboard page once, and writes the result into the plugin''s own benchmarks.json under the user''s
+  data directory — fetched values are never committed to the repository and never redistributed; the plugin
+  itself makes no Artificial Analysis request and writes nothing outside its data directory; it declares
+  an OPTIONAL ARTIFICIAL_ANALYSIS_API_KEY secret setting (required: false) whose value Hermes stores in
+  its own .env — the plugin only reads it from the environment and never stores, echoes back or logs it.'
 maintainer: e-is
 tier: community
 category: models
-requires_hermes: ">=0.21.6"
+requires_hermes: '>=0.21'
 docs_url: https://github.com/e-is/hermes-model-leaderboard#readme
-version: "1.2.0"
-image: https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/516e2f8d4dd0790f2c486d1fe0b444de5c2b3c10/assets/card-podium.png
+version: "1.6.1"
+image: https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/513d48e5d6312cdc1d47d26b063b26f3269e6fa1/assets/card-podium.png
 screenshots:
-- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/516e2f8d4dd0790f2c486d1fe0b444de5c2b3c10/assets/screenshot-en-01-models.png
-- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/516e2f8d4dd0790f2c486d1fe0b444de5c2b3c10/assets/screenshot-en-03-score-bars.png
-- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/516e2f8d4dd0790f2c486d1fe0b444de5c2b3c10/assets/screenshot-en-05-heatmap.png
-- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/516e2f8d4dd0790f2c486d1fe0b444de5c2b3c10/assets/screenshot-en-06-quality-cost.png
-- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/516e2f8d4dd0790f2c486d1fe0b444de5c2b3c10/assets/screenshot-en-08-criteria.png
-- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/516e2f8d4dd0790f2c486d1fe0b444de5c2b3c10/assets/screenshot-en-11-profile-front-designer.png
+- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/513d48e5d6312cdc1d47d26b063b26f3269e6fa1/assets/screenshot-en-01-models.png
+- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/513d48e5d6312cdc1d47d26b063b26f3269e6fa1/assets/screenshot-en-02-models-table.png
+- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/513d48e5d6312cdc1d47d26b063b26f3269e6fa1/assets/screenshot-en-05-heatmap.png
+- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/513d48e5d6312cdc1d47d26b063b26f3269e6fa1/assets/screenshot-en-06-quality-cost.png
+- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/513d48e5d6312cdc1d47d26b063b26f3269e6fa1/assets/screenshot-en-07-context-size.png
+- https://raw.githubusercontent.com/e-is/hermes-model-leaderboard/513d48e5d6312cdc1d47d26b063b26f3269e6fa1/assets/screenshot-en-11-profile-front-designer.png
 platforms: []
 capabilities:
   provides_tools: []

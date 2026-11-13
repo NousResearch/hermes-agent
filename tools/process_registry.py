@@ -1650,7 +1650,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 and reader is not None and reader.is_alive())
 
     def is_completion_consumed(self, session_id: str) -> bool:
-        """Check if a completion notification was already consumed via wait/log."""
+        """True once wait/log/kill/acked poll consumed it; keyed by the full id, never a short prefix."""
         return session_id in self._completion_consumed
 
     def is_session_waiting(self, session_id: str) -> bool:
@@ -2045,7 +2045,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             **self._status_head(session), "output": "\n".join(selected),
             "total_lines": total_lines, "showing": f"{len(selected)} lines"}
         if exited and observed_completion_output and not finalizing:
-            self._completion_consumed.add(session_id)
+            self._completion_consumed.add(session.id)
         return result
 
     def wait(self, session_id: str, timeout: int | None = None) -> dict:
@@ -2079,7 +2079,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._reconcile_local_exit(session)  # orphaned-pipe reader guard
             result = None
             if session.exited and not self._reader_finalizing(session):
-                self._completion_consumed.add(session_id)
+                self._completion_consumed.add(session.id)
                 result = self._exit_snapshot(session, "exited")
             elif _is_interrupted():
                 result = {
@@ -2155,10 +2155,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # Only suppress the autonomous turn after its output is present in
             # the explicit kill result, matching wait/log consumption.
             if consume_output and not finalizing:
-                self._completion_consumed.add(session_id)
+                self._completion_consumed.add(session.id)
             return result
         try:
-            early = self._signal_kill(session, session_id, consume_output)
+            early = self._signal_kill(session, consume_output)
             if early is not None:
                 return early
             # Additive to the PID kill: stopping the scope reaps double-forked
@@ -2204,7 +2204,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             with session._lock:
                 output = _completion_output(session)
                 if consume_output:
-                    self._completion_consumed.add(session_id)
+                    self._completion_consumed.add(session.id)
                 session.exited = True
                 session.exit_code = -15  # SIGTERM
                 session.completion_reason = "killed"
@@ -2232,7 +2232,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session._scope_stop_pending = not stopped
         return stopped
 
-    def _signal_kill(self, session: ProcessSession, session_id: str, consume_output: bool) -> Optional[dict]:
+    def _signal_kill(self, session: ProcessSession, consume_output: bool) -> Optional[dict]:
         """Deliver the kill via PTY, local Popen tree, sandbox exec or recovered host
         PID. Returns a final result dict when the kill cannot proceed (recycled/dead
         recovered PID, or no runtime handle), else None."""
@@ -2260,7 +2260,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 with session._lock:
                     output = _completion_output(session)
                 if consume_output:
-                    self._completion_consumed.add(session_id)
+                    self._completion_consumed.add(session.id)
                 # No waitable handle, so this is not a collected exit. Close the
                 # entry without queueing a completion, and do not signal a PID
                 # whose start time does not match.

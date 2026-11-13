@@ -163,8 +163,10 @@ _PROPERTIES: dict[str, Any] = {
             "For input actions (click, type, key, drag, scroll). `background` (DEFAULT) delivers "
             "without raising the window or stealing focus. `foreground` briefly fronts the window "
             "then restores focus — a visible change needing its own approval; use it only when a "
-            "result's verdict tells you to escalate there. Each result's `verdict` carries the "
-            "next step; follow it rather than guessing."
+            "result's verdict tells you to escalate there, or to re-issue the same action after a "
+            "fresh capture shows a background `coordinate` input had no effect (a no-op `element` "
+            "input climbs to `coordinate` first). Each result's `verdict` carries the next step; "
+            "follow it rather than guessing."
         ),
     },
     "bring_to_front": {

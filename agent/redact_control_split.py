@@ -12,11 +12,17 @@ from bisect import bisect_left
 # ``ghp_abc\n123``) and escape the contiguous prefix regexes.
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202f\u2060\ufeff]")
 
-# A complete CSI sequence (7-bit ``ESC [`` or 8-bit ``\x9b``), as in tools/ansi_strip.py. Deleting
-# only the ESC byte leaves ``[32m`` glued to the token head and the ``m`` defeats the prefix
-# lookbehind, so the whole sequence must go (#81012). Matched only AT an introducer: a search from
-# an orphan ESC would jump to a later sequence and treat the live text between as noise.
-_CSI_SEQ_RE = re.compile(r"(?:\x1b\[|\x9b)[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]")
+# A complete escape sequence, in the tools/ansi_strip.py shapes: 7-/8-bit CSI, nF (``ESC ( B`` from
+# ``tput sgr0``), SS2/SS3 + one char (``ESC O A``), and the cursor escapes ``ESC 7/8/=/>/M``.
+# Deleting only the ESC byte leaves ``[32m`` / ``(B`` glued to the token head and its last letter
+# defeats the prefix lookbehind, so the whole sequence must go (#81012). Matched only AT an
+# introducer: a search from an orphan ESC would jump to a later sequence and treat the live text
+# between as noise. Terminated strings (OSC/DCS) are not matched: an unterminated one would make
+# every ESC scan to the end of the text.
+_CSI_SEQ_RE = re.compile(
+    r"(?:\x1b\[|\x9b)[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    r"|\x1b(?:[\x20-\x2f]+[\x30-\x7e]|[NO][^\x00-\x1f\x7f]|[78=>M])"
+)
 
 # Union of every _PREFIX_PATTERNS body class: a shadow match may only span token-body chars or
 # stripped noise. ``=`` is excluded so a KEY=value separator never lets a match span unrelated text.

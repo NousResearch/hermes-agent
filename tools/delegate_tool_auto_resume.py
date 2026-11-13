@@ -420,8 +420,11 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
     """One pass over the bound profile's records; returns the subagent ids it resumed. ``start(record, unit_row,
     message)`` performs the continue and returns an error string, or None once the child was dispatched."""
     from tools.delegate_tool_registry import is_spawn_paused
-    if not enabled() or capacity <= 0 or is_spawn_paused():  # paused: no claim, no stand-in parent built
+    if not enabled():
         return []
+    # A full pool or a spawn pause holds only new starts (no claim, no stand-in parent built): give-ups, notes and
+    # supersessions still settle, so a deadline reports on time.
+    starts = 0 if is_spawn_paused() else max(capacity, 0)
     now = now or time.time()
     resumed, endpoints = [], set()
     for record in _candidates(now):
@@ -439,7 +442,7 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
             logger.info("Subagent %s will not resume automatically: %s", sid, payload)
             continue
         endpoint = json.dumps(record.get("endpoint"))
-        if kind != "run" or endpoint in endpoints or len(resumed) >= capacity:
+        if kind != "run" or endpoint in endpoints or len(resumed) >= starts:
             continue  # one resume per endpoint per tick: children sharing one reset are staggered
         endpoints.add(endpoint)
         if _resume(record, payload, start) == "resumed":
@@ -447,22 +450,17 @@ def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[fl
     return resumed
 
 
-def _give_up(record: dict[str, Any], reason: str) -> bool:
-    """A promised record will not be resumed: mark it (once) and deliver ONE failed completion to the parent, on the
-    route of the unit that reported its last stop, with its last summary and transcript tail."""
-    sid = record["subagent_id"]
-    claimed = _write(lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_gave_up', ?, '$.auto_off', ?, "
-        "'$.auto_note', ?), updated_at=? WHERE subagent_id=? AND state='resumable' "
-        "AND json_extract(record_json, '$.auto_gave_up') IS NULL", (reason, reason, reason, time.time(), sid)).rowcount)
-    if claimed != 1:
-        return False
-    row = _unit_row(record.get("unit_id"))
-    if row is None:  # pruning keeps a waiting child's row (KEEP_WAITING_UNITS_SQL): only a nested/joined child
-        logger.info("Subagent %s gave up on automatic resume (%s) but has no completion route", sid, reason)
-        return False
-    from tools.async_delegation import _ROUTING_KEYS, _push_completion_event
+def gave_up_delegation_id(unit_id: Any, sid: str) -> str:
+    """The give-up failure's own ledger row: one per child, so siblings of one unit each report (and ack) once."""
+    return f"{unit_id}:auto:{sid}"
+
+
+def _gave_up_completion(record: dict[str, Any], reason: str, row: dict[str, Any]) -> tuple[dict, dict]:
+    """``(event, result)`` of the ONE failed completion, on the route of the unit that reported the last stop, with
+    the child's last summary and transcript tail."""
+    from tools.async_delegation import _ROUTING_KEYS, completion_event
     from tools.async_delegation_recovery_hints import transcript_tails
+    sid = record["subagent_id"]
     task = json.loads(row.get("task_json") or "{}")
     prior = json.loads(row.get("result_json") or "{}") or {}
     last = next((r for r in (prior.get("results") or [prior]) if r.get("subagent_id") == sid), {})
@@ -472,15 +470,65 @@ def _give_up(record: dict[str, Any], reason: str) -> bool:
     entry = {"task_index": index, "subagent_id": sid, "status": "failed", "summary": last.get("summary"),
              "error": f"automatic resume {reason}", "auto_gave_up": reason, "failure_reason": record.get("failure_reason"),
              **({"transcript_tail": tail} if tail else {})}
-    unit = {"delegation_id": record["unit_id"], "session_key": row.get("origin_session") or "",
+    unit = {"delegation_id": gave_up_delegation_id(record["unit_id"], sid), "session_key": row.get("origin_session") or "",
             "origin_ui_session_id": row.get("origin_ui_session_id") or "", "parent_session_id": row["parent_session_id"],
             "origin_session_id": row.get("origin_session_id") or "", "is_batch": True,
             **{k: task.get(k) for k in ("goal", "goals", "context", "toolsets", "role", "model")},
             "dispatched_at": row.get("dispatched_at"), "completed_at": time.time(),
             **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
-    _push_completion_event(unit, {"results": [entry], "error": None}, "failed")
+    evt, result, _silent = completion_event(unit, {"results": [entry], "error": None}, "failed")
+    return evt, result
+
+
+def _give_up(record: dict[str, Any], reason: str) -> bool:
+    """A promised record will not be resumed: ONE write transaction marks it and records its one failed completion
+    as its own pending ledger row (:func:`gave_up_delegation_id`), so a crash on either side of the commit leaves
+    the report replayable (restart replay, orphan sweep) and never doubled; then the in-memory copy is queued."""
+    from tools.async_delegation import redact_child_result, redact_completion_event
+    from tools.delegate_tool_resumable import _begin_immediate
+    sid = record["subagent_id"]
+    cols = ("origin_session", "origin_ui_session_id", "parent_session_id", "origin_session_id", "task_json",
+            "result_json", "dispatched_at")
+
+    def do(conn):
+        _begin_immediate(conn)
+        if conn.execute(
+                "UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_gave_up', ?, '$.auto_off', ?, "
+                "'$.auto_note', ?), updated_at=? WHERE subagent_id=? AND state='resumable' "
+                "AND json_extract(record_json, '$.auto_gave_up') IS NULL",
+                (reason, reason, reason, time.time(), sid)).rowcount != 1:
+            return None
+        got = conn.execute(f"SELECT {', '.join(cols)} FROM async_delegations WHERE delegation_id=?",
+                           (str(record.get("unit_id")),)).fetchone() if record.get("unit_id") else None
+        if got is None:  # pruning keeps a waiting child's row (KEEP_WAITING_UNITS_SQL): only a nested/joined child
+            return False
+        evt, result = _gave_up_completion(record, reason, dict(zip(cols, got)))
+        _insert_completion(conn, redact_completion_event(evt), redact_child_result(result))
+        return evt
+    evt = _write(do)
+    if evt is False:
+        logger.info("Subagent %s gave up on automatic resume (%s) but has no completion route", sid, reason)
+    if not evt:
+        return False
+    from tools.process_registry import process_registry
+    process_registry.completion_queue.put(evt)
     logger.info("Subagent %s: automatic resume %s; delivered one failure to its parent", sid, reason)
     return True
+
+
+def _insert_completion(conn, evt: dict[str, Any], result: dict[str, Any]) -> None:
+    from gateway.status import get_process_start_time
+    now = time.time()
+    task = {k: evt.get(k) for k in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")}
+    conn.execute(
+        "INSERT OR IGNORE INTO async_delegations (delegation_id, origin_session, origin_ui_session_id, "
+        "parent_session_id, state, dispatched_at, completed_at, updated_at, event_json, result_json, delivery_state, "
+        "delivery_attempts, owner_pid, owner_started_at, task_json, origin_session_id) "
+        "VALUES (?, ?, ?, ?, 'failed', ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)",
+        (evt["delegation_id"], evt.get("session_key") or "", evt.get("origin_ui_session_id") or "",
+         evt.get("parent_session_id"), evt.get("dispatched_at") or now, evt.get("completed_at") or now, now,
+         json.dumps(evt), json.dumps(result), os.getpid(), get_process_start_time(os.getpid()), json.dumps(task),
+         evt.get("origin_session_id") or ""))
 
 
 def waiting_entries(parent_agent: Any) -> list[dict[str, Any]]:

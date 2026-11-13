@@ -5,17 +5,18 @@ import time
 from unittest.mock import patch
 
 from tests.tools.test_delegate_auto_resume import _AlwaysLimited, _enable, _repo, _scheduler
-from tests.tools.test_delegate_continue import _parent
+from tests.tools.test_delegate_continue import _parent, _ScriptedModel
 from tests.tools.test_delegate_resumable import _db_rows
 from tests.waiting import wait_until
 from tools.process_registry import process_registry
 
 
 def _events(delegation_id):
+    """The queued completions of unit *delegation_id*: its own and each child's give-up failure (own row)."""
     got = []
     while not process_registry.completion_queue.empty():
         evt = process_registry.completion_queue.get_nowait()
-        if evt.get("type") == "async_delegation" and evt.get("delegation_id") == delegation_id:
+        if evt.get("type") == "async_delegation" and str(evt.get("delegation_id") or "").split(":auto:")[0] == delegation_id:
             got.append(evt)
     return got
 
@@ -90,7 +91,7 @@ def test_a_waiting_child_is_not_listed_as_failed_until_it_gives_up(tmp_path):
     _deadline(1)
     tick(_scheduler(parent, []), capacity=3, now=time.time() + 120)
     failed = failed_delegations_for_session(parent_session_id="parent-sess")
-    assert [(f["delegation_id"], f["goal"]) for f in failed] == [(unit, "write the parser")], failed
+    assert [(f["delegation_id"], f["goal"]) for f in failed] == [(f"{unit}:auto:{_sid}", "write the parser")], failed
 
 
 def test_a_crash_during_the_last_attempt_reports_the_give_up_once_not_outcome_unknown(tmp_path):
@@ -144,3 +145,91 @@ def test_the_duplicate_guard_is_off_without_auto_resume(tmp_path):
     with patch("run_agent.AIAgent", side_effect=_ScriptedModel()):
         out = json.loads(delegate_task(goal="write the parser", background=True, parent_agent=parent))
     assert out.get("status") == "dispatched", out
+
+
+# ── delivery: each child reports once, on its own row, whatever the pool or a crash does ──────────────────────────
+def _deliver_all(events):
+    from tools.async_delegation import claim_event_delivery, complete_completion_delivery
+    delivered = []
+    for event in events:
+        token = claim_event_delivery(event, "test")
+        if token:
+            delivered += [r["subagent_id"] for r in event["results"] if r.get("status") != "waiting_to_resume"]
+            assert complete_completion_delivery(event["delegation_id"], token)
+    return delivered
+
+
+class _LimitedWhenSlow(_ScriptedModel):
+    """Only a child whose task says "slow" hits the limit at once (reset already passed); the other completes."""
+
+    def __call__(self, **kw):
+        child = super().__call__(**kw)
+        ok = child.run_conversation.side_effect
+
+        def run_conversation(user_message, conversation_history=None, **rest):
+            result = ok(user_message, conversation_history=conversation_history, **rest)
+            if "slow" not in user_message:
+                # Finishes only after its limited sibling was recorded, so that one's early-notice check runs while
+                # this child is still running (dispatch records a finished child right before that check).
+                from tools.async_delegation import _records, _records_lock
+
+                def sibling_recorded():
+                    with _records_lock:
+                        return any(r.get("_finished_children") for r in _records.values())
+                wait_until(sibling_recorded, what="the limited sibling to be recorded")
+                return result
+            return {**result, "completed": False, "failed": True, "error": "limit", "failure_reason": "rate_limit",
+                    "failure_resets_at": time.time() - 1}
+        child.run_conversation.side_effect = run_conversation
+        return child
+
+
+def test_a_mixed_batch_reports_each_child_once_and_no_early_failure_for_the_waiting_one(tmp_path):
+    """One child completes, one is limit-stopped and promised a resume: no early per-task failure notice for the
+    waiting one; the batch's own completion carries the finished child, and the give-up its own row and ack."""
+    from tools.delegate_tool import delegate_task
+    from tools.delegate_tool_auto_resume import tick
+    _enable(independent_completions=False, worktree_isolation=False, max_concurrent_children=3)
+    parent = _parent()
+    with patch("run_agent.AIAgent", side_effect=_LimitedWhenSlow()):
+        out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}, {"goal": "slow: write the tests"}],
+                                       background=True, parent_agent=parent))
+        wait_until(lambda: (_ledger(parent, out["delegation_id"]) or ("running",))[0] != "running", what="the unit")
+    first = _events(out["delegation_id"])
+    assert [e.get("task_failure_notice") for e in first] == [None], first  # the batch result only, no early notice
+    _deadline(1)
+    for _ in range(3):
+        tick(lambda *args: None, capacity=3, now=time.time() + 120)
+    later = _events(out["delegation_id"])
+    assert len(later) == 1 and later[0]["results"][0]["auto_gave_up"], later
+    assert sorted(_deliver_all(first + later)) == sorted(out["subagent_ids"])
+
+
+def test_a_full_pool_still_settles_a_deadline(tmp_path):
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    _deadline(1)
+    tick(lambda *args: None, capacity=0, now=time.time() + 120)
+    events = _events(unit)
+    assert len(events) == 1 and events[0]["results"][0]["subagent_id"] == sid, events
+
+
+def test_a_give_up_interrupted_before_its_commit_reports_once_on_a_later_tick(tmp_path):
+    """The gave-up mark and the replayable failure commit together: a failure between them loses neither, and the
+    retry neither repeats nor drops the one report (its row stays pending for restart replay until acked)."""
+    import contextlib
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent = _parent()
+    sid, unit = _silent_stop(tmp_path, parent)
+    _deadline(1)
+    with patch("tools.async_delegation_recovery_hints.transcript_tails", side_effect=RuntimeError("disk full")), \
+            contextlib.suppress(RuntimeError):
+        tick(lambda *args: None, capacity=3, now=time.time() + 120)
+    assert _events(unit) == []
+    for _ in range(3):
+        tick(lambda *args: None, capacity=3, now=time.time() + 120)
+    assert len(_events(unit)) == 1
+    assert _ledger(parent, f"{unit}:auto:{sid}") == ("failed", "pending")

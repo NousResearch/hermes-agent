@@ -343,13 +343,17 @@ function useDraftProfile() {
   // Every adopted bot keeps its own generation: a later bot never cuts off an
   // earlier one's setup.
   const keptSetupGensRef = useRef(new Set<number>())
+  // Set by unmount. A flag, not a counter bump: StrictMode's rehearsal
+  // unmount must leave the remounted dialog's captured generations live.
+  const closedRef = useRef(false)
 
   const retireSetup = () => {
     setupGenRef.current += 1
     setSetupGen(setupGenRef.current)
   }
 
-  const setupRetired = (gen: number) => () => setupGenRef.current !== gen && !keptSetupGensRef.current.has(gen)
+  const setupRetired = (gen: number) => () =>
+    (setupGenRef.current !== gen || closedRef.current) && !keptSetupGensRef.current.has(gen)
 
   const forget = () => {
     genRef.current += 1
@@ -391,16 +395,16 @@ function useDraftProfile() {
     retireSetup()
   }
 
-  useEffect(
-    () => () => {
-      genRef.current += 1
-      sessionRef.current += 1
+  // Unmounting ends the draft, its warnings and any setup it did not adopt.
+  // eslint-disable-next-line no-restricted-syntax -- mount flag for the draft lifetime, not an atom mirror
+  useEffect(() => {
+    closedRef.current = false
+
+    return () => {
+      closedRef.current = true
       warningRef.current = null
-      // Closing without adopting abandons the draft's pending setup too.
-      setupGenRef.current += 1
-    },
-    []
-  )
+    }
+  }, [])
 
   // A rename drops pending setup flows but keeps the draft and its completed
   // setup: both go only when the draft is replaced, so renaming back finds
@@ -439,7 +443,7 @@ function useDraftProfile() {
     const generation = genRef.current
 
     const lease: DraftLease = {
-      live: () => generation === genRef.current,
+      live: () => generation === genRef.current && !closedRef.current,
       created: (target, owner) => {
         mintRef.current += 1
         createdRef.current = slug
@@ -475,22 +479,32 @@ function useDraftProfile() {
    *  rename away and back or a tab switch, dropped once the draft is replaced
    *  or the session ends (adopted, closed), even when the button reporting
    *  them has unmounted. A button rendered before its draft existed binds to
-   *  the draft its first result comes from. */
-  const setupRecorder = (slug: string) => {
+   *  the draft its own `ensure` materialized, never one minted later. */
+  const setupRecorder = (slug: string, ensure: () => Promise<null | string>) => {
     const owner = session
     let mint = createdRef.current === slug ? mintRef.current : null
 
-    return (name: string, patch: Partial<CapabilityCatalog['mcp'][number]>) => {
-      if (sessionRef.current !== owner || createdRef.current !== slug || (mint ?? mintRef.current) !== mintRef.current) {
+    const record = (name: string, patch: Partial<CapabilityCatalog['mcp'][number]>) => {
+      if (closedRef.current || sessionRef.current !== owner || createdRef.current !== slug || mint !== mintRef.current) {
         return false
       }
-
-      mint = mintRef.current
 
       setCaps(prev => prev && { ...prev, mcp: prev.mcp.map(x => (x.name === name ? { ...x, ...patch } : x)) })
 
       return true
     }
+
+    const ensureBound = async () => {
+      const created = await ensure()
+
+      if (created === slug && createdRef.current === slug && mint === null) {
+        mint = mintRef.current
+      }
+
+      return created
+    }
+
+    return { ensure: ensureBound, record }
   }
 
   return {
@@ -599,7 +613,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // name clash is fine there, and the remote's own duplicate check rejects
   // real collisions at profiles.create time.
   const taken = slugTaken(roster, slug, createTarget, draft.draftName())
-  const recordSetup = draft.setupRecorder(slug)
+  const setup = draft.setupRecorder(slug, () => ensureAgentCreated())
 
   const reset = () => {
     setName('')
@@ -1253,15 +1267,15 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                               ) : null}
                               {needsSetup ? (
                                 <McpSetupButton
-                                  ensureProfile={ensureAgentCreated}
+                                  ensureProfile={setup.ensure}
                                   // A server this draft already added resumes at its keys.
                                   entry={m.addedInDraft === slug ? { ...m, installed: true } : m}
                                   key={draft.setupGen}
-                                  onAdded={() => recordSetup(m.name, { addedInDraft: slug })}
+                                  onAdded={() => setup.record(m.name, { addedInDraft: slug })}
                                   onDone={() => {
                                     // Setup done: mark installed so the row's
                                     // checkbox un-disables, and enable it.
-                                    if (recordSetup(m.name, { installed: true, installedInDraft: slug, enabled: true })) {
+                                    if (setup.record(m.name, { installed: true, installedInDraft: slug, enabled: true })) {
                                       setDirtyCaps(prev => ({ ...prev, mcp: true }))
                                     }
                                   }}

@@ -8,7 +8,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, StrictMode } from 'react'
 import { afterEach, beforeAll, beforeEach, vi } from 'vitest'
 
 import type { RosterRow } from './types'
@@ -153,17 +153,15 @@ export function createAgentHarness(mocks: CreateAgentMocks) {
     await new Promise(resolve => setTimeout(resolve, 0))
   })
 
-  async function renderDialog(hasCapabilitiesView: boolean, onConfigureModel?: (bot: RosterRow) => void) {
+  /** `strict` renders under StrictMode, like the app root (main.tsx). */
+  async function renderDialog(hasCapabilitiesView: boolean, onConfigureModel?: (bot: RosterRow) => void, strict = false) {
     mocks.hasCapabilitiesView.value = hasCapabilitiesView
     vi.resetModules()
 
     const { CreateAgentDialog } = await import('./create-dialog')
 
-    const view = render(
-      withQueryClient(
-        <CreateAgentDialog onClose={() => undefined} onConfigureModel={onConfigureModel} open roster={roster} />
-      )
-    )
+    const dialog = <CreateAgentDialog onClose={() => undefined} onConfigureModel={onConfigureModel} open roster={roster} />
+    const view = render(withQueryClient(strict ? <StrictMode>{dialog}</StrictMode> : dialog))
 
     fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
     fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))

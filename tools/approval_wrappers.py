@@ -4,7 +4,7 @@ The ``_CMDPOS``-anchored hardline rules see a verb only where the shell would ru
 projections put a verb that IS run back on that anchor:
 
 * ``strip_wrapper_prefixes`` blanks a leading chain of exec wrappers from a fixed set (``nice``,
-  ``timeout 5``, ``command``, ``doas -u x`` ...), parsing each wrapper's own option grammar so an
+  ``timeout 5``, ``command``, ``doas -u x``, a ``busybox`` / ``toybox`` applet selector ...), parsing each wrapper's own option grammar so an
   option operand is never mistaken for the program (``timeout -s KILL 5 reboot``).
 * ``carried_command_variants`` re-scans the LITERAL command string a carrier would run: GNU
   ``env -S`` / ``--split-string`` and the ``-c`` / ``--command`` argument of ``su`` / ``runuser``,
@@ -21,6 +21,8 @@ _WRAPPER_WORDS = frozenset({
     "sudo", "doas", "env", "exec", "nohup", "setsid", "time",
     "command", "builtin", "nice", "ionice", "stdbuf", "timeout", "xargs",
 })
+
+_MULTI_CALL_WORDS = frozenset({"busybox", "toybox"})
 
 _WRAPPER_STR_OPERAND = {
     "sudo": {"-u", "-g", "-h", "-p", "-U", "-D", "-R", "-T",
@@ -97,6 +99,14 @@ def _wrapper_prefix_end(command: str, start: int) -> int:
             continue
         # Quote/escape-spelled wrappers (`n\\ice`, `'nice'`) are still the wrapper.
         base = re.split(r"[\\/]", _deobfuscate_shell_word_for_detection(word))[-1].lower()
+        if base in _MULTI_CALL_WORDS:
+            # `busybox "reboot"`: the applet is argv[1]; peel so it gets command-word dequoting.
+            # An option first (`busybox --help reboot`, `--install`) runs no applet.
+            nws, nwe, nword = _read_shell_word(command, we)
+            if nws == nwe or nword.startswith("-"):
+                return ws if seen_prefix else start
+            seen_prefix, pos = True, we
+            continue
         if base not in _WRAPPER_WORDS:
             return ws if seen_prefix else start
         seen_prefix, pos = True, we

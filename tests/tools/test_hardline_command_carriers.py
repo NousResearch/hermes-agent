@@ -44,6 +44,17 @@ _BLOCKED = [
     "sh -c 'nice \"reboot\"'",
     'ls; "reboot"',
     'ls && sudo "reboot"',
+    # The busybox/toybox applet (argv[1]) is a command word too.
+    'busybox "reboot"',
+    "toybox 'reboot'",
+    '/bin/busybox "reboot"',
+    'nice busybox "reboot"',
+    "su -c 'busybox \"reboot\"'",
+    # Payloads carried behind a peeled wrapper (xargs sh -c) are scanned.
+    "xargs sh -c 'nice reboot'",
+    "xargs -n1 sh -c 'nice reboot'",
+    "xargs sh -c '\"reboot\"'",
+    "xargs su -c 'nice reboot'",
 ]
 
 _ALLOWED = [
@@ -61,6 +72,9 @@ _ALLOWED = [
     'command -v "reboot"',
     'git commit -m "x; reboot"',
     "su -c 'nice \"echo\" reboot'",
+    "busybox --help reboot",
+    "busybox --install",
+    "xargs sh -c 'echo nice reboot'",
 ]
 
 

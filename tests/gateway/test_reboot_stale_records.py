@@ -76,3 +76,31 @@ def test_identifiable_holder_is_never_reclaimed_by_its_timestamps(monkeypatch):
     monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: _PREVIOUS_START_TIME)
     monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "hermes gateway run")
     assert not _scoped_lock_record_is_stale(_record(metadata={}), pid)
+
+
+def test_same_boot_naive_utc_stamp_stays_reserved_in_non_utc_timezone(ghost, monkeypatch):
+    """An offset-free persisted UTC stamp must not be interpreted as local time."""
+    import time
+    from datetime import UTC, datetime
+    from gateway import status_boot_epoch
+
+    if not hasattr(time, "tzset"):
+        pytest.skip("requires process-local POSIX timezone override")
+
+    boot = 1_700_000_000
+    monkeypatch.setattr(status_boot_epoch, "current_boot_epoch", lambda: boot)
+    stamp = datetime.fromtimestamp(boot + 600, UTC).replace(tzinfo=None).isoformat()
+    record = _record(start_time=None, updated_at=stamp)
+
+    saved_tz = os.environ.get("TZ")
+    try:
+        monkeypatch.setenv("TZ", "JST-9")
+        time.tzset()
+        assert not _scoped_lock_record_is_stale(record, ghost)
+        assert status._live_pid_from_record(record) == ghost
+    finally:
+        if saved_tz is None:
+            monkeypatch.delenv("TZ", raising=False)
+        else:
+            monkeypatch.setenv("TZ", saved_tz)
+        time.tzset()

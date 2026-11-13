@@ -94,10 +94,13 @@ def _updated_at_seconds(record: Optional[dict[str, Any]]) -> Optional[float]:
     raw = (record or {}).get("updated_at")
     if not isinstance(raw, str):
         return None
-    try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-    except ValueError:
+    from gateway.status import normalize_updated_at
+
+    # Persisted timestamps without an offset are UTC, not the caller's timezone.
+    normalized = normalize_updated_at(raw)
+    if normalized is None:
         return None
+    return datetime.fromisoformat(normalized).timestamp()
 
 
 def record_predates_boot(record: Optional[dict[str, Any]]) -> bool:

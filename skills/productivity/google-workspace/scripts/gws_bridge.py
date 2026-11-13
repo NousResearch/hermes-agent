@@ -2,7 +2,10 @@
 """Bridge between Hermes OAuth token and gws CLI.
 
 Refreshes the token if expired, then executes gws with the valid access token.
+
+Usage: gws_bridge.py [--account EMAIL] <gws args...>
 """
+import argparse
 import json
 import os
 import subprocess
@@ -16,9 +19,15 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+import _google_account
+
+# Named account selected with --account; None means the profile default token.
+ACCOUNT: str | None = None
 
 
 def get_token_path() -> Path:
+    if ACCOUNT:
+        return _google_account.token_path(ACCOUNT)
     return get_hermes_home() / "google_token.json"
 
 
@@ -85,7 +94,8 @@ def get_valid_token() -> str:
     """Return a valid access token, refreshing if needed."""
     token_path = get_token_path()
     if not token_path.exists():
-        print("ERROR: No Google token found. Run setup.py --auth-url first.", file=sys.stderr)
+        account_arg = f"--account {ACCOUNT} " if ACCOUNT else ""
+        print(f"ERROR: No Google token found. Run setup.py {account_arg}--auth-url first.", file=sys.stderr)
         sys.exit(1)
 
     token_data = json.loads(token_path.read_text(encoding="utf-8"))
@@ -100,17 +110,38 @@ def get_valid_token() -> str:
     return token_data["token"]
 
 
+_USAGE = "Usage: gws_bridge.py [--account EMAIL] <gws args...>"
+
+
+def _take_account(args: list[str]) -> list[str]:
+    """Consume a leading ``--account EMAIL`` and return the gws arguments."""
+    global ACCOUNT
+    if args[:1] != ["--account"]:
+        return args
+    if len(args) < 2:
+        print(_USAGE, file=sys.stderr)
+        sys.exit(1)
+    try:
+        ACCOUNT = _google_account.normalize_account(args[1])
+    except argparse.ArgumentTypeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    return args[2:]
+
+
 def main():
     """Refresh token if needed, then exec gws with remaining args."""
-    if len(sys.argv) < 2:
-        print("Usage: gws_bridge.py <gws args...>", file=sys.stderr)
+    args = _take_account(sys.argv[1:])
+    if not args:
+        print(_USAGE, file=sys.stderr)
         sys.exit(1)
 
     access_token = get_valid_token()
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_TOKEN"] = access_token
 
-    result = subprocess.run(["gws"] + sys.argv[1:], env=env, check=False)
+    # health: allow HX006 -- interactive passthrough to gws; runs as long as the user's command needs
+    result = subprocess.run(["gws"] + args, env=env, check=False)
     sys.exit(result.returncode)
 
 

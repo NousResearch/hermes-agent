@@ -7,6 +7,7 @@ endpoint reported a started action.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -77,7 +78,7 @@ def test_only_system_scope_lifecycle_verbs_are_spawned_under_sudo(
         user_unit.write_text("[Service]\n", encoding="utf-8")
     monkeypatch.setattr("hermes_cli.web_server_profiles._resolve_profile_dir", lambda name: tmp_path / name)
     argv = _spawn(tmp_path, subcommand, sudo_ok=True)
-    plain = runtime_command(tmp_path, subcommand)
+    plain = runtime_command(tmp_path, subcommand, **({"home": os.environ["HERMES_HOME"]} if elevated else {}))
     assert argv == (["sudo", "-n", *plain] if elevated else plain)
 
 
@@ -92,6 +93,33 @@ def test_targeted_nopasswd_sudoers_still_elevates(unprivileged, system_scope_ins
     # inconclusive; the exact argv is then checked non-destructively (``sudo -n -l -- <argv>``).
     probes: list = []
     argv = _spawn(tmp_path, ["gateway", "restart"], sudo_ok=True, targeted_only=True, probes=probes)
-    plain = runtime_command(tmp_path, ["gateway", "restart"])
+    plain = runtime_command(tmp_path, ["gateway", "restart"], home=os.environ["HERMES_HOME"])
     assert argv == ["sudo", "-n", *plain]
     assert probes == [["sudo", "-n", "true"], ["sudo", "-n", "-l", "--", *plain]]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.spawns_gateway_lookalike
+def test_elevated_child_pins_dependency_home_before_bootstrap(
+    unprivileged, system_scope_install, monkeypatch, tmp_path
+):
+    """sudo resets HOME/HERMES_HOME before bootstrap selects the dependency environment."""
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(data))
+    (tmp_path / "hermes_bootstrap.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "assert Path(os.environ['HERMES_HOME']).joinpath('dependency-marker').is_file()\n"
+    )
+    (data / "dependency-marker").touch()
+    package = tmp_path / "hermes_cli"
+    package.mkdir()
+    (package / "__init__.py").touch()
+    (package / "main.py").write_text("print('dependency home selected')\n")
+    argv = _spawn(tmp_path, ["gateway", "restart"], sudo_ok=True)
+    assert argv[:2] == ["sudo", "-n"]
+    env = {key: value for key, value in os.environ.items() if not key.startswith("HERMES_")}
+    env["HOME"] = str(tmp_path / "root")
+    child = subprocess.run(argv[2:], env=env, capture_output=True, text=True, timeout=10, check=False)
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip() == "dependency home selected"

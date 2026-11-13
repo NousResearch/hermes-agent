@@ -342,7 +342,11 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
 
     payload["behind"] = behind
     if behind is None:
-        payload["message"] = "Couldn't reach the update source — try again later."
+        # null means the check could not measure: offline, a rate limit, an unreadable
+        # revision, or a branch that is not published. Name the cause the check itself
+        # reported, so the card does not claim the update source is unreachable when it
+        # was reached and refused. The generic line is only the fallback.
+        payload["message"] = status.get("message") or "Couldn't reach the update source — try again later."
     elif behind == 0 and status.get("held"):
         version = status.get("sourceVersion")
         payload.update(held=status["held"], source_version=version,

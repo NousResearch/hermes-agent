@@ -126,16 +126,37 @@ def test_credential_pool_still_prefers_dotenv_for_non_op_values(monkeypatch):
     assert token == "dotenv-value"
 
 
-def test_credential_pool_falls_back_to_env_when_dotenv_is_only_op_ref(monkeypatch):
-    """An unresolved op:// in .env with no resolved env value yields the raw ref.
+def test_credential_pool_never_seeds_an_unresolved_op_ref(monkeypatch):
+    """An op:// line with nothing resolved behind it is NOT a credential.
 
-    This is the pre-resolution / misconfigured edge: there is nothing better
-    to return, so behaviour is unchanged (the raw reference is surfaced rather
-    than silently dropping the credential).
+    Pre-resolution / misconfigured edge (a routed profile whose source could not
+    authenticate): the old behaviour surfaced the raw reference, which seeded a pool
+    row whose ``secret_fingerprint`` is the reference's hash — the provider then got a
+    URL as its API key and answered 401, and the bogus row stuck to auth.json. Drop it.
     """
-    token = _seed_openrouter_token(
-        monkeypatch,
-        dotenv_value="op://Vault/Item/field",
-        environ_value=None,
+    monkeypatch.setattr(
+        credential_pool, "load_env", lambda: {"OPENROUTER_API_KEY": "op://Vault/Item/field"}
     )
-    assert token == "op://Vault/Item/field"
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("hermes_cli.auth.is_source_suppressed", lambda _p, _s: False)
+
+    entries: list = []
+    changed, _sources = credential_pool._seed_from_env("openrouter", entries)
+    assert not changed and not entries
+
+
+def test_prefer_dotenv_config_getter_drops_an_unresolved_op_ref(monkeypatch):
+    """``hermes_cli.config.get_env_value_prefer_dotenv`` refuses the reference too.
+
+    Same rule on the provider-auth path (``_resolve_api_key_provider_secret``): a raw
+    ``op://`` line whose scope value is the reference itself must resolve to empty
+    rather than to the URL.
+    """
+    from hermes_cli import config as config_module
+
+    monkeypatch.setattr(config_module, "load_env", lambda: {"COMMANDCODE_API_KEY": "op://Vault/Item/field"})
+    monkeypatch.setattr(config_module, "_scoped_environ_get", lambda _k: "op://Vault/Item/field")
+    assert config_module.get_env_value_prefer_dotenv("COMMANDCODE_API_KEY") == ""
+
+    monkeypatch.setattr(config_module, "_scoped_environ_get", lambda _k: "resolved-value")
+    assert config_module.get_env_value_prefer_dotenv("COMMANDCODE_API_KEY") == "resolved-value"

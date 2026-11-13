@@ -29,6 +29,7 @@ from hermes_cli.kanban_output import (
     _task_to_dict,
 )
 from hermes_cli.kanban_boards import _dispatch_boards
+from hermes_cli.kanban_model import resolve_model_override
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
@@ -360,6 +361,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    # Expand a palier (``--model std``) before anything is stored: see ``kanban_model``.
+    try:
+        model_override, provider_override = resolve_model_override(
+            getattr(args, "model_override", None), getattr(args, "provider_override", None))
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
@@ -369,8 +376,8 @@ def _cmd_create(args: argparse.Namespace) -> int:
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries, model_override=getattr(args, "model_override", None),
-            provider_override=getattr(args, "provider_override", None),
+            max_retries=max_retries, model_override=model_override,
+            provider_override=provider_override,
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
@@ -584,6 +591,7 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
         model = None
     provider = getattr(args, "provider", None)
     try:
+        model, provider = resolve_model_override(model, provider)
         with kbc.connect_closing() as conn:
             ok = kb.set_model_override(conn, args.task_id, model, provider=provider)
     except (ValueError, RuntimeError) as exc:

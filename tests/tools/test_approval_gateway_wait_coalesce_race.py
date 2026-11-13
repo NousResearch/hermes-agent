@@ -152,13 +152,13 @@ def test_identical_requests_racing_to_lead_send_one_prompt(monkeypatch):
     assert settled.wait(10)
     prompts = len(notified)
     queued = len(mod._gateway_queues.get(SESSION_KEY, []))
-    # One /approve answers the only prompt (and, on failure, every duplicate so the threads exit).
-    mod.resolve_gateway_approval(SESSION_KEY, "session", resolve_all=True)
+    # A denial is safe to share: it narrows, never widens. One /deny answers the only prompt.
+    mod.resolve_gateway_approval(SESSION_KEY, "deny", resolve_all=True)
     for thread in threads:
         thread.join(10)
     assert (prompts, queued) == (1, 1)
     assert sorted((r["resolved"], r["choice"], bool(r.get("coalesced"))) for r in results) == [
-        (True, "session", False), (True, "session", True)]
+        (True, "deny", False), (True, "deny", True)]
 
 
 def test_followers_released_by_once_share_one_fresh_prompt(monkeypatch):
@@ -203,3 +203,51 @@ def test_followers_released_by_once_share_one_fresh_prompt(monkeypatch):
             thread.join(0.05)
     assert (prompts, queued) == (2, 1)
     assert [r["choice"] for r in results] == ["once"] * 3
+
+
+def test_follower_does_not_inherit_a_broader_grant(monkeypatch):
+    """A ``session``/``always`` decision on the leader must not authorize a follower.
+
+    Coalescing is keyed by the rendered command and pattern-key set, not by
+    request identity: two different operations can render identically. A
+    single-use grant covers only the leader's execution, and a broader grant
+    must never widen to a request the user never saw — the follower has to be
+    asked on its own.
+    """
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+
+    for grant in ("once", "session", "always"):
+        leader = wait_mod._ApprovalEntry(dict(APPROVAL))
+        leader.data["timeout_s"] = APPROVAL_TIMEOUT
+        leader.result = grant
+        leader.event.set()
+
+        payload = {"command": APPROVAL["command"], "description": APPROVAL["description"],
+                   "pattern_key": APPROVAL["pattern_key"], "pattern_keys": APPROVAL["pattern_keys"],
+                   "session_key": SESSION_KEY, "surface": "gateway"}
+
+        assert wait_mod._await_coalesced_leader(SESSION_KEY, leader, payload) is None, (
+            f"follower adopted a {grant!r} grant it never saw"
+        )
+
+
+def test_follower_still_inherits_a_denial(monkeypatch):
+    """A denial is safe to share: it narrows, never widens."""
+    _clear()
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+
+    leader = wait_mod._ApprovalEntry(dict(APPROVAL))
+    leader.data["timeout_s"] = APPROVAL_TIMEOUT
+    leader.result = "deny"
+    leader.event.set()
+
+    payload = {"command": APPROVAL["command"], "description": APPROVAL["description"],
+               "pattern_key": APPROVAL["pattern_key"], "pattern_keys": APPROVAL["pattern_keys"],
+               "session_key": SESSION_KEY, "surface": "gateway"}
+
+    decision = wait_mod._await_coalesced_leader(SESSION_KEY, leader, payload)
+    assert decision is not None
+    assert decision["resolved"] is True
+    assert decision["choice"] == "deny"
+    assert decision["coalesced"] is True

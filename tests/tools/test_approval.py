@@ -1832,6 +1832,12 @@ class TestConcurrentApprovalCoalescing:
         return results, threads
 
     def test_identical_concurrent_approvals_send_one_prompt(self, monkeypatch):
+        """One prompt, one denial: a denial is safe to share because it narrows.
+
+        A broad grant (``session``/``always``) is deliberately NOT shared — see
+        ``test_coalesced_follower_does_not_inherit_a_broader_grant`` — so this
+        case uses a denial to exercise coalescing itself.
+        """
         from tools import approval as mod
         monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 30)
 
@@ -1843,11 +1849,11 @@ class TestConcurrentApprovalCoalescing:
         assert len(notified) == 1
 
         # One answer resolves everyone.
-        assert mod.resolve_gateway_approval(self.SESSION_KEY, "session") == 1
+        assert mod.resolve_gateway_approval(self.SESSION_KEY, "deny") == 1
         for t in threads:
             t.join(timeout=5)
         for r in results:
-            assert r is not None and r["resolved"] and r["choice"] == "session"
+            assert r is not None and r["resolved"] and r["choice"] == "deny"
         # Followers are marked as coalesced adoptions.
         assert sum(1 for r in results if r.get("coalesced")) == 2
 

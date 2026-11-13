@@ -105,17 +105,41 @@ class TestMetadata:
 
 class TestAvailability:
     def test_unavailable_without_codex_token(self, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: (None, None))
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda model=None: (None, None))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
     def test_available_with_codex_token(self, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: ("tok", "https://chatgpt.com/backend-api/codex"))
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda model=None: ("tok", "https://chatgpt.com/backend-api/codex"))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
 
     def test_openai_api_key_alone_is_not_enough(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: (None, None))
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda model=None: (None, None))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
+
+    def test_availability_scopes_pool_selection_to_the_image_model(self, monkeypatch):
+        """#146385: a chat model's year-long entitlement bench must not hide this provider.
+
+        ``_select_pool_entry``/``select`` skip a key with ANY active model cooldown when the caller
+        passes no model (``model_cooldown_until(entry, None)`` is deliberately conservative), and a
+        Codex entitlement 400 benches the refused chat model for a year (#71970). These images never
+        touch a chat model, so an unscoped read here reports "no credentials" — and drops
+        ``image_generate`` for the whole account — while the same key still serves the images
+        endpoint. Both entry points must scope to the model they will post.
+        """
+        from agent import auxiliary_client
+
+        seen = []
+
+        def _select(provider, model=None):
+            seen.append((provider, model))
+            return False, None
+
+        monkeypatch.setattr(auxiliary_client, "_select_pool_entry", _select)
+        monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: "codex-token")
+
+        assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
+        assert seen == [("openai-codex", codex_plugin.API_MODEL)]
 
 
 # ── Generation ──────────────────────────────────────────────────────────────
@@ -183,6 +207,27 @@ class TestGenerate:
         assert provider.generate("a cat")["success"] is False
         (request,) = codex_backend["requests"]
         assert request.url.host == "images.example.test"
+
+    def test_generate_scopes_pool_selection_to_the_image_model(self, provider, monkeypatch):
+        """``is_available`` is not the only reader — the generate path resolves the credential too,
+        so an unscoped read there is the same year-long outage, one call later (#146385)."""
+        from agent import auxiliary_client
+
+        seen = []
+
+        def _select(provider_id, model=None):
+            seen.append(model)
+            return False, None
+
+        monkeypatch.setattr(auxiliary_client, "_select_pool_entry", _select)
+        monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_post_image_request", lambda *args, **kwargs: {
+            "data": [{"b64_json": _b64_png()}], "quality": "medium", "size": "1024x1536"})
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is True
+        assert seen == [codex_plugin.API_MODEL]
 
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
         from agent import auxiliary_client

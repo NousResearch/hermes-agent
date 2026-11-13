@@ -79,7 +79,7 @@ def test_picker_path_uses_provider_aware_context_on_codex(monkeypatch):
         is_global=False,
     )
     with patch(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         return_value=272_000,
     ):
         lines = _run_display(monkeypatch, result)
@@ -114,7 +114,7 @@ def test_picker_path_falls_back_to_model_info_when_resolver_empty(monkeypatch):
         is_global=False,
     )
     with patch(
-        "agent.model_metadata.get_model_context_length",
+        "hermes_agent.agent.model_metadata.get_model_context_length",
         return_value=None,
     ):
         lines = _run_display(monkeypatch, result)
@@ -162,7 +162,7 @@ def test_global_switch_clears_context_pin_owned_by_previous_route(monkeypatch):
     }
     config_path = get_config_path()
     config_path.write_text(yaml.safe_dump(configured), encoding="utf-8")
-    with patch("agent.model_metadata.get_model_context_length", return_value=256_000):
+    with patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=256_000):
         cli_mod.HermesCLI._apply_model_switch_result(cli, result, True)
 
     model = read_user_config_raw(config_path)["model"]

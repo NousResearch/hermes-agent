@@ -130,7 +130,7 @@ def _pending_provider(home: Path, *, say: Callable[[str], None]) -> Optional[str
     """The provider *home* needs from the catalog, or None (nothing to do, or a catalog miss already
     reported through *say*). Read-only."""
     name = configured_provider(home)
-    from agent.memory_provider import is_core_memory_provider
+    from hermes_agent.agent.memory_provider import is_core_memory_provider
     if is_core_memory_provider(name) or provider_present(name, home):
         return None
     if catalog_source(name) is None:

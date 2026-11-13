@@ -18,7 +18,7 @@ class TestGroupAllowlistEnv:
     def test_env_only_group_allowlist_gates_intake_through_the_secret_scope(self, tmp_path, monkeypatch):
         """No config key: the profile-scoped WHATSAPP_GROUP_ALLOWED_USERS seeds the allowlist ``_is_group_allowed``
         reads (multiplex-safe like every other WHATSAPP_* read)."""
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
 
         (tmp_path / ".env").write_text("WHATSAPP_GROUP_ALLOWED_USERS=120363001234567890@g.us\nWHATSAPP_GROUP_POLICY=allowlist\n", encoding="utf-8")
         monkeypatch.delenv("WHATSAPP_GROUP_ALLOWED_USERS", raising=False)

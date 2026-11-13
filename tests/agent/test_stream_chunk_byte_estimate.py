@@ -12,7 +12,7 @@ from openai.types.chat.chat_completion_chunk import (
     ChoiceDelta,
 )
 
-from agent.chat_completion_helpers import _estimate_chunk_bytes
+from hermes_agent.agent.chat_completion_helpers import _estimate_chunk_bytes
 
 
 def _chunk(delta):

@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 from time import monotonic_ns
 from typing import Any, Callable, Iterator
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from agent.portal_tags import get_conversation_context
+from hermes_agent.agent.portal_tags import get_conversation_context
 from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
@@ -87,7 +87,7 @@ def _with_launch_entrypoint(event: dict[str, Any]) -> dict[str, Any]:
     if (event.get("entrypoint") or event.get("parent_task_id") or event.get("parent_session_id")
             or contract.execution_surface(event) != "cli"):
         return event
-    from agent.oneshot_footprint import is_single_query_session
+    from hermes_agent.agent.oneshot_footprint import is_single_query_session
 
     if not is_single_query_session():
         return event
@@ -746,7 +746,7 @@ class _Runtime:
         turn thread one session finishing stalls behind another session's long tool. One worker
         per runtime (= per profile); triggers landing while it runs coalesce into one more pass.
         """
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
 
         with self._flush_lock:
             self._flush_pending = True
@@ -1295,7 +1295,7 @@ class _Runtime:
         with self._send_lock:
             # One in-flight pass per process; the next hook fire picks up what is pending.
             if self._send_thread is None or not self._send_thread.is_alive():
-                from agent.memory_provider import spawn_context_thread
+                from hermes_agent.agent.memory_provider import spawn_context_thread
 
                 # Context copy: the pass re-checks consent (still_consented) in THIS profile's scope.
                 self._send_thread = spawn_context_thread(

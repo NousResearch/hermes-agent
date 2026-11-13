@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.redact import redact_for_egress
+from hermes_agent.agent.redact import redact_for_egress
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from hermes_agent.gateway.stream_consumer_redact import redact_settled

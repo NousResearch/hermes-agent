@@ -70,7 +70,7 @@ def build_browser_env() -> dict:
     profile's child env WITHOUT credentials, the Bot Desktop DISPLAY when its screen is up, a loopback
     NO_PROXY (a macOS system proxy would capture the local CDP dial, #110565), and a short TMPDIR
     (Chrome's SingletonSocket overflows the AF_UNIX path cap under a deep scratch dir)."""
-    from agent.proxy_bypass import add_loopback_no_proxy
+    from hermes_agent.agent.proxy_bypass import add_loopback_no_proxy
     from hermes_constants import socket_safe_tmpdir
     from hermes_agent.tools.bot_desktop.runtime import desktop_env
     from hermes_agent.tools.environments.local import served_profile_child_env

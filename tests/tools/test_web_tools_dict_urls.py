@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from agent import web_search_registry
-from agent.web_search_provider import WebSearchProvider
+from hermes_agent.agent import web_search_registry
+from hermes_agent.agent.web_search_provider import WebSearchProvider
 from hermes_agent.tools import web_tools
 
 

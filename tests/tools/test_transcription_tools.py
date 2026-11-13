@@ -1575,7 +1575,7 @@ class TestTranscribeCredentialReadGuard:
         read guard added to image-gen (587be5b5b) and xAI video-gen
         (104232979)."""
         from hermes_agent.tools.transcription_tools import transcribe_audio
-        from agent.file_safety import get_read_block_error
+        from hermes_agent.agent.file_safety import get_read_block_error
 
         env_file = tmp_path / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-secret\n")

@@ -1,4 +1,4 @@
-"""Tests for agent/empty_response_guard.py (NS-503).
+"""Tests for hermes_agent/agent/empty_response_guard.py (NS-503).
 
 The guard exists to stop the empty-retry loop re-billing large inputs for
 deterministic empties (unsignaled provider refusals with zero output
@@ -16,7 +16,7 @@ Fail-open contract under test:
 from decimal import Decimal
 from types import SimpleNamespace
 
-from agent import empty_response_guard as guard
+from hermes_agent.agent import empty_response_guard as guard
 
 
 def _agent(**overrides):

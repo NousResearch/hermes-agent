@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-from agent.terminal_env_provider import TerminalEnvironmentProvider
+from hermes_agent.agent.terminal_env_provider import TerminalEnvironmentProvider
 from hermes_agent.tools import terminal_tool
 from hermes_agent.tui_gateway import server
 
@@ -74,7 +74,7 @@ class _HostRunner(TerminalEnvironmentProvider):
 
 @pytest.fixture
 def clean_registry():
-    from agent import terminal_env_registry as registry
+    from hermes_agent.agent import terminal_env_registry as registry
 
     registry._reset_for_tests()
     yield registry

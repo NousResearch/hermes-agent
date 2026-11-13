@@ -1,6 +1,6 @@
 """Perplexity web search + page snippets — plugin form.
 
-Subclasses :class:`agent.web_search_provider.WebSearchProvider`. Two
+Subclasses :class:`hermes_agent.agent.web_search_provider.WebSearchProvider`. Two
 capabilities advertised:
 
 - ``supports_search()``  -> True (Perplexity Search API ``POST /search``)
@@ -42,7 +42,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from agent.web_search_provider import WebSearchProvider
+from hermes_agent.agent.web_search_provider import WebSearchProvider
 from hermes_cli.version_info import hermes_user_agent
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def _perplexity_request(endpoint: str, payload: dict[str, Any], gateway=None) ->
     carrying the response body so Perplexity's own error text (invalid key,
     BAD_REQUEST, rate limit) reaches the model verbatim.
     """
-    from agent.web_search_provider import get_provider_env
+    from hermes_agent.agent.web_search_provider import get_provider_env
 
     api_key = get_provider_env("PERPLEXITY_API_KEY")
     headers = _headers()
@@ -187,7 +187,7 @@ class PerplexityWebSearchProvider(WebSearchProvider):
 
     def is_available(self) -> bool:
         """True with a ``PERPLEXITY_API_KEY``, or on the managed route with a likely-usable Nous token."""
-        from agent.web_search_provider import get_provider_env
+        from hermes_agent.agent.web_search_provider import get_provider_env
         from hermes_agent.tools.managed_tool_gateway import peek_nous_access_token
 
         return bool(get_provider_env("PERPLEXITY_API_KEY")) or _managed_gateway(token_reader=peek_nous_access_token) is not None
@@ -211,7 +211,7 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
-            from agent.web_search_provider import get_provider_env
+            from hermes_agent.agent.web_search_provider import get_provider_env
             from hermes_agent.tools.managed_tool_gateway import resolve_free_search_gateway
             from hermes_agent.tools.web_tools import _managed_web_search
 

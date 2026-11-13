@@ -2,8 +2,8 @@
 
 Original diagnosis and fix by Kristian Vastveit (@kristianvast) in PR #6600,
 against the then-inline ``_interruptible_api_call`` /
-``_interruptible_streaming_api_call`` methods in run_agent.py. Those methods
-have since been extracted into ``agent/chat_completion_helpers.py``, so the
+``_interruptible_streaming_api_call`` methods in hermes_agent/run_agent.py. Those methods
+have since been extracted into ``hermes_agent/agent/chat_completion_helpers.py``, so the
 fix is reapplied there and these tests target the extracted functions.
 
 The bug: when ``agent.interrupt()`` fires during an active LLM call, the main
@@ -29,7 +29,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from agent import chat_completion_helpers as cch
+from hermes_agent.agent import chat_completion_helpers as cch
 
 
 

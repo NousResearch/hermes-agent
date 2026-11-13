@@ -69,7 +69,7 @@ Agent 每个目录每轮**最多创建一个检查点**，因此长时间运行�
 ```mermaid
 flowchart LR
   user["User command\n(hermes, gateway)"]
-  agent["AIAgent\n(run_agent.py)"]
+  agent["AIAgent\n(hermes_agent/run_agent.py)"]
   tools["File & terminal tools"]
   cpMgr["CheckpointManager"]
   store["Shared shadow store\n~/.hermes/checkpoints/store/"]

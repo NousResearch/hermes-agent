@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-import agent.secret_scope as ss
+import hermes_agent.agent.secret_scope as ss
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.platforms.base import Platform, SessionSource
 from hermes_agent.gateway.session import SessionEntry, SessionStore

@@ -354,7 +354,7 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     with _hermes_home_scope(profile_dir):
-        from agent.skill_utils import iter_skill_index_files
+        from hermes_agent.agent.skill_utils import iter_skill_index_files
         from hermes_cli.config import load_config
         from hermes_cli.skills_config import get_disabled_skills
         cfg = load_config() or {}
@@ -548,7 +548,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
 
 def _profile_group_selection_context(profile_dir, target_model):
     """The largest measured context among this profile's affected group members."""
-    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, persisted_anchor_tokens
+    from hermes_agent.agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, persisted_anchor_tokens
     from hermes_cli.model_selection_guards import SelectionContext
     from hermes_agent.hermes_state import SessionDB
 

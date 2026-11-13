@@ -28,7 +28,7 @@ import pytest
 
 @pytest.fixture()
 def compressor():
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     return ContextCompressor(model="main-model", quiet_mode=True)
 

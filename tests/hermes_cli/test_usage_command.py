@@ -1,7 +1,7 @@
 """``hermes usage`` — the non-interactive /usage surface (issue #33094).
 
 Drives the real ``hermes`` argparse entrypoint; only the network fetch is replaced with a snapshot
-(``agent.account_usage.fetch_account_usage`` is what ``cmd_usage`` reads at call time).
+(``hermes_agent.agent.account_usage.fetch_account_usage`` is what ``cmd_usage`` reads at call time).
 """
 
 import json
@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone, UTC
 from unittest.mock import patch
 
-from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+from hermes_agent.agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from hermes_cli import main as hermes_main
 
 _SNAPSHOT = AccountUsageSnapshot(
@@ -25,7 +25,7 @@ _SNAPSHOT = AccountUsageSnapshot(
 
 def _run(argv, fetch):
     with patch.object(hermes_main, "_plugin_cli_discovery_needed", return_value=False), \
-         patch("agent.account_usage.fetch_account_usage", fetch), \
+         patch("hermes_agent.agent.account_usage.fetch_account_usage", fetch), \
          patch.object(sys, "argv", ["hermes", *argv]):
         try:
             hermes_main.main()

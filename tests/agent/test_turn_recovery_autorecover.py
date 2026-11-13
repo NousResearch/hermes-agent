@@ -5,10 +5,10 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.error_classifier import classify_api_error
-from agent.turn_api_error import settle_unrecovered_error
-from agent.turn_recovery_autorecover import ladder_wait_seconds
-from agent.turn_retry_state import TurnRetryState
+from hermes_agent.agent.error_classifier import classify_api_error
+from hermes_agent.agent.turn_api_error import settle_unrecovered_error
+from hermes_agent.agent.turn_recovery_autorecover import ladder_wait_seconds
+from hermes_agent.agent.turn_retry_state import TurnRetryState
 
 
 class _Err(Exception):
@@ -73,11 +73,11 @@ class _Agent:
 def _settle(agent, err, retry=None):
     retry = retry or TurnRetryState(primary_recovery_attempted=True)
     classified = classify_api_error(err, provider=agent.provider)
-    with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None), \
-            patch("agent.conversation_loop._arm_fallback_restart", lambda a, m, s, r: s), \
-            patch("agent.turn_recovery.interruptible_backoff_sleep", lambda agent, *a, **k: agent.sleep_outcome), \
-            patch("agent.turn_api_error.max_retries_exhausted_result", lambda *a, **k: {"failed": True}), \
-            patch("agent.turn_api_error.nonretryable_client_error_result", lambda *a, **k: {"failed": True, "nonretryable": True}):
+    with patch("hermes_agent.agent.conversation_loop._credential_refresh_profile", lambda a: None), \
+            patch("hermes_agent.agent.conversation_loop._arm_fallback_restart", lambda a, m, s, r: s), \
+            patch("hermes_agent.agent.turn_recovery.interruptible_backoff_sleep", lambda agent, *a, **k: agent.sleep_outcome), \
+            patch("hermes_agent.agent.turn_api_error.max_retries_exhausted_result", lambda *a, **k: {"failed": True}), \
+            patch("hermes_agent.agent.turn_api_error.nonretryable_client_error_result", lambda *a, **k: {"failed": True, "nonretryable": True}):
         return settle_unrecovered_error(
             agent, api_error=err, classified=classified, _retry=retry, status_code=err.status_code,
             error_msg=str(err).lower(), is_context_length_error=False, is_rate_limited=False,
@@ -127,7 +127,7 @@ def test_ladder_is_bounded_and_yields_to_fallback_and_shuns_nonretryable():
 
 
 def test_ladder_schedule_honours_retry_after_and_platform_stop_hint(monkeypatch):
-    from agent import retry_utils
+    from hermes_agent.agent import retry_utils
     calls = []
 
     def _recording_backoff(attempt, *, base_delay, max_delay, jitter_ratio):

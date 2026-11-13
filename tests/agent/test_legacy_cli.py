@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-import run_agent
+from hermes_agent import run_agent
 
 
 def _run_console_script(monkeypatch, *argv: str):

@@ -287,7 +287,7 @@ def test_every_local_warmer_has_a_registered_cache():
 
 
 def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch, timers):
-    from agent import tts_provider, tts_registry
+    from hermes_agent.agent import tts_provider, tts_registry
 
     calls: list = []
 
@@ -363,7 +363,7 @@ def test_command_hook_thread_resolves_passthrough_under_the_callers_scope(monkey
     """The warm/release hook runs on its own thread; under the multiplexer that thread must carry
     the caller's secret scope or ``resolve_passthrough_value`` fails closed and the hook never
     runs (#120481)."""
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
     from hermes_agent.tools.env_passthrough import resolve_passthrough_value
 
     seen: list = []

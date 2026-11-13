@@ -217,11 +217,11 @@ def _default_verify() -> bool | ssl.SSLContext:
 
     On macOS with Homebrew Python the system OpenSSL cannot find the system trust store, so pin
     certifi's bundle when importable; elsewhere defer to httpx's built-in default. The bundle is
-    resolved through ``agent.ssl_verify``, the one place that re-derives a path an
+    resolved through ``hermes_agent.agent.ssl_verify``, the one place that re-derives a path an
     install-environment rotation deleted: the Nous credential exchange builds its context here, and
     in a long-lived gateway it can be the first TLS client constructed after the rotation.
     """
-    from agent.ssl_verify import certifi_bundle_path, platform_ssl_context
+    from hermes_agent.agent.ssl_verify import certifi_bundle_path, platform_ssl_context
     bundle = certifi_bundle_path()
     if bundle is None:
         # No usable certifi bundle (absent, or deleted by a rotation and not re-derivable):
@@ -371,7 +371,7 @@ def _poll_device_token_generic(
             # Edge/WAF mitigation: back off and keep polling until the device code expires.
             if status in {408, 429} or status >= 500 or (
                     status == 403 and response.headers.get("x-vercel-mitigated")):
-                from agent.retry_utils import parse_retry_after_seconds
+                from hermes_agent.agent.retry_utils import parse_retry_after_seconds
                 unavailable = status
                 retry_after = parse_retry_after_seconds(response.headers)
                 if retry_after is not None:

@@ -949,7 +949,7 @@ def restore_interrupted_pull(project_root: Path | None = None, *, after_failure:
     A torn ``hermes_bootstrap.py``, ``hermes_cli/__init__.py`` or recovery/lock/custody module fails
     before (or inside) the checkout's copy of this code: a minted launcher then runs the copy the
     updater published beside the marker (``RECOVERY_CLOSURE``). Limits, by design: other entry points
-    (``python -m``, the ``hermes-agent`` hook's ``agent/__init__.py``) have no such fallback, and a
+    (``python -m``, the ``hermes-agent`` hook's ``hermes_agent/agent/__init__.py``) have no such fallback, and a
     launcher minted before that fallback existed has none either. A file git also changes that the user deleted, emptied or cut to a prefix of git's version
     looks exactly like git's own half-written file and is restored too, as is a user edit to a
     conflicted path or, on git < 2.38, to a path both sides of a custom-branch merge changed.

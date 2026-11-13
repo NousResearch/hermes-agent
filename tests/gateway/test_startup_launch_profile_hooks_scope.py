@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import logging
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.run_startup import GatewayStartupMixin
 
 
 def _capture_registration(monkeypatch, hooks_cfg):
     seen: dict = {}
-    import agent.outbound_webhooks as ow
-    import agent.shell_hooks as sh
+    import hermes_agent.agent.outbound_webhooks as ow
+    import hermes_agent.agent.shell_hooks as sh
     import hermes_cli.config as cfgmod
 
     def fake_register_outbound(cfg):

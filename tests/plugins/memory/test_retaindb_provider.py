@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from unittest.mock import MagicMock
 
-import agent.file_safety as fs
+import hermes_agent.agent.file_safety as fs
 
 import pytest
 
@@ -158,7 +158,7 @@ def test_initialize_env_overrides_config_yaml(tmp_path, monkeypatch):
 
 def test_initialize_combines_scoped_secret_with_dashboard_config(tmp_path, monkeypatch):
     """Rebase regression: scoped secrets and non-secret config must coexist."""
-    from agent.secret_scope import (
+    from hermes_agent.agent.secret_scope import (
         is_multiplex_active,
         reset_secret_scope,
         set_multiplex_active,

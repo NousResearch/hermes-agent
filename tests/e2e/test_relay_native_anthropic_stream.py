@@ -11,8 +11,8 @@ def test_anthropic_sdk_stream_runs_through_relay_managed_execution(
     anthropic = pytest.importorskip("anthropic")
     httpx = pytest.importorskip("httpx")
     pytest.importorskip("nemo_relay")
-    from agent import relay_runtime
-    from run_agent import AIAgent
+    from hermes_agent.agent import relay_runtime
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     response_body = b"""event: message_start

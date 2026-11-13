@@ -68,7 +68,7 @@ def resolve_repeat_cap() -> int:
             return max(int(raw), 0)
     except (TypeError, ValueError):
         pass
-    from agent.delegation_context import is_delegated_child_process_context
+    from hermes_agent.agent.delegation_context import is_delegated_child_process_context
     return _SUBAGENT_REPEAT_CAP if is_delegated_child_process_context() else 0
 
 

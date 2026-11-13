@@ -1,6 +1,6 @@
 """Plain-language copy for the one-line cron failure notice delivered to a job's chat.
 
-The scheduler classifies the failure text through ``agent.error_classifier.classify_api_error``
+The scheduler classifies the failure text through ``hermes_agent.agent.error_classifier.classify_api_error``
 (one classifier for the whole app, no cron-local regex ladder) and looks the verdict up here.
 Every notice says WHAT happened and WHAT TO DO, and names the exact ``hermes cron`` command plus
 the real output directory — "cron output" alone sent operators hunting.
@@ -30,7 +30,7 @@ def classify_cron_failure_reason(text: str) -> str:
     keys on are rebuilt from the text: a whole-token HTTP code after ``HTTP`` / ``Error code`` /
     ``status`` (a bare ``429`` inside a job id or hash never counts, #83188) and a leading
     ``ReadTimeout:``-style type prefix."""
-    from agent.error_classifier import classify_api_error
+    from hermes_agent.agent.error_classifier import classify_api_error
 
     status = _HTTP_STATUS_IN_TEXT.search(text)
     type_name = _LEADING_EXC_TYPE.match(text)
@@ -42,9 +42,9 @@ def classify_cron_failure_reason(text: str) -> str:
 
 
 # What happened, per reason: the one gloss table shared with subagent notices lives in
-# agent/turn_failure_copy.py so the two never drift; the job is the subject here.
+# hermes_agent/agent/turn_failure_copy.py so the two never drift; the job is the subject here.
 def _provider_failure_cause(reason: str) -> Optional[str]:
-    from agent.turn_failure_copy import failure_cause_gloss
+    from hermes_agent.agent.turn_failure_copy import failure_cause_gloss
 
     return failure_cause_gloss(reason, subject="this job", possessive="the job's")
 
@@ -99,7 +99,7 @@ def provider_failure_notice(
             f"`hermes cron run {job_id}` tries now."
         )
     else:
-        from agent.turn_failure_copy import relogin_command_hint
+        from hermes_agent.agent.turn_failure_copy import relogin_command_hint
 
         action = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION).format(
             job_id=job_id, relogin=relogin_command_hint(provider))

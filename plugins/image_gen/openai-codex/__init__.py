@@ -25,7 +25,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, success_response
+from hermes_agent.agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_b64_image, success_response
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
     StaticImageGenProvider, collect_source_images, error_factory, prompt_required_error,
@@ -65,12 +65,12 @@ def _resolve_model() -> tuple[str, dict[str, Any]]:
 
 
 def _read_codex_credential() -> tuple[Optional[str], Optional[str]]:
-    """``(token, base_url)`` from one resolution (``agent.auxiliary_client`` owns expiry/pool/JWT):
+    """``(token, base_url)`` from one resolution (``hermes_agent.agent.auxiliary_client`` owns expiry/pool/JWT):
     the image request goes to the host the token's credential routes to (pool row /
     ``model.base_url`` / profile override), never a default it does not belong to (#121486).
     ``(None, None)`` without a usable token."""
     try:
-        from agent.auxiliary_client import _resolve_codex_credential_and_base
+        from hermes_agent.agent.auxiliary_client import _resolve_codex_credential_and_base
 
         token, base_url = _resolve_codex_credential_and_base()
         if isinstance(token, str) and token.strip():
@@ -90,7 +90,7 @@ def _httpx_available() -> bool:
 
 
 def _sniff_image_mime(raw: bytes) -> Optional[str]:
-    from agent.image_routing import _sniff_mime_from_bytes
+    from hermes_agent.agent.image_routing import _sniff_mime_from_bytes
 
     mime = _sniff_mime_from_bytes(raw)
     return mime if mime in _ACCEPTED_INPUT_MIME else None
@@ -135,7 +135,7 @@ def _remote_image_to_data_url(value: str) -> str:
 
 
 def _local_image_to_data_url(value: str) -> str:
-    from agent.file_safety import get_read_block_error
+    from hermes_agent.agent.file_safety import get_read_block_error
 
     blocked = get_read_block_error(value)
     if blocked:
@@ -198,7 +198,7 @@ def _post_image_request(
 
     ``base_url`` must come from the same resolution as ``token`` (``_read_codex_credential``)."""
     import httpx
-    from agent.codex_headers import codex_cloudflare_headers
+    from hermes_agent.agent.codex_headers import codex_cloudflare_headers
 
     base_url = base_url.strip().rstrip("/")
     headers = codex_cloudflare_headers(token, base_url=base_url)

@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.redact import clear_vault_redaction_values
-from agent.vault_store import get_vault_store
+from hermes_agent.agent.redact import clear_vault_redaction_values
+from hermes_agent.agent.vault_store import get_vault_store
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.tools import browser_vault_tool
 from hermes_agent.tools.registry import registry
@@ -72,7 +72,7 @@ def _login(password, origin=ORIGIN):
 
 
 def test_preview_fill_writes_through_the_pinned_tab_and_redacts_echoes(home):
-    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+    from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
     from hermes_agent.tools.drive_preview_tool import drive_preview_tool
     from hermes_agent.tools.read_preview_tool import read_preview_tool
 
@@ -95,7 +95,7 @@ def test_preview_fill_writes_through_the_pinned_tab_and_redacts_echoes(home):
 
 @pytest.mark.parametrize("failure", ["wrong_origin", "no_window", "bad_target"])
 def test_preview_refusals_never_resolve_the_secret_or_fall_back(home, monkeypatch, failure):
-    from agent.vault_backends.local import LocalLoginBackend
+    from hermes_agent.agent.vault_backends.local import LocalLoginBackend
 
     meta = _login("synthetic-refusal-secret")
     monkeypatch.setattr(LocalLoginBackend, "resolve_password", _managed_browser_used)
@@ -110,7 +110,7 @@ def test_preview_refusals_never_resolve_the_secret_or_fall_back(home, monkeypatc
 
 
 def test_saved_code_is_origin_bound_on_the_preview(home, monkeypatch):
-    from agent.vault_backends.local import LocalLoginBackend
+    from hermes_agent.agent.vault_backends.local import LocalLoginBackend
 
     meta = _login("synthetic-otp-login")
     monkeypatch.setattr(LocalLoginBackend, "resolve_otp", _managed_browser_used)
@@ -126,8 +126,8 @@ def test_omitted_target_picks_the_preview_only_without_a_managed_page(home, monk
     """Desktop sessions with drive_preview (eager or behind tool_call) and no managed browser page fill
     the in-app browser; a session that opened a page with browser_exec, OR whose live page is owned by a
     plugin backend (e.g. Camofox), keeps filling that page."""
-    from agent import tool_executor
-    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+    from hermes_agent.agent import tool_executor
+    from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
     from hermes_agent.tools import browser_session
 
     managed = []
@@ -137,7 +137,7 @@ def test_omitted_target_picks_the_preview_only_without_a_managed_page(home, monk
                         lambda tid: {"cdp_url": "ws://x"} if surface == "managed_page" else {})
     # A plugin backend holding the task's live page must win over an omitted target, exactly like a
     # managed CDP page: browser_vault's own backend selection already picks it (#150283 P1-4).
-    import agent.browser_page_registry as page_registry
+    import hermes_agent.agent.browser_page_registry as page_registry
     monkeypatch.setattr(page_registry, "backend_for_task",
                         lambda tid: object() if surface == "plugin_page" else None)
     names = {"preview": {"drive_preview"}, "preview_deferred": {"tool_call"}, "managed_page": {"drive_preview"},

@@ -18,8 +18,8 @@ pytest.importorskip("botocore.client")
 import boto3
 import botocore.client
 
-from agent import bedrock_adapter
-from agent.bedrock_adapter import _get_bedrock_runtime_client, invalidate_runtime_client
+from hermes_agent.agent import bedrock_adapter
+from hermes_agent.agent.bedrock_adapter import _get_bedrock_runtime_client, invalidate_runtime_client
 
 REGION = "us-east-1"
 RUNTIME_URL = f"https://bedrock-runtime.{REGION}.amazonaws.com"
@@ -126,7 +126,7 @@ def test_models_with_different_overrides_never_share_a_client_in_one_region(conf
 
 def test_profile_scoped_clients_carry_their_own_profile_timeouts(tmp_path, monkeypatch):
     """A routed profile's clients come from its own config.yaml and own cache slot, per timeout."""
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home = tmp_path / "profile-home"
@@ -166,7 +166,7 @@ def test_profile_scoped_clients_carry_their_own_profile_timeouts(tmp_path, monke
 # --- dispatch ---------------------------------------------------------------------------------
 
 def test_converse_and_converse_stream_are_served_with_the_requested_models_timeout(config, botocore_calls):
-    from agent.chat_completion_helpers import _BedrockStream, _dispatch_nonstreaming_api_request
+    from hermes_agent.agent.chat_completion_helpers import _BedrockStream, _dispatch_nonstreaming_api_request
     config(OVERRIDES)
 
     agent = SimpleNamespace(api_mode="bedrock_converse", provider="bedrock", model=CLAUDE,
@@ -179,7 +179,7 @@ def test_converse_and_converse_stream_are_served_with_the_requested_models_timeo
 
 
 def test_auxiliary_call_converse_uses_the_models_timeout(config, botocore_calls):
-    from agent.bedrock_adapter import call_converse
+    from hermes_agent.agent.bedrock_adapter import call_converse
     config(OVERRIDES)
 
     call_converse(region=REGION, model=LLAMA, messages=[{"role": "user", "content": "hi"}])
@@ -188,8 +188,8 @@ def test_auxiliary_call_converse_uses_the_models_timeout(config, botocore_calls)
 
 
 def _agent():
-    from agent.context_compressor import ContextCompressor
-    from run_agent import AIAgent
+    from hermes_agent.agent.context_compressor import ContextCompressor
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent.__new__(AIAgent)
     agent.model, agent.provider = "claude-opus-4.8", "anthropic"
     agent.base_url, agent.api_key, agent.api_mode = "https://api.anthropic.com", "sk-ant", "anthropic_messages"
@@ -204,14 +204,14 @@ def _agent():
 
 
 def _dispatch_turn(agent):
-    from agent.chat_completion_helpers import _build_bedrock_kwargs, _dispatch_nonstreaming_api_request
+    from hermes_agent.agent.chat_completion_helpers import _build_bedrock_kwargs, _dispatch_nonstreaming_api_request
     kwargs = _build_bedrock_kwargs(agent, [{"role": "user", "content": "hi"}], None, None)
     _dispatch_nonstreaming_api_request(agent, kwargs, make_client=None)
 
 
 def test_model_switch_and_fallback_dispatch_with_the_new_models_timeout(config, botocore_calls, monkeypatch):
-    from agent.client_lifecycle import _swap_fallback_clients
-    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 200_000)
+    from hermes_agent.agent.client_lifecycle import _swap_fallback_clients
+    monkeypatch.setattr("hermes_agent.agent.model_metadata.get_model_context_length", lambda *a, **k: 200_000)
     config(OVERRIDES)
     agent = _agent()
 
@@ -235,7 +235,7 @@ def test_model_switch_and_fallback_dispatch_with_the_new_models_timeout(config, 
 
 def test_anthropic_bedrock_client_takes_the_timeout_and_keeps_default_when_unset():
     pytest.importorskip("anthropic")
-    from agent.anthropic_adapter import build_anthropic_bedrock_client
+    from hermes_agent.agent.anthropic_adapter import build_anthropic_bedrock_client
 
     configured = build_anthropic_bedrock_client(REGION, timeout=300.0).timeout
     unset = build_anthropic_bedrock_client(REGION).timeout
@@ -246,7 +246,7 @@ def test_anthropic_bedrock_client_takes_the_timeout_and_keeps_default_when_unset
 
 def test_anthropic_bedrock_request_client_follows_the_active_model(config, monkeypatch):
     pytest.importorskip("anthropic")
-    monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: 200_000)
+    monkeypatch.setattr("hermes_agent.agent.model_metadata.get_model_context_length", lambda *a, **k: 200_000)
     other_claude = "us.anthropic.claude-haiku-4-5-20251001-v1:0"  # provider-level 600
     config(OVERRIDES)
     agent = _agent()

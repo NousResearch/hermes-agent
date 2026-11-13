@@ -86,11 +86,11 @@ entry point at a package rather than a single module if you ship either.
 
 ## The MemoryProvider ABC
 
-Your plugin implements the `MemoryProvider` abstract base class from `agent/memory_provider.py`:
+Your plugin implements the `MemoryProvider` abstract base class from `hermes_agent/agent/memory_provider.py`:
 
 ```python
-from agent.memory_provider import MemoryProvider
-from agent.secret_scope import get_secret
+from hermes_agent.agent.memory_provider import MemoryProvider
+from hermes_agent.agent.secret_scope import get_secret
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -158,7 +158,7 @@ when it stores no transcript of its own. Older Hermes omits it: read it with `kw
 
 Do not assume `os.getcwd()` identifies the conversation's workspace: one Desktop
 or gateway backend can serve several sessions. If `cwd` is absent and directory
-routing is needed, `agent.runtime_cwd.resolve_agent_cwd()` honors the session cwd
+routing is needed, `hermes_agent.agent.runtime_cwd.resolve_agent_cwd()` honors the session cwd
 context, then scoped `terminal.cwd` (carried internally as `TERMINAL_CWD`), then
 the launch directory. Construction-time workspace metadata does not require
 changing the process cwd or rebuilding an existing conversation's system prompt.
@@ -255,7 +255,7 @@ transcript evidence to a durable store *before* the lossy rewrite. For that
 case the host offers an opt-in checkpoint contract (API v2):
 
 ```python
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 class MyArchivingProvider(MemoryProvider):
     # Opt in: every successful on_pre_compress() return means the durable
@@ -482,10 +482,10 @@ hooks:
 
 ## Threading Contract
 
-**`sync_turn()` MUST be non-blocking.** If your backend has latency (API calls, LLM processing), run the work in a daemon thread — spawned with `agent.memory_provider.spawn_context_thread`, never a bare `threading.Thread`. Profile isolation (the active `HERMES_HOME`, the per-turn secret scope) lives in `contextvars`, and a plain thread starts with an empty context: under multiplexed profiles it would silently write into the *default* profile's store, and `get_secret()` fails closed there.
+**`sync_turn()` MUST be non-blocking.** If your backend has latency (API calls, LLM processing), run the work in a daemon thread — spawned with `hermes_agent.agent.memory_provider.spawn_context_thread`, never a bare `threading.Thread`. Profile isolation (the active `HERMES_HOME`, the per-turn secret scope) lives in `contextvars`, and a plain thread starts with an empty context: under multiplexed profiles it would silently write into the *default* profile's store, and `get_secret()` fails closed there.
 
 ```python
-from agent.memory_provider import spawn_context_thread
+from hermes_agent.agent.memory_provider import spawn_context_thread
 
 def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
     def _sync():
@@ -542,7 +542,7 @@ Hermes can't verify a provider's internals. A provider that keeps a process-wide
 See `tests/agent/test_memory_provider.py` and adjacent memory tests (`tests/agent/test_memory_session_switch.py`, `tests/agent/test_memory_user_id.py`, `tests/agent/test_memory_provider_init.py`) for end-to-end patterns.
 
 ```python
-from agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_manager import MemoryManager
 
 mgr = MemoryManager()
 mgr.add_provider(my_provider)

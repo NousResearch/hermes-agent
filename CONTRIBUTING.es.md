@@ -55,7 +55,7 @@ Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es me
 
 Los plugins de memoria independientes:
 
-- Implementan el mismo ABC `MemoryProvider` (`agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown` y opcionalmente `post_setup(hermes_home, config)` para integración con el asistente de configuración
+- Implementan el mismo ABC `MemoryProvider` (`hermes_agent/agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown` y opcionalmente `post_setup(hermes_home, config)` para integración con el asistente de configuración
 - Usan el mismo sistema de descubrimiento — `discover_memory_providers()` los recoge desde directorios de plugins de usuario/proyecto y entry points de pip
 - Se integran con `hermes memory setup` a través de `post_setup()` — sin necesidad de tocar el código base
 - Pueden registrar sus propios subcomandos CLI a través de `register_cli(subparser)` en un archivo `cli.py`
@@ -120,13 +120,21 @@ Para JavaScript, ejecuta `pnpm install --frozen-lockfile` en la raíz del reposi
 
 ```
 hermes-agent/
-├── run_agent.py              # Clase AIAgent — bucle de conversación central, despacho de herramientas, persistencia de sesión
 ├── cli.py                    # Clase HermesCLI — TUI interactiva, integración prompt_toolkit
 ├── hermes_agent/             # el paquete de Python
+│   ├── run_agent.py              # Clase AIAgent — bucle de conversación central, despacho de herramientas, persistencia de sesión
 │   ├── model_tools.py            # Orquestación de herramientas (capa delgada sobre tools/registry.py)
 │   ├── toolsets.py               # Agrupaciones y presets de herramientas (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # Base de datos de sesiones SQLite con búsqueda de texto completo FTS5, títulos de sesión
 │   ├── batch_runner.py           # Procesamiento en lote paralelo para generación de trayectorias
+│   │
+│   ├── agent/                    # Internos del agente (módulos extraídos)
+│   │   ├── prompt_builder.py         # Ensamblaje del prompt del sistema (identidad, habilidades, archivos de contexto, memoria)
+│   │   ├── context_compressor.py     # Auto-resumición al acercarse a los límites de contexto
+│   │   ├── auxiliary_client.py       # Resuelve clientes OpenAI auxiliares (resumición, visión)
+│   │   ├── display.py                # KawaiiSpinner, formateo del progreso de herramientas
+│   │   ├── model_metadata.py         # Longitudes de contexto del modelo, estimación de tokens
+│   │   └── trajectory.py             # Ayudantes para guardar trayectorias
 │   │
 │   ├── tools/                    # Implementaciones de herramientas (auto-registradas)
 │   │   ├── registry.py               # Registro central de herramientas (esquemas, manejadores, despacho)
@@ -150,14 +158,6 @@ hermes-agent/
 │       ├── session.py                # Almacén de sesiones, prompts de contexto, políticas de reset
 │       └── platforms/                # Adaptadores de plataformas
 │           ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
-│
-├── agent/                    # Internos del agente (módulos extraídos)
-│   ├── prompt_builder.py         # Ensamblaje del prompt del sistema (identidad, habilidades, archivos de contexto, memoria)
-│   ├── context_compressor.py     # Auto-resumición al acercarse a los límites de contexto
-│   ├── auxiliary_client.py       # Resuelve clientes OpenAI auxiliares (resumición, visión)
-│   ├── display.py                # KawaiiSpinner, formateo del progreso de herramientas
-│   ├── model_metadata.py         # Longitudes de contexto del modelo, estimación de tokens
-│   └── trajectory.py             # Ayudantes para guardar trayectorias
 │
 ├── hermes_cli/               # Implementaciones de comandos CLI
 │   ├── main.py                   # Punto de entrada, análisis de argumentos, despacho de comandos

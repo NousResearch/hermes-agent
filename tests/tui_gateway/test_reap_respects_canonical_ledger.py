@@ -15,7 +15,7 @@ from hermes_agent.tui_gateway.server import _teardown_session
 
 
 def _session(tmp_path, monkeypatch, source, session_id):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     home = tmp_path / 'home'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))

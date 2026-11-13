@@ -17,7 +17,7 @@ These tests pin the floor's behavior:
    (gpt-4o, olmo-1, etc.), and longest-substring-first wins on
    shared prefixes (``o3-mini-`` > ``o3-``).
 2. The non-stream resolver at
-   ``run_agent.py:AIAgent._resolved_api_call_stale_timeout_base``
+   ``hermes_agent/run_agent.py:AIAgent._resolved_api_call_stale_timeout_base``
    consults the floor at priority 4 (after explicit user config,
    provider config, and env var; before the 90s default), and
    returns ``uses_implicit_default=False`` so the local-endpoint
@@ -48,7 +48,7 @@ from pathlib import Path
 
 
 def test_nemotron_super_reasoning_floor_matches_existing_super_family():
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
+    from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
 
     assert floor("nvidia/nemotron-3.5-super-vl-120b-a12b") == floor("nvidia/nemotron-3-super-120b-a12b") is not None
 
@@ -56,7 +56,7 @@ def test_nemotron_super_reasoning_floor_matches_existing_super_family():
 def test_floor_matching_is_vendor_prefix_and_variant_suffix_transparent():
     """A routed/vendor-prefixed or -variant/:sku slug resolves to its family's floor,
     while a look-alike community derivative does not match at all."""
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
+    from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
 
     assert floor("openai/o3-mini") == floor("o3-mini") is not None
     assert floor("gpt-5.6-sol-900k") == floor("gpt-5.6-sol") is not None
@@ -66,7 +66,7 @@ def test_floor_matching_is_vendor_prefix_and_variant_suffix_transparent():
 
 def test_minimax_m2_reasoning_models_get_floor_but_non_reasoning_minimax_does_not():
     """MiniMax M2.x thinks >180s before first content (#62353); VL/chat variants don't."""
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
+    from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
 
     assert floor("minimax/minimax-m2.7") == floor("minimax-m2.5") == 300.0
     for slug in ("minimax/minimax-vl", "minimax-chat", "some-minimax-m2-fork"):
@@ -75,7 +75,7 @@ def test_minimax_m2_reasoning_models_get_floor_but_non_reasoning_minimax_does_no
 
 def test_mythos_models_get_their_fable_twins_floor():
     """Mythos models have the same specs as their Fable twins, so they need the same floor."""
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
+    from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
 
     for mythos in ("claude-mythos-5-2", "anthropic/claude-mythos-5.2", "claude-mythos-5-1"):
         assert floor(mythos) == floor(mythos.replace("mythos", "fable")) is not None, mythos
@@ -89,7 +89,7 @@ def _write_config(tmp_path: Path, body: str) -> None:
 
 
 def _make_agent(tmp_path: Path, **overrides):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     kwargs = dict(
         model="gpt-5.5",
         provider="openai-codex",
@@ -120,7 +120,7 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     _write_config(tmp_path, "")
 
     # No provider config, no env var, no floor match -> 90s implicit default.
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
 
     agent = _make_agent(
@@ -140,9 +140,9 @@ def test_gpt_5_6_floor_reaches_non_stream_and_stream_resolvers(monkeypatch, tmp_
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, "")
 
-    import run_agent
-    from agent.chat_completion_helpers import _cloud_stale_timeout
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+    from hermes_agent import run_agent
+    from hermes_agent.agent.chat_completion_helpers import _cloud_stale_timeout
+    from hermes_agent.agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
 
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, model="gpt-5.6-sol")
@@ -169,7 +169,7 @@ def test_explicit_provider_stale_timeout_wins_over_context_tier_and_reasoning_fl
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
-    from agent.chat_completion_helpers import _derive_stream_stale_timeout
+    from hermes_agent.agent.chat_completion_helpers import _derive_stream_stale_timeout
 
     api_kwargs = {"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "word " * 60_000}]}
     agent = SimpleNamespace(provider="custom", model="gpt-5.6-sol", base_url="https://api.example.invalid/v1")

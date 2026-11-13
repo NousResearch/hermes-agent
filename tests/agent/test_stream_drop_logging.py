@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent() -> AIAgent:
@@ -106,7 +106,7 @@ def test_flatten_exception_chain_caps_depth():
 def test_quiet_mode_does_not_clobber_runagent_logger_level():
     """Regression guard for the parent fix — must persist across this PR."""
     _ = _make_agent()
-    for name in ("run_agent", "hermes_agent.tools", "hermes_agent.trajectory_compressor", "hermes_agent.cron", "hermes_cli"):
+    for name in ("hermes_agent.run_agent", "hermes_agent.tools", "hermes_agent.trajectory_compressor", "hermes_agent.cron", "hermes_cli"):
         logger = logging.getLogger(name)
         assert logger.getEffectiveLevel() <= logging.WARNING
 
@@ -116,7 +116,7 @@ def test_retry_after_drop_reports_the_attempt_that_dropped():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from agent.chat_completion_helpers import _StreamingCall
+    from hermes_agent.agent.chat_completion_helpers import _StreamingCall
 
     agent = MagicMock()
     agent._is_provider_stream_parse_error.return_value = False

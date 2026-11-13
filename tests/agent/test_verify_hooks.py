@@ -1,4 +1,4 @@
-"""Unit tests for the verification-loop policy (agent/verify_hooks.py).
+"""Unit tests for the verification-loop policy (hermes_agent/agent/verify_hooks.py).
 
 The `pre_verify` user-hook aggregation lives in `hermes_cli.plugins`
 (`get_pre_verify_continue_message`) and is tested in
@@ -7,7 +7,7 @@ The `pre_verify` user-hook aggregation lives in `hermes_cli.plugins`
 
 from __future__ import annotations
 
-from agent import verify_hooks
+from hermes_agent.agent import verify_hooks
 
 
 class TestMaxVerifyNudges:

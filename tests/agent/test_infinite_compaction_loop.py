@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import time
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -37,7 +37,7 @@ def _make_compressor(**kwargs) -> ContextCompressor:
     # NOTE: 96K < 512K, so the small-context floor raises the effective
     # threshold_percent to 0.75 → threshold_tokens = 72_000. Tests use
     # 73_000 as the "over threshold" probe value.
-    with patch("agent.context_compressor.get_model_context_length", return_value=96000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=96000):
         return ContextCompressor(**defaults)
 
 def _build_session(n_turns: int, words_per_turn: int = 20) -> list:
@@ -238,19 +238,19 @@ class TestPressureRealFloor:
         return _C()
 
     def test_real_floor_lifts_undercounted_rough(self):
-        from agent.conversation_loop import _pressure_with_real_floor
+        from hermes_agent.agent.conversation_loop import _pressure_with_real_floor
         assert _pressure_with_real_floor(self._compressor(64_842), 45_000) == 64_842
 
     def test_rough_wins_when_larger(self):
-        from agent.conversation_loop import _pressure_with_real_floor
+        from hermes_agent.agent.conversation_loop import _pressure_with_real_floor
         assert _pressure_with_real_floor(self._compressor(30_000), 45_000) == 45_000
 
     def test_stale_real_ignored_right_after_compaction(self):
-        from agent.conversation_loop import _pressure_with_real_floor
+        from hermes_agent.agent.conversation_loop import _pressure_with_real_floor
         compressor = self._compressor(64_842, awaiting=True)
         assert _pressure_with_real_floor(compressor, 20_000) == 20_000
 
     def test_zero_and_missing_real_are_safe(self):
-        from agent.conversation_loop import _pressure_with_real_floor
+        from hermes_agent.agent.conversation_loop import _pressure_with_real_floor
         assert _pressure_with_real_floor(self._compressor(0), 10_000) == 10_000
         assert _pressure_with_real_floor(object(), 10_000) == 10_000

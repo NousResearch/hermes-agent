@@ -47,9 +47,9 @@ class _Agent:
 
 def _skill(monkeypatch):
     """One installed skill, ``/demo``, without a skills directory."""
-    import agent.skill_bundles as bundles
-    import agent.skill_commands as skills
-    from agent import skill_utils
+    import hermes_agent.agent.skill_bundles as bundles
+    import hermes_agent.agent.skill_commands as skills
+    from hermes_agent.agent import skill_utils
 
     monkeypatch.setattr(skills, 'get_skill_commands', lambda: {'/demo': {'name': 'demo'}})
     monkeypatch.setattr(skills, 'resolve_skill_command_key', lambda command, **_: '/demo' if command == 'demo' else None)
@@ -278,7 +278,7 @@ async def test_stop_during_a_busy_skill_rewrite_drops_it(monkeypatch, caller, ki
     cold skill scan) drops it, as it clears the in-process slot: it never commits afterwards.
     ``adapter``: the adapter's busy handler; ``runner``: the runner's busy path (no adapter guard)."""
     import threading
-    import agent.skill_bundles as bundles
+    import hermes_agent.agent.skill_bundles as bundles
     from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
     _skill(monkeypatch)
@@ -289,7 +289,7 @@ async def test_stop_during_a_busy_skill_rewrite_drops_it(monkeypatch, caller, ki
         gate.wait(10)
         return f'[{kind}] {text}'
     if kind == 'skill':
-        import agent.skill_commands as skills
+        import hermes_agent.agent.skill_commands as skills
         monkeypatch.setattr(skills, 'build_skill_invocation_message', lambda key, text='', **_: slow(text))
     else:
         monkeypatch.setattr(bundles, 'resolve_bundle_command_key', lambda command: '/demo' if command == 'demo' else None)
@@ -315,7 +315,7 @@ async def test_queued_ack_follows_the_commit(monkeypatch, command, agent, ack):
     """The busy sender may be released before the row commits (#140454 releases it once the input
     waits behind an earlier one of its chat). The "Queued" reply follows the commit, not that
     release: none before it, one once it lands."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     import hermes_agent.gateway.session_ingress as ingress
     from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 
@@ -363,7 +363,7 @@ async def test_reset_during_an_idle_skill_rewrite_drops_it(monkeypatch, reset):
     must drop the command, which keeps the epoch it arrived under. Read after the rewrite, the epoch
     already counts the reset and the old command commits into the fresh conversation."""
     import threading
-    import agent.skill_commands as skills
+    import hermes_agent.agent.skill_commands as skills
     from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_ingress import executing_admission

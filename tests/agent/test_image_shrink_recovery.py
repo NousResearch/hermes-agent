@@ -3,9 +3,9 @@
 Covers the full chain for Anthropic's 5 MB per-image ceiling (and any
 future provider that returns an image-too-large error):
 
-  1. agent/error_classifier.py: 400 with "image exceeds 5 MB maximum"
+  1. hermes_agent/agent/error_classifier.py: 400 with "image exceeds 5 MB maximum"
      gets FailoverReason.image_too_large, not context_overflow.
-  2. run_agent._try_shrink_image_parts_in_messages mutates the API
+  2. hermes_agent.run_agent._try_shrink_image_parts_in_messages mutates the API
      payload in-place, re-encoding native data: URL image parts to fit
      under 4 MB using vision_tools._resize_image_for_vision.
 
@@ -22,8 +22,8 @@ import sys
 from types import SimpleNamespace
 
 
-from agent.turn_recovery import _image_error_max_dimension
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.turn_recovery import _image_error_max_dimension
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 
 class _FakeApiError(Exception):
@@ -186,7 +186,7 @@ class TestSpentShrinkFallsBack:
         from types import SimpleNamespace
         from unittest.mock import patch
 
-        from agent.turn_api_error import settle_unrecovered_error
+        from hermes_agent.agent.turn_api_error import settle_unrecovered_error
 
         agent = self._Agent()
         err = _FakeApiError(400, "Please make sure your payload is below 26214400 bytes in size.")
@@ -196,10 +196,10 @@ class TestSpentShrinkFallsBack:
         )
         classified = classify_api_error(err, provider="custom")
         assert classified.reason == FailoverReason.image_too_large
-        with patch("agent.conversation_loop._credential_refresh_profile", lambda a: None), patch(
-            "agent.conversation_loop._arm_fallback_restart", lambda agent, msgs, prompt, retry: prompt
-        ), patch("agent.turn_api_error.compute_error_backoff", lambda *a, **k: 0), patch(
-            "agent.turn_api_error.interruptible_backoff_sleep", lambda *a, **k: None
+        with patch("hermes_agent.agent.conversation_loop._credential_refresh_profile", lambda a: None), patch(
+            "hermes_agent.agent.conversation_loop._arm_fallback_restart", lambda agent, msgs, prompt, retry: prompt
+        ), patch("hermes_agent.agent.turn_api_error.compute_error_backoff", lambda *a, **k: 0), patch(
+            "hermes_agent.agent.turn_api_error.interruptible_backoff_sleep", lambda *a, **k: None
         ):
             verdict = settle_unrecovered_error(
                 agent, api_error=err, classified=classified, _retry=retry, status_code=400, error_msg=str(err),
@@ -231,7 +231,7 @@ class TestImagePatchBudgetShrink:
 
         from PIL import Image
 
-        from agent.conversation_compression import try_shrink_image_parts_in_messages
+        from hermes_agent.agent.conversation_compression import try_shrink_image_parts_in_messages
 
         err = _FakeApiError(
             status_code=400,
@@ -317,7 +317,7 @@ def _install_fake_pillow(
 
 def _make_agent():
     """Build a bare AIAgent for method-level testing, no provider setup."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = object.__new__(AIAgent)
     agent.provider = "anthropic"
     agent.model = "claude-sonnet-4-6"

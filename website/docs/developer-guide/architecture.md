@@ -52,14 +52,29 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 
 ```text
 hermes-agent/
-├── run_agent.py              # AIAgent facade — loop lives in agent/conversation_loop.py + agent/turn_*.py
 ├── cli.py                    # HermesCLI facade — mixins in hermes_cli/cli_*_mixin.py
 ├── hermes_constants.py       # HERMES_HOME, profile-aware paths
 ├── hermes_agent/             # the Python package
+│   ├── run_agent.py              # AIAgent facade — loop lives in agent/conversation_loop.py + agent/turn_*.py
 │   ├── model_tools.py            # Tool discovery, schema collection, dispatch
 │   ├── toolsets.py               # Tool groupings and platform presets
 │   ├── hermes_state.py           # SQLite session/state database facade (+ hermes_state_*.py siblings)
 │   ├── batch_runner.py           # Batch trajectory generation
+│   │
+│   ├── agent/                    # Agent internals
+│   │   ├── prompt_builder.py     # System prompt assembly
+│   │   ├── context_engine.py     # ContextEngine ABC (pluggable)
+│   │   ├── context_compressor.py # Default engine — lossy summarization
+│   │   ├── prompt_caching.py     # Anthropic prompt caching
+│   │   ├── auxiliary_client.py   # Auxiliary LLM for side tasks (vision, summarization)
+│   │   ├── model_metadata.py     # Model context lengths, token estimation
+│   │   ├── models_dev.py         # models.dev registry integration
+│   │   ├── anthropic_adapter.py  # Anthropic Messages API format conversion
+│   │   ├── display.py            # KawaiiSpinner, tool preview formatting
+│   │   ├── skill_commands.py     # Skill slash commands
+│   │   ├── memory_manager.py    # Memory manager orchestration
+│   │   ├── memory_provider.py   # Memory provider ABC
+│   │   └── trajectory.py         # Trajectory saving helpers
 │   │
 │   ├── tools/                    # Tool implementations (one file per tool)
 │   │   ├── registry.py           # Central tool registry
@@ -92,21 +107,6 @@ hermes-agent/
 │   │
 │   ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 │   └── cron/                     # Scheduler (jobs.py, scheduler.py)
-│
-├── agent/                    # Agent internals
-│   ├── prompt_builder.py     # System prompt assembly
-│   ├── context_engine.py     # ContextEngine ABC (pluggable)
-│   ├── context_compressor.py # Default engine — lossy summarization
-│   ├── prompt_caching.py     # Anthropic prompt caching
-│   ├── auxiliary_client.py   # Auxiliary LLM for side tasks (vision, summarization)
-│   ├── model_metadata.py     # Model context lengths, token estimation
-│   ├── models_dev.py         # models.dev registry integration
-│   ├── anthropic_adapter.py  # Anthropic Messages API format conversion
-│   ├── display.py            # KawaiiSpinner, tool preview formatting
-│   ├── skill_commands.py     # Skill slash commands
-│   ├── memory_manager.py    # Memory manager orchestration
-│   ├── memory_provider.py   # Memory provider ABC
-│   └── trajectory.py         # Trajectory saving helpers
 │
 ├── hermes_cli/               # CLI subcommands and setup
 │   ├── main.py               # Entry point — `hermes` subcommands (parsers in subcommands/, main_*.py)
@@ -197,7 +197,7 @@ If you are new to the codebase:
 
 ### Agent Loop
 
-The synchronous orchestration engine (`AIAgent`, exposed by the `run_agent.py` facade; the loop lives in `agent/conversation_loop.py` and `agent/turn_*.py`). Handles provider selection, prompt construction, tool execution, retries, fallback, callbacks, compression, and persistence. Supports three API modes for different provider backends.
+The synchronous orchestration engine (`AIAgent`, exposed by the `hermes_agent/run_agent.py` facade; the loop lives in `hermes_agent/agent/conversation_loop.py` and `hermes_agent/agent/turn_*.py`). Handles provider selection, prompt construction, tool execution, retries, fallback, callbacks, compression, and persistence. Supports three API modes for different provider backends.
 
 → [Agent Loop Internals](./agent-loop.md)
 
@@ -279,7 +279,7 @@ hermes_agent/tools/*.py  (each calls registry.register() at import time)
        ↑
 hermes_agent/model_tools.py  (imports hermes_agent/tools/registry + triggers tool discovery)
        ↑
-run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
+hermes_agent/run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
 This chain means tool registration happens at import time, before any agent instance is created. Any `hermes_agent/tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

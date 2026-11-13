@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 def _make_agent(session_db):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",
@@ -77,7 +77,7 @@ class _NoProgressCompressor(_InPlaceSuccessCompressor):
 
 class TestAbortPathsResetPerAttemptState:
     def _in_place_success(self, agent, messages):
-        from agent.conversation_compression import (
+        from hermes_agent.agent.conversation_compression import (
             compress_context,
             conversation_history_after_compression,
         )
@@ -93,7 +93,7 @@ class TestAbortPathsResetPerAttemptState:
 
     def test_breaker_blocked_skip_retains_previous_baseline(self):
         """Pre-lock breaker skip after an in-place success must keep baseline."""
-        from agent.conversation_compression import (
+        from hermes_agent.agent.conversation_compression import (
             compress_context,
             conversation_history_after_compression,
         )

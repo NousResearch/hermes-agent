@@ -27,7 +27,7 @@ def install_profile(monkeypatch):
     monkeypatch.setattr(profiles, "_REGISTRY", dict(profiles._REGISTRY))
     monkeypatch.setattr(profiles, "_ALIASES", dict(profiles._ALIASES))
     monkeypatch.setattr(profiles, "_PROVIDER_LIST_CACHE", None)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda *a, **kw: {})
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", lambda *a, **kw: {})
     monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **kw: ACCEPT)
     auth_before = dict(auth_mod.PROVIDER_REGISTRY)
 

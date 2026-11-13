@@ -59,7 +59,7 @@ class TestRegisterTranscriptionProvider:
     def test_accepts_valid_provider(self):
         from hermes_cli.plugins import PluginManager
 
-        from agent import transcription_registry
+        from hermes_agent.agent import transcription_registry
         transcription_registry._reset_for_tests()
 
         hermes_home = Path(os.environ["HERMES_HOME"])
@@ -67,7 +67,7 @@ class TestRegisterTranscriptionProvider:
             hermes_home / "plugins",
             "my-stt-plugin",
             register_body=(
-                "from agent.transcription_provider import TranscriptionProvider\n"
+                "from hermes_agent.agent.transcription_provider import TranscriptionProvider\n"
                 "    class P(TranscriptionProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'fake-stt'\n"
@@ -91,7 +91,7 @@ class TestRegisterTranscriptionProvider:
     def test_rejects_non_provider(self, caplog):
         from hermes_cli.plugins import PluginManager
 
-        from agent import transcription_registry
+        from hermes_agent.agent import transcription_registry
         transcription_registry._reset_for_tests()
 
         hermes_home = Path(os.environ["HERMES_HOME"])
@@ -115,7 +115,7 @@ class TestRegisterTranscriptionProvider:
     def test_rejects_builtin_shadow(self, caplog):
         from hermes_cli.plugins import PluginManager
 
-        from agent import transcription_registry
+        from hermes_agent.agent import transcription_registry
         transcription_registry._reset_for_tests()
 
         hermes_home = Path(os.environ["HERMES_HOME"])
@@ -123,7 +123,7 @@ class TestRegisterTranscriptionProvider:
             hermes_home / "plugins",
             "shadow-stt-plugin",
             register_body=(
-                "from agent.transcription_provider import TranscriptionProvider\n"
+                "from hermes_agent.agent.transcription_provider import TranscriptionProvider\n"
                 "    class P(TranscriptionProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'openai'\n"

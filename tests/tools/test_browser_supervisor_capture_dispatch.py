@@ -120,7 +120,7 @@ def test_unbounded_reply_fails_promptly_on_socket_close(pair):
 
 def test_unbounded_wait_ends_when_loop_closes_with_dispatch_queued(pair, monkeypatch):
     _server, registry, _sup, handle = pair
-    from agent import async_utils
+    from hermes_agent.agent import async_utils
     # A stop racing call() can close the loop before its queued dispatch runs; the
     # scheduled future then never resolves.
     real = async_utils.safe_schedule_threadsafe

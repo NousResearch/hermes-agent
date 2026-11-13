@@ -47,9 +47,9 @@ def _tls_out_normalized(out: str) -> str:
 
 def test_check_certificates_exercises_real_tls_policy(monkeypatch, capsys):
     """install_truststore True: the check exercises the actual policy
-    (agent.ssl_verify platform trust store), reports TLS as configured, and
+    (hermes_agent.agent.ssl_verify platform trust store), reports TLS as configured, and
     never presents context construction as certificate verification."""
-    monkeypatch.setattr("agent.ssl_verify.install_truststore", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.ssl_verify.install_truststore", lambda: True)
 
     doctor_platform.check_certificates()
 
@@ -65,7 +65,7 @@ def test_check_certificates_fallback_names_openssl_without_platform_trust_claim(
     """install_truststore False + a constructible context is an OpenSSL fallback:
     the output names the actual fallback, stays available, and no ✓ row claims
     the platform trust store is active."""
-    monkeypatch.setattr("agent.ssl_verify.install_truststore", lambda: False)
+    monkeypatch.setattr("hermes_agent.agent.ssl_verify.install_truststore", lambda: False)
 
     doctor_platform.check_certificates()
 
@@ -171,11 +171,11 @@ class TestDoctorToolAvailabilitySummary:
 
         unavailable = _Unavailable()
         monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
+            "hermes_agent.agent.web_search_registry.get_active_search_provider",
             lambda: unavailable,
         )
         monkeypatch.setattr(
-            "agent.web_search_registry.get_active_extract_provider",
+            "hermes_agent.agent.web_search_registry.get_active_extract_provider",
             lambda: unavailable,
         )
 
@@ -192,11 +192,11 @@ class TestDoctorToolAvailabilitySummary:
 
         ready = _Ready()
         monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
+            "hermes_agent.agent.web_search_registry.get_active_search_provider",
             lambda: ready,
         )
         monkeypatch.setattr(
-            "agent.web_search_registry.get_active_extract_provider",
+            "hermes_agent.agent.web_search_registry.get_active_extract_provider",
             lambda: ready,
         )
 

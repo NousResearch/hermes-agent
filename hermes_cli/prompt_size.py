@@ -50,10 +50,10 @@ def _build_inspection_agent(platform: str) -> Any:
     direct-construction path (no provider auto-detection, no network); toolsets resolve the way
     the gateway does so the breakdown matches a real session.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_cli.config import load_config
     from hermes_cli.tools_config import _get_platform_tools
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
 
     cfg = load_config()
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
@@ -71,7 +71,7 @@ def _skill_md_paths_by_name() -> dict[str, Path]:
     Local skills win over external dirs (``get_all_skills_dirs`` yields local first), matching
     the index's own precedence.
     """
-    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files, parse_frontmatter
+    from hermes_agent.agent.skill_utils import get_all_skills_dirs, iter_skill_index_files, parse_frontmatter
 
     mapping: dict[str, Path] = {}
     for skills_dir in get_all_skills_dirs():
@@ -151,7 +151,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> dict[str, Any]:
     ``memory``, ``user_profile``, ``tools``, ``sections`` (the three prompt tiers), and the
     largest-first ``skills_breakdown`` / ``toolsets_breakdown`` ("what should I disable?").
     """
-    from agent.system_prompt import build_system_prompt, build_system_prompt_parts
+    from hermes_agent.agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
     agent = _build_inspection_agent(platform)
     parts = build_system_prompt_parts(agent)

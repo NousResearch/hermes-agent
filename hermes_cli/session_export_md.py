@@ -170,9 +170,9 @@ def redact_session_data(session: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of a session export dict with secrets redacted.
 
     Every message's content and tool-call arguments go through the force-mode redaction pass
-    (``agent.redact.redact_sensitive_text``) so credentials in tool output never land in exports.
+    (``hermes_agent.agent.redact.redact_sensitive_text``) so credentials in tool output never land in exports.
     """
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     def _clean(value: Any) -> Any:
         if isinstance(value, str):

@@ -85,7 +85,7 @@ class HostedRoomAuthorityRPC:
         from hermes_agent.gateway.session_local_recovery import restore_local_session
         from hermes_agent.gateway.session_runtime_workers import tracked_write
         from hermes_agent.hermes_state_local import commit_local_session
-        from agent.skill_utils import parse_config_string_list
+        from hermes_agent.agent.skill_utils import parse_config_string_list
         private = {}
         config = _load_gateway_config()
         # A room has no clarification reply (group controls expose approvals only), so a member

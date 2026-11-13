@@ -1,11 +1,11 @@
 """Regression tests: resolve_anthropic_token() must honour the profile secret scope.
 
 BUG LOCATION
-    agent/anthropic_adapter.py lines 1218, 1226, 1245
+    hermes_agent/agent/anthropic_adapter.py lines 1218, 1226, 1245
 
 ROOT CAUSE
     resolve_anthropic_token() calls os.getenv() directly at three call sites,
-    bypassing get_secret() from agent/secret_scope.py:
+    bypassing get_secret() from hermes_agent/agent/secret_scope.py:
 
         line 1218: os.getenv("ANTHROPIC_TOKEN", "")
         line 1226: os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
@@ -25,14 +25,14 @@ IMPACT
 STATUS
     All tests in this file are RED (failing) while the bug exists.
     They turn GREEN when os.getenv() at the three sites is replaced with
-    get_secret() from agent.secret_scope (matching the pattern in runtime_provider.py).
+    get_secret() from hermes_agent.agent.secret_scope (matching the pattern in runtime_provider.py).
 """
 
 import pytest
 from unittest.mock import patch
 
-from agent import secret_scope as ss
-from agent.anthropic_credentials import resolve_anthropic_token
+from hermes_agent.agent import secret_scope as ss
+from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token
 
 
 @pytest.fixture(autouse=True)
@@ -50,8 +50,8 @@ def _pin_file_and_pool_sources():
     This isolates the three os.getenv() call sites (sources 1, 2, 5) so each
     test exercises exactly the env-var reading behaviour under scope control.
     """
-    with patch("agent.anthropic_credentials.read_claude_code_credentials", return_value=None), \
-         patch("agent.anthropic_credentials._resolve_anthropic_pool_token", return_value=None):
+    with patch("hermes_agent.agent.anthropic_credentials.read_claude_code_credentials", return_value=None), \
+         patch("hermes_agent.agent.anthropic_credentials._resolve_anthropic_pool_token", return_value=None):
         yield
 
 

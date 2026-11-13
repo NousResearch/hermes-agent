@@ -100,7 +100,7 @@ def _run(tmp_path, job, *, primary_error=None):
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
          patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
-         patch("run_agent.AIAgent") as agent_cls:
+         patch("hermes_agent.run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {"final_response": "ok"}
         success, _output, _final, error = _run_owned_job(dict(job), tmp_path)
     kwargs = agent_cls.call_args.kwargs if agent_cls.called else {}
@@ -202,7 +202,7 @@ def test_pinned_job_same_provider_credential_pool_still_loads(tmp_path):
     """Credential-pool rotation stays on the pinned provider; it is not the fallback chain."""
     pool = MagicMock()
     pool.has_credentials.return_value = True
-    with patch("agent.credential_pool.load_pool", return_value=pool) as load_pool:
+    with patch("hermes_agent.agent.credential_pool.load_pool", return_value=pool) as load_pool:
         success, error, _requested, agent_kwargs = _run(
             tmp_path, _job(provider="anthropic", model="claude-sonnet-5"))
     assert (success, error) == (True, None)

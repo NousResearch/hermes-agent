@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_cli.cli_commands_session_tools import _t
 
 

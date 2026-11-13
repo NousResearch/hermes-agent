@@ -15,7 +15,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from agent.model_metadata import CHARS_PER_TOKEN
+from hermes_agent.agent.model_metadata import CHARS_PER_TOKEN
 from hermes_agent.tools.tts_command_provider import (
     _command_output_format, _command_timeout, _is_command_provider_config as _is_command_stt_provider_config,
     _named_provider_config, _resolve_command_config, command_env_passthrough as _command_stt_env_passthrough,
@@ -168,7 +168,7 @@ def _dispatch_to_plugin_provider(
     if stt_config is not None and _is_command_stt_provider_config(_get_named_stt_provider_config(stt_config, key)):
         return None
     try:
-        from agent.transcription_registry import get_provider
+        from hermes_agent.agent.transcription_registry import get_provider
         from hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
         plugin_provider = get_provider(key)

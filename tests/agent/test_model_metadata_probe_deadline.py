@@ -9,8 +9,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-import agent.model_metadata as mm
-import agent.model_metadata_http as http
+import hermes_agent.agent.model_metadata as mm
+import hermes_agent.agent.model_metadata_http as http
 
 
 class _Trickle(BaseHTTPRequestHandler):

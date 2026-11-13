@@ -6,7 +6,7 @@ context_length, causing the CLI status bar to show 'ctx --'.
 
 from unittest.mock import patch
 
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 
 class _StubEngine(ContextEngine):
@@ -47,12 +47,12 @@ def test_plugin_engine_gets_context_length_on_init():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -84,12 +84,12 @@ def test_active_context_engine_tools_survive_explicit_platform_toolsets():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -136,12 +136,12 @@ def test_codex_gpt55_autoraise_suppressed_for_plugin_engine():
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.context_engine.load_context_engine", return_value=engine),
-        patch("agent.model_metadata.get_model_context_length", return_value=272_000),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=272_000),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(**_codex_agent_kwargs())
 
@@ -161,12 +161,12 @@ def test_codex_gpt55_autoraise_still_applies_to_builtin_compressor():
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("agent.context_compressor.get_model_context_length", return_value=272_000),
+        patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=272_000),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(**_codex_agent_kwargs())
 

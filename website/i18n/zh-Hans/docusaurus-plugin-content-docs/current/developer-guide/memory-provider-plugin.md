@@ -25,10 +25,10 @@ plugins/memory/my-provider/
 
 ## MemoryProvider 抽象基类
 
-你的插件需要实现 `agent/memory_provider.py` 中的 `MemoryProvider` 抽象基类（ABC）：
+你的插件需要实现 `hermes_agent/agent/memory_provider.py` 中的 `MemoryProvider` 抽象基类（ABC）：
 
 ```python
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -185,7 +185,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 完整的端到端测试模式（使用真实 SQLite provider）请参见 `tests/agent/test_memory_plugin_e2e.py`。
 
 ```python
-from agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_manager import MemoryManager
 
 mgr = MemoryManager()
 mgr.add_provider(my_provider)

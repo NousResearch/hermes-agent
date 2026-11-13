@@ -72,7 +72,7 @@ def _chat_response(_request):
 
 
 def _llm(messages, request_id):
-    from agent import relay_llm
+    from hermes_agent.agent import relay_llm
 
     relay_llm.execute(
         {"model": "test/main-model", "messages": messages}, _chat_response, name=LLM_NAME,
@@ -114,9 +114,9 @@ def _run_turn_with_compaction(tmp_path, monkeypatch, summary):
     if getattr(relay, "_native", None) is None:
         pytest.skip("NeMo Relay native binding is unavailable on this platform")
 
-    from agent import relay_runtime
-    from agent.context_compressor import ContextCompressor
-    from agent.conversation_compression import compress_context
+    from hermes_agent.agent import relay_runtime
+    from hermes_agent.agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.conversation_compression import compress_context
 
     hermes_home, atof_dir = tmp_path / "hermes-home", tmp_path / "atof"
     hermes_home.mkdir()
@@ -125,7 +125,7 @@ def _run_turn_with_compaction(tmp_path, monkeypatch, summary):
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(_write_plugins_toml(tmp_path, atof_dir)))
     relay_runtime._reset_for_tests()
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000):
         compressor = ContextCompressor(
             model="test/main-model", provider="test-provider", threshold_percent=0.50, quiet_mode=True,
             config_context_length=100_000, abort_on_summary_failure=summary is ABORT,

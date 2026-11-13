@@ -1,6 +1,6 @@
 """Recall in a gateway-managed worker (#141705).
 
-The worker's agent is constructed with ``session_db=RuntimeSessionStore`` (``agent/managed_worker.py``),
+The worker's agent is constructed with ``session_db=RuntimeSessionStore`` (``hermes_agent/agent/managed_worker.py``),
 a facade over the owner's RPC that mirrors the write and lineage surface but not the FTS read API.
 Handing it to ``session_search`` made every recall inside a worker answer
 ``'RuntimeSessionStore' object has no attribute 'search_messages'``; recall now opens its own read-only
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from agent.runtime_session_store import RuntimeSessionStore
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.tools.session_search_tool import session_search
 

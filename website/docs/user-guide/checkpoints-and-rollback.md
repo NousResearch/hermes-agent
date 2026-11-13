@@ -70,7 +70,7 @@ At a high level:
 ```mermaid
 flowchart LR
   user["User command\n(hermes, gateway)"]
-  agent["AIAgent\n(run_agent.py)"]
+  agent["AIAgent\n(hermes_agent/run_agent.py)"]
   tools["File & terminal tools"]
   cpMgr["CheckpointManager"]
   store["Shared shadow store\n~/.hermes/checkpoints/store/"]

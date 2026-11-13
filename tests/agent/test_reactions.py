@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent.reactions import VIBE, detect_reaction
+from hermes_agent.agent.reactions import VIBE, detect_reaction
 
 
 @pytest.mark.parametrize(

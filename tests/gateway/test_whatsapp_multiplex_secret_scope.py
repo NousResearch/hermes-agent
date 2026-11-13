@@ -6,12 +6,12 @@ profile's secret scope and returns the process-global value (often unset),
 causing the bridge to silently fall back to ``"self-chat"`` and reject all
 inbound messages.
 
-The fix routes WHATSAPP_* reads through ``get_secret()`` (``agent.secret_scope``)
+The fix routes WHATSAPP_* reads through ``get_secret()`` (``hermes_agent.agent.secret_scope``)
 which honours the active scope.
 """
 import pytest
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 
 
 @pytest.fixture(autouse=True)

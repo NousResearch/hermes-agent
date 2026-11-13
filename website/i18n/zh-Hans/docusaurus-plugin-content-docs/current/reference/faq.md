@@ -119,7 +119,7 @@ Hermes Agent 本身**免费且开源**（MIT 许可证）。您只需为所选�
 可以。导入 `AIAgent` 类，以编程方式使用 Hermes：
 
 ```python
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(model="anthropic/claude-opus-4.7")
 response = agent.chat("Explain quantum computing briefly")

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.auxiliary_client import _CodexCompletionsAdapter
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.auxiliary_client import _CodexCompletionsAdapter
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 def _message(text, *, phase: str | None = "final_answer", status="completed"):
@@ -49,8 +49,8 @@ def test_compressor_rejects_actual_adapter_partial_summary(monkeypatch):
         calls.append(kwargs.get("model"))
         return _adapter_response(partial, streamed=True)
 
-    monkeypatch.setattr("agent.context_compressor.call_llm", fake_call_llm)
-    monkeypatch.setattr("agent.context_compressor.get_model_context_length", lambda *a, **k: 100000)
+    monkeypatch.setattr("hermes_agent.agent.context_compressor.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.context_compressor.get_model_context_length", lambda *a, **k: 100000)
     compressor = ContextCompressor(
         model="main-model", quiet_mode=True, tail_mode="legacy", protect_first_n=2, protect_last_n=2,
         abort_on_summary_failure=False,

@@ -162,7 +162,7 @@ async def test_card_resolves_its_own_request(newer_request_pending, press):
 @pytest.mark.asyncio
 async def test_matrix_settled_card_reports_expiry(newer_request_pending):
     """A reaction on a settled Matrix card says it expired and retires the card, as the other adapters do."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     from plugins.platforms.matrix.adapter import MatrixAdapter
     adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
     adapter._user_id, adapter._client = "@bot:example.org", MagicMock()

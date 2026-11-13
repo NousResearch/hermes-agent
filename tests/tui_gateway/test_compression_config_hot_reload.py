@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 from hermes_agent.tui_gateway import server
 
 
@@ -169,7 +169,7 @@ def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
 
     # The pin is scoped to the configured default route (#116467); that scoping has its own tests,
     # this one is about the cap, so keep the 1M window in scope for the bare test runtime.
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
 
     monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 1_000_000)
     _sync_with_cfg(monkeypatch, session, {"model": {"context_length": 1_000_000}, "compression": {}})
@@ -263,7 +263,7 @@ def test_removing_threshold_restores_derived_default(monkeypatch):
 
 
 def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
-    import agent.context_compressor as cc_mod
+    import hermes_agent.agent.context_compressor as cc_mod
 
     session, compressor = _neutral_session()
     assert compressor.context_length == 600_000

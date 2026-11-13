@@ -1,4 +1,4 @@
-"""Safety and lifecycle invariants of the public ACP stdio client (``agent.acp_client.ACPClient``).
+"""Safety and lifecycle invariants of the public ACP stdio client (``hermes_agent.agent.acp_client.ACPClient``).
 
 Every ``external_process`` model provider (a plugin profile whose ``create_client`` returns an
 ``ACPClient`` subclass) inherits these, so they are pinned on the generic base with a vendor-neutral
@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.acp_client import _ACP_PROBE_CACHE, ACPClient, _acp_supported, _model_selection_request
+from hermes_agent.agent.acp_client import _ACP_PROBE_CACHE, ACPClient, _acp_supported, _model_selection_request
 from tests.waiting import wait_until
 
 
@@ -84,10 +84,10 @@ def test_read_text_file_redacts_sensitive_content(client, tmp_path, redact_toggl
     secret_file = tmp_path / "config.env"
     secret_file.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012", encoding="utf-8")
 
-    # agent.redact snapshots HERMES_REDACT_SECRETS at import time into _REDACT_ENABLED, so patching
+    # hermes_agent.agent.redact snapshots HERMES_REDACT_SECRETS at import time into _REDACT_ENABLED, so patching
     # os.environ is a no-op; flip the constant. The fs bridge hands file text to a third-party agent
     # process, so it redacts whatever the user's display toggle says.
-    with patch("agent.redact._REDACT_ENABLED", redact_toggle):
+    with patch("hermes_agent.agent.redact._REDACT_ENABLED", redact_toggle):
         response = _dispatch(client, _request("fs/read_text_file", {"path": str(secret_file)}), cwd=str(tmp_path))
 
     content = (response.get("result") or {}).get("content") or ""
@@ -459,8 +459,8 @@ def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch,
     captured = {}
 
     # The --acp support probe runs subprocess.run before Popen; inconclusive so no host CLI interferes.
-    with patch("agent.acp_client.subprocess.run", side_effect=FileNotFoundError), \
-            patch("agent.acp_client.subprocess.Popen", side_effect=_capture_popen(captured)), \
+    with patch("hermes_agent.agent.acp_client.subprocess.run", side_effect=FileNotFoundError), \
+            patch("hermes_agent.agent.acp_client.subprocess.Popen", side_effect=_capture_popen(captured)), \
             pytest.raises(RuntimeError, match="Could not start Acme ACP command"):
         _launch_client(tmp_path)._run_prompt("hello", timeout_seconds=1)
 
@@ -473,8 +473,8 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_HOME", raising=False)
     captured = {}
 
-    with patch("agent.acp_client.subprocess.run", side_effect=FileNotFoundError), \
-            patch("agent.acp_client.subprocess.Popen", side_effect=_capture_popen(captured)), \
+    with patch("hermes_agent.agent.acp_client.subprocess.run", side_effect=FileNotFoundError), \
+            patch("hermes_agent.agent.acp_client.subprocess.Popen", side_effect=_capture_popen(captured)), \
             pytest.raises(RuntimeError, match="Could not start Acme ACP command"):
         _launch_client(tmp_path)._run_prompt("hello", timeout_seconds=1)
 
@@ -489,26 +489,26 @@ def _completed(returncode=0, stdout=""):
 
 
 def test_probe_true_when_help_advertises_acp():
-    with patch("agent.acp_client.subprocess.run", return_value=_completed(stdout="Usage: acme-agent [--acp] [--stdio]")):
+    with patch("hermes_agent.agent.acp_client.subprocess.run", return_value=_completed(stdout="Usage: acme-agent [--acp] [--stdio]")):
         assert _acp_supported("acme-agent", ["--acp", "--stdio"]) is True
 
 
 def test_probe_false_when_help_lacks_acp_and_run_prompt_fast_fails(tmp_path):
-    with patch("agent.acp_client.subprocess.run", return_value=_completed(stdout="Usage: other [--print] [--model]")), \
+    with patch("hermes_agent.agent.acp_client.subprocess.run", return_value=_completed(stdout="Usage: other [--print] [--model]")), \
             pytest.raises(RuntimeError, match="ACP transport not supported"):
         _launch_client(tmp_path)._run_prompt("hello", timeout_seconds=1)
 
 
 def test_probe_inconclusive_falls_through_to_spawn_error(tmp_path):
     """Missing binary: the probe must NOT mask the established spawn error."""
-    with patch("agent.acp_client.subprocess.run", side_effect=FileNotFoundError("acme-agent not found")), \
-            patch("agent.acp_client.subprocess.Popen", side_effect=FileNotFoundError("acme-agent not found")), \
+    with patch("hermes_agent.agent.acp_client.subprocess.run", side_effect=FileNotFoundError("acme-agent not found")), \
+            patch("hermes_agent.agent.acp_client.subprocess.Popen", side_effect=FileNotFoundError("acme-agent not found")), \
             pytest.raises(RuntimeError, match="Could not start Acme ACP command"):
         _launch_client(tmp_path)._run_prompt("hello", timeout_seconds=1)
 
 
 def test_probe_skipped_for_custom_args_without_acp():
-    with patch("agent.acp_client.subprocess.run") as run_mock:
+    with patch("hermes_agent.agent.acp_client.subprocess.run") as run_mock:
         assert _acp_supported("mycli", ["--custom-transport"]) is True
     run_mock.assert_not_called()
 

@@ -120,7 +120,7 @@ def test_other_sections_still_apply_while_model_awaits_confirmation(home, contri
 
 @pytest.mark.parametrize("group_tokens, expect_warning", [(99_000, False), (120_000, True)])
 def test_profile_switch_uses_the_largest_affected_group_context(home, group_tokens, expect_warning):
-    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
+    from hermes_agent.agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
     from hermes_agent.hermes_state import SessionDB
 
     old_model = "old-local-model"

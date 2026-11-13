@@ -10,8 +10,8 @@ import tomllib
 
 import pytest
 
-from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS, non_dispatcher_owned_context
-from agent.transports import codex_app_server as cas
+from hermes_agent.agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS, non_dispatcher_owned_context
+from hermes_agent.agent.transports import codex_app_server as cas
 from hermes_cli.codex_runtime_plugin_migration import migrate
 
 

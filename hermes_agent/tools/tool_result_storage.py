@@ -415,7 +415,7 @@ _PERSISTED_PATH_RE = re.compile(r"^Full output saved to: (.+)$", re.MULTILINE)
 
 def extract_persisted_path(content: str) -> str | None:
     """File path from a <persisted-output> block, or None (lets the result-reference stubbing
-    guard in agent/tool_guardrails.py carry the spillover path instead of leaving it dangling)."""
+    guard in hermes_agent/agent/tool_guardrails.py carry the spillover path instead of leaving it dangling)."""
     match = (_PERSISTED_PATH_RE.search(content)
              if isinstance(content, str) and PERSISTED_OUTPUT_TAG in content else None)
     return match.group(1).strip() if match else None

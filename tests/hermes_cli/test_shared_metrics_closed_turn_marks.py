@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-from agent import relay_runtime
+from hermes_agent.agent import relay_runtime
 from hermes_cli import plugins
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_events as events

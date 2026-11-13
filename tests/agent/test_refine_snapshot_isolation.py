@@ -22,7 +22,7 @@ def _agent_with_real_chokepoint():
     Everything below the chokepoint (thread spawn) is captured at
     ``_spawn_background_review_now`` so no fork actually runs.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = MagicMock()
     agent.valid_tool_names = {"memory"}

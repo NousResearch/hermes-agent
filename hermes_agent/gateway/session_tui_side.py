@@ -88,9 +88,9 @@ def _resolve_runtime(authority, policy):
 
 def _side_agent(authority, policy, live, task_id, **overrides):
     """A fresh ``AIAgent`` on the session's frozen route (call inside ``_side_scope``)."""
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
     from hermes_agent.gateway.run import _checkpoint_agent_kwargs
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     runner = authority.runner
     model, runtime = _resolve_runtime(authority, policy)
     config = policy.config(authority)
@@ -197,7 +197,7 @@ async def background(connection, ref, params):
 
 async def btw(connection, ref, params):
     """``/btw <question>``: a side question over a snapshot of the conversation
-    (``agent/side_question.py``); the live history, FIFO and prompt cache stay untouched."""
+    (``hermes_agent/agent/side_question.py``); the live history, FIFO and prompt cache stay untouched."""
     _live, policy, text, task_id = _admit(connection, ref, params, 'btw')
     authority = connection.authority
     # The resident agent's conversation (a cache-parity fork replays it); a session with no
@@ -210,7 +210,7 @@ async def btw(connection, ref, params):
     handle = _SideQuestionStop()
 
     def body():
-        from agent.side_question import answer_side_question
+        from hermes_agent.agent.side_question import answer_side_question
         history = snapshot or authority.db.get_messages_as_conversation(target)
         with _side_scope(authority, policy, task_id):
             model, runtime = _resolve_runtime(authority, policy)
@@ -243,7 +243,7 @@ class _SideQuestionStop:
         with self._lock:
             fork = self._fork
         if fork is not None:
-            from agent.interrupt_compat import request_hard_interrupt
+            from hermes_agent.agent.interrupt_compat import request_hard_interrupt
             request_hard_interrupt(fork, message)
 
     def abandoned(self):

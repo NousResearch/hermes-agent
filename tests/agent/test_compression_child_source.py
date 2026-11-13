@@ -5,7 +5,7 @@ import types
 
 import pytest
 
-from agent import conversation_compression as cc
+from hermes_agent.agent import conversation_compression as cc
 from hermes_agent.hermes_state import SessionDB
 
 

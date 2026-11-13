@@ -8,11 +8,11 @@ import pytest
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
 
-from agent.chat_completion_helpers import build_assistant_message, interruptible_streaming_api_call
-from agent.chat_completion_helpers_relay import RelayChatAccumulator
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.chat_completion_helpers import build_assistant_message, interruptible_streaming_api_call
+from hermes_agent.agent.chat_completion_helpers_relay import RelayChatAccumulator
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 @pytest.mark.parametrize("collector", ["main", "relay"])

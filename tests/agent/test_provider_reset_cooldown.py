@@ -5,14 +5,14 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.error_classifier import FailoverReason
-from run_agent import AIAgent
+from hermes_agent.agent.error_classifier import FailoverReason
+from hermes_agent.run_agent import AIAgent
 
 def _agent_with_one_fallback():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key", provider="openrouter", base_url="https://openrouter.ai/api/v1",
@@ -42,9 +42,9 @@ def test_fallback_switch_benches_primary_until_valid_future_provider_reset(reset
     the reset_at kwarg must reach the cooldown arming, not just the helper."""
     agent = _agent_with_one_fallback()
     with (
-        patch("agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
-        patch("agent.fallback_cooldown.time.time", return_value=1_700_000_000),
-        patch("agent.fallback_cooldown.time.monotonic", return_value=500),
+        patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
+        patch("hermes_agent.agent.fallback_cooldown.time.time", return_value=1_700_000_000),
+        patch("hermes_agent.agent.fallback_cooldown.time.monotonic", return_value=500),
     ):
         assert agent._try_activate_fallback(reason=FailoverReason.rate_limit, reset_at=reset_at) is True
 
@@ -57,9 +57,9 @@ def test_min_switch_reset_seconds_keeps_primary_when_reset_is_imminent(threshold
     threshold, so the turn stays on the primary and no cooldown is armed; 0 (default) switches."""
     agent = _agent_with_one_fallback()
     with (
-        patch("agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
+        patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(_fallback_client(), "gpt-5.5")),
         patch("hermes_cli.config.load_config", return_value={"fallback": {"min_switch_reset_seconds": threshold}}),
-        patch("agent.fallback_cooldown.time.time", return_value=1_700_000_000),
+        patch("hermes_agent.agent.fallback_cooldown.time.time", return_value=1_700_000_000),
     ):
         activated = agent._try_activate_fallback(reason=FailoverReason.rate_limit, reset_at=1_700_000_030)
 

@@ -6,14 +6,14 @@ from datetime import datetime, timezone, UTC
 
 import pytest
 
-from agent.account_usage import (
+from hermes_agent.agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
     _fetch_portal_account,
     fetch_account_usage,
     render_account_usage_lines,
 )
-from agent.billing_usage import fetch_nous_account as _billing_fetch_nous_account
+from hermes_agent.agent.billing_usage import fetch_nous_account as _billing_fetch_nous_account
 from providers.base import ProviderProfile
 
 
@@ -74,7 +74,7 @@ class _RoutingClient:
 
 def test_fetch_account_usage_codex(monkeypatch):
     monkeypatch.setattr(
-        "agent.account_usage.resolve_codex_runtime_credentials",
+        "hermes_agent.agent.account_usage.resolve_codex_runtime_credentials",
         lambda refresh_if_expiring=True: {
             "provider": "openai-codex",
             "base_url": "https://chatgpt.com/backend-api/codex",
@@ -82,11 +82,11 @@ def test_fetch_account_usage_codex(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "agent.account_usage._read_codex_tokens",
+        "hermes_agent.agent.account_usage._read_codex_tokens",
         lambda: {"tokens": {"account_id": "acct_123"}},
     )
     monkeypatch.setattr(
-        "agent.account_usage.httpx.Client",
+        "hermes_agent.agent.account_usage.httpx.Client",
         lambda timeout=15.0: _Client(
             {
                 "plan_type": "pro",
@@ -153,7 +153,7 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
         AccountUsageSnapshot(provider="openrouter", source="plugin", fetched_at=datetime.now(UTC)),
         name="openrouter",
     )
-    monkeypatch.setattr("agent.account_usage._USAGE_FETCHERS", {"openrouter": lambda base_url, api_key: builtin})
+    monkeypatch.setattr("hermes_agent.agent.account_usage._USAGE_FETCHERS", {"openrouter": lambda base_url, api_key: builtin})
     _register_profile(monkeypatch, profile)
 
     assert fetch_account_usage("openrouter") is builtin
@@ -162,7 +162,7 @@ def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
 
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
-        "agent.account_usage.resolve_runtime_provider",
+        "hermes_agent.agent.account_usage.resolve_runtime_provider",
         lambda requested, explicit_base_url=None, explicit_api_key=None: {
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
@@ -170,7 +170,7 @@ def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_depreca
         },
     )
     monkeypatch.setattr(
-        "agent.account_usage.httpx.Client",
+        "hermes_agent.agent.account_usage.httpx.Client",
         lambda timeout=10.0: _RoutingClient(
             {
                 "https://openrouter.ai/api/v1/credits": {
@@ -209,7 +209,7 @@ def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_depreca
 
 def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit(monkeypatch):
     monkeypatch.setattr(
-        "agent.account_usage.resolve_runtime_provider",
+        "hermes_agent.agent.account_usage.resolve_runtime_provider",
         lambda requested, explicit_base_url=None, explicit_api_key=None: {
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
@@ -217,7 +217,7 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
         },
     )
     monkeypatch.setattr(
-        "agent.account_usage.httpx.Client",
+        "hermes_agent.agent.account_usage.httpx.Client",
         lambda timeout=10.0: _RoutingClient(
             {
                 "https://openrouter.ai/api/v1/credits": {
@@ -251,7 +251,7 @@ def test_plugin_usage_hook_is_bounded_and_fails_open(monkeypatch):
     import threading
     import time
 
-    from agent import account_usage
+    from hermes_agent.agent import account_usage
 
     started = threading.Event()
 
@@ -279,7 +279,7 @@ def test_plugin_usage_hook_failure_never_reaches_threading_excepthook(monkeypatc
     ``threading.excepthook`` prints a traceback into every ``/usage`` surface."""
     import threading
 
-    from agent import account_usage
+    from hermes_agent.agent import account_usage
 
     class _Boom(ProviderProfile):
         def fetch_account_usage(self, *, base_url=None, api_key=None):

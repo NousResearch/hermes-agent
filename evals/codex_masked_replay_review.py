@@ -14,8 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import run_agent
-from agent import error_classifier
+from hermes_agent import run_agent
+from hermes_agent.agent import error_classifier
 from openai import APIError
 import httpx
 

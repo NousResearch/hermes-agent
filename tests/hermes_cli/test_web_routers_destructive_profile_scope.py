@@ -9,7 +9,7 @@ These pin both halves of the contract:
   profiles are served, and still means the launch profile on a genuinely single-profile host.
 
 Multi-profile hosting is NOT faked here. ``destructive_profile`` asks
-``agent.secret_scope.is_multiplex_active()``, and that flag is only ever set by the boot
+``hermes_agent.agent.secret_scope.is_multiplex_active()``, and that flag is only ever set by the boot
 wiring (``activate_multi_profile_hosting_eagerly``) or by the lazy backstop inside
 ``_config_profile_scope``. Patching the predicate would leave exactly that wiring — the
 thing the whole 400 branch rests on — untested, so the tests drive the real path and the
@@ -30,7 +30,7 @@ def _multiplex_state_is_per_test():
     request 400 by accident) and restored exactly as found, including the frozen launch
     env snapshot activation captures.
     """
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.tui_gateway import launch_profile_policy
 
     was_active = secret_scope.is_multiplex_active()
@@ -120,8 +120,8 @@ def seams(monkeypatch):
     session-store open names, ``pool_home`` = the home the credential-pool body resolves.
     A route that reaches any of them after a 400 shows up as a non-empty list.
     """
-    from agent import credential_pool
-    from agent import credential_sources
+    from hermes_agent.agent import credential_pool
+    from hermes_agent.agent import credential_sources
     from hermes_cli import web_server_gateway, web_server_sessions
     from hermes_cli.config import get_hermes_home
 
@@ -161,7 +161,7 @@ def multiplexed(homes):
     homes and flips ``set_multiplex_active`` itself; asserting it returned True is what
     proves the wiring — not just the flag — is what refuses the unnamed requests below.
     """
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
 
     assert activate_multi_profile_hosting_eagerly() is True, "boot probe did not see two homes"
@@ -300,7 +300,7 @@ def test_credential_pool_delete_runs_in_the_named_profiles_home(client, homes, s
 
 def test_a_request_for_another_profile_arms_the_guard(client, homes):
     """The lazy backstop: the first cross-profile request is itself the activation."""
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
 
     assert not is_multiplex_active()
     assert client.get("/api/memory?profile=worker_beta").status_code == 200
@@ -314,7 +314,7 @@ def test_unnamed_profile_still_means_the_launch_profile_on_a_single_profile_host
     client, homes, monkeypatch, tmp_path
 ):
     """A plain ``hermes serve`` has nothing to confuse: `curl` with no profile is unchanged."""
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_cli import profiles
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
 

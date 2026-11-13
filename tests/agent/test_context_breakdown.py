@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_breakdown import compute_session_context_breakdown
+from hermes_agent.agent.context_breakdown import compute_session_context_breakdown
 
 def _make_agent(
     *,
@@ -39,7 +39,7 @@ def test_breakdown_includes_major_categories():
     history = [{"role": "user", "content": "hello there"}]
     agent, parts = _make_agent(stable=stable, context=context, volatile=volatile)
 
-    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+    with patch("hermes_agent.agent.system_prompt.build_system_prompt_parts", return_value=parts):
         data = compute_session_context_breakdown(agent, history)
 
     ids = {item["id"] for item in data["categories"]}
@@ -50,15 +50,15 @@ def test_breakdown_includes_major_categories():
 def test_context_used_never_exceeds_model_window():
     """Regression for #109760: anchor + appended-delta estimate can overshoot the window
     (355.8k / 262.1k); one prompt can never be larger than the model's context."""
-    from agent.context_breakdown import context_usage_fields
-    from agent.usage_anchor import capture_usage_anchor
+    from hermes_agent.agent.context_breakdown import context_usage_fields
+    from hermes_agent.agent.usage_anchor import capture_usage_anchor
 
     history = [{"role": "user", "content": "start"}, {"role": "assistant", "content": "ok"}]
     agent, parts = _make_agent(context_length=262_144)
     agent._turn_base_usage_anchor = capture_usage_anchor(250_000, 1_000, history)
     history = history + [{"role": "user", "content": "x" * 800_000}]
 
-    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+    with patch("hermes_agent.agent.system_prompt.build_system_prompt_parts", return_value=parts):
         data = compute_session_context_breakdown(agent, history)
 
     assert data["context_source"] == "provider_usage_plus_estimate"
@@ -83,7 +83,7 @@ def test_empty_transcript_still_reports_the_conversation_category():
     )
     history = []  # nothing said yet
 
-    with patch("agent.system_prompt.build_system_prompt_parts", return_value=parts):
+    with patch("hermes_agent.agent.system_prompt.build_system_prompt_parts", return_value=parts):
         data = compute_session_context_breakdown(agent, history)
 
     categories = {item["id"]: item["tokens"] for item in data["categories"]}
@@ -95,7 +95,7 @@ def test_empty_transcript_still_reports_the_conversation_category():
 
 # ── /context renderers (pure functions over the payload) ────────────────────
 
-from agent.context_breakdown import (
+from hermes_agent.agent.context_breakdown import (
     render_context_breakdown_lines,
     render_context_grid,
 )

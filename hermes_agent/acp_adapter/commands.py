@@ -16,7 +16,7 @@ logger = logging.getLogger("hermes_agent.acp_adapter.server")
 
 def _estimate_tokens(history: list, agent: Any, system_prompt: str | None = None, tools: Any = None) -> int:
     """Rough request-token estimate over history + system prompt + tool schemas."""
-    from agent.model_metadata import estimate_request_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
 
     if system_prompt is None:
         system_prompt = getattr(agent, "_cached_system_prompt", "") or ""
@@ -113,7 +113,7 @@ class SlashCommandsMixin:
         # into the persisted cached prompt. Pin inside a fresh context: no leak, no teardown.
         def _dispatch() -> str | None:
             try:
-                from agent.runtime_cwd import set_session_cwd
+                from hermes_agent.agent.runtime_cwd import set_session_cwd
 
                 set_session_cwd(state.cwd)
             except Exception:
@@ -153,7 +153,7 @@ class SlashCommandsMixin:
         try:
             from hermes_agent.model_tools import get_tool_definitions
             from types import SimpleNamespace
-            from agent.memory_manager_tools import inject_memory_provider_tools
+            from hermes_agent.agent.memory_manager_tools import inject_memory_provider_tools
 
             toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None))
             tools = get_tool_definitions(
@@ -252,8 +252,8 @@ class SlashCommandsMixin:
 
     def _cmd_compress(self, args: str, state: SessionState) -> str:
         """``/compress [here [N] | <focus>] [--preview] [--aggressive]`` through the shared core."""
-        from agent.conversation_compression import finalize_context_engine_compression_notification
-        from agent.conversation_compression_manual import (
+        from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
+        from hermes_agent.agent.conversation_compression_manual import (
             AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
 
         if not state.history:

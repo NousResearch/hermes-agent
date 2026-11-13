@@ -18,7 +18,7 @@ import sys
 
 import pytest
 
-from agent.runtime_scope import bind_state
+from hermes_agent.agent.runtime_scope import bind_state
 from hermes_scope import Principal, Scope
 from hermes_agent.tools.hosted_tool_policy import HostedToolRefused
 
@@ -67,7 +67,7 @@ def test_checkpoints_take_and_restore_nothing_on_the_host(tmp_path, no_spawn):
 
 
 def test_inline_skill_shell_does_not_run_on_the_host(tmp_path, no_spawn):
-    from agent.skill_preprocessing import run_inline_shell
+    from hermes_agent.agent.skill_preprocessing import run_inline_shell
 
     with bind_state(A):
         out = run_inline_shell("echo HOST", tmp_path, 5)
@@ -75,7 +75,7 @@ def test_inline_skill_shell_does_not_run_on_the_host(tmp_path, no_spawn):
 
 
 def test_context_references_read_nothing_on_the_host(tmp_path, monkeypatch):
-    from agent.context_references import preprocess_context_references
+    from hermes_agent.agent.context_references import preprocess_context_references
     from hermes_agent.tools.environments import sandbox_conformance as conformance
 
     planted = tmp_path / "secret.txt"
@@ -87,7 +87,7 @@ def test_context_references_read_nothing_on_the_host(tmp_path, monkeypatch):
 
 
 def test_the_workspace_probe_runs_no_git_on_the_host(tmp_path, no_spawn):
-    from agent.coding_context import build_coding_workspace_block
+    from hermes_agent.agent.coding_context import build_coding_workspace_block
 
     (tmp_path / ".git").mkdir()
     with bind_state(A):
@@ -157,8 +157,8 @@ def test_document_extraction_is_not_done_on_the_host(monkeypatch):
 
 def test_local_calls_still_reach_every_guarded_path(tmp_path):
     """With no scope bound the same entry points behave as before (spot checks of the cheap ones)."""
-    from agent.coding_context import build_coding_workspace_block
-    from agent.skill_preprocessing import run_inline_shell
+    from hermes_agent.agent.coding_context import build_coding_workspace_block
+    from hermes_agent.agent.skill_preprocessing import run_inline_shell
     from hermes_agent.tools.checkpoint_manager import CheckpointManager
 
     assert run_inline_shell("echo LOCAL", tmp_path, 5) == "LOCAL"

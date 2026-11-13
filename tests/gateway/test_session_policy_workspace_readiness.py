@@ -34,7 +34,7 @@ async def test_turn_in_removed_workspace_names_the_folder_instead_of_failing_gen
     generic "model request failed" / "something went wrong"."""
     from types import SimpleNamespace
 
-    from agent.error_surface import build_error_surface_from_result
+    from hermes_agent.agent.error_surface import build_error_surface_from_result
     from hermes_agent.gateway.run_turn_runner import TurnRunner
     from hermes_agent.gateway.session_results import execution_result
     from tests.gateway.test_session_policy_verbs import _owner

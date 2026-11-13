@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from agent.session_persistence import _db_flush_collect
+from hermes_agent.agent.session_persistence import _db_flush_collect
 from hermes_agent.gateway.run import _build_gateway_agent_history
 
 

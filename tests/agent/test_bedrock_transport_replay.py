@@ -82,8 +82,8 @@ def _stream_response():
 
 @pytest.mark.parametrize("streaming", [False, True])
 def test_bedrock_transport_preserves_reasoning_and_order(streaming):
-    from agent.bedrock_adapter import normalize_converse_response, normalize_converse_stream_events, convert_messages_to_converse
-    from agent.transports.bedrock import BedrockTransport
+    from hermes_agent.agent.bedrock_adapter import normalize_converse_response, normalize_converse_stream_events, convert_messages_to_converse
+    from hermes_agent.agent.transports.bedrock import BedrockTransport
 
     raw = _stream_response() if streaming else _raw_response()
     adapter_response = (
@@ -99,7 +99,7 @@ def test_bedrock_transport_preserves_reasoning_and_order(streaming):
     # Exercise the real history builder against the transport's canonical
     # NormalizedResponse, rather than the adapter-only SimpleNamespace.
     sys.modules.setdefault("requests", ModuleType("requests"))
-    from agent.chat_completion_helpers import build_assistant_message
+    from hermes_agent.agent.chat_completion_helpers import build_assistant_message
     history = build_assistant_message(_FakeAgent(), normalized, "tool_calls")
     assert history["reasoning_details"] == normalized.provider_data["reasoning_details"]
     assert history["bedrock_content_blocks"] == normalized.provider_data["bedrock_content_blocks"]

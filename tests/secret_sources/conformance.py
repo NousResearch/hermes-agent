@@ -1,4 +1,4 @@
-"""Conformance kit for :class:`agent.secret_sources.base.SecretSource`.
+"""Conformance kit for :class:`hermes_agent.agent.secret_sources.base.SecretSource`.
 
 Any secret-source backend — bundled or external plugin — can validate
 itself against the contract by subclassing :class:`SecretSourceConformance`
@@ -24,12 +24,12 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_sources.base import (
+from hermes_agent.agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION,
     FetchResult,
     SecretSource,
 )
-from agent.secret_sources.registry import (
+from hermes_agent.agent.secret_sources.registry import (
     _reset_registry_for_tests,
     apply_all,
     register_source,
@@ -96,7 +96,7 @@ class SecretSourceConformance:
         assert source.fetch_timeout_seconds({"timeout_seconds": "junk"}) > 0
 
     def test_protected_vars_are_valid_names(self, source, minimal_cfg):
-        from agent.secret_sources.base import is_valid_env_name
+        from hermes_agent.agent.secret_sources.base import is_valid_env_name
 
         for var in source.protected_env_vars(minimal_cfg):
             assert is_valid_env_name(var)
@@ -109,7 +109,7 @@ class SecretSourceConformance:
         _reset_registry_for_tests()
         # Prevent the bundled sources from interfering.
         monkeypatch.setattr(
-            "agent.secret_sources.registry._ensure_builtin_sources", lambda: None
+            "hermes_agent.agent.secret_sources.registry._ensure_builtin_sources", lambda: None
         )
         try:
             assert register_source(source), "register_source() rejected the source"

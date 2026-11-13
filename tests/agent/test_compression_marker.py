@@ -2,7 +2,7 @@
 
 The bare bracketed truncation idiom those renderers used to compose was imitated
 from replayed context into new durable writes (see #83435/#83714). All elision now
-routes through ``agent.compression_marker.elide`` / ``elide_middle``; this file pins
+routes through ``hermes_agent.agent.compression_marker.elide`` / ``elide_middle``; this file pins
 guard parity and that the real renderers emit a guard-visible marker, never the idiom.
 """
 from __future__ import annotations
@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 import re
 
-from agent.compression_marker import (
+from hermes_agent.agent.compression_marker import (
     _COMPRESSION_MARKER_RE,
     elide,
     elide_middle,
 )
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     _build_verbatim_user_section,
     _compact_fallback_turn,

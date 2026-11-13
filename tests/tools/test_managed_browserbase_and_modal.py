@@ -53,13 +53,13 @@ def _restore_tool_and_agent_modules():
         for name, module in sys.modules.items()
         if name == "hermes_agent.tools"
         or name.startswith("hermes_agent.tools.")
-        or name == "agent"
-        or name.startswith("agent.")
+        or name == "hermes_agent.agent"
+        or name.startswith("hermes_agent.agent.")
     }
     try:
         yield
     finally:
-        _reset_modules(("hermes_agent.tools", "agent"))
+        _reset_modules(("hermes_agent.tools", "hermes_agent.agent"))
         sys.modules.update(original_modules)
 
 
@@ -84,7 +84,7 @@ def _enable_managed_nous_tools(monkeypatch):
 
 
 def _install_fake_tools_package():
-    _reset_modules(("hermes_agent.tools", "agent"))
+    _reset_modules(("hermes_agent.tools", "hermes_agent.agent"))
 
     tools_package = types.ModuleType("hermes_agent.tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]
@@ -94,20 +94,20 @@ def _install_fake_tools_package():
     env_package.__path__ = [str(TOOLS_DIR / "environments")]  # type: ignore[attr-defined]
     sys.modules["hermes_agent.tools.environments"] = env_package
 
-    agent_package = types.ModuleType("agent")
-    agent_package.__path__ = [str(REPO_ROOT / "agent")]  # type: ignore[attr-defined]
-    sys.modules["agent"] = agent_package
-    sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
+    agent_package = types.ModuleType("hermes_agent.agent")
+    agent_package.__path__ = [str(REPO_ROOT / "hermes_agent" / "agent")]  # type: ignore[attr-defined]
+    sys.modules["hermes_agent.agent"] = agent_package
+    sys.modules["hermes_agent.agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",
     )
     # Keep unrelated imports real; only replace the collaborators this fixture
     # isolates. hermes_agent.tools.browser_tool imports redact_cdp_url;
     # hermes_cli.auth (imported transitively by nous_account /
     # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
-    sys.modules["agent.redact"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.agent.redact"] = types.SimpleNamespace(
         redact_cdp_url=lambda value: str(value),
     )
-    sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.agent.credential_persistence"] = types.SimpleNamespace(
         sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,
     )
 
@@ -117,12 +117,12 @@ def _install_fake_tools_package():
     # tests instantiate the real plugin classes via _load_tool_module
     # below, so the stubs only need to satisfy import + isinstance.
     class _StubBrowserProvider:
-        """Minimal BrowserProvider stub for ``from agent.browser_provider import BrowserProvider``."""
+        """Minimal BrowserProvider stub for ``from hermes_agent.agent.browser_provider import BrowserProvider``."""
 
-    sys.modules["agent.browser_provider"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.agent.browser_provider"] = types.SimpleNamespace(
         BrowserProvider=_StubBrowserProvider,
     )
-    sys.modules["agent.browser_registry"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.agent.browser_registry"] = types.SimpleNamespace(
         get_provider=lambda name: None,
         list_providers=list,
         register_provider=lambda provider: None,

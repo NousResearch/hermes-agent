@@ -196,7 +196,7 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
         )
         if slug_suffix and slug_suffix in builtin_aggregators:
             return True
-        from agent.model_metadata import _infer_provider_from_url
+        from hermes_agent.agent.model_metadata import _infer_provider_from_url
 
         inferred = _infer_provider_from_url(str(row.get("api_url") or ""))
         return inferred is not None and inferred in builtin_aggregators
@@ -263,7 +263,7 @@ def _apply_limits(rows: list[dict]) -> None:
     import logging
     from datetime import datetime, timezone
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     from hermes_cli.auth import read_credential_pool
 
     def iso(epoch: float) -> str:
@@ -300,7 +300,7 @@ def _apply_usage(rows: list[dict]) -> None:
     a provider-wide percentage there would be a fabricated average. A snapshot older than the
     staleness bound renders ``unknown``/``unavailable``, never a confident stale gauge. Nothing here
     mutates the pool or disables routing: telemetry never benches a credential."""
-    from agent.account_usage_cache import (
+    from hermes_agent.agent.account_usage_cache import (
         cached_account_usage, has_account_usage, refresh_account_usage_async,
         refresh_account_usage_entries_async, snapshot_is_stale,
     )
@@ -382,8 +382,8 @@ def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
     import logging
     import time
 
-    from agent.account_usage_cache import _identity_id_for, cached_account_usage, has_account_usage, snapshot_is_stale
-    from agent.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
+    from hermes_agent.agent.account_usage_cache import _identity_id_for, cached_account_usage, has_account_usage, snapshot_is_stale
+    from hermes_agent.agent.credential_pool import STATUS_DEAD, _exhausted_until, load_pool
 
     try:
         pool = load_pool(slug)
@@ -450,7 +450,7 @@ def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
 
 def _pool_entry_host(slug: str, entry) -> str:
     """Normalized route host of one entry, for account dedupe scoping. Never serialized."""
-    from agent.credential_pool import _norm_url
+    from hermes_agent.agent.credential_pool import _norm_url
 
     if slug == "openai-codex":
         from hermes_cli.auth_codex import _codex_pool_route_base_url
@@ -544,11 +544,11 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from agent.codex_service_tiers import daybreak_offered, ultrafast_offered
+    from hermes_agent.agent.codex_service_tiers import daybreak_offered, ultrafast_offered
     from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
-        from agent.models_dev import get_model_capabilities
+        from hermes_agent.agent.models_dev import get_model_capabilities
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
 
@@ -609,7 +609,7 @@ def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) ->
     row, whose ``models:`` list is an explicit allow-list — get an empty list and keep top-N
     behaviour (#120217)."""
     try:
-        from agent.models_dev import get_model_info
+        from hermes_agent.agent.models_dev import get_model_info
     except Exception:
         get_model_info = None  # type: ignore[assignment]
 
@@ -754,7 +754,7 @@ def _anthropic_oauth_credentials_present() -> bool:
     """True when the user explicitly authenticated Anthropic via OAuth (Hermes device flow or Claude Code
     login) — those leave no trace in active_provider / model.provider / API-key env vars."""
     try:
-        from agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
+        from hermes_agent.agent.anthropic_credentials import read_claude_code_credentials, read_hermes_oauth_credentials
 
         readers = (read_hermes_oauth_credentials, read_claude_code_credentials)
         if any((read() or {}).get("accessToken") for read in readers):
@@ -765,7 +765,7 @@ def _anthropic_oauth_credentials_present() -> bool:
     # accepts them via pool.has_credentials(), so the filter must too or those rows are built then
     # silently dropped. Read-only (no load_pool) so a picker open never mutates auth.json.
     try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH
+        from hermes_agent.agent.credential_pool import AUTH_TYPE_OAUTH
         from hermes_cli.auth import read_credential_pool
 
         for entry in read_credential_pool("anthropic"):
@@ -899,7 +899,7 @@ def _plan_usage_window(g) -> dict:
     """One window-plan allowance in main's ``ProviderUsageWindow`` shape. The label is Hermes's row title
     (``Today``), like the other providers' English window labels."""
     from datetime import datetime
-    from agent.usage_gauges import WindowGauge, gauge_title
+    from hermes_agent.agent.usage_gauges import WindowGauge, gauge_title
     return {
         "label": gauge_title(WindowGauge(g.label, g.scope, g.title or g.label, 0)),
         "used_percent": round(g.used_fraction * 100.0, 2),

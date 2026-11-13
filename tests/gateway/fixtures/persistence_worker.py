@@ -42,7 +42,7 @@ for line in sys.stdin:
     try:
         command = json.loads(line)
         if command['op'] == 'start':
-            from agent import runtime_session_store as module
+            from hermes_agent.agent import runtime_session_store as module
             home = Path(command['home'])
             transport = module.WorkerRPC(home)
             scope = {'profile_id': str(home), 'session_id': command['session_id'],

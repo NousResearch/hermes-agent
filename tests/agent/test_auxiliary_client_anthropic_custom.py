@@ -1,4 +1,4 @@
-"""Tests for agent.auxiliary_client._try_custom_endpoint's anthropic_messages branch.
+"""Tests for hermes_agent.agent.auxiliary_client._try_custom_endpoint's anthropic_messages branch.
 
 When a user configures a custom endpoint with ``api_mode: anthropic_messages``
 (e.g. MiniMax, Zhipu GLM, LiteLLM in Anthropic-proxy mode), auxiliary tasks
@@ -27,24 +27,24 @@ def _install_anthropic_adapter_mocks():
     """Patch build_anthropic_client so the test doesn't need the SDK."""
     fake_client = MagicMock(name="anthropic_client")
     return patch(
-        "agent.anthropic_adapter.build_anthropic_client",
+        "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
         return_value=fake_client,
     ), fake_client
 
 
 def test_custom_endpoint_anthropic_messages_builds_anthropic_wrapper():
     """api_mode=anthropic_messages → returns AnthropicAuxiliaryClient, not OpenAI."""
-    from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
 
     with patch(
-        "agent.auxiliary_client._resolve_custom_runtime",
+        "hermes_agent.agent.auxiliary_client._resolve_custom_runtime",
         return_value=(
             "https://api.minimax.io/anthropic",
             "minimax-key",
             "anthropic_messages",
         ),
     ), patch(
-        "agent.auxiliary_client._read_main_model",
+        "hermes_agent.agent.auxiliary_client._read_main_model",
         return_value="claude-sonnet-4-6",
     ):
         adapter_patch, _fake_client = _install_anthropic_adapter_mocks()
@@ -64,18 +64,18 @@ def test_custom_endpoint_anthropic_messages_builds_anthropic_wrapper():
 
 def test_custom_endpoint_anthropic_messages_falls_back_when_sdk_missing():
     """Graceful degradation when anthropic SDK is unavailable."""
-    from agent.auxiliary_client import _try_custom_endpoint
+    from hermes_agent.agent.auxiliary_client import _try_custom_endpoint
 
     import_error = ImportError("anthropic package not installed")
 
     with patch(
-        "agent.auxiliary_client._resolve_custom_runtime",
+        "hermes_agent.agent.auxiliary_client._resolve_custom_runtime",
         return_value=("https://api.minimax.io/anthropic", "k", "anthropic_messages"),
     ), patch(
-        "agent.auxiliary_client._read_main_model",
+        "hermes_agent.agent.auxiliary_client._read_main_model",
         return_value="claude-sonnet-4-6",
     ), patch(
-        "agent.anthropic_adapter.build_anthropic_client",
+        "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
         side_effect=import_error,
     ):
         client, model = _try_custom_endpoint()
@@ -85,19 +85,19 @@ def test_custom_endpoint_anthropic_messages_falls_back_when_sdk_missing():
     assert client is not None
     assert model == "claude-sonnet-4-6"
     # OpenAI client, not AnthropicAuxiliaryClient.
-    from agent.auxiliary_client import AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import AnthropicAuxiliaryClient
     assert not isinstance(client, AnthropicAuxiliaryClient)
 
 
 def test_custom_endpoint_chat_completions_still_uses_openai_wire():
     """Regression: default path (no api_mode) must remain OpenAI client."""
-    from agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
+    from hermes_agent.agent.auxiliary_client import _try_custom_endpoint, AnthropicAuxiliaryClient
 
     with patch(
-        "agent.auxiliary_client._resolve_custom_runtime",
+        "hermes_agent.agent.auxiliary_client._resolve_custom_runtime",
         return_value=("https://api.example.com/v1", "key", None),
     ), patch(
-        "agent.auxiliary_client._read_main_model",
+        "hermes_agent.agent.auxiliary_client._read_main_model",
         return_value="my-model",
     ):
         client, model = _try_custom_endpoint()

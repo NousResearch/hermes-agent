@@ -15,7 +15,7 @@ import pytest
 
 
 def _make_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -112,8 +112,8 @@ class TestSingleWriterSink:
 
 
 class TestSingleWriterLoop:
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_consume_loop_stops_when_superseded_mid_stream(self, _close, mock_create):
         """The real streaming loop bails out the moment a newer attempt claims
         the sink, so a superseded stream cannot interleave into the turn."""
@@ -144,7 +144,7 @@ class TestSingleWriterLoop:
         managed_stream.final_response = None
 
         with patch(
-            "agent.relay_llm.stream",
+            "hermes_agent.agent.relay_llm.stream",
             return_value=managed_stream,
         ):
             with pytest.raises(AttributeError):
@@ -161,7 +161,7 @@ class TestCodexSingleWriter:
         return SimpleNamespace(type=event_type, **fields)
 
     def test_codex_stream_claims_writer_and_stops_when_superseded(self):
-        from agent.codex_runtime import run_codex_stream
+        from hermes_agent.agent.codex_runtime import run_codex_stream
 
         agent = _make_agent()
         agent.api_mode = "codex_responses"
@@ -195,7 +195,7 @@ class TestCodexSingleWriter:
 
 
     def test_codex_interrupt_closes_stream_without_draining_provider(self):
-        from agent.codex_runtime import run_codex_stream
+        from hermes_agent.agent.codex_runtime import run_codex_stream
 
         agent = _make_agent()
         agent.api_mode = "codex_responses"

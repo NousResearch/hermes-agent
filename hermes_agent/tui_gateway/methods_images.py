@@ -21,7 +21,7 @@ def _image_to_data_url(ref: str, cap: int):
     try:
         if ref.startswith(("http://", "https://")):
             # Provider-result URLs are remote-party-controlled — same SSRF guard as
-            # agent/provider_media.save_url (which may have fallen back to the bare URL).
+            # hermes_agent/agent/provider_media.save_url (which may have fallen back to the bare URL).
             from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_safe_url
             if not is_safe_url(ref):
                 return None
@@ -101,7 +101,7 @@ def _(rid, params: dict) -> dict:
     """Params: ``path``, ``cols``/``rows`` (cell budget), ``graphics`` (client owns a real
     terminal), ``terminal`` (the client's own protocol pick). Result: ``{mode, cols, rows, ...}``
     — see ``ImageRenderResult``."""
-    from agent.terminal_image import local_image_path, render_inline_image, resolve_inline_mode
+    from hermes_agent.agent.terminal_image import local_image_path, render_inline_image, resolve_inline_mode
     # The client's terminal, never this process's env: one gateway serves many clients.
     mode = resolve_inline_mode(_display_cfg().get("inline_images", "auto"), graphics=params.get("graphics") is True,
                                detected="kitty" if params.get("terminal") == "kitty" else "unicode")

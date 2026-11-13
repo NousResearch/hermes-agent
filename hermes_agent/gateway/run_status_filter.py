@@ -11,7 +11,7 @@ so similar or user-quoted text is never swallowed.
 import re
 from typing import Any
 
-from agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
+from hermes_agent.agent.conversation_compression import CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE
 
 # "" = an unclassified source: keep the warning (the pre-#101003 behaviour) rather than guess it is shared.
 _DM_CHAT_TYPES = frozenset({"dm", "private", "direct", ""})
@@ -33,7 +33,7 @@ def _template_regex(template: str) -> re.Pattern[str]:
     return re.compile("".join(fields.get(part) or re.escape(part) for part in parts))
 
 
-# The empty-response ladder's buffered lines (agent/turn_empty_response.py), flushed when the turn ends
+# The empty-response ladder's buffered lines (hermes_agent/agent/turn_empty_response.py), flushed when the turn ends
 # empty: its final reply explains that, and "switching to fallback..." would otherwise be the chat's last
 # status even though the switch failed. Chat surfaces drop them like the retry counter.
 EMPTY_LADDER_STATUS_PATTERN = (

@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_empty_body_error(response_text: str, status_code: int = 400) -> Exception:

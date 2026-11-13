@@ -11,7 +11,7 @@ import sqlite3
 
 import pytest
 
-from agent import verification_evidence as ve
+from hermes_agent.agent import verification_evidence as ve
 
 @pytest.fixture(autouse=True)
 def _ledger_on(monkeypatch):

@@ -20,7 +20,7 @@ def test_anthropic_adapter_honors_timeout_kwarg():
     """build_anthropic_client(timeout=X) overrides the default read timeout."""
     pytest = __import__("pytest")
     pytest.importorskip("anthropic")  # skip if optional SDK missing
-    from agent.anthropic_adapter import build_anthropic_client
+    from hermes_agent.agent.anthropic_adapter import build_anthropic_client
 
     c_default = build_anthropic_client("sk-ant-dummy", None)
     c_custom = build_anthropic_client("sk-ant-dummy", None, timeout=45.0)
@@ -50,7 +50,7 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
         """)
     monkeypatch.setenv("HERMES_API_TIMEOUT", "999")
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent(
         model="openai/gpt-4o-mini",
         provider="openrouter",
@@ -76,7 +76,7 @@ def test_resolved_api_call_timeout_priority(monkeypatch, tmp_path):
     importlib.reload(cfg_mod)
     from hermes_cli import timeouts as to_mod
     importlib.reload(to_mod)
-    import run_agent as ra_mod
+    import hermes_agent.run_agent as ra_mod
     importlib.reload(ra_mod)
 
     agent2 = ra_mod.AIAgent(

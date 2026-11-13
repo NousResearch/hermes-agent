@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.turn_finalizer import finalize_turn
+from hermes_agent.agent.turn_finalizer import finalize_turn
 
 
 class _StubBudget:
@@ -25,7 +25,7 @@ class _StubCompressor:
     last_prompt_tokens = 0
 
 
-from agent.status_output import StatusOutputMixin
+from hermes_agent.agent.status_output import StatusOutputMixin
 
 
 class _StubAgent(StatusOutputMixin):
@@ -196,7 +196,7 @@ def test_persist_disabled_turn_skips_session_end_hook(
         calls.append(name)
         return []
 
-    with patch("agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
+    with patch("hermes_agent.agent.turn_finalizer._invoke_hook_safely", side_effect=capture):
         _run(
             agent,
             final_response="done",

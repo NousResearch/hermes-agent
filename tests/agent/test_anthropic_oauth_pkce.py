@@ -120,7 +120,7 @@ def test_authorization_url_state_is_not_pkce_verifier(monkeypatch, tmp_path):
 
     monkeypatch.setattr(builtins, "input", fake_input)
 
-    from agent.anthropic_credentials import run_hermes_oauth_login_pure
+    from hermes_agent.agent.anthropic_credentials import run_hermes_oauth_login_pure
 
     result = run_hermes_oauth_login_pure()
     assert result is not None, "OAuth flow should succeed with matching state"
@@ -170,7 +170,7 @@ def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
         capture_token_request=captured_token,
     )
 
-    from agent.anthropic_credentials import run_hermes_oauth_login_pure
+    from hermes_agent.agent.anthropic_credentials import run_hermes_oauth_login_pure
 
     result = run_hermes_oauth_login_pure()
 

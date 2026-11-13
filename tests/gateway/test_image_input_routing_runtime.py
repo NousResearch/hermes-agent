@@ -143,10 +143,10 @@ async def test_prepare_route_identity_check_keeps_event_loop_responsive(monkeypa
         )
 
     monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length_async", fake_context_length
+        "hermes_agent.agent.model_metadata.get_model_context_length_async", fake_context_length
     )
     monkeypatch.setattr(
-        "agent.context_references.preprocess_context_references_async",
+        "hermes_agent.agent.context_references.preprocess_context_references_async",
         fake_preprocess,
     )
 

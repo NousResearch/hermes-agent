@@ -4,8 +4,8 @@ import httpx
 import openai
 import pytest
 
-from agent.error_classifier import FailoverReason, classify_api_error
-from agent.errors import InvalidProviderResponseError
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.errors import InvalidProviderResponseError
 
 
 _R = FailoverReason

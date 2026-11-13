@@ -1,4 +1,4 @@
-"""Tests for agent.thread_scoped_output.thread_scoped_silence.
+"""Tests for hermes_agent.agent.thread_scoped_output.thread_scoped_silence.
 
 Behaviour contract: a thread inside ``thread_scoped_silence()`` has its
 stdout/stderr routed to devnull, while every OTHER thread keeps writing to the
@@ -13,8 +13,8 @@ import sys
 import threading
 import time
 
-import agent.thread_scoped_output as thread_output
-from agent.thread_scoped_output import thread_scoped_silence
+import hermes_agent.agent.thread_scoped_output as thread_output
+from hermes_agent.agent.thread_scoped_output import thread_scoped_silence
 
 
 def _run_with_real_stream(fn):
@@ -132,7 +132,7 @@ def test_temporary_global_redirects_do_not_allocate_new_sinks(monkeypatch):
 
 def test_agent_builds_keep_the_installed_routing_proxy(monkeypatch):
     """Agent builds between silences must not stack wrappers on sys.stdout/stderr (#139687)."""
-    from agent.process_bootstrap import _install_safe_stdio
+    from hermes_agent.agent.process_bootstrap import _install_safe_stdio
 
     monkeypatch.setattr(thread_output, "_installed", {})
     monkeypatch.setattr(sys, "stdout", io.StringIO())

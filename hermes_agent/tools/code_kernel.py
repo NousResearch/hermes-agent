@@ -439,7 +439,7 @@ def _resolve_owner(task_id: str) -> str:
         # Session keys are not unique across hosted agents; a kernel belongs to one agent's sandbox.
         owner = f"{sandbox}:{owner}"
     try:
-        from agent.delegation_context import is_delegated_child_context
+        from hermes_agent.agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():
             from hermes_agent.gateway.session_context import get_session_env
             child_id = get_session_env("HERMES_SESSION_ID", "") or (task_id or "")
@@ -799,7 +799,7 @@ def stale_modules_warning(payload: dict[str, Any]) -> str:
              if isinstance(name, str) and len(name) <= 200 and all(part.isidentifier() for part in name.split("."))]
     if not names:
         return ""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     # Redacted like the cell's stdout: a module name is cell-chosen text.
     shown = redact_sensitive_text(", ".join(names[:8]), code_file=True) + (
         f" and {len(names) - 8} more" if len(names) > 8 else "")
@@ -817,7 +817,7 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                  state_reset: bool, exec_start: float) -> dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
     from hermes_agent.tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     from hermes_agent.tools.ansi_strip import strip_ansi
     def clean(text: str) -> str:
         return redact_sensitive_text(strip_ansi(text), code_file=True)
@@ -892,7 +892,7 @@ def execute_in_session_kernel(
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
     key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
-    from agent.delegation_context import is_delegated_child_context
+    from hermes_agent.agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,

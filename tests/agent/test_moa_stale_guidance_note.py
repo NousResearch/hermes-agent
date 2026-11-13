@@ -43,7 +43,7 @@ def _install_fake_llm(monkeypatch, ref_runs):
             return _response("call the clarify tool with three questions")
         return _response("acted")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
 
 
 def _after_tool_call(base):
@@ -61,7 +61,7 @@ def _prepared(monkeypatch, tmp_path, fanout="user_turn"):
     ref_runs = []
     _install_fake_llm(monkeypatch, ref_runs)
 
-    from agent.moa_loop import MoAChatCompletions
+    from hermes_agent.agent.moa_loop import MoAChatCompletions
 
     facade = MoAChatCompletions("review")
     base = [{"role": "user", "content": "use the clarify tool now"}]
@@ -71,7 +71,7 @@ def _prepared(monkeypatch, tmp_path, fanout="user_turn"):
 
 
 def test_reused_guidance_is_marked_as_predating_the_tool_results(monkeypatch, tmp_path):
-    from agent.moa_loop import _STALE_GUIDANCE_NOTE
+    from hermes_agent.agent.moa_loop import _STALE_GUIDANCE_NOTE
 
     first, second, ref_runs = _prepared(monkeypatch, tmp_path)
 
@@ -84,7 +84,7 @@ def test_reused_guidance_is_marked_as_predating_the_tool_results(monkeypatch, tm
 
 def test_fresh_guidance_carries_no_note(monkeypatch, tmp_path):
     """per_iteration advisors see the tool result themselves, so nothing is stale."""
-    from agent.moa_loop import _STALE_GUIDANCE_NOTE
+    from hermes_agent.agent.moa_loop import _STALE_GUIDANCE_NOTE
 
     first, second, ref_runs = _prepared(monkeypatch, tmp_path, fanout="per_iteration")
 

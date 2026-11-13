@@ -55,7 +55,7 @@ async def shell_exec(connection, ref, params):
 
 
 def _run(command, cwd):
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
     from hermes_cli._subprocess_compat import windows_hide_flags
     from hermes_agent.tools.environments.local import build_subprocess_env
     # shell=True keeps the user-facing !cmd grammar (pipes, redirects); the child never inherits

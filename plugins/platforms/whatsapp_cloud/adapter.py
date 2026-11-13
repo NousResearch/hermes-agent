@@ -41,7 +41,7 @@ except ImportError:
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms._shared import config_connected_extra
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
 from hermes_agent.gateway.platforms.base_exec_approval import ea_header_text
 from hermes_agent.gateway.platforms.helpers import bounded_put, caption_is_command

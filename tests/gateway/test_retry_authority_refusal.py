@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run import GatewayRunner
@@ -189,7 +189,7 @@ async def test_an_admitted_retry_rewrites_in_its_own_admission(served):
 
 
 def _carrier(ask='REAL ASK'):
-    from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+    from hermes_agent.agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
     return {'role': 'user',
             'content': f'{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n{_SUMMARY_END_MARKER}\n\n{ask}'}
 

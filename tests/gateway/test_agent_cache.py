@@ -272,7 +272,7 @@ class TestAgentCacheLifecycle:
 
     def test_evict_on_session_reset(self):
         """_evict_cached_agent removes the entry."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         runner = _make_runner()
         session_key = "telegram:12345"
@@ -443,7 +443,7 @@ class TestAgentCacheSpilloverLive:
 
     def _real_agent(self):
         """A genuine AIAgent; no API calls are made during these tests."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         return AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
@@ -510,7 +510,7 @@ class TestAgentCacheIdleResume:
 
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from hermes_agent.tools import terminal_tool_lifecycle as _tt
 
         agent = AIAgent(
@@ -553,8 +553,8 @@ class TestAgentCacheIdleResume:
         (full teardown — session is done), cache-eviction path uses
         release_clients() (soft — session may resume).
         """
-        from run_agent import AIAgent
-        import run_agent as _ra
+        from hermes_agent.run_agent import AIAgent
+        import hermes_agent.run_agent as _ra
 
         # Agent A: evicted from cache (soft) — terminal survives.
         # Agent B: session expired (hard) — terminal torn down.
@@ -607,7 +607,7 @@ class TestCachedAgentInactivityReset:
     """
 
     def _fake_agent(self, stale_seconds: float = 1800.0):
-        from agent.session_activity import ActivityProvenance
+        from hermes_agent.agent.session_activity import ActivityProvenance
 
         m = MagicMock()
         m._last_activity_ts = _FAKE_NOW - stale_seconds
@@ -637,7 +637,7 @@ class TestCachedAgentInactivityReset:
 
     def test_fresh_turn_resets_provenance(self):
         """interrupt_depth=0: provenance resets with ts/desc (#72039)."""
-        from agent.session_activity import ActivityProvenance
+        from hermes_agent.agent.session_activity import ActivityProvenance
         from hermes_agent.gateway.run import GatewayRunner
 
         agent = self._fake_agent()
@@ -679,7 +679,7 @@ class TestCachedAgentInactivityReset:
 
     def test_interrupt_turn_preserves_provenance(self):
         """interrupt_depth=1: provenance preserved with ts/desc."""
-        from agent.session_activity import ActivityProvenance
+        from hermes_agent.agent.session_activity import ActivityProvenance
         from hermes_agent.gateway.run import GatewayRunner
 
         agent = self._fake_agent(stale_seconds=1200.0)

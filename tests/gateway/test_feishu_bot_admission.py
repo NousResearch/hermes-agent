@@ -576,7 +576,7 @@ def test_dm_admission_config_resolves_from_profile_scope_under_multiplex(tmp_pat
     profile's .env must govern its own adapter — Feishu open_ids are
     app-scoped, so the default allow-list can never match the role app's
     senders, and the role profile's allow-all flag must be honored."""
-    import agent.secret_scope as ss
+    import hermes_agent.agent.secret_scope as ss
     from plugins.platforms.feishu.adapter import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_default")

@@ -14,7 +14,7 @@ def _args(**kwargs):
     return SimpleNamespace(**values)
 
 def test_run_defaults_to_synchronous(monkeypatch, capsys):
-    import agent.curator as curator_state
+    import hermes_agent.agent.curator as curator_state
     import hermes_cli.curator as curator_cli
 
     calls = []

@@ -11,7 +11,7 @@ def check_api_key() -> bool:
     scope failure propagates -- a failed scoped read must never silently
     borrow another profile's key from ``os.environ``.
     """
-    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
 
     try:
         return bool(get_secret("OPENROUTER_API_KEY"))

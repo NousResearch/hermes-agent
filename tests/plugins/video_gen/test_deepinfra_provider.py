@@ -1,7 +1,7 @@
 """Tests for the bundled DeepInfra video_gen plugin.
 
 Invariants only — no snapshots of specific model ids. The plugin is a thin
-subclass of ``agent.video_gen_provider.OpenAICompatibleVideoGenProvider``;
+subclass of ``hermes_agent.agent.video_gen_provider.OpenAICompatibleVideoGenProvider``;
 these tests pin the plugin-specific bits (tag filtering, identity) and the
 shared base behaviour exercised through it (OpenAI ``videos`` call shape,
 t2v vs i2v routing, download → save).
@@ -75,7 +75,7 @@ def _fake_openai_with_capture(captured: dict, *, status="succeeded",
 @contextmanager
 def _mock_url_download(captured: dict, raise_exc: Exception | None = None):
     """Patch the shared ``save_url_video`` helper the base provider calls."""
-    import agent.video_gen_provider as base
+    import hermes_agent.agent.video_gen_provider as base
     from pathlib import Path
 
     def _fake_save_url_video(url, *, prefix="video", **kw):
@@ -138,7 +138,7 @@ def test_generate_text_to_video_downloads_url_and_saves_locally():
 def test_credentials_follow_the_profile_secret_scope(monkeypatch):
     """On a multiplexed gateway os.environ is the launch profile's .env: the key and base URL come from the
     routed profile's scope, and a profile without a key is unavailable instead of borrowing the launch key."""
-    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
 
     monkeypatch.setenv("DEEPINFRA_BASE_URL", "https://launch.example/v1")
     provider = deepinfra_plugin.DeepInfraVideoGenProvider()

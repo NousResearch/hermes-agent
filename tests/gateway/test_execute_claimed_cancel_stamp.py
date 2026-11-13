@@ -12,7 +12,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_a_drain_cancelled_during_the_review_cancel_clears_the_executing_stamp(monkeypatch):
-    from agent.background_review import finish_background_review_run, prepare_background_review_run
+    from hermes_agent.agent.background_review import finish_background_review_run, prepare_background_review_run
     from hermes_agent.gateway import session_finite
     from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
     from hermes_agent.gateway.session_contract import SessionRef

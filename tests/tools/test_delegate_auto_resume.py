@@ -88,7 +88,7 @@ def test_a_child_that_keeps_hitting_the_limit_is_resumed_at_most_twice_and_says_
     model, parent, dispatched = _AlwaysLimited(), _parent(), []
     parent._current_task_id = "parent-task"
     record_session_cwd("parent-task", str(_repo(tmp_path, "repo")))
-    with patch("run_agent.AIAgent", side_effect=model):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         first = _settled(out["delegation_id"])
         sid = out["subagent_ids"][0]
@@ -122,11 +122,11 @@ def test_the_parent_wins_a_child_is_not_resumed_once_its_parent_moved_on(tmp_pat
     repo = _repo(tmp_path, "repo")
     record_session_cwd("parent-task", str(repo))
     limited, fine = _AlwaysLimited(), _ScriptedModel()
-    with patch("run_agent.AIAgent", side_effect=limited):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=limited):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         _settled(out["delegation_id"])
         sid = out["subagent_ids"][0]
-    with patch("run_agent.AIAgent", side_effect=fine):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=fine):
         if parent_moved_on == "parent_reset":
             parent._session_db.end_session(parent.session_id, "new_session")
         else:
@@ -135,7 +135,7 @@ def test_the_parent_wins_a_child_is_not_resumed_once_its_parent_moved_on(tmp_pat
             again = json.loads(delegate_task(tasks=[{"goal": "write the parser, take two"}], background=True,
                                              parent_agent=parent))
             _settled(again["delegation_id"])
-        with patch("run_agent.AIAgent", side_effect=limited):
+        with patch("hermes_agent.run_agent.AIAgent", side_effect=limited):
             resumed = tick(_scheduler(parent, dispatched), capacity=3)
             if dispatched:
                 _settled(dispatched[-1])
@@ -158,7 +158,7 @@ def test_stop_on_a_waiting_child_dismisses_it_and_releases_its_pin(tmp_path):
     parent, dispatched = _parent(), []
     parent._current_task_id = "parent-task"
     record_session_cwd("parent-task", str(_repo(tmp_path, "repo")))
-    with patch("run_agent.AIAgent", side_effect=_AlwaysLimited()):
+    with patch("hermes_agent.run_agent.AIAgent", side_effect=_AlwaysLimited()):
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}], background=True, parent_agent=parent))
         _settled(out["delegation_id"])
         sid = out["subagent_ids"][0]

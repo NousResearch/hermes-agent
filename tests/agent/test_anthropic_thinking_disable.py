@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.anthropic_adapter import build_anthropic_kwargs
+from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
 
 MESSAGES = [{"role": "user", "content": "hello"}]
 
@@ -129,7 +129,7 @@ class TestDisableVerdictHelper:
 
 
     def test_non_claude_models_are_left_alone(self) -> None:
-        from agent.anthropic_adapter import _accepts_thinking_disable
+        from hermes_agent.agent.anthropic_adapter import _accepts_thinking_disable
 
         for model in ("minimax-m2.7", "qwen3-max", "kimi-k2.5"):
             assert _accepts_thinking_disable(model) is False, model
@@ -137,6 +137,6 @@ class TestDisableVerdictHelper:
     def test_unknown_claude_releases_default_to_disableable(self) -> None:
         """Mirrors _supports_adaptive_thinking: new Claude gets the modern
         contract without a code change."""
-        from agent.anthropic_adapter import _accepts_thinking_disable
+        from hermes_agent.agent.anthropic_adapter import _accepts_thinking_disable
 
         assert _accepts_thinking_disable("anthropic/claude-opus-6") is True

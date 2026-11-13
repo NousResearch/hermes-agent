@@ -6,7 +6,7 @@ import textwrap
 import time
 from pathlib import Path
 
-from agent.trajectory import save_trajectory
+from hermes_agent.agent.trajectory import save_trajectory
 
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
 

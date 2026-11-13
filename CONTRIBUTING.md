@@ -73,7 +73,7 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 Standalone memory plugins:
 
-- Implement the same `MemoryProvider` ABC (`agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown`, and optionally `post_setup(hermes_home, config)` for setup-wizard integration
+- Implement the same `MemoryProvider` ABC (`hermes_agent/agent/memory_provider.py`) — `sync_turn`, `prefetch`, `shutdown`, and optionally `post_setup(hermes_home, config)` for setup-wizard integration
 - Use the same discovery system — `discover_memory_providers()` picks them up from user/project plugin directories and pip entry points
 - Integrate with `hermes memory setup` via `post_setup()` — no need to touch core code
 - Can register their own CLI subcommands via `register_cli(subparser)` in a `cli.py` file
@@ -296,13 +296,24 @@ See [Package management](website/docs/reference/package-management.md) for PM co
 
 ```
 hermes-agent/
-├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
 ├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 ├── hermes_agent/             # the Python package
+│   ├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
 │   ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 │   ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
 │   ├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
 │   ├── batch_runner.py           # Parallel batch processing for trajectory generation
+│   │
+│   ├── agent/                    # Agent internals (extracted modules)
+│   │   ├── conversation_loop.py      # run_conversation() — the agent turn loop (phases in turn_*.py)
+│   │   ├── tool_executor.py          # Tool dispatch (inline agent-level tools, delegate, registry)
+│   │   ├── session_persistence.py    # Session/trajectory saving
+│   │   ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
+│   │   ├── context_compressor.py     # Auto-summarization when approaching context limits
+│   │   ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
+│   │   ├── display.py                # KawaiiSpinner, tool progress formatting
+│   │   ├── model_metadata.py         # Model context lengths, token estimation
+│   │   └── trajectory.py             # Trajectory saving helpers
 │   │
 │   ├── tools/                    # Tool implementations (self-registering)
 │   │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
@@ -329,17 +340,6 @@ hermes-agent/
 │       ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
 │       └── platforms/                # Platform adapters
 │           ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
-│
-├── agent/                    # Agent internals (extracted modules)
-│   ├── conversation_loop.py      # run_conversation() — the agent turn loop (phases in turn_*.py)
-│   ├── tool_executor.py          # Tool dispatch (inline agent-level tools, delegate, registry)
-│   ├── session_persistence.py    # Session/trajectory saving
-│   ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
-│   ├── context_compressor.py     # Auto-summarization when approaching context limits
-│   ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
-│   ├── display.py                # KawaiiSpinner, tool progress formatting
-│   ├── model_metadata.py         # Model context lengths, token estimation
-│   └── trajectory.py             # Trajectory saving helpers
 │
 ├── hermes_cli/               # CLI command implementations
 │   ├── main.py                   # Entry point, argument parsing, command dispatch
@@ -622,7 +622,7 @@ metadata:
     fallback_for_toolsets: [browser]
 ```
 
-The filtering happens at prompt build time in `agent/prompt_builder.py`. The `build_skills_system_prompt()` function receives the set of available tools and toolsets from the agent and uses `_skill_should_show()` to evaluate each skill's conditions.
+The filtering happens at prompt build time in `hermes_agent/agent/prompt_builder.py`. The `build_skills_system_prompt()` function receives the set of available tools and toolsets from the agent and uses `_skill_should_show()` to evaluate each skill's conditions.
 
 ### Skill setup metadata
 

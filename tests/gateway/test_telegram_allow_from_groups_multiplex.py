@@ -33,7 +33,7 @@ def two_profiles(monkeypatch):
     for key in _AUTH_ENV:  # set-then-delete so the default profile's bridge writes are undone too
         monkeypatch.setenv(key, "")
         monkeypatch.delenv(key)
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     prev = secret_scope.is_multiplex_active()
     secret_scope.set_multiplex_active(True)
     yield home, secondary

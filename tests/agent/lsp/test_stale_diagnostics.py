@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.client import LSPClient
+from hermes_agent.agent.lsp.client import LSPClient
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -88,7 +88,7 @@ def _install_mock_server(script: str, server_id: str = "pyright"):
     Mirrors the helper in test_service.py — reuse pyright so .py files
     route to the mock without a real toolchain.
     """
-    from agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
+    from hermes_agent.agent.lsp.servers import SERVERS, ServerContext, ServerDef, SpawnSpec
 
     target_index = next(i for i, s in enumerate(SERVERS) if s.server_id == server_id)
     original = SERVERS[target_index]
@@ -122,7 +122,7 @@ def stale_repo(monkeypatch, tmp_path):
     monkeypatch.chdir(str(repo))
     idx, original = _install_mock_server("stale")
     yield repo
-    from agent.lsp.servers import SERVERS
+    from hermes_agent.agent.lsp.servers import SERVERS
 
     SERVERS[idx] = original
 
@@ -130,7 +130,7 @@ def stale_repo(monkeypatch, tmp_path):
 def test_service_reports_no_data_not_stale_errors(stale_repo):
     """When the server never re-checks the edited content in budget,
     get_diagnostics_sync must return [] and keep the server usable."""
-    from agent.lsp.manager import LSPService
+    from hermes_agent.agent.lsp.manager import LSPService
 
     f = stale_repo / "x.py"
     f.write_text("bad code\n")

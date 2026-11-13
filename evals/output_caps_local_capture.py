@@ -58,9 +58,9 @@ from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs
 from hermes_agent.gateway.platforms.api_server import _resolve_request_runtime_agent_kwargs
 from hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_cli.moa_config import _normalize_preset
-from agent.transports.chat_completions import ChatCompletionsTransport
-from agent.transports.anthropic import AnthropicTransport
-from agent.transports.bedrock import BedrockTransport
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.transports.anthropic import AnthropicTransport
+from hermes_agent.agent.transports.bedrock import BedrockTransport
 
 messages = [{"role": "user", "content": "fixture"}]
 client = OpenAI(api_key="fixture", base_url=url + "/v1", max_retries=0)
@@ -75,7 +75,7 @@ for label, params in [("compatible-claude", {"anthropic_max_output": 65536}), ("
     client.chat.completions.create(**kwargs)
     results[label] = captures[-1]
 from providers import get_provider_profile
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 agent = AIAgent(model="fixture", provider="custom", base_url=url + "/v1", api_key="fixture", quiet_mode=True, skip_memory=True, skip_context_files=True, enabled_toolsets=[])
 actual_kwargs = agent._build_api_kwargs(messages, tools_for_api=[])
 client.chat.completions.create(**actual_kwargs)
@@ -83,7 +83,7 @@ results["agent-main-custom"] = captures[-1]
 kwargs = ChatCompletionsTransport().build_kwargs("fixture", messages, provider_profile=get_provider_profile("custom"), max_tokens_param_fn=lambda value: {"max_tokens": value})
 client.chat.completions.create(**kwargs)
 results["registered-custom-profile"] = captures[-1]
-from agent.auxiliary_client import _compression_fast_lane_controls
+from hermes_agent.agent.auxiliary_client import _compression_fast_lane_controls
 from hermes_agent.tools.delegate_tool_config import _resolve_delegation_credentials
 route = {"provider": "custom", "model": "fixture", "reasoning_effort": "none", "max_output_tokens": 47}
 compression_cap, _ = _compression_fast_lane_controls(

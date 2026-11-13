@@ -29,7 +29,7 @@ def _limited_child_of_session(tmp_path):
     tokens = set_session_vars(platform="telegram", chat_id="42", chat_type="dm", session_key=KEY,
                               session_id=parent.session_id)
     try:
-        with patch("run_agent.AIAgent", side_effect=model):
+        with patch("hermes_agent.run_agent.AIAgent", side_effect=model):
             out = json.loads(delegate_task(tasks=[{"goal": "task on the session's route"}], background=True,
                                            parent_agent=parent))
             _settled(out["delegation_id"])
@@ -65,7 +65,7 @@ def test_the_stand_in_parent_keeps_the_sessions_model_override(tmp_path):
     built = []
     factory, start = _start(_runner(), model, built)
     with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value=dict(DEFAULT_ROUTE)), \
-            patch("run_agent.AIAgent", side_effect=factory):
+            patch("hermes_agent.run_agent.AIAgent", side_effect=factory):
         resumed = tick(start, capacity=3)
     assert [kw["provider"] for kw in built] == ["openrouter"] and built[0]["model"] == "parent-model"
     assert resumed == [sid], _db_rows(parent)[sid][2].get("auto_note")
@@ -79,7 +79,7 @@ def test_the_stand_in_parent_runs_on_the_sessions_own_tier_not_the_runners_last_
     runner._service_tier = "priority"
     factory, start = _start(runner, model, built)
     with patch("hermes_cli.models.resolve_fast_mode_overrides", return_value={"service_tier": "priority"}), \
-            patch("run_agent.AIAgent", side_effect=factory):
+            patch("hermes_agent.run_agent.AIAgent", side_effect=factory):
         assert tick(start, capacity=3) == [sid]
     assert built[0].get("service_tier") is None and "service_tier" not in (built[0]["request_overrides"] or {})
 
@@ -91,7 +91,7 @@ def test_a_stand_in_that_cannot_be_built_retries_later_and_never_turns_auto_resu
     factory, start = _start(_runner(), model, [])
     target = ("hermes_agent.gateway.run.GatewayRunner._resolve_session_agent_runtime" if broken == "route"
               else "hermes_agent.gateway.run_auto_resume._stand_in_parent")
-    with patch(target, side_effect=RuntimeError("no credentials")), patch("run_agent.AIAgent", side_effect=factory):
+    with patch(target, side_effect=RuntimeError("no credentials")), patch("hermes_agent.run_agent.AIAgent", side_effect=factory):
         assert tick(start, capacity=3) == []
     state, _pinned, record = _db_rows(parent)[sid]
     assert (state, record.get("auto_off"), record.get("auto_attempts")) == ("resumable", None, 0)
@@ -99,7 +99,7 @@ def test_a_stand_in_that_cannot_be_built_retries_later_and_never_turns_auto_resu
 
 def test_capacity_counts_only_this_profiles_running_units(tmp_path, monkeypatch):
     """One gateway serves many profiles: another profile's running units never use up this one's slots."""
-    from agent.runtime_scope import bind_profile_scope
+    from hermes_agent.agent.runtime_scope import bind_profile_scope
     from hermes_agent.gateway.run_auto_resume import _capacity
     from hermes_constants import hermes_home_key
     from hermes_agent.tools import async_delegation
@@ -124,7 +124,7 @@ def test_a_spawn_pause_holds_resumes_without_claiming_or_building_a_stand_in(tmp
     factory, start = _start(_runner(), model, built)
     set_spawn_paused(True)
     try:
-        with patch("run_agent.AIAgent", side_effect=factory):
+        with patch("hermes_agent.run_agent.AIAgent", side_effect=factory):
             assert tick(start, capacity=3) == []
     finally:
         set_spawn_paused(False)

@@ -54,7 +54,7 @@ class TestRedactApprovalCommand:
         approval prompt is a hard secret-egress boundary regardless of config."""
         raw = "curl -H 'Authorization: token " + _FAKE_GHP + "' https://api.github.com"
         # With redaction globally disabled, the seam must STILL redact (force=True).
-        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
+        monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", False, raising=False)
         out = _redact_approval_command(raw)
         assert _FAKE_GHP not in out
 

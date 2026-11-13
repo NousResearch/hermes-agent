@@ -94,7 +94,7 @@ class TestRunBackgroundTask:
         try:
             with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
                  patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), \
-                 patch("run_agent.AIAgent", return_value=agent):
+                 patch("hermes_agent.run_agent.AIAgent", return_value=agent):
                 await runner._run_background_task("inspect workspace", _make_event().source, "bg_test")
             assert async_delivery_supported() is True
         finally:
@@ -133,7 +133,7 @@ class TestRunBackgroundTask:
         }
         with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
              patch("hermes_agent.gateway.run._load_gateway_config", return_value=checkpoint_config), \
-             patch("run_agent.AIAgent") as MockAgent:
+             patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_agent_instance = MagicMock()
             mock_agent_instance.shutdown_memory_provider = MagicMock()
             mock_agent_instance.close = MagicMock()
@@ -170,7 +170,7 @@ class TestRunBackgroundTask:
         agent.run_conversation.return_value = {"final_response": "done", "messages": []}
         with patch("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
              patch("hermes_agent.gateway.run._load_gateway_config", return_value={}), \
-             patch("run_agent.AIAgent", return_value=agent):
+             patch("hermes_agent.run_agent.AIAgent", return_value=agent):
             await runner._run_background_task("say hello", _make_event().source, "bg_test")
         assert (agent.daybreak_surface, agent.daybreak) == (surface, switch)
 
@@ -211,7 +211,7 @@ class TestHandleBtwCommand:
 
         event = _make_event(text="/btw which file was that?")
 
-        with patch("agent.side_question.answer_side_question",
+        with patch("hermes_agent.agent.side_question.answer_side_question",
                    return_value="it was foo.py") as mock_answer:
             result = await runner._handle_btw_command(event)
             # Ack returned immediately, worker task registered.

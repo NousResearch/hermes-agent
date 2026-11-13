@@ -1,4 +1,4 @@
-"""Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
+"""Tests for hermes_agent/agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
 import os
 from unittest.mock import patch
@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_agent.tools.skills_tool as skills_tool_module
-from agent.skill_commands import (
+from hermes_agent.agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
     resolve_skill_command_key,
@@ -73,8 +73,8 @@ class TestScanSkillCommands:
         ``get_skill_commands()`` calls from the other platform silently
         inherited that filter.
         """
-        import agent.skill_commands as sc_mod
-        from agent.skill_commands import get_skill_commands
+        import hermes_agent.agent.skill_commands as sc_mod
+        from hermes_agent.agent.skill_commands import get_skill_commands
 
         def _disabled_skills():
             platform = os.getenv("HERMES_PLATFORM")
@@ -128,8 +128,8 @@ class TestScanSkillCommands:
         gateway sessions, which is the bug the ContextVar plumbing exists
         to prevent in the first place.
         """
-        import agent.skill_commands as sc_mod
-        from agent.skill_commands import get_skill_commands
+        import hermes_agent.agent.skill_commands as sc_mod
+        from hermes_agent.agent.skill_commands import get_skill_commands
         from hermes_agent.gateway.session_context import (
             clear_session_vars,
             get_session_env,
@@ -187,8 +187,8 @@ class TestScanSkillCommands:
         declares its own ``skills.external_dirs``, and the previous profile's
         skill list must not leak into the new one.
         """
-        import agent.skill_commands as sc_mod
-        from agent.skill_commands import get_skill_commands
+        import hermes_agent.agent.skill_commands as sc_mod
+        from hermes_agent.agent.skill_commands import get_skill_commands
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         empty_local_dir = tmp_path / "no-local-skills"
@@ -239,8 +239,8 @@ class TestScanSkillCommands:
         multiplexed webhook routed to profile B otherwise sees default's skills.
         Deliberately does NOT patch ``hermes_agent.tools.skills_tool.SKILLS_DIR``.
         """
-        import agent.skill_commands as sc_mod
-        from agent.skill_commands import build_skill_invocation_message, get_skill_commands
+        import hermes_agent.agent.skill_commands as sc_mod
+        from hermes_agent.agent.skill_commands import build_skill_invocation_message, get_skill_commands
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         profile_b = tmp_path / "profiles" / "b"
@@ -274,8 +274,8 @@ class TestScanSkillCommands:
         invocations would otherwise stay stuck on whichever platform's
         filter was last applied.
         """
-        import agent.skill_commands as sc_mod
-        from agent.skill_commands import get_skill_commands
+        import hermes_agent.agent.skill_commands as sc_mod
+        from hermes_agent.agent.skill_commands import get_skill_commands
 
         def _disabled_skills():
             if os.getenv("HERMES_PLATFORM") == "telegram":
@@ -377,7 +377,7 @@ class TestScanSkillCommands:
         with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), patch(
             "hermes_agent.tools.skills_tool._parse_frontmatter", parking_parse
         ):
-            with caplog.at_level(_logging.WARNING, logger="agent.skill_commands"):
+            with caplog.at_level(_logging.WARNING, logger="hermes_agent.agent.skill_commands"):
                 background = threading.Thread(
                     target=scan_skill_commands, name="parked-scan", daemon=True
                 )
@@ -410,8 +410,8 @@ class TestScanSkillCommands:
         """
         import threading
 
-        import agent.skill_commands as skill_commands_module
-        from agent.skill_commands import get_skill_commands
+        import hermes_agent.agent.skill_commands as skill_commands_module
+        from hermes_agent.agent.skill_commands import get_skill_commands
 
         _make_skill(tmp_path, "shared")
 
@@ -441,7 +441,7 @@ class TestScanSkillCommands:
     def test_scan_never_publishes_a_partially_built_map(self, tmp_path):
         """A reader during a scan sees the previous map, never a half-built one."""
 
-        import agent.skill_commands as skill_commands_module
+        import hermes_agent.agent.skill_commands as skill_commands_module
         import hermes_agent.tools.skills_tool as _skills_tool
 
         skill_count = 5
@@ -533,7 +533,7 @@ class TestBuildPreloadedSkillsPrompt:
             _make_skill(tmp_path, "enabled-skill", body="Enabled content.")
             _make_skill(tmp_path, "disabled-skill", body="SECRET DISABLED CONTENT.")
 
-            import agent.skill_utils as su_module
+            import hermes_agent.agent.skill_utils as su_module
             monkeypatch.setattr(
                 su_module, "get_disabled_skill_names", lambda platform=None: {"disabled-skill"}
             )
@@ -555,7 +555,7 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         duplicate (same relative path, local + external) loads the local copy everywhere."""
         import json
 
-        from agent import prompt_builder as pb, skill_utils
+        from hermes_agent.agent import prompt_builder as pb, skill_utils
         from hermes_agent.cron.scheduler_prompt import _load_cron_skill_parts
         from hermes_agent.tools.skills_tool import skill_view, skills_list
         local, ext = tmp_path / "local", tmp_path / "ext"
@@ -735,7 +735,7 @@ class TestTemplateVarSubstitution:
         with (
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
             patch(
-                "agent.skill_commands._load_skills_config",
+                "hermes_agent.agent.skill_commands._load_skills_config",
                 return_value={"template_vars": False},
             ),
         ):
@@ -763,7 +763,7 @@ class TestInlineShellExpansion:
         with (
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
             patch(
-                "agent.skill_commands._load_skills_config",
+                "hermes_agent.agent.skill_commands._load_skills_config",
                 return_value={"template_vars": True, "inline_shell": True,
                               "inline_shell_timeout": 5},
             ),
@@ -783,7 +783,7 @@ class TestInlineShellExpansion:
         with (
             patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
             patch(
-                "agent.skill_commands._load_skills_config",
+                "hermes_agent.agent.skill_commands._load_skills_config",
                 return_value={"template_vars": True, "inline_shell": True,
                               "inline_shell_timeout": 1},
             ),
@@ -815,7 +815,7 @@ class TestStackedSkillCommands:
 
 
     def test_split_stops_at_non_skill_token(self, tmp_path):
-        from agent.skill_commands import split_stacked_skill_commands
+        from hermes_agent.agent.skill_commands import split_stacked_skill_commands
         with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             self._setup_three_skills(tmp_path)
             scan_skill_commands()
@@ -829,7 +829,7 @@ class TestStackedSkillCommands:
 
 
     def test_split_caps_at_five_total(self, tmp_path):
-        from agent.skill_commands import split_stacked_skill_commands
+        from hermes_agent.agent.skill_commands import split_stacked_skill_commands
         with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             for i in range(7):
                 _make_skill(tmp_path, f"stk-{i}")
@@ -843,7 +843,7 @@ class TestStackedSkillCommands:
 
 
     def test_stacked_message_skips_missing_skills(self, tmp_path):
-        from agent.skill_commands import build_stacked_skill_invocation_message
+        from hermes_agent.agent.skill_commands import build_stacked_skill_invocation_message
         with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             self._setup_three_skills(tmp_path)
             scan_skill_commands()

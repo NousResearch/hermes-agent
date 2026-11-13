@@ -34,7 +34,7 @@ def _egress_proxy_args_for_docker() -> tuple[list[str], dict[str, str], list[str
     fail visibly rather than silently disable enforcement."""
     try:
         from hermes_cli.config import load_config
-        from agent.proxy_sources import iron_proxy as ip
+        from hermes_agent.agent.proxy_sources import iron_proxy as ip
     except ImportError as exc:
         logger.debug("Egress proxy plumbing unavailable: %s", exc)
         return ([], {}, [])
@@ -239,7 +239,7 @@ def check_docker_env_collisions(user_env: dict[str, str], egress_env: dict[str, 
     live token mappings; for those ANY override collides since a real key bypasses the swap)."""
     provider_keys: set[str] = set()
     try:
-        from agent.proxy_sources import iron_proxy as ip
+        from hermes_agent.agent.proxy_sources import iron_proxy as ip
         provider_keys = {m.real_env_name for m in ip.load_mappings()}
     except Exception:  # best-effort
         pass

@@ -80,7 +80,7 @@ def _print_curator_first_run_notice() -> None:
     the first pass (deferred one ``interval_hours``) is pending, so the user can preview or
     disable it first. Silent on steady state."""
     try:
-        from agent import curator
+        from hermes_agent.agent import curator
         if not curator.is_enabled():
             return
         state = curator.load_state()
@@ -214,7 +214,7 @@ def _print_curator_recent_run_notice() -> None:
     """Print the latest background curator run summary (rename map) once, stamping
     ``last_run_summary_shown_at``. Silent when never run, already shown, or no rename info."""
     try:
-        from agent import curator
+        from hermes_agent.agent import curator
         state = curator.load_state()
     except Exception:
         return

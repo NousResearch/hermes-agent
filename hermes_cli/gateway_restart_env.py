@@ -40,7 +40,7 @@ def _launch_bot_token_names() -> set[str]:
     any dotenv this process loaded, its secret sources. Those are the root bot's identity and must not
     follow a sibling (#135792). A provider key, a proxy, or a token the user's SHELL exported is not
     the launch profile's: a manual ``hermes -p X gateway run`` from that shell has it too, so it stays."""
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
     from hermes_cli.env_loader import launch_dotenv_keys, source_supplied_names
     from hermes_constants import get_routing_process_hermes_home
     from hermes_agent.tools.environments.local_env_policy import _ADAPTER_SECRET_ENV, _home_adapter_secret_env
@@ -68,7 +68,7 @@ def profile_gateway_restart_env(home: Optional[str]) -> Optional[dict[str, str]]
     """
     if not home:
         return None
-    from agent.secret_scope import build_profile_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope
     from hermes_constants import apply_scratch_tmp_env, get_default_hermes_root, get_routing_process_hermes_home
     from hermes_agent.tools.environments.local import strip_launch_profile_env
     target = Path(home).resolve()

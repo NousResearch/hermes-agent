@@ -116,7 +116,7 @@ def test_a_hosted_read_under_a_hermes_directory_is_still_a_secret_file(provider,
 
 
 def test_a_local_config_yaml_under_the_hermes_home_is_still_recognized():
-    from agent.redact import _is_under_hermes_home
+    from hermes_agent.agent.redact import _is_under_hermes_home
     from hermes_constants import get_hermes_home
     from hermes_agent.tools.file_tools import read_file_tool
     home = get_hermes_home()

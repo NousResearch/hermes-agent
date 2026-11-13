@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, UTC
 
-from agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 from hermes_cli.sqlite_util import write_txn
 
 from .shared_metrics import _isoformat, _utc_now

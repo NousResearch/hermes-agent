@@ -14,20 +14,20 @@ import copy
 import pytest
 from unittest.mock import patch
 
-from agent import skill_bundles
-from agent import skill_commands
+from hermes_agent.agent import skill_bundles
+from hermes_agent.agent import skill_commands
 from hermes_agent.tools import skills_tool
-from agent import prompt_cache_boundary
-from agent.prompt_cache_boundary import (
+from hermes_agent.agent import prompt_cache_boundary
+from hermes_agent.agent.prompt_cache_boundary import (
     find_stable_prefix,
     register_stable_prefix,
 )
-from agent.prompt_caching import (
+from hermes_agent.agent.prompt_caching import (
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
     strip_anthropic_cache_control,
 )
-from agent.skill_commands import _SINGLE_SKILL_INSTRUCTION
+from hermes_agent.agent.skill_commands import _SINGLE_SKILL_INSTRUCTION
 
 MARKER = {"type": "ephemeral"}
 
@@ -68,7 +68,7 @@ class TestRegistry:
     def test_append_user_instruction_prefix_invariant(self):
         """The shared builder helper must return a byte-prefix of the final
         joined message — the invariant every registration site depends on."""
-        from agent.skill_commands import append_user_instruction
+        from hermes_agent.agent.skill_commands import append_user_instruction
 
         parts = ["scaffold line one", "", "skill body", ""]
         instruction = "ticket=42 time=10:00"
@@ -93,7 +93,7 @@ class TestRegistry:
         assert find_stable_prefix("scaffold extended tail") == "scaffold extended"
 
     def test_lru_eviction_falls_back_safely(self):
-        from agent import prompt_cache_boundary
+        from hermes_agent.agent import prompt_cache_boundary
 
         for index in range(prompt_cache_boundary._MAX_ENTRIES + 1):
             register_stable_prefix(f"scaffold-{index} ")
@@ -108,7 +108,7 @@ class TestRegistry:
         """A cron scaffold fired every minute must survive a burst of one-off
         invocations; without the refresh it silently drops back to
         whole-message caching while still being the hottest prefix."""
-        from agent import prompt_cache_boundary
+        from hermes_agent.agent import prompt_cache_boundary
 
         register_stable_prefix("hot-scaffold ")
         for index in range(prompt_cache_boundary._MAX_ENTRIES - 1):
@@ -124,7 +124,7 @@ class TestRegistry:
     def test_total_char_cap_evicts_oldest_and_keeps_newest(self, monkeypatch):
         """Entries retain whole skill bodies, so the entry count alone does
         not bound memory."""
-        from agent import prompt_cache_boundary
+        from hermes_agent.agent import prompt_cache_boundary
 
         monkeypatch.setattr(prompt_cache_boundary, "_MAX_CHARS", 100)
 
@@ -135,7 +135,7 @@ class TestRegistry:
         assert find_stable_prefix("b" * 80 + "tail") == "b" * 80
 
     def test_single_oversized_prefix_still_registers(self, monkeypatch):
-        from agent import prompt_cache_boundary
+        from hermes_agent.agent import prompt_cache_boundary
 
         monkeypatch.setattr(prompt_cache_boundary, "_MAX_CHARS", 10)
         oversized = "x" * 500
@@ -251,7 +251,7 @@ class TestRequestLocalSplit:
         entry, a busy gateway that registered _MAX_ENTRIES newer scaffolds in
         between would ship the split shape to the next provider instead of
         the canonical string."""
-        from agent import prompt_cache_boundary
+        from hermes_agent.agent import prompt_cache_boundary
 
         scaffold = "stable scaffold\n\n" + _SINGLE_SKILL_INSTRUCTION
         register_stable_prefix(scaffold)
@@ -362,7 +362,7 @@ class TestCronBuilder:
         from hermes_agent.cron.scheduler import _build_job_prompt
 
         with patch(
-            "agent.skill_bundles.resolve_bundle_command_key", return_value=None
+            "hermes_agent.agent.skill_bundles.resolve_bundle_command_key", return_value=None
         ), patch(
             "hermes_agent.tools.skills_tool.skill_view", side_effect=self._skill_view
         ), patch(

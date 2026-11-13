@@ -48,7 +48,7 @@ def _boto_sys_modules_hygiene():
     _sys.modules.update(saved)
 
 
-from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+from hermes_agent.agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
 
 _MANTLE_MODELS = list(BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
 _MANTLE_SET = {m.lower() for m in _MANTLE_MODELS}
@@ -100,8 +100,8 @@ class TestProviderModelIdsBedrock:
 
         monkeypatch.setenv("AWS_REGION", "eu-central-1")
 
-        with patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+        with patch("hermes_agent.agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
+             patch("hermes_agent.agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
             result = provider_model_ids("bedrock")
 
         assert "eu.anthropic.claude-sonnet-4-6-20250514-v1:0" in result
@@ -114,10 +114,10 @@ class TestProviderModelIdsBedrock:
         """Different regions produce different model ID prefixes (eu.* vs us.*)."""
         from hermes_cli.models import provider_model_ids
 
-        with patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover):
-            with patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+        with patch("hermes_agent.agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover):
+            with patch("hermes_agent.agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
                 eu_result = provider_model_ids("bedrock")
-            with patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
+            with patch("hermes_agent.agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
                 us_result = provider_model_ids("bedrock")
 
         assert all(m.startswith("eu.") or m.lower() in _MANTLE_SET for m in eu_result)
@@ -150,7 +150,7 @@ class TestListAuthenticatedProvidersBedrock:
         monkeypatch.delenv("AWS_WEB_IDENTITY_TOKEN_FILE", raising=False)
         monkeypatch.delenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", raising=False)
 
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=False):
+        with patch("hermes_agent.agent.bedrock_adapter.has_aws_credentials", return_value=False):
             providers = list_authenticated_providers(current_provider="openai")
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
@@ -174,7 +174,7 @@ class TestListAuthenticatedProvidersBedrock:
             calls["has_aws_credentials"] += 1
             return False
 
-        with patch("agent.bedrock_adapter.has_aws_credentials", side_effect=_has_aws_credentials):
+        with patch("hermes_agent.agent.bedrock_adapter.has_aws_credentials", side_effect=_has_aws_credentials):
             providers = list_authenticated_providers(current_provider="openrouter", max_models=0)
 
         assert calls["has_aws_credentials"] == 0
@@ -196,8 +196,8 @@ class TestBedrockRegionRouting:
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
 
-        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
+        with patch("hermes_agent.agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("hermes_agent.agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
              _mock_botocore_session(return_value=mock_session):
             providers = list_authenticated_providers(current_provider="bedrock")
 
@@ -212,7 +212,7 @@ class TestBedrockRegionRouting:
 
     def test_env_var_takes_priority_over_botocore_profile(self, monkeypatch):
         """AWS_REGION env var wins over botocore profile region."""
-        from agent.bedrock_adapter import resolve_bedrock_region
+        from hermes_agent.agent.bedrock_adapter import resolve_bedrock_region
 
         monkeypatch.setenv("AWS_REGION", "us-west-2")
 

@@ -17,7 +17,7 @@ def test_parent_action_after_scheduler_verdict(tmp_path, action):
     parent._current_task_id = 'parent-task'
     record_session_cwd('parent-task', str(_repo(tmp_path, 'repo')))
     limited = _AlwaysLimited()
-    with patch('run_agent.AIAgent', side_effect=limited):
+    with patch('hermes_agent.run_agent.AIAgent', side_effect=limited):
         out = json.loads(delegate_task(tasks=[{'goal': 'original task'}], background=True, parent_agent=parent))
         _settled(out['delegation_id'])
     sid = out['subagent_ids'][0]
@@ -29,13 +29,13 @@ def test_parent_action_after_scheduler_verdict(tmp_path, action):
         elif action == 'stop_session':
             assert supersede_for_session(parent_session_id=parent.session_id, reason='/stop') == 1
         else:
-            with patch('run_agent.AIAgent', side_effect=_ScriptedModel()):
+            with patch('hermes_agent.run_agent.AIAgent', side_effect=_ScriptedModel()):
                 result = json.loads(delegate_task(tasks=[{'goal': 'replacement task'}], background=True, parent_agent=parent))
                 _settled(result['delegation_id'])
         before = _db_rows(parent)[sid]
         print('PARENT_ACTION', action, 'OLD_STATE_BEFORE_AUTO_CLAIM', before[0])
         return start(record, unit, message)
-    with patch('run_agent.AIAgent', side_effect=limited):
+    with patch('hermes_agent.run_agent.AIAgent', side_effect=limited):
         resumed = tick(interleaved, capacity=3)
         if dispatched:
             _settled(dispatched[-1])
@@ -55,7 +55,7 @@ def _limited_child(tmp_path, parent):
     from hermes_agent.tools.terminal_tool import record_session_cwd
     parent._current_task_id = 'parent-task'
     record_session_cwd('parent-task', str(_repo(tmp_path, 'repo')))
-    with patch('run_agent.AIAgent', side_effect=_AlwaysLimited()):
+    with patch('hermes_agent.run_agent.AIAgent', side_effect=_AlwaysLimited()):
         out = json.loads(delegate_task(tasks=[{'goal': 'write the parser'}], background=True, parent_agent=parent))
         first = _settled(out['delegation_id'])
     return out['subagent_ids'][0], first
@@ -71,7 +71,7 @@ def test_a_stop_from_before_opt_in_is_never_resumed_once_auto_resume_is_turned_o
     sid, first = _limited_child(tmp_path, parent)
     assert 'auto_resume' not in first['results'][0]  # no promise was made
     _enable()
-    with patch('run_agent.AIAgent', side_effect=_ScriptedModel()):
+    with patch('hermes_agent.run_agent.AIAgent', side_effect=_ScriptedModel()):
         assert tick(_scheduler(parent, dispatched), capacity=3) == [] and dispatched == []
     state, _pinned, record = _db_rows(parent)[sid]
     assert state == 'resumable' and 'never promised' in record['auto_note']  # still continuable by hand
@@ -85,7 +85,7 @@ def test_a_parent_with_no_gateway_scheduler_gets_the_manual_continue_hint(tmp_pa
     sid, first = _limited_child(tmp_path, parent)
     assert 'auto_resume' not in first['results'][0]
     assert 'WILL resume automatically' not in json.dumps(first)
-    with patch('run_agent.AIAgent', side_effect=_ScriptedModel()):
+    with patch('hermes_agent.run_agent.AIAgent', side_effect=_ScriptedModel()):
         assert tick(_scheduler(parent, dispatched), capacity=3) == []
     assert _db_rows(parent)[sid][0] == 'resumable'
 
@@ -111,7 +111,7 @@ def test_a_stop_after_the_last_pre_dispatch_check_still_wins(tmp_path, action):
         return out
 
     model = _ScriptedModel()
-    with patch.object(ar, 'confirm_start', confirm_then_parent_acts), patch('run_agent.AIAgent', side_effect=model):
+    with patch.object(ar, 'confirm_start', confirm_then_parent_acts), patch('hermes_agent.run_agent.AIAgent', side_effect=model):
         ar.tick(_scheduler(parent, dispatched), capacity=3)
         if dispatched:
             _settled(dispatched[-1])
@@ -136,7 +136,7 @@ def test_a_promise_belongs_to_one_stop(tmp_path):
         child.run_conversation.side_effect = lambda *a, **k: (seen.append(_db_rows(parent)[sid]), ok(*a, **k))[1]
         return child
 
-    with patch('run_agent.AIAgent', side_effect=build):
+    with patch('hermes_agent.run_agent.AIAgent', side_effect=build):
         assert tick(_scheduler(parent, dispatched), capacity=3) == [sid]
         _settled(dispatched[-1])
     state, _pinned, running = seen[0]
@@ -160,7 +160,7 @@ def test_an_automatic_run_whose_record_cannot_be_written_does_not_start(tmp_path
         return real_write(path, fn)
 
     model = _ScriptedModel()
-    with patch.object(dr, '_write', busy_once), patch('run_agent.AIAgent', side_effect=model):
+    with patch.object(dr, '_write', busy_once), patch('hermes_agent.run_agent.AIAgent', side_effect=model):
         tick(_scheduler(parent, dispatched), capacity=3)
         if dispatched:
             _settled(dispatched[-1])
@@ -186,7 +186,7 @@ def test_a_cancelled_automatic_run_never_hands_back_the_parents_own_continue(tmp
         return out
 
     model = _ScriptedModel()
-    with patch.object(ar, 'confirm_start', confirm_then_parent_takes_it), patch('run_agent.AIAgent', side_effect=model):
+    with patch.object(ar, 'confirm_start', confirm_then_parent_takes_it), patch('hermes_agent.run_agent.AIAgent', side_effect=model):
         ar.tick(_scheduler(parent, dispatched), capacity=3)
         if dispatched:
             _settled(dispatched[-1])
@@ -211,7 +211,7 @@ def test_failing_closed_leaves_no_marker_that_turns_a_manual_continue_into_a_dis
     _enable()
     parent, dispatched = _parent(), []
     sid, _first = _limited_child(tmp_path, parent)
-    with patch.object(dr, '_write', _busy_run_record(dr)), patch('run_agent.AIAgent', side_effect=_ScriptedModel()):
+    with patch.object(dr, '_write', _busy_run_record(dr)), patch('hermes_agent.run_agent.AIAgent', side_effect=_ScriptedModel()):
         tick(_scheduler(parent, dispatched), capacity=3)
         if dispatched:
             _settled(dispatched[-1])
@@ -230,7 +230,7 @@ def test_a_stop_while_the_automatic_run_fails_closed_is_kept(tmp_path):
     sid, _first = _limited_child(tmp_path, parent)
     stop = lambda: json.loads(delegate_task(action='stop', subagent_id=sid, parent_agent=parent))['status']
     model = _ScriptedModel()
-    with patch.object(dr, '_write', _busy_run_record(dr, stop)), patch('run_agent.AIAgent', side_effect=model):
+    with patch.object(dr, '_write', _busy_run_record(dr, stop)), patch('hermes_agent.run_agent.AIAgent', side_effect=model):
         tick(_scheduler(parent, dispatched), capacity=3)
         if dispatched:
             _settled(dispatched[-1])

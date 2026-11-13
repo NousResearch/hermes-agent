@@ -39,7 +39,7 @@ def test_followup_user_turn_is_not_merged_into_function_response_turn():
     merges (parallel tool results, back-to-back plain user texts) remain
     required for Gemini alternation and are covered by sibling tests.
     """
-    from agent.gemini_native_adapter import (
+    from hermes_agent.agent.gemini_native_adapter import (
         _INTERRUPTED_RESPONSE_PLACEHOLDER,
         _build_gemini_contents,
     )
@@ -83,7 +83,7 @@ def test_parallel_tool_results_merge_into_one_user_content():
     contents are rejected with HTTP 400. Parallel tool calls produce two tool
     results in a row, so their functionResponses must be grouped into a single
     user content instead of two consecutive ones."""
-    from agent.gemini_native_adapter import _build_gemini_contents
+    from hermes_agent.agent.gemini_native_adapter import _build_gemini_contents
 
     messages = [
         {"role": "user", "content": "Read a.txt and b.txt"},
@@ -119,7 +119,7 @@ def test_parallel_tool_results_merge_into_one_user_content():
 def test_consecutive_user_messages_merge_for_gemini_alternation():
     """Back-to-back user messages must also be merged, not sent as two
     consecutive user contents."""
-    from agent.gemini_native_adapter import _build_gemini_contents
+    from hermes_agent.agent.gemini_native_adapter import _build_gemini_contents
 
     messages = [
         {"role": "user", "content": "first"},
@@ -141,7 +141,7 @@ def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():
     vercel/ai#14369). ``tool_describe`` output for an MCP tool is exactly such
     a schema, so it must be wrapped as opaque text instead.
     """
-    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+    from hermes_agent.agent.gemini_native_adapter import _translate_tool_result_to_gemini
 
     schema = {
         "$defs": {"SetCookieParam": {"type": "object"}},
@@ -166,7 +166,7 @@ def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():
 def test_plain_json_tool_result_remains_structured():
     """Ordinary JSON tool results without a ``$ref`` pointer keep the
     structured form (no regression to the existing structured-response path)."""
-    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+    from hermes_agent.agent.gemini_native_adapter import _translate_tool_result_to_gemini
 
     msg = {
         "role": "tool",
@@ -183,7 +183,7 @@ def test_plain_json_tool_result_remains_structured():
 def test_deeply_nested_ref_is_detected():
     """A ``$ref`` pointer buried several levels deep through mixed lists and
     dicts still demotes the result to opaque text (recursion coverage)."""
-    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+    from hermes_agent.agent.gemini_native_adapter import _translate_tool_result_to_gemini
 
     deep = {"a": [{"b": {"c": [{"$ref": "#/$defs/Deep"}]}}]}
     msg = {
@@ -206,7 +206,7 @@ def test_top_level_json_array_is_wrapped_as_opaque_text():
     ``response = parsed if isinstance(parsed, dict) else {"output": content}``
     already wraps lists, so a list of schemas cannot reach the Gemini 400 path.
     """
-    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+    from hermes_agent.agent.gemini_native_adapter import _translate_tool_result_to_gemini
 
     arr = [{"$ref": "#/$defs/SetCookieParam", "type": "object"}]
     msg = {
@@ -226,7 +226,7 @@ def test_top_level_json_array_is_wrapped_as_opaque_text():
 def test_ref_value_without_pointer_prefix_remains_structured():
     """Only values shaped like a JSON pointer (``#/...``) demote a result; a
     ``$ref`` value that is not a pointer leaves the structured path intact."""
-    from agent.gemini_native_adapter import _translate_tool_result_to_gemini
+    from hermes_agent.agent.gemini_native_adapter import _translate_tool_result_to_gemini
 
     payload = {"$ref": "not-a-pointer", "status": "ok"}
     msg = {
@@ -244,7 +244,7 @@ def test_ref_value_without_pointer_prefix_remains_structured():
 
 
 def test_translate_native_response_surfaces_reasoning_and_tool_calls():
-    from agent.gemini_native_adapter import translate_gemini_response
+    from hermes_agent.agent.gemini_native_adapter import translate_gemini_response
 
     payload = {
         "candidates": [
@@ -274,7 +274,7 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
 
 
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
 
     recorded = {}
 
@@ -302,7 +302,7 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
         def close(self):
             return None
 
-    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    monkeypatch.setattr("hermes_agent.agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
 
     client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
     response = client.chat.completions.create(
@@ -338,7 +338,7 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
 def test_normalize_gemini_base_url_guarantees_version_segment(configured, expected):
     """Host roots (how Google's own client is configured) gain ``/v1beta``; versioned URLs and the
     ``/openai`` strip are unchanged, so ``{base}/models/{model}:generateContent`` never 404s."""
-    from agent.gemini_native_adapter import normalize_gemini_base_url
+    from hermes_agent.agent.gemini_native_adapter import normalize_gemini_base_url
 
     assert normalize_gemini_base_url(configured) == expected
 
@@ -348,7 +348,7 @@ def test_normalize_gemini_base_url_guarantees_version_segment(configured, expect
 def test_native_client_rejects_empty_api_key_with_actionable_message():
     """Empty/whitespace api_key must raise at construction, not produce a cryptic
     Google GFE 'Error 400 (Bad Request)!!1' HTML page on the first request."""
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
 
     for bad in ("", "   ", None):
         with pytest.raises(RuntimeError) as excinfo:
@@ -359,7 +359,7 @@ def test_native_client_rejects_empty_api_key_with_actionable_message():
 
 @pytest.mark.asyncio
 async def test_async_native_client_streams_without_requiring_async_iterator_from_sync_client():
-    from agent.gemini_native_adapter import AsyncGeminiNativeClient
+    from hermes_agent.agent.gemini_native_adapter import AsyncGeminiNativeClient
 
     chunk = SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="hi"), finish_reason=None)])
     sync_stream = iter([chunk])
@@ -387,7 +387,7 @@ async def test_async_native_client_streams_without_requiring_async_iterator_from
 
 
 def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
-    from agent.gemini_native_adapter import translate_stream_event
+    from hermes_agent.agent.gemini_native_adapter import translate_stream_event
 
     tool_call_indices = {}
     event = {
@@ -432,7 +432,7 @@ def test_distinct_same_tool_calls_in_separate_events_get_their_own_slots():
     """Gemini 2.5 (no call id) streams each parallel call as parts[0] of its own event; two
     different calls to one tool must not share a slot, and a resend of the second must land on
     the slot it opened instead of concatenating onto the first."""
-    from agent.gemini_native_adapter import translate_stream_event
+    from hermes_agent.agent.gemini_native_adapter import translate_stream_event
 
     slots = {}
     out = []
@@ -447,7 +447,7 @@ def test_distinct_same_tool_calls_in_separate_events_get_their_own_slots():
 def test_provider_call_id_is_the_slot_identity():
     """Gemini 3 ids two calls with identical name and args as two calls; the same id across events
     (with drifting part_index / signature) is one call."""
-    from agent.gemini_native_adapter import translate_stream_event
+    from hermes_agent.agent.gemini_native_adapter import translate_stream_event
 
     slots = {}
     out = translate_stream_event(_fc_event("search", {"q": "A"}, call_id="c1"), model="gemini-3-pro", tool_call_indices=slots)
@@ -463,7 +463,7 @@ def test_provider_call_id_is_the_slot_identity():
 
 
 def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
-    from agent.gemini_native_adapter import build_gemini_request
+    from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
         messages=[{"role": "user", "content": "hi"}],
@@ -475,7 +475,7 @@ def test_build_gemini_request_preserves_explicit_max_tokens_without_thinking():
 
 
 def test_build_gemini_request_raises_max_output_when_thinking_is_enabled():
-    from agent.gemini_native_adapter import (
+    from hermes_agent.agent.gemini_native_adapter import (
         GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
         build_gemini_request,
     )
@@ -491,7 +491,7 @@ def test_build_gemini_request_raises_max_output_when_thinking_is_enabled():
 
 
 def test_build_gemini_request_does_not_raise_when_thinking_is_disabled():
-    from agent.gemini_native_adapter import build_gemini_request
+    from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
         messages=[{"role": "user", "content": "hi"}],
@@ -546,7 +546,7 @@ class TestGemini3ToolCallIds:
         ]
 
     def test_requires_ids_gate(self):
-        from agent.gemini_native_adapter import gemini_requires_tool_call_ids
+        from hermes_agent.agent.gemini_native_adapter import gemini_requires_tool_call_ids
 
         assert gemini_requires_tool_call_ids("gemini-3.6-flash")
         assert gemini_requires_tool_call_ids("google/gemini-3.6-pro")
@@ -557,7 +557,7 @@ class TestGemini3ToolCallIds:
         assert not gemini_requires_tool_call_ids("")
 
     def test_ids_preserved_for_gemini3(self):
-        from agent.gemini_native_adapter import _build_gemini_contents
+        from hermes_agent.agent.gemini_native_adapter import _build_gemini_contents
 
         contents, _ = _build_gemini_contents(
             self._history(), include_tool_call_ids=True
@@ -574,7 +574,7 @@ class TestGemini3ToolCallIds:
         assert response_ids == ["call_1", "call_2"]
 
     def test_ids_omitted_for_older_gemini(self):
-        from agent.gemini_native_adapter import _build_gemini_contents
+        from hermes_agent.agent.gemini_native_adapter import _build_gemini_contents
 
         contents, _ = _build_gemini_contents(self._history())
         for c in contents:
@@ -585,7 +585,7 @@ class TestGemini3ToolCallIds:
                     assert "id" not in p["functionResponse"]
 
     def test_build_request_threads_model_gate(self):
-        from agent.gemini_native_adapter import build_gemini_request
+        from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
         request = build_gemini_request(
             messages=self._history(), model="gemini-3.6-flash"
@@ -600,7 +600,7 @@ class TestGemini3ToolCallIds:
         assert all("id" not in p.get("functionCall", {}) for p in parts_old)
 
     def test_response_preserves_provider_tool_call_id(self):
-        from agent.gemini_native_adapter import translate_gemini_response
+        from hermes_agent.agent.gemini_native_adapter import translate_gemini_response
 
         resp = {
             "candidates": [{
@@ -616,7 +616,7 @@ class TestGemini3ToolCallIds:
         assert tool_calls[0].id == "call_native_7"
 
     def test_response_generates_id_when_absent(self):
-        from agent.gemini_native_adapter import translate_gemini_response
+        from hermes_agent.agent.gemini_native_adapter import translate_gemini_response
 
         resp = {
             "candidates": [{
@@ -678,7 +678,7 @@ def _vision_tool_messages():
 )
 def test_gemini_3x_embeds_image_in_function_response_parts(model):
     """Gemini 3.x multimodal tool results embed inlineData inside functionResponse.parts."""
-    from agent.gemini_native_adapter import build_gemini_request
+    from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
         messages=_vision_tool_messages(),
@@ -694,7 +694,7 @@ def test_gemini_3x_embeds_image_in_function_response_parts(model):
 
 def test_gemini_2x_does_not_embed_image_parts():
     """Gemini 2.x rejects functionResponse.parts — tool result stays text-only."""
-    from agent.gemini_native_adapter import build_gemini_request
+    from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
     request = build_gemini_request(
         messages=_vision_tool_messages(),
@@ -708,7 +708,7 @@ def test_gemini_2x_does_not_embed_image_parts():
 
 def test_text_only_tool_result_has_no_parts():
     """Text-only Gemini 3.x tool result does not add empty parts."""
-    from agent.gemini_native_adapter import build_gemini_request
+    from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
     messages = [
         {
@@ -751,7 +751,7 @@ class _FakeStreamResponse:
 
 def test_iter_sse_events_flushes_residual_buffer_after_eof():
     """A final SSE frame without a trailing newline must not be dropped (pi#8997 class)."""
-    from agent.gemini_native_adapter import _iter_sse_events
+    from hermes_agent.agent.gemini_native_adapter import _iter_sse_events
 
     resp = _FakeStreamResponse([
         'data: {"candidates": [1]}\n',
@@ -764,7 +764,7 @@ def test_iter_sse_events_flushes_residual_buffer_after_eof():
 def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
     """[DONE] terminates iteration even when more frames follow; a residual
     [DONE] in the leftover buffer is not yielded as data."""
-    from agent.gemini_native_adapter import _iter_sse_events
+    from hermes_agent.agent.gemini_native_adapter import _iter_sse_events
 
     resp = _FakeStreamResponse([
         'data: {"candidates": [1]}\ndata: [DONE]\ndata: {"candidates": [3]}\n',
@@ -795,7 +795,7 @@ def test_native_client_never_reroutes_aq_keys_off_the_configured_surface(api_key
     """Google issues ``AQ.`` keys for both AI Studio and Vertex express mode, so the key prefix must
     not decide the surface (#115306): the default (or explicitly configured) base is used verbatim,
     and an explicit aiplatform base is completed to ``…/publishers/google/models/…``."""
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
 
     seen = []
 
@@ -813,7 +813,7 @@ def test_native_client_never_reroutes_aq_keys_off_the_configured_surface(api_key
 def test_native_gemini_detection_covers_express_but_not_vertex_oauth_openapi():
     """The express base is native Gemini; the OAuth Vertex provider's OpenAI-compatible
     ``…/endpoints/openapi`` base must NOT be captured by the native adapter."""
-    from agent.gemini_native_adapter import is_native_gemini_base_url
+    from hermes_agent.agent.gemini_native_adapter import is_native_gemini_base_url
 
     assert is_native_gemini_base_url("https://aiplatform.googleapis.com/v1beta1/publishers/google")
     assert not is_native_gemini_base_url(
@@ -827,8 +827,8 @@ def test_thinking_tokens_are_counted_as_output_and_surfaced_as_reasoning():
     includes thoughts. Dropping thoughts made the emitted usage internally
     inconsistent (prompt + completion != total) and billed a thinking turn at a
     fraction of its real output."""
-    from agent.gemini_native_adapter import translate_gemini_response
-    from agent.usage_pricing import normalize_usage
+    from hermes_agent.agent.gemini_native_adapter import translate_gemini_response
+    from hermes_agent.agent.usage_pricing import normalize_usage
 
     prompt, visible, thoughts = 10, 200, 5000
     payload = {
@@ -853,8 +853,8 @@ def test_thinking_tokens_are_counted_as_output_and_surfaced_as_reasoning():
 def test_response_without_thinking_tokens_keeps_its_output_count():
     """Non-thinking / older responses omit ``thoughtsTokenCount``; their numbers
     must not move, and reasoning stays zero."""
-    from agent.gemini_native_adapter import translate_gemini_response
-    from agent.usage_pricing import normalize_usage
+    from hermes_agent.agent.gemini_native_adapter import translate_gemini_response
+    from hermes_agent.agent.usage_pricing import normalize_usage
 
     prompt, visible = 10, 5
     payload = {
@@ -876,7 +876,7 @@ def test_response_without_thinking_tokens_keeps_its_output_count():
 def test_build_gemini_request_translates_response_format_on_both_schema_surfaces(json_schema_surface, key):
     """OpenAI response_format reaches generationConfig: full JSON Schema under ``responseJsonSchema`` on
     v1beta, the OpenAPI subset under ``responseSchema`` elsewhere (with unsupported keys stripped)."""
-    from agent.gemini_native_adapter import build_gemini_request
+    from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"], "additionalProperties": False}
     generation = build_gemini_request(
@@ -892,7 +892,7 @@ def test_build_gemini_request_translates_response_format_on_both_schema_surfaces
 @pytest.mark.parametrize("tool_choice", ["required", {"type": "function", "function": {"name": "lookup"}}])
 def test_build_gemini_request_drops_json_output_when_tool_choice_forces_calls(tool_choice):
     """Gemini 400s on forced function calling (mode ANY) combined with a JSON responseMimeType, on every model."""
-    from agent.gemini_native_adapter import build_gemini_request
+    from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
     generation = build_gemini_request(
         messages=[{"role": "user", "content": "hi"}],
@@ -908,7 +908,7 @@ def test_build_gemini_request_drops_json_output_when_tool_choice_forces_calls(to
 def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keeps_json):
     """Pre-Gemini-3 rejects function declarations alongside a JSON mime type (HTTP 400 "Function calling
     with a response mime type: 'application/json' is unsupported"); Gemini 3+ accepts the combination."""
-    from agent.gemini_native_adapter import build_gemini_request
+    from hermes_agent.agent.gemini_native_adapter import build_gemini_request
 
     generation = build_gemini_request(
         messages=[{"role": "user", "content": "hi"}],
@@ -921,7 +921,7 @@ def test_build_gemini_request_tools_plus_json_output_only_on_gemini3(model, keep
 def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypatch):
     """A CONTINUATION hop resends the SAME request plus the token (never the partial output); the hops
     join into one turn whose usage is summed for billing, with hop 1's prompt kept as the context size."""
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
 
     def hop(text, finish, token, prompt, out):
         cand = {"content": {"role": "model", "parts": [{"text": text}]}, "finishReason": finish}
@@ -958,7 +958,7 @@ def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypa
         def close(self):
             return None
 
-    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    monkeypatch.setattr("hermes_agent.agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
     client = GeminiNativeClient(api_key="AQ.test", base_url="https://generativelanguage.googleapis.com/v1beta")
     kwargs = {"model": "gemini-4-argon", "messages": [{"role": "user", "content": "prove it"}], "max_tokens": 262_144}
 
@@ -981,7 +981,7 @@ def test_long_decode_continues_across_hops_and_reports_first_hop_prompt(monkeypa
 
 def _blocking_client(monkeypatch, payload):
     """Real GeminiNativeClient over a transport that answers HTTP 200 with ``payload`` (unary and SSE)."""
-    from agent.gemini_native_adapter import GeminiNativeClient
+    from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
 
     class _Stream:
         status_code, headers = 200, {}
@@ -1005,15 +1005,15 @@ def _blocking_client(monkeypatch, payload):
         def close(self):
             return None
 
-    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+    monkeypatch.setattr("hermes_agent.agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
     return GeminiNativeClient(api_key="AQ.test", base_url="https://generativelanguage.googleapis.com/v1beta")
 
 
 @pytest.mark.parametrize("stream", [False, True])
 def test_prompt_block_reason_is_terminal_content_policy_error(monkeypatch, stream):
     # Google answers a blocked prompt with HTTP 200, promptFeedback.blockReason and no candidates.
-    from agent.error_classifier import FailoverReason, classify_api_error
-    from agent.gemini_native_adapter import GeminiAPIError
+    from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
+    from hermes_agent.agent.gemini_native_adapter import GeminiAPIError
 
     payload = {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}, "usageMetadata": {"promptTokenCount": 7}}
     client = _blocking_client(monkeypatch, payload)
@@ -1028,7 +1028,7 @@ def test_prompt_block_reason_is_terminal_content_policy_error(monkeypatch, strea
 
 def test_prompt_block_surfaces_vertex_block_reason_message(monkeypatch):
     # Vertex explains the block in promptFeedback.blockReasonMessage; the user sees that, not canned text.
-    from agent.gemini_native_adapter import GeminiAPIError
+    from hermes_agent.agent.gemini_native_adapter import GeminiAPIError
 
     payload = {"promptFeedback": {"blockReason": "MODEL_ARMOR", "blockReasonMessage": "Blocked by Model Armor policy X."}}
     client = _blocking_client(monkeypatch, payload)

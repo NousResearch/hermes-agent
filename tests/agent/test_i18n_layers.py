@@ -7,7 +7,7 @@ from __future__ import annotations
 import hermes_yaml as yaml
 import pytest
 
-from agent import i18n, i18n_layers
+from hermes_agent.agent import i18n, i18n_layers
 from hermes_cli.plugins import PluginManager
 
 # A bundled key every test can lean on (approval prompts ship in every locale).

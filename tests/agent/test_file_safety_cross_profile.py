@@ -1,4 +1,4 @@
-"""Tests for the active-profile resolver in agent/file_safety."""
+"""Tests for the active-profile resolver in hermes_agent/agent/file_safety."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -49,7 +49,7 @@ def fake_hermes(tmp_path, monkeypatch):
     import hermes_constants
     monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
 
-    import agent.file_safety as fs
+    import hermes_agent.agent.file_safety as fs
     monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
 
     return {
@@ -62,7 +62,7 @@ def fake_hermes(tmp_path, monkeypatch):
 
 def _set_active_home(monkeypatch, hermes_home: Path):
     """Point file_safety._hermes_home_path at a specific profile dir."""
-    import agent.file_safety as fs
+    import hermes_agent.agent.file_safety as fs
     monkeypatch.setattr(fs, "_hermes_home_path", lambda: hermes_home)
 
 
@@ -74,13 +74,13 @@ def _set_active_home(monkeypatch, hermes_home: Path):
 class TestResolveActiveProfileName:
     def test_default_when_home_is_root(self, fake_hermes, monkeypatch):
         _set_active_home(monkeypatch, fake_hermes["default_home"])
-        from agent.file_safety import _resolve_active_profile_name
+        from hermes_agent.agent.file_safety import _resolve_active_profile_name
         assert _resolve_active_profile_name() == "default"
 
 
     def test_falls_back_to_default_on_resolution_failure(self, fake_hermes, monkeypatch):
         """If HERMES_HOME resolution raises, return 'default' rather than crashing the tool."""
-        import agent.file_safety as fs
+        import hermes_agent.agent.file_safety as fs
 
         def _boom():
             raise RuntimeError("simulated")

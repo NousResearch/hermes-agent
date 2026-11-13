@@ -22,13 +22,13 @@ The counter now round-trips the durable session-state channel exactly like
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 from hermes_agent.hermes_state import SessionDB
 
 
 def _compressor(db: SessionDB | None = None, session_id: str = "") -> ContextCompressor:
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         cc = ContextCompressor(

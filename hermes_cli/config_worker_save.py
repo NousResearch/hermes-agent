@@ -1,6 +1,6 @@
 """What ``save_config`` persists when the process serves a frozen session config.
 
-A managed worker binds its session's creation-time config (``agent.safe_worker_policy``), so its
+A managed worker binds its session's creation-time config (``hermes_agent.agent.safe_worker_policy``), so its
 ``load_config()`` is that snapshot, not the profile file. A read-modify-write in such a worker
 (an ``always`` approval, a connector enable) must land only what it changed on the LIVE file:
 writing the whole snapshot back would revert every profile edit made since the session was
@@ -31,7 +31,7 @@ def _frozen_for_deletion(snapshot: dict[str, Any]) -> Any:
     empty allowlist is a real branch. A bypass worker (safe mode, ``--ignore-user-config``)
     freezes a copy of the schema, so a branch that is still the schema default was never
     an operator choice and must not count as a deletion."""
-    from agent.safe_worker_policy import _current_policy
+    from hermes_agent.agent.safe_worker_policy import _current_policy
 
     policy = _current_policy()
     if policy is None or not policy.ignore_user_config:

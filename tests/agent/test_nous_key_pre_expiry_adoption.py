@@ -9,7 +9,7 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-from agent.client_lifecycle import ClientLifecycleMixin
+from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
 
 
 def _jwt(exp: float, sub: str = "acct-A") -> str:
@@ -79,7 +79,7 @@ def test_same_key_back_from_the_store_is_not_readopted():
 
 def test_keepalive_thread_starts_when_an_agent_routes_to_nous(monkeypatch, tmp_path):
     """Real construction path: the CLI process builds agents through AIAgent, never through the gateway boot."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
     started = []
@@ -87,7 +87,7 @@ def test_keepalive_thread_starts_when_an_agent_routes_to_nous(monkeypatch, tmp_p
     # Tool discovery and the SDK client are irrelevant to the keepalive wiring and dominate runtime.
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
     monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", lambda *a, **k: {})
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", MagicMock())
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", MagicMock())
     AIAgent(api_key="k", base_url="https://inference-api.nousresearch.com/v1", provider="nous",
             model="anthropic/claude-fable-5.1", quiet_mode=True, skip_context_files=True, skip_memory=True)
     assert started == [1]

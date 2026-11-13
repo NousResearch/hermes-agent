@@ -11,11 +11,11 @@ wire with an invalid array.  See #58755 (follow-up).
 
 import pytest
 
-from agent.transports import get_transport
+from hermes_agent.agent.transports import get_transport
 
 @pytest.fixture
 def transport():
-    import agent.transports.chat_completions
+    import hermes_agent.agent.transports.chat_completions
     return get_transport("chat_completions")
 
 class TestEmptyToolCallsStripping:

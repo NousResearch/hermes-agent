@@ -102,7 +102,7 @@ class TestResolveProviderCorruptConfig:
         _setup_home(tmp_path, monkeypatch, CORRUPT_YAML)
         _load_config_fresh()
 
-        from agent.credential_pool import (
+        from hermes_agent.agent.credential_pool import (
             AUTH_TYPE_API_KEY,
             SOURCE_MANUAL,
             PooledCredential,

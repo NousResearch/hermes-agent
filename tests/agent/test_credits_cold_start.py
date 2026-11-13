@@ -8,7 +8,7 @@ primed the way conversation_loop does it.
 """
 import time
 
-from agent.credits_tracker import CreditsState, evaluate_credits_notices
+from hermes_agent.agent.credits_tracker import CreditsState, evaluate_credits_notices
 
 
 def _cold_start_notices(state: CreditsState):
@@ -51,7 +51,7 @@ def test_dev_fixtures_drive_cold_start():
     """Every HERMES_DEV_CREDITS_FIXTURE state produces a valid seed CreditsState."""
     import os
 
-    from agent.credits_tracker import dev_fixture_credits_state
+    from hermes_agent.agent.credits_tracker import dev_fixture_credits_state
 
     expected = {
         "healthy": [],
@@ -75,11 +75,11 @@ def test_dev_fixtures_drive_cold_start():
 
 class _FakeAgent:
     """Minimal agent surface for the seed helper: state slots + an emit that runs
-    the real policy against the latch (mirroring run_agent._emit_credits_notices,
+    the real policy against the latch (mirroring hermes_agent.run_agent._emit_credits_notices,
     including the free-model suppression flag)."""
 
     def __init__(self, provider="nous", model="", base_url="", session_id="session-1"):  # session_id may be None
-        from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model
+        from hermes_agent.agent.credits_tracker import evaluate_credits_notices, is_free_tier_model
 
         self.provider = provider
         self.model = model
@@ -91,7 +91,7 @@ class _FakeAgent:
         self.emitted: list = []
         self._eval = evaluate_credits_notices
         self._is_free = is_free_tier_model
-        from agent.credits_tracker import _remember_shown_band
+        from hermes_agent.agent.credits_tracker import _remember_shown_band
         self._remember_band = _remember_shown_band
 
     def _emit_credits_notices(self):
@@ -111,7 +111,7 @@ class _FakeAgent:
 def _seed(agent, fixture):
     import os
 
-    from agent.credits_tracker import seed_credits_at_session_start
+    from hermes_agent.agent.credits_tracker import seed_credits_at_session_start
 
     os.environ["HERMES_DEV_CREDITS"] = "1"  # fixtures gate on the dev flag
     os.environ["HERMES_DEV_CREDITS_FIXTURE"] = fixture
@@ -159,7 +159,7 @@ def test_seed_is_idempotent():
 
 
 def test_seed_skips_non_nous():
-    from agent.credits_tracker import seed_credits_at_session_start
+    from hermes_agent.agent.credits_tracker import seed_credits_at_session_start
 
     a = _FakeAgent(provider="openrouter")
     assert seed_credits_at_session_start(a) is False
@@ -186,7 +186,7 @@ def _band_state(used_fraction_of_cap: float) -> CreditsState:
 
 
 def test_rebuild_with_same_band_does_not_refire(monkeypatch):
-    import agent.credits_tracker as ct
+    import hermes_agent.agent.credits_tracker as ct
 
     monkeypatch.setattr(ct, "_seen_usage_bands", {})
     _hydrate = ct._hydrate_seed_state
@@ -206,7 +206,7 @@ def test_rebuild_with_same_band_does_not_refire(monkeypatch):
 
 
 def test_rebuild_still_fires_on_genuine_band_change(monkeypatch):
-    import agent.credits_tracker as ct
+    import hermes_agent.agent.credits_tracker as ct
 
     monkeypatch.setattr(ct, "_seen_usage_bands", {})
     _hydrate = ct._hydrate_seed_state
@@ -224,7 +224,7 @@ def test_rebuild_still_fires_on_genuine_band_change(monkeypatch):
 
 
 def test_unrelated_session_id_not_suppressed(monkeypatch):
-    import agent.credits_tracker as ct
+    import hermes_agent.agent.credits_tracker as ct
 
     monkeypatch.setattr(ct, "_seen_usage_bands", {})
     _hydrate = ct._hydrate_seed_state
@@ -244,7 +244,7 @@ def test_unrelated_session_id_not_suppressed(monkeypatch):
 def test_agent_without_session_id_falls_back_to_prior_behavior(monkeypatch):
     """CLI/plain agents may have no session_id — degrade to the pre-fix behavior
     (cold-start seed warns at open), never raise."""
-    import agent.credits_tracker as ct
+    import hermes_agent.agent.credits_tracker as ct
 
     monkeypatch.setattr(ct, "_seen_usage_bands", {})
     a = _FakeAgent(session_id=None)
@@ -296,9 +296,9 @@ def _run_bg_seed(monkeypatch, agent, *, warm):
     """
     import threading
 
-    from agent import memory_provider
+    from hermes_agent.agent import memory_provider
     from hermes_cli import nous_account
-    from agent import credits_tracker
+    from hermes_agent.agent import credits_tracker
 
     release_worker = threading.Event()
     spawned: list[threading.Thread] = []
@@ -377,8 +377,8 @@ def test_bg_seed_reruns_the_policy_when_a_header_beat_it(monkeypatch):
 
 def _mixin_agent(model="openai/gpt-5.6-luna"):
     """The real notice path (RateLimitCreditsMixin._emit_credits_notices) with a recording driver."""
-    from agent.rate_limit_credits import RateLimitCreditsMixin
-    from agent.status_output import StatusOutputMixin
+    from hermes_agent.agent.rate_limit_credits import RateLimitCreditsMixin
+    from hermes_agent.agent.status_output import StatusOutputMixin
 
     class _Agent(RateLimitCreditsMixin, StatusOutputMixin):
         provider = "nous"
@@ -406,7 +406,7 @@ def test_header_after_ttl_expiry_rewarms_instead_of_flashing_the_banner(monkeypa
     """The session-start warm is one-shot; a Nous catalog expires after _NOUS_CATALOG_TTL_SECONDS. A
     header landing after that saw a cold peek and brought the depleted banner back for a
     subscription-billed model. Now the cold peek starts a re-warm and the banner never shows."""
-    from agent import credits_tracker
+    from hermes_agent.agent import credits_tracker
 
     models_pricing = _cold_pricing_cache(monkeypatch)
     models_pricing._cache_catalog(
@@ -430,7 +430,7 @@ def test_header_on_a_cold_catalog_still_warns_when_the_warm_fails(monkeypatch):
     """Fail-open guard rail: a warm whose fetch fails (the cache keeps the empty result for its retry
     window) decides against the cold peek — the banner shows — and neither the warm's own re-run nor
     the next header inside that window starts another warm."""
-    from agent import credits_tracker
+    from hermes_agent.agent import credits_tracker
 
     models_pricing = _cold_pricing_cache(monkeypatch)
     warms: list = []

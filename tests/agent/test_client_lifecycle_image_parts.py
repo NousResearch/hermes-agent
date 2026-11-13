@@ -8,7 +8,7 @@ session to the fallback model (#149107, #148586).
 
 import pytest
 
-from agent.client_lifecycle import ClientLifecycleMixin
+from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
 
 
 @pytest.mark.parametrize("type_value", [{"slug": "full-time"}, ["string", "null"]])

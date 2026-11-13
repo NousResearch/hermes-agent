@@ -1,10 +1,10 @@
-"""Unit tests for ``agent.turn_context_compaction`` (turn-start compaction extracted
+"""Unit tests for ``hermes_agent.agent.turn_context_compaction`` (turn-start compaction extracted
 from ``build_turn_context``)."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.turn_context_compaction import (
+from hermes_agent.agent.turn_context_compaction import (
     CompactionOutcome,
     _codex_native_auto_compaction,
     run_turn_start_compaction,

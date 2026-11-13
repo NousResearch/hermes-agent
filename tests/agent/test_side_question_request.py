@@ -1,4 +1,4 @@
-"""Plugin side questions on the live session agent (``agent/side_question_request.py``).
+"""Plugin side questions on the live session agent (``hermes_agent/agent/side_question_request.py``).
 
 A real parent ``AIAgent`` runs a turn against a capturing fake client; the side call then
 replays the lease captured at finalization through the turn loop's own request phases. The
@@ -18,10 +18,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import side_question_lease
-from agent.side_question_lease import redeem_side_question
+from hermes_agent.agent import side_question_lease
+from hermes_agent.agent.side_question_lease import redeem_side_question
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 SIDE_PROMPT = "Suggest the user's next prompt in one line."
 # Plugin side questions bill per plugin, apart from ``/btw``'s ``side_question``.
@@ -73,13 +73,13 @@ class _FakeProvider:
 @pytest.fixture
 def provider(tmp_path, monkeypatch):
     fake = _FakeProvider()
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *a, **k: None)
     # Every agent built during the test (parent and fork) talks to the same fake.
     patches = [
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_tool_defs("web_search", "terminal")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI", return_value=fake.client),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=fake.client),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
         # The side call only runs where a consented plugin holds the capability; that gate has
         # its own tests (test_side_question_lease.py).
         patch.object(side_question_lease, "_consented_plugin_loaded", return_value=True),
@@ -320,7 +320,7 @@ def test_side_call_leaves_the_parent_sessions_terminal_environment_alive(provide
 def test_side_call_runs_under_the_turns_profile_and_secret_scope(provider, issued, tmp_path):
     """The plugin (of the turn's profile) redeems from its own thread, where no profile is bound;
     the request still resolves the parent turn's HERMES_HOME and secret scope."""
-    from agent.secret_scope import current_secret_scope_home, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope_home, reset_secret_scope, set_secret_scope
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 
     profile_home = tmp_path / "profiles" / "work"
@@ -406,14 +406,14 @@ def test_runtime_changed_since_the_turn_is_refused(provider, issued):
 def test_server_side_tool_in_final_request_is_refused(provider, issued, monkeypatch):
     parent = _make_parent()
     _run_parent_turn(parent, provider, tool_round=False)
-    real_build = __import__("agent.turn_api_request", fromlist=["build_request_payload"]).build_request_payload
+    real_build = __import__("hermes_agent.agent.turn_api_request", fromlist=["build_request_payload"]).build_request_payload
 
     def _with_native_search(*args, **kwargs):
         built = real_build(*args, **kwargs)
         built.api_kwargs["tools"] = [*built.api_kwargs["tools"], {"type": "web_search"}]
         return built
 
-    monkeypatch.setattr("agent.turn_api_request.build_request_payload", _with_native_search)
+    monkeypatch.setattr("hermes_agent.agent.turn_api_request.build_request_payload", _with_native_search)
     sent = len(provider.requests)
     assert redeem_side_question(issued[-1], SIDE_PROMPT, plugin_id="next-prompt") is None
     assert len(provider.requests) == sent
@@ -433,7 +433,7 @@ def test_server_side_tool_in_final_request_is_refused(provider, issued, monkeypa
     ({"extra_body": {"tools": [{"type": "function", "function": {"name": "x"}}]}}, False),
 ])
 def test_server_side_tool_predicate(api_kwargs, server_side):
-    from agent.side_question_request import has_server_side_tools
+    from hermes_agent.agent.side_question_request import has_server_side_tools
 
     assert has_server_side_tools(api_kwargs) is server_side
 
@@ -467,7 +467,7 @@ def test_timeout_interrupts_the_inflight_request(provider, issued):
 def test_timeout_counts_the_fork_build(provider, issued, monkeypatch):
     """Runtime resolution in the fork build is part of the caller's budget: a build that
     outlasts the timeout sends nothing."""
-    from agent import side_question_request
+    from hermes_agent.agent import side_question_request
 
     parent = _make_parent()
     _run_parent_turn(parent, provider, tool_round=False)

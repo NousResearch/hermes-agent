@@ -6,7 +6,7 @@ faster on flaky primaries instead of burning ~3x180s on the same stall.
 """
 from unittest.mock import patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(api_max_retries=None):
@@ -16,7 +16,7 @@ def _make_agent(api_max_retries=None):
     if api_max_retries is not None:
         cfg["agent"]["api_max_retries"] = api_max_retries
 
-    with patch("agent.process_bootstrap.OpenAI"), \
+    with patch("hermes_agent.agent.process_bootstrap.OpenAI"), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         return AIAgent(

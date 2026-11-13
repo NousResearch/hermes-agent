@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 
 def test_manual_compress_runs_under_the_session_cwd(tmp_path, monkeypatch):
-    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
     from hermes_agent.tui_gateway.server import _compress_session_history
 
     workspace = tmp_path / "workspace"

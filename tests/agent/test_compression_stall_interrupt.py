@@ -20,8 +20,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.auxiliary_client import AuxiliaryExplicitCancellation
-from agent.conversation_compression import (
+from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
+from hermes_agent.agent.conversation_compression import (
     STALL_INTERRUPTED_FAILURE_CLASS,
     CompressionCommitFence,
     compress_context,
@@ -34,7 +34,7 @@ def _build_agent(tmp_path: Path, session_id: str = "STALL_INTERRUPT_96775"):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session(session_id, source="cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -154,7 +154,7 @@ class TestStallInterruptedBackoff:
         self, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_context_compression_timeouts",
+            "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (1.0, 10.0),
         )
         db, agent = _build_agent(tmp_path, "STALL_AUX_CANCEL")
@@ -205,7 +205,7 @@ class TestStallInterruptedBackoff:
         self, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_context_compression_timeouts",
+            "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (1.0, 10.0),
         )
         db, agent = _build_agent(tmp_path, "STALL_FENCE_CANCEL")
@@ -243,7 +243,7 @@ class TestStallInterruptedBackoff:
         self, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_context_compression_timeouts",
+            "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (1.0, 10.0),
         )
         db, agent = _build_agent(tmp_path, "FRESH_FENCE_CANCEL")
@@ -277,7 +277,7 @@ class TestStallInterruptedBackoff:
         self, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_context_compression_timeouts",
+            "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (1.0, 10.0),
         )
         _db, agent = _build_agent(tmp_path, "FORCE_BYPASS_STALL")
@@ -320,7 +320,7 @@ class TestStallInterruptedBackoff:
         self, tmp_path: Path, monkeypatch
     ):
         monkeypatch.setattr(
-            "agent.conversation_compression.resolve_context_compression_timeouts",
+            "hermes_agent.agent.conversation_compression.resolve_context_compression_timeouts",
             lambda compression_cfg=None: (1.0, 10.0),
         )
         db, agent = _build_agent(tmp_path, "MERGE_MAX_STALL")

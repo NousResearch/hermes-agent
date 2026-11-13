@@ -306,7 +306,7 @@ def _agent(callback):
 
 
 def test_inline_executor_hands_the_agent_callback_to_the_tool(backend):
-    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+    from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
     callback = _answering(json.dumps({"targets": [{"name": "paper", "status": "approved"}]}))
     with patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
@@ -317,7 +317,7 @@ def test_inline_executor_hands_the_agent_callback_to_the_tool(backend):
 
 
 def test_setup_mcp_replay_shim_translates_to_an_mcp_target(backend):
-    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+    from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
     callback = _answering(json.dumps({"targets": [{"name": "linear", "status": "skipped"}]}))
     with patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):

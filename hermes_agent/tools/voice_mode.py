@@ -371,7 +371,7 @@ def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize:
     """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
     hangs forever if the device stalls)."""
     sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
-    from agent.deadline import poll_until
+    from hermes_agent.agent.deadline import poll_until
 
     poll_until(lambda: not (sd.get_stream() and sd.get_stream().active), timeout, 0.01)
     sd.stop()
@@ -1463,7 +1463,7 @@ def _check_plugin_stt_provider(provider: str) -> bool:
     if not key or key == "none":
         return False
     try:
-        from agent.transcription_registry import get_provider
+        from hermes_agent.agent.transcription_registry import get_provider
         from hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
         plugin_provider = get_provider(key)

@@ -1,4 +1,4 @@
-"""Behavior tests for the status-bar battery helper (agent/battery.py)."""
+"""Behavior tests for the status-bar battery helper (hermes_agent/agent/battery.py)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ import types
 
 import pytest
 
-from agent import battery as battery_mod
-from agent.battery import (
+from hermes_agent.agent import battery as battery_mod
+from hermes_agent.agent.battery import (
     BatteryStatus,
     battery_category,
     read_battery,

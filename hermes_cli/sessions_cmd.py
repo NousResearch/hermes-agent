@@ -507,7 +507,7 @@ def _export_trace(db, args, filters):
         if not session_id:
             print("No session found to export. Pass --session-id.")
             return 1
-    from agent.trace_upload import TraceRedactionError, build_trace_jsonl, upload_session_trace
+    from hermes_agent.agent.trace_upload import TraceRedactionError, build_trace_jsonl, upload_session_trace
     redact_trace = not getattr(args, "no_redact", False)
     if getattr(args, "upload", False):
         if not session_id:
@@ -912,8 +912,8 @@ def _cmd_pinned(db, args):
 
 
 def _cmd_retitle_skills(db, args):
-    from agent.skill_commands import describe_skill_invocation
-    from agent.title_generator import generate_title
+    from hermes_agent.agent.skill_commands import describe_skill_invocation
+    from hermes_agent.agent.title_generator import generate_title
     limit = max(1, int(getattr(args, "limit", 200) or 200))
     apply_changes = bool(getattr(args, "apply", False))
     candidates = db.list_skill_scaffolded_sessions(limit=limit)
@@ -1188,8 +1188,8 @@ def _repair_prompts_lacks_skill_safety(row) -> bool:
     # Only the skill_manage guidance is a reliable marker: <available_skills> is legitimately absent when no
     # skills are installed, but the guidance is emitted whenever skill_manage is. A prompt stored before the
     # Skill Safety Rule moved to compaction carries that heading, under whichever opening line it was built with.
-    from agent.context_compressor_tail import SKILL_SAFETY_HEADING
-    from agent.prompt_builder import SKILLS_GUIDANCE
+    from hermes_agent.agent.context_compressor_tail import SKILL_SAFETY_HEADING
+    from hermes_agent.agent.prompt_builder import SKILLS_GUIDANCE
     prompt = (row.get("system_prompt") or "").strip()
     return bool(prompt and SKILLS_GUIDANCE not in prompt and SKILL_SAFETY_HEADING not in prompt)
 

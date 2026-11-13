@@ -32,8 +32,8 @@ async def _native(tmp_path, monkeypatch):
 
 
 def _seed(db):
-    from agent.context_compressor import SUMMARY_PREFIX
-    from agent.prompt_builder import steer_user_row
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
+    from hermes_agent.agent.prompt_builder import steer_user_row
     db.create_session('old-tui', source='tui', model='fake-model')
     db.append_message('old-tui', 'user', SUMMARY_PREFIX + '\nUser Messages (verbatim, newest first)\nEND OF CONTEXT SUMMARY')
     db.append_message('old-tui', 'user', 'run the tool')

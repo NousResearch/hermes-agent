@@ -30,7 +30,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_credential_cache():
-    from agent.azure_identity_adapter import reset_credential_cache
+    from hermes_agent.agent.azure_identity_adapter import reset_credential_cache
     reset_credential_cache()
     yield
     reset_credential_cache()
@@ -40,7 +40,7 @@ def _reset_credential_cache():
 def fake_azure_identity(monkeypatch):
     """Identical fake to test_azure_identity_adapter — keeps Azure SDK
     out of these tests so they run in CI without the package installed."""
-    from agent import azure_identity_adapter as _adapter
+    from hermes_agent.agent import azure_identity_adapter as _adapter
 
     last = {"scope": None, "kwargs": None, "credential_count": 0}
 
@@ -241,7 +241,7 @@ class TestAzureFoundryAuthStatus:
         )
         # Do not patch the token provider: status must not request credentials.
         monkeypatch.setattr(
-            "agent.azure_identity_adapter.has_azure_identity_installed",
+            "hermes_agent.agent.azure_identity_adapter.has_azure_identity_installed",
             lambda: installed,
         )
         info = _auth._get_azure_foundry_auth_status()

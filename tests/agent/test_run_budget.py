@@ -3,7 +3,7 @@
 Covers:
 
 1. Stale-timeout deadline scaling in
-   ``run_agent.py:AIAgent._compute_non_stream_stale_timeout``:
+   ``hermes_agent/run_agent.py:AIAgent._compute_non_stream_stale_timeout``:
    - an active run budget CAPS an implicit stale timeout (default 90s and
      reasoning floors like deepseek's 600s) at ``max(60, remaining * 0.5)``;
    - the cap never RAISES the timeout above what it would otherwise be;
@@ -12,14 +12,14 @@ Covers:
    - no budget => completely unchanged behavior.
 
 2. One-time-ness of the 80% wrap-up notice injection in
-   ``agent.conversation_loop._maybe_inject_run_budget_wrapup``:
+   ``hermes_agent.agent.conversation_loop._maybe_inject_run_budget_wrapup``:
    - fires once (latched), not repeatedly;
    - never fires when no budget is set or before the 80% threshold;
    - appended to the newest tool message (cache-safe /steer channel), no
      synthetic user message.
 
 3. Normalization of the config/CLI value
-   (``agent.agent_init._normalize_run_budget_seconds``): dormant on
+   (``hermes_agent.agent.agent_init._normalize_run_budget_seconds``): dormant on
    null/invalid/non-positive input.
 """
 
@@ -41,7 +41,7 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     monkeypatch.delenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, config_body)
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     kwargs = dict(
         model="gpt-5.5",
         provider="openai",
@@ -70,7 +70,7 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     (0.5, 0.5),
 ])
 def test_normalize_run_budget_seconds(raw, expected):
-    from agent.agent_init import _normalize_run_budget_seconds
+    from hermes_agent.agent.agent_init import _normalize_run_budget_seconds
     assert _normalize_run_budget_seconds(raw) == expected
 
 # ── constructor / config plumbing ─────────────────────────────────────────
@@ -94,7 +94,7 @@ def test_constructor_arg_wins_over_config(monkeypatch, tmp_path):
 
 def test_no_budget_stale_timeout_unchanged(monkeypatch, tmp_path):
     """Without a run budget the implicit 90s default is untouched."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch)
     base, _implicit = agent._resolved_api_call_stale_timeout_base()
@@ -105,7 +105,7 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
 
     900s budget, 800s elapsed -> remaining 100s -> cap = max(60, 50) = 60s.
     """
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(
         tmp_path, monkeypatch,
@@ -117,7 +117,7 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
 
 def test_active_budget_cap_half_remaining(monkeypatch, tmp_path):
     """Cap is remaining * 0.5 when that exceeds the 60s floor."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(
         tmp_path, monkeypatch,
@@ -133,7 +133,7 @@ def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
 
     90s default with lots of remaining budget (cap would be ~445s) -> stays 90s.
     """
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     base, _implicit = agent._resolved_api_call_stale_timeout_base()
@@ -142,7 +142,7 @@ def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
 
 def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
     """Explicit stale_timeout_seconds is never capped by the run budget."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 1800.0)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     agent._run_budget_started_at = time.time() - 800
@@ -150,7 +150,7 @@ def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
 
 def test_explicit_env_var_wins_over_budget_cap(monkeypatch, tmp_path):
     """HERMES_API_CALL_STALE_TIMEOUT is explicit config — never capped."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "1200")
@@ -159,7 +159,7 @@ def test_explicit_env_var_wins_over_budget_cap(monkeypatch, tmp_path):
 
 def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     """A configured budget with no running turn clock changes nothing."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(
         tmp_path, monkeypatch,
@@ -183,7 +183,7 @@ def test_cloud_stream_budget_preserves_explicit_deadlines(
     monkeypatch, tmp_path, config_body, env_value, expected
 ):
     """Both stream owners cap implicit patience without changing explicit precedence."""
-    from agent import chat_completion_helpers as helpers
+    from hermes_agent.agent import chat_completion_helpers as helpers
 
     agent = _make_agent(
         tmp_path,
@@ -204,7 +204,7 @@ def test_cloud_stream_budget_preserves_explicit_deadlines(
 
 def test_local_stream_patience_is_independent_of_run_budget(monkeypatch, tmp_path):
     """A short remaining run budget does not shorten local model prefill grace."""
-    from agent import chat_completion_helpers as helpers
+    from hermes_agent.agent import chat_completion_helpers as helpers
 
     agent = _make_agent(
         tmp_path,
@@ -238,21 +238,21 @@ def _tool_messages():
     ]
 
 def test_wrapup_not_injected_when_unset():
-    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
+    from hermes_agent.agent.conversation_loop import _maybe_inject_run_budget_wrapup
     agent = _StubAgent(budget=None, started=time.time() - 10_000)
     messages = _tool_messages()
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
     assert messages == _tool_messages()
 
 def test_wrapup_not_injected_before_threshold():
-    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
+    from hermes_agent.agent.conversation_loop import _maybe_inject_run_budget_wrapup
     agent = _StubAgent(budget=900, started=time.time() - 100)  # 11% elapsed
     messages = _tool_messages()
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
     assert agent._run_budget_wrapup_injected is False
 
 def test_wrapup_injected_once_after_threshold():
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         RUN_BUDGET_WRAPUP_NOTICE,
         _maybe_inject_run_budget_wrapup,
     )
@@ -278,7 +278,7 @@ def test_wrapup_injected_once_after_threshold():
 def test_wrapup_retries_when_no_tool_message_yet():
     """First iteration (no tool results) can't inject; the latch stays open
     so the next iteration with a tool result delivers the notice."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         RUN_BUDGET_WRAPUP_NOTICE,
         _maybe_inject_run_budget_wrapup,
     )
@@ -295,7 +295,7 @@ def test_wrapup_retries_when_no_tool_message_yet():
     assert RUN_BUDGET_WRAPUP_NOTICE in messages[-1]["content"]
 
 def test_wrapup_not_injected_without_turn_clock():
-    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
+    from hermes_agent.agent.conversation_loop import _maybe_inject_run_budget_wrapup
     agent = _StubAgent(budget=900, started=None)
     messages = _tool_messages()
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
@@ -304,8 +304,8 @@ def test_wrapup_skips_already_persisted_tool_row():
     """An already-flushed tool row is append-only; mutating it would diverge the
     replayed transcript from the live wire bytes and break the prompt cache (same
     contract as _maybe_inject_iteration_budget_warning)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.conversation_loop import _maybe_inject_run_budget_wrapup
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.conversation_loop import _maybe_inject_run_budget_wrapup
 
     agent = _StubAgent(budget=900, started=time.time() - 800)
     messages = _tool_messages()
@@ -318,7 +318,7 @@ def test_wrapup_skips_already_persisted_tool_row():
 
 def test_wrapup_multimodal_tool_content():
     """Content-blocks tool results get a text block appended, not clobbered."""
-    from agent.conversation_loop import (
+    from hermes_agent.agent.conversation_loop import (
         RUN_BUDGET_WRAPUP_NOTICE,
         _maybe_inject_run_budget_wrapup,
     )
@@ -341,8 +341,8 @@ def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_p
     never reaches SQLite: prepare_iteration's own call always runs on an
     already-persisted row (the previous iteration's flush already ran)."""
     from hermes_agent.hermes_state import SessionDB
-    from agent.tool_executor import _flush_session_db_after_tool_progress
-    from agent.conversation_loop import RUN_BUDGET_WRAPUP_NOTICE
+    from hermes_agent.agent.tool_executor import _flush_session_db_after_tool_progress
+    from hermes_agent.agent.conversation_loop import RUN_BUDGET_WRAPUP_NOTICE
 
     session_db = SessionDB(db_path=tmp_path / "proof.db")
     try:
@@ -364,7 +364,7 @@ def test_gemini_long_decode_scales_implicit_stale_timeout_by_hops(monkeypatch, t
     """One non-streaming stale timer spans every unary long-decode hop: an xhigh budget (262,144 tokens,
     8 hops of 32,768) gets 8x the 600s gemini-4 floor, not 600s for the whole answer. Explicit config
     still wins untouched, and a request without a long-decode budget is unchanged."""
-    import run_agent
+    from hermes_agent import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, model="gemini-4-argon", provider="gemini", api_key="AQ.dummy",
                         base_url="https://generativelanguage.googleapis.com/v1beta")

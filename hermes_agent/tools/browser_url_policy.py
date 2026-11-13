@@ -108,7 +108,7 @@ def hybrid_routes_locally(url: str) -> bool:
 def _secret_url_error(url: str) -> Optional[dict]:
     """Refuse URLs embedding an API key/token (raw and URL-decoded, catching ``%2D`` tricks): a prompt
     injection could otherwise exfiltrate secrets through the URL."""
-    from agent.redact import _PREFIX_RE
+    from hermes_agent.agent.redact import _PREFIX_RE
     if _PREFIX_RE.search(url) or _PREFIX_RE.search(urllib.parse.unquote(url)):
         return _err("Blocked: URL contains what appears to be an API key or token. Secrets must not be sent in URLs.")
     return None

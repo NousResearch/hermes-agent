@@ -18,8 +18,8 @@ import time
 from contextlib import ExitStack
 from pathlib import Path, PurePosixPath
 
-from agent.file_safety import get_nt_namespace_error, get_read_block_error, is_blocked_device_path
-from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
+from hermes_agent.agent.file_safety import get_nt_namespace_error, get_read_block_error, is_blocked_device_path
+from hermes_agent.agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from hermes_agent.tools.binary_extensions import has_binary_extension
 from hermes_agent.tools.skill_provenance import is_background_review
 from hermes_agent.tools.file_operations import (
@@ -27,7 +27,7 @@ from hermes_agent.tools.file_operations import (
 from hermes_agent.tools.file_operations_common import DEFAULT_READ_LIMIT, count_conflict_blocks
 from hermes_agent.tools import file_state
 from hermes_platform.host import facts
-from agent.redact import _is_secret_file_arg, redact_sensitive_text
+from hermes_agent.agent.redact import _is_secret_file_arg, redact_sensitive_text
 from hermes_agent.tools.file_tools_paths import (
     _expand_tilde, _hosted_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_entry_for_task,
     _resolve_path_for_task)
@@ -1276,7 +1276,7 @@ def _is_openai_family_main() -> bool:
     codex). Fail-closed to the universal replace-only schema.
     """
     try:
-        from agent.auxiliary_client import _read_main_model, _read_main_provider
+        from hermes_agent.agent.auxiliary_client import _read_main_model, _read_main_provider
 
         provider = (_read_main_provider() or "").strip().lower()
         model = (_read_main_model() or "").strip().lower()
@@ -1354,8 +1354,8 @@ def _handle_write_file(args, **kw):
 
 def _owned(owner: str, fn, **call_kwargs):
     """Run an edit tool with its late LSP verdicts attributed to ``owner``, the calling session
-    (``agent.lsp.deferred``): they ride that session's next tool result."""
-    from agent.lsp.deferred import bind_owner
+    (``hermes_agent.agent.lsp.deferred``): they ride that session's next tool result."""
+    from hermes_agent.agent.lsp.deferred import bind_owner
     with bind_owner(owner):
         return fn(**call_kwargs)
 

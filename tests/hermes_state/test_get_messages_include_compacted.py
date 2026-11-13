@@ -18,7 +18,7 @@ import tracemalloc
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     _MERGED_PRIOR_CONTEXT_HEADER,

@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-import agent.model_metadata as mm
+import hermes_agent.agent.model_metadata as mm
 from tests.lock_contention import watch_file_lock_contention
 from tests.waiting import wait_until
 

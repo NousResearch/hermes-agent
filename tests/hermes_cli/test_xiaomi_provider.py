@@ -72,7 +72,7 @@ class TestXiaomiCredentials:
         self, tmp_path, monkeypatch
     ):
         """BWS-injected keys belong in the profile scope that loaded them."""
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
         from hermes_cli import config as config_module
         from hermes_cli import env_loader
 
@@ -120,7 +120,7 @@ class TestXiaomiModelCatalog:
 
     def test_list_agentic_models_mock(self, monkeypatch):
         """When models.dev returns Xiaomi data, list_agentic_models should return models."""
-        from agent import models_dev as md
+        from hermes_agent.agent import models_dev as md
 
         fake_data = {
             "xiaomi": {
@@ -190,7 +190,7 @@ class TestXiaomiURLMapping:
 
     def test_infer_from_regional_urls(self):
         """Regional token-plan endpoints should also resolve to xiaomi."""
-        from agent.model_metadata import _infer_provider_from_url
+        from hermes_agent.agent.model_metadata import _infer_provider_from_url
         assert _infer_provider_from_url("https://token-plan-ams.xiaomimimo.com/v1") == "xiaomi"
         assert _infer_provider_from_url("https://token-plan-cn.xiaomimimo.com/v1") == "xiaomi"
         assert _infer_provider_from_url("https://token-plan-sgp.xiaomimimo.com/v1") == "xiaomi"

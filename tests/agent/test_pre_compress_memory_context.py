@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 def _make_compressor():
@@ -57,7 +57,7 @@ def test_memory_context_injected_into_initial_summary_prompt_with_focus():
         prompts.append(kwargs["messages"][0]["content"])
         return _summary_response()
 
-    with patch("agent.context_compressor.call_llm", mock_call_llm):
+    with patch("hermes_agent.agent.context_compressor.call_llm", mock_call_llm):
         compressor._generate_summary(
             turns,
             focus_topic="authentication",
@@ -83,7 +83,7 @@ def test_memory_context_injected_into_iterative_summary_prompt():
         prompts.append(kwargs["messages"][0]["content"])
         return _summary_response("## Goal\nMigration updated.")
 
-    with patch("agent.context_compressor.call_llm", mock_call_llm):
+    with patch("hermes_agent.agent.context_compressor.call_llm", mock_call_llm):
         compressor._generate_summary(
             turns,
             memory_context="Checkpoint id: ctx-123",
@@ -110,8 +110,8 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
         prompts.append(kwargs["messages"][0]["content"])
         return _summary_response()
 
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
-    with patch("agent.context_compressor.call_llm", mock_call_llm):
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", False)
+    with patch("hermes_agent.agent.context_compressor.call_llm", mock_call_llm):
         compressor._generate_summary(
             [{"role": "user", "content": "Continue"}],
             memory_context=(
@@ -158,7 +158,7 @@ def test_whitespace_memory_context_is_not_injected():
         prompts.append(kwargs["messages"][0]["content"])
         return _summary_response()
 
-    with patch("agent.context_compressor.call_llm", mock_call_llm):
+    with patch("hermes_agent.agent.context_compressor.call_llm", mock_call_llm):
         compressor._generate_summary(turns, memory_context="  \n\t ")
 
     assert len(prompts) == 1

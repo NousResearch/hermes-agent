@@ -99,7 +99,7 @@ def report_deprecated_config_and_env(raw_config: dict | None = None, env_map: di
 @doctor_check("Relay plugin check failed: {e}")
 def _check_relay_plugins(should_fix: bool, f: Finding) -> None:
     """Name the plugins.toml files Relay applies to Hermes, including ones outside the Hermes home."""
-    from agent.relay_runtime import resolve_plugin_sources
+    from hermes_agent.agent.relay_runtime import resolve_plugin_sources
     try:
         sources = resolve_plugin_sources()
     except ModuleNotFoundError as exc:

@@ -3,8 +3,8 @@ import json
 from unittest.mock import patch
 from textwrap import dedent
 import pytest
-from agent.vault_backends.base import LoginBackend, backend_for_handle
-from agent import vault_backend_registry as registry
+from hermes_agent.agent.vault_backends.base import LoginBackend, backend_for_handle
+from hermes_agent.agent import vault_backend_registry as registry
 
 
 class Example(LoginBackend):
@@ -30,8 +30,8 @@ def _record_verified_install(home, dirname):
 
 def test_registration_requires_explicit_profile_enablement():
     with patch.dict(registry._providers, clear=True), \
-         patch("agent.vault_backends.base.is_enabled", return_value=False), \
-         patch("agent.vault_backends.base._cfg", return_value={}) as cfg:
+         patch("hermes_agent.agent.vault_backends.base.is_enabled", return_value=False), \
+         patch("hermes_agent.agent.vault_backends.base._cfg", return_value={}) as cfg:
         registry.register_provider(Example())
         assert backend_for_handle("example:one") is None
         cfg.return_value = {"example": {"enabled": True}}
@@ -94,7 +94,7 @@ def test_real_plugin_discovery_reload_and_disable(tmp_path, monkeypatch):
     plugin.mkdir(parents=True)
     (plugin / "plugin.yaml").write_text("name: login_example\n", encoding="utf-8")
     (plugin / "__init__.py").write_text(dedent('''
-        from agent.vault_backends.base import LoginBackend
+        from hermes_agent.agent.vault_backends.base import LoginBackend
         class Backend(LoginBackend):
             name, prefix, display_name = "example", "example:", "Example"
             def list_items(self):

@@ -13,7 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 import cli
-from agent.turn_author import TURN_AUTHOR_ENV
+from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV
 
 
 def _one_shot_cli(monkeypatch):

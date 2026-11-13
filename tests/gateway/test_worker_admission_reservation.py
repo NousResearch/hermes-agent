@@ -219,7 +219,7 @@ def test_reservation_survives_a_boot_time_reanchor_on_linux(tmp_path, monkeypatc
     call, and WSL2 re-anchors btime after host sleep, so the owner read a live worker's birth
     shifted from the one the worker reported and refused every managed worker."""
     from hermes_agent.gateway.session_worker_reservation import reserve_admission_worker
-    code = 'import json, sys; from agent.managed_worker import hello; print(json.dumps(hello()), flush=True); sys.stdin.read()'
+    code = 'import json, sys; from hermes_agent.agent.managed_worker import hello; print(json.dumps(hello()), flush=True); sys.stdin.read()'
     process = subprocess.Popen([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[2],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     db = SessionDB(tmp_path / 'state.db')

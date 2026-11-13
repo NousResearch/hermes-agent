@@ -1,4 +1,4 @@
-"""Tests for the /review command engine — agent/review_engine.py.
+"""Tests for the /review command engine — hermes_agent/agent/review_engine.py.
 
 Covers conversation snapshotting, reviewer-task composition,
 auxiliary.review credential resolution, background dispatch through
@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent import review_engine as re_mod
-from agent.review_engine import (
+from hermes_agent.agent import review_engine as re_mod
+from hermes_agent.agent.review_engine import (
     build_review_task,
     format_dispatch_note,
     snapshot_recent_messages,
@@ -257,7 +257,7 @@ def test_start_review_requires_agent():
 # ---------------------------------------------------------------------------
 
 def test_collect_skills_from_preloaded_prompt_and_history():
-    from agent.review_engine import collect_parent_loaded_skills
+    from hermes_agent.agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
     parent.ephemeral_system_prompt = (
@@ -287,7 +287,7 @@ def test_collect_skills_from_preloaded_prompt_and_history():
     assert names == ["hermes-agent-dev", "github-pr-workflow"]
 
 def test_collect_skills_empty_when_none_loaded():
-    from agent.review_engine import collect_parent_loaded_skills
+    from hermes_agent.agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
     parent.ephemeral_system_prompt = None
@@ -296,7 +296,7 @@ def test_collect_skills_empty_when_none_loaded():
     ]) == []
 
 def test_collect_skills_caps_at_limit():
-    from agent.review_engine import collect_parent_loaded_skills
+    from hermes_agent.agent.review_engine import collect_parent_loaded_skills
 
     parent = MagicMock()
     parent.ephemeral_system_prompt = ""

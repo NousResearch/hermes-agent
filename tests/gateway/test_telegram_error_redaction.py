@@ -1,7 +1,7 @@
 """Regression tests for remaining unredacted Telegram transport-error sites.
 
 ``c3ab1424e`` added ``_redact_telegram_error_text()`` (built on
-``agent.redact``'s bot-token stripping for
+``hermes_agent.agent.redact``'s bot-token stripping for
 ``api.telegram.org/bot<TOKEN>/...`` URLs) and applied it across the
 send/edit transient-error paths. Four sites still built their message from
 the raw exception:

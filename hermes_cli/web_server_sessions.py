@@ -523,7 +523,7 @@ def _maybe_run_skill_maintenance(started_at: float) -> None:
     if _check_gateway_running(get_hermes_home()):
         return
 
-    from agent.curator import maybe_run_curator
+    from hermes_agent.agent.curator import maybe_run_curator
 
     try:
         idle_for = _skill_maintenance_idle_for(started_at)

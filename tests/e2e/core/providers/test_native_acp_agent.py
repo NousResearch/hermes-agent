@@ -1,7 +1,7 @@
 """ACP agent wire conformance, part 1: the multi-call tool flow, resume, and the process lifecycle.
 
 An ``external_process`` model provider makes Hermes spawn an external ACP agent per model call and
-speak the Agent Client Protocol to it over stdio through the public ``agent.acp_client.ACPClient``.
+speak the Agent Client Protocol to it over stdio through the public ``hermes_agent.agent.acp_client.ACPClient``.
 Here the provider is ``fake-acp``, a user model-provider plugin written into the temp
 ``HERMES_HOME`` (``tests/fakes/providers/fake_acp_agent.py::install_provider_plugin``) whose
 ``create_client`` returns an ``ACPClient`` subclass, and the agent is that module run as a script: a
@@ -10,7 +10,7 @@ Everything on the Hermes side is real: the ``hermes chat -q`` process, user plug
 resolution from ``config.yaml`` + the profile ``.env`` (the profile's ``process_command_env_vars`` /
 ``process_args_env_var``), the ACP client, the agent loop, the ``read_file`` tool and ``state.db``.
 
-Contract under test (documented in ``agent/acp_client.py`` and the ACP spec):
+Contract under test (documented in ``hermes_agent/agent/acp_client.py`` and the ACP spec):
 
 * each model call is a fresh agent process: ``initialize`` -> ``session/new`` (absolute cwd) ->
   model selection via the advertised ``model`` config option -> ``session/prompt``; every request is

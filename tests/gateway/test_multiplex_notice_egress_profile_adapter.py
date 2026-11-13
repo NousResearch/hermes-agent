@@ -73,7 +73,7 @@ async def test_restart_marker_from_secondary_session_notifies_via_its_own_bot(tm
 
 @pytest.mark.asyncio
 async def test_loop_wakeup_from_secondary_route_fires_through_its_own_bot(monkeypatch):
-    from agent import estop
+    from hermes_agent.agent import estop
     from hermes_cli import loops
 
     fired = []

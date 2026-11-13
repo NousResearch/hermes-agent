@@ -129,7 +129,7 @@ def test_delegated_child_in_worker_process_neither_receives_nor_consumes_notes(w
     """A delegate_task child inherits the worker's ``HERMES_KANBAN_TASK``; operator notes
     address the worker, so the child must not be steered by them and must not advance the
     shared watermark (which would make the worker miss them) (#112817)."""
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
 
     conn = kbc.connect()
     try:

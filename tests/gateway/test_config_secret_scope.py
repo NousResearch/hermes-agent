@@ -464,8 +464,8 @@ def test_a_moved_route_never_sends_its_frozen_key_to_the_new_endpoint(tmp_path, 
                     model, runtime = _resolve_policy_agent_runtime(SimpleNamespace(session_authority=authority), frozen)
                     _send(OpenAI(api_key=runtime['api_key'], base_url=runtime['base_url']), model)
             else:
-                from agent import auxiliary_client
-                from agent.auxiliary_task_config import session_auxiliary_scope
+                from hermes_agent.agent import auxiliary_client
+                from hermes_agent.agent.auxiliary_task_config import session_auxiliary_scope
                 from hermes_cli import runtime_provider
                 config = frozen.config(authority)
                 with runtime_provider.frozen_runtime_config(config), session_auxiliary_scope(config['auxiliary']):

@@ -26,14 +26,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from agent.vault_login_classifier import (
+from hermes_agent.agent.vault_login_classifier import (
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
     classify_login_control,
     select_password_fill,
 )
-from agent.vault_store import (
+from hermes_agent.agent.vault_store import (
     VaultError,
     VaultStore,
     normalize_origin,
@@ -262,7 +262,7 @@ class TestBrowserVaultTools:
         from hermes_agent.tools import browser_vault_tool
 
         empty = VaultStore(base_dir=tmp_path / "empty-vault")
-        with patch("agent.vault_store.get_vault_store", return_value=empty), \
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=empty), \
              patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value=""):
             with patch("hermes_agent.tools.browser_use_cli.browser_exec_available", return_value=True):
                 assert browser_vault_tool._check_vault_available() is True
@@ -277,7 +277,7 @@ class TestBrowserVaultTools:
         from hermes_agent.tools import browser_vault_tool
 
         _add_login(store)
-        with patch("agent.vault_store.get_vault_store", return_value=store):
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store):
             out = json.loads(browser_vault_tool.browser_vault_list())
         assert out["success"] is True
         assert out["items"][0]["handle"].startswith("vault_")
@@ -290,7 +290,7 @@ class TestBrowserVaultTools:
         from hermes_agent.tools import browser_vault_tool
 
         meta = _add_login(store, origin="https://example.com")
-        with patch("agent.vault_store.get_vault_store", return_value=store), \
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_current_page_origin", return_value="https://evil.com"):
             out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
         assert out["success"] is False
@@ -299,7 +299,7 @@ class TestBrowserVaultTools:
 
     @staticmethod
     def _manager_meta():
-        from agent.vault_store import VaultItemMeta
+        from hermes_agent.agent.vault_store import VaultItemMeta
 
         return VaultItemMeta(
             id="op:multi", kind="login", label="Amazon", origin="https://amazon.co.uk",
@@ -343,7 +343,7 @@ class TestBrowserVaultTools:
             secret_exprs.append(expression)
             return {"success": True, "result": json.dumps({"filled": 1})}
 
-        with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
+        with patch("hermes_agent.agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
              patch.object(browser_vault_tool, "_current_page_origin", return_value="https://www.amazon.co.uk"), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
@@ -375,7 +375,7 @@ class TestBrowserVaultTools:
             def resolve_password(self, handle):
                 return "s3cret-pw"
 
-        with patch("agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
+        with patch("hermes_agent.agent.vault_backends.backend_for_handle", return_value=_ManagerBackend()), \
              patch.object(browser_vault_tool, "_current_page_origin", return_value="https://payments.amazon.co.uk"):
             out = json.loads(browser_vault_tool.browser_vault_fill("op:multi"))
         assert out["success"] is False
@@ -385,7 +385,7 @@ class TestBrowserVaultTools:
     def test_fill_unknown_handle(self, store):
         from hermes_agent.tools import browser_vault_tool
 
-        with patch("agent.vault_store.get_vault_store", return_value=store):
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store):
             out = json.loads(browser_vault_tool.browser_vault_fill("vault_nope"))
         assert out["success"] is False
 
@@ -409,7 +409,7 @@ class TestBrowserVaultTools:
             secret_exprs.append(expression)
             return {"success": True, "result": json.dumps({"filled": 1})}
 
-        with patch("agent.vault_store.get_vault_store", return_value=store), \
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
             raw = browser_vault_tool.browser_vault_fill(meta.id)
@@ -461,7 +461,7 @@ class TestBrowserVaultTools:
                 ),
             }
 
-        with patch("agent.vault_store.get_vault_store", return_value=store), \
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
             raw = browser_vault_tool.browser_vault_fill(meta.id)
@@ -488,7 +488,7 @@ class TestBrowserVaultTools:
         # No supervisor registered and the task's session exposes no CDP endpoint → the fill refuses.
         # There is no other path the password could take (argv, a subprocess eval): nothing is attached
         # and nothing evaluates the secret-bearing script.
-        with patch("agent.vault_store.get_vault_store", return_value=store), \
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch("hermes_agent.tools.browser_session.session_for_task", return_value={}), \
              patch("hermes_agent.tools.browser_supervisor.SUPERVISOR_REGISTRY") as reg:
@@ -504,8 +504,8 @@ class TestBrowserVaultTools:
     def test_vault_canary_redacted_from_browser_cdp_results(self, store):
         """P1-1 regression: a filled, non-token-shaped canary password must be
         unrecoverable through a model-facing browser_cdp-style result."""
-        from agent import redact
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent import redact
+        from hermes_agent.agent.redact import redact_sensitive_text
         from hermes_agent.tools import browser_vault_tool
         from hermes_agent.tools.browser_cdp_tool import _redact_cdp_output
 
@@ -524,7 +524,7 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps({"filled": 1})}
 
         try:
-            with patch("agent.vault_store.get_vault_store", return_value=store), \
+            with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
                 out = json.loads(browser_vault_tool.browser_vault_fill(meta.id))
@@ -551,7 +551,7 @@ class TestBrowserVaultTools:
         able to spend); the secret eval then targets the classified card controls and the result carries
         the field tokens but never a value."""
         from hermes_agent.tools import browser_vault_tool
-        from agent import redact
+        from hermes_agent.agent import redact
 
         meta = store.add_item(kind="payment", label="Visa", origin="https://shop.test", secret=_CARD)
         controls = [
@@ -573,7 +573,7 @@ class TestBrowserVaultTools:
             return {"success": True, "result": json.dumps({"filled": 3})}
 
         try:
-            with patch("agent.vault_store.get_vault_store", return_value=store), \
+            with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
                  patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="decline"):
@@ -581,7 +581,7 @@ class TestBrowserVaultTools:
             assert declined["success"] is False and declined["error_type"] == "payment_declined"
             assert secret_exprs == []
 
-            with patch("agent.vault_store.get_vault_store", return_value=store), \
+            with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
                  patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
                  patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret), \
                  patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="accept"):
@@ -604,7 +604,7 @@ class TestVaultHardening:
     """
 
     def test_read_block_vault_dir_and_contents(self, tmp_path, monkeypatch):
-        import agent.file_safety as fs
+        import hermes_agent.agent.file_safety as fs
 
         home = tmp_path / "hermes_home"
         vault = home / "vault"
@@ -618,7 +618,7 @@ class TestVaultHardening:
             assert err is not None, f"expected read deny for {target}"
 
     def test_read_block_leaves_sibling_dirs_alone(self, tmp_path, monkeypatch):
-        import agent.file_safety as fs
+        import hermes_agent.agent.file_safety as fs
 
         home = tmp_path / "hermes_home"
         other = home / "vaults-notes"
@@ -663,7 +663,7 @@ class TestSaveLoginPrompt:
     origin and fills. The password must never come back in the tool result."""
 
     def test_saves_to_page_origin_and_never_echoes_the_password(self, store, monkeypatch):
-        from agent.vault_backends import unlock as unlock_mod
+        from hermes_agent.agent.vault_backends import unlock as unlock_mod
         from hermes_agent.tools import browser_vault_tool
 
         seen = {}
@@ -676,8 +676,8 @@ class TestSaveLoginPrompt:
         monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
         monkeypatch.setattr(browser_vault_tool, "browser_vault_fill",
                             lambda handle, task_id=None: json.dumps({"success": True, "filled_fields": 1}))
-        with patch("agent.vault_store.get_vault_store", return_value=store), \
-             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
+             patch("hermes_agent.agent.vault_backends.unlock.can_prompt_here", return_value=True):
             out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t1"))
         unlock_mod.set_save_login_prompt_callback(None)
 
@@ -688,15 +688,15 @@ class TestSaveLoginPrompt:
         assert meta.origin == "https://acme.test" and meta.identifier == "tek@acme.test"
 
     def test_declined_or_headless_stores_nothing(self, store, monkeypatch):
-        from agent.vault_backends import unlock as unlock_mod
+        from hermes_agent.agent.vault_backends import unlock as unlock_mod
         from hermes_agent.tools import browser_vault_tool
 
         monkeypatch.setattr(browser_vault_tool, "_current_page_origin", lambda task_id: "https://acme.test")
-        with patch("agent.vault_store.get_vault_store", return_value=store):
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store):
             unlock_mod.set_save_login_prompt_callback(lambda origin, site: None)
-            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+            with patch("hermes_agent.agent.vault_backends.unlock.can_prompt_here", return_value=True):
                 declined = json.loads(browser_vault_tool.browser_vault_save_login())
-            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=False):
+            with patch("hermes_agent.agent.vault_backends.unlock.can_prompt_here", return_value=False):
                 headless = json.loads(browser_vault_tool.browser_vault_save_login())
             unlock_mod.set_save_login_prompt_callback(None)
         assert declined["error_type"] == "save_declined"
@@ -706,7 +706,7 @@ class TestSaveLoginPrompt:
 
 class TestManagerAutoDetection:
     def test_installed_manager_is_a_source_without_config_and_config_can_opt_out(self):
-        from agent.vault_backends import base
+        from hermes_agent.agent.vault_backends import base
 
         with patch.object(base, "is_installed", return_value=True):
             with patch.object(base, "_cfg", return_value={}):
@@ -730,7 +730,7 @@ def test_every_vault_tool_is_in_the_browser_toolset():
 
 class TestTwoFactor:
     def test_totp_matches_rfc6238_vector_and_seed_normalisation(self):
-        from agent.vault_store import VaultError, normalize_otp_secret, totp_now
+        from hermes_agent.agent.vault_store import VaultError, normalize_otp_secret, totp_now
 
         seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # "12345678901234567890"
         assert totp_now(seed, digits=8, at=59) == "94287082"
@@ -749,7 +749,7 @@ class TestTwoFactor:
 
     def test_saved_authenticator_key_mints_codes_without_asking(self, store, monkeypatch):
         """The whole point: with a seed on the login, enter_code never prompts and the code never comes back."""
-        from agent.vault_backends import unlock as unlock_mod
+        from hermes_agent.agent.vault_backends import unlock as unlock_mod
         from hermes_agent.tools import browser_vault_tool
 
         meta = store.add_item("login", "gh", {"identifier_type": "username", "identifier": "tek", "password": "pw",
@@ -767,7 +767,7 @@ class TestTwoFactor:
             seen["expr"] = expr
             return {"success": True, "result": json.dumps({"filled": 1})}
 
-        with patch("agent.vault_store.get_vault_store", return_value=store), \
+        with patch("hermes_agent.agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
@@ -779,7 +779,7 @@ class TestTwoFactor:
         assert code not in raw  # the code went to the page, not to the model
 
     def test_without_a_key_the_user_is_asked_and_split_boxes_get_one_digit_each(self, store):
-        from agent.vault_backends import unlock as unlock_mod
+        from hermes_agent.agent.vault_backends import unlock as unlock_mod
         from hermes_agent.tools import browser_vault_tool
 
         unlock_mod.set_code_prompt_callback(lambda site, hint: "246 810")
@@ -792,7 +792,7 @@ class TestTwoFactor:
             seen["expr"] = e
             return {"success": True, "result": json.dumps({"filled": 6})}
 
-        with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+        with patch("hermes_agent.agent.vault_backends.unlock.can_prompt_here", return_value=True), \
              patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_secret):
@@ -807,7 +807,7 @@ class TestTwoFactor:
     def test_several_code_like_inputs_that_are_not_a_digit_widget_get_one_field(self):
         """Reviewer case: a page with 4+ code-ish inputs (promo code, zip code, a real OTP box...) must never
         get a digit sprayed across them. Only an unmistakable maxlength=1 same-form adjacent group splits."""
-        from agent.vault_login_classifier import ClassifiedLoginControl, LoginControl, build_otp_fills
+        from hermes_agent.agent.vault_login_classifier import ClassifiedLoginControl, LoginControl, build_otp_fills
 
         def ctl(i, form=0, maxlen=None, score=70):
             return ClassifiedLoginControl(LoginControl("", form, i, "", f"code{i}", "text", maxlen), score, "one-time-code")

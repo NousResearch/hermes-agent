@@ -32,7 +32,7 @@ class TestGetExternalSkillsDirs:
     def test_empty_config(self, hermes_home):
         (hermes_home / "config.yaml").write_text("skills:\n  external_dirs: []\n")
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            from agent.skill_utils import get_external_skills_dirs
+            from hermes_agent.agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()
         assert result == []
 
@@ -42,7 +42,7 @@ class TestGetExternalSkillsDirs:
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            from agent.skill_utils import get_external_skills_dirs
+            from hermes_agent.agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()
         assert len(result) == 1
         assert result[0] == external_skills_dir.resolve()
@@ -58,7 +58,7 @@ class TestGetAllSkillsDirs:
             f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
         )
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            from agent.skill_utils import get_all_skills_dirs
+            from hermes_agent.agent.skill_utils import get_all_skills_dirs
             result = get_all_skills_dirs()
         assert result[0] == hermes_home / "skills"
         assert result[1] == external_skills_dir.resolve()

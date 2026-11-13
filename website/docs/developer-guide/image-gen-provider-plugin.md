@@ -20,7 +20,7 @@ Hermes scans for image-gen backends in three places:
 2. **User** — `~/.hermes/plugins/image_gen/<name>/` (opt-in via `plugins.enabled`)
 3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
 
-Each plugin's `register(ctx)` function calls `ctx.register_image_gen_provider(...)` — that puts it into the registry in `agent/image_gen_registry.py`. The active provider is picked by `image_gen.provider` in `config.yaml`; `hermes tools` walks users through selection.
+Each plugin's `register(ctx)` function calls `ctx.register_image_gen_provider(...)` — that puts it into the registry in `hermes_agent/agent/image_gen_registry.py`. The active provider is picked by `image_gen.provider` in `config.yaml`; `hermes tools` walks users through selection.
 
 The `image_generate` tool wrapper asks the registry for the active provider and dispatches there. If no provider is registered, the tool surfaces a helpful error pointing at `hermes tools`.
 
@@ -36,14 +36,14 @@ A bundled plugin is complete at this point. User plugins at `~/.hermes/plugins/i
 
 ## The ImageGenProvider ABC
 
-Subclass `agent.image_gen_provider.ImageGenProvider`. The only required members are the `name` property and the `generate()` method — everything else has sane defaults:
+Subclass `hermes_agent.agent.image_gen_provider.ImageGenProvider`. The only required members are the `name` property and the `generate()` method — everything else has sane defaults:
 
 ```python
 # plugins/image_gen/my-backend/__init__.py
 from typing import Any, Dict, List, Optional
 import os
 
-from agent.image_gen_provider import (
+from hermes_agent.agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
     error_response,
@@ -228,7 +228,7 @@ requires_env:
 
 ## ABC reference
 
-Full contract in `agent/image_gen_provider.py`. The methods you'll typically override:
+Full contract in `hermes_agent/agent/image_gen_provider.py`. The methods you'll typically override:
 
 | Member | Required | Default | Purpose |
 |---|---|---|---|
@@ -242,7 +242,7 @@ Full contract in `agent/image_gen_provider.py`. The methods you'll typically ove
 
 ## Response format
 
-`generate()` must return a dict built via `success_response()` or `error_response()`. Both live in `agent/image_gen_provider.py`.
+`generate()` must return a dict built via `success_response()` or `error_response()`. Both live in `hermes_agent/agent/image_gen_provider.py`.
 
 **Success:**
 ```python

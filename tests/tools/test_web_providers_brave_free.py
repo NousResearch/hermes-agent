@@ -151,7 +151,7 @@ class TestBraveFreeSearchOnlyErrors:
     def _populate_web_registry(self):
         self._register_providers()
         yield
-        from agent.web_search_registry import _reset_for_tests
+        from hermes_agent.agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
     def test_web_extract_returns_search_only_error(self, monkeypatch):

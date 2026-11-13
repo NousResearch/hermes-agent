@@ -20,7 +20,7 @@ import time
 import httpx
 import pytest
 
-from agent.bounded_response import read_streaming_error_body
+from hermes_agent.agent.bounded_response import read_streaming_error_body
 
 
 class _ThreadingServer(socketserver.ThreadingTCPServer):

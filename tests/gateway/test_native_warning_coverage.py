@@ -52,7 +52,7 @@ async def test_matrix_download_diagnostic_not_caption_is_suppressed(policy, capt
         if frames:
             assert frames[0]["m.relates_to"]["event_id"] == "$thread"
     else:
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
         notice = t("platform.matrix.media.image_download_failed")
         assert [f["body"] for f in frames] == [f"{caption}\n{notice}" if caption else notice]
         assert result.success and result.message_id == "$sent"

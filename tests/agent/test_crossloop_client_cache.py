@@ -32,7 +32,7 @@ def _clean_client_cache():
     with patch.dict("sys.modules", {}):
         pass
     # Import and clear
-    import agent.auxiliary_client as ac
+    import hermes_agent.agent.auxiliary_client as ac
     ac._client_cache.clear()
     yield
     ac._client_cache.clear()
@@ -42,14 +42,14 @@ class TestCrossLoopCacheIsolation:
 
     def test_different_loops_get_different_clients(self):
         """Different event loops must get separate client instances."""
-        from agent.auxiliary_client import _get_cached_client
+        from hermes_agent.agent.auxiliary_client import _get_cached_client
 
         results = {}
 
         def _get_client_on_new_loop(name):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            with patch("agent.auxiliary_client.resolve_provider_client",
+            with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client",
                         side_effect=_stub_resolve_provider_client):
                 client, _ = _get_cached_client("custom", "m1", async_mode=True,
                                                  base_url="http://localhost:8081/v1")

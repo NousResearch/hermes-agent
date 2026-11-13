@@ -30,10 +30,10 @@ sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
-import run_agent
+from hermes_agent import run_agent
 
-from agent import chat_completion_helpers
-from agent.chat_completion_helpers import direct_api_call
+from hermes_agent.agent import chat_completion_helpers
+from hermes_agent.agent.chat_completion_helpers import direct_api_call
 
 
 def _make_agent(*, stale_timeout, platform="cron"):
@@ -89,7 +89,7 @@ def test_inline_cron_openai_codex_keeps_large_context_stale_floor(monkeypatch):
     """#69734: cron Codex runs inline, so the inline stale budget must keep the
     openai-codex large-context floor the worker path applied — else a healthy
     >10k-token cron turn is killed at the 90s default."""
-    from agent.chat_completion_helpers import _resolve_direct_stale_timeout, should_use_direct_api_call
+    from hermes_agent.agent.chat_completion_helpers import _resolve_direct_stale_timeout, should_use_direct_api_call
 
     for key in ("HERMES_API_CALL_STALE_TIMEOUT", "HERMES_STREAM_STALE_TIMEOUT", "HERMES_CODEX_HARD_TIMEOUT_SECONDS"):
         monkeypatch.delenv(key, raising=False)
@@ -106,7 +106,7 @@ def test_inline_cron_openai_codex_keeps_large_context_stale_floor(monkeypatch):
 def test_inline_local_responses_endpoint_keeps_its_configured_stale_budget(monkeypatch):
     """The hosted Codex floor/hard cap must not clamp a local Responses server's
     configured stale budget on the inline path either (same rule as the worker path)."""
-    from agent.chat_completion_helpers import _resolve_direct_stale_timeout
+    from hermes_agent.agent.chat_completion_helpers import _resolve_direct_stale_timeout
 
     monkeypatch.delenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", raising=False)
     monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "3000")
@@ -286,7 +286,7 @@ def test_e2e_cron_turn_is_bounded_through_the_real_agent_routing(monkeypatch):
     threading_proxy = SimpleNamespace(**vars(threading))
     threading_proxy.Timer = RequestStartedTimer
     monkeypatch.setattr(chat_completion_helpers, "threading", threading_proxy)
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **_kwargs: wire)
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", lambda **_kwargs: wire)
     monkeypatch.setattr(
         run_agent.AIAgent,
         "_force_close_tcp_sockets",
@@ -333,7 +333,7 @@ def test_interrupt_abort_is_not_misclassified_as_provider_staleness():
 
     def _interrupt_soon():
         # Wait until the abort hook is registered, then interrupt like
-        # run_agent.interrupt() does (registered under the same name).
+        # hermes_agent.run_agent.interrupt() does (registered under the same name).
         deadline = time.time() + 2.0
         while time.time() < deadline:
             hook = agent._active_request_abort

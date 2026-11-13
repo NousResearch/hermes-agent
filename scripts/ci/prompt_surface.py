@@ -39,7 +39,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SNAPSHOT = ROOT / "tests" / "fixtures" / "prompt_surface"
 MANIFEST = "surfaces.json"
-# Same rough estimate as agent.model_metadata.CHARS_PER_TOKEN; kept local so ``diff`` needs no deps.
+# Same rough estimate as hermes_agent.agent.model_metadata.CHARS_PER_TOKEN; kept local so ``diff`` needs no deps.
 CHARS_PER_TOKEN = 4
 
 MODELS = {
@@ -87,7 +87,7 @@ def _pin_environment() -> None:
     # read credentials, binaries and the tool store, which vary by host and would hide schemas.
     import hermes_agent.tools.registry as registry_module
     registry_module._check_fn_cached = lambda _fn: True  # type: ignore[assignment]
-    from agent import skill_utils
+    from hermes_agent.agent import skill_utils
     skill_utils._ENV_DETECT_CACHE.update({"docker": False, "s6": False})
     # The toolchain probe line reports the host's python/node/pip; it is environment, not code.
     from hermes_agent.tools import env_probe
@@ -127,8 +127,8 @@ def _enabled_toolsets(platform: str) -> list[str]:
 
 def _render_surface(home: Path, platform: str, model: str, code: bool) -> tuple[dict[str, str], dict]:
     from hermes_cli.config import load_config, save_config
-    from agent.system_prompt import build_system_prompt_parts
-    from run_agent import AIAgent
+    from hermes_agent.agent.system_prompt import build_system_prompt_parts
+    from hermes_agent.run_agent import AIAgent
 
     cfg = load_config()
     cfg["model"] = {**(cfg.get("model") or {}), "default": model}

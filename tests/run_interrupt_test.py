@@ -12,8 +12,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import MagicMock, patch
-from agent.iteration_budget import IterationBudget
-from run_agent import AIAgent
+from hermes_agent.agent.iteration_budget import IterationBudget
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tools.delegate_tool import _run_single_child
 from hermes_agent.tools.interrupt import set_interrupt, is_interrupted
 
@@ -52,7 +52,7 @@ def main() -> int:
     result_holder = [None]
 
     def run_delegate():
-        with patch("agent.process_bootstrap.OpenAI") as MockOpenAI:
+        with patch("hermes_agent.agent.process_bootstrap.OpenAI") as MockOpenAI:
             mock_client = MagicMock()
 
             def slow_create(**kwargs):

@@ -196,7 +196,7 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
     """The messaging gateway's own quick-command / plugin-command dispatch for this session
     (``run_inbound_hooks``): the operator's slash access policy, the 30 s sanitized-env exec with
     redacted output, the plugin handler under this session's env scope."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     from hermes_agent.gateway.platforms.base import MessageEvent
     if kind == 'exec':
         if not shell:
@@ -233,8 +233,8 @@ async def _run_runner_command(runner, live, name, arg, kind, shell):
 def _skill_directive(name, arg, route):
     """A local session's ``/skill`` (its plugin skills included, as on main's interactive surfaces),
     stacked ``/skill-a /skill-b do X`` too: built here, so no client loads plugins to resolve one."""
-    from agent.i18n import t
-    from agent.skill_commands import (
+    from hermes_agent.agent.i18n import t
+    from hermes_agent.agent.skill_commands import (
         build_skill_invocation_message, build_stacked_skill_invocation_message, describe_skill_invocation,
         get_interactive_skill_commands, resolve_slash_key, split_stacked_skill_commands,
     )
@@ -284,7 +284,7 @@ async def _on_own_thread(fn):
     (``plugins.hook_callback_timeout``, enforced by the hook dispatcher: abandoned worker, suppression,
     cap) holds from another session. One session runs one delivery at a time, so this is at most one
     thread per session with a delivery in flight."""
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
     loop = asyncio.get_running_loop()
     done = loop.create_future()
 
@@ -399,9 +399,9 @@ def _session_workspace(runner, source):
     """The session's frozen terminal policy (``TERMINAL_CWD`` = its launch cwd), so ``/diff``
     reads the caller's checkout instead of the gateway process's configured directory."""
     import json
-    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    from hermes_agent.agent.runtime_cwd import reset_session_cwd, set_session_cwd
     from hermes_agent.gateway.session_policy import policy_for_source
-    from agent.runtime_scope import bind_terminal_policy
+    from hermes_agent.agent.runtime_scope import bind_terminal_policy
     from hermes_agent.tools.terminal_scope import reset_terminal_scope
     policy = policy_for_source(runner, source)
     if policy is None:

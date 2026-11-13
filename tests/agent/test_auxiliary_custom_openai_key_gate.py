@@ -21,7 +21,7 @@ def _isolate(tmp_path, monkeypatch):
 
 
 def _key_for(base_url):
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
     client, _model = resolve_provider_client("custom", model="test-model", explicit_base_url=base_url)
     assert client is not None, base_url
     return client.api_key
@@ -71,7 +71,7 @@ def test_env_key_pairing_matches_the_rewritten_url(monkeypatch):
 
 
 def test_same_origin_main_key_wins_over_env_key():
-    from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT, set_runtime_main
+    from hermes_agent.agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT, set_runtime_main
     token = set_runtime_main("custom", "m", base_url="https://api.fireworks.ai/inference/v1",
                              api_key="fw-configured-key")
     try:
@@ -81,7 +81,7 @@ def test_same_origin_main_key_wins_over_env_key():
 
 
 def test_explicit_key_wins():
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
     client, _ = resolve_provider_client("custom", model="m", explicit_base_url="https://api.openai.com/v1",
                                         explicit_api_key="sk-explicit")
     assert client.api_key == "sk-explicit"

@@ -2,7 +2,7 @@
 import json
 import os
 
-from agent import kanban_turn_recovery as rec
+from hermes_agent.agent import kanban_turn_recovery as rec
 from hermes_agent.gateway import session_kanban
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_connect import connect_closing
@@ -35,7 +35,7 @@ def _claimed_frame(tmp_path, monkeypatch, *, expired=False, goal_mode=False):
                        ("HERMES_KANBAN_RUN_ID", "999"), ("HERMES_KANBAN_CLAIM_LOCK", "foreign")):
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    monkeypatch.setattr("agent.skill_commands.build_preloaded_skills_prompt", lambda *a, **k: ("", [], []))
+    monkeypatch.setattr("hermes_agent.agent.skill_commands.build_preloaded_skills_prompt", lambda *a, **k: ("", [], []))
     kb.init_db()
     path = kb.kanban_db_path()
     with connect_closing(path) as conn:

@@ -49,7 +49,7 @@ def _resolve_tool_timeout(config: dict) -> float:
     if per_server is not None:
         return per_server
     try:
-        from agent.deadline import resolve_timeout
+        from hermes_agent.agent.deadline import resolve_timeout
         resolved = resolve_timeout("mcp.tool_call", default=_DEFAULT_TOOL_TIMEOUT)
         if resolved is not None:
             return resolved

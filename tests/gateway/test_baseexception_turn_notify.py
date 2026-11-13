@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType

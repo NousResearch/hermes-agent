@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from agent.acp_client import ACPClient
+from hermes_agent.agent.acp_client import ACPClient
 from providers.base import ProviderProfile
 
 _HINT = "Run `fake-cli login` to sign in."

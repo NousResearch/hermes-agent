@@ -14,7 +14,7 @@ def _response(content="ok"):
 
 
 def test_slot_reasoning_config_parses_effort_and_none():
-    from agent.moa_loop import _slot_reasoning_config
+    from hermes_agent.agent.moa_loop import _slot_reasoning_config
 
     assert _slot_reasoning_config({"reasoning_effort": "high"}) == {
         "enabled": True,
@@ -26,7 +26,7 @@ def test_slot_reasoning_config_parses_effort_and_none():
 
 
 def test_moa_reference_passes_per_slot_reasoning_config(monkeypatch):
-    from agent.moa_loop import _run_reference
+    from hermes_agent.agent.moa_loop import _run_reference
 
     captured = {}
 
@@ -34,7 +34,7 @@ def test_moa_reference_passes_per_slot_reasoning_config(monkeypatch):
         captured.update(kwargs)
         return _response("advice")
 
-    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.moa_loop.call_llm", fake_call_llm)
     with patch("hermes_cli.runtime_provider.resolve_runtime_provider") as mock_resolve:
         mock_resolve.return_value = {"provider": "openai-codex", "model": "gpt-5.6-sol"}
         _run_reference(
@@ -60,7 +60,7 @@ class TestAggregatorGlobalFallback:
 
 
     def test_global_yaml_false_disables(self, monkeypatch):
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         monkeypatch.setattr(
             "hermes_cli.config.load_config",
@@ -72,7 +72,7 @@ class TestAggregatorGlobalFallback:
 
     def test_reference_slots_do_not_inherit_global(self, monkeypatch):
         """Advisors stay slot-or-default: global effort must NOT leak in."""
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         monkeypatch.setattr(
             "hermes_cli.config.load_config",

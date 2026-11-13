@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.manager import LSPService
-from agent.lsp.servers import (
+from hermes_agent.agent.lsp.manager import LSPService
+from hermes_agent.agent.lsp.servers import (
     SERVERS,
     ServerContext,
     ServerDef,
@@ -123,7 +123,7 @@ def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent, monkeypatch)
 
     # The budget is read off the call, not inferred from wall time: server spawn and initialize
     # sit inside snapshot_baseline too, and on a loaded runner they ate the margin to 5s.
-    from agent.lsp.client import LSPClient
+    from hermes_agent.agent.lsp.client import LSPClient
     budgets = []
     real_wait = LSPClient.wait_for_diagnostics
 

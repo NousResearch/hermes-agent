@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_tool_defs(*names: str) -> list[dict]:
@@ -50,7 +50,7 @@ def _make_agent(
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=config or {}),
         patch("hermes_cli.config.load_config_readonly", return_value=config or {}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -297,7 +297,7 @@ def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispat
     )
 
     with (
-        patch("agent.relay_tools.execute", side_effect=relay_execute),
+        patch("hermes_agent.agent.relay_tools.execute", side_effect=relay_execute),
         patch(
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
             side_effect=observe_plugin,
@@ -338,7 +338,7 @@ def test_relay_rewrite_is_guarded_before_dispatch_in_concurrent_path():
 
     agent.tool_start_callback = lambda *args: starts.append(args)
     with (
-        patch("agent.relay_tools.execute", side_effect=relay_execute),
+        patch("hermes_agent.agent.relay_tools.execute", side_effect=relay_execute),
         patch("hermes_agent.model_tools.handle_function_call", return_value="SHOULD_NOT_RUN") as dispatch,
     ):
         agent._execute_tool_calls_concurrent(msg, messages, "task-1")
@@ -371,7 +371,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
 
 def _compressed_args(field: str) -> dict:
     """Generate a legacy compression marker for already-contaminated session coverage."""
-    from agent.compression_marker import _COMPRESSION_MARKER_TEMPLATE
+    from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_TEMPLATE
 
     original = "z" * 2000
     marker = _COMPRESSION_MARKER_TEMPLATE.format(
@@ -402,8 +402,8 @@ def test_context_pruned_effectful_call_blocks_before_dispatch():
     assert payload["argument_paths"] == ["$.body"]
     assert "Recover the exact content from its durable source" in payload["message"]
     # Only the compressor's current marker is an artifact; a legacy "...[truncated]" tail is ordinary content.
-    from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
-    from agent.tool_dispatch_helpers import _context_pruned_argument_paths
+    from hermes_agent.agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+    from hermes_agent.agent.tool_dispatch_helpers import _context_pruned_argument_paths
 
     assert _context_pruned_argument_paths("write_file", {"content": "x" * 201 + "...[truncated]"}) == []
     assert _context_pruned_argument_paths("write_file", {"content": f"see {_COMPRESSION_MARKER_PREFIX} docs"}) == []

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Mapping
 from urllib.parse import unquote, urlparse
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")

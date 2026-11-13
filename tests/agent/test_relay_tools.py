@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("nemo_relay")
 
-from agent import relay_runtime, relay_tools
+from hermes_agent.agent import relay_runtime, relay_tools
 
 
 @pytest.fixture()

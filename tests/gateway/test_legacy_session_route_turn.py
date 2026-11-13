@@ -60,7 +60,7 @@ def _write_profile(home, profile_url, extra=''):
 
 @pytest.mark.parametrize('shape', ['tui-custom', 'tui-named', 'tui-provider-only', 'cli-billing'])
 def test_adopted_legacy_session_turn_goes_to_its_route_with_its_own_key(monkeypatch, shape):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with FakeLLMServer([Text('profile')]) as profile, FakeLLMServer([Text('legacy ok')]) as legacy:
         home = Path(os.environ['HERMES_HOME'])  # the per-test home conftest isolates
         monkeypatch.setattr('hermes_agent.gateway.run._hermes_home', home)
@@ -96,7 +96,7 @@ def test_adopted_legacy_session_turn_goes_to_its_route_with_its_own_key(monkeypa
 def test_adopted_cli_custom_session_keeps_custom_route_when_profile_moved_to_another_provider(monkeypatch):
     """A v0.21 CLI row's route is ``billing_provider='custom'`` + ``billing_base_url``. With the profile now
     on Anthropic, adoption must not pair ``anthropic`` (its wire mode and key) with the legacy endpoint."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with FakeLLMServer([Text('legacy ok')]) as legacy:
         home = Path(os.environ['HERMES_HOME'])
         monkeypatch.setattr('hermes_agent.gateway.run._hermes_home', home)
@@ -130,7 +130,7 @@ def test_adopted_legacy_session_whose_provider_lost_credentials_is_refused_by_na
 
 
 def _run_turn(policy, model, runtime):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = AIAgent(model=model, **{k: runtime[k] for k in ('api_key', 'base_url', 'provider', 'api_mode')},
                     reasoning_config=policy.reasoning_config, quiet_mode=True, skip_context_files=True,
                     skip_memory=True, enabled_toolsets=['memory'])

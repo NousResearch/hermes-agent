@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.onboarding_flow import Facts
+from hermes_agent.agent.onboarding_flow import Facts
 from tests.waiting import async_wait_until
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=())
@@ -40,7 +40,7 @@ async def _desktop(tmp_path, monkeypatch, turns):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_db", None)
-    monkeypatch.setattr("agent.onboarding_facts.read_facts", lambda **kw: FACTS)
+    monkeypatch.setattr("hermes_agent.agent.onboarding_facts.read_facts", lambda **kw: FACTS)
     (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-test\n", encoding="utf-8")
     (home / "config.yaml").write_text("model:\n  provider: openrouter\n  default: anthropic/claude-sonnet-4\n",
                                       encoding="utf-8")
@@ -100,7 +100,7 @@ async def test_the_window_resumes_the_chat_onboarding_start_opened(tmp_path, mon
 
 @pytest.mark.asyncio
 async def test_a_rerun_replaces_the_open_run_and_skip_ends_the_new_one(tmp_path, monkeypatch):
-    from agent import onboarding_record
+    from hermes_agent.agent import onboarding_record
     from hermes_agent.gateway.session_server_requests import ask_viewer_result, waiting
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
@@ -145,9 +145,9 @@ async def test_a_rerun_with_no_model_opens_no_chat(tmp_path, monkeypatch):
 def test_an_onboarding_chat_folds_in_setup_beat_for_its_whole_life(tmp_path):
     """The authority resolves toolsets every turn; the fold-in keys on the record existing, so a run
     that ends never changes the tool array mid-conversation (prompt cache)."""
-    from agent import onboarding_record
-    from agent.onboarding_flow import End
-    from agent.onboarding_session import onboarding_chat_toolsets
+    from hermes_agent.agent import onboarding_record
+    from hermes_agent.agent.onboarding_flow import End
+    from hermes_agent.agent.onboarding_session import onboarding_chat_toolsets
     from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=tmp_path / "state.db")
     try:
@@ -164,8 +164,8 @@ def test_an_onboarding_chat_folds_in_setup_beat_for_its_whole_life(tmp_path):
 
 
 def test_the_authority_turn_plays_the_opening_and_skips_the_note_while_a_card_waits(tmp_path):
-    from agent import onboarding_record
-    from agent.onboarding_text import GREETING
+    from hermes_agent.agent import onboarding_record
+    from hermes_agent.agent.onboarding_text import GREETING
     from hermes_agent.gateway.session_onboarding import arm_onboarding_turn
     from hermes_agent.gateway.session_server_requests import _Pending, _lock, _open
     from hermes_agent.hermes_state import SessionDB
@@ -256,7 +256,7 @@ async def test_skip_accepts_the_profile_the_desktop_names(tmp_path, monkeypatch)
 
 @pytest.mark.asyncio
 async def test_deleting_the_onboarding_chat_from_the_sidebar_ends_the_run(tmp_path, monkeypatch):
-    from agent import onboarding_record
+    from hermes_agent.agent import onboarding_record
     from hermes_cli.onboarding_run import _root_config
     from hermes_cli.config import read_user_config_raw
     turns, ended = [], []
@@ -334,7 +334,7 @@ async def test_onboarding_start_from_a_client_that_is_not_the_local_desktop_chan
 async def test_a_window_that_reopens_the_old_chat_while_a_fresh_launch_starts_keeps_it(tmp_path, monkeypatch):
     """The start decided the old chat had no viewer, then another window resumed it before the delete
     ran: the chat stays with its messages, and its run ends as replaced."""
-    from agent import onboarding_record
+    from hermes_agent.agent import onboarding_record
     from hermes_agent.gateway.session_controls import AuthorityConnection
     turns = []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
@@ -374,7 +374,7 @@ async def test_a_window_whose_resume_reads_history_while_a_fresh_launch_claims_t
     the chat unwatched and claimed it; the resume finished before the delete ran. The chat stays with its
     messages, and its run ends as replaced."""
     import threading
-    from agent import onboarding_record
+    from hermes_agent.agent import onboarding_record
     from hermes_agent.gateway import session_local_recovery
     from hermes_agent.gateway.session_controls import AuthorityConnection
     turns = []

@@ -76,8 +76,8 @@ def _transcript_store(parent_agent: Any) -> Iterator[Any]:
 
 
 def _refusal(parent_agent: Any) -> Optional[str]:
-    from agent.oneshot_footprint import agent_is_oneshot
-    from agent.runtime_session_store import RuntimeSessionStore, is_worker_process
+    from hermes_agent.agent.oneshot_footprint import agent_is_oneshot
+    from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, is_worker_process
     from hermes_agent.tools.delegate_tool_registry import is_spawn_paused
     if agent_is_oneshot(parent_agent):
         # The same frozen fact that strips live control from its schema: its children are joined inside the call.

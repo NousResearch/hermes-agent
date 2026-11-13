@@ -1,4 +1,4 @@
-"""Tests for ``agent.conversation_loop._restore_or_build_system_prompt``.
+"""Tests for ``hermes_agent.agent.conversation_loop._restore_or_build_system_prompt``.
 
 Validates the gateway DB-roundtrip path that keeps the system prompt
 byte-stable across turns (fresh AIAgent → must restore from session DB
@@ -22,8 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_loop import _restore_or_build_system_prompt
-from agent.surface_switch import _SURFACE_NAME_END, _SURFACE_SWITCH_NOTE_PREFIX, identity_line_value
+from hermes_agent.agent.conversation_loop import _restore_or_build_system_prompt
+from hermes_agent.agent.surface_switch import _SURFACE_NAME_END, _SURFACE_SWITCH_NOTE_PREFIX, identity_line_value
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -113,7 +113,7 @@ class TestSurfaceSwitch:
         assert self._restore(stored="cli", current="cli")._surface_switch_note == ""
 
     def test_stored_prompt_platform_ignores_runtime_hint_decoys(self):
-        from agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
+        from hermes_agent.agent.prompt_builder import RUNTIME_ENVIRONMENT_END, RUNTIME_ENVIRONMENT_HEADING
 
         decoy = "Host: Example\nPlatform: tui\n"
         stored = (
@@ -204,7 +204,7 @@ class TestSurfaceSwitch:
         assert "read_file" not in agent._surface_switch_note.split("were not loaded for this interface")[1]
 
     def test_note_rides_the_user_message_channel_once(self):
-        from agent.turn_context import _merge_gateway_notes, consume_surface_switch_note
+        from hermes_agent.agent.turn_context import _merge_gateway_notes, consume_surface_switch_note
 
         agent = self._restore(stored="desktop", current="tui")
         staged = agent._surface_switch_note
@@ -225,7 +225,7 @@ class TestStoredPromptReuse:
         db.get_session.return_value = {"system_prompt": stored}
         agent = _make_agent(session_db=db)
 
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_loop"):
             _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
 
         assert agent._cached_system_prompt == stored
@@ -264,7 +264,7 @@ class TestStoredPromptReuse:
         )
         agent.model = "openai/gpt-5.5"
 
-        with caplog.at_level(logging.INFO, logger="agent.conversation_loop"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.agent.conversation_loop"):
             _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
 
         assert agent._cached_system_prompt.endswith(
@@ -323,7 +323,7 @@ class TestStoredPromptReuse:
             agent = _make_agent(session_db=db)
             agent._persist_disabled = False
             agent.tools = list(tools)
-            with patch("agent.conversation_loop._stored_prompt_matches_runtime", return_value=True):
+            with patch("hermes_agent.agent.conversation_loop._stored_prompt_matches_runtime", return_value=True):
                 _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
 
             assert agent._cached_system_prompt == "BUILT_PROMPT"
@@ -341,7 +341,7 @@ class TestLegitimateFreshBuild:
         db = MagicMock()
         agent = _make_agent(session_db=db)
 
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_loop"):
             _restore_or_build_system_prompt(agent, None, [])
 
         # No history → DB read skipped entirely
@@ -377,7 +377,7 @@ class TestSilentFailureWarnings:
         db.update_system_prompt.side_effect = RuntimeError("database is locked")
         agent = _make_agent(session_db=db)
 
-        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.conversation_loop"):
             _restore_or_build_system_prompt(agent, None, [])
 
         # Built and assigned the cache anyway
@@ -426,7 +426,7 @@ class TestStaticPrefixReconstructionOnRestore:
         from unittest.mock import patch as _patch
 
         with _patch(
-            "agent.system_prompt.build_system_prompt_parts",
+            "hermes_agent.agent.system_prompt.build_system_prompt_parts",
             return_value={"stable": stable, "context": "", "volatile": ""},
         ):
             _restore_or_build_system_prompt(
@@ -450,7 +450,7 @@ class TestStaticPrefixReconstructionOnRestore:
         from unittest.mock import patch as _patch
 
         with _patch(
-            "agent.system_prompt.build_system_prompt_parts",
+            "hermes_agent.agent.system_prompt.build_system_prompt_parts",
             return_value={"stable": "NEW STATIC HEAD", "context": "", "volatile": ""},
         ):
             _restore_or_build_system_prompt(
@@ -473,7 +473,7 @@ class TestStaticPrefixReconstructionOnRestore:
         from unittest.mock import patch as _patch
 
         with _patch(
-            "agent.system_prompt.build_system_prompt_parts",
+            "hermes_agent.agent.system_prompt.build_system_prompt_parts",
             side_effect=RuntimeError("boom"),
         ):
             _restore_or_build_system_prompt(
@@ -504,12 +504,12 @@ class TestReconstructStaticPrefixMemoization:
     def test_failed_rebuild_is_memoized_per_stored_prompt(self):
         from unittest.mock import patch as _patch
 
-        from agent.system_prompt import reconstruct_static_prefix
+        from hermes_agent.agent.system_prompt import reconstruct_static_prefix
 
         stored = "STORED PROMPT\n\ntail"
         agent = self._agent(stored)
         with _patch(
-            "agent.system_prompt.build_system_prompt_parts",
+            "hermes_agent.agent.system_prompt.build_system_prompt_parts",
             return_value={"stable": "MISMATCH", "context": "", "volatile": ""},
         ) as build:
             reconstruct_static_prefix(agent)
@@ -521,11 +521,11 @@ class TestReconstructStaticPrefixMemoization:
     def test_changed_stored_prompt_retries_once(self):
         from unittest.mock import patch as _patch
 
-        from agent.system_prompt import reconstruct_static_prefix
+        from hermes_agent.agent.system_prompt import reconstruct_static_prefix
 
         agent = self._agent("OLD STORED")
         with _patch(
-            "agent.system_prompt.build_system_prompt_parts",
+            "hermes_agent.agent.system_prompt.build_system_prompt_parts",
             return_value={"stable": "MISMATCH", "context": "", "volatile": ""},
         ) as build:
             reconstruct_static_prefix(agent)
@@ -539,13 +539,13 @@ class TestReconstructStaticPrefixMemoization:
     def test_success_clears_failure_memo_and_early_returns(self):
         from unittest.mock import patch as _patch
 
-        from agent.system_prompt import reconstruct_static_prefix
+        from hermes_agent.agent.system_prompt import reconstruct_static_prefix
 
         stable = "STATIC HEAD"
         stored = stable + "\n\nvolatile"
         agent = self._agent(stored)
         with _patch(
-            "agent.system_prompt.build_system_prompt_parts",
+            "hermes_agent.agent.system_prompt.build_system_prompt_parts",
             return_value={"stable": stable, "context": "", "volatile": ""},
         ) as build:
             reconstruct_static_prefix(agent)
@@ -589,7 +589,7 @@ class TestPerResponseSessionWritePath:
             db.append_message(session_id=session_id, role="user", content="hi")
 
             with caplog.at_level(
-                logging.WARNING, logger="agent.conversation_loop"
+                logging.WARNING, logger="hermes_agent.agent.conversation_loop"
             ):
                 _restore_or_build_system_prompt(
                     self._agent(db, session_id), None, history
@@ -599,7 +599,7 @@ class TestPerResponseSessionWritePath:
             caplog.clear()
             second = self._agent(db, session_id)
             with caplog.at_level(
-                logging.WARNING, logger="agent.conversation_loop"
+                logging.WARNING, logger="hermes_agent.agent.conversation_loop"
             ):
                 _restore_or_build_system_prompt(second, None, history)
 
@@ -611,7 +611,7 @@ class TestPerResponseSessionWritePath:
 def test_null_stored_prompt_does_not_take_the_stale_probe_path(tmp_path):
     """A NULL system_prompt row already rebuilds. The capability probe must not gate it."""
     from hermes_agent.hermes_state import SessionDB
-    from agent.conversation_loop import _bot_chat_prompt_stale
+    from hermes_agent.agent.conversation_loop import _bot_chat_prompt_stale
 
     agent = SimpleNamespace(
         _bot_mode_protocol=True,

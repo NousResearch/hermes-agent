@@ -16,11 +16,11 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import auxiliary_client, conversation_compression, local_prompt_progress
-from agent.auxiliary_client import _ChatStreamAccumulator, _current_aux_stream_deadline
-from agent.conversation_compression import CompressionCommitFence, _await_worker_within_budget
-from agent.conversation_compression_deadline import compression_deadline_scope, effective_ceiling
-from agent.local_prompt_progress import PromptReadingClock, prompt_reading_hook
+from hermes_agent.agent import auxiliary_client, conversation_compression, local_prompt_progress
+from hermes_agent.agent.auxiliary_client import _ChatStreamAccumulator, _current_aux_stream_deadline
+from hermes_agent.agent.conversation_compression import CompressionCommitFence, _await_worker_within_budget
+from hermes_agent.agent.conversation_compression_deadline import compression_deadline_scope, effective_ceiling
+from hermes_agent.agent.local_prompt_progress import PromptReadingClock, prompt_reading_hook
 
 
 @pytest.fixture

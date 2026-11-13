@@ -29,7 +29,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
 
     def test_full_delegate_interrupt_flow(self):
         """Full integration: parent runs delegate_task, main thread interrupts."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         interrupt_detected = threading.Event()
         child_started = threading.Event()
@@ -94,7 +94,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
 
         # Patch AIAgent to use our mock
         from hermes_agent.tools.delegate_tool import _run_single_child
-        from agent.iteration_budget import IterationBudget
+        from hermes_agent.agent.iteration_budget import IterationBudget
 
         parent.iteration_budget = IterationBudget(max_total=100)
 
@@ -104,7 +104,7 @@ class TestCLISubagentInterrupt(unittest.TestCase):
 
         def run_delegate():
             try:
-                with patch('run_agent.AIAgent') as MockAgent:
+                with patch('hermes_agent.run_agent.AIAgent') as MockAgent:
                     mock_instance = MagicMock()
                     mock_instance._interrupt_requested = False
                     mock_instance._interrupt_message = None

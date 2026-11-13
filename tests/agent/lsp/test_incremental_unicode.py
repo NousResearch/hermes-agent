@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.client import LSPClient, file_uri
+from hermes_agent.agent.lsp.client import LSPClient, file_uri
 
 
 @pytest.mark.asyncio

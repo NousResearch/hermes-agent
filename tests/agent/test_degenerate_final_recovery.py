@@ -17,18 +17,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.agent_runtime_helpers import looks_like_degenerate_final
-from agent.conversation_loop import _DEGENERATE_FINAL_NUDGE
+from hermes_agent.agent.agent_runtime_helpers import looks_like_degenerate_final
+from hermes_agent.agent.conversation_loop import _DEGENERATE_FINAL_NUDGE
 
 
 @pytest.fixture()
 def loop_agent():
     """AIAgent with a mocked OpenAI client (mirrors test_dropped_tool_call_recovery)."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",

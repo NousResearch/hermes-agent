@@ -121,11 +121,11 @@ def cmd_insights(args):
     db = None
     try:
         from hermes_agent.hermes_state import SessionDB
-        from agent.insights import InsightsEngine
+        from hermes_agent.agent.insights import InsightsEngine
         from hermes_cli.config import get_hermes_home
         path = get_hermes_home() / "state.db"
         if not path.exists():
-            from agent.i18n import t
+            from hermes_agent.agent.i18n import t
             print(f"  {t('cli.insights.no_session_data')}")
             return
         db = SessionDB(db_path=path, read_only=True)
@@ -134,7 +134,7 @@ def cmd_insights(args):
         print(engine.format_terminal(report))
     except Exception as e:
         # Interactive /insights delegates here, so keep main's localized error line.
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
         print(t("gateway.insights.error", error=str(e)))
     finally:
         if db is not None:
@@ -155,7 +155,7 @@ def cmd_monitoring(args):
     mon = _dict_or_empty(load_config().get("monitoring"))
 
     if action == "status":
-        from agent.monitoring import otlp_exporter
+        from hermes_agent.agent.monitoring import otlp_exporter
         gh = _dict_or_empty(mon.get("gateway_health_export"))
         otlp = _dict_or_empty(_dict_or_empty(mon.get("export")).get("otlp"))
 
@@ -206,7 +206,7 @@ def _cmd_skills_trust(args):
     (nearest ancestor with ``.git``).
     """
     from pathlib import Path
-    from agent.skill_utils import (
+    from hermes_agent.agent.skill_utils import (
         PROJECT_SKILLS_SUBDIRS,
         _candidate_project_skills_dirs,
         find_project_root,

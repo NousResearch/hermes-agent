@@ -51,8 +51,8 @@ class _RewordingEngine:
 
 
 def _progress_lines():
-    from agent.context_engine import automatic_compaction_status_message
-    from agent.conversation_compression import (
+    from hermes_agent.agent.context_engine import automatic_compaction_status_message
+    from hermes_agent.agent.conversation_compression import (
         COMPACTION_HEARTBEAT_STATUS,
         COMPACTION_STATUS,
         IDLE_COMPACTION_STATUS_TEMPLATE,
@@ -83,7 +83,7 @@ def test_every_compaction_progress_line_is_retagged(server, monkeypatch):
 
 
 def test_warnings_that_mention_compression_are_not_compaction(server, monkeypatch):
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         COMPRESSION_REFUSED_WOULD_GROW_WARNING,
         COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
         COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
@@ -110,7 +110,7 @@ def test_warnings_that_mention_compression_are_not_compaction(server, monkeypatc
 
 
 def test_compaction_done_edge_keeps_its_kind(server, monkeypatch):
-    from agent.conversation_compression import COMPACTION_DONE_STATUS
+    from hermes_agent.agent.conversation_compression import COMPACTION_DONE_STATUS
 
     events = _capture(server, monkeypatch)
     server._agent_status_update("sid", "compacted", COMPACTION_DONE_STATUS)

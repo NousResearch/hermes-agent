@@ -261,7 +261,7 @@ class TestRunSingleChildSchemaValidation:
         thread where HERMES_KANBAN_TASK is set. Unwrapped it carries the worker's identity,
         so the kanban stop guard nudges the child toward a board tool it does not have
         (#109735 / #87671)."""
-        from agent.delegation_context import is_delegated_child_context
+        from hermes_agent.agent.delegation_context import is_delegated_child_context
         from hermes_agent.tools.delegate_tool_child_run import _validate_child_output_schema
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")

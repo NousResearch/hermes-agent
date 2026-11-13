@@ -11,9 +11,9 @@ import threading
 
 import pytest
 
-from agent.pet import store
-from agent.pet.constants import FRAME_H, FRAME_W
-from agent.pet.render import PetRenderer
+from hermes_agent.agent.pet import store
+from hermes_agent.agent.pet.constants import FRAME_H, FRAME_W
+from hermes_agent.agent.pet.render import PetRenderer
 from cli import HermesCLI
 
 
@@ -140,8 +140,8 @@ def test_pet_resolve_config_enables_and_disables(boba_like):
 
 
 def test_pet_fragments_render_kitty_placeholders(boba_like):
-    from agent import terminal_image
-    from agent.pet import render
+    from hermes_agent.agent import terminal_image
+    from hermes_agent.agent.pet import render
 
     cli_obj = _make_cli()
     pet = store.load_pet("boba")
@@ -242,7 +242,7 @@ def test_pet_resolve_ghostty_uses_kitty(boba_like, monkeypatch):
 
 
 def test_force_full_redraw_requeues_kitty_frame(boba_like, monkeypatch):
-    from agent.pet import render
+    from hermes_agent.agent.pet import render
 
     cli_obj = _make_cli()
     pet = store.load_pet("boba")

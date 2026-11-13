@@ -104,7 +104,7 @@ GET  /health, /health/detailed
 - **正在编写 IDE 插件，且 IDE 已支持 ACP** → 选 ACP。IDE 侧无需任何协议工作。
 - **正在编写自定义桌面 / Web / TUI 宿主，且需要 Hermes 的全部功能**（slash 命令、审批、clarify、多 agent、会话分支）→ 选 TUI gateway JSON-RPC。
 - **需要任意兼容 OpenAI 的前端、语言无关的 HTTP 客户端或 curl 驱动的自动化** → 选 API server。
-- **需要在 Python 进程内嵌入，不想启动子进程** → 直接导入 `run_agent.AIAgent`。参见 [Agent Loop](./agent-loop)。
+- **需要在 Python 进程内嵌入，不想启动子进程** → 直接导入 `hermes_agent.run_agent.AIAgent`。参见 [Agent Loop](./agent-loop)。
 
 ---
 

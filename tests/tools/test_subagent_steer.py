@@ -171,7 +171,7 @@ class TestMissedSteerRetention:
         parent.model = "test-model"
         parent.interactive_mode = False
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "test-model"
             mock_child.session_prompt_tokens = 0
@@ -209,7 +209,7 @@ class TestMissedSteerRetention:
         parent.model = "test-model"
         parent.interactive_mode = False
 
-        with patch("run_agent.AIAgent") as MockAgent:
+        with patch("hermes_agent.run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             mock_child.model = "test-model"
             mock_child.session_prompt_tokens = 0

@@ -76,7 +76,7 @@ def _verdict_reasoning() -> dict | None:
     (``auxiliary.approval.reasoning_effort`` or ``extra_body.reasoning``). A one-word verdict needs
     no thinking, and a reasoning model otherwise spends the whole 16-token budget thinking and
     returns nothing (a local Qwen 27B: 45 of 45 verdicts came back empty)."""
-    from agent.auxiliary_task_config import _get_auxiliary_task_config
+    from hermes_agent.agent.auxiliary_task_config import _get_auxiliary_task_config
 
     config = _get_auxiliary_task_config("approval")
     extra_body = config.get("extra_body")
@@ -92,7 +92,7 @@ def _smart_approve(command: str, description: str) -> str:
     """
     _smart_t0 = time.monotonic()
     try:
-        from agent.auxiliary_client import _get_task_timeout, call_llm
+        from hermes_agent.agent.auxiliary_client import _get_task_timeout, call_llm
 
         # Pass the timeout explicitly AND log call + duration: this synchronous call gates EVERY flagged command, and
         # a stalled provider once froze turns for tens of minutes with zero log output.
@@ -152,7 +152,7 @@ def _smart_verdict(command: str, description: str, pattern_key: str,
     Redaction is observer-payload preparation, not approval policy: if it fails,
     skip observability rather than leak raw data or block the LLM decision."""
     try:
-        from agent.redact import redact_sensitive_text
+        from hermes_agent.agent.redact import redact_sensitive_text
         payload = {
             "command": redact_sensitive_text(command, force=True),
             "description": redact_sensitive_text(description, force=True),

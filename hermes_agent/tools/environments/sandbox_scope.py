@@ -246,7 +246,7 @@ class ScopedEnvironment:
                 return self._guarded(name, method)(*args, **kwargs)
             if self.owner is None:
                 raise CrossAgentHandleRefused(f"{name} on a hosted sandbox with no owning scope; refused")
-            from agent.runtime_scope import bind_state
+            from hermes_agent.agent.runtime_scope import bind_state
             with bind_state(self.owner):
                 return self._guarded(name, method)(*args, **kwargs)
         return call

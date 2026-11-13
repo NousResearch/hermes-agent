@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.secret_scope import set_multiplex_active
+from hermes_agent.agent.secret_scope import set_multiplex_active
 from hermes_agent.gateway.config import Platform, PlatformConfig, load_gateway_config
 from hermes_cli import config as cli_config
 from hermes_cli.plugins import discover_plugins

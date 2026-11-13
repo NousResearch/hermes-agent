@@ -191,7 +191,7 @@ def refuse(*a, **k):
     reads.append(1)
     raise cb.ConfigBackendUnavailable("this test's backend refuses every read")
 cb._route = refuse
-from agent.secret_scope import set_multiplex_active
+from hermes_agent.agent.secret_scope import set_multiplex_active
 set_multiplex_active(True)
 from plugins.config_backends.remote.credentials import plane_token
 out = {}

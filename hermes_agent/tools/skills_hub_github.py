@@ -11,7 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from agent.retry_utils import parse_retry_after_seconds
+from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 from hermes_agent.tools.skills_guard import TRUSTED_REPOS
 from hermes_agent.tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _dedupe_by_trust,
@@ -134,7 +134,7 @@ class GitHubAuth:
     @staticmethod
     def _try_pat() -> Optional[str]:
         # Profile-scoped secret lookup (multiplexed gateway safe).
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         return get_secret("GITHUB_TOKEN") or get_secret("GH_TOKEN")
 
     def _try_gh_cli(self) -> Optional[str]:
@@ -144,7 +144,7 @@ class GitHubAuth:
         return _gh_cli_token()
 
     def _try_github_app(self) -> Optional[str]:
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         app_id, key_path = get_secret("GITHUB_APP_ID"), get_secret("GITHUB_APP_PRIVATE_KEY_PATH")
         installation_id = get_secret("GITHUB_APP_INSTALLATION_ID")
         if not all([app_id, key_path, installation_id]):

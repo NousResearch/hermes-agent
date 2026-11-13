@@ -54,7 +54,7 @@ def _https_origin(url: str) -> Optional[str]:
 
 
 def _env_github_token() -> Optional[str]:
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
 
     return get_secret("GITHUB_TOKEN") or get_secret("GH_TOKEN") or None
 

@@ -259,7 +259,7 @@ def _config_profile_scope(profile: Optional[str]):
     profile's native ticket, ``native_profile_scope``) is that profile, so it gets that profile's
     secret scope rather than the launch profile's.
     """
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import get_hermes_home, get_hermes_home_override
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
@@ -317,7 +317,7 @@ def _plugin_terminal_backend_rows() -> list[dict[str, str]]:
     except Exception:
         pass
     try:
-        from agent.terminal_env_registry import list_providers
+        from hermes_agent.agent.terminal_env_registry import list_providers
         for provider in list_providers():
             try:
                 rows.append({"name": provider.name.strip().lower(), "label": provider.display_name,

@@ -23,8 +23,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import auxiliary_client as aux
-from agent.anthropic_adapter import create_anthropic_message
+from hermes_agent.agent import auxiliary_client as aux
+from hermes_agent.agent.anthropic_adapter import create_anthropic_message
 
 
 # ── Codex Responses wire ─────────────────────────────────────────────────
@@ -71,7 +71,7 @@ def test_codex_stream_stops_at_the_host_deadline_not_its_own_ceiling():
     adapter = _make_codex_adapter(_live_forever())
     start = time.monotonic()
     with (
-        patch("agent.codex_runtime._consume_codex_event_stream", _consume_codex),
+        patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume_codex),
         aux.aux_stream_deadline(time.monotonic() + 0.4),
         pytest.raises(TimeoutError, match="hard ceiling"),
     ):
@@ -90,7 +90,7 @@ def test_codex_stream_without_host_deadline_keeps_its_ceiling():
             yield _codex_content_event()
 
     adapter = _make_codex_adapter(_short())
-    with patch("agent.codex_runtime._consume_codex_event_stream", _consume_codex):
+    with patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume_codex):
         response = adapter.create(
             messages=[{"role": "user", "content": "summarize"}], timeout=300,
         )

@@ -11,7 +11,7 @@ from tests.tools._child_env_fixtures import child_env, observe_child
 from hermes_agent.tools.environments import local
 
 # Default bootstrap env names declared by the bundled sources
-# (agent/secret_sources/bitwarden.py, agent/secret_sources/onepassword.py).
+# (hermes_agent/agent/secret_sources/bitwarden.py, hermes_agent/agent/secret_sources/onepassword.py).
 VAULT_TOKENS = ["BWS_ACCESS_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN"]
 # Operator-shell credentials that stay inheritable on purpose (SECURITY.md §3.2 posture,
 # local_env_policy.py AWS note); the fix must not widen the scrub to them.
@@ -40,8 +40,8 @@ def test_vault_bootstrap_tokens_never_reach_spawned_children(monkeypatch, builde
 @pytest.mark.usefixtures("child_env")
 def test_sources_still_hand_the_token_to_their_own_cli(monkeypatch):
     # The scrub is about *other* children. The vault CLIs get the token explicitly.
-    from agent.secret_sources import onepassword
-    from agent.secret_sources.base import source_child_env
+    from hermes_agent.agent.secret_sources import onepassword
+    from hermes_agent.agent.secret_sources.base import source_child_env
 
     _seed(monkeypatch)
     assert onepassword._op_child_env("op-token")["OP_SERVICE_ACCOUNT_TOKEN"] == "op-token"
@@ -58,8 +58,8 @@ def test_launch_home_credentialed_children_keep_the_token(monkeypatch, tmp_path)
     import shlex
     import sys
 
-    from agent.command_token_source import _mint
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.command_token_source import _mint
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
     from hermes_constants import get_hermes_home
 
     _seed(monkeypatch)

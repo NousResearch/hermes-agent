@@ -203,7 +203,7 @@ class WebhookRouteProcessor:
             return False, None
         stdout, stderr = (result.stdout or "").strip(), (result.stderr or "").strip()
         try:
-            from agent.redact import redact_sensitive_text
+            from hermes_agent.agent.redact import redact_sensitive_text
             stdout, stderr = redact_sensitive_text(stdout), redact_sensitive_text(stderr)
         except Exception as exc:
             logger.warning("[webhook] Failed to redact script output: %s", exc)

@@ -1,4 +1,4 @@
-"""Tests for the shell-hooks subprocess bridge (agent.shell_hooks).
+"""Tests for the shell-hooks subprocess bridge (hermes_agent.agent.shell_hooks).
 
 These tests focus on the pure translation layer — JSON serialisation,
 JSON parsing, matcher behaviour, block-schema correctness, and the
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from agent import shell_hooks
+from hermes_agent.agent import shell_hooks
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ class TestCallbackSubprocess:
     def test_block_aggregation_through_plugin_manager(self, tmp_path, monkeypatch):
         """Registering via register_from_config makes
         get_pre_tool_call_block_message surface the block — the real
-        end-to-end control flow used by run_agent._invoke_tool."""
+        end-to-end control flow used by hermes_agent.run_agent._invoke_tool."""
         from hermes_cli import plugins
 
         script = _write_script(
@@ -688,7 +688,7 @@ class TestRoutedProfileEnv:
         launch.mkdir(); routed.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(launch))
         monkeypatch.setenv("OPENAI_API_KEY", "sk-default-profile")
-        monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+        monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: True)
         script = _write_script(
             tmp_path, "env_dump.sh",
             "#!/usr/bin/env bash\ncat > /dev/null\n"
@@ -753,9 +753,9 @@ def test_real_tool_hooks_receive_only_the_owning_workers_identity(tmp_path, monk
     import sys
     from contextlib import nullcontext
     from types import SimpleNamespace
-    from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
-    from agent.agent_runtime_helpers import _pre_tool_block_message
-    from agent.inline_tool_executors import emit_terminal_post_tool_call
+    from hermes_agent.agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
+    from hermes_agent.agent.agent_runtime_helpers import _pre_tool_block_message
+    from hermes_agent.agent.inline_tool_executors import emit_terminal_post_tool_call
     from hermes_cli import plugins
 
     home = tmp_path / "home"

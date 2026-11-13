@@ -29,7 +29,7 @@ class TestResolveAutoCustomEndToEnd:
         """custom:<name> with NO config entry: the live base_url carried by
         set_runtime_main() must build a real client at that endpoint — not
         fall through to Step 2 (the regression in #34777)."""
-        import agent.auxiliary_client as mod
+        import hermes_agent.agent.auxiliary_client as mod
 
         # Hermetic: no aggregator creds, no stale OPENAI_BASE_URL.
         for var in ("OPENROUTER_API_KEY", "NOUS_API_KEY", "OPENAI_API_KEY",
@@ -69,7 +69,7 @@ class TestResolveAutoCustomEndToEnd:
         still resolve to that entry's endpoint.  An earlier competing fix
         collapsed the provider to bare ``custom`` before resolution, which
         broke the named-custom branch and returned None here."""
-        import agent.auxiliary_client as mod
+        import hermes_agent.agent.auxiliary_client as mod
 
         for var in ("OPENROUTER_API_KEY", "NOUS_API_KEY", "OPENAI_API_KEY",
                     "OPENAI_BASE_URL"):
@@ -110,7 +110,7 @@ class TestResolveAutoCustomEndToEnd:
         trailing ``/anthropic`` into ``/v1`` and 404s against proxies like
         Palantir Foundry's Anthropic surface.  The resulting client must be an
         AnthropicAuxiliaryClient pointed at the ORIGINAL /anthropic URL."""
-        import agent.auxiliary_client as mod
+        import hermes_agent.agent.auxiliary_client as mod
 
         for var in ("OPENROUTER_API_KEY", "NOUS_API_KEY", "OPENAI_API_KEY",
                     "OPENAI_BASE_URL"):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, List, Optional
 
-from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+from hermes_agent.agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 from hermes_cli.model_switch import ModelSwitchResult, resolve_display_context_length
 
 
@@ -35,7 +35,7 @@ def _estimate_tokens(agent: Any, messages: Optional[list[dict]]) -> Optional[int
         if len(messages) <= protect:
             return None
         try:
-            from agent.model_metadata import estimate_request_tokens_rough
+            from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
 
             system_prompt = getattr(agent, "_cached_system_prompt", None) or ""
             tools = getattr(agent, "tools", None)

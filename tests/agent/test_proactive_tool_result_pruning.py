@@ -11,7 +11,7 @@ Mirrors the construction/patching conventions in test_context_compressor.py.
 
 from unittest.mock import patch
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     ContextCompressor,
     _PRUNED_TOOL_PLACEHOLDER,
     _estimate_msg_budget_tokens,
@@ -30,7 +30,7 @@ def _compressor(**kw):
     )
     defaults.update(kw)
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=LARGE_WINDOW,
     ):
         return ContextCompressor(**defaults)

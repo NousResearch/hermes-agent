@@ -11,8 +11,8 @@ import os
 import queue
 import threading
 import time
-from agent.i18n import t
-from agent.session_activity import format_iteration_progress
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.session_activity import format_iteration_progress
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from hermes_agent.gateway.config import Platform
@@ -131,7 +131,7 @@ class GatewayTurnHygieneMixin:
                 except Exception:
                     hs.config_context_length = None
 
-            # custom_providers per-model context_length fallback (as in run_agent.py); needs base_url.
+            # custom_providers per-model context_length fallback (as in hermes_agent/run_agent.py); needs base_url.
             if hs.config_context_length is None and hs.base_url:
                 with suppress(TypeError, ValueError):
                     try:
@@ -156,7 +156,7 @@ class GatewayTurnHygieneMixin:
     async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key):
         """Decide whether hygiene compression fires this turn (token/message thresholds, DB-backed
         failure cooldown, in-flight compression)."""
-        from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
+        from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
         _hyg_context_length = await get_model_context_length_async(
             hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
             config_context_length=hs.config_context_length, provider=hs.provider or "",
@@ -169,12 +169,12 @@ class GatewayTurnHygieneMixin:
         # row (real count + delta of what was appended since, survives gateway restarts), else the
         # rough estimate (runs 30-50% high, which only fires hygiene early — safe). Do NOT compensate
         # with a threshold multiplier.
-        from agent.image_token_cost import image_cost_context, learned_image_token_cost
+        from hermes_agent.agent.image_token_cost import image_cost_context, learned_image_token_cost
         _anchored = None
         # Images in any local delta/estimate are priced at the cost learned from this model's usage.
         with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
             if session_entry.last_prompt_tokens <= 0:
-                from agent.usage_anchor import persisted_anchor_tokens
+                from hermes_agent.agent.usage_anchor import persisted_anchor_tokens
                 _session_db = getattr(self, "_session_db", None)
                 _anchored = persisted_anchor_tokens(
                     getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
@@ -232,7 +232,7 @@ class GatewayTurnHygieneMixin:
         transcript; raises ``HygieneTurnHoldExceeded`` (turn-hold budget) or
         ``asyncio.TimeoutError`` (idle/ceiling/fence cancel) for the caller's handlers. Idle timeout
         (fence ticks per streamed token) + hard ceiling (moved back by prompt reading) + turn-hold cap."""
-        from agent.conversation_compression_deadline import effective_ceiling
+        from hermes_agent.agent.conversation_compression_deadline import effective_ceiling
         from hermes_agent.gateway.run import HygieneTurnHoldExceeded, hygiene_wait_should_extend
         fence = attempt.commit_fence
         while True:
@@ -312,7 +312,7 @@ class GatewayTurnHygieneMixin:
 
     @staticmethod
     def _hmwa_hygiene_stamp(agent, desc, provenance_name, debug_label):
-        from agent.session_activity import ActivityProvenance
+        from hermes_agent.agent.session_activity import ActivityProvenance
         from hermes_agent.gateway.run import _stamp_hygiene_compression_provenance
         _stamp_hygiene_compression_provenance(agent, desc, getattr(ActivityProvenance, provenance_name), debug_label)
 
@@ -507,7 +507,7 @@ class GatewayTurnHygieneMixin:
         FAILURE and an unconditional rewrite would leave only the summary. Write-before-repoint:
         a repoint-then-failed-rewrite would point the live entry at an empty session."""
         from hermes_agent.gateway.run_turn import hygiene_no_commit_reason
-        from agent.model_metadata import estimate_messages_tokens_rough
+        from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
         _hyg_agent = attempt.agent
         # _compress_context rotates to a NEW session_id so the old transcript stays intact/searchable.
         _hyg_new_sid = _hyg_agent.session_id
@@ -624,7 +624,7 @@ class GatewayTurnHygieneMixin:
             )
             if not _hyg_fence_cancelled:
                 # Force-redact: provider exception text may contain credentials; this reaches users.
-                from agent.redact import redact_sensitive_text
+                from hermes_agent.agent.redact import redact_sensitive_text
                 _err = redact_sensitive_text(
                     getattr(_comp, "_last_summary_error", None) or t("gateway.shared.unknown_error"), force=True)
                 logger.warning("Session hygiene compression aborted: %s", _err)
@@ -666,7 +666,7 @@ class GatewayTurnHygieneMixin:
         """Build the detached hygiene ``AIAgent`` with the live session's system prompt. Returns
         ``(agent, sync_session_db)``."""
         from hermes_agent.gateway.run import _GATEWAY_HYGIENE_PLATFORM, _seed_hygiene_system_prompt
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         try:
             _hyg_session_row = await self._session_db.get_session(session_entry.session_id)
         except Exception as exc:
@@ -704,7 +704,7 @@ class GatewayTurnHygieneMixin:
         """Run one detached hygiene compression attempt end to end; publishes the transcript to
         continue with (compressed or original) on ``attempt.history``."""
         from hermes_agent.gateway.run import HygieneTurnHoldExceeded
-        from agent.conversation_compression import CompressionCommitFence
+        from hermes_agent.agent.conversation_compression import CompressionCommitFence
         _hyg_agent, _hyg_session_db = await self._hmwa_hygiene_build_agent(_hyg_model, _hyg_runtime, session_entry)
         attempt.agent = _hyg_agent
         try:

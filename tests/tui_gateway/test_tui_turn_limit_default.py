@@ -28,7 +28,7 @@ def _stub_make_agent(monkeypatch, cfg):
 
 def test_an_unset_max_turns_gives_the_tui_agent_an_unlimited_budget(monkeypatch):
     _stub_make_agent(monkeypatch, {})
-    with patch("run_agent.AIAgent") as agent:
+    with patch("hermes_agent.run_agent.AIAgent") as agent:
         rebind(_make_agent, server.__dict__)("sid", "key")
     assert agent.call_args.kwargs["max_iterations"] == TURN_LIMIT_UNLIMITED
 

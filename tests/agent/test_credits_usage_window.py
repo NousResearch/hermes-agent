@@ -1,4 +1,4 @@
-"""Usage-window plans in agent.credits_tracker & friends.
+"""Usage-window plans in hermes_agent.agent.credits_tracker & friends.
 
 Header parsing (the server's gauge list is REQUIRED; spend-source / paused-reason optional), the
 derived gauge (the binding all-scope allowance, exhausted flags by scope), the notice policy
@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import credits_tracker as ct
-from agent.credits_tracker import (
+from hermes_agent.agent import credits_tracker as ct
+from hermes_agent.agent.credits_tracker import (
     CREDITS_DEPLETED_KEY,
     CREDITS_WINDOW_LIMIT_KEY,
     CREDITS_RESTORED_KEY,
@@ -453,7 +453,7 @@ class TestHardStops:
 
     def test_a_pause_for_another_reason_never_claims_a_payment_failed(self):
         """The server may send any reason (\"unknown\" for a malformed one): still a pause, neutral copy."""
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         from hermes_cli import nous_account
         show, _ = _run(_state(paid_access=False, paused_reason="unknown", spend_source=None), new_credits_latch())
         assert [k for k, _l, _t in show] == [CREDITS_DEPLETED_KEY]
@@ -632,7 +632,7 @@ def _plan_state(day_bp: int, week_bp: int, *, top_tier_bp: int = 0, purchased: s
     last spend source, auto top-up, a pause and the account's top-up-for-Hermes setting."""
     from decimal import Decimal
 
-    from agent.usage_gauges import SCOPE_ALL, SCOPE_TOP_TIER, WindowGauge
+    from hermes_agent.agent.usage_gauges import SCOPE_ALL, SCOPE_TOP_TIER, WindowGauge
     now_ms = int(time.time() * 1000)
     micros = int(Decimal(purchased) * 1_000_000)
     day_reset = now_ms + 6 * 3600 * 1000
@@ -716,7 +716,7 @@ class TestPlanStates:
 
 class TestUsageCommand:
     def test_portal_window_account_renders_today_week_and_top_tier(self, monkeypatch):
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         top_reset_ms = int(time.time() * 1000) + 20 * 86_400_000
         monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         info = SimpleNamespace(
@@ -748,7 +748,7 @@ class TestUsageCommand:
         assert account_usage._DEPLETED_LINE not in lines
 
     def test_portal_rows_follow_the_server_list(self, monkeypatch):
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         now = int(time.time() * 1000)
         kw = dict(day_reset=now + 3600_000, week_reset=now + 3 * 86_400_000, top_reset=now + 20 * 86_400_000,
                   month_reset=now + 20 * 86_400_000)
@@ -769,7 +769,7 @@ class TestUsageCommand:
     def test_an_unknown_reset_keeps_the_allowance_row(self):
         """A valid percent with no usable reset still shows as a window row (no reset phrase), never the
         dollar view: the window plan's details stay on screen."""
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         gauges = [{"id": "day", "scope": "all", "label": "Today", "used_bp": 4_200},
                   {"id": "week", "scope": "all", "label": "This week", "used_bp": 1_000, "resets_at_ms": "soon"}]
         info = SimpleNamespace(logged_in=True, paid_service_access=True, paid_service_access_info=None, subscription=None,
@@ -780,7 +780,7 @@ class TestUsageCommand:
         assert not any("resets" in line for line in account_usage.render_account_usage_lines(snap))
 
     def test_header_gauge_raises_stale_portal_percents(self, monkeypatch):
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         info = SimpleNamespace(
             logged_in=True, paid_service_access=True,
@@ -808,7 +808,7 @@ class TestUsageCommand:
         assert [round(w.used_percent) for w in account_usage.apply_header_gauge(snap, reset).windows][:2] == [22, 16]
 
     def test_portal_paused_window_account(self, monkeypatch):
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         info = SimpleNamespace(
             logged_in=True, paid_service_access=False,
@@ -824,7 +824,7 @@ class TestUsageCommand:
     def test_portal_keep_going_off_says_so_and_never_says_add_credits(self, monkeypatch):
         """Keep going on credits off: /usage names the setting, the used-up line points at the other
         included usage (a balance doesn't unlock it), and the 402 guidance links billing, not top-up."""
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         from hermes_cli import nous_account
         monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         monkeypatch.setattr("hermes_cli.nous_account.nous_portal_billing_url", lambda info: "https://portal/billing")
@@ -864,7 +864,7 @@ class TestUsageCommand:
     def test_partial_or_empty_usage_window_block_is_treated_as_absent(self):
         """Gate on a readable gauge list, not on the block's presence: an empty block, or one whose list
         has nothing that stops every model, keeps the dollar usage model and the credit-grant 402 guidance."""
-        from agent.billing_usage import usage_model_from_account
+        from hermes_agent.agent.billing_usage import usage_model_from_account
         from hermes_cli.nous_account import NousUsageWindowInfo, format_usage_window_block_guidance
         complete = NousUsageWindowInfo(gauges=ct.parse_gauges(_gauges(100, 50)))
         top_only = NousUsageWindowInfo(gauges=ct.parse_gauges([g for g in _gauges() if g["scope"] == "top_tier"]))
@@ -880,7 +880,7 @@ class TestUsageCommand:
             assert (format_usage_window_block_guidance(info) is not None) is is_window
 
     def test_portal_legacy_account_is_unchanged(self, monkeypatch):
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         info = SimpleNamespace(
             logged_in=True, paid_service_access=True,
@@ -899,7 +899,7 @@ class TestUsageCommand:
         assert not any("% used  " in l or "Top up via" in l for l in lines)
 
     def test_fixture_window_state_renders(self, monkeypatch):
-        from agent import account_usage
+        from hermes_agent.agent import account_usage
         monkeypatch.setattr(ct, "dev_fixture_credits_state", _PLAN_STATES["top_tier_blocked"])
         lines = account_usage.nous_credits_lines()
         joined = "\n".join(lines)
@@ -922,7 +922,7 @@ class TestClassifier:
         return e
 
     def test_window_402_is_billing_and_not_retryable(self):
-        from agent.error_classifier import FailoverReason, classify_api_error
+        from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
         c = classify_api_error(self._err(402, "usage_window_and_credits_exhausted",
                                          "Your included Hermes usage for today is used up and you have no top-up credits. It resets at 18:00."),
                                provider="nous", model="example/model-c")
@@ -932,7 +932,7 @@ class TestClassifier:
     def test_other_402_billing_codes_keep_main_text_rules(self):
         """Only the Nous window code is decisive on a 402; any other provider's billing code
         with transient wording stays a rate limit, as on main."""
-        from agent.error_classifier import FailoverReason, classify_api_error
+        from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
         c = classify_api_error(self._err(402, "insufficient_quota",
                                          "quota exceeded, please retry after the window resets"),
                                provider="example", model="example/model-a")
@@ -940,7 +940,7 @@ class TestClassifier:
         assert not c.error_context.get("usage_window")
 
     def test_window_402_carries_the_server_wording_when_sent(self):
-        from agent.error_classifier import classify_api_error
+        from hermes_agent.agent.error_classifier import classify_api_error
         err = self._err(402, "usage_window_and_credits_exhausted", "Your included Hermes usage for today is used up.")
         assert "display_message" not in classify_api_error(err, provider="nous", model="m").error_context
         err.body = {"status": 402, "code": "usage_window_and_credits_exhausted", "message": "m",
@@ -954,12 +954,12 @@ class TestClassifier:
 
     def test_window_402_never_falls_back_to_another_model(self):
         """A plan limit is the user's call (the limit card offers a switch): never the fallback chain."""
-        from agent.error_classifier import classify_api_error
+        from hermes_agent.agent.error_classifier import classify_api_error
         c = classify_api_error(self._err(402, "usage_window_and_credits_exhausted", "used up"), provider="nous", model="m")
         assert c.should_fallback is False
 
     def test_window_402_code_from_another_upstream_keeps_main_rules(self):
-        from agent.error_classifier import FailoverReason, classify_api_error
+        from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
         c = classify_api_error(self._err(402, "usage_window_and_credits_exhausted", "quota exceeded, retry after the window resets"),
                                provider="example", model="m", base_url="https://example.invalid/v1")
         assert c.reason == FailoverReason.rate_limit and not c.error_context.get("usage_window")
@@ -967,7 +967,7 @@ class TestClassifier:
     def test_window_code_on_a_429_from_another_upstream_keeps_main_rules(self):
         """The code is honoured only through the gated 402 path: on any other status (a 429 from another
         provider or a custom endpoint) it is not a billing code, so the turn backs off and retries as on main."""
-        from agent.error_classifier import FailoverReason, classify_api_error
+        from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
         for provider, base_url in (("example", "https://example.invalid/v1"), ("custom", "https://custom.example.invalid/v1")):
             c = classify_api_error(self._err(429, "usage_window_and_credits_exhausted", "Too many requests"),
                                    provider=provider, model="m", base_url=base_url)
@@ -975,7 +975,7 @@ class TestClassifier:
             assert not c.error_context.get("usage_window")
 
     def test_a_plain_403_still_classifies_as_before(self):
-        from agent.error_classifier import FailoverReason, classify_api_error
+        from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
         c = classify_api_error(self._err(403, "forbidden", "Forbidden"), provider="nous", model="m")
         assert c.reason != FailoverReason.model_not_found
 
@@ -985,7 +985,7 @@ class TestClassifier:
 
 class TestBlockedResponseCapture:
     def test_a_nous_402_refreshes_the_credits_state(self, monkeypatch):
-        from agent.rate_limit_credits import RateLimitCreditsMixin
+        from hermes_agent.agent.rate_limit_credits import RateLimitCreditsMixin
 
         class Agent(RateLimitCreditsMixin):
             provider = "nous"
@@ -1025,7 +1025,7 @@ class TestBlockedResponseCapture:
     def test_non_streaming_success_feeds_the_header_capture(self):
         """A non-streaming 200 must observe x-nous-credits-* like a stream open does
         (spend_source / window gauges otherwise go stale until the next stream or 402)."""
-        from agent.chat_completion_headers import _chat_completion_capturing_headers
+        from hermes_agent.agent.chat_completion_headers import _chat_completion_capturing_headers
 
         seen = []
         agent = SimpleNamespace(
@@ -1070,7 +1070,7 @@ class TestBlockedResponseCapture:
     def test_non_streaming_non_window_keeps_mains_behaviour(self):
         """Not a usage-window response: nothing is captured. A session not known to be on a window
         plan (no state yet, or a credit-grant state) keeps main's plain call."""
-        from agent.chat_completion_headers import _chat_completion_capturing_headers
+        from hermes_agent.agent.chat_completion_headers import _chat_completion_capturing_headers
 
         seen = []
         agent = SimpleNamespace(
@@ -1118,11 +1118,11 @@ class TestBlockedResponseCapture:
         hook runs."""
         from unittest.mock import patch
 
-        from agent.turn_api_error import handle_api_error
-        from run_agent import AIAgent
+        from hermes_agent.agent.turn_api_error import handle_api_error
+        from hermes_agent.run_agent import AIAgent
         with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
                 patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
-                patch("agent.process_bootstrap.OpenAI"):
+                patch("hermes_agent.agent.process_bootstrap.OpenAI"):
             agent = AIAgent(api_key="test-key-1234567890", base_url="https://inference-api.nousresearch.com/v1",
                             quiet_mode=True, skip_context_files=True, skip_memory=True)
         agent.provider = provider
@@ -1180,11 +1180,11 @@ class TestPicker:
 
 class TestRefusalReadsAsTheStopLine:
     """A window 402's chat text and error card say what the stop line says, nothing generic, plus the
-    structured limit (agent/plan_limits.py) the surfaces turn into buttons."""
+    structured limit (hermes_agent/agent/plan_limits.py) the surfaces turn into buttons."""
 
     @pytest.fixture(autouse=True)
     def _no_plan_caches(self, monkeypatch):
-        from agent import plan_limits as pl
+        from hermes_agent.agent import plan_limits as pl
         monkeypatch.setattr(pl, "_plan_usage", lambda: None)
         monkeypatch.setattr(pl, "_portal_free_models", list)
         monkeypatch.setattr(pl, "cached_pricing", lambda base_url: {})
@@ -1195,7 +1195,7 @@ class TestRefusalReadsAsTheStopLine:
                                base_url="https://inference-api.nousresearch.com/v1")
 
     def test_the_refusal_text_is_the_stop_line(self):
-        from agent.conversation_loop import _usage_window_refusal
+        from hermes_agent.agent.conversation_loop import _usage_window_refusal
         window = SimpleNamespace(error_context={"usage_window": True})
         agent = self._agent(purchased_micros=5_000_000, keep_going_on_credits=False)
         text, resets_at, limit = _usage_window_refusal(agent, window)
@@ -1207,9 +1207,9 @@ class TestRefusalReadsAsTheStopLine:
     def test_only_a_billing_refusal_with_the_window_mark_benches_one_model(self):
         """The model-scoped bench applies to the usage-window 402 alone, and wins over the unverified-billing
         sizing; any other reason keeps the pool's own handling."""
-        from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
-        from agent.credential_pool_model_cooldowns import FAILURE_REASON_USAGE_WINDOW, pool_failure_reason
-        from agent.error_classifier import FailoverReason
+        from hermes_agent.agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+        from hermes_agent.agent.credential_pool_model_cooldowns import FAILURE_REASON_USAGE_WINDOW, pool_failure_reason
+        from hermes_agent.agent.error_classifier import FailoverReason
         window = {"usage_window": True}
         assert pool_failure_reason(FailoverReason.billing, window, True) == FAILURE_REASON_USAGE_WINDOW
         assert pool_failure_reason(FailoverReason.rate_limit, window, False) == FailoverReason.rate_limit.value
@@ -1219,16 +1219,16 @@ class TestRefusalReadsAsTheStopLine:
     def test_the_pool_bench_lasts_until_the_refused_allowance_resets(self):
         """The 402's own headers are captured before recovery, so the pool gets the window's reset (not its
         default 60 s / 1 h bench); a state naming no reset leaves the default."""
-        from agent.turn_recovery import _usage_window_reset_context
+        from hermes_agent.agent.turn_recovery import _usage_window_reset_context
         assert _usage_window_reset_context(self._agent()) == {"reset_at": DAY_RESET / 1000}
         assert _usage_window_reset_context(SimpleNamespace(_credits_state=None)) == {}
 
     def test_a_regular_model_refused_by_its_day_names_the_day_everywhere(self, monkeypatch):
         """Day and Large-model allowances both full on a 402 for a model that is not top tier: the line, the retry
         time, the pool bench and the card all name the day (what stops this model), not the month-away reset."""
-        from agent import plan_limits as pl
-        from agent.conversation_loop import _usage_window_refusal
-        from agent.turn_recovery import _usage_window_reset_context
+        from hermes_agent.agent import plan_limits as pl
+        from hermes_agent.agent.conversation_loop import _usage_window_refusal
+        from hermes_agent.agent.turn_recovery import _usage_window_reset_context
         monkeypatch.setattr(pl, "cached_pricing", lambda base_url: {
             "example/model-b": {"prompt": "0.0000004", "completion": "0.000004", "usage_level": "medium"}})
         agent = self._agent(window_top_tier_used_bp=10_000, window_top_tier_resets_at_ms=MONTH_RESET)
@@ -1241,8 +1241,8 @@ class TestRefusalReadsAsTheStopLine:
         """Day and Large-model allowances both full on a 402 while the catalog has no row for the model (cold, or
         its 300 s cache lapsed): it may be Large, so the line, retry time, pool bench and card name the later
         Large-model reset, never a daily one it would still be refused after."""
-        from agent.conversation_loop import _usage_window_refusal
-        from agent.turn_recovery import _usage_window_reset_context
+        from hermes_agent.agent.conversation_loop import _usage_window_refusal
+        from hermes_agent.agent.turn_recovery import _usage_window_reset_context
         agent = self._agent(window_top_tier_used_bp=10_000, window_top_tier_resets_at_ms=MONTH_RESET)
         text, resets_at, limit = _usage_window_refusal(agent, SimpleNamespace(error_context={"usage_window": True}))
         assert text.startswith(f"You've hit your monthly large-model limit · resets {format_window_reset(MONTH_RESET)}")
@@ -1252,7 +1252,7 @@ class TestRefusalReadsAsTheStopLine:
     def test_keep_going_off_with_no_balance_says_both_steps_everywhere(self):
         """A new subscriber's first limit (setting off by default, no top-up): the stop line, the next-steps
         payload and the 402 guidance all name both steps, since either one alone is still refused."""
-        from agent.conversation_loop import _usage_window_refusal
+        from hermes_agent.agent.conversation_loop import _usage_window_refusal
         from hermes_cli import nous_account
         agent = self._agent(purchased_micros=0, keep_going_on_credits=False)
         text, _resets_at, limit = _usage_window_refusal(agent, SimpleNamespace(error_context={"usage_window": True}))
@@ -1271,7 +1271,7 @@ class TestRefusalReadsAsTheStopLine:
     def test_the_server_wording_replaces_the_stop_line_when_sent(self):
         """``display_message`` on the 402: shown verbatim (a reword ships with the API); the retry clock
         still comes from the gauges. Absent: Hermes's own stop line, as above."""
-        from agent.conversation_loop import _usage_window_refusal
+        from hermes_agent.agent.conversation_loop import _usage_window_refusal
         agent = self._agent()
         server = SimpleNamespace(error_context={"usage_window": True, "display_message": "  Daily limit hit. Back at 4pm.  "})
         text, resets_at, limit = _usage_window_refusal(agent, server)
@@ -1284,7 +1284,7 @@ class TestRefusalReadsAsTheStopLine:
         """Local gauges show nothing spent (stale snapshot / thinks credits pay) but the API refused with
         the window code: still a window refusal in the server's words, never the generic billing wall
         (which on desktop meant an "Out of credits" card + toast + banner)."""
-        from agent.conversation_loop import _usage_window_refusal
+        from hermes_agent.agent.conversation_loop import _usage_window_refusal
         quiet = SimpleNamespace(_credits_state=_state(), _credits_latch=new_credits_latch(), model="example/model-b",
                                 base_url="https://inference-api.nousresearch.com/v1")
         refused = SimpleNamespace(error_context={"usage_window": True},
@@ -1293,8 +1293,8 @@ class TestRefusalReadsAsTheStopLine:
         assert _usage_window_refusal(quiet, SimpleNamespace(error_context={"usage_window": True}))[0] == ""
 
     def test_the_refusal_names_the_plans_recommended_model(self, monkeypatch):
-        from agent import plan_limits as pl
-        from agent.conversation_loop import _usage_window_refusal
+        from hermes_agent.agent import plan_limits as pl
+        from hermes_agent.agent.conversation_loop import _usage_window_refusal
         monkeypatch.setattr(pl, "_plan_usage", lambda: SimpleNamespace(featured_model_ids=("example/model-b", "example/model-free:free")))
         monkeypatch.setattr(pl, "cached_pricing", lambda base_url: {
             "example/model-b": {"prompt": "0.0000004", "completion": "0.000004", "name": "Model B"},
@@ -1307,13 +1307,13 @@ class TestRefusalReadsAsTheStopLine:
 
     def test_the_text_never_carries_a_command_hint(self):
         """The old stop-line hint (", or /model x") is gone: suggestions travel structured."""
-        from agent.conversation_loop import _usage_window_refusal
+        from hermes_agent.agent.conversation_loop import _usage_window_refusal
         text = _usage_window_refusal(self._agent(), SimpleNamespace(error_context={"usage_window": True}))[0]
         assert "/model" not in text
 
     def test_result_and_error_surface_carry_the_sentence(self, monkeypatch):
-        from agent import conversation_loop as cl
-        from agent.error_surface import build_error_surface_from_result
+        from hermes_agent.agent import conversation_loop as cl
+        from hermes_agent.agent.error_surface import build_error_surface_from_result
         monkeypatch.setattr(cl, "_billing_or_entitlement_message", lambda **kw: "Add credits to keep going now: https://x")
         classified = SimpleNamespace(billing_unverified=False, retryable=False, reason=SimpleNamespace(value="billing"))
         kw = dict(classified=classified, summary="HTTP 402", messages=[], api_call_count=1,
@@ -1389,7 +1389,7 @@ class TestRebuildMemory:
 def test_a_refused_request_keeps_the_last_known_top_up_balance():
     """The gateway's 402 sends only the window headers. The capture must not read that as "no credits"."""
     from types import SimpleNamespace as NS
-    from agent.rate_limit_credits import RateLimitCreditsMixin
+    from hermes_agent.agent.rate_limit_credits import RateLimitCreditsMixin
 
     class _Agent(RateLimitCreditsMixin):
         provider = "nous"
@@ -1420,7 +1420,7 @@ def test_leaving_a_window_plan_clears_its_limit_line():
 def test_window_headers_from_another_upstream_are_ignored():
     """Only Nous replies can put a session on a window plan (no window UI or Keep going button from a proxy)."""
     from types import SimpleNamespace as NS
-    from agent.rate_limit_credits import RateLimitCreditsMixin
+    from hermes_agent.agent.rate_limit_credits import RateLimitCreditsMixin
 
     class _Agent(RateLimitCreditsMixin):
         provider = "example"
@@ -1437,7 +1437,7 @@ def test_window_headers_from_another_upstream_are_ignored():
 def test_an_unmetered_reply_raises_no_limit_stop():
     """An admitted reply without a spend source (the server skipped metering) is no refusal: no stop line."""
     from types import SimpleNamespace as NS
-    from agent.rate_limit_credits import RateLimitCreditsMixin
+    from hermes_agent.agent.rate_limit_credits import RateLimitCreditsMixin
 
     class _Agent(RateLimitCreditsMixin):
         provider = "nous"

@@ -76,7 +76,7 @@ import logging
 
 logging.disable(logging.CRITICAL)
 
-import run_agent
+from hermes_agent import run_agent
 
 _loaded = os.path.normcase(os.path.normpath(run_agent.__file__))
 _want = os.path.normcase(os.path.normpath(WT))
@@ -90,7 +90,7 @@ if ARM == "prns":
     bu._skill_text_cache = None
     bu.BROWSER_EXEC_SCHEMA["description"] = bu._description_header()
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 # Provider resolution: default openrouter (original battery), but allow the
 # Nous-subscription path on boxes without an OpenRouter key. Credentials are

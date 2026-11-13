@@ -40,7 +40,7 @@ class DaytonaEnvironment(BaseEnvironment):
         ensure_lazy_dep("daytona")
         from daytona import (Daytona, CreateSandboxFromImageParams, DaytonaConfig, DaytonaError, Resources,
                              SandboxState)
-        from agent.secret_scope import get_secret, serves_routed_profile
+        from hermes_agent.agent.secret_scope import get_secret, serves_routed_profile
 
         self._persistent, self._task_id, self._SandboxState = persistent_filesystem, task_id, SandboxState
         # With no key the SDK falls back to os.environ and the cwd .env: another profile's account.

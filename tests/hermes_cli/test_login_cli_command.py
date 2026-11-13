@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_cli import anon_auth
 from hermes_cli import cli_commands_mixin as commands
 

@@ -26,7 +26,7 @@ class TestNeuterAsyncHttpxDel:
 
     def test_del_becomes_noop(self):
         """After neuter, __del__ should do nothing (no RuntimeError)."""
-        from agent.auxiliary_client import neuter_async_httpx_del
+        from hermes_agent.agent.auxiliary_client import neuter_async_httpx_del
 
         try:
             from openai._base_client import AsyncHttpxClientWrapper
@@ -55,7 +55,7 @@ class TestCleanupStaleAsyncClients:
 
     def test_removes_stale_entries(self):
         """Entries with a closed loop should be evicted."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _client_cache,
             _client_cache_key,
             _client_cache_lock,
@@ -86,7 +86,7 @@ class TestCleanupStaleAsyncClients:
                 _client_cache.pop(key, None)
 
     def test_awaits_async_close_for_closed_loop(self):
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _client_cache,
             _client_cache_key,
             _client_cache_lock,
@@ -117,7 +117,7 @@ class TestCleanupStaleAsyncClients:
                 _client_cache.pop(key, None)
 
     def test_shutdown_closes_outside_cache_lock(self):
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _client_cache,
             _client_cache_key,
             _client_cache_lock,
@@ -151,7 +151,7 @@ class TestCleanupStaleAsyncClients:
         assert lock_observations == [True]
 
     def test_shutdown_does_not_await_live_foreign_loop_client(self):
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _client_cache,
             _client_cache_key,
             _client_cache_lock,
@@ -185,7 +185,7 @@ class TestCleanupStaleAsyncClients:
 
     def test_keeps_live_entries(self):
         """Entries with an open loop should be preserved."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _client_cache,
             _client_cache_key,
             _client_cache_lock,
@@ -210,7 +210,7 @@ class TestCleanupStaleAsyncClients:
 
     def test_keeps_entries_without_loop(self):
         """Sync entries (cached_loop=None) should be preserved."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _client_cache,
             _client_cache_key,
             _client_cache_lock,
@@ -244,7 +244,7 @@ class TestClientCacheBoundedGrowth:
 
     def test_same_key_replaces_stale_loop_entry(self):
         """When the loop changes, the old entry should be replaced, not duplicated."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _client_cache,
             _client_cache_key,
             _client_cache_lock,
@@ -269,7 +269,7 @@ class TestClientCacheBoundedGrowth:
 
         try:
             # Now call _get_cached_client — should detect stale loop and evict
-            with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client") as mock_resolve:
                 mock_resolve.return_value = (MagicMock(), "new-model")
                 _client, _model = _get_cached_client(
                     "test_replace", async_mode=True,

@@ -19,7 +19,7 @@ Gating invariants (from cross-vendor review):
 """
 from types import SimpleNamespace
 
-from agent import chat_completion_helpers as h
+from hermes_agent.agent import chat_completion_helpers as h
 
 
 def _make_call(api_kwargs, *, deltas_sent=False, api_mode="chat_completions"):

@@ -2,7 +2,7 @@
 keeps 1h, the child is built at 5m, and the child's wire markers carry no ``ttl``. A disabled cache
 stays disabled (the child is not re-enabled to 5m)."""
 from types import SimpleNamespace
-from agent.prompt_caching import apply_anthropic_cache_control
+from hermes_agent.agent.prompt_caching import apply_anthropic_cache_control
 from hermes_agent.tools.delegate_tool import _apply_child_cache_ttl
 
 
@@ -44,7 +44,7 @@ def test_real_spawn_path_applies_it(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(
         "prompt_caching:\n  cache_ttl: 1h\nmodel:\n  default: anthropic/claude-sonnet-4.6\n", encoding="utf-8")
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from hermes_agent.tools import delegate_tool as dt
     import hermes_agent.tools.delegate_tool_config as dtc
     monkeypatch.setattr(dt, "_load_config", dict)

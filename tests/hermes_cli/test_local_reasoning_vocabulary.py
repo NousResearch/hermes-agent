@@ -7,7 +7,7 @@ accepts; the request and the picker's "sends X" hint both clamp onto them.
 
 import pytest
 
-from agent.reasoning_effort import EFFORT_LADDER, effort_display_label
+from hermes_agent.agent.reasoning_effort import EFFORT_LADDER, effort_display_label
 from hermes_cli.local_runtime import catalog, growth
 
 MANAGED = "http://127.0.0.1:18434/v1"
@@ -23,7 +23,7 @@ def _model(entry_id):
 
 
 def _wire_effort(model_id, reasoning_config, base_url=MANAGED):
-    from agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
     from providers import get_provider_profile
 
     wire = ChatCompletionsTransport().build_kwargs(
@@ -47,7 +47,7 @@ def test_turning_thinking_off_still_sends_none(managed_endpoint, off):
 
 
 def test_a_background_call_to_the_same_model_is_clamped_too(managed_endpoint):
-    from agent.auxiliary_client import _build_call_kwargs
+    from hermes_agent.agent.auxiliary_client import _build_call_kwargs
 
     kwargs = _build_call_kwargs(
         "custom", _model("qwen3.8-27b"), [{"role": "user", "content": "Hello"}],

@@ -70,7 +70,7 @@ def test_agent_close_owned_loop_skips_persisted_sessions(registry, monkeypatch):
     must be skipped there too (#41225)."""
     from types import SimpleNamespace
 
-    from agent.client_lifecycle import ClientLifecycleMixin
+    from hermes_agent.agent.client_lifecycle import ClientLifecycleMixin
     import hermes_agent.tools.process_registry as registry_module
 
     persisted = _make_session(sid="proc_persisted", task_id="turn-1", persist=True)
@@ -83,7 +83,7 @@ def test_agent_close_owned_loop_skips_persisted_sessions(registry, monkeypatch):
     monkeypatch.setattr(registry_module, "process_registry", registry)
     # _close_task_resources also runs cleanup_vm/cleanup_browser/release_computer_use;
     # stub them so the loop under test is the only thing that runs.
-    import run_agent as ra
+    import hermes_agent.run_agent as ra
     monkeypatch.setattr(ra, "cleanup_vm", lambda *a, **k: None)
     monkeypatch.setattr(ra, "cleanup_browser", lambda *a, **k: None)
     import hermes_agent.tools.computer_use.tool as cu

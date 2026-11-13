@@ -46,7 +46,7 @@ def test_budget_is_per_chain_from_the_root_down(tmp_path):
 def test_a_chain_at_the_cap_loads_whole_on_a_128k_model(tmp_path):
     """The cap exists so the loader never truncates: a three-file chain at CHAIN_MAX_CHARS, with the
     ``## <label>`` header the loader puts on each file, still fits its 128k budget."""
-    from agent.prompt_builder import _load_agents_md
+    from hermes_agent.agent.prompt_builder import _load_agents_md
 
     area = "hermes_agent/gateway/platforms"
     repo = _repo(tmp_path, {"AGENTS.md": ROOT_CAP, "hermes_agent/gateway/AGENTS.md": CHAIN_CAP - ROOT_CAP - 8_000,

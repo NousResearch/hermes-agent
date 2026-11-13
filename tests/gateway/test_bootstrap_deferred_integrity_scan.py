@@ -29,7 +29,7 @@ def test_scan_runs_on_a_daemon_thread_with_the_1800s_deadline(monkeypatch):
 @pytest.fixture
 def _startup(monkeypatch, tmp_path):
     """Drive the real ``start_gateway`` with a fake runner; record the order of startup milestones."""
-    from agent import memory_provider
+    from hermes_agent.agent import memory_provider
     from hermes_agent.gateway import lifecycle_ledger as ledger
     from hermes_agent.gateway import run_api, run_runtime
 

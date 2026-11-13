@@ -1,4 +1,4 @@
-"""Usage-anchored context accounting (agent/usage_anchor.py).
+"""Usage-anchored context accounting (hermes_agent/agent/usage_anchor.py).
 
 Context-size checks anchor on the provider-reported ``usage.prompt_tokens``
 of the last main-loop response and estimate ONLY the messages appended
@@ -22,9 +22,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.model_metadata import estimate_messages_tokens_rough
-from agent.turn_context import _preflight_request_tokens
-from agent.usage_anchor import (
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.turn_context import _preflight_request_tokens
+from hermes_agent.agent.usage_anchor import (
     anchored_context_tokens,
     capture_usage_anchor,
     restore_usage_anchor,
@@ -290,7 +290,7 @@ class TestCodexAppServerAnchor:
         }
 
     def test_turn_usage_sets_anchor(self):
-        from agent.codex_runtime import _record_codex_app_server_usage
+        from hermes_agent.agent.codex_runtime import _record_codex_app_server_usage
 
         messages = _history_with_images(10)
         agent = self._agent()
@@ -311,7 +311,7 @@ class TestCodexAppServerAnchor:
         assert 12_000 < got < 12_200
 
     def test_usage_less_turn_keeps_previous_anchor(self):
-        from agent.codex_runtime import _record_codex_app_server_usage
+        from hermes_agent.agent.codex_runtime import _record_codex_app_server_usage
 
         messages = _history_with_images(2)
         prior = capture_usage_anchor(9_000, 50, messages)

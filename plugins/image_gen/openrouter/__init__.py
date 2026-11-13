@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.image_gen_provider import (
+from hermes_agent.agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO, ImageGenProvider, error_response, resolve_aspect_ratio, save_b64_image,
     save_url_image, success_response)
 from plugins.image_gen._common import error_factory, load_image_gen_config, post_json, record_token_usage
@@ -185,7 +185,7 @@ def _to_image_url_part(ref: str) -> Optional[str]:
     if ref.startswith(("http://", "https://", "data:")):
         return ref
     path = Path(ref)
-    from agent.file_safety import raise_if_read_blocked  # credential-read guard before inlining
+    from hermes_agent.agent.file_safety import raise_if_read_blocked  # credential-read guard before inlining
 
     raise_if_read_blocked(ref)
     try:
@@ -275,7 +275,7 @@ def _fetch_catalog(
 def _fetch_image_api_catalog(base_url: str, api_key: str) -> frozenset:
     """Model ids from ``GET {base_url}/images/models``, cached per (base URL, key). Any failure caches
     an empty set (→ chat-completions): guessing "images" would 404 a working chat setup."""
-    from agent.credential_persistence import fingerprint_secret_value
+    from hermes_agent.agent.credential_persistence import fingerprint_secret_value
 
     cache_key = (base_url, fingerprint_secret_value(api_key))
     cached = _CATALOG_CACHE.get(cache_key)

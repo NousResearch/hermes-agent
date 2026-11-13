@@ -247,7 +247,7 @@ class TestTavilyAvailability:
              patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=False), \
              patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
              patch("hermes_agent.tools.web_tools._list_registered_web_providers", return_value=[]), \
-             patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
+             patch("hermes_agent.agent.web_search_registry._keyless_tier_enabled", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             assert _get_backend() == "firecrawl"
 
@@ -266,8 +266,8 @@ class TestTavilyAvailability:
              patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=False), \
              patch("hermes_agent.tools.web_tools.check_firecrawl_api_key", return_value=False), \
              patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("agent.web_search_registry.get_active_search_provider", return_value=None), \
-             patch("agent.web_search_registry.get_active_extract_provider", return_value=None):
+             patch("hermes_agent.agent.web_search_registry.get_active_search_provider", return_value=None), \
+             patch("hermes_agent.agent.web_search_registry.get_active_extract_provider", return_value=None):
             os.environ.pop("TAVILY_API_KEY", None)
             assert check_web_api_key() is True
 
@@ -283,7 +283,7 @@ class TestWebSearchTavily:
     def _populate_web_registry(self):
         self._register_providers()
         yield
-        from agent.web_search_registry import _reset_for_tests
+        from hermes_agent.agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
     def test_search_dispatches_to_tavily(self):
@@ -333,7 +333,7 @@ class TestWebExtractTavily:
     def _populate_web_registry(self):
         self._register_providers()
         yield
-        from agent.web_search_registry import _reset_for_tests
+        from hermes_agent.agent.web_search_registry import _reset_for_tests
         _reset_for_tests()
 
     def test_extract_dispatches_to_tavily(self):

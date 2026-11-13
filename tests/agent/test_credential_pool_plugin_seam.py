@@ -11,7 +11,7 @@ import pytest
 import providers
 from providers.base import ProviderProfile
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     STATUS_DEAD,
     STATUS_EXHAUSTED,
@@ -111,7 +111,7 @@ def test_plugin_refresh_outcome(plugin_profiles, caplog, hook, status, tokens, e
     entry = _entry(expires_at_ms=1)
     pool = CredentialPool("example-oauth", [entry])
     pool._persist()
-    with caplog.at_level(logging.WARNING, logger="agent.credential_pool"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.credential_pool"):
         pool._refresh_entry(entry, force=True)
     row = PooledCredential.from_dict("example-oauth", read_credential_pool("example-oauth")[0])
     assert (row.last_status, row.access_token, row.refresh_token) == (status, *tokens)

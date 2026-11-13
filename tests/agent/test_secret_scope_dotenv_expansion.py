@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 
 
 def test_cron_home_target_resolves_a_dotenv_reference(tmp_path, monkeypatch):

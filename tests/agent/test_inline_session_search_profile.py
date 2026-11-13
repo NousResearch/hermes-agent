@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from hermes_agent.hermes_state import SessionDB
 
 

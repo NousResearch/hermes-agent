@@ -45,7 +45,7 @@ def _anonymous_platform_entry(value: Any) -> dict[str, Any]:
 def redact_status_for_unverified(status: dict[str, Any]) -> None:
     """Reduce the free-text diagnostics of a ``/api/status`` body to bounded codes in place.
     Full detail stays for a caller the auth gate would accept on a gated route."""
-    from agent.monitoring.gateway_health import classify_exit_reason
+    from hermes_agent.agent.monitoring.gateway_health import classify_exit_reason
     status["gateway_platforms"] = {key: _anonymous_platform_entry(value)
                                    for key, value in (status.get("gateway_platforms") or {}).items()}
     reason = status.get("gateway_exit_reason")

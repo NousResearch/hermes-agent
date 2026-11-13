@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import onboarding_record
-from agent.onboarding_flow import End, Facts, Shown
-from agent.onboarding_session import carry_onboarding_toolset, onboarding_prelude, onboarding_toolsets
-from agent.onboarding_text import GREETING
+from hermes_agent.agent import onboarding_record
+from hermes_agent.agent.onboarding_flow import End, Facts, Shown
+from hermes_agent.agent.onboarding_session import carry_onboarding_toolset, onboarding_prelude, onboarding_toolsets
+from hermes_agent.agent.onboarding_text import GREETING
 from hermes_agent.tui_gateway import server, server_requests
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=("blender",))
@@ -27,7 +27,7 @@ def root(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(server, "_hermes_home", str(home))
     monkeypatch.setattr(server, "_db", None)
-    monkeypatch.setattr("agent.onboarding_facts.read_facts", lambda **kw: FACTS)
+    monkeypatch.setattr("hermes_agent.agent.onboarding_facts.read_facts", lambda **kw: FACTS)
     (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-test\n", encoding="utf-8")  # a model to run on
     return home
 
@@ -389,7 +389,7 @@ def test_the_onboarding_facts_are_read_in_the_default_profile(root, client, monk
     monkeypatch.setenv("HERMES_HOME", str(work))  # a backend launched with -p work
     monkeypatch.setitem(server._methods, "prompt.submit", lambda rid, params: {"result": {}})  # launch db is work's
     homes = []
-    monkeypatch.setattr("agent.onboarding_facts.read_facts", lambda **kw: (homes.append(get_hermes_home()), FACTS)[1])
+    monkeypatch.setattr("hermes_agent.agent.onboarding_facts.read_facts", lambda **kw: (homes.append(get_hermes_home()), FACTS)[1])
 
     _call("onboarding.start")
     assert homes == [root]

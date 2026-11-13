@@ -1,8 +1,8 @@
-"""Tests for agent.gemini_schema — OpenAI→Gemini tool parameter translation."""
+"""Tests for hermes_agent.agent.gemini_schema — OpenAI→Gemini tool parameter translation."""
 
 import copy
 
-from agent.gemini_schema import (
+from hermes_agent.agent.gemini_schema import (
     prepare_gemini_tool_parameters,
     sanitize_gemini_schema,
     sanitize_gemini_tool_parameters,
@@ -222,7 +222,7 @@ class TestAdapterWireShape:
         "type": "object", "properties": {"g": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}}}}}]
 
     def test_v1beta_sends_parameters_json_schema_other_versions_send_legacy_subset(self):
-        from agent.gemini_native_adapter import GeminiNativeClient
+        from hermes_agent.agent.gemini_native_adapter import GeminiNativeClient
 
         def decl(base_url):
             client = GeminiNativeClient(api_key="k", base_url=base_url)

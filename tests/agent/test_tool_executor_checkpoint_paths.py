@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.tool_executor import _ToolCallRef, _begin_tool_execution, _ensure_file_checkpoint
-from agent.turn_explainers import TurnExplainersMixin
+from hermes_agent.agent.tool_executor import _ToolCallRef, _begin_tool_execution, _ensure_file_checkpoint
+from hermes_agent.agent.turn_explainers import TurnExplainersMixin
 from hermes_agent.tools.checkpoint_manager import CheckpointManager
 from hermes_agent.tools.terminal_tool import _active_environments, _env_lock
 

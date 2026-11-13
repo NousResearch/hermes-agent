@@ -18,7 +18,7 @@ class TestMinimaxM3StaleCacheGuard:
     def test_m2_cache_not_clobbered(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import agent.model_metadata as mm
+        import hermes_agent.agent.model_metadata as mm
         importlib.reload(mm)
         base = "https://api.minimaxi.com/anthropic"
         # 204,800 is the CORRECT value for M2.x — guard must not touch it.
@@ -41,7 +41,7 @@ class TestMinimaxThinkingSupport:
     """
 
     def test_minimax_m27_gets_manual_thinking(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="MiniMax-M2.7",
             messages=[{"role": "user", "content": "hello"}],
@@ -75,8 +75,8 @@ class TestMinimaxBetaHeaders:
 
     def _build_and_get_betas(self, api_key, base_url=None):
         """Build client, return the anthropic-beta header string."""
-        from agent.anthropic_adapter import build_anthropic_client
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_client
+        with patch("hermes_agent.agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(api_key, base_url=base_url)
             kwargs = mock_sdk.Anthropic.call_args[1]
             headers = kwargs.get("default_headers", {})
@@ -139,7 +139,7 @@ class TestMinimaxPreserveDots:
     def test_minimax_provider_preserves_dots(self):
         from types import SimpleNamespace
         agent = SimpleNamespace(provider="minimax", base_url="")
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is True
 
 
@@ -151,7 +151,7 @@ class TestMinimaxPreserveDots:
 
 
     def test_normalize_preserves_m25_free_dot(self):
-        from agent.anthropic_message_convert import normalize_model_name
+        from hermes_agent.agent.anthropic_message_convert import normalize_model_name
         assert normalize_model_name("minimax-m2.5-free", preserve_dots=True) == "minimax-m2.5-free"
 
 
@@ -171,8 +171,8 @@ class TestMinimaxSwitchModelCredentialGuard:
         """switch_model() should NOT call resolve_anthropic_token() for MiniMax."""
         from unittest.mock import patch, MagicMock
 
-        with patch("run_agent.AIAgent.__init__", return_value=None):
-            from run_agent import AIAgent
+        with patch("hermes_agent.run_agent.AIAgent.__init__", return_value=None):
+            from hermes_agent.run_agent import AIAgent
             agent = AIAgent.__new__(AIAgent)
             agent.provider = "anthropic"
             agent.model = "claude-sonnet-4"
@@ -187,9 +187,9 @@ class TestMinimaxSwitchModelCredentialGuard:
             agent._anthropic_client = MagicMock()
             agent._fallback_chain = []
 
-        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
-             patch("agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-leaked") as mock_resolve, \
-             patch("agent.anthropic_credentials._is_oauth_token", return_value=False):
+        with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("hermes_agent.agent.anthropic_credentials.resolve_anthropic_token", return_value="sk-ant-leaked") as mock_resolve, \
+             patch("hermes_agent.agent.anthropic_credentials._is_oauth_token", return_value=False):
 
             agent.switch_model(
                 new_model="MiniMax-M2.7",

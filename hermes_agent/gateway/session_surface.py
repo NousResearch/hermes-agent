@@ -55,7 +55,7 @@ def restore_surface(committed):
 
 
 def _hud_note(committed, valid_tool_names):
-    from agent.prompt_builder import hud_surface_note
+    from hermes_agent.agent.prompt_builder import hud_surface_note
     return hud_surface_note(valid_tool_names)
 
 

@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 from hermes_agent.hermes_state import SessionDB
 
 _HYGIENE_TIMEOUT_ERROR = (
@@ -21,7 +21,7 @@ _HYGIENE_TURNHOLD_ERROR = (
 
 def _bound_compressor(db: SessionDB, session_id: str) -> ContextCompressor:
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         compressor = ContextCompressor(

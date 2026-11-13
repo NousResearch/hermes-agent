@@ -994,12 +994,12 @@ _LOG_CHROME = re.compile(r"[─━═╭╮╰╯│┃┌┐└┘]+|☤\s*Herm
 
 def _exit_summary_marker() -> str:
     """The CLI exit-summary header (``cli_session_mixin.show_exit_summary``), in the active language."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     return t("cli.session.exit_resume_hint")
 
 
 def _log_noise_prefixes() -> tuple[str, ...]:
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
@@ -2576,7 +2576,7 @@ def _worker_profile_scope(hermes_home: str):
     env-over-``.env`` precedence (``launch_secret_scope``) so systemd / ``op run`` injection still
     resolves for a standalone dispatcher.
     """
-    from agent.runtime_scope import bind_profile_scope
+    from hermes_agent.agent.runtime_scope import bind_profile_scope
     with bind_profile_scope(hermes_home, hydrate_secrets=False):
         yield
 
@@ -2709,7 +2709,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_cli.kanban_worker_env import worker_client_env
     from hermes_agent.tools.environments.local import _is_routed_home, build_subprocess_env
 
@@ -2798,7 +2798,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env["HERMES_PROFILE"] = profile_arg
     # This is the grant boundary: the dispatcher assigned this new worker's task. HERMES_TUI: older
     # hermes builds on PATH predate `--cli`'s precedence.
-    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    from hermes_agent.agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     env.pop(DELEGATED_CHILD_ENV_MARKER, None)
     env.pop("HERMES_TUI", None)
 

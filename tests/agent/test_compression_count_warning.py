@@ -20,7 +20,7 @@ from hermes_agent.hermes_state import SessionDB
 
 def _build_agent_with_db(db: SessionDB, session_id: str, compression_count: int):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -57,7 +57,7 @@ def test_repeated_compression_warning_reaches_status_callback_as_warning(tmp_pat
     # compression_count == 2 → the "compressed N times" warning should fire.
     agent = _build_agent_with_db(db, sid, compression_count=2)
 
-    from agent.conversation_compression import compaction_status_kind
+    from hermes_agent.agent.conversation_compression import compaction_status_kind
 
     emitted: list[tuple[str, str]] = []
     agent.status_callback = lambda kind, message=None: emitted.append((kind, message))

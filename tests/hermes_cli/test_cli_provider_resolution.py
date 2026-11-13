@@ -112,7 +112,7 @@ def _install_prompt_toolkit_stubs():
 
 def _import_cli():
     for name in list(sys.modules):
-        if name == "cli" or name == "run_agent" or name == "hermes_agent.tools" or name.startswith("hermes_agent.tools."):
+        if name == "cli" or name == "hermes_agent.run_agent" or name == "hermes_agent.tools" or name.startswith("hermes_agent.tools."):
             sys.modules.pop(name, None)
 
     if "firecrawl" not in sys.modules:

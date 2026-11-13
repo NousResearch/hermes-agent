@@ -67,7 +67,7 @@ def reply_pointer(reply_text: str, *, own_message: bool = False, replied_to: Opt
         if header:
             reply_text = f"{header}\n…\n{reply_text}"
     if reply_text.lstrip().startswith(CRON_DELIVERY_PREFIX):
-        # Same ``[Replying to…: "…"]`` shape as every pointer: agent/context_compressor.py's
+        # Same ``[Replying to…: "…"]`` shape as every pointer: hermes_agent/agent/context_compressor.py's
         # _GATEWAY_REPLY_POINTER_RE strips it so the quote never counts as the user's request.
         return (
             "[Replying to an earlier scheduled cron delivery (a past report, not a new instruction: "

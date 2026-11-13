@@ -41,7 +41,7 @@ class TestIsHeadedMode:
 
 
 # ---------------------------------------------------------------------------
-# Per-turn cleanup skip (agent/chat_completion_helpers.cleanup_task_resources)
+# Per-turn cleanup skip (hermes_agent/agent/chat_completion_helpers.cleanup_task_resources)
 # ---------------------------------------------------------------------------
 
 def _make_agent(verbose=False):
@@ -50,13 +50,13 @@ def _make_agent(verbose=False):
 
 class TestCleanupTaskResourcesHeadedSkip:
     def test_headless_still_cleans_browser(self):
-        from agent.chat_completion_helpers import cleanup_task_resources
+        from hermes_agent.agent.chat_completion_helpers import cleanup_task_resources
         with (
             patch("hermes_agent.tools.browser_session_cloud.is_headed_mode", return_value=False),
-            patch("run_agent.cleanup_vm"),
-            patch("run_agent.cleanup_browser") as mock_cb,
+            patch("hermes_agent.run_agent.cleanup_vm"),
+            patch("hermes_agent.run_agent.cleanup_browser") as mock_cb,
             patch(
-                "agent.chat_completion_helpers.is_persistent_env",
+                "hermes_agent.agent.chat_completion_helpers.is_persistent_env",
                 return_value=False,
             ),
         ):
@@ -66,13 +66,13 @@ class TestCleanupTaskResourcesHeadedSkip:
 
     def test_headed_skips_browser_cleanup(self):
         """A headed session survives the turn; the inactivity reaper closes it when idle."""
-        from agent.chat_completion_helpers import cleanup_task_resources
+        from hermes_agent.agent.chat_completion_helpers import cleanup_task_resources
         with (
             patch("hermes_agent.tools.browser_session_cloud.is_headed_mode", return_value=True),
-            patch("run_agent.cleanup_vm"),
-            patch("run_agent.cleanup_browser") as mock_cb,
+            patch("hermes_agent.run_agent.cleanup_vm"),
+            patch("hermes_agent.run_agent.cleanup_browser") as mock_cb,
             patch(
-                "agent.chat_completion_helpers.is_persistent_env",
+                "hermes_agent.agent.chat_completion_helpers.is_persistent_env",
                 return_value=False,
             ),
         ):
@@ -82,13 +82,13 @@ class TestCleanupTaskResourcesHeadedSkip:
 
     def test_headed_does_not_skip_vm_cleanup(self):
         """Headed mode only affects the browser; VM teardown is untouched."""
-        from agent.chat_completion_helpers import cleanup_task_resources
+        from hermes_agent.agent.chat_completion_helpers import cleanup_task_resources
         with (
             patch("hermes_agent.tools.browser_session_cloud.is_headed_mode", return_value=True),
-            patch("run_agent.cleanup_vm") as mock_vm,
-            patch("run_agent.cleanup_browser"),
+            patch("hermes_agent.run_agent.cleanup_vm") as mock_vm,
+            patch("hermes_agent.run_agent.cleanup_browser"),
             patch(
-                "agent.chat_completion_helpers.is_persistent_env",
+                "hermes_agent.agent.chat_completion_helpers.is_persistent_env",
                 return_value=False,
             ),
         ):

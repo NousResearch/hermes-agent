@@ -6,7 +6,7 @@ re-wrote the skills index on every first call. These tests pin where the breakpo
 that the request still carries the same bytes.
 """
 
-from agent.prompt_caching import apply_anthropic_cache_control, strip_anthropic_cache_control
+from hermes_agent.agent.prompt_caching import apply_anthropic_cache_control, strip_anthropic_cache_control
 
 STATIC = "You are Hermes.\n"
 SESSION = STATIC + "## Skills\n- alpha: does a thing\n"
@@ -65,7 +65,7 @@ def test_strip_keeps_a_three_part_system_message_the_planner_did_not_split():
 
 
 def test_three_part_failover_rewrite_keeps_the_unchanged_parts():
-    from agent.conversation_loop import _rewrite_system_content_blocks
+    from hermes_agent.agent.conversation_loop import _rewrite_system_content_blocks
 
     parts = [{"type": "text", "text": x, "cache_control": {"type": "ephemeral"}} for x in ["core", "skills", "old tail"]]
     assert _rewrite_system_content_blocks({"role": "system", "content": parts}, "coreskillsnew tail")
@@ -81,7 +81,7 @@ def test_real_agent_keeps_one_split_and_marks_the_session_prompt_on_the_first_ca
     from pathlib import Path
 
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     from tests.agent.test_prompt_cache_prefix_contract import _prefix_breaks
     from tests.e2e.core.history._helpers import NO_BACKGROUND_REVIEW, OFFLINE_CONFIG
     from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall, write_hermes_home

@@ -106,7 +106,7 @@ class TestBuildSessionContextPrompt:
         never borrow the ambient env token (another profile's). Pre-fix the
         ``except Exception -> os.environ`` tail returned True here."""
         from unittest.mock import patch
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
         from hermes_agent.gateway.session import _slack_tools_loaded
 
         class _ExplodingScope(dict):

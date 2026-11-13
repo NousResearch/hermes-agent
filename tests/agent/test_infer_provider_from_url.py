@@ -6,7 +6,7 @@ headers, pricing identity and stale-route detection, so a lookalike host must st
 
 import pytest
 
-from agent.model_metadata import _infer_provider_from_url
+from hermes_agent.agent.model_metadata import _infer_provider_from_url
 
 
 @pytest.mark.parametrize("url, expected", [

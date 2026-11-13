@@ -7,7 +7,7 @@ backend's manager session or lock. Inside the context a backend with its own ``f
 item re-read, so the origins checked and the secret resolved come from one snapshot.
 
 A plugin backend's failure arrives as ``PluginBackendError`` (fixed text, see
-``agent/vault_backends/plugin.py``) and becomes a typed refusal; built-in backends behave as before.
+``hermes_agent/agent/vault_backends/plugin.py``) and becomes a typed refusal; built-in backends behave as before.
 """
 import json
 from functools import wraps
@@ -18,7 +18,7 @@ def plugin_errors_as_refusal(fn):
     becomes the ``backend_unavailable`` refusal."""
     @wraps(fn)
     def wrapped(*args, **kwargs):
-        from agent.vault_backends.plugin import PluginBackendError
+        from hermes_agent.agent.vault_backends.plugin import PluginBackendError
 
         try:
             return fn(*args, **kwargs)
@@ -36,7 +36,7 @@ def snapshot_refusal(backend, handle, meta, page_origin):
     """Inside ``fill_context``: ``None`` when the item still binds ``page_origin``, else the refusal.
     Only a backend with its own context is re-read (the built-in managers' metadata read is a full
     listing, and their default context freezes nothing)."""
-    from agent.vault_backends.base import LoginBackend
+    from hermes_agent.agent.vault_backends.base import LoginBackend
 
     if type(backend).fill_context is LoginBackend.fill_context:
         return None
@@ -52,7 +52,7 @@ def write_backend_code(backend, handle, meta, origin, write):
     """Mint the backend's one-time code for ``handle`` and ``write`` it, both inside ``fill_context``, as a
     password fill is. The caller has already checked ``origin`` against ``meta``. ``None`` when the backend
     has no code (or failed to give one): the caller asks the user."""
-    from agent.vault_backends.plugin import PluginBackendError
+    from hermes_agent.agent.vault_backends.plugin import PluginBackendError
 
     written = None
     try:

@@ -296,7 +296,7 @@ class TestPreToolCallBlocking:
             return json.dumps({"ok": True})
 
         monkeypatch.setattr(
-            "agent.relay_runtime.apply_tool_request_intercepts",
+            "hermes_agent.agent.relay_runtime.apply_tool_request_intercepts",
             rewrite,
         )
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)

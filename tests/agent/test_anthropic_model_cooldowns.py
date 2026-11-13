@@ -1,6 +1,6 @@
 """A generic Anthropic 429 benches only the model that was rate-limited (#111769, #61451).
 
-Real ``agent.credential_pool`` against a real temp auth store: one API-key credential,
+Real ``hermes_agent.agent.credential_pool`` against a real temp auth store: one API-key credential,
 one ``mark_exhausted_and_rotate(status_code=429, model=A)``.
 """
 import json
@@ -28,13 +28,13 @@ def pool(tmp_path, monkeypatch):
         "id": "seat", "label": "seat", "auth_type": "api_key", "priority": 0,
         "source": "manual", "access_token": KEY,
     }]}}))
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     return load_pool("anthropic")
 
 
 def test_generic_429_benches_only_the_rate_limited_model(pool, monkeypatch):
-    from agent.anthropic_credentials import resolve_anthropic_token
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token
+    from hermes_agent.agent.credential_pool import load_pool
 
     ctx = {"message": "This request would exceed your account's rate limit. Please try again later."}
     assert pool.mark_exhausted_and_rotate(
@@ -60,7 +60,7 @@ def test_generic_429_benches_only_the_rate_limited_model(pool, monkeypatch):
 
 @pytest.mark.parametrize("status_code, failure_reason", [(401, None), (402, "billing"), (429, "billing")])
 def test_auth_and_billing_failures_stay_credential_wide(pool, status_code, failure_reason):
-    from agent.credential_pool import STATUS_EXHAUSTED
+    from hermes_agent.agent.credential_pool import STATUS_EXHAUSTED
 
     pool.mark_exhausted_and_rotate(
         status_code=status_code, api_key_hint=KEY, failure_reason=failure_reason, model=MODEL_A,

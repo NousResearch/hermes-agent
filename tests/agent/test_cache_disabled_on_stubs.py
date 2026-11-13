@@ -31,7 +31,7 @@ class TestPromptCachingDisabledFromConfig:
         Unknown values keep caching enabled (default TTL), exactly like the
         historical inline detection in agent_init (#76085 drift guard).
         """
-        from agent.agent_runtime_helpers import cache_ttl_means_disabled
+        from hermes_agent.agent.agent_runtime_helpers import cache_ttl_means_disabled
 
         for ttl in (False, None, "off", "false", "disabled", "no", "none", "OFF"):
             assert cache_ttl_means_disabled(ttl) is True, ttl
@@ -41,7 +41,7 @@ class TestPromptCachingDisabledFromConfig:
 
 class TestPlanCacheSectionsHonorsDisable:
     def test_explicit_cache_disabled_strips_markers(self):
-        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -70,7 +70,7 @@ class TestPlanCacheSectionsHonorsDisable:
         assert not _has_cache_control(out_tools)
 
     def test_config_off_without_explicit_flag(self):
-        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -92,7 +92,7 @@ class TestPlanCacheSectionsHonorsDisable:
         assert out_tools is None or not _has_cache_control(out_tools)
 
     def test_enabled_still_adds_markers_on_native_anthropic(self):
-        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -121,7 +121,7 @@ class TestPlanCacheSectionsHonorsDisable:
 
 class TestMoASlotDecorationHonorsDisable:
     def test_maybe_apply_skips_markers_when_disabled(self):
-        from agent.moa_loop import _maybe_apply_moa_cache_control
+        from hermes_agent.agent.moa_loop import _maybe_apply_moa_cache_control
 
         messages = [
             {"role": "system", "content": "sys"},
@@ -143,7 +143,7 @@ class TestMoASlotDecorationHonorsDisable:
         assert not _has_cache_control(messages)
 
     def test_maybe_apply_config_off(self):
-        from agent.moa_loop import _maybe_apply_moa_cache_control
+        from hermes_agent.agent.moa_loop import _maybe_apply_moa_cache_control
 
         messages = [
             {"role": "system", "content": "sys"},
@@ -173,7 +173,7 @@ class TestPreparedAggregatorNoAgentConfigOff:
     def test_prepared_aggregator_without_agent_honors_config_off(self):
         import copy
 
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         calls = []
         with (
@@ -262,7 +262,7 @@ class TestOneShotSynthesisAgentDisable:
     """
 
     def test_synthesis_untouched_when_agent_disables_cache(self):
-        from agent import moa_loop
+        from hermes_agent.agent import moa_loop
 
         calls = []
         with (
@@ -317,7 +317,7 @@ class TestOneShotSynthesisAgentDisable:
 
 class TestAdvisorRuntimeDisable:
     def test_maybe_apply_honors_runtime_cache_disabled_snapshot(self):
-        from agent.moa_loop import _maybe_apply_moa_cache_control
+        from hermes_agent.agent.moa_loop import _maybe_apply_moa_cache_control
 
         messages = [
             {"role": "system", "content": "advisor"},

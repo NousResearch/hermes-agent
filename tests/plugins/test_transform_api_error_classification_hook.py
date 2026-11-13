@@ -1,6 +1,6 @@
 """Tests for the ``transform_api_error_classification`` plugin hook.
 
-Covers the seam in ``agent.error_classifier.classify_api_error`` (step 0,
+Covers the seam in ``hermes_agent.agent.error_classifier.classify_api_error`` (step 0,
 consulted before the built-in pipeline) and the sanitization contract of
 ``hermes_cli.plugins.get_plugin_error_classification``.
 
@@ -18,7 +18,7 @@ import importlib.util
 import logging
 
 import hermes_cli.plugins as plugins_mod
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 
 class _FakeAPIError(Exception):

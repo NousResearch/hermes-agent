@@ -4,8 +4,8 @@ the same 1M window, on the Claude API and on Bedrock."""
 
 import pytest
 
-from agent.bedrock_adapter import get_bedrock_context_length
-from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+from hermes_agent.agent.bedrock_adapter import get_bedrock_context_length
+from hermes_agent.agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
 
 
 @pytest.mark.parametrize("mythos", ["claude-mythos-5-2", "claude-mythos-5-1", "claude-mythos-5", "anthropic/claude-mythos-5.2"])

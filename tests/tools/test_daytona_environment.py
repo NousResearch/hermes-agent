@@ -135,7 +135,7 @@ def served_profile(tmp_path, monkeypatch):
 
 class TestCredentials:
     def test_served_profile_uses_its_own_key_not_the_launch_key(self, make_env, daytona_sdk, served_profile):
-        from agent.runtime_scope import bind_profile_scope
+        from hermes_agent.agent.runtime_scope import bind_profile_scope
 
         with bind_profile_scope(served_profile("DAYTONA_API_KEY=dtn-profile-key\n")):
             make_env()
@@ -145,7 +145,7 @@ class TestCredentials:
     @pytest.mark.parametrize("dotenv", ["OTHER=1\n", "DAYTONA_API_KEY=\n"], ids=["absent", "empty"])
     def test_served_profile_without_a_key_never_borrows_the_launch_key(self, make_env, daytona_sdk,
                                                                         served_profile, dotenv):
-        from agent.runtime_scope import bind_profile_scope
+        from hermes_agent.agent.runtime_scope import bind_profile_scope
 
         with bind_profile_scope(served_profile(dotenv)), pytest.raises(ValueError, match="DAYTONA_API_KEY"):
             make_env()

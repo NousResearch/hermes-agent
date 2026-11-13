@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from agent.browser_provider import BrowserProvider
-from agent.ssl_verify import requests_verify
+from hermes_agent.agent.browser_provider import BrowserProvider
+from hermes_agent.agent.ssl_verify import requests_verify
 
 _CLOSE_OK = {200, 201, 204}
 

@@ -16,11 +16,11 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 
-from agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
-from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
+from hermes_agent.agent.context_compressor import SUMMARY_PREFIX, _DB_PERSISTED_MARKER
+from hermes_agent.agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
-import run_agent
+from hermes_agent.run_agent import AIAgent
+from hermes_agent import run_agent
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ def _no_compression_sleep(monkeypatch):
     """
     import time as _time
     monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
-    from agent import retry_utils as _retry_utils
+    from hermes_agent.agent import retry_utils as _retry_utils
     monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
 
 
@@ -84,7 +84,7 @@ def _new_test_agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",
@@ -370,7 +370,7 @@ class TestHTTP413Compression:
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
-            patch("agent.model_metadata.save_context_length") as mock_save,
+            patch("hermes_agent.agent.model_metadata.save_context_length") as mock_save,
         ):
             mock_compress.return_value = (
                 [{"role": "user", "content": "compressed summary"}],
@@ -472,7 +472,7 @@ class TestPreflightCompression:
         with (
             patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
             patch.object(agent, "_build_system_prompt", return_value="new system prompt") as build_prompt,
-            patch("agent.conversation_compression.estimate_request_tokens_rough", return_value=42),
+            patch("hermes_agent.agent.conversation_compression.estimate_request_tokens_rough", return_value=42),
         ):
             compressed, new_system_prompt = agent._compress_context(
                 [{"role": "user", "content": "hello"}],
@@ -503,7 +503,7 @@ class TestPreflightCompression:
         """The compacting status must land BEFORE the first-attempt feasibility probe (live catalog /
         provider lookups): a slow probe otherwise leaves the Desktop working row on a bare spinner with no
         \"Summarizing thread\" label (#111294). The probe's hard rejection still retires the phase."""
-        import agent.conversation_compression as cc
+        import hermes_agent.agent.conversation_compression as cc
 
         agent.compression_enabled = True
         agent._compression_feasibility_checked = False
@@ -519,7 +519,7 @@ class TestPreflightCompression:
                          side_effect=lambda a: events.append(("probe", "feasibility"))),
             patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
             patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
-            patch("agent.conversation_compression.estimate_request_tokens_rough", return_value=42),
+            patch("hermes_agent.agent.conversation_compression.estimate_request_tokens_rough", return_value=42),
         ):
             agent._compress_context([{"role": "user", "content": "hello"}], "system prompt", approx_tokens=1234)
 
@@ -679,10 +679,10 @@ class TestPreflightCompression:
         with (
             # Keep the turn-prologue preflight quiet-by-size so only the
             # in-loop pre-API pressure gate fires.
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=10_000),
-            patch("agent.model_metadata.estimate_request_tokens_rough", return_value=144_669),
+            patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=10_000),
+            patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=144_669),
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_messages_tokens_rough",
                 return_value=144_669,
             ),
             patch.object(
@@ -781,8 +781,8 @@ class TestPreflightCompression:
             return 114_000 if _rough_calls["n"] == 1 else 40_000
 
         with (
-            patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
-            patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_rough_estimate),
+            patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
+            patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -833,8 +833,8 @@ class TestPreflightCompression:
             return 114_000 if _rough_calls["n"] == 1 else 40_000
 
         with (
-            patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
-            patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_rough_estimate),
+            patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
+            patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -872,8 +872,8 @@ class TestPreflightCompression:
         ]
 
         with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=125_000),
-            patch("agent.model_metadata.estimate_request_tokens_rough", return_value=125_000),
+            patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=125_000),
+            patch("hermes_agent.agent.model_metadata.estimate_request_tokens_rough", return_value=125_000),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -986,15 +986,15 @@ class TestPreflightCompression:
 
         with (
             patch(
-                "agent.turn_context.estimate_request_tokens_rough",
+                "hermes_agent.agent.turn_context.estimate_request_tokens_rough",
                 return_value=144_669,
             ),
             patch(
-                "agent.model_metadata.estimate_request_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_request_tokens_rough",
                 return_value=144_669,
             ),
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_messages_tokens_rough",
                 return_value=144_669,
             ),
             patch.object(
@@ -1057,11 +1057,11 @@ class TestPreflightCompression:
 
         with (
             patch(
-                "agent.turn_context.estimate_request_tokens_rough",
+                "hermes_agent.agent.turn_context.estimate_request_tokens_rough",
                 return_value=30_000,
             ),
             patch(
-                "agent.conversation_loop._midturn_request_pressure_tokens",
+                "hermes_agent.agent.conversation_loop._midturn_request_pressure_tokens",
                 side_effect=_request_pressure,
             ),
             patch.object(
@@ -1132,11 +1132,11 @@ class TestPreflightCompression:
 
         with (
             patch(
-                "agent.turn_context.estimate_request_tokens_rough",
+                "hermes_agent.agent.turn_context.estimate_request_tokens_rough",
                 return_value=30_000,
             ),
             patch(
-                "agent.conversation_loop._midturn_request_pressure_tokens",
+                "hermes_agent.agent.conversation_loop._midturn_request_pressure_tokens",
                 side_effect=_request_pressure,
             ),
             patch.object(
@@ -1183,7 +1183,7 @@ class TestPreflightCompression:
             big_history.append({"role": "assistant", "content": f"Response {i} padded text"})
 
         with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
+            patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
             patch.object(agent.context_compressor, "should_compress", return_value=False),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1226,7 +1226,7 @@ class TestPreflightCompression:
             return msgs, agent._cached_system_prompt
 
         with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
+            patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
             patch.object(agent.context_compressor, "should_compress", return_value=True),
             patch.object(agent, "_compress_context", side_effect=_fake_preflight_compress),
             patch.object(agent, "_persist_session"),
@@ -1268,7 +1268,7 @@ class TestPreflightCompression:
             )
 
         with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=1_300_000),
+            patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=1_300_000),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -1298,7 +1298,7 @@ class TestPreflightCompression:
         )
 
         with (
-            patch("agent.turn_context.estimate_request_tokens_rough", return_value=1_300_000),
+            patch("hermes_agent.agent.turn_context.estimate_request_tokens_rough", return_value=1_300_000),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1358,7 +1358,7 @@ class TestPreflightCompression:
         agent.context_compressor.threshold_tokens = 130_000
         # Exercise the idle pass too: it runs before threshold preflight and must honor
         # the same one-response checkpoint latch on a long-idle restored session.
-        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+        from hermes_agent.agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 
         set_usage_anchor(agent, capture_usage_anchor(180_000, 100, history[:1]))
         agent.compression_idle_compact_after_seconds = 1
@@ -1383,7 +1383,7 @@ class TestPreflightCompression:
 
         with (
             patch(
-                "agent.codex_responses_adapter.estimate_native_responses_preflight_tokens",
+                "hermes_agent.agent.codex_responses_adapter.estimate_native_responses_preflight_tokens",
                 return_value=1_300_000,
             ),
             patch.object(agent, "_run_codex_stream", return_value=response) as provider,
@@ -1478,7 +1478,7 @@ class TestToolResultPreflightCompression:
 
         with (
             patch(
-                "agent.model_metadata.estimate_messages_tokens_rough",
+                "hermes_agent.agent.model_metadata.estimate_messages_tokens_rough",
                 side_effect=lambda *_a, **_k: next(assembled_estimates),
             ),
             patch("hermes_agent.model_tools.handle_function_call", return_value="x" * 100_000),

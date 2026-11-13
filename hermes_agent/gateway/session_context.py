@@ -78,9 +78,9 @@ _VAR_MAP = {var.name: var for var in (
 
 
 def _runtime_cwd(func: str, *args: Any) -> None:
-    """Best-effort call of ``agent.runtime_cwd.<func>``; import/runtime failures are ignored."""
+    """Best-effort call of ``hermes_agent.agent.runtime_cwd.<func>``; import/runtime failures are ignored."""
     try:
-        from agent import runtime_cwd
+        from hermes_agent.agent import runtime_cwd
         getattr(runtime_cwd, func)(*args)
     except Exception:
         pass
@@ -92,7 +92,7 @@ def set_current_session_id(session_id: str) -> None:
     get ONLY the task-local write, or they would clobber the parent's id."""
     _SESSION_ID.set(session_id)
     try:
-        from agent.delegation_context import is_delegated_child_context
+        from hermes_agent.agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():
             return
     except Exception:
@@ -269,7 +269,7 @@ def async_delivery_supported() -> bool:
     (``HERMES_KANBAN_TASK``: one-shot subprocesses whose parent disappears after the turn) and
     registered worker processes: a managed worker exits at its turn boundary, so detached work
     it scheduled would be lost (recovered ``unknown``) and its completion queue has no reader."""
-    from agent.runtime_session_store import is_worker_process
+    from hermes_agent.agent.runtime_session_store import is_worker_process
     if os.environ.get("HERMES_KANBAN_TASK") or is_worker_process():
         return False
     value = _SESSION_ASYNC_DELIVERY.get()

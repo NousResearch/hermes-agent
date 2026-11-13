@@ -26,7 +26,7 @@ def _skills_body(prompt: str) -> str:
 def test_skills_prompt_scoped_to_override_not_ambient_home(tmp_path, monkeypatch):
     """An explicit skills_dir_override wins over ambient HERMES_HOME, on a
     bare thread with no override bound."""
-    from agent import prompt_builder
+    from hermes_agent.agent import prompt_builder
 
     # A "default" home WITH skills (the thing that must NOT leak).
     default_home = tmp_path / "default"
@@ -67,7 +67,7 @@ def test_skills_prompt_scoped_to_override_not_ambient_home(tmp_path, monkeypatch
 def test_agent_home_resolves_from_session_db_path(tmp_path):
     """The agent's own home is read from its session_db, independent of any
     ContextVar."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     bot_home = tmp_path / "profiles" / "mybot"
     bot_home.mkdir(parents=True)
@@ -83,7 +83,7 @@ def test_agent_home_resolves_from_session_db_path(tmp_path):
 
 
 def test_agent_home_none_without_session_db():
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     class _Agent:
         _session_db = None
@@ -98,7 +98,7 @@ def test_profile_name_correct_on_bound_profile_session(tmp_path, monkeypatch):
     ``get_hermes_home()/profiles`` as the root would never match and every
     profile would misreport as \"default\". The name must derive from the
     hermes ROOT (get_default_hermes_root)."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     bot_home = tmp_path / "profiles" / "mybot"
     bot_home.mkdir(parents=True)
@@ -110,7 +110,7 @@ def test_profile_name_correct_on_bound_profile_session(tmp_path, monkeypatch):
 
 
 def test_profile_name_default_when_home_is_root(tmp_path, monkeypatch):
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert system_prompt._profile_name_for_home(tmp_path) == "default"
@@ -120,7 +120,7 @@ def test_profile_name_correct_when_ambient_is_another_profile(tmp_path, monkeypa
     """CodeRabbit case: agent belongs to profile A while the ambient home is
     bound to profile B. The root must derive independently of the ambient
     home, so A still resolves as 'mybot' (not 'default', and never 'other')."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     bot_home = tmp_path / "profiles" / "mybot"
     bot_home.mkdir(parents=True)

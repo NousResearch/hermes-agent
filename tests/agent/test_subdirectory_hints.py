@@ -6,9 +6,9 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
-from agent.prompt_builder import drain_truncation_warnings
-from agent.subdirectory_hints import SubdirectoryHintTracker
+from hermes_agent.agent.search_policy import SEARCH_PRUNE_DIR_NAMES
+from hermes_agent.agent.prompt_builder import drain_truncation_warnings
+from hermes_agent.agent.subdirectory_hints import SubdirectoryHintTracker
 
 
 @pytest.fixture
@@ -121,7 +121,7 @@ class TestSubdirectoryHintTracker:
         """Over the ceiling: head AND tail survive, the marker names the file to read_file, and it is logged
         (the old silent tail-chop hid a truncated apps/desktop/AGENTS.md for months)."""
         import logging
-        from agent import subdirectory_hints as sh
+        from hermes_agent.agent import subdirectory_hints as sh
         sub = tmp_path / "bigdir"
         sub.mkdir()
         body = "HEAD-MARKER " + ("x" * (sh._MAX_HINT_CHARS + 5_000)) + " TAIL-MARKER"
@@ -129,7 +129,7 @@ class TestSubdirectoryHintTracker:
 
         tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
         drain_truncation_warnings()
-        with caplog.at_level(logging.WARNING, logger="agent.prompt_builder"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.prompt_builder"):
             result = tracker.check_tool_call("read_file", {"path": str(sub / "file.py")})
         assert result is not None
         assert "HEAD-MARKER" in result and "TAIL-MARKER" in result
@@ -166,7 +166,7 @@ class TestSubdirectoryHintTracker:
         (backend / "AGENTS.md").write_text("Backend-specific instructions", encoding="utf-8")
         import sys
 
-        from agent import subdirectory_hints as sh_mod
+        from hermes_agent.agent import subdirectory_hints as sh_mod
 
         # Patch the module object the hint tracker's helper closes over.
         pb_mod = sys.modules[sh_mod._read_text_with_timeout.__module__]
@@ -183,7 +183,7 @@ class TestSubdirectoryHintTracker:
 
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         start = time.monotonic()
-        with caplog.at_level("WARNING", logger="agent.prompt_builder"):
+        with caplog.at_level("WARNING", logger="hermes_agent.agent.prompt_builder"):
             result = tracker.check_tool_call(
                 "read_file", {"path": str(project / "backend" / "src" / "main.py")}
             )

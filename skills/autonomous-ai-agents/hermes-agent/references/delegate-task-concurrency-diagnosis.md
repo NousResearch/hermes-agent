@@ -20,7 +20,7 @@ which reads `delegation.max_concurrent_children` from `config.yaml`
    max_concurrent_children is {M}. ..."` The model sees this as a failed
    tool call and usually retries with fewer tasks.
 
-2. **Per-turn truncator** — `run_agent.py::AIAgent._cap_delegate_task_calls`
+2. **Per-turn truncator** — `hermes_agent/run_agent.py::AIAgent._cap_delegate_task_calls`
    (~line 5708). If the model emits *multiple separate* `delegate_task`
    tool_calls in a single assistant turn, the count of those calls is
    truncated to `max_children`. Logs as

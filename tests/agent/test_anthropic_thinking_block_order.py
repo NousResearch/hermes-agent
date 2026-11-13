@@ -14,11 +14,11 @@ assistant turn can emit content blocks in an interleaved order::
 Anthropic signs each thinking block against the turn content that precedes it
 at its position.  ``thinking_2`` is signed with ``tool_use_1`` before it.
 
-``AnthropicTransport.normalize_response`` (agent/transports/anthropic.py)
+``AnthropicTransport.normalize_response`` (hermes_agent/agent/transports/anthropic.py)
 splits the turn into two *parallel* lists — ``reasoning_details`` (thinking
 blocks) and ``tool_calls`` (tool_use blocks) — discarding the cross-type
 ordering.  ``run_agent`` stores those as separate fields on the assistant
-message.  On replay, ``_convert_assistant_message`` (agent/anthropic_adapter.py)
+message.  On replay, ``_convert_assistant_message`` (hermes_agent/agent/anthropic_adapter.py)
 rebuilds the content as ``[all thinking][text][all tool_use]``, which reorders
 ``thinking_2`` ahead of ``tool_use_1``.  The signature no longer matches its
 original position, so Anthropic rejects the latest assistant message with the
@@ -35,8 +35,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.transports import get_transport
-from agent.anthropic_message_convert import convert_messages_to_anthropic
+from hermes_agent.agent.transports import get_transport
+from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
 
 
 def _thinking_block(text: str, signature: str) -> SimpleNamespace:
@@ -65,9 +65,9 @@ def _interleaved_response() -> SimpleNamespace:
 def _stored_assistant_message(normalized) -> dict:
     """Reconstruct the OpenAI-style assistant message the way run_agent stores it.
 
-    run_agent.py persists assistant turns as separate fields: content,
+    hermes_agent/run_agent.py persists assistant turns as separate fields: content,
     reasoning_details (from provider_data), and tool_calls.  See
-    run_agent.py L1513-1516 and hermes_agent/hermes_state.py.
+    hermes_agent/run_agent.py L1513-1516 and hermes_agent/hermes_state.py.
     """
     provider_data = normalized.provider_data or {}
     tool_calls = []

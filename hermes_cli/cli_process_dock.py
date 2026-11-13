@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 # A finished process stays on the dock long enough to read its exit line, then
 # leaves; the completion notification in the transcript is the durable record.

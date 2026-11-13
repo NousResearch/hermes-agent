@@ -2,7 +2,7 @@
 
 Tracks wall-clock time the agent spends verifiably blocked on a HUMAN prompt
 (CLI approval prompt, gateway approval round-trip). The concurrent tool batch
-deadline in agent/tool_executor.py excludes this time so a slow human answer
+deadline in hermes_agent/agent/tool_executor.py excludes this time so a slow human answer
 never times a batch out — but ONLY this time. Measuring at the source (rather
 than residency in the authorization gate, which is arbitrary code) is what keeps
 a wedged pre_tool_call plugin or a dead approval client from growing the
@@ -20,7 +20,7 @@ import time
 # ========================================================================= Human-wait accounting (per
 # session) ========================================================================= Tracks the wall-clock
 # time the agent spends verifiably blocked on a HUMAN prompt (CLI approval prompt, gateway approval
-# round-trip). The concurrent tool batch deadline in agent/tool_executor.py excludes this time so a slow
+# round-trip). The concurrent tool batch deadline in hermes_agent/agent/tool_executor.py excludes this time so a slow
 # human answer never times a batch out — but ONLY this time. Measuring human waits at the source (rather
 # than residency in the authorization gate, which is arbitrary code) is what keeps a wedged pre_tool_call
 # plugin or a dead approval client from growing the exclusion 1:1 with wall clock and defeating the deadline
@@ -40,7 +40,7 @@ _human_wait_lock = threading.Lock()
 _human_wait_states: dict[str, _HumanWaitState] = {}
 _HUMAN_WAIT_MAX_SESSIONS = 256
 # Margin added on top of approvals.timeout when clamping a window's contribution (read-side AND close-side) and when
-# bounding the authorization gate's serialization-lock acquire in agent/tool_executor.py. One constant so the clamps
+# bounding the authorization gate's serialization-lock acquire in hermes_agent/agent/tool_executor.py. One constant so the clamps
 # can't drift apart.
 HUMAN_WAIT_MARGIN_S = 60.0
 
@@ -51,12 +51,12 @@ def human_wait_ceiling() -> float:
     prompt join and the gateway poll loop both enforce it), so a window that
     overstays this ceiling is itself wedged and must not keep extending a batch
     deadline. Also the bound on the authorization gate's serialization-lock
-    acquire in agent/tool_executor.py, so the two cannot drift. Never call while
+    acquire in hermes_agent/agent/tool_executor.py, so the two cannot drift. Never call while
     holding ``_human_wait_lock`` — it reads the config cache.
-    ``_get_approval_timeout`` caps at ``agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
+    ``_get_approval_timeout`` caps at ``hermes_agent.agent.deadline.MAX_SAFE_TIMEOUT_S`` so the
     value is always safe for ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``."""
     from hermes_agent.tools import approval_context
-    from agent.deadline import MAX_SAFE_TIMEOUT_S
+    from hermes_agent.agent.deadline import MAX_SAFE_TIMEOUT_S
     return min(MAX_SAFE_TIMEOUT_S, float(approval_context._get_approval_timeout()) + HUMAN_WAIT_MARGIN_S)
 
 

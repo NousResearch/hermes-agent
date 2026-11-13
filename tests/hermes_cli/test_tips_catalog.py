@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent import i18n
-from agent.i18n import t
+from hermes_agent.agent import i18n
+from hermes_agent.agent.i18n import t
 from hermes_cli import tips
 
 

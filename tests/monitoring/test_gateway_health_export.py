@@ -26,7 +26,7 @@ from __future__ import annotations
 
 
 def test_otlp_attrs_redact_strings_and_never_export_profile():
-    from agent.monitoring.otlp_exporter import _span_attrs
+    from hermes_agent.agent.monitoring.otlp_exporter import _span_attrs
 
     attrs = _span_attrs({
         "event": "gateway_health",
@@ -41,7 +41,7 @@ def test_otlp_attrs_redact_strings_and_never_export_profile():
 
 
 def test_resource_attributes_are_allowlisted_and_sanitized():
-    from agent.monitoring.otlp_exporter import _safe_resource_attributes
+    from hermes_agent.agent.monitoring.otlp_exporter import _safe_resource_attributes
 
     attrs = _safe_resource_attributes({
         "service.name": "hermes-gateway",
@@ -66,7 +66,7 @@ def test_resource_attributes_are_allowlisted_and_sanitized():
 
 
 def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
-    from agent.monitoring.gateway_health_export import _diagnostic_log_attributes
+    from hermes_agent.agent.monitoring.gateway_health_export import _diagnostic_log_attributes
 
     attrs = _diagnostic_log_attributes({
         "event": "gateway_diagnostic",
@@ -109,7 +109,7 @@ def test_gateway_health_metrics_reach_loopback_collector():
 
     pytest.importorskip("opentelemetry.sdk.metrics", reason="otlp extra not installed")
     from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
-    from agent.monitoring.gateway_health_export import start_gateway_health_export
+    from hermes_agent.agent.monitoring.gateway_health_export import start_gateway_health_export
 
     received = []
     delivered = threading.Event()
@@ -155,8 +155,8 @@ def test_gateway_health_metrics_reach_loopback_collector():
 
 
 def test_start_gateway_health_export_reports_otlp_unavailable_when_sdk_missing(monkeypatch):
-    import agent.monitoring.gateway_health_export as gw
-    from agent.monitoring.otlp_exporter import OTLPUnavailable
+    import hermes_agent.agent.monitoring.gateway_health_export as gw
+    from hermes_agent.agent.monitoring.otlp_exporter import OTLPUnavailable
 
     config = {
         "monitoring": {
@@ -182,7 +182,7 @@ def test_install_id_persists_across_calls(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text("{}\n")
 
     import hermes_cli.config as cfg_mod
-    from agent.monitoring.policy import ensure_install_id
+    from hermes_agent.agent.monitoring.policy import ensure_install_id
 
     first = ensure_install_id(cfg_mod.load_config())
     assert first and first != "unknown"

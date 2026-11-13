@@ -45,10 +45,10 @@ def _restore_modules(saved):
 
 def _fresh_run_agent(hermes_home):
     for mod in list(sys.modules):
-        if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("hermes_agent.tools.") or mod.startswith("hermes_"):
+        if mod == "hermes_agent.run_agent" or mod.startswith("hermes_agent.agent.") or mod.startswith("hermes_agent.tools.") or mod.startswith("hermes_"):
             del sys.modules[mod]
-    import run_agent
-    return sys.modules["run_agent"]
+    import hermes_agent.run_agent as run_agent  # noqa: PLR0402
+    return sys.modules["hermes_agent.run_agent"]
 
 
 

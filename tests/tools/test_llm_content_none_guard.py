@@ -12,7 +12,7 @@ when content is empty.
 
 import types
 
-from agent.auxiliary_client import extract_content_or_reasoning
+from hermes_agent.agent.auxiliary_client import extract_content_or_reasoning
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -31,7 +31,7 @@ def _make_response(content, **msg_attrs):
 # ── extract_content_or_reasoning() ────────────────────────────────────────
 
 class TestExtractContentOrReasoning:
-    """agent/auxiliary_client.py — extract_content_or_reasoning()"""
+    """hermes_agent/agent/auxiliary_client.py — extract_content_or_reasoning()"""
 
     def test_normal_content_returned(self):
         response = _make_response("  Hello world  ")

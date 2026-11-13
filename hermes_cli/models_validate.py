@@ -455,7 +455,7 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     Returns None (fall through) when the catalog is empty."""
     catalog = _static_catalog(req.normalized)
     if req.normalized == "openai-codex":
-        from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
+        from hermes_agent.agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
 
         # Ineligible ``-900k`` aliases must be rejected BEFORE the hidden-slug soft-accept:
         # the suffix is a Hermes picker convention, so an unknown `*-900k` can never be a real
@@ -678,7 +678,7 @@ def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:
     """Bedrock's runtime URL has no /models; discovery goes through the AWS control plane
     (ListFoundationModels + ListInferenceProfiles). Any failure falls through (None)."""
     try:
-        from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_runtime_region
+        from hermes_agent.agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_runtime_region
 
         region = resolve_bedrock_runtime_region()
         discovered_ids = {m["id"] for m in discover_bedrock_models(region)}

@@ -4,7 +4,7 @@ Class-closure follow-up to the profile secret-scope cluster (#76462). Memory,
 image_gen, and browser plugins, plus a handful of tier-3 tool helpers, read
 credentials straight from ``os.environ``. Under a multiplexed gateway the
 process environment may hold ANOTHER profile's key (or none), so every
-credential read must route through ``agent.secret_scope.get_secret`` and honor
+credential read must route through ``hermes_agent.agent.secret_scope.get_secret`` and honor
 its verdict — a scoped miss under multiplexing returns the default and must
 NOT borrow from ``os.environ``.
 
@@ -22,7 +22,7 @@ from typing import Any, Dict
 
 import pytest
 
-from agent.secret_scope import (
+from hermes_agent.agent.secret_scope import (
     reset_secret_scope,
     set_multiplex_active,
     set_secret_scope,

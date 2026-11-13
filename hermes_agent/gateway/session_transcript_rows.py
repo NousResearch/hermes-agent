@@ -2,7 +2,7 @@
 
 - ``'message'``: a display row, exactly as ``session.resume``'s ``display_messages`` projects it.
 - ``'compaction'``: a compaction handoff at its position in the transcript: ``role: 'system'``, ``text``
-  the summary a reader sees (``agent.compaction_display.compaction_summary``: without the preamble, end
+  the summary a reader sees (``hermes_agent.agent.compaction_display.compaction_summary``: without the preamble, end
   marker, re-quoted user messages and recovery footer written for the model), ``compacted_messages`` (how
   many messages it summarized, when the handoff names it), ``timestamp`` and the stored ``row_id``.
 
@@ -44,7 +44,7 @@ def handoff_occurrence(message):
 
 def shown_occurrences(messages):
     """The handoff occurrences among stored *messages* (``transcript_handoff_rows`` candidates)."""
-    from agent.compaction_display import compaction_summary
+    from hermes_agent.agent.compaction_display import compaction_summary
     return {handoff_occurrence(message) for message in messages if compaction_summary(message) is not None}
 
 
@@ -54,7 +54,7 @@ def page_handoffs(db, rows, segments, earlier=None):
     of its message. Each handoff is shown once in the whole transcript, before the first row that holds
     it, wherever the page starts: ``earlier(candidates)`` (stored handoff messages) is the occurrences
     among them a row before *rows* holds."""
-    from agent.compaction_display import compaction_summary
+    from hermes_agent.agent.compaction_display import compaction_summary
     found = db.transcript_handoff_rows([row['_row_id'] for row in rows if type(row.get('_row_id')) is int], segments)
     candidates = [message for messages in found.values() for message in messages]
     seen, out = set(earlier(candidates)) if earlier is not None and candidates else set(), []

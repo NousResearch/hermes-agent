@@ -53,7 +53,7 @@ def test_is_connected_needs_both_credentials(monkeypatch):
 
 
 def test_qqbot_platform_hint_comes_from_its_platform_entry():
-    from agent.system_prompt import _default_platform_hint
+    from hermes_agent.agent.system_prompt import _default_platform_hint
     from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import discover_plugins
 

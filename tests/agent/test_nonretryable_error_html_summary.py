@@ -17,8 +17,8 @@ terminal path is taken, ``result['error']`` is a short, HTML-free summary.
 
 from unittest.mock import MagicMock, patch
 
-import run_agent
-from run_agent import AIAgent
+from hermes_agent import run_agent
+from hermes_agent.run_agent import AIAgent
 
 
 # A representative Cloudflare "managed challenge" body, matching the shape the
@@ -57,7 +57,7 @@ def _make_agent() -> AIAgent:
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",

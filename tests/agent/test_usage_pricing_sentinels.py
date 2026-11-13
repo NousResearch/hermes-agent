@@ -4,8 +4,8 @@ from decimal import Decimal
 
 import pytest
 
-from agent import usage_pricing
-from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+from hermes_agent.agent import usage_pricing
+from hermes_agent.agent.usage_pricing import CanonicalUsage, estimate_usage_cost
 
 _USAGE = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
 

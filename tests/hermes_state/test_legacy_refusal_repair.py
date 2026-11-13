@@ -9,7 +9,7 @@ screen as greyed refused rows, and leaves alone every chat it cannot prove locke
 """
 import json
 
-from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
+from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_legacy_refusal import LEGACY_REFUSAL_REPAIR_DONE
 

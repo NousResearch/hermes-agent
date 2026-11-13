@@ -12,7 +12,7 @@ pytest.importorskip("fastapi")
 from starlette.testclient import TestClient
 
 ROUTES_PLUGIN = '''
-from agent.delegation_provider import DelegationProvider
+from hermes_agent.agent.delegation_provider import DelegationProvider
 
 
 class _Routes(DelegationProvider):
@@ -64,7 +64,7 @@ def homes(tmp_path, monkeypatch):
     empty_bundled.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.tui_gateway import launch_profile_policy as lpp
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr(lpp, "_snapshot", None)

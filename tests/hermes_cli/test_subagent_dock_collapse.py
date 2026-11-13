@@ -2,7 +2,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def test_collapsed_dock_reserves_one_shaded_row_without_changing_editor():

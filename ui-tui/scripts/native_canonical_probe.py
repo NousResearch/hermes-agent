@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from tests.gateway.fixtures.shared_authority_peer import ModelPeer
 from websockets.asyncio.client import connect
-from agent.memory_provider import spawn_context_thread
+from hermes_agent.agent.memory_provider import spawn_context_thread
 
 
 def _peer_class(kind, stopping):

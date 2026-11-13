@@ -230,7 +230,7 @@ def test_cold_nous_entitlement_keeps_models_unselectable(monkeypatch):
 
 def test_prewarm_preserves_context_and_runs_once_per_profile(tmp_path, monkeypatch):
     """Concurrent multiplex profiles retain their own home and secret scope."""
-    from agent.secret_scope import (
+    from hermes_agent.agent.secret_scope import (
         current_secret_scope,
         reset_secret_scope,
         set_secret_scope,

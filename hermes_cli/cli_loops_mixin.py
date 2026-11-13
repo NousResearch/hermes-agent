@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_cli.gateway_client import GatewayClientError
 from rich.markup import escape as _escape
 

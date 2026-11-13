@@ -29,7 +29,7 @@ def _collect_cache_controls(obj):
 
 class TestPlanCacheSectionsThreadsTtlAndPrefix:
     def test_cache_ttl_1h_reaches_markers(self):
-        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -52,7 +52,7 @@ class TestPlanCacheSectionsThreadsTtlAndPrefix:
         )
 
     def test_static_system_prefix_gets_early_breakpoint(self):
-        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
         messages = [
             {"role": "system", "content": "stable prefix\nvolatile suffix"},
@@ -78,7 +78,7 @@ class TestPlanCacheSectionsThreadsTtlAndPrefix:
         assert system_content[1]["text"] == "\nvolatile suffix"
 
     def test_qwen_1h_clamped_to_5m(self):
-        from agent.agent_runtime_helpers import plan_cache_sections_for_destination
+        from hermes_agent.agent.agent_runtime_helpers import plan_cache_sections_for_destination
 
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -103,7 +103,7 @@ class TestPlanCacheSectionsThreadsTtlAndPrefix:
 
 class TestMoACacheControlThreadsTtl:
     def test_moa_decoration_uses_threaded_1h(self):
-        from agent.moa_loop import _maybe_apply_moa_cache_control
+        from hermes_agent.agent.moa_loop import _maybe_apply_moa_cache_control
 
         messages = [
             {"role": "system", "content": "sys"},
@@ -129,7 +129,7 @@ class TestMoACacheControlThreadsTtl:
         assert not _collect_cache_controls(messages)
 
     def test_moa_qwen_1h_clamped_to_5m(self):
-        from agent.moa_loop import _maybe_apply_moa_cache_control
+        from hermes_agent.agent.moa_loop import _maybe_apply_moa_cache_control
 
         messages = [
             {"role": "system", "content": "sys"},
@@ -151,7 +151,7 @@ class TestMoACacheControlThreadsTtl:
         )
 
     def test_moa_decoration_defaults_to_5m_without_ttl(self):
-        from agent.moa_loop import _maybe_apply_moa_cache_control
+        from hermes_agent.agent.moa_loop import _maybe_apply_moa_cache_control
 
         messages = [
             {"role": "system", "content": "sys"},
@@ -177,7 +177,7 @@ class TestAuxFallbackReplanThreadsTtl:
     config key agent_init snapshots into ``agent._cache_ttl``."""
 
     def test_configured_cache_ttl_reads_valid_tiers(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(
             "hermes_cli.config.load_config_readonly",
@@ -191,7 +191,7 @@ class TestAuxFallbackReplanThreadsTtl:
         assert arh.configured_cache_ttl() == "5m"
 
     def test_configured_cache_ttl_none_for_disabled_or_unknown(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         for value in ("off", False, None, "2h"):
             monkeypatch.setattr(
@@ -201,7 +201,7 @@ class TestAuxFallbackReplanThreadsTtl:
             assert arh.configured_cache_ttl() is None, value
 
     def test_replan_threads_configured_ttl_to_markers(self, monkeypatch):
-        from agent import auxiliary_client
+        from hermes_agent.agent import auxiliary_client
 
         monkeypatch.setattr(
             "hermes_cli.config.load_config_readonly",
@@ -232,7 +232,7 @@ class TestAuxFallbackReplanThreadsTtl:
     def test_replan_leaves_one_shot_unmarked_on_caching_route(self, monkeypatch):
         """system + one user turn, no tools: nothing reads the prefix back, so a marker
         would only pay a cache write (2x input at 1h)."""
-        from agent import auxiliary_client
+        from hermes_agent.agent import auxiliary_client
 
         monkeypatch.setattr(
             "hermes_cli.config.load_config_readonly",
@@ -254,7 +254,7 @@ class TestAuxFallbackReplanThreadsTtl:
             assert _collect_cache_controls(out_msgs) == [], destination.provider
         # A caller that decorated its own request (MoA advisor, iteration 1 of a
         # per-iteration fan-out) will replay that prefix: its markers survive the replan.
-        from agent.prompt_caching import apply_anthropic_cache_control
+        from hermes_agent.agent.prompt_caching import apply_anthropic_cache_control
         advisor = apply_anthropic_cache_control(messages, cache_ttl="1h", native_anthropic=True)
         out_msgs, _ = auxiliary_client._replan_synchronous_cache_sections(
             advisor, None, destination=auxiliary_client._FallbackDestination(

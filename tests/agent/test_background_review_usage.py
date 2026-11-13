@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import background_review
+from hermes_agent.agent import background_review
 from hermes_agent.hermes_state import SessionDB
 
 @pytest.fixture
@@ -144,6 +144,6 @@ def test_enabled_config_failure_logs_warning(caplog):
     with patch(
         "hermes_cli.config.load_config_readonly",
         side_effect=RuntimeError("boom"),
-    ), caplog.at_level(logging.WARNING, logger="agent.background_review"):
+    ), caplog.at_level(logging.WARNING, logger="hermes_agent.agent.background_review"):
         assert background_review.load_background_review_settings()[0] is True
     assert any(r.levelno >= logging.WARNING for r in caplog.records)

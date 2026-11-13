@@ -11,7 +11,7 @@ import logging
 from types import SimpleNamespace
 
 def test_primary_client_ignores_stale_auxiliary_router(monkeypatch):
-    from agent import agent_runtime_helpers, auxiliary_client
+    from hermes_agent.agent import agent_runtime_helpers, auxiliary_client
 
     # Model a gateway that cached auxiliary_client before the Codex header
     # helper was added. The fresh runtime helper must use the leaf module rather
@@ -24,7 +24,7 @@ def test_primary_client_ignores_stale_auxiliary_router(monkeypatch):
         captured.update(kwargs)
         return object()
 
-    from agent import process_bootstrap
+    from hermes_agent.agent import process_bootstrap
 
     monkeypatch.setattr(process_bootstrap, "OpenAI", fake_openai)
     monkeypatch.setattr(

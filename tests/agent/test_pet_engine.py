@@ -1,4 +1,4 @@
-"""Tests for the petdex pet engine (agent/pet/*).
+"""Tests for the petdex pet engine (hermes_agent/agent/pet/*).
 
 Behavior/invariant focused — no network, no live manifest. A tiny synthetic
 spritesheet is generated with Pillow so render paths exercise real decode
@@ -11,8 +11,8 @@ import io
 
 import pytest
 
-from agent.pet import constants, render, state, store
-from agent.pet.constants import FRAME_H, FRAME_W, PetState
+from hermes_agent.agent.pet import constants, render, state, store
+from hermes_agent.agent.pet.constants import FRAME_H, FRAME_W, PetState
 
 
 # ─────────────────────────────────────────────────────────────────────────

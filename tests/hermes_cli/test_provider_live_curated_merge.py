@@ -134,7 +134,7 @@ class TestGenericProviderLiveCuratedMerge:
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "", "base_url": ""},
             ),
-            patch("agent.models_dev.list_agentic_models", return_value=["x-preview-f-free", "kimi-k3"]),
+            patch("hermes_agent.agent.models_dev.list_agentic_models", return_value=["x-preview-f-free", "kimi-k3"]),
         ):
             result = provider_model_ids("opencode-zen")
 

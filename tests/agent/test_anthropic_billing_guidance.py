@@ -1,5 +1,5 @@
 """Tests for the Anthropic-subscription branch of
-``agent.conversation_loop._billing_or_entitlement_message``.
+``hermes_agent.agent.conversation_loop._billing_or_entitlement_message``.
 
 Regression context: Anthropic Claude Pro/Max OAuth subscriptions surface
 exhaustion of the metered "extra usage" bucket as a hard HTTP 400
@@ -16,7 +16,7 @@ confirmed verdict keeps the assertive wording.
 """
 from __future__ import annotations
 
-from agent.conversation_loop import _billing_or_entitlement_message
+from hermes_agent.agent.conversation_loop import _billing_or_entitlement_message
 
 
 def test_anthropic_subscription_exhausted_guidance():

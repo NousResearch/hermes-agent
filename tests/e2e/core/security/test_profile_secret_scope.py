@@ -9,7 +9,7 @@ so every request path must bind the REQUESTING profile's scope — never borrow 
 Harness: a fake HOME with two profiles (``default`` = launch home, ``beta`` under ``profiles/``);
 each ``.env`` carries a distinct random canary under the same variable NAME plus the tenancy
 harness canaries (provider key, API-server key, marker). A user dashboard plugin whose API route
-reads that variable through ``agent.secret_scope.get_secret`` is enabled via ``plugins.enabled``,
+reads that variable through ``hermes_agent.agent.secret_scope.get_secret`` is enabled via ``plugins.enabled``,
 and each profile configures a stdio MCP server that dumps the environment it was spawned with and
 is handed exactly one secret (``env: {X: ${SECRET}}``). One real ``hermes serve`` hosts both;
 the Desktop's per-request profile selector is ``?profile=<name>`` (HTTP) / ``session.create

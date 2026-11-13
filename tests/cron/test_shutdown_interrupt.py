@@ -354,9 +354,9 @@ class TestExecutionScopedInterruption:
             "fire_claim": {"by": "replacement-owner"},
         }
         with patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True), \
-             patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
-             patch("agent.secret_scope.reset_secret_scope"), \
+             patch("hermes_agent.agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("hermes_agent.agent.secret_scope.build_profile_secret_scope", return_value={}), \
+             patch("hermes_agent.agent.secret_scope.reset_secret_scope"), \
              patch(
                  "hermes_agent.cron.scheduler.run_job",
                  return_value=(True, "full output", "final response", None),
@@ -429,9 +429,9 @@ class TestBaseExceptionThroughOwnerFencedFlow:
     def _patches(self, run_side_effect):
         return (
             patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True),
-            patch("agent.secret_scope.set_secret_scope", return_value=None),
-            patch("agent.secret_scope.build_profile_secret_scope", return_value={}),
-            patch("agent.secret_scope.reset_secret_scope"),
+            patch("hermes_agent.agent.secret_scope.set_secret_scope", return_value=None),
+            patch("hermes_agent.agent.secret_scope.build_profile_secret_scope", return_value={}),
+            patch("hermes_agent.agent.secret_scope.reset_secret_scope"),
             patch("hermes_agent.cron.scheduler.run_job", side_effect=run_side_effect),
             patch("hermes_agent.cron.scheduler.heartbeat_fire_claim", return_value=True),
         )
@@ -542,9 +542,9 @@ class TestRunOneJobHonoursInterruptedFlag:
         sched._interrupted_job_ids.add(sched._inflight_key(job["id"]))
 
         with patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True), \
-             patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
-             patch("agent.secret_scope.reset_secret_scope"), \
+             patch("hermes_agent.agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("hermes_agent.agent.secret_scope.build_profile_secret_scope", return_value={}), \
+             patch("hermes_agent.agent.secret_scope.reset_secret_scope"), \
              patch(
                  "hermes_agent.cron.scheduler.run_job",
                  return_value=(True, "full output", "final response", None),
@@ -577,9 +577,9 @@ class TestRunOneJobHonoursInterruptedFlag:
         sched._interrupted_job_ids.add(sched._inflight_key(job["id"]))
 
         with patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True), \
-             patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
-             patch("agent.secret_scope.reset_secret_scope"), \
+             patch("hermes_agent.agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("hermes_agent.agent.secret_scope.build_profile_secret_scope", return_value={}), \
+             patch("hermes_agent.agent.secret_scope.reset_secret_scope"), \
              patch(
                  "hermes_agent.cron.scheduler.run_job",
                  return_value=(True, "full output", "a plausible final response", None),
@@ -613,9 +613,9 @@ class TestRunOneJobHonoursInterruptedFlag:
         sched._interrupted_job_ids.add(sched._inflight_key(job["id"]))
 
         with patch("hermes_agent.cron.scheduler.claim_dispatch", return_value=True), \
-             patch("agent.secret_scope.set_secret_scope", return_value=None), \
-             patch("agent.secret_scope.build_profile_secret_scope", return_value={}), \
-             patch("agent.secret_scope.reset_secret_scope"), \
+             patch("hermes_agent.agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("hermes_agent.agent.secret_scope.build_profile_secret_scope", return_value={}), \
+             patch("hermes_agent.agent.secret_scope.reset_secret_scope"), \
              patch("hermes_agent.cron.scheduler.run_job", side_effect=RuntimeError("boom")), \
              patch("hermes_agent.cron.scheduler.mark_job_run") as mock_mark:
             result = sched.run_one_job(job)

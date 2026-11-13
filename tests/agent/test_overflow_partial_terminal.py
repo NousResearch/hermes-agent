@@ -17,7 +17,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 
 
 def _make_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -40,8 +40,8 @@ def _make_stream_chunk(content=None, finish_reason=None):
 
 
 class TestOverflowTerminalStub:
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_partial_stream_overflow_error_returns_terminal_stub(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -71,8 +71,8 @@ class TestOverflowTerminalStub:
         assert response.choices[0].message.content is None
 
 
-    @patch("run_agent.AIAgent._create_request_openai_client")
-    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._create_request_openai_client")
+    @patch("hermes_agent.run_agent.AIAgent._close_request_openai_client")
     def test_payload_too_large_partial_is_not_made_terminal(
         self, _mock_close, mock_create, monkeypatch,
     ):
@@ -124,7 +124,7 @@ class TestRecoverFromTruncationOverflowTerminal:
         )
 
     def test_overflow_terminal_stub_ends_turn_without_continuation(self):
-        from agent.turn_truncation import (
+        from hermes_agent.agent.turn_truncation import (
             _CONTEXT_OVERFLOW_PARTIAL_FINAL,
             recover_from_truncation,
         )

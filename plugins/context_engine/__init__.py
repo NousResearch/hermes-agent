@@ -70,7 +70,7 @@ def load_context_engine(name: str) -> Optional[ContextEngine]:
 
 def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     """Import an engine module and extract its ContextEngine (register(ctx) or subclass)."""
-    from agent.context_engine import ContextEngine
+    from hermes_agent.agent.context_engine import ContextEngine
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
     module_name = f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
@@ -78,7 +78,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     host = None if is_bundled else user_plugin_host()
     if host is not None:
         return host.load_instance(engine_dir, module_name=module_name, capture="register_context_engine",
-                                  base_ref="agent.context_engine:ContextEngine")
+                                  base_ref="hermes_agent.agent.context_engine:ContextEngine")
     mod = _loader.load_plugin_module(
         module_name, engine_dir, parents=(__package__.rpartition(".")[0], __package__), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)

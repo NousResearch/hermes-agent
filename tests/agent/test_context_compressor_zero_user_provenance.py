@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
@@ -15,7 +15,7 @@ from agent.context_compressor import (
     ContextCompressor,
     _NO_USER_TASK_SENTINEL,
 )
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     compress_context,
 )
 from hermes_agent.hermes_state import SessionDB
@@ -87,7 +87,7 @@ def _assistant_turns(start: int, count: int) -> list[dict]:
 
 def _lifecycle_agent(db: SessionDB, session_id: str):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -112,7 +112,7 @@ def _lifecycle_agent(db: SessionDB, session_id: str):
 @pytest.fixture()
 def compressor() -> ContextCompressor:
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         instance = ContextCompressor(
@@ -135,7 +135,7 @@ Vind de bestanden.
 """
 
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         return_value=_response(fabricated),
     ):
         result = compressor._generate_summary(_assistant_tool_turns(0, 2))
@@ -162,7 +162,7 @@ def test_zero_user_provenance_survives_iterative_compaction(compressor):
     assert first_handoffs[0][COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
 
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         resumed = ContextCompressor(
@@ -389,7 +389,7 @@ def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
 
     first_agent = _lifecycle_agent(db, session_id)
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         return_value=_response(_valid_zero_user_summary("First boundary")),
     ):
         first, _ = compress_context(
@@ -422,7 +422,7 @@ def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
 
     second_agent = _lifecycle_agent(db, session_id)
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         return_value=_response(_valid_zero_user_summary("Second boundary")),
     ):
         second, _ = compress_context(

@@ -38,8 +38,8 @@ def test_component_routing_matches_top_level_and_package_logger_names(component,
 
 @pytest.mark.parametrize("package", ["", "hermes_agent."])
 def test_gateway_diagnostics_keep_their_subsystem_under_the_package_name(package, monkeypatch):
-    from agent.monitoring import emitter
-    from agent.monitoring.gateway_health import GatewayDiagnosticLogHandler
+    from hermes_agent.agent.monitoring import emitter
+    from hermes_agent.agent.monitoring.gateway_health import GatewayDiagnosticLogHandler
 
     events = []
     monkeypatch.setattr(emitter, "get_emitter", lambda: type("Sink", (), {"emit": staticmethod(events.append)})())
@@ -55,7 +55,7 @@ def test_gateway_diagnostics_keep_their_subsystem_under_the_package_name(package
 
 @pytest.mark.parametrize("package", ["", "hermes_agent."])
 def test_formatted_lines_print_the_canonical_logger_name(package):
-    from agent.redact import RedactingFormatter
+    from hermes_agent.agent.redact import RedactingFormatter
     from hermes_logging import _LOG_FORMAT, DisplayNameFormatter
 
     record = logging.makeLogRecord({"name": f"{package}gateway.run", "levelname": "INFO", "msg": "started"})

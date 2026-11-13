@@ -64,7 +64,7 @@ def test_third_party_children_never_see_hermes_credentials(child_env, monkeypatc
     probe = _probe_script(child_env / "probe", out, [*_TIER1, _PROVIDER, own, "HOME"])
 
     if site == "lsp_server":
-        from agent.lsp.client import LSPClient
+        from hermes_agent.agent.lsp.client import LSPClient
 
         async def _run():
             client = LSPClient(server_id="probe", workspace_root=str(child_env), command=[str(probe)],
@@ -75,12 +75,12 @@ def test_third_party_children_never_see_hermes_credentials(child_env, monkeypatc
                 task.cancel()
         asyncio.run(_run())
     elif site == "lsp_go_install":
-        from agent.lsp import install
+        from hermes_agent.agent.lsp import install
 
         with patch.object(install.shutil, "which", return_value=str(probe)):
             install._install_go("example.com/probe@latest", "probe")
     elif site == "lsp_npm_install":
-        from agent.lsp import install
+        from hermes_agent.agent.lsp import install
 
         with patch.object(install, "find_node_executable", return_value=str(probe)):
             install._install_npm("probe-language-server", "probe")

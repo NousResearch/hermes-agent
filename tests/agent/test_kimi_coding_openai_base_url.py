@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock
-from agent.agent_runtime_helpers import create_openai_client
+from hermes_agent.agent.agent_runtime_helpers import create_openai_client
 
 
 def _fake_openai_factory(captured_kwargs):
@@ -19,7 +19,7 @@ def test_create_openai_client_normalizes_kimi_coding_base_url(monkeypatch):
     mock_agent._client_log_context.return_value = "test_context"
 
     captured_kwargs = {}
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai_factory(captured_kwargs))
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", _fake_openai_factory(captured_kwargs))
 
     client_kwargs = {
         "api_key": "sk-kimi-test12345",
@@ -39,7 +39,7 @@ def test_create_openai_client_preserves_already_suffixed_kimi_url(monkeypatch):
     mock_agent._client_log_context.return_value = "test_context"
 
     captured_kwargs = {}
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", _fake_openai_factory(captured_kwargs))
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", _fake_openai_factory(captured_kwargs))
 
     client_kwargs = {
         "api_key": "sk-kimi-test12345",

@@ -2,7 +2,7 @@
 
 
 def test_retire_agent_flushes_pending_memory_before_shutdown():
-    from agent.managed_worker import retire_agent
+    from hermes_agent.agent.managed_worker import retire_agent
 
     calls = []
 

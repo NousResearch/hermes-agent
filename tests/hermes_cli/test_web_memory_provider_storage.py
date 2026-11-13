@@ -10,7 +10,7 @@ _INIT = """
 import json
 from pathlib import Path
 
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 _ROOT_KEYS = {"baseUrl"}
 
@@ -181,7 +181,7 @@ def test_storage_provider_without_a_writer_is_a_501_with_no_secret_saved(client)
 
 
 def test_a_provider_that_fails_to_load_is_a_503_not_unknown(client):
-    _install("broken", "from agent.memory_provider import MemoryProvider\nraise RuntimeError('import-time failure')\n",
+    _install("broken", "from hermes_agent.agent.memory_provider import MemoryProvider\nraise RuntimeError('import-time failure')\n",
              _SCHEMA.replace('name="ownprov"', 'name="broken"'))
     assert client.get("/api/memory/providers/broken/config?surface=declared").status_code == 503
 

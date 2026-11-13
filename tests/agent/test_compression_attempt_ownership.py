@@ -25,7 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     _COMPRESSOR_ATTEMPT_GENERATION,
     _claim_compressor_attempt,
     _clear_compression_cancelled_check_if_owner,
@@ -55,7 +55,7 @@ class TestCallerAttemptOwnership:
     def test_newer_entry_generation_without_marker_remains_stale(self):
         """Control for the unclaimed-compressor carve-out: a CLAIMED compressor whose newer claim
         never published a working marker still cancels the older caller."""
-        from agent.auxiliary_client import AuxiliaryExplicitCancellation
+        from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
 
         compressor = _compressor()
         caller_gen = _claim_compressor_attempt(compressor)
@@ -196,7 +196,7 @@ class TestSummaryRoutePinSingleUse:
         import contextvars
 
         def _probe():
-            from agent.context_compressor import (
+            from hermes_agent.agent.context_compressor import (
                 pin_summary_route,
                 take_pinned_summary_route,
             )
@@ -219,7 +219,7 @@ class TestSummaryRoutePinSingleUse:
         import contextvars
 
         def _consume_in_isolated_context():
-            from agent.context_compressor import (
+            from hermes_agent.agent.context_compressor import (
                 pin_summary_route,
                 take_pinned_summary_route,
             )
@@ -231,7 +231,7 @@ class TestSummaryRoutePinSingleUse:
         ctx.run(_consume_in_isolated_context)
 
         # Outer context never saw the pin.
-        from agent.context_compressor import take_pinned_summary_route
+        from hermes_agent.agent.context_compressor import take_pinned_summary_route
 
         assert take_pinned_summary_route() is None
 
@@ -240,7 +240,7 @@ class TestMidRestoreClaimRace:
     """TOCTOU: a claim landing between entry check and write must void the restore."""
 
     def test_claim_during_restore_body_voids_the_write(self, monkeypatch):
-        import agent.conversation_compression as cc
+        import hermes_agent.agent.conversation_compression as cc
 
         compressor = _compressor()
         snapshot = _snapshot_compressor_attempt_state(compressor)
@@ -276,7 +276,7 @@ class TestStaleAttemptEndToEnd:
     ``compress()``, and the stale unwind propagating as a cancellation."""
 
     def _compressor(self):
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
         compressor = ContextCompressor(
             model="test/model", quiet_mode=True,
@@ -305,7 +305,7 @@ class TestStaleAttemptEndToEnd:
     def test_outer_attempt_can_use_never_claimed_inner_compressor(self):
         from unittest.mock import patch
 
-        from agent.conversation_compression import _run_summary_dispatch
+        from hermes_agent.agent.conversation_compression import _run_summary_dispatch
 
         inner = self._compressor()
 
@@ -319,7 +319,7 @@ class TestStaleAttemptEndToEnd:
         generation = _claim_compressor_attempt(engine)
 
         with patch(
-            "agent.context_compressor.call_llm",
+            "hermes_agent.agent.context_compressor.call_llm",
             return_value=self._llm_response("## Goal\ndelegated summary"),
         ):
             compressed = _run_summary_dispatch(
@@ -335,8 +335,8 @@ class TestStaleAttemptEndToEnd:
         import threading
         from unittest.mock import patch
 
-        from agent.auxiliary_client import AuxiliaryExplicitCancellation
-        from agent.conversation_compression import (
+        from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
+        from hermes_agent.agent.conversation_compression import (
             _claim_compressor_attempt,
             _run_summary_dispatch,
         )
@@ -374,7 +374,7 @@ class TestStaleAttemptEndToEnd:
 
         gen1 = _claim_compressor_attempt(cc)
         assert gen1 == 1
-        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=fake_call_llm):
             t = threading.Thread(target=attempt_a, daemon=True)
             thread_a[0] = t
             t.start()
@@ -406,8 +406,8 @@ class TestStaleAttemptEndToEnd:
         import threading
         from unittest.mock import patch
 
-        from agent.auxiliary_client import AuxiliaryExplicitCancellation
-        from agent.conversation_compression import (
+        from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
+        from hermes_agent.agent.conversation_compression import (
             _claim_compressor_attempt,
             _run_summary_dispatch,
         )
@@ -445,7 +445,7 @@ class TestStaleAttemptEndToEnd:
                 a_done.set()
 
         _claim_compressor_attempt(cc)
-        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+        with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=fake_call_llm):
             t = threading.Thread(target=attempt_a, daemon=True)
             thread_a[0] = t
             t.start()

@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import chat_completion_helpers as h
-from agent import chat_completion_local
+from hermes_agent.agent import chat_completion_helpers as h
+from hermes_agent.agent import chat_completion_local
 
 
 @pytest.mark.parametrize("local_loading,heartbeat_race", [(False, False), (True, False), (False, True)])

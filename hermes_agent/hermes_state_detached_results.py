@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from agent.message_metadata import stamp_message_uid
+from hermes_agent.agent.message_metadata import stamp_message_uid
 
 # Rows of a session and of the parents it was compressed from; a detached result's match condition follows.
 _LINEAGE_MATCH_SQL = """WITH RECURSIVE lineage(id) AS (SELECT ? UNION

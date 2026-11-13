@@ -370,7 +370,7 @@ def test_managed_worker_turn_runs_in_its_sessions_workspace(home, tmp_path, monk
 
     frame = {'policy': asdict(policy), 'text': 'hi', 'route': 'agent:main:local:dm:worker-s1',
              'scope': {'session_id': 'worker-s1'}}
-    with policy_scope(policy):  # agent/managed_worker.py: policy_scope(policy), no session key bound
+    with policy_scope(policy):  # hermes_agent/agent/managed_worker.py: policy_scope(policy), no session key bound
         session_kanban.run_worker_turns(Agent(), frame, [])
     assert seen['task_id'] == 'worker-s1'
     assert ':ws:' in seen['plan'][0]

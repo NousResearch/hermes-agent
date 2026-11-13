@@ -28,7 +28,7 @@ _GIT_ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
 
 _PLUGIN = '''
-from agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_backends.base import LoginBackend
 
 
 class Backend(LoginBackend):
@@ -104,7 +104,7 @@ def world(request, tmp_path, monkeypatch):
     managers = []
 
     def load():
-        from agent import vault_backend_registry as registry
+        from hermes_agent.agent import vault_backend_registry as registry
         from hermes_cli.plugins import PluginManager
 
         (home / "config.yaml").write_text("plugins:\n  enabled: [acme-vault]\nvault:\n  acme: {enabled: true}\n")
@@ -176,8 +176,8 @@ def test_verified_entry_installed_with_allow_removed_is_refused(world, caplog):
 
 @pytest.mark.parametrize("source, accepted", [("bundled", True), ("project", False), ("entrypoint", False)])
 def test_bundled_plugins_register_and_project_or_pip_plugins_do_not(tmp_path, source, accepted):
-    from agent import vault_backend_registry as registry
-    from agent.vault_backends.base import LoginBackend
+    from hermes_agent.agent import vault_backend_registry as registry
+    from hermes_agent.agent.vault_backends.base import LoginBackend
     from hermes_cli.plugins import PluginContext, PluginManager
     from hermes_cli.plugins_manifest import PluginManifest
 

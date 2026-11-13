@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-import agent.models_dev as md
+import hermes_agent.agent.models_dev as md
 
 class _Trickle(BaseHTTPRequestHandler):
     def log_message(self, *args):

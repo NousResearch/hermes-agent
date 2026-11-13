@@ -36,7 +36,7 @@ _FORBIDDEN_MODULES = (
     "yaml",
     "argparse",
     "cli",
-    "run_agent",
+    "hermes_agent.run_agent",
     "hermes_agent.model_tools",
     "httpx",
     "openai",

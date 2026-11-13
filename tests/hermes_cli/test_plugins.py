@@ -36,7 +36,7 @@ from hermes_cli.middleware import (
 
 
 def test_portable_data_namespace_is_ascii_safe():
-    from agent.skill_utils import is_valid_namespace
+    from hermes_agent.agent.skill_utils import is_valid_namespace
 
     namespace = _portable_data_namespace("café/portable")
 
@@ -780,7 +780,7 @@ class TestPluginLoading:
         provider_dir = plugins_dir / "mempalace_dup"
         provider_dir.mkdir(parents=True)
         (provider_dir / "__init__.py").write_text(
-            "from agent.memory_provider import MemoryProvider\n"
+            "from hermes_agent.agent.memory_provider import MemoryProvider\n"
             "class MyProvider(MemoryProvider):\n"
             "    @property\n"
             "    def name(self): return 'mempalace_dup'\n"
@@ -1113,13 +1113,13 @@ class TestForceReloadSymmetry:
     @pytest.fixture(autouse=True)
     def _cleanup_shell_hook_registry(self):
         yield
-        import agent.shell_hooks as shell_hooks_mod
+        import hermes_agent.agent.shell_hooks as shell_hooks_mod
 
         shell_hooks_mod.reset_for_tests()
 
 
     def test_shell_hook_re_register_failure_does_not_abort_reload(self, monkeypatch):
-        import agent.shell_hooks as shell_hooks_mod
+        import hermes_agent.agent.shell_hooks as shell_hooks_mod
 
         def _boom():
             raise RuntimeError("config unreadable")
@@ -1650,7 +1650,7 @@ class TestForceReloadSymmetry:
         not duplicated, not dropped (#92682 review).
         """
         import hermes_cli.plugins as plugins_mod
-        import agent.shell_hooks as shell_hooks_mod
+        import hermes_agent.agent.shell_hooks as shell_hooks_mod
 
         cfg = {"hooks": {"on_session_start": [{"command": "/bin/true"}]}}
         monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
@@ -2374,7 +2374,7 @@ class TestPluginCommands:
             })
         )
         (plugin_dir / "__init__.py").write_text(
-            "from agent.context_engine import ContextEngine\n\n"
+            "from hermes_agent.agent.context_engine import ContextEngine\n\n"
             "class StubEngine(ContextEngine):\n"
             "    @property\n"
             "    def name(self):\n"
@@ -2425,7 +2425,7 @@ class TestPluginCommands:
                 },
                 register_body=(
                     "import os\n"
-                    "    from agent.context_engine import ContextEngine\n\n"
+                    "    from hermes_agent.agent.context_engine import ContextEngine\n\n"
                     "    class HomeEngine(ContextEngine):\n"
                     "        def __init__(self):\n"
                     "            self.home = os.environ.get('HERMES_HOME')\n\n"

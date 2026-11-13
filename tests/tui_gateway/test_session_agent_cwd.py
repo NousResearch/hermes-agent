@@ -8,11 +8,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent import codex_runtime, runtime_cwd
-from agent.transports import codex_app_server_session
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent import codex_runtime, runtime_cwd
+from hermes_agent.agent.transports import codex_app_server_session
+from hermes_agent.agent.memory_provider import MemoryProvider
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tools import terminal_tool
 
 
@@ -58,7 +58,7 @@ def workspace_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_agent.tools.terminal_tool_lifecycle.cleanup_vm", lambda *a: None)
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **k: [])
     monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", lambda *a, **k: {})
-    monkeypatch.setattr("agent.process_bootstrap.OpenAI", MagicMock())
+    monkeypatch.setattr("hermes_agent.agent.process_bootstrap.OpenAI", MagicMock())
     monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"memory": {"provider": "cwd-recording"}})
     providers, agents, starts, network_attempts = [], [], [], []
 

@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 def _agent(max_iterations: int | None):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     kwargs: dict[str, Any] = dict(base_url="http://127.0.0.1:9/v1", api_key="sk-dummy", model="dummy-model",
                   quiet_mode=True, enabled_toolsets=[], disabled_toolsets=["*"])

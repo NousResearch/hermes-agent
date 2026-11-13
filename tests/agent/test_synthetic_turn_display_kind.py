@@ -26,9 +26,9 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.turn_context import build_turn_context
+from hermes_agent.agent.turn_context import build_turn_context
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 NOTE = "[System note: Your previous turn was interrupted mid-run …]\n\nkeep going"
 
@@ -76,7 +76,7 @@ def _build(agent, **overrides):
         ra=lambda: types.SimpleNamespace(_set_interrupt=lambda *a, **k: None),
     )
     kwargs.update(overrides)
-    with patch("agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
+    with patch("hermes_agent.agent.auxiliary_client.set_runtime_main", lambda *a, **k: None):
         return build_turn_context(**kwargs)
 
 

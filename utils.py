@@ -72,7 +72,7 @@ def _frozen_config_worker(path: str | Path) -> bool:
     worker never opens a profile config file, so a cache key there stays stat-only."""
     if Path(path).name != "config.yaml":
         return False
-    policy = sys.modules.get("agent.safe_worker_policy")  # binding a snapshot imports it first
+    policy = sys.modules.get("hermes_agent.agent.safe_worker_policy")  # binding a snapshot imports it first
     return policy is not None and policy.worker_config_snapshot() is not None
 
 
@@ -256,7 +256,7 @@ def atomic_replace(tmp_path: str | Path, target: str | Path) -> str:
             raise
         if contended:
             # Lazy: keeps ``utils`` free of a package-level dependency on ``agent``.
-            from agent.retry_utils import jittered_backoff
+            from hermes_agent.agent.retry_utils import jittered_backoff
             for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
                 time.sleep(jittered_backoff(attempt, base_delay=_REPLACE_RETRY_BASE_DELAY_S, max_delay=_REPLACE_RETRY_MAX_DELAY_S))
                 try:
@@ -749,7 +749,7 @@ def _bare_ipv6_literal(entry: str) -> str | None:
     httpx 0.28.1's ``get_environment_proxies`` routes bracketed entries through its wildcard
     branch (``all://*[::1]`` → ``InvalidURL: Invalid port`` at ``Client.__init__``) and cannot
     compile IPv6 CIDR bypasses at all, so both degrade to the bare literal — which httpx compiles
-    into a working ``all://[<v6>]`` bypass and urllib, requests and ``agent.proxy_bypass`` all
+    into a working ``all://[<v6>]`` bypass and urllib, requests and ``hermes_agent.agent.proxy_bypass`` all
     understand. A ``[<v6>]:port`` entry loses its port: httpx has no port-scoped IPv6 bypass form,
     and the portless literal still bypasses every port (the operator's intent superset). Bracketed
     or CIDR IPv4 is left alone (httpx compiles those forms fine).

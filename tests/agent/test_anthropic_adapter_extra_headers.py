@@ -5,7 +5,7 @@ them, so a relay behind a WAF that rejects the SDK User-Agent kept 403ing in ant
 """
 from unittest.mock import patch
 
-from agent.anthropic_adapter import build_anthropic_client
+from hermes_agent.agent.anthropic_adapter import build_anthropic_client
 
 _ROUTE = "https://proxy.example.com/v1"
 _CONFIG = {"custom_providers": [{
@@ -15,7 +15,7 @@ _CONFIG = {"custom_providers": [{
 
 
 def _build(route):
-    with patch("agent.anthropic_adapter._require_sdk") as sdk, patch("hermes_cli.config.load_config", return_value=_CONFIG):
+    with patch("hermes_agent.agent.anthropic_adapter._require_sdk") as sdk, patch("hermes_cli.config.load_config", return_value=_CONFIG):
         build_anthropic_client("sk-test", route)
     return sdk.return_value.Anthropic.call_args.kwargs["default_headers"]
 

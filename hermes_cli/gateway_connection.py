@@ -223,7 +223,7 @@ class GatewayConnection:
                     # end instead of reading it as a dial in progress (and re-raising its stale error).
                     thread.join(max(deadline - time.monotonic(), 0))
                 if thread is None or not thread.is_alive():
-                    from agent.memory_provider import spawn_context_thread
+                    from hermes_agent.agent.memory_provider import spawn_context_thread
 
                     if thread is not None:
                         # The gateway hung up, or the last redial failed: dial again (``connect_gateway``
@@ -427,7 +427,7 @@ class GatewayConnection:
         :class:`CallStopped`; the request was sent and its work goes on, but its answer is dropped. The
         socket closes on any of these, and its thread is gone before this returns."""
         import concurrent.futures
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call_until() on the gateway loop thread would deadlock")
         self.start()  # this viewer's gateway, dialled (or redialled after a hang-up) as for any call

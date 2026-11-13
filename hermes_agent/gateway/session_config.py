@@ -179,7 +179,7 @@ def _voice(connection, ref):
 
 
 def _fast(connection, ref, policy, agent, cfg):
-    from agent.fast_mode import parse_service_tier
+    from hermes_agent.agent.fast_mode import parse_service_tier
     if ref.session_id:  # the session's next-turn tier: its /fast pin, else its policy's
         from hermes_agent.gateway.session_tui_config import current_tier
         tier = current_tier(connection, ref, policy)
@@ -189,7 +189,7 @@ def _fast(connection, ref, policy, agent, cfg):
 
 
 def _service_tier(connection, ref, policy):
-    from agent.fast_mode import service_tier_word
+    from hermes_agent.agent.fast_mode import service_tier_word
     from hermes_agent.gateway.session_tui_config import current_tier, service_tier_options
     if not ref.session_id:
         raise RuntimeStoreError('invalid_params')
@@ -216,7 +216,7 @@ def _project(params, policy, cfg):
     from hermes_agent.tui_gateway import git_probe
     cwd = params.get('cwd') or (policy.cwd if policy else cfg.get('terminal', {}).get('cwd'))
     if not cwd:
-        from agent.runtime_cwd import resolve_agent_cwd
+        from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
         cwd = str(resolve_agent_cwd())
     return {'cwd': cwd, 'branch': git_probe.branch(cwd)}
 

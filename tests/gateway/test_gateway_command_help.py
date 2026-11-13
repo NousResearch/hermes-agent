@@ -30,7 +30,7 @@ def _make_runner():
 async def test_help_sanitizes_slash_command_mentions_for_telegram(monkeypatch):
     """Telegram help output must not expose invalid uppercase/hyphenated slashes."""
     monkeypatch.setattr(
-        "agent.skill_commands.get_skill_commands",
+        "hermes_agent.agent.skill_commands.get_skill_commands",
         lambda: {
             "/Linear": {"description": "Open Linear"},
             "/Custom-Thing": {"description": "Run a custom thing"},
@@ -51,7 +51,7 @@ async def test_help_sanitizes_slash_command_mentions_for_telegram(monkeypatch):
 async def test_commands_sanitizes_slash_command_mentions_for_telegram(monkeypatch):
     """Paginated Telegram /commands output uses Telegram-valid slash mentions."""
     monkeypatch.setattr(
-        "agent.skill_commands.get_skill_commands",
+        "hermes_agent.agent.skill_commands.get_skill_commands",
         lambda: {"/Linear": {"description": "Open Linear"}},
     )
 

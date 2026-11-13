@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import agent.model_metadata as mm
+import hermes_agent.agent.model_metadata as mm
 
 URL = "https://keyed.example/v1"
 

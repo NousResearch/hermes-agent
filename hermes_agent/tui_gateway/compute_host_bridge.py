@@ -381,7 +381,7 @@ def _compute_host_compress_wait_seconds(cfg: dict | None = None) -> float:
 
     See #97948.
     """
-    from agent.conversation_compression import resolve_context_compression_timeouts
+    from hermes_agent.agent.conversation_compression import resolve_context_compression_timeouts
     try:
         compression_cfg = (cfg if cfg is not None else _load_cfg()).get("compression", {})
     except Exception:

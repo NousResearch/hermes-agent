@@ -7,14 +7,14 @@ import httpx
 import pytest
 from openai import OpenAI
 
-from agent.transports import get_transport
-from agent.transports.types import NormalizedResponse
+from hermes_agent.agent.transports import get_transport
+from hermes_agent.agent.transports.types import NormalizedResponse
 from providers import get_provider_profile
 
 
 @pytest.fixture
 def transport():
-    import agent.transports.chat_completions
+    import hermes_agent.agent.transports.chat_completions
     return get_transport("chat_completions")
 
 
@@ -291,7 +291,7 @@ class TestChatCompletionsBuildKwargs:
 
 
     def test_nous_tags(self, transport):
-        from agent.portal_tags import nous_portal_tags
+        from hermes_agent.agent.portal_tags import nous_portal_tags
         from providers import get_provider_profile
         profile = get_provider_profile("nous")
         msgs = [{"role": "user", "content": "Hi"}]
@@ -370,7 +370,7 @@ class TestChatCompletionsBuildKwargs:
         }
 
     def test_gemini_ultra_thinking_raises_first_request_max_tokens(self, transport):
-        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+        from hermes_agent.agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
         from providers import get_provider_profile
 
         profile = get_provider_profile("gemini")

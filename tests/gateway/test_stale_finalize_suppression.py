@@ -178,9 +178,9 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = agent_cls
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     adapter = FinalizeCaptureAdapter()
     runner = _make_runner(adapter)
@@ -308,9 +308,9 @@ async def test_payload_less_split_does_not_suppress_complete_response(
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
-    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent = types.ModuleType("hermes_agent.run_agent")
     fake_run_agent.AIAgent = StalePrefixAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_run_agent)
 
     gateway_run = importlib.import_module("hermes_agent.gateway.run")
     stream_consumer_mod = importlib.import_module("hermes_agent.gateway.stream_consumer")

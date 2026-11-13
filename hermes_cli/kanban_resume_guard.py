@@ -64,5 +64,5 @@ def kanban_resume_refusal(db, session_id: str):
     # quirk) is treated as unclassified, keeping the guard open for every non-worker store.
     if owned is not True:
         return None
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     return t("cli.resume.kanban_owned", session_id=session_id)

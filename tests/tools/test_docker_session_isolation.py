@@ -143,7 +143,7 @@ class TestRoutedScopeQualification:
     → distinct sandboxes and cwd records. No routed home → historical raw key."""
 
     def test_colliding_session_id_is_isolated_per_routed_profile(self, monkeypatch, tmp_path):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         _enable_isolation(monkeypatch)

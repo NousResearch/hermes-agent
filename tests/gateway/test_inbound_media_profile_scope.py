@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 from hermes_agent.gateway.platforms.base import cache_media_bytes
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run import _profile_runtime_scope

@@ -4,7 +4,7 @@ provider="custom" (Ollama, vLLM, llama.cpp, GLM-5.2 on ARK, …)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
+from hermes_agent.agent.reasoning_effort import OPENAI_COMPAT_WIRE_EFFORTS, clamp_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 from utils import base_url_host_matches
@@ -49,7 +49,7 @@ class CustomProfile(ProviderProfile):
         Leaving the field off lets the endpoint's own default apply, and for a hosted reasoning
         model that default can be its ceiling: kimi-k3 behind an OpenAI-compatible relay defaults
         to ``max`` — 3x the reasoning tokens and ~3x the latency of medium. The agent skips this
-        default for models the catalog marks non-reasoning (``agent.reasoning_params``).
+        default for models the catalog marks non-reasoning (``hermes_agent.agent.reasoning_params``).
         """
         return {"enabled": True, "effort": "medium"}
 

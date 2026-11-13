@@ -82,7 +82,7 @@ def provider_owns_route(provider: Any, base_url: Any, config: Any = None) -> Opt
         return True
     if pdef is None and user_pdef is None:
         return True
-    from agent.model_metadata import _infer_provider_from_url
+    from hermes_agent.agent.model_metadata import _infer_provider_from_url
     inferred = _infer_provider_from_url(str(base_url))
     if inferred is None:
         return None
@@ -118,7 +118,7 @@ def should_clear_context_pin(configured_model: Any, active_model: Any, configure
     if configured_model and configured_model != str(active_model or "").strip():
         return True
     try:
-        from agent.agent_init import _context_route_mismatch
+        from hermes_agent.agent.agent_init import _context_route_mismatch
         return _context_route_mismatch(configured_base_url, active_base_url, configured_provider, active_provider)
     except Exception:
         return True

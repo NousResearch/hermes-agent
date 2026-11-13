@@ -127,7 +127,7 @@ def test_unavailable_route_returns_none_without_catalog(settings_env, catalog, u
 async def test_thread_hop_binds_owning_profile_for_catalog(settings_env, catalog, monkeypatch):
     from hermes_agent.gateway.session_identity import RoutingIdentity
     from hermes_constants import get_hermes_home
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli import model_switch_providers
 
     adapter, runner, source, home = settings_env
@@ -156,7 +156,7 @@ async def test_thread_hop_binds_owning_profile_for_catalog(settings_env, catalog
 def test_catalog_fetches_stay_in_the_owning_profile_scope(settings_env, monkeypatch):
     """With more than three keyed providers, blocking catalogs prefetch in a thread pool that does not
     carry the profile scope; cache-only catalogs keep every fetch in the owning profile."""
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_agent.gateway.session_identity import RoutingIdentity
     from hermes_cli import models
     from hermes_constants import get_hermes_home

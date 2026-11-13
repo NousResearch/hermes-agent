@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import codex_service_tiers as tiers
-from agent import model_metadata as mm
-from agent.fast_mode import effective_request_overrides
-from agent.transports.codex import ResponsesApiTransport
+from hermes_agent.agent import codex_service_tiers as tiers
+from hermes_agent.agent import model_metadata as mm
+from hermes_agent.agent.fast_mode import effective_request_overrides
+from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
 BASE = "https://chatgpt.com/backend-api/codex"
 # Shapes taken from the live ChatGPT Codex /models catalog.
@@ -169,8 +169,8 @@ def test_only_the_owners_own_chats_carry_daybreak(tmp_path, monkeypatch):
 def test_delegation_sees_the_owners_gateway_chat_with_the_switch_off(tmp_path, monkeypatch):
     """A Daybreak delegation route is chosen per task, not by the switch, so a gateway-hosted chat records
     whether it is the owner's own (its launch policy) apart from ``agent.daybreak``, and delegation reads that."""
-    from agent.session_source import turn_daybreak_surface
-    from agent.subagent_lifecycle import bind_subagent_parent
+    from hermes_agent.agent.session_source import turn_daybreak_surface
+    from hermes_agent.agent.subagent_lifecycle import bind_subagent_parent
     from hermes_agent.gateway.config import Platform
     home = tmp_path / ".hermes"
     home.mkdir()

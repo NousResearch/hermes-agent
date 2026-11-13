@@ -12,7 +12,7 @@ import httpx
 import pytest
 from openai import APIConnectionError
 
-from agent.codex_runtime import _codex_request_failure_details, run_codex_stream
+from hermes_agent.agent.codex_runtime import _codex_request_failure_details, run_codex_stream
 
 
 def test_transport_failure_without_attached_request_reports_unknown_size():
@@ -55,7 +55,7 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
         _buffer_diagnostic_status=lambda message: None,
     )
 
-    with caplog.at_level(logging.WARNING, logger="agent.codex_runtime"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.codex_runtime"):
         with pytest.raises(APIConnectionError):
             run_codex_stream(agent, {"model": "gpt-5.6-sol"}, client=client)
 
@@ -110,7 +110,7 @@ def test_zero_event_retry_prunes_oversized_tool_output_and_logs_size_delta(monke
     seen: list = []
     agent.client = _zero_event_then_completed_client(seen)
 
-    with caplog.at_level(logging.INFO, logger="agent.codex_runtime"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.codex_runtime"):
         response = agent._run_codex_stream(_oversized_codex_kwargs(760_396))
 
     assert response.status == "completed" and len(seen) == 2
@@ -135,7 +135,7 @@ def test_zero_event_retry_without_prunable_output_logs_unchanged_resend(monkeypa
     kwargs["input"][2]["output"] = ["not-a-string"]  # nothing prunable
     kwargs["input"][0]["content"] = "u" * 300_000  # still a large payload
 
-    with caplog.at_level(logging.INFO, logger="agent.codex_runtime"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.codex_runtime"):
         response = agent._run_codex_stream(kwargs)
 
     assert response.status == "completed" and seen[0] == seen[1]

@@ -7,10 +7,10 @@ import httpx
 import openai
 import pytest
 
-from agent.error_classifier import classify_api_error
-from agent.error_surface import build_error_surface_from_result
-from agent.nous_rate_guard import is_long_welcome_rate_limit, welcome_refusal_from_headers
-from agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
+from hermes_agent.agent.error_classifier import classify_api_error
+from hermes_agent.agent.error_surface import build_error_surface_from_result
+from hermes_agent.agent.nous_rate_guard import is_long_welcome_rate_limit, welcome_refusal_from_headers
+from hermes_agent.agent.turn_recovery import max_retries_exhausted_result, nonretryable_client_error_result
 from tests.hermes_cli.anon_portal import make_jwt
 
 WELCOME = "https://welcome-api.nousresearch.com/v1"

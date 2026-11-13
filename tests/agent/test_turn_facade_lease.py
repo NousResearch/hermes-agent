@@ -1,10 +1,10 @@
-"""Unit tests for agent.turn_facade_lease (admission + lease bracket)."""
+"""Unit tests for hermes_agent.agent.turn_facade_lease (admission + lease bracket)."""
 import sqlite3
 import threading
 import time
 from types import SimpleNamespace
 
-from agent.turn_facade_lease import (
+from hermes_agent.agent.turn_facade_lease import (
     LEASE_TTL_SECONDS,
     DurableTurnLease,
     admit_durable_turn_lease,
@@ -63,7 +63,7 @@ def _admit(agent, history=None):
 
 def test_fresh_row_leases_with_seed_kept_and_persist_disabled_skips(monkeypatch):
     monkeypatch.setattr(
-        "agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)
+        "hermes_agent.agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)
     )
     seed = [{"role": "user", "content": "hi"}]
     agent = _agent(_Db(exists=False))
@@ -80,7 +80,7 @@ def test_fresh_row_leases_with_seed_kept_and_persist_disabled_skips(monkeypatch)
 
 def test_admission_sets_holder_attrs_and_release_clears_them(monkeypatch):
     monkeypatch.setattr(
-        "agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)
+        "hermes_agent.agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)
     )
     db = _Db()
     agent = _agent(db)
@@ -185,7 +185,7 @@ def test_lock_tolerance_never_outlives_the_committed_row_expiry(tmp_path, monkey
     take it. Control: the lock clearing lets the delayed renewal succeed with no interrupt."""
     from hermes_agent import hermes_state
     from hermes_agent import hermes_state_compression
-    from agent import turn_facade_lease
+    from hermes_agent.agent import turn_facade_lease
 
     clock = _MovingClock(1000.0)
     fake_time = SimpleNamespace(time=clock.time, monotonic=time.monotonic, sleep=time.sleep)

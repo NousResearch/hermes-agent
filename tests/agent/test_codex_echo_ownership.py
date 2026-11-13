@@ -4,10 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.codex_runtime import _persist_projected_messages
-from agent.message_metadata import append_message
-from agent.session_persistence import SessionPersistenceMixin
-from agent.transports.codex_event_projector import CodexEventProjector
+from hermes_agent.agent.codex_runtime import _persist_projected_messages
+from hermes_agent.agent.message_metadata import append_message
+from hermes_agent.agent.session_persistence import SessionPersistenceMixin
+from hermes_agent.agent.transports.codex_event_projector import CodexEventProjector
 from hermes_agent.hermes_state import SessionDB
 
 

@@ -26,7 +26,7 @@ Hermes scans for browser backends in three places:
 2. **User** — `~/.hermes/plugins/browser/<name>/` (opt-in via `plugins.enabled` or `hermes plugins enable <name>`)
 3. **Pip** — packages declaring a `hermes_agent.plugins` entry point
 
-Each plugin's `register(ctx)` calls `ctx.register_browser_provider(...)`, which puts the instance into the registry in `agent/browser_registry.py`.
+Each plugin's `register(ctx)` calls `ctx.register_browser_provider(...)`, which puts the instance into the registry in `hermes_agent/agent/browser_registry.py`.
 
 ## Directory structure
 
@@ -61,10 +61,10 @@ def register(ctx) -> None:
 
 ## The BrowserProvider ABC
 
-Implement `agent.browser_provider.BrowserProvider`. Three lifecycle methods plus identity:
+Implement `hermes_agent.agent.browser_provider.BrowserProvider`. Three lifecycle methods plus identity:
 
 ```python
-from agent.browser_provider import BrowserProvider
+from hermes_agent.agent.browser_provider import BrowserProvider
 
 
 class MyBackendProvider(BrowserProvider):

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from agent import image_gen_registry
+from hermes_agent.agent import image_gen_registry
 
 
 @pytest.fixture(autouse=True)
@@ -20,7 +20,7 @@ class TestPluginDispatch:
     def test_handler_forwards_only_the_creative_controls_the_plugin_declares(self, monkeypatch, tmp_path):
         """Declared controls reach generate(); an undeclared one the model sent anyway is dropped, so a
         plugin whose generate() lacks **kwargs never sees it."""
-        from agent.image_gen_provider import ImageGenProvider
+        from hermes_agent.agent.image_gen_provider import ImageGenProvider
         from hermes_cli import plugins as plugins_module
         from hermes_agent.tools import image_generation_tool
 

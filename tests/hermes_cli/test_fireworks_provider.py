@@ -124,9 +124,9 @@ class TestFireworksAuxiliary:
     def _resolve(self, name):
         from unittest.mock import patch
 
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("hermes_agent.agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = object()
             client, model = resolve_provider_client(name)
         return client, model, mock_openai.call_args.kwargs
@@ -151,6 +151,6 @@ class TestFireworksAuxiliary:
 
 class TestFireworksModelMetadata:
     def test_url_infers_fireworks(self):
-        from agent.model_metadata import _infer_provider_from_url
+        from hermes_agent.agent.model_metadata import _infer_provider_from_url
 
         assert _infer_provider_from_url("https://api.fireworks.ai/inference/v1") == "fireworks"

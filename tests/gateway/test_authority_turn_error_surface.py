@@ -87,7 +87,7 @@ def test_usage_window_refusal_completes_with_the_window_card():
 
 
 def test_a_managed_worker_turn_carries_the_free_tier_failure_to_the_owner():
-    from agent.managed_worker import accept_result, encode_frame, read_frame, result_frame
+    from hermes_agent.agent.managed_worker import accept_result, encode_frame, read_frame, result_frame
 
     raw = {'final_response': '', 'failed': True, 'completed': False, 'provider': 'nous', 'model': 'free-model',
            'messages': [], **_FREE_TIER_FULL}
@@ -109,13 +109,13 @@ def _assert_update_key_card(complete):
 
 
 def test_an_auth_failure_offers_the_agents_key_action_when_the_result_names_no_provider():
-    """Real failed results (``agent/turn_recovery._failed_turn_result``) carry no provider or model;
+    """Real failed results (``hermes_agent/agent/turn_recovery._failed_turn_result``) carry no provider or model;
     the card's sign-in / update-key action comes from the agent that ran, as on the TUI path."""
     _assert_update_key_card(_complete(*_authority_turn(Platform.LOCAL, _AUTH_FAILED, identity=_OPENROUTER)))
 
 
 def test_a_managed_worker_auth_failure_offers_the_agents_key_action(tmp_path, monkeypatch):
-    from agent.managed_worker import accept_result
+    from hermes_agent.agent.managed_worker import accept_result
     from tests.gateway.test_managed_worker_route_key import _execute, _minimax_frame
 
     class Identity:

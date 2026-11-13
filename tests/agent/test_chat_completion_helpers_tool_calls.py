@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
+from hermes_agent.agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
 
 
 def _calls(*deltas):

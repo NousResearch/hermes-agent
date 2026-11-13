@@ -1,6 +1,6 @@
 """E2E: compression.max_attempts=6 drives a 4th+ preflight compaction pass.
 
-The turn-start preflight loop in ``agent/turn_context.py`` was hardcoded to
+The turn-start preflight loop in ``hermes_agent/agent/turn_context.py`` was hardcoded to
 ``range(3)``: even when every pass made real progress and the request stayed
 over threshold, the 4th pass never ran, regardless of configuration.  The
 loop now sizes itself from the same resolved ``compression.max_attempts`` cap
@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _config(max_attempts) -> dict:
@@ -70,7 +70,7 @@ def _make_agent(monkeypatch, tmp_path: Path, *, max_attempts) -> AIAgent:
         contextlib.redirect_stdout(io.StringIO()),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             base_url="https://openrouter.ai/api/v1",
@@ -130,7 +130,7 @@ def test_preflight_runs_fourth_compaction_pass_at_cap_six(monkeypatch, tmp_path)
 
     with (
         patch(
-            "agent.turn_context.estimate_request_tokens_rough",
+            "hermes_agent.agent.turn_context.estimate_request_tokens_rough",
             side_effect=_shrinking_estimate,
         ),
         patch.object(agent, "_compress_context", side_effect=_fake_compress),

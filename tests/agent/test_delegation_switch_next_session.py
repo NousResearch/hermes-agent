@@ -47,7 +47,7 @@ def options_backend(monkeypatch):
 
 def _agent(srv, home, session_id):
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     db = SessionDB(db_path=home / "state.db")
     db.ensure_session(session_id, source="cli")  # opened before its first turn, as the gateway does
@@ -75,7 +75,7 @@ def _turn(agent, text, history):
 
 
 def test_a_now_switch_rebuilds_this_sessions_delegate_task_and_routing_for_the_new_backend(options_backend):
-    from agent.delegation_backends import set_global_backend
+    from hermes_agent.agent.delegation_backends import set_global_backend
 
     srv, home = options_backend
     agent = _agent(srv, home, "chat-now")
@@ -100,7 +100,7 @@ def test_a_now_switch_rebuilds_this_sessions_delegate_task_and_routing_for_the_n
 
 def test_a_plain_switch_changes_nothing_in_this_session_and_new_sessions_take_the_saved_backend(options_backend):
     import hermes_yaml as yaml
-    from agent.delegation_backends import set_global_backend
+    from hermes_agent.agent.delegation_backends import set_global_backend
 
     srv, home = options_backend
     agent = _agent(srv, home, "chat-plain")

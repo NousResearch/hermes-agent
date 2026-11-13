@@ -111,7 +111,7 @@ python -m evals.postmortem.live_ab.cache_concurrency_probe --repo . --provider o
 Reference results (2026-09-05/06): Nous native wire 13.9% stuck (14–20% over 4 runs, unchanged by the
 portal's provider pin or a 2 s settle); Nous chat wire 0/320; OpenRouter pinned 0/161; OpenRouter
 unpinned 9.8% collapse. Use this to clear a new upstream before flipping
-`agent/nous_wire.py::GMI_NATIVE_WIRE_CLEARED`. `--ttl 1h` reproduces the 2× write price
+`hermes_agent/agent/nous_wire.py::GMI_NATIVE_WIRE_CLEARED`. `--ttl 1h` reproduces the 2× write price
 (#104168). The `.summary.json` carries the bad pairs with both response ids for the provider's logs.
 
 ## What is NOT here, and why

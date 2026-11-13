@@ -74,7 +74,7 @@ class TestIsSkillDisabled:
 # ---------------------------------------------------------------------------
 
 class TestGetDisabledSkillNames:
-    """Tests for agent.skill_utils.get_disabled_skill_names."""
+    """Tests for hermes_agent.agent.skill_utils.get_disabled_skill_names."""
 
     def test_explicit_platform_param(self, tmp_path, monkeypatch):
         """Explicit platform= parameter should resolve per-platform list."""
@@ -91,7 +91,7 @@ class TestGetDisabledSkillNames:
         monkeypatch.delenv("HERMES_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
 
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names(platform="telegram")
         assert result == {"tg-only-skill", "global-skill"}
 
@@ -110,7 +110,7 @@ class TestGetDisabledSkillNames:
         monkeypatch.delenv("HERMES_PLATFORM", raising=False)
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
 
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names()
         assert result == {"discord-skill", "global-skill"}
 
@@ -129,7 +129,7 @@ class TestGetDisabledSkillNames:
         monkeypatch.setenv("HERMES_PLATFORM", "telegram")
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
 
-        from agent.skill_utils import get_disabled_skill_names
+        from hermes_agent.agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names()
         assert result == {"tg-skill"}
 
@@ -149,7 +149,7 @@ class TestFindAllSkillsFiltering:
         # Point SKILLS_DIR at the real tempdir so iter_skill_index_files
         # (which uses os.walk) can actually find the file.
         import hermes_agent.tools.skills_tool as _st
-        import agent.skill_utils as _su
+        import hermes_agent.agent.skill_utils as _su
         monkeypatch.setattr(_st, "SKILLS_DIR", tmp_path)
         monkeypatch.setattr(_su, "get_external_skills_dirs", list)
         from hermes_agent.tools.skills_tool import find_all_skills

@@ -1,5 +1,5 @@
 """Durable message-identity columns for SessionDB (schema v31): the codec between the live identity keys
-(``agent.message_metadata``) and the ``message_uid`` / ``absorbed_message_uids`` / ``tool_call_uids`` /
+(``hermes_agent.agent.message_metadata``) and the ``message_uid`` / ``absorbed_message_uids`` / ``tool_call_uids`` /
 ``tool_call_uid`` columns, shared by the transcript writers, restore, and transcript repair."""
 
 from __future__ import annotations
@@ -7,8 +7,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Tuple
 
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
-from agent.message_sanitization import coalesce_tool_call_id
+from hermes_agent.agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
+from hermes_agent.agent.message_sanitization import coalesce_tool_call_id
 from hermes_agent.hermes_state_common import _json_or
 
 

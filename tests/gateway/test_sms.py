@@ -286,7 +286,7 @@ class TestMultiplexProfileScope:
 
     @pytest.fixture(autouse=True)
     def _default_profile_env(self, monkeypatch):
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
         for key, value in (("TWILIO_ACCOUNT_SID", "AC-default"), ("TWILIO_AUTH_TOKEN", "token-default"),
                            ("TWILIO_PHONE_NUMBER", "+15550000000")):
             monkeypatch.setenv(key, value)
@@ -295,7 +295,7 @@ class TestMultiplexProfileScope:
         set_multiplex_active(False)
 
     def test_init_pairs_secondary_secrets_with_secondary_from_number(self):
-        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
         from plugins.platforms.sms.adapter import SmsAdapter
 
         token = set_secret_scope({"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile",
@@ -309,7 +309,7 @@ class TestMultiplexProfileScope:
     @pytest.mark.asyncio
     async def test_standalone_send_without_own_number_fails_closed(self):
         """A secondary lacking its own from-number must NOT send from the default's +15550000000."""
-        from agent.secret_scope import reset_secret_scope, set_secret_scope
+        from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
         from plugins.platforms.sms.adapter import _standalone_send
 
         token = set_secret_scope({"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile"})

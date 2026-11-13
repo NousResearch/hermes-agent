@@ -3,14 +3,14 @@
 Some models emit inline <think>...</think> blocks in content.  The agent strips
 them from the final response, but intermediate edits go out before that, so this
 mirrors the CLI's _stream_delta state machine; tag primitives are shared with
-``agent/think_scrubber.py`` so the progressive display matches the post-stream scrubber."""
+``hermes_agent/agent/think_scrubber.py`` so the progressive display matches the post-stream scrubber."""
 
 from __future__ import annotations
 
 import logging
 
-from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
-from agent.think_scrubber import StreamingThinkScrubber as _Scrubber
+from hermes_agent.agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from hermes_agent.agent.think_scrubber import StreamingThinkScrubber as _Scrubber
 
 logger = logging.getLogger("hermes_agent.gateway.stream_consumer")
 

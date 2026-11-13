@@ -56,7 +56,7 @@ def test_a_stored_label_that_is_not_valid_reads_as_none():
 
 
 def test_prompt_section_info_carries_the_client_as_strings(tmp_path, monkeypatch):
-    from agent.system_prompt import _plugin_session_info
+    from hermes_agent.agent.system_prompt import _plugin_session_info
     agent = SimpleNamespace(session_id='s', model='m', provider='p', platform='tui')
     info = _plugin_session_info(agent)
     assert (info['client'], info['client_version']) == ('', '')
@@ -71,7 +71,7 @@ def test_prompt_section_info_carries_the_client_as_strings(tmp_path, monkeypatch
 def test_a_plugins_prompt_section_sees_the_client_in_either_isolation_mode(tmp_path, monkeypatch, isolation):
     """A hosted section's callable gets the session info as plain data (a read-only mapping crosses the
     host wire as a dict, not an opaque placeholder), so it reads ``client`` exactly as in-process."""
-    from agent.system_prompt import _plugin_session_info
+    from hermes_agent.agent.system_prompt import _plugin_session_info
     from hermes_cli.plugins import PluginManager
     home = _home_with_plugins(tmp_path, monkeypatch, {'clientprobe': SECTION_PLUGIN}, isolation=isolation)
     manager = PluginManager()

@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent import transcription_registry
-from agent.transcription_provider import TranscriptionProvider
+from hermes_agent.agent import transcription_registry
+from hermes_agent.agent.transcription_provider import TranscriptionProvider
 from hermes_agent.tools import transcription_tools
 
 

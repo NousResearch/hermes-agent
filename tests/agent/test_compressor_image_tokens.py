@@ -9,8 +9,8 @@ creative workflows that iterate on images across many turns.
 from __future__ import annotations
 
 
-from agent.context_compressor import _CHARS_PER_TOKEN, _content_length_for_budget
-from agent.image_token_cost import DEFAULT_IMAGE_TOKEN_COST, image_cost_context
+from hermes_agent.agent.context_compressor import _CHARS_PER_TOKEN, _content_length_for_budget
+from hermes_agent.agent.image_token_cost import DEFAULT_IMAGE_TOKEN_COST, image_cost_context
 
 
 class TestContentLengthForBudget:
@@ -46,7 +46,7 @@ class TestTokenBudgetWithImages:
 
     def test_image_heavy_turns_count_toward_budget(self):
         """A tail with 5 image-bearing turns should blow past a 5K token budget."""
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
 
         # Minimal compressor fixture — just enough to call _find_tail_cut_by_tokens
         cc = object.__new__(ContextCompressor)

@@ -38,15 +38,15 @@ _PRE_COMMAND = {"surface", "command", "alias_used", "args_raw", "session_key", "
 
 # (ctx registrar, registry module, lookup function) for each register_<kind>_provider the fixture uses.
 _PROVIDERS = [
-    ("register_image_gen_provider", "agent.image_gen_registry", "get_provider"),
-    ("register_video_gen_provider", "agent.video_gen_registry", "get_provider"),
-    ("register_web_search_provider", "agent.web_search_registry", "get_provider"),
-    ("register_browser_provider", "agent.browser_registry", "get_provider"),
-    ("register_terminal_environment_provider", "agent.terminal_env_registry", "get_provider"),
-    ("register_tts_provider", "agent.tts_registry", "get_provider"),
-    ("register_transcription_provider", "agent.transcription_registry", "get_provider"),
-    ("register_delegation_provider", "agent.delegation_registry", "get_provider"),
-    ("register_secret_source", "agent.secret_sources.registry", "get_source"),
+    ("register_image_gen_provider", "hermes_agent.agent.image_gen_registry", "get_provider"),
+    ("register_video_gen_provider", "hermes_agent.agent.video_gen_registry", "get_provider"),
+    ("register_web_search_provider", "hermes_agent.agent.web_search_registry", "get_provider"),
+    ("register_browser_provider", "hermes_agent.agent.browser_registry", "get_provider"),
+    ("register_terminal_environment_provider", "hermes_agent.agent.terminal_env_registry", "get_provider"),
+    ("register_tts_provider", "hermes_agent.agent.tts_registry", "get_provider"),
+    ("register_transcription_provider", "hermes_agent.agent.transcription_registry", "get_provider"),
+    ("register_delegation_provider", "hermes_agent.agent.delegation_registry", "get_provider"),
+    ("register_secret_source", "hermes_agent.agent.secret_sources.registry", "get_source"),
 ]
 
 

@@ -1,14 +1,14 @@
 """Billing and subscription handlers for the interactive CLI (mixed into ``HermesCLI``).
 cli.py symbols are imported LAZILY inside methods — never at module load (import cycle).
 
-User-facing copy is looked up through ``agent.i18n.t`` at call time (never at import — the
+User-facing copy is looked up through ``hermes_agent.agent.i18n.t`` at call time (never at import — the
 active language is not known when this module loads), under ``cli.billing.*`` (shared /topup
 copy) and ``cli.subscription.*`` (/subscription copy). Modal choice VALUES (index 0) stay
 English identifiers; only labels/descriptions are translated."""
 
 from __future__ import annotations
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 _RULE = "─" * 41
 
@@ -170,7 +170,7 @@ class CLIBillingMixin:
     def _try_usage_model(self):
         """Shared dollar usage model (the only source with top-up dollars); None on any failure."""
         try:
-            from agent.billing_usage import build_usage_model
+            from hermes_agent.agent.billing_usage import build_usage_model
             return build_usage_model()
         except Exception:
             return None
@@ -256,7 +256,7 @@ class CLIBillingMixin:
         from cli import _cprint, _b, _d
         usage = self._try_usage_model()
         if usage is not None and usage.available:
-            from agent.billing_usage import format_renews
+            from hermes_agent.agent.billing_usage import format_renews
             plan = usage.plan_name or (t("cli.billing.plan_free") if usage.status == "free" else None)
             renews_display = usage.renews_display or format_renews(usage.renews_at)
             renews = t("cli.billing.renews_suffix", date=renews_display) if renews_display else ""
@@ -279,7 +279,7 @@ class CLIBillingMixin:
                 _cprint(ln)
             if head or tail:
                 return True
-        from agent.account_usage import nous_credits_lines
+        from hermes_agent.agent.account_usage import nous_credits_lines
         lines = nous_credits_lines(
             credits_state=getattr(getattr(self, "agent", None), "_credits_state", None),
         )
@@ -298,7 +298,7 @@ class CLIBillingMixin:
 
     def _show_subscription(self):
         """`/subscription` (alias `/upgrade`). Deep-links NAS's ``/manage-subscription`` (NOT Stripe); never charges."""
-        from agent.subscription_view import build_subscription_state, subscription_manage_url
+        from hermes_agent.agent.subscription_view import build_subscription_state, subscription_manage_url
         state = build_subscription_state()
         if not state.logged_in:
             self._print_logged_out(state, t("cli.subscription.load_failed_label"), "/subscription")
@@ -314,7 +314,7 @@ class CLIBillingMixin:
     def _subscription_overview(self, state, manage_url):
         """Plan read block, then the action: portal hand-off (member / non-interactive), catalog (Free), change menu."""
         from cli import _cprint, _b, _d
-        from agent.billing_usage import format_renews
+        from hermes_agent.agent.billing_usage import format_renews
         usage = self._try_usage_model()
         c = state.current
         is_free = not (c and c.tier_id)
@@ -385,7 +385,7 @@ class CLIBillingMixin:
 
     def _subscription_free_catalog(self, state, manage_url):
         """Free + admin + interactive: catalog → pick → portal deep-link ``plan=<tier_id>`` (a new sub needs a card)."""
-        from agent.subscription_view import format_tier_row, selectable_tiers, subscription_manage_url
+        from hermes_agent.agent.subscription_view import format_tier_row, selectable_tiers, subscription_manage_url
         tiers = selectable_tiers(state)
         if not tiers:
             self._subscription_open_portal(state, manage_url, verb=t("cli.subscription.start_subscription"))
@@ -468,7 +468,7 @@ class CLIBillingMixin:
 
     def _subscription_pick_tier(self, state):
         """Tier picker → preview → confirm. Paid tiers other than current (dropping to free = cancellation)."""
-        from agent.subscription_view import format_tier_row, is_upgrade, selectable_tiers
+        from hermes_agent.agent.subscription_view import format_tier_row, is_upgrade, selectable_tiers
         c = state.current
         selectable = selectable_tiers(state)
         if not selectable:
@@ -491,7 +491,7 @@ class CLIBillingMixin:
     def _subscription_preview_and_confirm(self, state, tier_id, *, allow_stepup=True):
         """Preview → effect → confirm+apply. ``allow_stepup=False`` (post-grant replay) never re-prompts a step-up."""
         from cli import _cprint, _b, _d
-        from agent.subscription_view import is_upgrade, subscription_change_preview_from_payload, subscription_manage_url
+        from hermes_agent.agent.subscription_view import is_upgrade, subscription_change_preview_from_payload, subscription_manage_url
         from hermes_cli.nous_billing import BillingError, BillingScopeRequired, post_subscription_preview
         self._dim(t("cli.subscription.checking_change"))
         try:
@@ -531,7 +531,7 @@ class CLIBillingMixin:
             # subscription charge actually uses (subPin / customerDefault — Stripe's precedence).
             _card_line = t("cli.subscription.card_on_subscription_charged")
             try:
-                from agent.billing_view import build_billing_state
+                from hermes_agent.agent.billing_view import build_billing_state
                 _bs = build_billing_state(timeout=6.0)
                 _c = _bs.card if _bs.logged_in else None
                 if _c is not None and _c.resolved_via in ("subPin", "customerDefault"):
@@ -565,7 +565,7 @@ class CLIBillingMixin:
     def _subscription_confirm_cancel(self, state):
         """Confirm, then schedule a cancellation at period end."""
         from cli import _cprint, _b, _d
-        from agent.billing_usage import format_renews
+        from hermes_agent.agent.billing_usage import format_renews
         c = state.current
         _end = ((format_renews(c.cycle_ends_at) if (c and c.cycle_ends_at) else None)
                 or t("cli.subscription.end_of_billing_period"))
@@ -588,7 +588,7 @@ class CLIBillingMixin:
         kind, arg = action
         key = None
         if kind == "upgrade":
-            from agent.billing_view import new_idempotency_key
+            from hermes_agent.agent.billing_view import new_idempotency_key
             key = idempotency_key or new_idempotency_key()
         try:
             if kind == "upgrade":
@@ -647,7 +647,7 @@ class CLIBillingMixin:
         except Exception:
             pass
         # Re-fetch fresh state, then replay the held action ONCE (allow_stepup=False).
-        from agent.subscription_view import build_subscription_state
+        from hermes_agent.agent.subscription_view import build_subscription_state
         try:
             fresh = build_subscription_state()
         except Exception:
@@ -681,7 +681,7 @@ class CLIBillingMixin:
     def _show_billing(self, command: str = "/topup"):
         """`/topup` — ZERO sub-commands (argument ignored; Overview is the only route). Non-interactive never
         prompts. Money is Decimal end-to-end; the terminal never collects card details."""
-        from agent.billing_view import build_billing_state
+        from hermes_agent.agent.billing_view import build_billing_state
         state = build_billing_state()
         if not state.logged_in:
             self._print_logged_out(state, t("cli.billing.load_failed_label"), "/topup")
@@ -713,7 +713,7 @@ class CLIBillingMixin:
     def _billing_overview(self, state):
         """Screen 1 — balance, bars, menu. No scope preflight (a charge 403s); a missing card does NOT gate it."""
         from cli import _cprint, _b
-        from agent.billing_view import format_money
+        from hermes_agent.agent.billing_view import format_money
         usage = self._try_usage_model()
         print()
         _cprint(f"  💳 {_b(t('cli.billing.topup_header', balance=format_money(state.balance_usd)))}")
@@ -788,7 +788,7 @@ class CLIBillingMixin:
                 self._billing_open_portal(state)
                 self._dim(t("cli.billing.add_card_then_recheck"))
             elif choice == "recheck":
-                from agent.billing_view import build_billing_state
+                from hermes_agent.agent.billing_view import build_billing_state
                 try:
                     fresh = build_billing_state()
                 except Exception:
@@ -806,7 +806,7 @@ class CLIBillingMixin:
 
     def _billing_buy_flow(self, state):
         """Screen 2 (presets) → Screen 3 (confirm+charge+poll). No scope preflight: react to the server's 403s."""
-        from agent.billing_view import format_money, validate_charge_amount
+        from hermes_agent.agent.billing_view import format_money, validate_charge_amount
         if not self._billing_require_admin(state):
             return
         if not self._app:
@@ -851,7 +851,7 @@ class CLIBillingMixin:
 
     def _billing_confirm_and_charge(self, state, amount):
         """Screen 3 — confirm total + consent, charge, then poll to settlement."""
-        from agent.billing_view import format_money, new_idempotency_key
+        from hermes_agent.agent.billing_view import format_money, new_idempotency_key
         card = state.card
         self._block_header("💳", t("cli.billing.confirm_purchase"))
         print(f"  {t('cli.billing.total_line', amount=format_money(amount))}")
@@ -905,7 +905,7 @@ class CLIBillingMixin:
     def _billing_poll_charge(self, state, charge_id, amount):
         """Poll loop: 2s interval, 5-min cap, cancellable. settled = ledger truth."""
         import time as _time
-        from agent.billing_view import format_money, parse_money
+        from hermes_agent.agent.billing_view import format_money, parse_money
         from hermes_cli.nous_billing import BillingError, BillingTransient, get_charge_status
         deadline = _time.time() + 300
         while _time.time() < deadline:
@@ -971,7 +971,7 @@ class CLIBillingMixin:
 
     def _billing_handle_scope_required(self, state, *, amount=None, idempotency_key=None):
         """403 insufficient_scope → reauth, then resume ``amount`` on explicit confirm, reusing the idempotency key."""
-        from agent.billing_view import build_billing_state, format_money, new_idempotency_key
+        from hermes_agent.agent.billing_view import build_billing_state, format_money, new_idempotency_key
         amount_str = format_money(amount) if amount is not None else t("cli.billing.your_topup")
         granted = self._step_up_remote_spending(
             explain=t("cli.billing.charge_stepup_explain", amount=amount_str),
@@ -1010,7 +1010,7 @@ class CLIBillingMixin:
 
     def _billing_auto_reload_flow(self, state):
         """Screen 4 — threshold + reload-to → PATCH. Prefills; validates ``reload_to > threshold``; "Turn off" if on."""
-        from agent.billing_view import format_money, validate_charge_amount
+        from hermes_agent.agent.billing_view import format_money, validate_charge_amount
         if not self._billing_require_admin(state):
             return
         card = state.card
@@ -1134,7 +1134,7 @@ class CLIBillingMixin:
             self._billing_render_charge_error(state, exc)
             return
         print(f"  {t('cli.billing.keep_going_turned_on' if turn_on else 'cli.billing.keep_going_turned_off')}")
-        from agent.credits_tracker import apply_keep_going_change
+        from hermes_agent.agent.credits_tracker import apply_keep_going_change
         apply_keep_going_change(getattr(self, "agent", None), turn_on)
 
     def _billing_auto_reload_disable(self, state):
@@ -1147,7 +1147,7 @@ class CLIBillingMixin:
 
     def _billing_limit_screen(self, state):
         """Screen 5 — monthly spend limit (read-only; cap is portal-only)."""
-        from agent.billing_view import format_money
+        from hermes_agent.agent.billing_view import format_money
         self._block_header("💳", t("cli.billing.monthly_spend_limit"))
         cap = state.monthly_cap
         if cap is None or cap.limit_usd is None:

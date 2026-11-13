@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
-from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
+from hermes_agent.agent.skill_utils import is_excluded_skill_path, is_external_skill_path
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -702,7 +702,7 @@ def _match_skill_dir(skill_mds: Iterable[Path], skill_name: str) -> Optional[Pat
 
 def _find_skill_dir(skill_name: str) -> Optional[Path]:
     """Skill dir by frontmatter ``name`` (flat or nested)."""
-    from agent.skill_utils import iter_skill_index_files
+    from hermes_agent.agent.skill_utils import iter_skill_index_files
     base = _skills_dir()
     return _match_skill_dir((p for p in iter_skill_index_files(base, "SKILL.md") if not is_external_skill_path(p)),
                             skill_name) if base.exists() else None
@@ -710,7 +710,7 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
 
 def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
     """Skill dir under configured external dirs by frontmatter name."""
-    from agent.skill_utils import get_all_skills_dirs
+    from hermes_agent.agent.skill_utils import get_all_skills_dirs
     return next((found for base in get_all_skills_dirs()[1:] if base.exists()
                  if (found := _match_skill_dir((p for p in base.rglob("SKILL.md") if not is_excluded_skill_path(p)),
                                                skill_name)) is not None), None)
@@ -739,7 +739,7 @@ def is_external_only(skill_name: str) -> bool:
 def _external_skill_names() -> set:
     """Frontmatter names of all skills under configured external dirs (one scan per call; the
     router's set-based provenance uses this instead of a per-skill dir lookup)."""
-    from agent.skill_utils import get_all_skills_dirs
+    from hermes_agent.agent.skill_utils import get_all_skills_dirs
     names: set = set()
     for base in get_all_skills_dirs()[1:]:
         if not base.exists():

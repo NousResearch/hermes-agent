@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from agent.session_activity import (
+from hermes_agent.agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
 from hermes_agent.hermes_state_errors import SessionActiveWriteGuardError
@@ -1627,7 +1627,7 @@ class SessionSessionsMixin:
         """(is_fork_child, source) in ONE read (prompt_cache_scope needs both from the same row).
         Missing row → (False, ""); DB errors propagate (fail closed).
 
-        ``agent/prompt_cache_scope.py`` needs both to resolve a host-declared conversation scope, and both
+        ``hermes_agent/agent/prompt_cache_scope.py`` needs both to resolve a host-declared conversation scope, and both
         live on the same ``sessions`` row; asking for them separately read that row twice per resolution
         (@teknium1 on 98811). The marker rules stay here, beside :meth:`is_explicit_fork_child`, instead of
         being re-implemented by the caller. See #98811.

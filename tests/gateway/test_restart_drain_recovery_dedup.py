@@ -51,7 +51,7 @@ def test_build_turn_context_stamps_the_platform_message_id_on_the_user_turn():
     This is the row the early crash-resilience persist writes, so it is the
     only place a drain-interrupted turn can pick the id up.
     """
-    from agent.turn_context import build_turn_context
+    from hermes_agent.agent.turn_context import build_turn_context
 
     agent = types.SimpleNamespace()
     ctx = _build_turn_context_for_test(
@@ -74,7 +74,7 @@ def test_persisted_interrupted_turn_is_findable_by_platform_message_id(tmp_path)
     the turn IS in the transcript, so recovery would re-run a turn that
     already ran (duplicate work, duplicate spend, duplicate reply).
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     db = _make_db(tmp_path)
     session_id = db.create_session("sess-drain-window", "gateway")
@@ -103,7 +103,7 @@ def test_platform_message_id_survives_a_persist_content_override(tmp_path):
     ``_persist_user_message_override``; the id has to survive that rewrite or
     the dedup authority is blind for exactly the busy channels that need it.
     """
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     db = _make_db(tmp_path)
     session_id = db.create_session("sess-override", "gateway")

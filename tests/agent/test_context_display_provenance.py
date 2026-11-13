@@ -2,16 +2,16 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.context_breakdown import compute_session_context_breakdown, render_context_breakdown_lines
-from agent.context_compressor import ContextCompressor
-from agent.usage_anchor import capture_usage_anchor
+from hermes_agent.agent.context_breakdown import compute_session_context_breakdown, render_context_breakdown_lines
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.agent.usage_anchor import capture_usage_anchor
 
 
 def test_context_provenance_follows_the_selected_number():
     comp = ContextCompressor(model="fixture", config_context_length=100_000, quiet_mode=True)
     agent = SimpleNamespace(context_compressor=comp, tools=[], model="fixture")
     messages = [{"role": "user", "content": "fixture question"}]
-    with patch("agent.system_prompt.build_system_prompt_parts", return_value={"stable": "fixture"}):
+    with patch("hermes_agent.agent.system_prompt.build_system_prompt_parts", return_value={"stable": "fixture"}):
         for source in ("local_estimate", "provider_usage", "provider_usage_plus_estimate"):
             if source == "provider_usage":
                 comp.update_from_response({"prompt_tokens": 1234, "completion_tokens": 20})
@@ -38,6 +38,6 @@ def test_preflight_seed_does_not_label_actual_usage_estimated():
     assert _get_usage(agent)["context_used"] == 1234
     comp.last_prompt_tokens = -1
     assert "context_used" not in _get_usage(agent)
-    from agent.context_breakdown import context_display_source
+    from hermes_agent.agent.context_breakdown import context_display_source
     # A cleared live gauge must not re-label a persisted provider fallback.
     assert context_display_source(comp) == "provider_usage"

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from agent.conversation_compression import recover_rotated_compression_session
+from hermes_agent.agent.conversation_compression import recover_rotated_compression_session
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_errors import CompressionSessionClosedError
 

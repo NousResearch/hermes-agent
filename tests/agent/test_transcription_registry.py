@@ -1,4 +1,4 @@
-"""Tests for agent/transcription_registry.py and agent/transcription_provider.py.
+"""Tests for hermes_agent/agent/transcription_registry.py and hermes_agent/agent/transcription_provider.py.
 
 Covers:
 - Registration happy path
@@ -19,8 +19,8 @@ from typing import Any, Optional
 
 import pytest
 
-from agent import transcription_registry
-from agent.transcription_provider import TranscriptionProvider
+from hermes_agent.agent import transcription_registry
+from hermes_agent.agent.transcription_provider import TranscriptionProvider
 
 
 class _FakeProvider(TranscriptionProvider):
@@ -78,7 +78,7 @@ class TestRegistration:
     @pytest.mark.parametrize("builtin", sorted(transcription_registry._BUILTIN_NAMES))
     def test_rejects_builtin_shadow_with_warning(self, builtin, caplog):
         p = _FakeProvider(name=builtin)
-        with caplog.at_level(logging.WARNING, logger="agent.transcription_registry"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.transcription_registry"):
             transcription_registry.register_provider(p)
         assert builtin in caplog.text
         assert transcription_registry.get_provider(builtin) is None
@@ -142,7 +142,7 @@ class TestABCContract:
 
 
 class TestBuiltinSync:
-    """``_BUILTIN_NAMES`` in agent/transcription_registry.py is duplicated
+    """``_BUILTIN_NAMES`` in hermes_agent/agent/transcription_registry.py is duplicated
     from ``BUILTIN_STT_PROVIDERS`` in hermes_agent/tools/transcription_tools.py
     (importing directly would create a circular dependency). This test
     fails loudly if the two lists drift — a new built-in added to

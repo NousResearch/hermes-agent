@@ -83,7 +83,7 @@ class TestHostSleep:
 
     @pytest.mark.parametrize("during_sample", [False, True])
     def test_sleep_is_not_idle_time_but_awake_idle_still_fires(self, monkeypatch, during_sample):
-        from agent import session_activity
+        from hermes_agent.agent import session_activity
         from hermes_agent.cron.scheduler_liveness import _inactivity_watchdog_loop
 
         # Wall time keeps running while the host sleeps; monotonic time pauses (macOS, Linux).
@@ -123,7 +123,7 @@ class TestHostSleep:
 
 def test_sleep_before_watchdog_thread_starts(monkeypatch):
     """The worker can record activity before the watchdog gets its first timeslice."""
-    from agent import activity_tracking, session_activity
+    from hermes_agent.agent import activity_tracking, session_activity
     from hermes_agent.cron import scheduler
 
     clock = SimpleNamespace(wall=1000.0, mono=1000.0)

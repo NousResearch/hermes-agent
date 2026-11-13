@@ -52,14 +52,29 @@ description: "Hermes Agent 内部结构——主要子系统、执行路径、�
 
 ```text
 hermes-agent/
-├── run_agent.py              # AIAgent — 核心对话循环（大文件）
 ├── cli.py                    # HermesCLI — 交互式终端 UI（大文件）
 ├── hermes_constants.py       # HERMES_HOME、感知 profile 的路径
 ├── hermes_agent/             # Python 包
+│   ├── run_agent.py              # AIAgent — 核心对话循环（大文件）
 │   ├── model_tools.py            # 工具发现、schema 收集、分发
 │   ├── toolsets.py               # 工具分组与平台预设
 │   ├── hermes_state.py           # 带 FTS5 的 SQLite 会话/状态数据库
 │   ├── batch_runner.py           # 批量轨迹生成
+│   │
+│   ├── agent/                    # Agent 内部模块
+│   │   ├── prompt_builder.py     # 系统 prompt 组装
+│   │   ├── context_engine.py     # ContextEngine ABC（可插拔）
+│   │   ├── context_compressor.py # 默认引擎——有损摘要压缩
+│   │   ├── prompt_caching.py     # Anthropic prompt 缓存
+│   │   ├── auxiliary_client.py   # 辅助 LLM，用于旁路任务（视觉、摘要）
+│   │   ├── model_metadata.py     # 模型上下文长度、token 估算
+│   │   ├── models_dev.py         # models.dev 注册表集成
+│   │   ├── anthropic_adapter.py  # Anthropic Messages API 格式转换
+│   │   ├── display.py            # KawaiiSpinner、工具预览格式化
+│   │   ├── skill_commands.py     # Skill 斜杠命令
+│   │   ├── memory_manager.py    # 记忆管理器编排
+│   │   ├── memory_provider.py   # 记忆提供者 ABC
+│   │   └── trajectory.py         # 轨迹保存辅助函数
 │   │
 │   ├── tools/                    # 工具实现（每个工具一个文件）
 │   │   ├── registry.py           # 中央工具注册表
@@ -90,21 +105,6 @@ hermes-agent/
 │   │
 │   ├── acp_adapter/              # ACP 服务器（VS Code / Zed / JetBrains）
 │   └── cron/                     # 调度器（jobs.py、scheduler.py）
-│
-├── agent/                    # Agent 内部模块
-│   ├── prompt_builder.py     # 系统 prompt 组装
-│   ├── context_engine.py     # ContextEngine ABC（可插拔）
-│   ├── context_compressor.py # 默认引擎——有损摘要压缩
-│   ├── prompt_caching.py     # Anthropic prompt 缓存
-│   ├── auxiliary_client.py   # 辅助 LLM，用于旁路任务（视觉、摘要）
-│   ├── model_metadata.py     # 模型上下文长度、token 估算
-│   ├── models_dev.py         # models.dev 注册表集成
-│   ├── anthropic_adapter.py  # Anthropic Messages API 格式转换
-│   ├── display.py            # KawaiiSpinner、工具预览格式化
-│   ├── skill_commands.py     # Skill 斜杠命令
-│   ├── memory_manager.py    # 记忆管理器编排
-│   ├── memory_provider.py   # 记忆提供者 ABC
-│   └── trajectory.py         # 轨迹保存辅助函数
 │
 ├── hermes_cli/               # CLI 子命令与设置
 │   ├── main.py               # 入口点——所有 `hermes` 子命令（大文件）
@@ -190,7 +190,7 @@ hermes-agent/
 
 ### Agent 循环
 
-同步编排引擎（`run_agent.py` 中的 `AIAgent`）。负责 provider 选择、prompt 构建、工具执行、重试、回退、回调、压缩和持久化。支持三种 API 模式以适配不同 provider 后端。
+同步编排引擎（`hermes_agent/run_agent.py` 中的 `AIAgent`）。负责 provider 选择、prompt 构建、工具执行、重试、回退、回调、压缩和持久化。支持三种 API 模式以适配不同 provider 后端。
 
 → [Agent 循环内部机制](./agent-loop.md)
 
@@ -272,7 +272,7 @@ hermes_agent/tools/*.py  （每个文件在导入时调用 registry.register()�
        ↑
 hermes_agent/model_tools.py  （导入 hermes_agent/tools/registry 并触发工具发现）
        ↑
-run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
+hermes_agent/run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
 这条依赖链意味着工具注册发生在导入时，早于任何 agent 实例的创建。任何在顶层调用 `registry.register()` 的 `hermes_agent/tools/*.py` 文件都会被自动发现——无需手动维护导入列表。

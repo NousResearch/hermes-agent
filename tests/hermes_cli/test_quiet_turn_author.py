@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli
-from agent.turn_author import TURN_AUTHOR_ENV
+from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV
 
 AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
 

@@ -3,13 +3,13 @@
 Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
-Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
-`agent/prompt_caching.py`, `hermes_agent/gateway/run_turn_hygiene.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
+Source files: `hermes_agent/agent/context_engine.py` (ABC), `hermes_agent/agent/context_compressor.py` (default engine),
+`hermes_agent/agent/prompt_caching.py`, `hermes_agent/gateway/run_turn_hygiene.py` (session hygiene), `hermes_agent/agent/compression_facade.py` (search for `_compress_context`)
 
 
 ## Bedrock context window cache
 
-Bedrock context resolution in `agent/model_metadata.py` uses this precedence:
+Bedrock context resolution in `hermes_agent/agent/model_metadata.py` uses this precedence:
 
 - **Explicit overrides win.** Configured context lengths take priority over cache,
   probes, and the static table.
@@ -38,7 +38,7 @@ small-window 75% threshold floor yields a 375,000-token trigger at this window.
 
 ## Pluggable Context Engine
 
-Context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management).
+Context management is built on the `ContextEngine` ABC (`hermes_agent/agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management).
 
 ```yaml
 context:
@@ -100,14 +100,14 @@ in long gateway sessions.
 
 ### 2. Agent ContextCompressor (50% threshold, configurable)
 
-Located in `agent/context_compressor.py`. This is the **primary compression
+Located in `hermes_agent/agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
 API-reported token counts.
 
 #### Token accounting: provider anchors and explicit heuristic fallbacks
 
 Every compaction gate (turn-start preflight, idle, pre-API pressure, post-tool)
-asks the **usage anchor** first (`agent/usage_anchor.py`): the provider's last
+asks the **usage anchor** first (`hermes_agent/agent/usage_anchor.py`): the provider's last
 prompt and completion token counts plus a rough estimate of ONLY the messages appended since
 that response. The anchor identifies the priced transcript by a content
 fingerprint, so it survives the gateway re-reading history from the DB every
@@ -171,7 +171,7 @@ saved before the count existed fall back to a per-provider estimate from the
 ciphertext length.
 
 Images are priced at the per-image cost **learned from the provider's usage**
-(`agent/image_token_cost.py`), not a vendor formula: on a response whose delta
+(`hermes_agent/agent/image_token_cost.py`), not a vendor formula: on a response whose delta
 since the previous anchor introduced N images, the residual between the real
 `prompt_tokens` and the text-only projection is N × the provider's price. The
 value is kept per `model@host` in `~/.hermes/cache/image_token_costs.json` and
@@ -240,7 +240,7 @@ attempt anyway:
 
 Every `compress_context` call that returns logs one content-free INFO line,
 `context compression attempt telemetry: {...}` (logger
-`agent.conversation_compression`). It never carries message text, summary
+`hermes_agent.agent.conversation_compression`). It never carries message text, summary
 text, the focus topic or error messages.
 
 - `trigger_source` names why the attempt ran: `manual`, `idle`,
@@ -415,7 +415,7 @@ Resolution rules:
   (e.g. `0.80`) wins.
 
 Plugin context engines can reuse the same resolution logic via
-`from agent.context_compressor import resolve_model_threshold`; engines that
+`from hermes_agent.agent.context_compressor import resolve_model_threshold`; engines that
 override `update_model()` own their own compaction policy and may ignore the
 map.
 
@@ -684,7 +684,7 @@ it is the handoff the transcript now carries.
 ### Prepared compaction (opt-in)
 
 With `compression.prepare_ahead: true` (read at agent construction, so it takes effect on the next
-session or gateway agent rebuild), `agent/prepared_compaction.py` writes the next summary before
+session or gateway agent rebuild), `hermes_agent/agent/prepared_compaction.py` writes the next summary before
 the trigger fires. When the last provider-reported prompt count is within 12% of the trigger
 (`threshold_tokens`) below it, the turn loop starts one background pass, before a tool batch runs or
 at turn end. Turn-end passes are skipped for cron runs, delegated children and one-shot sessions
@@ -793,7 +793,7 @@ Codex app-server sessions, native Responses compaction and micro-compaction are 
 
 ## Prompt Caching (Anthropic)
 
-Source: `agent/prompt_caching.py`
+Source: `hermes_agent/agent/prompt_caching.py`
 
 Reduces input token costs by ~75% on multi-turn conversations by caching the
 conversation prefix. Uses Anthropic's `cache_control` breakpoints.
@@ -869,7 +869,7 @@ prompt_caching:
   cache_ttl: "5m"
 ```
 
-`"auto"` resolves once per session in `agent/agent_init.py::_init_prompt_cache_config` via `agent/prompt_caching.py::auto_cache_ttl_for_source`: `1h` for human-paced sources, `5m` for `MACHINE_PACED_SOURCES` (subagent, cron, oneshot, webhook, kanban, api, tool, batch). Auxiliary/stub calls (`configured_cache_ttl()`) treat `auto` as `5m`.
+`"auto"` resolves once per session in `hermes_agent/agent/agent_init.py::_init_prompt_cache_config` via `hermes_agent/agent/prompt_caching.py::auto_cache_ttl_for_source`: `1h` for human-paced sources, `5m` for `MACHINE_PACED_SOURCES` (subagent, cron, oneshot, webhook, kanban, api, tool, batch). Auxiliary/stub calls (`configured_cache_ttl()`) treat `auto` as `5m`.
 
 The CLI shows caching status at startup:
 ```
@@ -879,4 +879,4 @@ The CLI shows caching status at startup:
 
 ## Context Pressure Warnings
 
-Intermediate context-pressure warnings have been removed (see the iteration-budget block in `agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.
+Intermediate context-pressure warnings have been removed (see the iteration-budget block in `hermes_agent/agent/turn_iteration_prep.py`, which notes: "No intermediate pressure warnings — they caused models to 'give up' prematurely on complex tasks"). Compression fires when prompt tokens reach the configured `compression.threshold` (default 50%) with no prior warning step; gateway session hygiene fires as the secondary safety net at 85% of the model's context window.

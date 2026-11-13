@@ -27,7 +27,7 @@ def _is_remote_env_backend(backend: str) -> bool:
     if backend in _REMOTE_ENV_BACKENDS or not backend or backend == "local":
         return backend in _REMOTE_ENV_BACKENDS
     try:
-        from agent.terminal_env_registry import provider_flag
+        from hermes_agent.agent.terminal_env_registry import provider_flag
         return bool(provider_flag(backend, "is_remote", False))
     except Exception:
         return False
@@ -136,7 +136,7 @@ def _is_env_var_persisted(var_name: str, env_snapshot: dict[str, str]) -> bool:
     if var_name in env_snapshot:
         return bool(env_snapshot[var_name])
     try:
-        from agent.secret_scope import UnscopedSecretError, get_secret
+        from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
         return bool(get_secret(var_name))
     except UnscopedSecretError:
         return False

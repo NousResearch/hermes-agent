@@ -59,7 +59,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
     monkeypatch.setattr(lpp, "_snapshot", None)
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
     server._cfg_cache = server._cfg_mtime = server._cfg_path = None
     return root, b
@@ -76,7 +76,7 @@ def _probe(profile: str | None) -> dict:
 
 
 def test_config_get_for_secondary_resolves_only_its_own_secrets_and_flips_fail_closed(two_homes):
-    from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
 
     _root, _b = two_homes
     assert not is_multiplex_active()  # single-profile so far
@@ -101,7 +101,7 @@ def test_config_get_for_secondary_resolves_only_its_own_secrets_and_flips_fail_c
 def test_single_profile_serve_keeps_environ_fallthrough(two_homes):
     """Control: with no secondary ever requested the launch profile stays unscoped, so credentials
     injected only via the process env (systemd, ``op run``) keep resolving."""
-    from agent.secret_scope import get_secret, is_multiplex_active
+    from hermes_agent.agent.secret_scope import get_secret, is_multiplex_active
 
     probe = _probe(None)
     assert probe["env_ref"] == ENV_VAL
@@ -111,7 +111,7 @@ def test_single_profile_serve_keeps_environ_fallthrough(two_homes):
 
 def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch):
     """The scope must wrap the body of every credential-reading RPC, not only config.get."""
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
 
     _root, b = two_homes
     seen = {}
@@ -122,7 +122,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
         seen["oneshot_home"] = Path(get_hermes_home())
         return "t"
 
-    monkeypatch.setattr("agent.oneshot.run_oneshot", fake_oneshot)
+    monkeypatch.setattr("hermes_agent.agent.oneshot.run_oneshot", fake_oneshot)
     monkeypatch.setattr(server, "_model_picker_context", lambda agent: object())
 
     def build_payload(ctx, **kwargs):
@@ -143,7 +143,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
 @pytest.mark.parametrize("route", ["session.compress", "slash.compress"])
 def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, monkeypatch, route):
     """Manual compression must resolve secrets from its session across an A→B→A sequence."""
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_constants import get_hermes_home
 
     root, b = two_homes
@@ -185,7 +185,7 @@ def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, 
 
                 monkeypatch.setattr(server, "_compress_session_history", compress_history)
                 monkeypatch.setattr(
-                    "agent.model_metadata.estimate_request_tokens_rough", lambda *args, **kwargs: 1)
+                    "hermes_agent.agent.model_metadata.estimate_request_tokens_rough", lambda *args, **kwargs: 1)
                 server._compress_live_with_feedback(sid, session, agent, "", snapshot_kwargs=True)
         finally:
             server._sessions.pop(sid, None)
@@ -206,7 +206,7 @@ def test_manual_compress_routes_bind_the_sessions_full_runtime_scope(two_homes, 
 
 def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch):
     """Desktop /review is off-turn; start_review must still see the session's secrets (#117544)."""
-    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
     from hermes_constants import get_hermes_home
     from hermes_agent.tui_gateway.transport import StdioTransport
 
@@ -243,7 +243,7 @@ def test_live_review_binds_runtime_scope_under_multiplex(two_homes, monkeypatch)
             ):
                 ctx.setattr(server, "_session_uses_compute_host", lambda value: False)
                 from unittest.mock import patch
-                with patch("agent.review_engine.start_review", fake_start_review):
+                with patch("hermes_agent.agent.review_engine.start_review", fake_start_review):
                     out = server._live_slash_command_output(sid, session, "review", "")
             assert out == "Review started. Results will return here."
         finally:
@@ -270,7 +270,7 @@ def test_model_switch_mirror_binds_runtime_scope_under_multiplex(two_homes, monk
     the switch's credentials from the session's own profile (#122655). Unbound, ``switch_model``
     reads ``get_secret`` with no scope active and the mirror reports "live session sync failed:
     ... UnscopedSecretError" while the session stays on its previous route."""
-    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
     from hermes_constants import get_hermes_home
 
     root, b = two_homes
@@ -349,7 +349,7 @@ def test_config_show_keeps_each_profiles_values_after_multiplex_activation(two_h
 def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monkeypatch):
     """The C6 asymmetry: a default-profile session (``profile_home`` None) in a multiplexing process
     must bind the launch profile's own scope for its agent build instead of running unscoped."""
-    from agent.secret_scope import current_secret_scope, set_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope, set_multiplex_active
     from hermes_constants import get_hermes_home
 
     root, _b = two_homes
@@ -368,7 +368,7 @@ def test_launch_profile_agent_build_is_scoped_once_multiplexing(two_homes, monke
 class _MemoryManager:
     """Stands in for an external memory provider: ``system_prompt_block()`` reads its credential via get_secret."""
     def build_system_prompt(self):
-        from agent.secret_scope import get_secret
+        from hermes_agent.agent.secret_scope import get_secret
         from hermes_constants import get_hermes_home
         return f"{get_hermes_home()}|{get_secret('MEM_PROVIDER_KEY')}"
 
@@ -389,7 +389,7 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     model-switch prompt re-persist rebuilt the system prompt with no secret scope, so the external memory
     provider's ``system_prompt_block()`` hit ``UnscopedSecretError`` on the LAUNCH profile once the process
     hosted a second home — and for a secondary they resolved the launch profile's credential/home."""
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     root, b = two_homes
     (root / ".env").write_text((root / ".env").read_text() + "MEM_PROVIDER_KEY=launch-mem-key\n")
@@ -397,7 +397,7 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     monkeypatch.setattr(system_prompt, "build_system_prompt_parts",
                         lambda agent, system_message=None: {"stable": "", "context": "",
                                                             "volatile": agent._memory_manager.build_system_prompt()})
-    monkeypatch.setattr("agent.context_file_sources.context_file_sources_for_agent", lambda agent: [])
+    monkeypatch.setattr("hermes_agent.agent.context_file_sources.context_file_sources_for_agent", lambda agent: [])
     sessions = {"sa": _prompt_building_session(None, "sess-a"), "sb": _prompt_building_session(str(b), "sess-b")}
     monkeypatch.setattr(server, "_sessions", sessions)
     assert _probe("b")["b_ref"] == B_VAL  # flips the process to fail-closed multi-profile hosting

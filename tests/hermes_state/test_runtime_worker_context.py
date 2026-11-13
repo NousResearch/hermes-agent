@@ -1,7 +1,7 @@
 """Constructor context is assignment-scoped and shares durable mutation receipts."""
 import pytest
 
-from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
 
@@ -46,7 +46,7 @@ def test_worker_context_preserves_authority_identity_and_prompt_receipts(tmp_pat
 
 def test_worker_constructor_restores_persisted_compressor_guards(tmp_path):
     import time
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
     db = SessionDB(tmp_path / 'state.db')
     try:
         db.create_session('owned', 'cli', model_config={'_proactive_prune_rearm_tokens': 1234})

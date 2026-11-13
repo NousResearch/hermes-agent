@@ -278,7 +278,7 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     _configure_mode(monkeypatch, tmp_path, "delete")
     _disable_vulnerable_gate(monkeypatch)
 
-    from agent import verification_evidence
+    from hermes_agent.agent import verification_evidence
     from hermes_agent.cron import executions
     from hermes_agent.gateway import delivery_ledger
     from hermes_agent.gateway.platforms.api_server import ResponseStore

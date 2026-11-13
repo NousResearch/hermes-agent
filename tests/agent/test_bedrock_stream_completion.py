@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from agent.bedrock_adapter import normalize_converse_stream_events
+from hermes_agent.agent.bedrock_adapter import normalize_converse_stream_events
 
 
 def _frame(kind, payload):
@@ -80,7 +80,7 @@ def test_bedrock_wire_requires_message_stop(terminal):
             assert result.choices[0].message.content == "partial answer"
             assert result.choices[0].finish_reason == "stop"
         else:
-            from agent.errors import EmptyStreamError
+            from hermes_agent.agent.errors import EmptyStreamError
 
             with pytest.raises(
                 EmptyStreamError, match="(?i)(incomplete|messageStop|truncat)"
@@ -94,8 +94,8 @@ def test_bedrock_wire_requires_message_stop(terminal):
 
 
 def test_explicit_interrupt_keeps_partial_response_contract():
-    from agent.bedrock_adapter import stream_converse_with_callbacks
-    from agent.chat_completion_helpers import _finalize_bedrock_relay_events
+    from hermes_agent.agent.bedrock_adapter import stream_converse_with_callbacks
+    from hermes_agent.agent.chat_completion_helpers import _finalize_bedrock_relay_events
 
     interrupted = False
 

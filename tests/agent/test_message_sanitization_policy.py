@@ -1,6 +1,6 @@
 """Tests for the single-owner call_id + reasoning_content policies.
 
-Audit F4 consolidation: agent/message_sanitization.py now owns the
+Audit F4 consolidation: hermes_agent/agent/message_sanitization.py now owns the
 deterministic call_id synthesis, call_id coalescing/dedup, and the
 reasoning_content strip-vs-repad provider-direction policy. These tests pin
 the owner functions' behavior (including byte-exact hash outputs — they feed
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.message_sanitization import (
+from hermes_agent.agent.message_sanitization import (
     apply_reasoning_content_policy,
     coalesce_tool_call_id,
     deterministic_call_id,
@@ -308,7 +308,7 @@ class TestPerProviderReasoningEcho:
     def _make_agent(self, reasoning_echo_flag=False, provider="custom",
                     model="my-model", base_url="https://gw.example.com/v1"):
         """Build a minimal AIAgent-shaped object without full init."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = object.__new__(AIAgent)
         agent.provider = provider
         agent.model = model
@@ -351,7 +351,7 @@ class TestPerProviderReasoningEcho:
         agent._reasoning_echo_flag = False  # fallback entry has no opt-in
         assert agent._needs_thinking_reasoning_pad() is False
         # End-to-end: reapply_reasoning_echo strips the field
-        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        from hermes_agent.agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
         api_msgs = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi", "reasoning_content": "thoughts"},
@@ -377,7 +377,7 @@ class TestPerProviderReasoningEcho:
         agent._reasoning_echo_flag = True  # fallback entry has opt-in
         assert agent._needs_thinking_reasoning_pad() is True
         # End-to-end: reapply_reasoning_echo re-pads
-        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        from hermes_agent.agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
         api_msgs = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},  # no reasoning_content
@@ -390,7 +390,7 @@ class TestPerProviderReasoningEcho:
     def test_restore_primary_reverts_flag(self):
         """After fallback, restore_primary_runtime reverts the flag
         from the snapshot saved by switch_model."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         agent = object.__new__(AIAgent)
         agent._reasoning_echo_flag = True  # primary had opt-in
         agent._fallback_activated = True
@@ -424,7 +424,7 @@ class TestPerProviderReasoningEcho:
         # Simulate: fallback set the flag to False
         agent._reasoning_echo_flag = False
 
-        from agent.agent_runtime_helpers import restore_primary_runtime
+        from hermes_agent.agent.agent_runtime_helpers import restore_primary_runtime
         restore_primary_runtime(agent)
 
         # Flag should be restored from snapshot
@@ -432,7 +432,7 @@ class TestPerProviderReasoningEcho:
         assert agent.model == "glm-5.2"
 
 
-from agent.message_sanitization import normalize_provider_tool_call_ids
+from hermes_agent.agent.message_sanitization import normalize_provider_tool_call_ids
 
 def test_normalize_provider_parallel_ids_is_deterministic_and_preserves_composite():
     calls = [

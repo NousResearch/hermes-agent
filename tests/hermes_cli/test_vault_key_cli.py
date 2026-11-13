@@ -10,7 +10,7 @@ import pytest
 from keyring.backend import KeyringBackend
 from keyring.backends import fail
 
-from agent.vault_store import VaultStore
+from hermes_agent.agent.vault_store import VaultStore
 
 
 class _MemoryKeyring(KeyringBackend):

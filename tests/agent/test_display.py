@@ -1,10 +1,10 @@
-"""Tests for agent/display.py — build_tool_preview() and inline diff previews."""
+"""Tests for hermes_agent/agent/display.py — build_tool_preview() and inline diff previews."""
 
 import pytest
 from unittest.mock import MagicMock
 
-import agent.display as display_module
-from agent.display import (
+import hermes_agent.agent.display as display_module
+from hermes_agent.agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
@@ -122,7 +122,7 @@ class TestBuildToolPreview:
     def test_tiny_max_len_never_exceeded(self, max_len):
         """max_len is a hard cap on every preview path — dedicated builder (terminal), generic
         fallback key (web_search), and the cute head-truncated path (#9439)."""
-        from agent.display import _cute_path, set_tool_preview_max_len
+        from hermes_agent.agent.display import _cute_path, set_tool_preview_max_len
         long = "abcdefghijklmnopqrstuvwxyz"
         for tool, args in (("terminal", {"command": long}), ("web_search", {"query": long})):
             preview = build_tool_preview(tool, args, max_len=max_len)
@@ -242,7 +242,7 @@ class TestEditDiffPreview:
     def test_render_edit_diff_with_delta_handles_renderer_errors(self, monkeypatch):
         printer = MagicMock()
 
-        monkeypatch.setattr("agent.display._summarize_rendered_diff_sections", MagicMock(side_effect=RuntimeError("boom")))
+        monkeypatch.setattr("hermes_agent.agent.display._summarize_rendered_diff_sections", MagicMock(side_effect=RuntimeError("boom")))
 
         rendered = render_edit_diff_with_delta(
             "patch",
@@ -274,7 +274,7 @@ class TestBuildToolLabel:
 
     @pytest.fixture(autouse=True)
     def _enable_friendly(self):
-        from agent.display import set_friendly_tool_labels
+        from hermes_agent.agent.display import set_friendly_tool_labels
         set_friendly_tool_labels(True)
         yield
         set_friendly_tool_labels(True)
@@ -288,7 +288,7 @@ class TestBuildToolLabel:
 
 
     def test_disabled_falls_back_to_preview(self):
-        from agent.display import (
+        from hermes_agent.agent.display import (
             build_tool_label,
             build_tool_preview,
             set_friendly_tool_labels,
@@ -311,7 +311,7 @@ class TestBuildStatusPhrase:
 
 
     def test_caps_length_for_slack_status_line(self):
-        from agent.display import build_status_phrase
+        from hermes_agent.agent.display import build_status_phrase
         phrase = build_status_phrase(
             "terminal", {"command": "x" * 300}, max_len=49
         )
@@ -320,7 +320,7 @@ class TestBuildStatusPhrase:
 
 
     def test_respects_friendly_labels_toggle(self):
-        from agent.display import build_status_phrase, set_friendly_tool_labels
+        from hermes_agent.agent.display import build_status_phrase, set_friendly_tool_labels
         set_friendly_tool_labels(False)
         try:
             assert build_status_phrase("terminal", {"command": "ls"}) is None

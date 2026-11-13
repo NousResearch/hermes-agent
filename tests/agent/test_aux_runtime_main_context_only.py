@@ -9,7 +9,7 @@ session's runtime, or one session's base_url paired with another's api_key. The
 
 import threading
 
-import agent.auxiliary_client as aux
+import hermes_agent.agent.auxiliary_client as aux
 
 _DELETED = (
     "auxiliary_is_nous",

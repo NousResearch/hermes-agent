@@ -1,6 +1,6 @@
 """Tests for per-platform prompt-hint overrides (config.yaml → platform_hints).
 
-Covers agent/system_prompt.py::_resolve_platform_hint — the resolver that
+Covers hermes_agent/agent/system_prompt.py::_resolve_platform_hint — the resolver that
 applies append/replace overrides to a platform's default hint. Feature added
 for enterprise managed profiles (per-platform behavior without affecting other
 platforms). See HA Core ticket: configurable per-platform prompt hints.
@@ -8,7 +8,7 @@ platforms). See HA Core ticket: configurable per-platform prompt hints.
 
 import types
 
-from agent.system_prompt import _resolve_platform_hint
+from hermes_agent.agent.system_prompt import _resolve_platform_hint
 
 
 def _agent(overrides):

@@ -1,6 +1,6 @@
 """Translation threats must not discard unrelated role instructions."""
 
-from agent.prompt_builder import _scan_context_content
+from hermes_agent.agent.prompt_builder import _scan_context_content
 from hermes_agent.tools.threat_patterns import scan_for_threats
 
 

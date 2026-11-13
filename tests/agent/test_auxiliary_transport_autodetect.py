@@ -1,4 +1,4 @@
-"""Tests for transport auto-detection in agent.auxiliary_client.
+"""Tests for transport auto-detection in hermes_agent.agent.auxiliary_client.
 
 Auxiliary clients must pick the correct wire protocol (OpenAI
 chat.completions vs native Anthropic Messages) based on the endpoint,
@@ -49,7 +49,7 @@ def _clean_env(monkeypatch):
     (None, False, "None"),
 ])
 def test_endpoint_speaks_anthropic_messages(url, expected, label):
-    from agent.auxiliary_client import _endpoint_speaks_anthropic_messages
+    from hermes_agent.agent.auxiliary_client import _endpoint_speaks_anthropic_messages
     assert _endpoint_speaks_anthropic_messages(url) is expected, (
         f"{label}: {url!r} should be {expected}"
     )
@@ -87,7 +87,7 @@ def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_pa
     generation 404s on every Kimi Coding Plan user after the "main model
     for every user" aux design shipped.
     """
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         resolve_provider_client,
         AnthropicAuxiliaryClient,
     )

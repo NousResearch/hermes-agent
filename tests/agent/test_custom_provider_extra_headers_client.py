@@ -8,7 +8,7 @@ never log them.
 """
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 _PROXY_URL = "https://llm.internal.example.com/v1"
 _PROXY_CONFIG = {
@@ -26,7 +26,7 @@ _PROXY_CONFIG = {
 }
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_custom_provider_extra_headers_applied_at_construction(mock_openai):
     mock_openai.return_value = MagicMock()
     with patch("hermes_cli.config.load_config", return_value=_PROXY_CONFIG):

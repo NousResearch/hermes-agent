@@ -24,10 +24,10 @@ def _visible(setting):
     return setting is not True
 
 
-# --- agent/conversation_compression.py replay_compression_warning -> DiagnosticText ------------
+# --- hermes_agent/agent/conversation_compression.py replay_compression_warning -> DiagnosticText ------------
 
 def test_compression_replay_is_classified_diagnostic():
-    from agent.conversation_compression import replay_compression_warning
+    from hermes_agent.agent.conversation_compression import replay_compression_warning
     from hermes_agent.gateway.warning_notifications import DiagnosticText, is_warning_status
     seen = []
     agent = types.SimpleNamespace(_compression_warning="ℹ Codex caps context at 272K, so auto-compaction was raised",
@@ -42,7 +42,7 @@ def test_compression_replay_is_classified_diagnostic():
 def test_compression_replay_reaches_gateway_status_sink_only_when_visible(tmp_path, monkeypatch, setting):
     """Composed: replay -> the gateway status callback's own gate (render_notification + is_warning_status)."""
     _policy(tmp_path, monkeypatch, setting)
-    from agent.conversation_compression import replay_compression_warning
+    from hermes_agent.agent.conversation_compression import replay_compression_warning
     from hermes_agent.gateway.warning_notifications import is_warning_status, render_notification
     rendered = []
 
@@ -55,13 +55,13 @@ def test_compression_replay_reaches_gateway_status_sink_only_when_visible(tmp_pa
     assert (len(rendered) == 1) is _visible(setting)
 
 
-# --- agent/agent_init.py invalid config int + autoraise notice ---------------------------------
+# --- hermes_agent/agent/agent_init.py invalid config int + autoraise notice ---------------------------------
 
 @pytest.mark.parametrize("setting", MODES)
 def test_invalid_config_int_print_honors_policy_log_always(tmp_path, monkeypatch, setting, capsys, caplog):
     _policy(tmp_path, monkeypatch, setting)
     import logging
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
     agent = types.SimpleNamespace(platform="cli", _notification_config=None)
     with caplog.at_level(logging.WARNING):
         agent_init._warn_invalid_config_int("model.context_length in config.yaml", "256K",
@@ -71,7 +71,7 @@ def test_invalid_config_int_print_honors_policy_log_always(tmp_path, monkeypatch
     assert any("Invalid model.context_length" in rec.getMessage() for rec in caplog.records)
 
 
-# --- agent/turn_tool_validation.py auto-repair notice ------------------------------------------
+# --- hermes_agent/agent/turn_tool_validation.py auto-repair notice ------------------------------------------
 
 
 # --- TUI (functions are rebound onto hermes_agent.tui_gateway.server by bind_module) -------------------------

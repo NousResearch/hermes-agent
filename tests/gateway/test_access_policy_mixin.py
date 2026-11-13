@@ -11,7 +11,7 @@ import itertools
 
 import pytest
 
-from agent.secret_scope import reset_secret_scope, set_secret_scope
+from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
 from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 POLICIES = ("open", "allowlist", "disabled", "pairing", "typo")
@@ -121,7 +121,7 @@ def test_platform_prefix_env_name_is_scoped_and_fail_closed(monkeypatch):
         ALLOW_ALL_ENV_PREFIX = "DEMO"
         _dm_policy, _group_policy, _allow_from, _group_allow_from = "open", "open", [], []
 
-    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", True)
     monkeypatch.setenv("DEMO_ALLOW_ALL_USERS", "true")  # the DEFAULT profile's opt-in
     assert Host()._allow_all_env_names() == ("GATEWAY_ALLOW_ALL_USERS", "DEMO_ALLOW_ALL_USERS")
     with _scope({}):  # secondary profile: scope installed, key absent

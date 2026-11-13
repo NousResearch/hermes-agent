@@ -51,7 +51,7 @@ def save_completed_result(session) -> None:
     has none on this host: its command and output are the tenant's, kept in the live registry only."""
     if session.sandbox_key:
         return
-    from agent.redact import redact_sensitive_text, redact_terminal_output
+    from hermes_agent.agent.redact import redact_sensitive_text, redact_terminal_output
     from hermes_agent.tools.process_registry import MAX_OUTPUT_CHARS
 
     with session._lock:

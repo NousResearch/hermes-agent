@@ -1,7 +1,7 @@
 """A worker reopening an acknowledged-but-unjournaled write reconciles before its next write."""
 import pytest
 
-from agent.runtime_session_store import RuntimeSessionStore
+from hermes_agent.agent.runtime_session_store import RuntimeSessionStore
 
 
 def test_reopen_reconciles_pending_receipt_before_new_write(tmp_path):

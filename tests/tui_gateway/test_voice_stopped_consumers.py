@@ -45,7 +45,7 @@ def test_owner_forward_relays_nothing_after_a_voice_stopped_reply(monkeypatch, t
 
 @pytest.mark.asyncio
 async def test_attach_view_submit_and_oneshot_return_on_a_voice_stopped_reply(capsys):
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     from hermes_cli.gateway_chat_view import GatewayChatView
     view = GatewayChatView(_StopClient(), {"stored_session_id": "s"})
     assert await view.submit("stop") == {"voice_stopped": True}

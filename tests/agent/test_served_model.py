@@ -1,11 +1,11 @@
-"""agent.served_model — per-response served-model capture behind routing proxies (#54864)."""
+"""hermes_agent.agent.served_model — per-response served-model capture behind routing proxies (#54864)."""
 
 from __future__ import annotations
 
 import httpx
 import openai
 
-from agent.served_model import install_served_model_capture, result_model_fields
+from hermes_agent.agent.served_model import install_served_model_capture, result_model_fields
 
 
 class _Agent:

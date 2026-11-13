@@ -34,7 +34,7 @@ async def whoami():
     credentials under multi-profile hosting (#120310). It reads a made-up key, so it
     never touches real credentials or the network.
     """
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
 
     try:
         return {"ok": True, "key": get_secret("EXAMPLE_PLUGIN_PROBE_KEY")}

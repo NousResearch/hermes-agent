@@ -90,7 +90,7 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
     )
 
     # Stub the fetch layer under the SecretSource adapter.
-    import agent.secret_sources.bitwarden as bw_module
+    import hermes_agent.agent.secret_sources.bitwarden as bw_module
 
     monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
     monkeypatch.setattr(
@@ -99,7 +99,7 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
         lambda **_kw: ({"ANTHROPIC_API_KEY": "sk-ant-test"}, []),
     )
 
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     reg_module._reset_registry_for_tests()
 
@@ -130,8 +130,8 @@ def test_cold_profile_bitwarden_uses_profile_bootstrap_without_global_env(
         encoding="utf-8",
     )
 
-    import agent.secret_sources.bitwarden as bw_module
-    from agent.secret_sources import registry as reg_module
+    import hermes_agent.agent.secret_sources.bitwarden as bw_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     captured = {}
     monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
@@ -157,7 +157,7 @@ def test_single_profile_scoped_load_keeps_override_behavior(tmp_path, monkeypatc
     Ported from #77970 (@DonShelly): the guard must key on the multiplex flag,
     not on the home override alone -- single-profile ``-p`` runs still load.
     """
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     monkeypatch.delenv("HERMES_TEST_SHARED_ADAPTER_CONFIG", raising=False)
@@ -185,9 +185,9 @@ def test_multiplex_dotenv_load_hydrates_sources_without_global_env(
     tmp_path, monkeypatch
 ):
     """The safe multiplex path must still refresh profile secret sources."""
-    from agent import secret_scope
-    import agent.secret_sources.bitwarden as bw_module
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent import secret_scope
+    import hermes_agent.agent.secret_sources.bitwarden as bw_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
     from hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
@@ -250,12 +250,12 @@ def test_cold_profile_hydration_seeds_op_env_bootstrap(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     seen_env = {}
 
     def _capture_apply_all(_cfg, home_path, environ=None):
-        from agent.secret_sources.registry import ApplyReport
+        from hermes_agent.agent.secret_sources.registry import ApplyReport
         seen_env.update(environ or {})
         return ApplyReport(sources=[], provenance={})
 
@@ -285,12 +285,12 @@ def test_cold_profile_hydration_dotenv_wins_over_op_env(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     seen_env = {}
 
     def _capture_apply_all(_cfg, home_path, environ=None):
-        from agent.secret_sources.registry import ApplyReport
+        from hermes_agent.agent.secret_sources.registry import ApplyReport
         seen_env.update(environ or {})
         return ApplyReport(sources=[], provenance={})
 
@@ -304,9 +304,9 @@ def test_cold_profile_hydration_dotenv_wins_over_op_env(tmp_path, monkeypatch):
 
 def test_cold_profile_hydration_retries_failed_source(tmp_path, monkeypatch):
     """A failed routed-profile fetch must not make its empty snapshot process-lifetime state."""
-    from agent.secret_sources.base import ErrorKind, FetchResult
-    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources.base import ErrorKind, FetchResult
+    from hermes_agent.agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     (tmp_path / "config.yaml").write_text(
         "secrets:\n  command:\n    enabled: true\n", encoding="utf-8"
@@ -358,10 +358,10 @@ def test_cold_profile_hydration_clears_partial_snapshot_when_sources_are_removed
     tmp_path, monkeypatch
 ):
     """Removing secret sources during a retry must revoke values from a partial snapshot."""
-    from agent.secret_scope import build_profile_secret_scope
-    from agent.secret_sources.base import ErrorKind, FetchResult
-    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope
+    from hermes_agent.agent.secret_sources.base import ErrorKind, FetchResult
+    from hermes_agent.agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -424,7 +424,7 @@ def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch)
 
 def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypatch):
     """``load_hermes_dotenv()`` is called at module-import time from several
-    hot modules (cli.py, hermes_cli/main.py, run_agent.py, ...).  The
+    hot modules (cli.py, hermes_cli/main.py, hermes_agent/run_agent.py, ...).  The
     Bitwarden status line previously printed once per call — 3-5x per
     startup.  The applied-home guard must short-circuit subsequent calls
     so the heavy work (config re-parse, Bitwarden lookup, status print)
@@ -449,16 +449,16 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
         call_count["n"] += 1
         return {"ANTHROPIC_API_KEY": "sk-ant-test"}, []
 
-    import agent.secret_sources.bitwarden as bw_module
+    import hermes_agent.agent.secret_sources.bitwarden as bw_module
     monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
     monkeypatch.setattr(bw_module, "fetch_bitwarden_secrets", _fake_fetch)
 
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     reg_module._reset_registry_for_tests()
 
     # Five calls in a row, simulating module-import-time invocations from
-    # cli.py, hermes_cli/main.py, run_agent.py, hermes_agent/trajectory_compressor.py,
+    # cli.py, hermes_cli/main.py, hermes_agent/run_agent.py, hermes_agent/trajectory_compressor.py,
     # hermes_agent/gateway/run.py.  Only the first should actually call the backend.
     for _ in range(5):
         env_loader._apply_external_secret_sources(tmp_path)
@@ -496,7 +496,7 @@ def test_apply_external_secret_sources_status_line_suppresses_secret_names(
         encoding="utf-8",
     )
 
-    import agent.secret_sources.bitwarden as bw_module
+    import hermes_agent.agent.secret_sources.bitwarden as bw_module
 
     monkeypatch.setattr(bw_module, "find_bws", lambda **_kw: Path("/fake/bws"))
     monkeypatch.setattr(
@@ -508,7 +508,7 @@ def test_apply_external_secret_sources_status_line_suppresses_secret_names(
         ),
     )
 
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     reg_module._reset_registry_for_tests()
 
@@ -521,14 +521,14 @@ def test_apply_external_secret_sources_status_line_suppresses_secret_names(
 
 def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch):
     """A later apply for the same key must not mutate an earlier home snapshot."""
-    from agent.secret_scope import build_profile_secret_scope
-    from agent.secret_sources.base import FetchResult
-    from agent.secret_sources.registry import (
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope
+    from hermes_agent.agent.secret_sources.base import FetchResult
+    from hermes_agent.agent.secret_sources.registry import (
         AppliedVar,
         ApplyReport,
         SourceReport,
     )
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     home_a = tmp_path / "profile-a"
     home_b = tmp_path / "profile-b"
@@ -608,7 +608,7 @@ def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monk
         encoding="utf-8",
     )
 
-    import agent.secret_sources.onepassword as op_module
+    import hermes_agent.agent.secret_sources.onepassword as op_module
 
     monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
     monkeypatch.setattr(
@@ -617,7 +617,7 @@ def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monk
         lambda **_kw: ({"ANTHROPIC_API_KEY": "sk-ant-test"}, []),
     )
 
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     reg_module._reset_registry_for_tests()
 
@@ -671,11 +671,11 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
         captured.update(kwargs)
         return {}, []
 
-    import agent.secret_sources.onepassword as op_module
+    import hermes_agent.agent.secret_sources.onepassword as op_module
     monkeypatch.setattr(op_module, "find_op", lambda *_a, **_kw: Path("/fake/op"))
     monkeypatch.setattr(op_module, "fetch_onepassword_secrets", _fake_fetch)
 
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     reg_module._reset_registry_for_tests()
 
@@ -687,7 +687,7 @@ def test_apply_external_secret_sources_bad_ttl_does_not_crash(tmp_path, monkeypa
 
 @pytest.fixture
 def _fresh_registry():
-    from agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources import registry as reg_module
 
     reg_module._reset_registry_for_tests()
     yield
@@ -696,8 +696,8 @@ def _fresh_registry():
 
 def _register_fake_bulk_source(value_for_home):
     """One bulk source supplying GLM_API_KEY, resolved per home."""
-    from agent.secret_sources import registry as reg_module
-    from agent.secret_sources.base import FetchResult, SecretSource
+    from hermes_agent.agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources.base import FetchResult, SecretSource
 
     class _Fake(SecretSource):
         name = "fakebulk"
@@ -717,7 +717,7 @@ def test_env_shadowed_reapply_keeps_home_snapshot(tmp_path, monkeypatch, _fresh_
     or a systemd ``EnvironmentFile=`` value) must still snapshot the home's effective values. Latching
     an empty snapshot made ``build_profile_secret_scope`` drop every vault credential for the process
     lifetime under multiplex."""
-    from agent.secret_scope import build_profile_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope
 
     home = tmp_path / ".hermes"
     home.mkdir()

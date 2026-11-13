@@ -137,7 +137,7 @@ class TestGatewayHistoryBuildForwardsSidecar:
 
 def test_gateway_history_keeps_sidecar_only_assistant_row():
     """A reasoning-only clean stop persists content="" with the promoted reply in ``api_content``
-    (agent/turn_final_response.py); the gateway rebuild must replay it, not drop it (user->user)."""
+    (hermes_agent/agent/turn_final_response.py); the gateway rebuild must replay it, not drop it (user->user)."""
     from hermes_agent.gateway.run import _build_gateway_agent_history
 
     history = [

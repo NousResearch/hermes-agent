@@ -53,7 +53,7 @@ def adapter():
 def _stub_create_agent_runtime(monkeypatch, fake_agent_cls):
     """Stub every external dependency of ``_create_agent`` so the real
     ``_spawn_stream_agent -> _run_agent -> _create_agent -> AIAgent(...)`` wiring runs."""
-    monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
+    monkeypatch.setattr("hermes_agent.run_agent.AIAgent", fake_agent_cls)
     monkeypatch.setattr("hermes_agent.gateway.run._resolve_runtime_agent_kwargs", lambda: {
         "provider": "openrouter", "api_key": "sk-test", "base_url": "https://openrouter.ai/api/v1",
         "api_mode": "chat_completions"})

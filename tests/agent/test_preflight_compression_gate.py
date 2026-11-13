@@ -8,7 +8,7 @@ of huge messages would silently skip compression and eventually hit a
 hard context-overflow error.
 """
 
-from agent.turn_context import _should_run_preflight_estimate
+from hermes_agent.agent.turn_context import _should_run_preflight_estimate
 
 
 # Protected-range counts mirror the compressor defaults. THRESHOLD_TOKENS is an

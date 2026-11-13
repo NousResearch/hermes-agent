@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.tool_executor import execute_tool_calls_sequential
-from run_agent import AIAgent
+from hermes_agent.agent.tool_executor import execute_tool_calls_sequential
+from hermes_agent.run_agent import AIAgent
 from hermes_agent.tools.clarify_gateway import resolve_clarify_timeout
 
 
@@ -75,9 +75,9 @@ def _make_agent(tmp_path: Path) -> AIAgent:
             ],
         ),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("run_agent._hermes_home", tmp_path),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.run_agent._hermes_home", tmp_path),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -145,7 +145,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
         with (
             patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
             patch(
-                "agent.tool_executor._emit_terminal_post_tool_call",
+                "hermes_agent.agent.tool_executor._emit_terminal_post_tool_call",
                 side_effect=_capture_terminal_event,
             ),
         ):
@@ -216,7 +216,7 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
 
 
 def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monkeypatch):
-    from agent.subagent_lifecycle import (
+    from hermes_agent.agent.subagent_lifecycle import (
         SubagentLaunchRequest,
         SubagentLifecycleService,
         SubagentState,
@@ -268,7 +268,7 @@ def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monke
         with (
             patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
             patch(
-                "agent.tool_executor._emit_terminal_post_tool_call",
+                "hermes_agent.agent.tool_executor._emit_terminal_post_tool_call",
                 side_effect=lambda *_args, **kwargs: terminal_events.append(kwargs),
             ),
         ):
@@ -329,7 +329,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     with (
         patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
         patch(
-            "agent.tool_executor._emit_terminal_post_tool_call",
+            "hermes_agent.agent.tool_executor._emit_terminal_post_tool_call",
             side_effect=_capture_terminal_event,
         ),
     ):

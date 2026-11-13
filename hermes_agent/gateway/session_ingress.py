@@ -406,7 +406,7 @@ def _launch_body_if_launch_owner(authority):
     profile switching this gateway to multiplexing mid-turn must not fail its later credential reads
     closed. Any other owner (a hosted named profile) stays unmarked, never reading the launch env."""
     from pathlib import Path
-    from agent.secret_scope import _is_process_home
+    from hermes_agent.agent.secret_scope import _is_process_home
     owner = Path(str(authority.profile_id))
     if not owner.is_absolute() or not _is_process_home(owner):
         return nullcontext()
@@ -418,7 +418,7 @@ def _launch_body_if_launch_owner(authority):
 async def _admission_scope(authority, ref, home, row, event, captured):
     """The execution scope, inside the adapter lifecycle the executor owns for a producer-admitted
     turn (``session_producer_lifecycle``; a no-op for every other admission)."""
-    from agent.runtime_scope import bind_turn, claim_fence
+    from hermes_agent.agent.runtime_scope import bind_turn, claim_fence
     async with producer_turn(authority, row, event, captured):
         with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
             yield

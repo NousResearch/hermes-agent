@@ -54,7 +54,7 @@ _HISTORY = [
 
 
 def _build(base_url):
-    from agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
     transport = ResponsesApiTransport()
     kwargs = transport.build_kwargs(
@@ -84,7 +84,7 @@ def test_unclaimed_endpoint_keeps_generic_wire(relay):
 
 
 def test_declared_issuer_untrusted_completed_status_continues(relay):
-    from agent.codex_responses_adapter import _normalize_codex_response
+    from hermes_agent.agent.codex_responses_adapter import _normalize_codex_response
 
     response = SimpleNamespace(status="completed", incomplete_details=None, output=[SimpleNamespace(
         type="reasoning", id="rs_1", encrypted_content="enc", summary=[SimpleNamespace(type="summary_text", text="t")],
@@ -94,7 +94,7 @@ def test_declared_issuer_untrusted_completed_status_continues(relay):
 
 
 def test_declared_carriers_are_captured_and_replayed_only_on_the_claimed_endpoint(relay):
-    from agent.reasoning_carriers import CARRIER_TYPE, carrier_record, shape_wire_carriers
+    from hermes_agent.agent.reasoning_carriers import CARRIER_TYPE, carrier_record, shape_wire_carriers
 
     record = carrier_record(SimpleNamespace(blob="B", blob_text="T"))
     assert record == {"type": CARRIER_TYPE, "blob": "B", "blob_text": "T"}
@@ -107,7 +107,7 @@ def test_declared_carriers_are_captured_and_replayed_only_on_the_claimed_endpoin
 
 def test_persisted_carrier_keys_of_an_uninstalled_plugin_never_reach_the_wire():
     """No registered profile declares ``blob`` (its plugin is gone): the record's own keys are still stripped."""
-    from agent.reasoning_carriers import CARRIER_TYPE, shape_wire_carriers
+    from hermes_agent.agent.reasoning_carriers import CARRIER_TYPE, shape_wire_carriers
 
     record = {"type": CARRIER_TYPE, "blob": "B"}
     assistant = {"role": "assistant", "content": "x", "blob": "B", "reasoning_details": [record]}

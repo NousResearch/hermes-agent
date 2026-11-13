@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from agent.reasoning_effort import EFFORT_LADDER
+from hermes_agent.agent.reasoning_effort import EFFORT_LADDER
 from hermes_cli.version_info import hermes_user_agent
 from providers import register_provider
 from providers.base import LazyHeaders, ProviderProfile, _profile_user_agent

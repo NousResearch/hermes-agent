@@ -2,10 +2,10 @@
 
 import pytest
 
-from agent.agent_runtime_helpers import repair_message_sequence
-from agent.message_metadata import TYPED_ASK
-from agent.session_persistence import SessionPersistenceMixin, _db_flush_row
-from agent.transcript_repair import sync_flushed_message_markers
+from hermes_agent.agent.agent_runtime_helpers import repair_message_sequence
+from hermes_agent.agent.message_metadata import TYPED_ASK
+from hermes_agent.agent.session_persistence import SessionPersistenceMixin, _db_flush_row
+from hermes_agent.agent.transcript_repair import sync_flushed_message_markers
 
 
 def _agent_persisting(override):
@@ -18,7 +18,7 @@ def _agent_persisting(override):
 
 
 def test_replay_flush_row_keeps_prefix_and_exact_api_sidecar():
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
     from hermes_agent.gateway.message_timestamps import strip_leading_message_timestamps
 
     wire = "[2026-04-13T17:02:06+0200] can you also run the smoke tests"
@@ -79,8 +79,8 @@ def test_a_merged_row_forgets_the_typed_ask_and_keeps_its_other_metadata(rows):
     """An unanswered stored image turn folded with the next prompt on repair: the row now holds more than
     that one ask, so the stamp goes (the row reads as before stamps existed); other metadata stays. An
     empty turn folded in changes nothing, so the stamp stays."""
-    from agent.agent_runtime_helpers import _merge_consecutive_users
-    from agent.turn_context import _previous_user_message_text
+    from hermes_agent.agent.agent_runtime_helpers import _merge_consecutive_users
+    from hermes_agent.agent.turn_context import _previous_user_message_text
 
     def history(stamped):
         return [{"role": "user", "content": row["content"], "display_metadata": {"keep": 1, **(
@@ -104,8 +104,8 @@ def test_a_folded_rows_flush_removes_its_stored_stamp_and_keeps_a_reaction(tmp_p
     (previous_message would name only the first ask); the rewrite removes it, keeping a concurrent reaction.
     A rewrite of the same content leaves it, even from a live dict that lacks the row's metadata."""
     from types import SimpleNamespace
-    from agent.agent_runtime_helpers import _merge_consecutive_users
-    from agent.turn_context import _previous_user_message_text
+    from hermes_agent.agent.agent_runtime_helpers import _merge_consecutive_users
+    from hermes_agent.agent.turn_context import _previous_user_message_text
     from hermes_agent.hermes_state import SessionDB
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

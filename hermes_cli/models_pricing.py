@@ -580,7 +580,7 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
     if not base_url:
         return ""
     try:
-        from agent.model_metadata import _URL_TO_PROVIDER, _infer_provider_from_url
+        from hermes_agent.agent.model_metadata import _URL_TO_PROVIDER, _infer_provider_from_url
         from providers import get_provider_profile
         from utils import base_url_host_matches, base_url_hostname
 
@@ -667,7 +667,7 @@ def _fireworks_pricing_from_models_dev(*, force_refresh: bool = False) -> dict[s
 
     result: dict[str, dict[str, str]] = {}
     try:
-        from agent.models_dev import _get_provider_models
+        from hermes_agent.agent.models_dev import _get_provider_models
 
         for mid, entry in (_get_provider_models("fireworks") or {}).items():
             cost = entry.get("cost") if isinstance(entry, dict) else None

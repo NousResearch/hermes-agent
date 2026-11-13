@@ -113,7 +113,7 @@ def _confirm_or_cancel(c: Console, *lines: str, cancel: str = "[dim]Cancelled.[/
 def _clear_skills_cache() -> None:
     """Invalidate the skills prompt cache so the change appears immediately."""
     try:
-        from agent.prompt_builder import clear_skills_system_prompt_cache
+        from hermes_agent.agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
     except Exception:
         pass
@@ -960,8 +960,8 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     from hermes_agent.tools.skills_hub import HubLockFile, ensure_hub_dirs
     from hermes_agent.tools.skills_sync import _read_manifest
     from hermes_agent.tools.skills_tool import _skill_catalog
-    from agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names
-    from agent.skill_commands import skill_command_collision_note
+    from hermes_agent.agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names
+    from hermes_agent.agent.skill_commands import skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
@@ -992,7 +992,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         enabled_count += is_enabled
         disabled_count += not is_enabled
         status = "[bold green]enabled[/]" if is_enabled else "[dim red]disabled[/]"
-        # Name taken by a built-in: the skill loads but has no /<name> (see agent.skill_commands).
+        # Name taken by a built-in: the skill loads but has no /<name> (see hermes_agent.agent.skill_commands).
         if note := skill_command_collision_note(name):
             status += f"\n[yellow]{note}[/]"
         table.add_row(name, skill.get("category", ""), source_display,

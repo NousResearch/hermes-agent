@@ -316,7 +316,7 @@ def _finalize_child_env(env: dict) -> dict:
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     strip_supervised_process_identity(env)
     _apply_windows_msys_bash_env_defaults(env)
-    from agent.delegation_context import delegated_child_subprocess_env
+    from hermes_agent.agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 
 
@@ -409,7 +409,7 @@ def build_subprocess_env(
     env: dict[str, str] = dict(base) if base is not None else os.environ.copy()
     if strip_launch_profile:
         strip_launch_profile_env(env)
-        from agent.secret_scope import current_secret_scope, is_multiplex_active
+        from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
         if is_multiplex_active():
             # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
             # values the child already inherits byte-identical.
@@ -424,7 +424,7 @@ def build_subprocess_env(
     if extra:
         env.update(extra)
     strip_supervised_process_identity(env)
-    from agent.delegation_context import delegated_child_subprocess_env
+    from hermes_agent.agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 
 
@@ -447,7 +447,7 @@ def served_profile_child_env(
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
     ``hermes_subprocess_env`` snapshot."""
-    from agent.secret_scope import (
+    from hermes_agent.agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
@@ -501,7 +501,7 @@ def host_gateway_child_env(
 def _is_routed_home(target_home: str | Path) -> bool:
     """True when ``target_home`` is not the process's own (launch) home.
 
-    Same launch-home identity as ``agent.secret_scope.serves_routed_profile()``: under a host that
+    Same launch-home identity as ``hermes_agent.agent.secret_scope.serves_routed_profile()``: under a host that
     mirrors the served profile into ``HERMES_HOME``, the live env var names the served home and the
     launch residue would never be stripped from that profile's child env."""
     from hermes_constants import get_routing_process_hermes_home
@@ -521,7 +521,7 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     launch profile. The authority test is "does this task serve a routed home", not "is the
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
-    from agent.secret_scope import _is_global_env, load_env_file
+    from hermes_agent.agent.secret_scope import _is_global_env, load_env_file
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
     if not target or not _is_routed_home(target):
@@ -805,7 +805,7 @@ def routed_terminal_base() -> dict:
     lose, managed policy keys keep precedence) instead of only the names the launch process also
     happened to define (#142798). The caller's scrub still filters every value."""
     base = strip_launch_profile_env(os.environ.copy())
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
     if is_multiplex_active():
         # First-party context credentials (``BUZZ_*``) keep the process value when the
         # context entitles them — the scope is the routed profile's ``.env``, never the
@@ -821,8 +821,8 @@ def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping, from
     :func:`routed_terminal_base` so the backend's own ``env`` and the served profile's own names
     are what the child sees. A local session's client toolchain (PATH, venv, nvm/pyenv/conda:
-    ``agent.session_client_env``) replaces the daemon's beneath the backend's own ``env``."""
-    from agent.session_client_env import toolchain_environ
+    ``hermes_agent.agent.session_client_env``) replaces the daemon's beneath the backend's own ``env``."""
+    from hermes_agent.agent.session_client_env import toolchain_environ
     base = routed_terminal_base()
     run_env = _scrubbed_env(
         [(dict(toolchain_environ(base) | env), True)],

@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-from agent.secret_scope import get_secret_str
+from hermes_agent.agent.secret_scope import get_secret_str
 
 NO_KEY_PLACEHOLDER = "no-key-required"
 
@@ -33,7 +33,7 @@ def _declared_custom_key(requested_provider: str, runtime: dict[str, Any], model
     (``source: custom_provider:<name>``) took its credential from the SELECTED entry even when an
     explicit base_url replaced the entry's URL, so that entry is found by name alone; any other
     runtime (direct alias, URL-matched bare custom) is owned by whichever entry serves its URL."""
-    from agent.custom_entry_pool import custom_entry_for_endpoint, named_custom_entry
+    from hermes_agent.agent.custom_entry_pool import custom_entry_for_endpoint, named_custom_entry
     base_url = str(runtime.get("base_url") or "")
     name = requested_provider if requested_provider not in ("", "auto", "custom") else None
     from_named_entry = str(runtime.get("source") or "").startswith("custom_provider:")
@@ -50,7 +50,7 @@ def where_to_set_key(env_var: str) -> str:
     """Sentence naming the profile whose ``.env`` must hold ``env_var`` and the command that writes
     it there. Says so when the variable exists only in this process's environment while a routed
     (named) profile is served: that is the copy users hit after exporting keys in an SSH shell."""
-    from agent.secret_scope import serves_routed_profile
+    from hermes_agent.agent.secret_scope import serves_routed_profile
     from hermes_constants import display_hermes_home, get_hermes_home, profile_cli_selector, profile_name_for_home
     profile = profile_name_for_home(get_hermes_home()) or "default"
     env_path = f"{display_hermes_home()}/.env"
@@ -92,7 +92,7 @@ def raise_if_declared_key_missing(requested_provider: Optional[str], runtime: di
     ``config`` is a frozen
     route's config (the entry that owned the endpoint when the session froze it). Typed ``AuthError``
     (``missing_api_key``) so every caller's fallback chain still advances."""
-    from agent.secret_scope import serves_routed_profile
+    from hermes_agent.agent.secret_scope import serves_routed_profile
     if runtime.get("provider") != "custom" or runtime.get("api_key") != NO_KEY_PLACEHOLDER:
         return
     if str(explicit_api_key or "").strip() or runtime.get("api_mode") in _KEYLESS_API_MODES:

@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from agent import runtime_session_store
+from hermes_agent.agent import runtime_session_store
 from hermes_agent.tools import async_delegation as ledger
 
 

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
-from agent.auxiliary_client import (
+from hermes_agent.agent.auxiliary_client import (
     call_llm,
     async_call_llm,
     _acquire_sync_aux_semaphore,
@@ -29,33 +29,33 @@ class TestGetTaskMaxConcurrency:
 
     def test_does_not_reuse_vision_cpu_limit_for_llm_calls(self):
         with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"max_concurrency": 1},
         ):
             assert _get_task_max_concurrency("vision") is None
 
     def test_returns_int_when_configured(self):
         with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"max_concurrency": 3},
         ):
             assert _get_task_max_concurrency("compression") == 3
 
     def test_returns_none_for_non_numeric(self):
         with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"max_concurrency": "not-a-number"},
         ):
             assert _get_task_max_concurrency("compression") is None
 
     def test_returns_none_for_zero_or_negative(self):
         with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"max_concurrency": 0},
         ):
             assert _get_task_max_concurrency("compression") is None
         with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"max_concurrency": -2},
         ):
             assert _get_task_max_concurrency("compression") is None
@@ -64,7 +64,7 @@ class TestGetTaskMaxConcurrency:
 class TestSemaphoreCache:
     def test_sync_returns_none_when_unset(self):
         with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config", return_value={}
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value={}
         ):
             assert _acquire_sync_aux_semaphore("title_generation") is None
 
@@ -73,7 +73,7 @@ class TestSemaphoreCache:
 
     def test_async_returns_none_with_no_running_loop(self):
         with patch(
-            "agent.auxiliary_client._get_auxiliary_task_config",
+            "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
             return_value={"max_concurrency": 2},
         ):
             # Called outside an asyncio loop — should bail rather than crash.
@@ -107,19 +107,19 @@ class TestSyncCallEnforcesLimit:
 
         with (
             patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
+                "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                 return_value=("openrouter", "test-model", None, None, None),
             ),
             patch(
-                "agent.auxiliary_client._get_cached_client",
+                "hermes_agent.agent.auxiliary_client._get_cached_client",
                 return_value=(client, "test-model"),
             ),
             patch(
-                "agent.auxiliary_client._validate_llm_response",
+                "hermes_agent.agent.auxiliary_client._validate_llm_response",
                 side_effect=lambda resp, _task, **_kwargs: resp,
             ),
             patch(
-                "agent.auxiliary_client._get_auxiliary_task_config",
+                "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
                 return_value={"max_concurrency": limit},
             ),
         ):
@@ -149,19 +149,19 @@ class TestSyncCallEnforcesLimit:
 
         with (
             patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
+                "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                 return_value=("openrouter", "test-model", None, None, None),
             ),
             patch(
-                "agent.auxiliary_client._get_cached_client",
+                "hermes_agent.agent.auxiliary_client._get_cached_client",
                 return_value=(client, "test-model"),
             ),
             patch(
-                "agent.auxiliary_client._validate_llm_response",
+                "hermes_agent.agent.auxiliary_client._validate_llm_response",
                 side_effect=lambda resp, _task, **_kwargs: resp,
             ),
             patch(
-                "agent.auxiliary_client._get_auxiliary_task_config",
+                "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
                 return_value={"max_concurrency": 1},
             ),
         ):
@@ -187,19 +187,19 @@ class TestSyncCallEnforcesLimit:
 
         with (
             patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
+                "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                 return_value=("openrouter", "test-model", None, None, None),
             ),
             patch(
-                "agent.auxiliary_client._get_cached_client",
+                "hermes_agent.agent.auxiliary_client._get_cached_client",
                 return_value=(client, "test-model"),
             ),
             patch(
-                "agent.auxiliary_client._validate_llm_response",
+                "hermes_agent.agent.auxiliary_client._validate_llm_response",
                 side_effect=lambda response, _task, **_kwargs: response,
             ),
             patch(
-                "agent.auxiliary_client._get_auxiliary_task_config",
+                "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
                 return_value={"max_concurrency": 1},
             ),
         ):
@@ -251,19 +251,19 @@ class TestAsyncCallEnforcesLimit:
 
         with (
             patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
+                "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                 return_value=("openrouter", "test-model", None, None, None),
             ),
             patch(
-                "agent.auxiliary_client._get_cached_client",
+                "hermes_agent.agent.auxiliary_client._get_cached_client",
                 return_value=(client, "test-model"),
             ),
             patch(
-                "agent.auxiliary_client._validate_llm_response",
+                "hermes_agent.agent.auxiliary_client._validate_llm_response",
                 side_effect=lambda resp, _task, **_kwargs: resp,
             ),
             patch(
-                "agent.auxiliary_client._get_auxiliary_task_config",
+                "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
                 return_value={"max_concurrency": limit},
             ),
         ):
@@ -286,19 +286,19 @@ class TestAsyncCallEnforcesLimit:
 
         with (
             patch(
-                "agent.auxiliary_client._resolve_task_provider_model",
+                "hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
                 return_value=("openrouter", "test-model", None, None, None),
             ),
             patch(
-                "agent.auxiliary_client._get_cached_client",
+                "hermes_agent.agent.auxiliary_client._get_cached_client",
                 return_value=(client, "test-model"),
             ),
             patch(
-                "agent.auxiliary_client._validate_llm_response",
+                "hermes_agent.agent.auxiliary_client._validate_llm_response",
                 side_effect=lambda resp, _task, **_kwargs: resp,
             ),
             patch(
-                "agent.auxiliary_client._get_auxiliary_task_config",
+                "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
                 return_value={"max_concurrency": 1},
             ),
         ):

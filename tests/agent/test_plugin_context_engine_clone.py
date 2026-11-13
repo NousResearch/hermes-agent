@@ -6,8 +6,8 @@ SQLite connections — hermes-lcm) stay selectable and a child's model never lea
 import threading
 from unittest.mock import patch
 
-from agent.agent_init import _select_context_engine
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.agent_init import _select_context_engine
+from hermes_agent.agent.context_engine import ContextEngine
 
 
 class _Engine(ContextEngine):

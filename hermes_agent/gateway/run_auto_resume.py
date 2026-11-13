@@ -56,7 +56,7 @@ def _stand_in_parent(runner: Any, db: Any, record: dict[str, Any], source: Any, 
     (``_resolve_session_agent_runtime``: its ``/model``, channel override or launch policy; its own ``/fast`` tier,
     never the runner-wide one the last turn of another conversation left), with the parent's session id and the
     profile's own store. It runs no turn. Its toolsets are the child's own, so the rebuild keeps every tool it had."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     key = route["session_key"] or None
     model, runtime = runner._resolve_session_agent_runtime(source=source, session_key=key)
     runner._pre_agent_fallback_notice = None  # a turn's notice; this agent runs none

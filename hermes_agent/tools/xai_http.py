@@ -28,7 +28,7 @@ def has_xai_credentials() -> bool:
     multi-account grants never write the providers singleton). Returns False on any exception
     so a corrupted auth store can't block other availability scans.
     """
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
 
     if (get_secret("XAI_API_KEY", "") or "").strip():
         return True
@@ -204,7 +204,7 @@ def resolve_xai_http_credentials(
         return {"provider": "xai", "api_key": explicit_key, "base_url": base_url}
 
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool("xai-oauth")
         entry = pool.try_refresh_matching(api_key_hint) if force_refresh else pool.select()
         if force_refresh and entry is None:

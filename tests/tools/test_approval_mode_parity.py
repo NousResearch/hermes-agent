@@ -7,7 +7,7 @@ must resolve identically on every surface that consults them:
     ``hermes_agent.tools.approval_context._get_approval_timeout``
   - the TUI gateway: ``hermes_agent.tui_gateway.server._load_approval_mode`` (delegates
     to the core as of the decision-core migration)
-  - the codex app-server surface: ``agent/codex_runtime.py`` feeds
+  - the codex app-server surface: ``hermes_agent/agent/codex_runtime.py`` feeds
     ``auto_approve_*`` from ``hermes_agent.tools.approval.is_approval_bypass_active()``,
     which itself reads the core resolver — so parity there reduces to
     ``is_approval_bypass_active() == (mode == "off")`` when no yolo

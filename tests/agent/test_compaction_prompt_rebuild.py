@@ -15,7 +15,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.system_prompt import invalidate_system_prompt
+from hermes_agent.agent.system_prompt import invalidate_system_prompt
 
 
 def _agent(**over):
@@ -47,7 +47,7 @@ class TestInvalidateClearsPluginFreeze(unittest.TestCase):
 
 class TestPluginRerenderFailOpen(unittest.TestCase):
     def test_raising_plugin_render_falls_back_to_previous_bytes(self):
-        from agent.system_prompt import _frozen_plugin_prompt_sections
+        from hermes_agent.agent.system_prompt import _frozen_plugin_prompt_sections
 
         agent = _agent(_cached_system_prompt=None)
         agent._plugin_system_prompt_sections_previous = ("last-good",)
@@ -57,7 +57,7 @@ class TestPluginRerenderFailOpen(unittest.TestCase):
         self.assertEqual(rendered, ("last-good",))
 
     def test_raising_plugin_render_without_previous_is_empty(self):
-        from agent.system_prompt import _frozen_plugin_prompt_sections
+        from hermes_agent.agent.system_prompt import _frozen_plugin_prompt_sections
 
         agent = _agent(_cached_system_prompt=None)
         with patch("hermes_cli.plugins.render_system_prompt_sections",
@@ -90,7 +90,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
     def test_workspace_snapshot_replayed_across_rebuilds_when_repo_mutates(self):
         import tempfile, shutil, subprocess
         from pathlib import Path
-        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+        from hermes_agent.agent.system_prompt import build_system_prompt, invalidate_system_prompt
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-ws-"))
         try:
@@ -116,9 +116,9 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                 _emit_status=lambda *a, **k: None,
             )
 
-            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
-                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
-                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+            with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=repo):
 
                 # First build: pins the snapshot
                 p1 = build_system_prompt(agent)
@@ -144,7 +144,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
     def test_workspace_snapshot_reprobes_when_cwd_changes(self):
         import tempfile, shutil
         from pathlib import Path
-        from agent.system_prompt import build_system_prompt
+        from hermes_agent.agent.system_prompt import build_system_prompt
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-cwd-"))
         try:
@@ -171,15 +171,15 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                 _emit_status=lambda *a, **k: None,
             )
 
-            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
-                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
-                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo1):
+            with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=repo1):
                 p1 = build_system_prompt(agent)
                 self.assertIn(f"init {repo1.name}", p1)
 
-            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
-                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
-                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo2):
+            with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=repo2):
                 p2 = build_system_prompt(agent)
                 self.assertIn(f"init {repo2.name}", p2)
 
@@ -190,8 +190,8 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         """A /new, /resume or /branch reuses the AIAgent; the next session must see the live repo."""
         import tempfile, shutil, subprocess
         from pathlib import Path
-        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
-        from run_agent import AIAgent
+        from hermes_agent.agent.system_prompt import build_system_prompt, invalidate_system_prompt
+        from hermes_agent.run_agent import AIAgent
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-boundary-"))
         try:
@@ -205,9 +205,9 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
                 _frozen_workspace_snapshot=None, context_compressor=None, _session_db=None,
                 _transition_context_engine_session=lambda **kw: None,
             )
-            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
-                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
-                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+            with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"), \
+                 patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=repo):
                 build_system_prompt(agent)
                 subprocess.run(["git", "commit", "-qm", "second commit", "--allow-empty"], cwd=repo, check=True)
                 # The CLI session boundary (cli_session_mixin.new_session) on the same agent object.
@@ -231,7 +231,7 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         one workspace, so the rebuild replays the session-start snapshot."""
         import os, tempfile, shutil
         from pathlib import Path
-        from agent.system_prompt import build_system_prompt, invalidate_system_prompt
+        from hermes_agent.agent.system_prompt import build_system_prompt, invalidate_system_prompt
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-bind-"))
         old_cwd = os.getcwd()
@@ -239,14 +239,14 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
             repo = _init_repo(tmp / "proj", "init commit")
             os.chdir(repo)
             agent = self._pin_agent()
-            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
-                 patch("agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
-                with patch("agent.system_prompt.resolve_context_cwd", return_value=None):
+            with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("hermes_agent.agent.prompt_builder.build_environment_hints", return_value="ENV HINTS"):
+                with patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=None):
                     p1 = build_system_prompt(agent)
                 self.assertIn("Status: clean", p1)
                 (repo / "untracked.txt").write_text("wip\n")
                 invalidate_system_prompt(agent)
-                with patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                with patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=repo):
                     self.assertEqual(build_system_prompt(agent), p1)
         finally:
             os.chdir(old_cwd)
@@ -258,26 +258,26 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         was taken in another cwd."""
         import tempfile, shutil
         from pathlib import Path
-        from agent.system_prompt import build_system_prompt
+        from hermes_agent.agent.system_prompt import build_system_prompt
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-resume-"))
         try:
             repo, other = _init_repo(tmp / "proj", "init commit"), _init_repo(tmp / "other", "init other")
 
             def env(cwd):
-                return patch("agent.prompt_builder.build_environment_hints",
+                return patch("hermes_agent.agent.prompt_builder.build_environment_hints",
                              return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {cwd}")
 
-            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
-                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+            with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), env(repo), \
+                 patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=repo):
                 stored = build_system_prompt(self._pin_agent())
                 self.assertIn("Status: clean", stored)
                 (repo / "untracked.txt").write_text("wip\n")
                 db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
                 resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
                 self.assertEqual(build_system_prompt(resumed), stored)
-            with patch("agent.prompt_builder.load_soul_md", return_value=""), env(other), \
-                 patch("agent.system_prompt.resolve_context_cwd", return_value=other):
+            with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), env(other), \
+                 patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=other):
                 moved = self._pin_agent(_cached_system_prompt=None, _session_db=db)
                 self.assertIn(f"- Root: {other}", build_system_prompt(moved))
         finally:
@@ -288,17 +288,17 @@ class TestWorkspaceSnapshotPinnedAcrossCompaction(unittest.TestCase):
         resumed in the same repo must capture a real snapshot, not pin "no workspace" for good."""
         import tempfile, shutil
         from pathlib import Path
-        from agent.system_prompt import build_system_prompt
+        from hermes_agent.agent.system_prompt import build_system_prompt
 
         tmp = Path(tempfile.mkdtemp(prefix="test-pinned-empty-"))
         try:
             repo = _init_repo(tmp / "proj", "init commit")
             stored = f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}\n\nBODY"
             db = SimpleNamespace(get_session=lambda sid: {"system_prompt": stored})
-            with patch("agent.prompt_builder.load_soul_md", return_value=""), \
-                 patch("agent.prompt_builder.build_environment_hints",
+            with patch("hermes_agent.agent.prompt_builder.load_soul_md", return_value=""), \
+                 patch("hermes_agent.agent.prompt_builder.build_environment_hints",
                        return_value=f"Host: x\nUser home directory: /h\nCurrent working directory: {repo}"), \
-                 patch("agent.system_prompt.resolve_context_cwd", return_value=repo):
+                 patch("hermes_agent.agent.system_prompt.resolve_context_cwd", return_value=repo):
                 resumed = self._pin_agent(_cached_system_prompt=None, _session_db=db)
                 self.assertIn(f"- Root: {repo}", build_system_prompt(resumed))
         finally:

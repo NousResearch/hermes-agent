@@ -114,7 +114,7 @@ class _AsyncWorker:
         self._started.wait(timeout=30)
 
     def run_coroutine(self, coro, timeout=600):
-        from agent.async_utils import safe_schedule_threadsafe
+        from hermes_agent.agent.async_utils import safe_schedule_threadsafe
         # safe_schedule_threadsafe closes the coroutine and returns None for a missing/closed loop.
         future = safe_schedule_threadsafe(coro, self._loop)
         if future is None:

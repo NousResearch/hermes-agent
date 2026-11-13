@@ -16,7 +16,7 @@ LIVE_CONTROL = {"action", "subagent_id", "message"}
 
 
 def _built_agent(monkeypatch, oneshot: bool, disabled=None):
-    from agent.agent_init import _load_tools
+    from hermes_agent.agent.agent_init import _load_tools
 
     if oneshot:
         monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
@@ -82,7 +82,7 @@ def test_gateway_oneshot_inventory_drops_clarify(tmp_path, monkeypatch):
 
 
 def test_oneshot_prompt_drops_steering_note(monkeypatch):
-    from agent import system_prompt
+    from hermes_agent.agent import system_prompt
 
     def guidance(oneshot):
         agent = SimpleNamespace(valid_tool_names={"terminal"}, model="m", _tool_use_enforcement=False,
@@ -94,15 +94,15 @@ def test_oneshot_prompt_drops_steering_note(monkeypatch):
 
 
 def _compress(messages):
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         c = ContextCompressor(model="test/model", quiet_mode=True, protect_first_n=1, protect_last_n=2)
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = "## Goal\nBuild the report.\n\n## Completed Actions\n1. Worked on it."
     with patch.object(c, "_find_tail_cut_by_tokens", return_value=9), \
-            patch("agent.context_compressor.call_llm", return_value=response):
+            patch("hermes_agent.agent.context_compressor.call_llm", return_value=response):
         result = c.compress(messages, force=True)
     return next(m["content"] for m in result if ContextCompressor.classify_summary_content(m.get("content")))
 
@@ -124,8 +124,8 @@ def _transcript(tool, tool_content):
 
 @pytest.mark.parametrize("pruned", [True, False])
 def test_skill_safety_rule_rides_the_compaction_handoff_not_the_system_prompt(pruned):
-    from agent import system_prompt
-    from agent.context_compressor import _skill_pruned_marker
+    from hermes_agent.agent import system_prompt
+    from hermes_agent.agent.context_compressor import _skill_pruned_marker
 
     fresh = system_prompt._tool_guidance_block(SimpleNamespace(valid_tool_names={"skill_manage"},
                                                                _kanban_worker_guidance=""))
@@ -138,17 +138,17 @@ def test_skill_safety_rule_rides_the_compaction_handoff_not_the_system_prompt(pr
 
 
 def test_skill_safety_rule_survives_prune_only_and_salvage_rewrites():
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         COMPRESSED_SUMMARY_METADATA_KEY, SKILL_PRUNED_MARKER_PREFIX, ContextCompressor, _SUMMARY_END_MARKER,
         _skill_pruned_marker, salvage_grown_transcript,
     )
-    from agent.context_compressor_tail import SKILL_SAFETY_RULE
+    from hermes_agent.agent.context_compressor_tail import SKILL_SAFETY_RULE
 
     def texts(messages):
         return "\n".join(str(m.get("content") or "") for m in messages)
 
     # Prune-only: no handoff exists, so the row the prune turns into a marker carries the rule itself.
-    with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=1_000_000):
         c = ContextCompressor(model="test", quiet_mode=True, threshold_percent=0.5, protect_first_n=2,
                               protect_last_n=4, proactive_prune_tokens=48_000, proactive_prune_min_result_chars=8_000)
     calls = [("skill_view", '{"name":"pdf"}', "P" * 9000)] + [("terminal", '{"cmd":"ls"}', ch * 9000) for ch in "AB"]

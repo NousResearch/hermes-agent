@@ -1,4 +1,4 @@
-"""Tests for agent.redact -- secret masking in logs and output."""
+"""Tests for hermes_agent.agent.redact -- secret masking in logs and output."""
 
 import ast
 import logging
@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
+from hermes_agent.agent.redact import mask_secret, redact_cdp_url, redact_sensitive_text, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -14,7 +14,7 @@ def _ensure_redaction_enabled(monkeypatch):
     """Ensure HERMES_REDACT_SECRETS is not disabled by prior test imports."""
     monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
     # Also patch the module-level snapshot so it reflects the cleared env var
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
 
 
 class TestKnownPrefixes:
@@ -24,7 +24,7 @@ class TestKnownPrefixes:
         prefix-less Zhipu ``id.secret`` shape must mask at all: on the terminal
         ``cat``/``grep`` path (code_file=True, the reporter's surface) and on the
         file-read path, where the mask must be the non-reusable sentinel."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         dotted_sk = "sk-sp-" + "ABCDEFGH1234567890" + "." + "abcdefgh1234567890_XYZ-0987654321"
         multi_dot_sk = "sk-ws-" + "H.EEPXREE.pFau.MEUCIQC6UnD-jj2a" + "ABCDEFGHIJKLMNOP"
@@ -49,7 +49,7 @@ class TestKnownPrefixes:
         """The Zhipu matcher is provider-shaped, not a generic dotted-token sweep:
         content-hash filenames (incl. ``<sha>.bundle`` / ``<md5>.sqlite3``), bare
         git shas, short ``sk-`` fragments and a 31-char id must stay byte-identical."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         benign = (
             "blob 0123456789abcdef0123456789abcdef.png\n"
@@ -1123,7 +1123,7 @@ class TestTerminalOutputRedaction:
     """
 
     def test_is_env_dump_command_detection(self):
-        from agent.redact import is_env_dump_command
+        from hermes_agent.agent.redact import is_env_dump_command
         assert is_env_dump_command("printenv")
         assert is_env_dump_command("env")
         assert is_env_dump_command("env | grep API")
@@ -1140,7 +1140,7 @@ class TestTerminalOutputRedaction:
     # ── .env file detection (issue #61352 v2) ──
 
     def test_command_reads_secret_file_detection(self):
-        from agent.redact import _command_reads_secret_file
+        from hermes_agent.agent.redact import _command_reads_secret_file
         # Basic detection
         assert _command_reads_secret_file("cat .env")
         assert _command_reads_secret_file("cat .env.local")
@@ -1170,7 +1170,7 @@ class TestTerminalOutputRedaction:
         assert _command_reads_secret_file("cat .ENV")
 
     def test_command_reads_secret_file_excludes_templates(self):
-        from agent.redact import _command_reads_secret_file
+        from hermes_agent.agent.redact import _command_reads_secret_file
         # Templates/examples should NOT trigger
         assert not _command_reads_secret_file("cat .env.example")
         assert not _command_reads_secret_file("cat .env.sample")
@@ -1178,7 +1178,7 @@ class TestTerminalOutputRedaction:
         assert not _command_reads_secret_file("cat .env.dist")
 
     def test_command_reads_secret_file_rejects_non_env_files(self):
-        from agent.redact import _command_reads_secret_file
+        from hermes_agent.agent.redact import _command_reads_secret_file
         assert not _command_reads_secret_file("cat config.py")
         assert not _command_reads_secret_file("cat README.md")
         assert not _command_reads_secret_file("cat .envrc.bak")  # .bak not in list
@@ -1189,7 +1189,7 @@ class TestTerminalOutputRedaction:
 
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         out = (
             "MISTRAL_API_KEY=abc123opaqueSecretValue\n"
             "NOUS_API_KEY=xyz789opaqueKey\n"
@@ -1202,21 +1202,21 @@ class TestTerminalOutputRedaction:
 
     def test_cat_env_file_with_flags_masks_opaque_token(self):
         """cat -n .env → still detected as .env read."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         out = "     1\tMISTRAL_API_KEY=abc123opaqueSecretValue\n"
         red = redact_terminal_output(out, "cat -n .env")
         assert "abc123opaqueSecretValue" not in red
 
     def test_cat_env_file_in_pipeline_masks_opaque_token(self):
         """cat .env | grep KEY → still detected as .env read."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         out = "MISTRAL_API_KEY=abc123opaqueSecretValue"
         red = redact_terminal_output(out, "cat .env | grep MISTRAL")
         assert "abc123opaqueSecretValue" not in red
 
     def test_cat_env_example_not_redacted_as_env(self):
         """cat .env.example → NOT treated as .env read (template file)."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         out = "MISTRAL_API_KEY=placeholder_value_here"
         red = redact_terminal_output(out, "cat .env.example")
         # Should NOT be redacted by the ENV-assignment pass (code_file=True).
@@ -1225,14 +1225,14 @@ class TestTerminalOutputRedaction:
 
     def test_cat_env_local_masks_opaque_token(self):
         """cat .env.local → detected as .env read."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         out = "CUSTOM_API_KEY=opaquecustomkey123456"
         red = redact_terminal_output(out, "cat .env.local")
         assert "opaquecustomkey123456" not in red
 
     def test_cat_env_inline_comment_preserved(self):
         """Inline comments after env values are preserved (issue #61352 review)."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         out = "MISTRAL_API_KEY=abc123secret # used for tests"
         red = redact_terminal_output(out, "cat .env")
         assert "abc123secret" not in red
@@ -1240,7 +1240,7 @@ class TestTerminalOutputRedaction:
 
     def test_cat_env_export_inline_comment_preserved(self):
         """export KEY=VALUE # comment — comment preserved."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
         out = "export MISTRAL_API_KEY=abc123secret # prod key"
         red = redact_terminal_output(out, "cat .env")
         assert "abc123secret" not in red
@@ -1291,7 +1291,7 @@ class TestTerminalOutputRedaction:
         ],
     )
     def test_secret_bearing_file_commands_mask_assignments(self, command, output, secret):
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         assert secret not in redact_terminal_output(output, command)
 
@@ -1315,7 +1315,7 @@ class TestTerminalOutputRedaction:
         """Only the known secret-bearing files flip the gate: the same opaque value read
         from project YAML / source code is left alone (code_file path), while the
         identical text under ``cat .env`` is masked."""
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         output = "SERVICE_TOKEN=3JcQ1UzX9vQ2mL7pR4tY8wA1sD5fG6hJ2kSbn7Q0"
         assert redact_terminal_output(output, command) == output
@@ -1323,8 +1323,8 @@ class TestTerminalOutputRedaction:
 
 
     def test_disabled_passes_through(self, monkeypatch):
-        from agent.redact import redact_terminal_output
-        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        from hermes_agent.agent.redact import redact_terminal_output
+        monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", False)
         out = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
         red = redact_terminal_output(out, "printenv")
         assert "zzzopaque1234567890abcdef" in red
@@ -1342,7 +1342,7 @@ class TestTerminalOutputRedaction:
         ],
     )
     def test_pytest_diagnostic_masks_python_repr_secret_field(self, command):
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         secret = "opaque-brave-value-1234567890"
         out = f"E       kwargs={{'env': {{'BRAVE_API_KEY': '{secret}'}}}}"
@@ -1353,7 +1353,7 @@ class TestTerminalOutputRedaction:
         assert "'BRAVE_API_KEY': '***'" in red
 
     def test_exception_line_masks_python_repr_secret_field(self):
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         secret = "opaque-exception-value-1234567890"
         out = f"RuntimeError: payload={{'API_KEY': '{secret}'}}"
@@ -1364,14 +1364,14 @@ class TestTerminalOutputRedaction:
         assert "'API_KEY': '***'" in red
 
     def test_source_dump_preserves_python_repr_fixture(self):
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         out = "CONFIG = {'BRAVE_API_KEY': 'fixture-value-1234567890'}"
         assert redact_terminal_output(out, "cat config.py", force=True) == out
         assert redact_terminal_output(out, "python dump_source.py", force=True) == out
 
     def test_pytest_source_line_preserves_python_repr_fixture(self):
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         source = "    CONFIG = {'BRAVE_API_KEY': 'fixture-value-1234567890'}"
         out = source + "\nE       assert False"
@@ -1381,9 +1381,9 @@ class TestTerminalOutputRedaction:
         assert source in red
 
     def test_disabled_pytest_diagnostic_passes_through(self, monkeypatch):
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
-        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", False)
         secret = "opaque-disabled-value-1234567890"
         out = f"E       payload={{'API_KEY': '{secret}'}}"
 
@@ -1473,8 +1473,8 @@ class TestHermesHomePathClassification:
     ``$HERMES_HOME``, so the literal test alone classified its ``config.yaml`` as ordinary YAML."""
 
     def test_resolved_home_config_is_secret_bearing_but_project_config_is_not(self, tmp_path, monkeypatch):
-        from agent import file_safety
-        from agent.redact import _is_secret_file_arg
+        from hermes_agent.agent import file_safety
+        from hermes_agent.agent.redact import _is_secret_file_arg
 
         home = tmp_path / "hermes"  # no ".hermes" segment
         monkeypatch.setattr(file_safety, "_hermes_home_path", lambda: home)
@@ -1667,19 +1667,19 @@ class TestRedactForEgress:
     calls; there is no second pattern list to keep in sync."""
 
     def test_opaque_bearer_without_vendor_prefix_is_masked(self):
-        from agent.redact import redact_for_egress
+        from hermes_agent.agent.redact import redact_for_egress
         out = redact_for_egress("curl -H 'Authorization: Bearer opaque0123456789abcdef' https://x.example")
         assert "opaque0123456789abcdef" not in out
         assert "https://x.example" in out
 
     def test_bearer_sweep_masks_real_tokens_not_the_english_word(self):
-        from agent.redact import redact_for_egress
+        from hermes_agent.agent.redact import redact_for_egress
         prose = "I'm the bearer of bad news: the deploy failed"
         assert redact_for_egress(prose) == prose
         assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in redact_for_egress("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
 
     def test_fails_closed_when_the_redactor_raises(self, monkeypatch):
-        from agent import redact as R
+        from hermes_agent.agent import redact as R
         monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
         assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE
 
@@ -1694,7 +1694,7 @@ class TestWebappLaunchLinks:
     CREDENTIAL = "Zq7_" + "k3Lm" * 9 + "x9-"  # the shape secrets.token_urlsafe(32) prints: 43 characters
 
     def test_the_browser_credential_in_a_link_is_masked(self):
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         link = "http://127.0.0.1:9120/?profile=work#hermes-session=" + self.CREDENTIAL
         out = redact_terminal_output(f"Open this link in your browser:\n  {link}\n", "hermes webapp")
@@ -1702,7 +1702,7 @@ class TestWebappLaunchLinks:
         assert "http://127.0.0.1:9120/?profile=work#hermes-session=" in out
 
     def test_a_launch_ticket_is_masked(self):
-        from agent.redact import redact_terminal_output
+        from hermes_agent.agent.redact import redact_terminal_output
 
         link = "http://127.0.0.1:9120/webapp/launch#ticket=" + self.CREDENTIAL + "&query=%3Fprofile%3Dwork"
         out = redact_terminal_output(f"Open this one-use link:\n  {link}\n", "hermes webapp --no-open")
@@ -1722,7 +1722,7 @@ class TestFlagAndKeyShapedCredentials:
     SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
     def test_key_qualified_field_names_are_secrets(self):
-        from agent.redact import is_secret_field_name
+        from hermes_agent.agent.redact import is_secret_field_name
 
         for name in (
             "aws_secret_access_key",
@@ -1739,7 +1739,7 @@ class TestFlagAndKeyShapedCredentials:
             assert is_secret_field_name(name) is True, name
 
     def test_names_that_merely_end_in_key_stay_readable(self):
-        from agent.redact import is_secret_field_name
+        from hermes_agent.agent.redact import is_secret_field_name
 
         for name in ("key", "public_key", "key_id", "hotkey", "keyboard", "cache_key", "monkey", "sortKey"):
             assert is_secret_field_name(name) is False, name
@@ -1799,7 +1799,7 @@ class TestFlagAndKeyShapedCredentials:
         '{"encryptKey": "true", "private_key": "<your key>"}\nmaster_key: default\nMASTER_KEY=default',
     ])
     def test_help_text_prose_and_paths_after_a_flag_stay_readable(self, text):
-        from agent.redact import redact_for_egress, redact_terminal_output
+        from hermes_agent.agent.redact import redact_for_egress, redact_terminal_output
 
         assert redact_sensitive_text(text, force=True) == text
         assert redact_sensitive_text(text, force=True, file_read=True) == text
@@ -1833,7 +1833,7 @@ class TestFlagAndKeyShapedCredentials:
         'tool --password "«redacted:ghp_…» Zq8xR2vT9pL4mN7k"',
     ])
     def test_crlf_ppk_tls_urls_and_yaml_key_names_are_masked(self, text):
-        from agent.redact import redact_for_egress
+        from hermes_agent.agent.redact import redact_for_egress
 
         assert "Zq8xR2vT9pL4mN7k" not in redact_sensitive_text(text, force=True)
         assert "Zq8xR2vT9pL4mN7k" not in redact_for_egress(text)
@@ -1893,7 +1893,7 @@ class TestFlagAndKeyShapedCredentials:
         ("AGE-SECRET-KEY-1LQOYBF4KMATERIALAAAABBBBCCCCDDDD", "LQOYBF4KMATERIALAAAABBBBCCCCDDDD"),
     ])
     def test_non_pem_private_key_formats_are_masked_on_every_surface(self, material, body):
-        from agent.redact import redact_for_egress, redact_terminal_output
+        from hermes_agent.agent.redact import redact_for_egress, redact_terminal_output
 
         assert body in material
         for out in (
@@ -1905,7 +1905,7 @@ class TestFlagAndKeyShapedCredentials:
             assert "[REDACTED PRIVATE KEY]" in out
 
     def test_a_base64_pem_key_is_masked_on_every_surface(self):
-        from agent.redact import redact_for_egress, redact_terminal_output
+        from hermes_agent.agent.redact import redact_for_egress, redact_terminal_output
 
         blob = "LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcEFJQkFBS0NBUUVB" + "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo="
         for text in (
@@ -1932,7 +1932,7 @@ class TestPasswordOnlyConnStrings:
         "amqp://:" + SECRET + "@rabbit:5672",
     ])
     def test_password_only_connection_strings_are_masked(self, url):
-        from agent.redact import redact_for_egress, redact_terminal_output
+        from hermes_agent.agent.redact import redact_for_egress, redact_terminal_output
 
         for out in (
             redact_sensitive_text(url, force=True),

@@ -495,7 +495,7 @@ def test_credential_pool_seeds_xai_oauth_from_singleton(tmp_path, monkeypatch):
 
     Device code is the only supported xAI OAuth flow, so the singleton is
     always surfaced as ``device_code``."""
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     hermes_home = tmp_path / "hermes"
     fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
@@ -514,7 +514,7 @@ def test_credential_pool_seeds_xai_oauth_from_singleton(tmp_path, monkeypatch):
 
 
 def test_credential_pool_device_code_seed_respects_suppression(tmp_path, monkeypatch):
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     from hermes_cli.auth import suppress_credential_source
 
     hermes_home = tmp_path / "hermes"
@@ -546,7 +546,7 @@ def test_auth_remove_xai_oauth_clears_singleton_and_sticks(tmp_path, monkeypatch
     nothing to clean up" branch. That branch is correct for ``manual``
     entries (pool-only) but wrong for singleton-seeded ``device_code``
     entries (auth.json singleton survives the in-memory removal)."""
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     from hermes_cli.auth_commands import auth_remove_command
     from types import SimpleNamespace
 
@@ -596,7 +596,7 @@ def test_login_xai_oauth_relogin_clears_suppression_and_reseeds(tmp_path, monkey
     """
     from types import SimpleNamespace
 
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
     from hermes_cli.auth import (
         _login_xai_oauth,
         is_source_suppressed,
@@ -695,7 +695,7 @@ def test_pool_refresh_recovers_when_other_process_already_refreshed(tmp_path, mo
     consumed-token error; we must re-check auth.json, find the fresh pair
     (written by the racing process), and adopt it instead of marking the
     entry exhausted."""
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     hermes_home = tmp_path / "hermes"
     in_memory_at = _jwt_with_exp(int(time.time()) + 30)
@@ -741,7 +741,7 @@ def test_pool_manual_entry_does_not_sync_back_to_singleton(tmp_path, monkeypatch
     independent credentials and must NOT write to the singleton.  Sync-back
     is restricted to entries seeded from the singleton.  Otherwise adding a
     second pool credential would silently overwrite the user's main login."""
-    from agent.credential_pool import load_pool, AUTH_TYPE_OAUTH, PooledCredential
+    from hermes_agent.agent.credential_pool import load_pool, AUTH_TYPE_OAUTH, PooledCredential
     import uuid
 
     hermes_home = tmp_path / "hermes"
@@ -809,7 +809,7 @@ def test_auxiliary_client_routes_xai_oauth_through_responses_api(tmp_path, monke
 
     Pin the routing contract: ``resolve_provider_client("xai-oauth", model)``
     must return a non-None client wrapping the xAI Responses API."""
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         CodexAuxiliaryClient,
         resolve_provider_client,
     )
@@ -839,7 +839,7 @@ def test_auxiliary_client_xai_oauth_requires_explicit_model(tmp_path, monkeypatc
     """xAI's Responses API has no safe "cheap aux model" default —
     pinning one would silently rot the same way Codex's did.  Callers
     must pass an explicit model (auxiliary.<task>.model in config.yaml)."""
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     hermes_home = tmp_path / "hermes"
     fresh = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
@@ -864,7 +864,7 @@ def test_pool_sync_back_preserves_active_provider(tmp_path, monkeypatch):
     provider (visible to ``hermes auth status``, ``hermes setup``, and the
     ``hermes`` no-arg dispatcher).  Pin the ``set_active=False`` contract so
     no future refactor regresses to the legacy semantic."""
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     hermes_home = tmp_path / "hermes"
     near_expiry = _jwt_with_exp(int(time.time()) + 30)

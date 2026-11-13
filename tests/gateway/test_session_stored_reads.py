@@ -45,7 +45,7 @@ def _flat(pages):
 
 
 def _summary(body, compacted):
-    from agent.context_compressor import SUMMARY_PREFIX, _build_recovery_footer, _build_verbatim_user_section
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX, _build_recovery_footer, _build_verbatim_user_section
     return (f"{SUMMARY_PREFIX}\n{body}"
             + _build_verbatim_user_section([{'role': 'user', 'content': 'question 1'}])
             + _build_recovery_footer('sid', compacted))
@@ -116,7 +116,7 @@ def _compact_carrying_tail(db, target, summary, tail_rows=2):
 
 @pytest.mark.asyncio
 async def test_a_page_boundary_inside_the_carried_tail_never_repeats_a_row(tmp_path, monkeypatch):
-    from agent.context_compressor import SUMMARY_PREFIX
+    from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
     from hermes_agent.gateway.session_local_recovery import transcript_target
 
     async def handle(event):
@@ -140,7 +140,7 @@ async def test_a_page_boundary_inside_the_carried_tail_never_repeats_a_row(tmp_p
 
 @pytest.mark.asyncio
 async def test_every_compaction_is_a_row_when_a_later_one_reuses_a_summary_carrier(tmp_path, monkeypatch):
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER,
     )
     from hermes_agent.gateway.session_local_recovery import transcript_target

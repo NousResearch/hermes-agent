@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
 from plugins.config_backends.remote import credentials
 
 STAGING = "https://portal.staging-nousresearch.com"
@@ -110,7 +110,7 @@ def test_poller_thread_refreshes_secondary_profile_against_its_own_portal(launch
 def test_another_profiles_bound_scope_does_not_route_this_profiles_token(launch_home, refreshes, caplog):
     """A caller bound to the launch profile resolving the secondary's token routes on the
     secondary's override, never the bound one; the caller's scope is back afterwards."""
-    from agent.secret_scope import current_secret_scope_home
+    from hermes_agent.agent.secret_scope import current_secret_scope_home
 
     secondary = _profile(launch_home / "profiles" / "work", OTHER)
     set_multiplex_active(True)
@@ -128,7 +128,7 @@ def test_another_profiles_bound_scope_does_not_route_this_profiles_token(launch_
 
 
 def test_scope_is_reset_when_resolution_fails(launch_home, monkeypatch):
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     from hermes_cli import auth
 
     set_multiplex_active(True)
@@ -148,7 +148,7 @@ def test_scope_is_reset_when_resolution_fails(launch_home, monkeypatch):
 
 
 def test_home_and_scope_are_restored_when_the_scope_build_fails(launch_home, monkeypatch):
-    from agent.secret_scope import current_secret_scope_home
+    from hermes_agent.agent.secret_scope import current_secret_scope_home
     from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tui_gateway import launch_profile_policy
 
@@ -203,7 +203,7 @@ def test_secondary_never_borrows_the_launch_profiles_env_override(launch_home, m
 
 def test_single_profile_binds_nothing(launch_home, refreshes, monkeypatch):
     """Not multiplexing: no scope is bound and the process env still routes (unchanged behaviour)."""
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     from hermes_cli import auth
 
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", OTHER)

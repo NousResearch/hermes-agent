@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _tool_call() -> SimpleNamespace:
@@ -77,9 +77,9 @@ def _make_loop_agent():
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[_tool_definition()]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.model_metadata.get_model_context_length", return_value=256_000),
-        patch("agent.context_compressor.get_model_context_length", return_value=256_000),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=256_000),
+        patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=256_000),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -189,7 +189,7 @@ def test_no_budget_attribute_leaves_tool_loop_unbounded():
 
 def test_review_input_budget_exhausted_predicate_edge_cases():
     """The gate only arms for a positive int budget and a real token count."""
-    from agent.conversation_loop import _review_input_budget_exhausted
+    from hermes_agent.agent.conversation_loop import _review_input_budget_exhausted
 
     class _Agent:
         pass
@@ -232,7 +232,7 @@ def test_review_input_budget_exhausted_predicate_edge_cases():
 )
 def test_review_input_token_budget_resolution(config_value, expected):
     """Explicit settings retain their established override and unlimited semantics."""
-    from agent.background_review import _review_input_token_budget
+    from hermes_agent.agent.background_review import _review_input_token_budget
 
     assert _review_input_token_budget(config_value) == expected
 
@@ -240,7 +240,7 @@ def test_review_input_token_budget_resolution(config_value, expected):
 def test_review_input_token_budget_default_tracks_forks_context_window():
     """Unset or malformed ``max_input_tokens`` → 75% of the fork's RESOLVED window (a 65k local
     model gets ~49k, not the cloud-scale 600k), capped at 600k; unknown window → 120k fallback."""
-    from agent.background_review import _review_input_token_budget
+    from hermes_agent.agent.background_review import _review_input_token_budget
 
     def fork(window):
         return SimpleNamespace(context_compressor=SimpleNamespace(context_length=window))

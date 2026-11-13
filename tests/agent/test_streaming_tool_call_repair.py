@@ -1,6 +1,6 @@
 """Tests for tool call argument repair in the streaming assembly path.
 
-The streaming path (run_agent._call_chat_completions) assembles tool call
+The streaming path (hermes_agent.run_agent._call_chat_completions) assembles tool call
 deltas into full arguments.  When a model truncates or malforms the JSON
 (e.g. GLM-5.1 via Ollama), the assembly path used to pass the broken JSON
 straight through — setting has_truncated_tool_args but NOT repairing it.
@@ -13,8 +13,8 @@ unclosed brackets, Python None) don't kill the session.
 
 import json
 
-from agent.chat_completion_helpers import _StreamingCall
-from agent.message_sanitization import _repair_tool_call_arguments
+from hermes_agent.agent.chat_completion_helpers import _StreamingCall
+from hermes_agent.agent.message_sanitization import _repair_tool_call_arguments
 
 
 def _accumulated(arguments: str) -> dict:
@@ -47,7 +47,7 @@ class TestStreamingAssemblyRepair:
 
     These tests verify the REPAIR FUNCTION itself works correctly for the
     cases that arise during streaming assembly.  Integration tests that
-    exercise the full streaming path are in run_agent.py's streaming tests.
+    exercise the full streaming path are in hermes_agent/run_agent.py's streaming tests.
     """
 
     # -- Truncation cases (most common streaming failure) --

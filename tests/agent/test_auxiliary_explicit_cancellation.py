@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 import pytest
 
-from agent import auxiliary_client as aux
+from hermes_agent.agent import auxiliary_client as aux
 
 
 class _BlockingStream:
@@ -489,7 +489,7 @@ def test_cancelled_attempt_does_not_close_or_fail_concurrent_shared_client_call(
 
 
 def test_bedrock_silent_nonstream_request_is_isolated_without_close_wakeup() -> None:
-    from agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
+    from hermes_agent.agent.bedrock_adapter import _bedrock_runtime_client_cache, reset_client_cache
 
     started = threading.Event()
     release = threading.Event()

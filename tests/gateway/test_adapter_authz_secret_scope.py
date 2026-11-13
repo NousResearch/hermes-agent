@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import secret_scope as ss
+from hermes_agent.agent import secret_scope as ss
 from hermes_agent.gateway.config import PlatformConfig
 
 _DEFAULT_ENV = {

@@ -118,7 +118,7 @@ class ApiServerMemorySessions:
 
     def _shutdown_async(self, manager: Any, owner: Optional[Path]) -> None:
         """Eviction runs inside a request's own turn: never make that reply wait on a provider drain."""
-        from agent.memory_provider import spawn_context_thread
+        from hermes_agent.agent.memory_provider import spawn_context_thread
         spawn_context_thread(self._shutdown, args=(manager, owner), name="api-server-memory-evict").start()
 
     @staticmethod
@@ -127,7 +127,7 @@ class ApiServerMemorySessions:
         whichever request happened to trigger it, and a provider reads its home/credentials at call time."""
         scope: Any = nullcontext()
         with suppress(Exception):
-            from agent.secret_scope import is_multiplex_active
+            from hermes_agent.agent.secret_scope import is_multiplex_active
             if owner is not None and is_multiplex_active():
                 from hermes_agent.gateway.run import _profile_runtime_scope
                 scope = _profile_runtime_scope(owner)

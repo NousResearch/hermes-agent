@@ -245,7 +245,7 @@ def test_in_dir_replaces_inherited_terminal_cwd(main_mod, monkeypatch, tmp_path)
     import os
     from pathlib import Path
 
-    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 
     inherited = tmp_path / "inherited"
     target = tmp_path / "target"

@@ -208,7 +208,7 @@ timeout, vision routing — is the same across all four.
 
 ## API surface
 
-`ctx.llm` is an instance of `agent.plugin_llm.PluginLlm`.
+`ctx.llm` is an instance of `hermes_agent.agent.plugin_llm.PluginLlm`.
 
 ### `complete()`
 
@@ -344,7 +344,7 @@ import contextvars
 import threading
 import uuid
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 CHART = {"type": "object", "properties": {"kind": {"type": "string"}}, "required": ["kind"]}
 
@@ -399,7 +399,7 @@ answered. The semaphore stands in for `llm.oneshot`'s per-owner cap: a fifth
 call while four run is refused. An exception in the handler itself answers
 the call with reason `plugin_rpc_failed`.
 
-- **Redact at the boundary.** `agent.redact.redact_sensitive_text` is part
+- **Redact at the boundary.** `hermes_agent.agent.redact.redact_sensitive_text` is part
   of the [public plugin API](plugins/public-api.md). Pass `force=True` where
   secrets must never leave the machine, such as text sent to a model: it then
   masks secrets even when the operator turned redaction off with
@@ -711,7 +711,7 @@ own model call — for any reason, structured or not — `ctx.llm`.
 
 ## Reference
 
-* Implementation: [`agent/plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/agent/plugin_llm.py)
+* Implementation: [`hermes_agent/agent/plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_agent/agent/plugin_llm.py)
 * Tests: [`tests/agent/test_plugin_llm.py`](https://github.com/NousResearch/hermes-agent/blob/main/tests/agent/test_plugin_llm.py)
 * Reference plugins (companion repo):
   * [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) — sync structured extraction with image input

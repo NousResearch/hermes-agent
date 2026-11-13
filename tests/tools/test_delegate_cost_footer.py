@@ -66,7 +66,7 @@ def _make_mock_child(cost=0.1234567, cost_status="estimated"):
 class TestCostInResultEntry(unittest.TestCase):
     def _run(self, child):
         parent = _make_mock_parent()
-        with patch("run_agent.AIAgent", return_value=child):
+        with patch("hermes_agent.run_agent.AIAgent", return_value=child):
             result = json.loads(
                 delegate_task(goal="Test per-delegation cost", parent_agent=parent)
             )

@@ -516,7 +516,7 @@ def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[
     connect/peer handshake are still synchronous calls into the pipe. Run the exchange on an
     abandoned-at-deadline worker so a peer that never answers costs ``timeout``, never forever —
     the bound ``_query_unix_socket`` already gets from ``sock.settimeout`` (#132547)."""
-    from agent.deadline import run_bounded_sync
+    from hermes_agent.agent.deadline import run_bounded_sync
     outcome = run_bounded_sync(lambda: _windows_pipe_exchange(home, request, timeout), timeout, label="control-pipe")
     return None if outcome.timed_out else outcome.value
 

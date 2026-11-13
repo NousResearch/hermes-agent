@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from agent.redact import redact_for_egress as _redact_for_egress
+from hermes_agent.agent.redact import redact_for_egress as _redact_for_egress
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from hermes_agent.gateway.platforms.base import _custom_unit_to_cp
 from hermes_agent.gateway.config import (

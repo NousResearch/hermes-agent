@@ -4,10 +4,10 @@ from hermes_agent.hermes_state_runtime import admit_session_input, claim_session
 
 
 def test_stored_result_is_bounded_and_redaction_skips_earlier_turns(owner, monkeypatch):
-    import agent.redact
+    import hermes_agent.agent.redact
     seen = []
-    redact = agent.redact.redact_sensitive_text
-    monkeypatch.setattr(agent.redact, 'redact_sensitive_text', lambda text, **kw: seen.append(text) or redact(text, **kw))
+    redact = hermes_agent.agent.redact.redact_sensitive_text
+    monkeypatch.setattr(hermes_agent.agent.redact, 'redact_sensitive_text', lambda text, **kw: seen.append(text) or redact(text, **kw))
     owner.db.create_session('s', source='api_server')
     tools = [{'type': 'function', 'function': {'name': f'tool{i}', 'description': 'd' * 500}} for i in range(40)]
     history = [{'role': 'user', 'content': 'history-sentinel ' + 'h' * 2000}] * 50

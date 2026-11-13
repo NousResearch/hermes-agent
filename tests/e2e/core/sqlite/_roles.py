@@ -312,9 +312,9 @@ def role_agent(a: dict, out: Out) -> int:
     With ``compress_at`` the agent runs ``/compress here <keep>`` after that turn, exactly as the CLI/TUI
     slash command does, and journals ``C <kept bases…>``. ``resume`` reloads history from state.db first
     (a fresh process resuming the session)."""
-    from agent.conversation_compression_manual import compress_now, parse_compress_args
+    from hermes_agent.agent.conversation_compression_manual import compress_now, parse_compress_args
     from hermes_agent.hermes_state import SessionDB
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     stop_file = Path(a["stop"])
     db = SessionDB(db_path=Path(a["db"]))

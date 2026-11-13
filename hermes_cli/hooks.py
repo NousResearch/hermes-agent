@@ -27,7 +27,7 @@ def hooks_command(args) -> None:
 
 def _cmd_list(_args) -> None:
     from hermes_cli.config import load_config
-    from agent import outbound_webhooks, shell_hooks
+    from hermes_agent.agent import outbound_webhooks, shell_hooks
 
     cfg = load_config()
     specs = shell_hooks.iter_configured_hooks(cfg)
@@ -97,7 +97,7 @@ def _mtime_drift(shell_hooks, spec, entry) -> tuple[bool | None, str, str]:
 # ---------------------------------------------------------------------------
 
 # Synthetic kwargs matching the real invoke_hook() call sites. They go verbatim to
-# agent.shell_hooks.run_once() -> the same _serialize_payload() production uses, so the
+# hermes_agent.agent.shell_hooks.run_once() -> the same _serialize_payload() production uses, so the
 # stdin a script sees under `hooks test` / `hooks doctor` has the runtime shape.
 _DEFAULT_PAYLOADS = {
     "pre_tool_call": {
@@ -189,7 +189,7 @@ _DEFAULT_PAYLOADS = {
 def _cmd_test(args) -> None:
     from hermes_cli.config import load_config
     from hermes_cli.plugins import VALID_HOOKS
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
 
     event = args.event
     if event not in VALID_HOOKS:
@@ -240,7 +240,7 @@ def _print_run_result(result: dict[str, Any]) -> None:
             text = (result.get(stream) or "").strip()
             if text:
                 print(f"      {stream}: {_truncate(text, 400)}")
-    # run_once always sets ``parsed`` (agent/shell_hooks.py::_evaluate_result), so it is available even
+    # run_once always sets ``parsed`` (hermes_agent/agent/shell_hooks.py::_evaluate_result), so it is available even
     # when the hook errored or timed out. A failing hook's decision is the one thing `hooks test` exists
     # to show — failed-open and failed-closed must not render identically (#115968).
     parsed = result.get("parsed")
@@ -259,7 +259,7 @@ def _truncate(s: str, n: int) -> str:
 # ---------------------------------------------------------------------------
 
 def _cmd_revoke(args) -> None:
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
 
     removed = shell_hooks.revoke(args.command)
     if removed == 0:
@@ -275,7 +275,7 @@ def _cmd_revoke(args) -> None:
 
 def _cmd_doctor(_args) -> None:
     from hermes_cli.config import load_config
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
 
     specs = shell_hooks.iter_configured_hooks(load_config())
     if not specs:

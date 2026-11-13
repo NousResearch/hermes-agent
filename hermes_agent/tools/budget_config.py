@@ -4,7 +4,7 @@ Per-tool resolution: pinned > config overrides > registry > default."""
 from dataclasses import dataclass, field
 from typing import Dict
 
-from agent.model_metadata import CHARS_PER_TOKEN
+from hermes_agent.agent.model_metadata import CHARS_PER_TOKEN
 
 # Never overridden; read_file=inf prevents infinite persist->read->persist loops.
 PINNED_THRESHOLDS: dict[str, float] = {"read_file": float("inf")}
@@ -18,7 +18,7 @@ DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
 # un-paginated 20-50K payloads that sail under the generic 100K threshold; spillover
 # keeps the full payload on disk. Config: ``tool_budget.mcp_result_size_chars``.
 DEFAULT_MCP_RESULT_SIZE_CHARS: int = 50_000
-# Same prefix the untrusted-content wrapper keys on (agent/tool_dispatch_helpers.py).
+# Same prefix the untrusted-content wrapper keys on (hermes_agent/agent/tool_dispatch_helpers.py).
 MCP_TOOL_PREFIX: str = "mcp_"
 
 

@@ -242,7 +242,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
     """Verify build_anthropic_kwargs handles fast_mode parameter."""
 
     def test_fast_mode_adds_speed_and_beta(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs, _FAST_MODE_BETA
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs, _FAST_MODE_BETA
 
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-8",
@@ -258,7 +258,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
 
     def test_fast_mode_on_opus_5_5_and_not_on_unlisted_opus(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
 
         def _speed(model):
             return build_anthropic_kwargs(
@@ -272,7 +272,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert _speed("claude-opus-5-6") is None
 
     def test_fast_mode_off_no_speed(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-8",
@@ -287,7 +287,7 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert "extra_headers" not in kwargs
 
     def test_fast_mode_skipped_for_third_party_endpoint(self):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
             model="claude-opus-4-8",

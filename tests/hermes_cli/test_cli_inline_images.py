@@ -11,7 +11,7 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from prompt_toolkit.renderer import print_formatted_text
 from prompt_toolkit.styles import Style
 
-from agent.terminal_image import render_inline_image
+from hermes_agent.agent.terminal_image import render_inline_image
 import cli as cli_mod
 from hermes_cli.cli_inline_images import image_rows, print_inline_images
 from hermes_cli.cli_render import _output_tail_fitting

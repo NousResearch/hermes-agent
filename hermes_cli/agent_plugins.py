@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Tuple
 from urllib.parse import urlsplit
 
-from agent.skill_utils import yaml_load
+from hermes_agent.agent.skill_utils import yaml_load
 from hermes_platform.declaration import Declaration, parse_declaration
 
 _HERMES_EXTENSION = "com.nousresearch.hermes"

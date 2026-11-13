@@ -30,7 +30,7 @@ CRYPTO_AVAILABLE = Cipher is not None
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks
 from hermes_agent.gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import (
     _IMAGE_EXTS, _VIDEO_EXTS, gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -103,7 +103,7 @@ def _make_ssl_connector() -> Optional[aiohttp.TCPConnector]:
     try:
         import ssl
 
-        from agent.ssl_verify import certifi_bundle_path
+        from hermes_agent.agent.ssl_verify import certifi_bundle_path
     except ImportError:
         return None
     if not AIOHTTP_AVAILABLE:

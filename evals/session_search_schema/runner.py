@@ -36,7 +36,7 @@ REPO_ROOT = EVAL_DIR.parent.parent
 sys.path.insert(0, str(EVAL_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
-from agent.compression_marker import elide
+from hermes_agent.agent.compression_marker import elide
 from tasks import SYSTEM, TASKS
 
 ALLOWED_KEYS = {

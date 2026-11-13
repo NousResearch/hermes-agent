@@ -7,7 +7,7 @@ fallbacks so existing CN users configured with the shared key keep working.
 
 from typing import Any
 
-from agent.reasoning_effort import dashscope_preserve_thinking_extras
+from hermes_agent.agent.reasoning_effort import dashscope_preserve_thinking_extras
 from providers import register_provider
 from providers.base import ProviderProfile
 

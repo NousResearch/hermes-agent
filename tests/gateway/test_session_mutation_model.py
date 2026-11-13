@@ -698,7 +698,7 @@ async def test_large_context_guard_reads_the_persisted_anchor_with_no_resident_a
     large-context guard must measure from the session's persisted usage anchor; reading only a live
     agent let the switch right after another one apply with no prompt."""
     from types import SimpleNamespace
-    from agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
+    from hermes_agent.agent.usage_anchor import USAGE_ANCHOR_MODEL_CONFIG_KEY, capture_usage_anchor
     from hermes_agent.gateway import run
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore

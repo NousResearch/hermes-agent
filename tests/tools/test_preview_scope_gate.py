@@ -11,7 +11,7 @@ working (the call reaches the tool).
 import json
 
 from hermes_agent import model_tools
-from agent.tool_executor import _unwrap_tool_search_call
+from hermes_agent.agent.tool_executor import _unwrap_tool_search_call
 
 TUI_SCOPE = ["coding", "project"]
 DESKTOP_SCOPE = ["coding", "desktop_ui", "project"]

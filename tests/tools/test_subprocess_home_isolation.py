@@ -288,7 +288,7 @@ class TestProfileBootstrap:
 def test_bound_profile_home_mode_beats_the_launch_profiles_bridged_value(tmp_path, monkeypatch):
     """A served profile's ``home_mode: profile`` decides its subprocess HOME even though
     ``os.environ`` carries the LAUNCH profile's bridged ``TERMINAL_HOME_MODE=auto`` (#146103)."""
-    from agent.runtime_scope import bind_profile_scope
+    from hermes_agent.agent.runtime_scope import bind_profile_scope
     from hermes_agent.tools.environments.local import _make_run_env
 
     monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
@@ -309,7 +309,7 @@ def test_policy_frozen_before_home_mode_keeps_the_bridged_mode(tmp_path, monkeyp
     """A session policy frozen before ``home_mode`` reached the terminal policy carries no key. It keeps
     the mode the process bridged from the profile's config, never drops ``home_mode: profile`` to
     ``auto`` (the real ``$HOME``) until the session's policy is refreshed (#146103)."""
-    from agent.runtime_scope import bind_terminal_policy
+    from hermes_agent.agent.runtime_scope import bind_terminal_policy
     from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
 
     monkeypatch.setattr(hermes_constants, "is_container", lambda: False)

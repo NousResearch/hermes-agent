@@ -7,7 +7,7 @@ arm a one-way, process-wide guard it was never meant to arm.
 """
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.tui_gateway import launch_profile_policy
 
 

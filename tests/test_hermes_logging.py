@@ -144,7 +144,7 @@ class TestSetupLogging:
             self, hermes_home, tmp_path, monkeypatch, launch_redacts, routed_opt_out, routed_redacted):
         """The listener thread formats every record after its profile scope is gone, so a routed profile's own
         agent.log was redacted by the LAUNCH profile's policy: raw credentials if only the launch opted out."""
-        from agent import redact
+        from hermes_agent.agent import redact
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         monkeypatch.setattr(redact, "_REDACT_ENABLED", launch_redacts)
@@ -186,7 +186,7 @@ class TestSetupLogging:
             [hermes_home, deleted_home, other_home]
         ) is True
 
-        logger = logging.getLogger("agent.profile-delete-log-release")
+        logger = logging.getLogger("hermes_agent.agent.profile-delete-log-release")
         token = set_hermes_home_override(deleted_home)
         try:
             logger.warning("deleted profile log handles")
@@ -231,7 +231,7 @@ class TestSetupLogging:
         assert not [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)], (
             "the second home must not add an unfiltered file handler")
 
-        logger = logging.getLogger("agent.conversation_loop.second-home-test")
+        logger = logging.getLogger("hermes_agent.agent.conversation_loop.second-home-test")
         token = set_hermes_home_override(profile_home)
         try:
             logger.info("turn of profile b")
@@ -261,7 +261,7 @@ class TestSetupLogging:
         assert not [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)]
         token = set_hermes_home_override(profile_home)
         try:
-            logging.getLogger("agent.conversation_loop.routed-home-test").info("once please")
+            logging.getLogger("hermes_agent.agent.conversation_loop.routed-home-test").info("once please")
         finally:
             reset_hermes_home_override(token)
         hermes_logging.flush_log_queue()

@@ -60,7 +60,7 @@ OPENAI_MODELS = frozenset(STT_MODEL_CATALOG["openai"])
 GROQ_MODELS = frozenset(STT_MODEL_CATALOG["groq"])
 RETIRED_GROQ_MODELS = frozenset({"distil-whisper-large-v3-en"})
 
-# Providers with native handlers. Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES``
+# Providers with native handlers. Kept in sync with ``hermes_agent.agent.transcription_registry._BUILTIN_NAMES``
 # (a regression test fails on drift); plugins may not register under these names and the
 # dispatcher short-circuits them before command/plugin lookup.
 # The plugin hook from issue #30398-style follow-up rejects plugins registering under any of these names;

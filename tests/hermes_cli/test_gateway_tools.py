@@ -200,7 +200,7 @@ def test_tools_lists_the_gateway_session_catalog_with_main_rendering(gateway, ca
 
 def test_reload_skills_rescans_in_the_gateway_session_and_prints_main_lines(gateway, capsys, monkeypatch):
     """/reload-skills rescans where the turn runs; main's lines print from the gateway's diff."""
-    from agent import skill_commands
+    from hermes_agent.agent import skill_commands
     from hermes_cli.cli_info_mixin import CLIInfoMixin
     _agent, client = gateway
     # The gateway's first rescan diffs against an empty map (everything "added"); main's lines come

@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from agent.plugin_llm import (
+from hermes_agent.agent.plugin_llm import (
     PluginLlmTrustError,
     PluginLlmTextInput,
     _check_task,
@@ -330,7 +330,7 @@ class TestForwardsToCallLlm:
             kwargs["route_info"].update(provider="aux-provider", model="aux-model")
             return _fake_response()
 
-        monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client.call_llm", fake_call_llm)
         llm = make_plugin_llm_for_test(plugin_id="my-plugin", policy=_policy())
         result = llm.complete([{"role": "user", "content": "hi"}], task="classifier")
         assert seen["task"] == "classifier"
@@ -345,7 +345,7 @@ class TestForwardsToCallLlm:
             seen.update(kwargs)
             return _fake_response()
 
-        monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client.call_llm", fake_call_llm)
         llm = make_plugin_llm_for_test(plugin_id="my-plugin", policy=_policy())
         llm.complete([{"role": "user", "content": "hi"}])
         assert seen["task"] is None
@@ -360,7 +360,7 @@ class TestForwardsToCallLlm:
             kwargs["route_info"].update(provider="aux-provider", model="aux-model")
             return _fake_response()
 
-        monkeypatch.setattr("agent.auxiliary_client.async_call_llm", fake_async_call_llm)
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client.async_call_llm", fake_async_call_llm)
         llm = make_plugin_llm_for_test(plugin_id="my-plugin", policy=_policy())
         result = asyncio.run(
             llm.acomplete([{"role": "user", "content": "hi"}], task="classifier")
@@ -427,7 +427,7 @@ class TestOwnershipIntegration:
             )
 
     def test_auto_task_reports_configured_fallback_provider_and_model(self, tmp_path, monkeypatch):
-        from agent import auxiliary_client as auxiliary_mod
+        from hermes_agent.agent import auxiliary_client as auxiliary_mod
         from hermes_cli import config as config_mod
 
         hermes_home = tmp_path / ".hermes"
@@ -451,8 +451,8 @@ auxiliary:
         ctx = self._register(manager, name="my-plugin", key="my-plugin", task_key="classifier")
         monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda: manager)
         _set_builtins(monkeypatch, [])
-        monkeypatch.setattr("agent.auxiliary_client._read_main_provider", lambda: "")
-        monkeypatch.setattr("agent.auxiliary_client._read_main_model", lambda: "")
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client._read_main_provider", lambda: "")
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client._read_main_model", lambda: "")
 
         captured: dict[str, Any] = {}
         client = SimpleNamespace(
@@ -470,7 +470,7 @@ auxiliary:
             return client, model
 
         monkeypatch.setattr(
-            "agent.auxiliary_client.resolve_provider_client", fake_provider_client
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client", fake_provider_client
         )
 
         result = ctx.llm.complete(
@@ -485,7 +485,7 @@ auxiliary:
         )
 
     def test_async_auto_resolution_preserves_route_provider(self, monkeypatch):
-        from agent import auxiliary_client
+        from hermes_agent.agent import auxiliary_client
 
         sync_client = SimpleNamespace()
         async_client = SimpleNamespace()
@@ -543,14 +543,14 @@ auxiliary:
             chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_kwargs: _fake_response()))
         )
         monkeypatch.setattr(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             lambda provider, model, **_kwargs: (failed_client, model),
         )
         monkeypatch.setattr(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             lambda provider, model, **_kwargs: (fallback_client, model),
         )
-        monkeypatch.setattr("agent.auxiliary_client._transient_retry_count", lambda: 0)
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client._transient_retry_count", lambda: 0)
 
         result = make_plugin_llm_for_test(
             plugin_id="my-plugin", policy=_policy()
@@ -594,15 +594,15 @@ auxiliary:
             chat=SimpleNamespace(completions=SimpleNamespace(create=succeed))
         )
         monkeypatch.setattr(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             lambda provider, model, **_kwargs: (failed_client, model),
         )
         monkeypatch.setattr(
-            "agent.auxiliary_client.resolve_provider_client",
+            "hermes_agent.agent.auxiliary_client.resolve_provider_client",
             lambda provider, model, **_kwargs: (fallback_client, model),
         )
         monkeypatch.setattr(
-            "agent.auxiliary_client._to_async_client",
+            "hermes_agent.agent.auxiliary_client._to_async_client",
             lambda client, model, **_kwargs: (client, model),
         )
 

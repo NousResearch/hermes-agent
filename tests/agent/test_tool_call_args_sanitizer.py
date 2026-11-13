@@ -3,7 +3,7 @@
 import copy
 import logging
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 _MISSING = object()
@@ -55,10 +55,10 @@ def test_truncated_arguments_replaced_with_empty_object(caplog):
         _assistant_message(_tool_call(arguments='{"path": "/tmp/foo')),
     ]
 
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
         repaired = AIAgent._sanitize_tool_call_arguments(
             messages,
-            logger=logging.getLogger("run_agent"),
+            logger=logging.getLogger("hermes_agent.run_agent"),
             session_id="session-123",
         )
 
@@ -113,10 +113,10 @@ def test_empty_string_arguments_treated_as_empty_object(caplog):
         _assistant_message(_tool_call(arguments="")),
     ]
 
-    with caplog.at_level(logging.WARNING, logger="run_agent"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
         repaired = AIAgent._sanitize_tool_call_arguments(
             messages,
-            logger=logging.getLogger("run_agent"),
+            logger=logging.getLogger("hermes_agent.run_agent"),
             session_id="session-123",
         )
 
@@ -145,7 +145,7 @@ def test_corrupt_args_repair_pops_persist_marker_on_stamped_dicts():
     """A resumed session can load stamped rows whose tool_call args are corrupt;
     repairing them in place must pop the marker or session.db keeps the corrupt
     bytes while the live transcript holds the repaired ones (divergent resume)."""
-    from agent.context_compressor import _DB_PERSISTED_MARKER
+    from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
     stamped_call = _assistant_message(
         _tool_call(call_id="call_1", arguments="{invalid json")

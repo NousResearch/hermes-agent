@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent import prompt_builder
+from hermes_agent.agent import prompt_builder
 from hermes_agent import model_tools
 from hermes_agent.gateway import run as gateway_run
 from hermes_agent.tools import env_probe

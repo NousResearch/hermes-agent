@@ -36,7 +36,7 @@ async def test_model_picker_receives_a_providers_whole_catalog(tmp_path, monkeyp
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-a-key")
     monkeypatch.setattr(gateway_run, "_hermes_home", home)
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
+    monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
 
     adapter = _CapturingPickerAdapter()
     runner = object.__new__(GatewayRunner)

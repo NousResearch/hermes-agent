@@ -33,7 +33,7 @@ class PluginCapabilityCtxMixin:
         session (memory included) and its warm prompt cache; tools never run and nothing is
         written to the transcript. Needs the ``llm.side_question`` capability; without it this
         returns None and leaves the attempt to a consented plugin."""
-        from agent.side_question_lease import SIDE_QUESTION_CAPABILITY, redeem_side_question
+        from hermes_agent.agent.side_question_lease import SIDE_QUESTION_CAPABILITY, redeem_side_question
 
         if not self._side_question_granted(SIDE_QUESTION_CAPABILITY):
             if not getattr(self, "_side_question_denial_logged", False):

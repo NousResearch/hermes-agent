@@ -1,4 +1,4 @@
-"""Opt-in prepared compaction (``compression.prepare_ahead``, agent/prepared_compaction.py).
+"""Opt-in prepared compaction (``compression.prepare_ahead``, hermes_agent/agent/prepared_compaction.py).
 
 Behaviour contracts, with the summariser stubbed at its model boundary:
 
@@ -25,10 +25,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import prepared_compaction as pc
-from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
-from agent.model_metadata import estimate_messages_tokens_rough
-from agent.prepared_compaction import PreparedCompaction
+from hermes_agent.agent import prepared_compaction as pc
+from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
+from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
+from hermes_agent.agent.prepared_compaction import PreparedCompaction
 from tests.waiting import wait_until
 
 
@@ -40,20 +40,20 @@ class _StubCompressor(ContextCompressor):
 
         worker = threading.current_thread().name == "compaction-prepare"
         if worker and self.read_seconds:
-            from agent.local_prompt_progress import current_prompt_reading_hook
+            from hermes_agent.agent.local_prompt_progress import current_prompt_reading_hook
 
             pending = self.prepared_compaction._pending
             wait_until(lambda: pending.on_reading is not None, what="compaction waiting on the pass")
             current_prompt_reading_hook()(self.read_seconds)  # a local server reading the prompt
             self.after_read()
         if worker and self.gate is not None:
-            from agent.auxiliary_client import AuxiliaryExplicitCancellation, _aux_interrupt_cancel_requested
+            from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation, _aux_interrupt_cancel_requested
 
             wait_until(lambda: self.gate.is_set() or _aux_interrupt_cancel_requested(), what="pass released or cancelled")
             if not self.gate.is_set():
                 raise AuxiliaryExplicitCancellation()  # how the aux client ends a cancelled summary stream
         if worker and self.stream_progress:
-            from agent.auxiliary_client import _aux_progress
+            from hermes_agent.agent.auxiliary_client import _aux_progress
 
             _aux_progress.hook()  # one streamed chunk
         self.calls.append({
@@ -70,7 +70,7 @@ class _StubCompressor(ContextCompressor):
 
 
 def _compressor(*, enabled: bool = True, session_id: str = "S1") -> _StubCompressor:
-    with patch("agent.context_compressor.get_model_context_length", return_value=40960):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=40960):
         cc = _StubCompressor(model="test/model", protect_first_n=3, protect_last_n=5, quiet_mode=True)
         cc.context_length = 40960
     cc.threshold_tokens = 20000
@@ -127,7 +127,7 @@ def test_flag_off_leaves_compression_inline_and_stateless():
 
 
 def test_config_flag_reaches_the_compressor_through_the_loader(tmp_path, monkeypatch):
-    from agent.agent_init import _parse_compression_config
+    from hermes_agent.agent.agent_init import _parse_compression_config
     from hermes_cli.config import DEFAULT_CONFIG, load_config_readonly
 
     agent = SimpleNamespace(model="m", provider="openrouter", api_mode="chat_completions", quiet_mode=True)
@@ -251,7 +251,7 @@ def test_growth_past_the_candidate_beyond_the_tail_budget_still_splices_keeping_
     assert start == window.compress_start and end > window.compress_end
     assert estimate_messages_tokens_rough(later[window.compress_end:end]) > cc.tail_token_budget
 
-    from agent.auxiliary_client import aux_progress_hook
+    from hermes_agent.agent.auxiliary_client import aux_progress_hook
 
     with aux_progress_hook(lambda: None):  # a host hook marks the moment the wait starts
         compressed = cc.compress(later, current_tokens=cc.threshold_tokens + 1)
@@ -284,7 +284,7 @@ def test_a_fresh_cut_before_the_candidate_boundary_still_splices_and_the_boundar
     _, _, start, end = cc._plan_compaction_window(later)
     assert start == window.compress_start and end < window.compress_end
 
-    from agent.auxiliary_client import aux_progress_hook
+    from hermes_agent.agent.auxiliary_client import aux_progress_hook
 
     with aux_progress_hook(lambda: None):
         compressed = cc.compress(later, current_tokens=cc.threshold_tokens + 1)
@@ -417,7 +417,7 @@ def test_identity_survives_a_session_db_round_trip_and_catches_a_rewind(tmp_path
 def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
     """No candidate yet: the compaction waits for the running pass instead of summarising again, and each
     streamed chunk of the pass touches the compacting thread's progress hook (the host's idle watchdog)."""
-    from agent.auxiliary_client import aux_progress_hook
+    from hermes_agent.agent.auxiliary_client import aux_progress_hook
 
     cc = _compressor()
     cc.gate, cc.stream_progress = threading.Event(), True
@@ -439,7 +439,7 @@ def test_compaction_waits_for_a_running_pass_and_forwards_its_progress():
 
 
 def test_wait_ends_at_the_host_deadline_then_summarises_inline_and_the_pass_cannot_publish():
-    from agent.auxiliary_client import aux_stream_deadline
+    from hermes_agent.agent.auxiliary_client import aux_stream_deadline
 
     cc = _compressor()
     cc.gate = threading.Event()
@@ -459,8 +459,8 @@ def test_wait_ends_at_the_host_deadline_then_summarises_inline_and_the_pass_cann
 def test_prompt_reading_in_the_pass_extends_the_deadline_the_wait_honours():
     """A local server still reading the pass's prompt pushes the host deadline back exactly as it would
     inline, and the wait follows the live deadline instead of the one it started with."""
-    from agent.auxiliary_client import aux_stream_deadline
-    from agent.local_prompt_progress import prompt_reading_hook
+    from hermes_agent.agent.auxiliary_client import aux_stream_deadline
+    from hermes_agent.agent.local_prompt_progress import prompt_reading_hook
 
     cc = _compressor()
     initial = []
@@ -482,7 +482,7 @@ def test_prompt_reading_in_the_pass_extends_the_deadline_the_wait_honours():
 
 
 def test_host_cancel_ends_the_wait_and_cancels_the_superseded_pass(monkeypatch):
-    from agent.auxiliary_client import aux_interrupt_protection, aux_progress_hook
+    from hermes_agent.agent.auxiliary_client import aux_interrupt_protection, aux_progress_hook
 
     escaped = []
     monkeypatch.setattr(threading, "excepthook", escaped.append)
@@ -503,7 +503,7 @@ def test_host_cancel_ends_the_wait_and_cancels_the_superseded_pass(monkeypatch):
 
 
 def test_session_reset_during_the_wait_wakes_it_without_waiting_for_the_pass():
-    from agent.auxiliary_client import aux_progress_hook
+    from hermes_agent.agent.auxiliary_client import aux_progress_hook
 
     cc = _compressor()
     cc.gate = threading.Event()
@@ -574,7 +574,7 @@ def test_a_held_candidate_starts_no_further_pass_however_far_the_prompt_grows(mo
 
 def test_failed_pass_backs_off_without_touching_live_failure_state(tmp_path, monkeypatch):
     from hermes_agent.hermes_state import SessionDB
-    import agent.context_compressor as module
+    import hermes_agent.agent.context_compressor as module
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("S1", source="cli")
@@ -600,7 +600,7 @@ def test_splice_carries_the_passs_main_model_fallback_and_call_telemetry(monkeyp
     """The summary model failed inside the pass and the main model answered: the live compressor ends up
     as the inline call would leave it (sticky main-model route, the user warning's source, the call's
     telemetry), not as if the broken summary model had worked."""
-    import agent.context_compressor as module
+    import hermes_agent.agent.context_compressor as module
 
     cc = _compressor()
     cc.summary_model = "broken/summary-model"
@@ -655,7 +655,7 @@ def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_t
     import os
     from pathlib import Path
 
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     if prepare_ahead:
         Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
@@ -667,7 +667,7 @@ def test_turn_that_crosses_the_trigger_splices_the_summary_prepared_during_its_t
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=tool_defs),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1",
                         quiet_mode=True, skip_context_files=True, skip_memory=True)

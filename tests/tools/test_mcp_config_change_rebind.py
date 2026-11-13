@@ -95,7 +95,7 @@ def test_unscoped_multiplex_load_keeps_plugin_servers_after_a_templated_one(monk
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     from hermes_agent.tools import mcp_tool_config

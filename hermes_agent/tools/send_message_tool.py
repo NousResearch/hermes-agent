@@ -7,7 +7,7 @@ import logging
 import os
 import re
 
-from agent.secret_scope import get_secret
+from hermes_agent.agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -212,8 +212,8 @@ def _handle_send(args):
     # call, `hermes send`, dashboard console) enters here, so scrub once before the
     # media extraction, the session mirror and the platform sender see the text.
     # Model output delivered by the gateway/cron is already scrubbed upstream
-    # (``agent/turn_finalizer.py::finalize_turn``, ``hermes_agent/gateway/run.py``).
-    from agent.message_sanitization import _sanitize_surrogates
+    # (``hermes_agent/agent/turn_finalizer.py::finalize_turn``, ``hermes_agent/gateway/run.py``).
+    from hermes_agent.agent.message_sanitization import _sanitize_surrogates
     message = _sanitize_surrogates(message)
     platform_name, chat_id, thread_id, resolution_error = _resolve_tool_target(target)
     if resolution_error:
@@ -330,7 +330,7 @@ def _resolve_platform_config(platform_name, config):
 def _not_configured_error(platform_name, platform, entry):
     """Name the resolved home and what each credential source held, so the user edits the file this
     process actually read (a hardcoded ``~/.hermes`` does not exist on a Windows or profile home)."""
-    from agent.secret_scope import load_env_file
+    from hermes_agent.agent.secret_scope import load_env_file
     from hermes_agent.gateway.config import _getenv
     from hermes_agent.gateway.config_env import _ENV_ENABLE_CREDENTIALS
     from hermes_constants import get_hermes_home
@@ -387,7 +387,7 @@ def _secret_sources_state(user_config):
     """``name: enabled|disabled`` for every registered secret source with a ``secrets.<name>`` section,
     or ``none configured``; names only, never values."""
     try:
-        from agent.secret_sources.registry import list_sources
+        from hermes_agent.agent.secret_sources.registry import list_sources
         secrets_cfg = user_config.get("secrets") if isinstance(user_config.get("secrets"), dict) else {}
         states = [f"{s.name}: {'enabled' if s.is_enabled(secrets_cfg[s.name]) else 'disabled'}"
                   for s in list_sources() if isinstance(secrets_cfg.get(s.name), dict)]
@@ -544,7 +544,7 @@ async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
         return await make_coro()  # same loop / no gateway loop (CLI, tests)
     if not gateway_loop.is_running():
         return {"error": "Gateway loop is not running; cannot dispatch adapter send"}
-    from agent.async_utils import safe_schedule_threadsafe
+    from hermes_agent.agent.async_utils import safe_schedule_threadsafe
     fut = safe_schedule_threadsafe(make_coro(), gateway_loop, logger=logger, log_message=log_message)
     if fut is None:
         return {"error": "Gateway loop unavailable for send dispatch"}
@@ -688,7 +688,7 @@ async def _send_reply_file_standalone(sender, pconfig, chat_id, message, thread_
     import secrets
     import shutil
     import tempfile
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     folder = await asyncio.to_thread(tempfile.mkdtemp, prefix="hermes-reply-")
     try:
         path = os.path.join(folder, f"reply-{secrets.token_hex(4)}.md")

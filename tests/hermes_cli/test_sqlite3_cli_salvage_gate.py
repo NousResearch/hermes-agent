@@ -191,7 +191,7 @@ class TestParseSqlite3CliVersion:
 class TestGuidanceNeverNamesLiveDb:
 
     def test_run_agent_corrupt_explanation(self):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         explanation = AIAgent._format_turn_completion_explanation(
             "session_persistence_failed", "corrupt"

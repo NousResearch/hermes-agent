@@ -33,7 +33,7 @@ from array import array
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
-from agent.memory_provider import spawn_context_thread
+from hermes_agent.agent.memory_provider import spawn_context_thread
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -496,7 +496,7 @@ def _builtin_session(provider: str, stt_config: dict[str, Any], language: Option
 
 def _plugin_session(provider: str, language: Optional[str], prompt: Optional[str],
                     on_partial: Optional[PartialCallback]) -> Optional[StreamingSession]:
-    from agent.transcription_registry import get_provider
+    from hermes_agent.agent.transcription_registry import get_provider
     registered = get_provider(provider)
     if registered is None or not registered.streaming_capable:
         return None
@@ -512,7 +512,7 @@ def streaming_available(stt_config: Optional[dict[str, Any]] = None) -> bool:
     provider = tt._get_provider(cfg)
     if provider in STREAMING_PROVIDERS:
         return _builtin_session(provider, cfg, None, None, None) is not None
-    from agent.transcription_registry import get_provider
+    from hermes_agent.agent.transcription_registry import get_provider
     registered = get_provider(provider)
     return bool(registered is not None and registered.streaming_capable)
 

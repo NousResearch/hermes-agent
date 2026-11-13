@@ -2,7 +2,7 @@
 
 ``pause`` writes the ESTOP sentinel at ``$HERMES_HOME/ESTOP``; cron, kanban and new gateway
 turns halt on their next check (in-flight work is never killed). Every local turn is a gateway
-turn, so interactive CLI, TUI and Desktop turns are held too, with ``agent.estop.paused_reply``'s
+turn, so interactive CLI, TUI and Desktop turns are held too, with ``hermes_agent.agent.estop.paused_reply``'s
 notice. ``resume`` removes it and operation resumes on the next tick — no restart. Ported from gastownhall/gastown estop.go (MIT).
 """
 
@@ -13,7 +13,7 @@ import argparse
 
 def cmd_pause(args: argparse.Namespace) -> int:
     """Engage the global emergency stop."""
-    from agent.estop import engage, get_state, is_engaged
+    from hermes_agent.agent.estop import engage, get_state, is_engaged
 
     reason = getattr(args, "reason", None)
     already = is_engaged()
@@ -32,7 +32,7 @@ def cmd_pause(args: argparse.Namespace) -> int:
 
 def cmd_resume(args: argparse.Namespace) -> int:
     """Disengage the global emergency stop."""
-    from agent.estop import disengage, sentinel_path
+    from hermes_agent.agent.estop import disengage, sentinel_path
 
     if disengage():
         print("▶️  Hermes resumed — dispatch picks up on the next tick.")

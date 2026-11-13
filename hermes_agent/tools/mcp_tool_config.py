@@ -200,7 +200,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     """Filtered env for stdio subprocesses so API keys/tokens don't leak: the safe baseline
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
-    from agent.secret_scope import get_secret
+    from hermes_agent.agent.secret_scope import get_secret
     from hermes_cli.env_loader import secret_source_names
     from hermes_agent.tools.environments.local_env_policy import hermes_consumed_credentials
     env = {
@@ -240,7 +240,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
         for key, value in user_env.items():
             if not getattr(value, "unset_ref", False):
                 env[key] = value
-    from agent.delegation_context import delegated_child_subprocess_env
+    from hermes_agent.agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)
 
 
@@ -573,7 +573,7 @@ def _interpolate_env_vars(value):
     refs resolve from the active profile's secret scope when multiplexing (the routed profile's
     value, not another profile's in ``os.environ``). Unset (or empty) vars keep the literal placeholder;
     a templated string comes back as a ``_RenderedStr`` recording how it resolved."""
-    from agent.secret_scope import get_secret as _get_secret
+    from hermes_agent.agent.secret_scope import get_secret as _get_secret
     if isinstance(value, str):
         if isinstance(value, _RenderedStr) and not value.missed:
             return value
@@ -681,7 +681,7 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
 
     The package's declared costs are facts about its server, so a same-name native entry (the way a user widens
     a package server's trust) keeps them unless it sets the cost key itself; ``spend_limit: 0`` turns the limit off."""
-    from agent.secret_scope import UnscopedSecretError
+    from hermes_agent.agent.secret_scope import UnscopedSecretError
     from hermes_agent.tools.mcp_tool_costs import CONFIG_KEYS
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
@@ -715,7 +715,7 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
 
 def _load_mcp_config() -> dict[str, dict]:
     """``mcp_servers`` from config.yaml as ``{name: config}`` (empty on error / safe mode), ``${VAR}`` interpolated."""
-    from agent.safe_worker_policy import safe_worker_enabled
+    from hermes_agent.agent.safe_worker_policy import safe_worker_enabled
     if safe_worker_enabled():
         return {}
     try:

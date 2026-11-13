@@ -33,12 +33,12 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.context_compressor import _DB_PERSISTED_MARKER
+from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
 
 
 def _make_agent_with_db(tmp_path):
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         from hermes_agent.hermes_state import SessionDB
 
         db = SessionDB(tmp_path / "state.db")

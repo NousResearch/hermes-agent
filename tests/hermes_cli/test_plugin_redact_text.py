@@ -3,7 +3,7 @@
 import pytest
 
 import hermes_cli.plugins as plugins_mod
-from agent import redact
+from hermes_agent.agent import redact
 
 KEY = "sk-proj-" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
 GH = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"

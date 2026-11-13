@@ -9,7 +9,7 @@ import time
 
 from prompt_toolkit.utils import get_cwidth
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_cli import cli_process_dock as procs
 from hermes_cli import cli_session_dock as session_rows
 

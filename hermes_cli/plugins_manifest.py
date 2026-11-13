@@ -422,7 +422,7 @@ class PluginManifest:
 def parse_provides_locales(raw: Any, key: str = "") -> tuple[list[str], dict[str, dict[str, Any]]]:
     """``provides_locales`` -> (ids, metadata). Entries are ``"pl"`` or ``{id: pl, endonym: Polski, rtl: false}``;
     ids are canonicalised (lowercase, ``_`` -> ``-``), invalid or duplicate ones are dropped with a warning."""
-    from agent.i18n_layers import is_language_id, normalize_language_id
+    from hermes_agent.agent.i18n_layers import is_language_id, normalize_language_id
     ids: list[str] = []
     metadata: dict[str, dict[str, Any]] = {}
     if raw is None:

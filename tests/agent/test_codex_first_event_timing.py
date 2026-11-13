@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from agent.codex_runtime import run_codex_stream
+from hermes_agent.agent.codex_runtime import run_codex_stream
 
 
 def _agent() -> SimpleNamespace:
@@ -35,7 +35,7 @@ def _completed_events():
 def test_codex_stream_records_first_lifecycle_event_before_text(monkeypatch):
     agent = _agent()
     ticks = iter((100.0, 200.0, 300.0))
-    monkeypatch.setattr("agent.codex_runtime.time.time", lambda: next(ticks))
+    monkeypatch.setattr("hermes_agent.agent.codex_runtime.time.time", lambda: next(ticks))
     attempts = 0
 
     def create(**_):

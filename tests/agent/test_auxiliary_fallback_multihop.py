@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent import auxiliary_client as ac
-from agent.auxiliary_client import async_call_llm, call_llm
+from hermes_agent.agent import auxiliary_client as ac
+from hermes_agent.agent.auxiliary_client import async_call_llm, call_llm
 
 
 @pytest.fixture(autouse=True)
@@ -68,13 +68,13 @@ def _walk_patches(primary, main_chain_selections):
     """``provider: auto`` primary; per-task chain empty; main ``fallback_providers`` hands out the
     given (client, model, label) tuples in order and then reports exhaustion; discovery is empty."""
     return (
-        patch("agent.auxiliary_client._resolve_task_provider_model",
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
               return_value=("auto", None, None, None, None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(primary, "modelA")),
-        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_main_fallback_chain",
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(primary, "modelA")),
+        patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_main_fallback_chain",
               side_effect=list(main_chain_selections) + [(None, None, "")]),
-        patch("agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_payment_fallback", return_value=(None, None, "")),
     )
 
 
@@ -106,7 +106,7 @@ async def test_async_walk_exhausts_every_configured_lane_once_then_raises_primar
 
     patches = _walk_patches(primary, [(lane_b, "modelB", "custom"), (lane_c, "modelC", "custom")])
     with patches[0], patches[1], patches[2], patches[3] as main_chain, patches[4] as discovery, \
-            patch("agent.auxiliary_client._to_async_client", side_effect=lambda c, m, **kw: (c, m)):
+            patch("hermes_agent.agent.auxiliary_client._to_async_client", side_effect=lambda c, m, **kw: (c, m)):
         with pytest.raises(Exception, match="'lane': 'A'"):
             await async_call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}])
 
@@ -121,7 +121,7 @@ async def test_async_walk_exhausts_every_configured_lane_once_then_raises_primar
 def test_candidate_quarantine_ttl_is_short_for_transient_429_and_long_for_payment(caplog):
     """A per-minute 429 on a candidate hides the lane for seconds, not the 10-minute payment hold,
     and the warning names the real class; a 402 candidate still gets the long hold."""
-    caplog.set_level("WARNING", logger="agent.auxiliary_client")
+    caplog.set_level("WARNING", logger="hermes_agent.agent.auxiliary_client")
     primary = _client("http://127.0.0.1:1/v1", MagicMock(side_effect=_plain_429("A")))
     lane_b = _client("http://127.0.0.1:2/v1", MagicMock(side_effect=_plain_429("B")))
     lane_c = _client("http://127.0.0.1:3/v1", MagicMock(side_effect=_payment_402("C")))

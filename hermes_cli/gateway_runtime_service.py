@@ -29,7 +29,7 @@ class RuntimeStartError(RuntimeError):
         # One line, bounded: Desktop prints the first line of ``detail`` after the reason code. It echoes
         # service definitions and child output that users paste into reports, so redact before truncating.
         if detail:
-            from agent.redact import redact_sensitive_text
+            from hermes_agent.agent.redact import redact_sensitive_text
             detail = " ".join(redact_sensitive_text(detail, force=True, redact_url_credentials=True).split())[:500]
         self.detail = detail or None
 

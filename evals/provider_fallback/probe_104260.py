@@ -130,8 +130,8 @@ config = {
 Path(os.environ["HERMES_HOME"], "config.yaml").write_text(
     json.dumps(config), encoding="utf-8"
 )
-from agent import auxiliary_client as aux
-from agent.backend_identity import BackendIdentity, FailureScope, should_skip_candidate
+from hermes_agent.agent import auxiliary_client as aux
+from hermes_agent.agent.backend_identity import BackendIdentity, FailureScope, should_skip_candidate
 
 assert aux.__file__.startswith(REPO)
 print("PRODUCTION_IMPORT", aux.__file__, flush=True)

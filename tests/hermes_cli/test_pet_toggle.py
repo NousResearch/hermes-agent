@@ -44,7 +44,7 @@ def empty_home(tmp_path, monkeypatch):
 
 
 def test_set_pet_scale_writes_clamped_value(empty_home):
-    from agent.pet.constants import MAX_SCALE, MIN_SCALE
+    from hermes_agent.agent.pet.constants import MAX_SCALE, MIN_SCALE
     from hermes_cli.pets import _pet_config, set_pet_scale
 
     applied, err = set_pet_scale("0.5")

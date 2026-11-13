@@ -25,7 +25,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 @pytest.fixture(autouse=True)
 def _reset_multiplex_flag():
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     ss.set_multiplex_active(False)
     yield
@@ -60,7 +60,7 @@ class TestLoadGatewayConfigForRunner:
         visible there — while API_SERVER_KEY (a credential) still resolves
         through the profile scope.
         """
-        from agent import secret_scope as ss
+        from hermes_agent.agent import secret_scope as ss
         from hermes_agent.gateway import run as run_mod
 
         home = tmp_path / "home"
@@ -236,7 +236,7 @@ class TestPrimaryMessageRuntimeScope:
     async def test_default_profile_prompt_gate_sees_its_scoped_token(
         self, tmp_path, monkeypatch
     ):
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from hermes_agent.gateway import run as run_mod
         from hermes_agent.gateway.run import GatewayRunner
 
@@ -279,7 +279,7 @@ class TestPrimaryMessageRuntimeScope:
         default-profile scoping wrapper and check SIGNAL_ALLOWED_USERS inside
         Sharik's unrelated secret scope.
         """
-        from agent import secret_scope
+        from hermes_agent.agent import secret_scope
         from hermes_agent.gateway import run as run_mod
         from hermes_agent.gateway.run import GatewayRunner
         from hermes_agent.gateway.session import SessionSource

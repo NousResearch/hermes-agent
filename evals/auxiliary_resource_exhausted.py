@@ -81,7 +81,7 @@ def main():
         import logging
         if os.environ.get("AUX_PROBE_DEBUG"):
             logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         result = {"module": aux.__file__, "mode": args.mode, "status": args.status,
                   "spelling": args.spelling, "surface": "local HTTP contract, not live provider"}

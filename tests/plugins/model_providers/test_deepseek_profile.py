@@ -174,7 +174,7 @@ class TestDeepSeekFullKwargsIntegration:
     """
 
     def test_full_kwargs_match_live_wire_shape(self, deepseek_profile):
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model="deepseek-v4-pro",
@@ -190,7 +190,7 @@ class TestDeepSeekFullKwargsIntegration:
         assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
 
     def test_v3_full_kwargs_omit_thinking(self, deepseek_profile):
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model="deepseek-v3-0324",
@@ -206,7 +206,7 @@ class TestDeepSeekFullKwargsIntegration:
 
     def test_unset_full_kwargs_still_enable_thinking(self, deepseek_profile):
         """CONTROL: rc=None on V4 must keep thinking=enabled (echo-trap / #106648)."""
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model="deepseek-v4.1-flash-expires-on-0910",
@@ -222,7 +222,7 @@ class TestDeepSeekFullKwargsIntegration:
 
     def test_effort_none_full_kwargs_disable_thinking(self, deepseek_profile):
         """CLI/UI ``none`` as ``{effort: "none"}`` (no enabled:False) must disable."""
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
         kwargs = ChatCompletionsTransport().build_kwargs(
             model="deepseek-v4.1-flash-expires-on-0910",
@@ -238,7 +238,7 @@ class TestDeepSeekFullKwargsIntegration:
 
     def test_cli_parse_none_full_kwargs_disable_thinking(self, deepseek_profile):
         """``--reasoning none`` / ``parse_reasoning_effort('none')`` → disabled on the wire."""
-        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
         from hermes_constants import parse_reasoning_effort
 
         kwargs = ChatCompletionsTransport().build_kwargs(
@@ -272,7 +272,7 @@ class TestDeepSeekAuxModel:
         assert all(_normalize_for_deepseek(m) == m for m in deepseek_profile.fallback_models)
 
     def test_consumer_api_matches_profile_aux_model(self, deepseek_profile):
-        from agent.auxiliary_client import _get_aux_model_for_provider
+        from hermes_agent.agent.auxiliary_client import _get_aux_model_for_provider
         assert deepseek_profile.default_aux_model
         assert _get_aux_model_for_provider("deepseek") == deepseek_profile.default_aux_model
 

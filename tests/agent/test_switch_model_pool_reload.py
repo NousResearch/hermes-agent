@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.agent_runtime_helpers import switch_model
+from hermes_agent.agent.agent_runtime_helpers import switch_model
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ class TestSwitchModelReloadsCredentialPool:
         agent = _make_agent("opencode-go", "qwen-coder", old_pool)
 
         with patch(
-            "agent.credential_pool.load_pool",
+            "hermes_agent.agent.credential_pool.load_pool",
             return_value=new_pool,
         ) as load_pool_mock:
             switch_model(
@@ -117,7 +117,7 @@ class TestSwitchModelReloadsCredentialPool:
 
         load_pool_mock = MagicMock(name="load_pool")
 
-        with patch("agent.credential_pool.load_pool", load_pool_mock):
+        with patch("hermes_agent.agent.credential_pool.load_pool", load_pool_mock):
             switch_model(
                 agent,
                 new_model="qwen-coder",
@@ -136,7 +136,7 @@ class TestSwitchModelReloadsCredentialPool:
         new_pool = _make_pool("groq")
         agent = _make_agent("opencode-go", "qwen-coder", None)
 
-        with patch("agent.credential_pool.load_pool", return_value=new_pool):
+        with patch("hermes_agent.agent.credential_pool.load_pool", return_value=new_pool):
             switch_model(
                 agent,
                 new_model="llama-3.3-70b",
@@ -158,15 +158,15 @@ class TestSwitchModelReloadsCredentialPool:
         After the fix: switch_model reloaded the pool to groq, so the guard
         is a no-op and recovery proceeds.
         """
-        from agent.agent_runtime_helpers import recover_with_credential_pool
-        from agent.error_classifier import FailoverReason
+        from hermes_agent.agent.agent_runtime_helpers import recover_with_credential_pool
+        from hermes_agent.agent.error_classifier import FailoverReason
 
         old_pool = _make_pool("opencode-go")
         new_pool = _make_pool("groq")
         new_pool.mark_exhausted_and_rotate.return_value = None
         agent = _make_agent("opencode-go", "qwen-coder", old_pool)
 
-        with patch("agent.credential_pool.load_pool", return_value=new_pool):
+        with patch("hermes_agent.agent.credential_pool.load_pool", return_value=new_pool):
             switch_model(
                 agent,
                 new_model="llama-3.3-70b",
@@ -199,7 +199,7 @@ class TestSwitchModelReloadsCredentialPool:
         agent = _make_agent("opencode-go", "qwen-coder", _make_pool("opencode-go"))
 
         with patch(
-            "agent.credential_pool.load_pool",
+            "hermes_agent.agent.credential_pool.load_pool",
             side_effect=RuntimeError("simulated corrupt auth.json"),
         ):
             # Should NOT raise — pool reload failure is logged+swallowed.

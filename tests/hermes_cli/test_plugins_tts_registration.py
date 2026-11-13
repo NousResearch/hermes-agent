@@ -61,7 +61,7 @@ class TestRegisterTTSProvider:
     def test_accepts_valid_provider(self):
         from hermes_cli.plugins import PluginManager
 
-        from agent import tts_registry
+        from hermes_agent.agent import tts_registry
         tts_registry._reset_for_tests()
 
         hermes_home = Path(os.environ["HERMES_HOME"])
@@ -69,7 +69,7 @@ class TestRegisterTTSProvider:
             hermes_home / "plugins",
             "my-tts-plugin",
             register_body=(
-                "from agent.tts_provider import TTSProvider\n"
+                "from hermes_agent.agent.tts_provider import TTSProvider\n"
                 "    class P(TTSProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'fake-tts'\n"
@@ -94,7 +94,7 @@ class TestRegisterTTSProvider:
         """A plugin that passes a non-TTSProvider gets a warning, no exception."""
         from hermes_cli.plugins import PluginManager
 
-        from agent import tts_registry
+        from hermes_agent.agent import tts_registry
         tts_registry._reset_for_tests()
 
         hermes_home = Path(os.environ["HERMES_HOME"])
@@ -123,7 +123,7 @@ class TestRegisterTTSProvider:
         """
         from hermes_cli.plugins import PluginManager
 
-        from agent import tts_registry
+        from hermes_agent.agent import tts_registry
         tts_registry._reset_for_tests()
 
         hermes_home = Path(os.environ["HERMES_HOME"])
@@ -131,7 +131,7 @@ class TestRegisterTTSProvider:
             hermes_home / "plugins",
             "shadow-tts-plugin",
             register_body=(
-                "from agent.tts_provider import TTSProvider\n"
+                "from hermes_agent.agent.tts_provider import TTSProvider\n"
                 "    class P(TTSProvider):\n"
                 "        @property\n"
                 "        def name(self): return 'edge'\n"

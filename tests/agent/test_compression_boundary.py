@@ -6,7 +6,7 @@ so that parallel tool calls are never split during compression.
 
 from unittest.mock import patch
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ def _make_compressor(**kwargs) -> ContextCompressor:
         quiet_mode=True,
     )
     defaults.update(kwargs)
-    with patch("agent.context_compressor.get_model_context_length", return_value=8000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=8000):
         return ContextCompressor(**defaults)
 
 

@@ -80,8 +80,8 @@ _TRUST_GATE_ARGUMENTS_TRUNCATION_MARKER = "\n... [arguments truncated]"
 
 
 def _is_secret_argument_name(key: Any) -> bool:
-    from agent.redact import is_secret_field_name
-    from agent.redact_headers import SECRET_HEADER_NAME_LIST
+    from hermes_agent.agent.redact import is_secret_field_name
+    from hermes_agent.agent.redact_headers import SECRET_HEADER_NAME_LIST
     return is_secret_field_name(key) or (isinstance(key, str) and key.casefold() in SECRET_HEADER_NAME_LIST)
 
 
@@ -101,7 +101,7 @@ def _format_trust_gate_arguments(args: dict) -> str:
     """Redacted, bounded JSON of the call's arguments for the approval card. Plain text, no
     fence: every surface already renders the prompt inside a code block."""
     import unicodedata
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     rendered = json.dumps(_mask_secret_fields(args), ensure_ascii=False, indent=2, default=str)
     # Scan and redact only a window well past the cap: a multi-megabyte payload (a file write) would
@@ -715,7 +715,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         read_only = _tool_is_read_only(server_name, tool_name)
         image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
         # Read on the agent's thread: the coroutine below runs on the MCP loop, outside this context.
-        from agent.tool_progress_relay import current_tool_progress
+        from hermes_agent.agent.tool_progress_relay import current_tool_progress
         report = current_tool_progress()
 
         async def _on_progress(progress, total, message):

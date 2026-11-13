@@ -143,7 +143,7 @@ class GatewayProfileReconcileMixin:
         """Blocking half of ``_sync_hooks_on_consent_change``; returns the signatures it applied. The
         key covers ``config.yaml`` too: a sync that read an empty/unreadable config applied nothing,
         so its recovery must re-run it. A failed sync is left unrecorded and retried next tick."""
-        from agent.shell_hooks import ALLOWLIST_FILENAME, sync_from_config
+        from hermes_agent.agent.shell_hooks import ALLOWLIST_FILENAME, sync_from_config
         from hermes_agent.gateway.run import _load_gateway_config, _profile_runtime_scope
         from hermes_agent.gateway.run_turn import GatewayTurnMixin
         current = {}

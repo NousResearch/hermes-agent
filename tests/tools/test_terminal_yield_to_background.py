@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from agent.interrupt_control import InterruptControlMixin
+from hermes_agent.agent.interrupt_control import InterruptControlMixin
 from hermes_agent.tools import interrupt as interrupt_mod
 from hermes_agent.tools.process_registry import process_registry
 from hermes_agent.tools.terminal_tool import terminal_tool

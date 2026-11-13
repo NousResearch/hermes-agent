@@ -7,8 +7,8 @@ import openai
 import pytest
 
 from hermes_agent import model_tools  # registers the bundled provider profiles
-from agent import auxiliary_client as ac
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent import auxiliary_client as ac
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 _UPSTREAM = {"error": {"type": "server_error",
                        "message": "Upstream request failed: Rate limit exceeded. Please try again later."}}

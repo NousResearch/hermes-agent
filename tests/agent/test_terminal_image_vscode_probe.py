@@ -1,4 +1,4 @@
-"""VS Code image-support probe (agent/terminal_image.py::probe_vscode_images) over a real PTY.
+"""VS Code image-support probe (hermes_agent/agent/terminal_image.py::probe_vscode_images) over a real PTY.
 
 The far end of the PTY plays the terminal: it answers the probe the way VS Code's xterm.js was
 measured to answer with ``terminal.integrated.enableImages`` on (sixel reply + DA1) and off

@@ -19,8 +19,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-from agent.deadline import poll_until
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.deadline import poll_until
+from hermes_agent.agent.redact import redact_sensitive_text
 from hermes_agent.cron.executions import _owner_is_live, _process_start_time
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now

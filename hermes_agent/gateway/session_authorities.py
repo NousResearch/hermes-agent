@@ -289,7 +289,7 @@ def _prepare_owner_scope(home: Path):
     nothing then). Entering the real scope keeps one definition of how it is built."""
     if not home.is_dir():
         return None
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.tools.terminal_scope import get_terminal_scope
     with _profile_runtime_scope(home, hydrate_secrets=False):

@@ -33,7 +33,7 @@ source ./activate
 使用 Hermes 最简单的方式是 `chat()` 方法——传入一条消息，返回一个字符串：
 
 ```python
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(
     model="anthropic/claude-sonnet-4",
@@ -189,7 +189,7 @@ python -m hermes_agent.batch_runner --input prompts.jsonl --output results.jsonl
 
 ```python
 import concurrent.futures
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 prompts = [
     "Explain recursion",
@@ -226,7 +226,7 @@ for prompt, result in zip(prompts, results):
 ```python
 from fastapi import FastAPI
 from pydantic import BaseModel
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 app = FastAPI()
 
@@ -250,7 +250,7 @@ async def chat(request: ChatRequest):
 
 ```python
 import discord
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 client = discord.Client(intents=discord.Intents.default())
 
@@ -279,7 +279,7 @@ client.run("YOUR_DISCORD_TOKEN")
 #!/usr/bin/env python3
 """CI step: auto-review a PR diff."""
 import subprocess
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 diff = subprocess.check_output(["git", "diff", "main...HEAD"]).decode()
 

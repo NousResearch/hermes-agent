@@ -17,9 +17,9 @@ import time
 
 import pytest
 
-from agent import anthropic_credentials as ac
-from agent import credential_pool as cp
-from agent.credential_pool import STATUS_DEAD, CredentialPool, PooledCredential
+from hermes_agent.agent import anthropic_credentials as ac
+from hermes_agent.agent import credential_pool as cp
+from hermes_agent.agent.credential_pool import STATUS_DEAD, CredentialPool, PooledCredential
 
 
 def _pool(provider: str) -> CredentialPool:

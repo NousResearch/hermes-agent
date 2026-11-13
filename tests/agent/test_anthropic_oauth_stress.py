@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     AUTH_TYPE_OAUTH,
     STATUS_EXHAUSTED,
     CredentialPool,
@@ -45,8 +45,8 @@ def _process_claude_code_refresh_worker(
     """Refresh one shared Claude Code credential from an independent process."""
     os.environ["HERMES_HOME"] = profile_home
 
-    from agent import anthropic_credentials as anthropic_mod
-    from agent import credential_pool as credential_pool_mod
+    from hermes_agent.agent import anthropic_credentials as anthropic_mod
+    from hermes_agent.agent import credential_pool as credential_pool_mod
     from hermes_cli import auth as auth_mod
 
     shared_path = Path(shared_credentials_path)
@@ -188,11 +188,11 @@ def test_high_concurrency_anthropic_refresh_no_lost_updates_no_deadlock(
     """
     server = _SingleUseTokenServer(delay_seconds=0.02)
     monkeypatch.setattr(
-        "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+        "hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure",
         lambda refresh_token, use_json=False: server.refresh(refresh_token, use_json=use_json),
     )
     monkeypatch.setattr(
-        "agent.anthropic_credentials.read_claude_code_credentials", lambda: None
+        "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials", lambda: None
     )
 
     shared_stale_entry = _entry(

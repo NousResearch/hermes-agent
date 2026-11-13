@@ -9,7 +9,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.image_eviction_policy import image_dimensions_from_bytes
+from hermes_agent.agent.image_eviction_policy import image_dimensions_from_bytes
 from hermes_agent.tools.computer_use.backend import ActionResult, UIElement
 
 # Linux/X11 surfaces GNOME Shell / desktop backdrop windows ahead of real app windows with no useful z-order; they

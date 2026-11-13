@@ -12,8 +12,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.secret_scope import get_secret, get_secret_str
-from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
+from hermes_agent.agent.secret_scope import get_secret, get_secret_str
+from hermes_agent.agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, success_response
 from plugins.image_gen._common import (
     GPT_IMAGE_2_API_MODEL as API_MODEL, GPT_IMAGE_2_DEFAULT as DEFAULT_MODEL, GPT_IMAGE_2_TIERS,
     StaticImageGenProvider, collect_source_images, error_factory, import_openai, load_image_gen_config,
@@ -81,7 +81,7 @@ def _build_client(openai: Any, base_url: str, api_key: str) -> Any:
     routes through a macOS system proxy whose ExceptionsList httpx cannot see (#64888). The project
     header is blanked: an ``OPENAI_PROJECT_ID`` set for chat makes ``/images/generations`` 403 on
     projects with a model allow-list, and the key already carries the project (#60748)."""
-    from agent.process_bootstrap import build_keepalive_http_client
+    from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
 
     kwargs: dict[str, Any] = {"api_key": api_key, "default_headers": {"OpenAI-Project": ""}}
     if base_url:
@@ -112,7 +112,7 @@ def _load_image_bytes(ref: str) -> tuple[bytes, str]:
         header, _, b64 = ref.partition(",")
         ext = (header.split("image/", 1)[1].split(";", 1)[0] if "image/" in header else "") or "png"
         return base64.b64decode(b64), f"image.{ext}"
-    from agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
+    from hermes_agent.agent.file_safety import raise_if_read_blocked  # credential-read guard before local bytes
 
     raise_if_read_blocked(ref)
     with open(ref, "rb") as fh:

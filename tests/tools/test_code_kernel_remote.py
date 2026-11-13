@@ -208,7 +208,7 @@ class TestOwnershipIsolation(RemoteKernelBase):
     def test_delegated_children_get_their_own_remote_kernels(self):
         """Same invariant as local (#94647 review fix): the child context
         qualifier must key a DIFFERENT remote kernel."""
-        from agent.delegation_context import delegated_child_context
+        from hermes_agent.agent.delegation_context import delegated_child_context
 
         env = ScriptedEnv(_spawn_ok_handlers([_cell(), _cell()]))
         _run(env, task="conv")

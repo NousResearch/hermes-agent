@@ -65,12 +65,12 @@ class _GatewayFirecrawlBoomProvider(_KeyedBoomProvider):
 def _keyed_keenable_env(monkeypatch):
     """Simulate a keyed Keenable setup with rescue enabled."""
     monkeypatch.setattr(
-        "agent.web_search_provider.get_provider_env",
+        "hermes_agent.agent.web_search_provider.get_provider_env",
         lambda name: "kn-real" if name == "KEENABLE_API_KEY" else "",
     )
     monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "keenable"})
     monkeypatch.setattr(
-        "agent.web_search_registry._keyless_tier_enabled", lambda: True
+        "hermes_agent.agent.web_search_registry._keyless_tier_enabled", lambda: True
     )
     yield
 
@@ -86,7 +86,7 @@ class TestEligibility:
     def test_keyless_mode_ring_vendor_not_eligible(self, monkeypatch):
         # No key: the keenable call already rode the ring; no double-walk.
         monkeypatch.setattr(
-            "agent.web_search_provider.get_provider_env", lambda name: ""
+            "hermes_agent.agent.web_search_provider.get_provider_env", lambda name: ""
         )
         assert web_tools_rescue._rescue_eligible(KeenableWebSearchProvider()) is False
 
@@ -94,7 +94,7 @@ class TestEligibility:
         # The persisted Nous route uses its subscriber token, not the keyless ring — eligible.
         # The same keyless Firecrawl selected directly DID walk the ring — not eligible.
         monkeypatch.setattr(
-            "agent.web_search_provider.get_provider_env", lambda name: ""
+            "hermes_agent.agent.web_search_provider.get_provider_env", lambda name: ""
         )
         monkeypatch.setattr("plugins.web.firecrawl.provider._env", lambda name: "")
         monkeypatch.setattr("plugins.web.firecrawl.provider._is_tool_gateway_ready", lambda: True)
@@ -123,7 +123,7 @@ class TestEligibility:
 
     def test_keyless_fallback_off_disables(self, monkeypatch):
         monkeypatch.setattr(
-            "agent.web_search_registry._keyless_tier_enabled", lambda: False
+            "hermes_agent.agent.web_search_registry._keyless_tier_enabled", lambda: False
         )
         assert web_tools_rescue._rescue_eligible(_KeyedBoomProvider()) is False
 
@@ -132,7 +132,7 @@ class TestSearchRescue:
     def _dispatch(self, monkeypatch, provider):
         monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
         monkeypatch.setattr(
-            "agent.web_search_registry.get_provider", lambda name: provider
+            "hermes_agent.agent.web_search_registry.get_provider", lambda name: provider
         )
         return json.loads(web_tools.web_search_tool("q", limit=2))
 
@@ -158,7 +158,7 @@ class TestSearchRescue:
     def test_gateway_selected_firecrawl_failure_is_rescued(self, monkeypatch):
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
         monkeypatch.setattr(
-            "agent.web_search_provider.get_provider_env", lambda name: ""
+            "hermes_agent.agent.web_search_provider.get_provider_env", lambda name: ""
         )
         monkeypatch.setattr(
             "hermes_agent.tools.tool_backend_helpers.read_selection", lambda kind: "nous"
@@ -215,7 +215,7 @@ class TestExtractRescue:
     async def _dispatch(self, monkeypatch, provider, urls):
         monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
         monkeypatch.setattr(
-            "agent.web_search_registry.get_provider", lambda name: provider
+            "hermes_agent.agent.web_search_registry.get_provider", lambda name: provider
         )
 
         async def _allow_all(url, **kwargs):

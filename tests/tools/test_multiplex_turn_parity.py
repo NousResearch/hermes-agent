@@ -52,7 +52,7 @@ def test_routed_local_profile_cwd_matches_standalone_gateway(tmp_path, two_homes
     process cwd — otherwise the system prompt, context files and the terminal all start in
     wherever ``hermes gateway`` happened to be launched from."""
     from hermes_agent.tools.terminal_scope import build_profile_terminal_scope, install_and_reset_profile_terminal_scope
-    from agent.runtime_cwd import resolve_agent_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_agent_cwd
 
     a, _ = two_homes
     assert build_profile_terminal_scope(a)["TERMINAL_CWD"] == str(tmp_path)
@@ -64,7 +64,7 @@ def test_routed_local_profile_cwd_matches_standalone_gateway(tmp_path, two_homes
 
 def test_launch_artifact_context_cwd_follows_routed_profile(two_homes, tmp_path):
     """Ignoring a Desktop launch cwd must still resolve terminal.cwd from the profile whose turn is active."""
-    from agent.runtime_cwd import resolve_context_cwd, reset_session_cwd, set_session_cwd
+    from hermes_agent.agent.runtime_cwd import resolve_context_cwd, reset_session_cwd, set_session_cwd
     from hermes_agent.tools.terminal_scope import install_and_reset_profile_terminal_scope
 
     a, b = two_homes
@@ -128,7 +128,7 @@ def test_permanent_allowlist_is_per_profile(two_homes):
 def test_profile_scoped_process_caches_follow_routed_home(two_homes, monkeypatch):
     """Config-derived singletons (redaction switch, aux unhealthy marks, LSP service, browser
     engine/headed flags, MCP stderr log path) are keyed by the routed profile home."""
-    from agent import auxiliary_client, lsp, redact
+    from hermes_agent.agent import auxiliary_client, lsp, redact
     from hermes_agent.tools import browser_session_cloud, mcp_tool_config
     from hermes_agent.tools.browser_session_lifecycle import cleanup_all_browsers
 

@@ -319,7 +319,7 @@ def test_a_changed_auxiliary_secret_reaches_the_next_side_task_call(tmp_path, mo
     the next turn's compression sends, to the endpoint config.yaml now pairs it with. The session's main
     route is untouched. (Earlier, a changed side-task key returned the task to the main route;
     that kept a retired or rotated side-task setting from ever reaching an existing chat.)"""
-    from agent.auxiliary_client import get_text_auxiliary_client, reset_runtime_main, set_runtime_main
+    from hermes_agent.agent.auxiliary_client import get_text_auxiliary_client, reset_runtime_main, set_runtime_main
     from hermes_agent.gateway.session_policy import policy_scope
     from tests.fakes.fake_llm_provider import FakeLLMServer
     with FakeLLMServer() as main, FakeLLMServer() as aux:

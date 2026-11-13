@@ -13,7 +13,7 @@ import hermes_yaml as yaml
 
 @pytest.fixture
 def actual_endpoint(monkeypatch):
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         shutdown_cached_clients,
         _reset_aux_unhealthy_cache,
     )
@@ -129,9 +129,9 @@ def test_actual_background_tasks_reach_chat_completions(
     use_api_key,
     stale_mode,
 ):
-    from agent.auxiliary_client import async_call_llm
-    from agent.context_compressor import ContextCompressor
-    from agent.title_generator import generate_title
+    from hermes_agent.agent.auxiliary_client import async_call_llm
+    from hermes_agent.agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.title_generator import generate_title
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     base_url, requests = actual_endpoint
@@ -243,9 +243,9 @@ def test_actual_background_tasks_reach_chat_completions(
 def test_actual_runtime_transitions_reach_chat_completions(
     tmp_path, monkeypatch, actual_endpoint, provider, hosted, entrypoint
 ):
-    from agent.error_classifier import FailoverReason
+    from hermes_agent.agent.error_classifier import FailoverReason
     from hermes_cli.runtime_provider import resolve_runtime_provider
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     base_url, requests = actual_endpoint
     if hosted:
@@ -317,7 +317,7 @@ def test_actual_runtime_transitions_reach_chat_completions(
             agent._fallback_activated = True
             assert agent._restore_primary_runtime()
         elif entrypoint == "rotation":
-            from agent.credential_pool import PooledCredential
+            from hermes_agent.agent.credential_pool import PooledCredential
 
             agent._swap_credential(
                 PooledCredential.from_dict(
@@ -357,12 +357,12 @@ def test_actual_runtime_transitions_reach_chat_completions(
 def test_actual_rejects_forced_responses_before_http(
     tmp_path, monkeypatch, actual_endpoint, provider, hosted, send_site
 ):
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         AsyncCodexAuxiliaryClient,
         CodexAuxiliaryClient,
         resolve_provider_client,
     )
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     base_url, requests = actual_endpoint
     if hosted:
@@ -428,7 +428,7 @@ def test_actual_rejects_forced_responses_before_http(
 def test_actual_auxiliary_fallback_reaches_chat_completions(
     tmp_path, monkeypatch, actual_endpoint, provider, async_mode
 ):
-    from agent.auxiliary_client import call_llm, async_call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm, async_call_llm
 
     local_url, requests = actual_endpoint
     actual_url = local_url.replace("127.0.0.1", "api.actual.inc") + "/v1"
@@ -534,7 +534,7 @@ def test_actual_setup_keeps_provider_settings_in_yaml(
 
 
 def test_actual_key_reload_keeps_yaml_endpoint(tmp_path, monkeypatch, actual_endpoint):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     base_url, requests = actual_endpoint
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

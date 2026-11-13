@@ -64,7 +64,7 @@ def registered(monkeypatch):
     """
     import hermes_cli.auth as _auth
     from hermes_cli.auth_plugin_providers import register_plugin_provider
-    from agent import secret_scope as _secret_scope
+    from hermes_agent.agent import secret_scope as _secret_scope
 
     _providers._discover_providers()
     monkeypatch.setattr(_providers, "_REGISTRY", dict(_providers._REGISTRY))
@@ -87,7 +87,7 @@ def registered(monkeypatch):
     ids=["sync", "async-skips-AsyncOpenAI-rewrap"],
 )
 def test_native_profile_supplies_the_auxiliary_client(registered, extra):
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     registered(_probe_profile(_NativeProfile, "aux-seam-native"))
     client, model = resolve_provider_client("aux-seam-native", "probe-model", **extra)
@@ -104,7 +104,7 @@ def test_native_profile_supplies_the_auxiliary_client(registered, extra):
 def test_profile_without_a_client_falls_back_to_the_standard_client(registered, profile_cls):
     from openai import OpenAI
 
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     registered(_probe_profile(profile_cls, "aux-seam-fallback"))
     client, model = resolve_provider_client("aux-seam-fallback", "probe-model")

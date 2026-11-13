@@ -311,7 +311,7 @@ def observe_request_tools(agent: Any, tools_for_api: Any) -> None:
 
 def tool_snapshot(agent: Any, tools_for_api: list) -> tuple[tuple[str, ...], frozenset[str], int, int]:
     """(sent tool names, enabled shipped toolsets, enabled tool count, estimated schema tokens)."""
-    from agent.model_metadata import _estimate_tools_tokens_rough
+    from hermes_agent.agent.model_metadata import _estimate_tools_tokens_rough
     from hermes_agent.model_tools import get_toolset_for_tool
 
     names = tuple(_tool_names(tools_for_api))
@@ -352,7 +352,7 @@ def record_prompt_rebuild(agent: Any, stored_prompt: Any, stored_state: str, reb
     if stored_state != "stale_runtime" or not stored_prompt or rebuilt == stored_prompt:
         return
     try:
-        from agent.surface_switch import identity_line_value
+        from hermes_agent.agent.surface_switch import identity_line_value
 
         switched = any(
             (stored := identity_line_value(stored_prompt, label)) and stored != str(getattr(agent, attr, "") or "").strip()

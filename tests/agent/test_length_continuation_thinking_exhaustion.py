@@ -37,7 +37,7 @@ class _AgentStandIn:
 
 class TestReasoningOffOneShotOverride:
     def test_flag_consumed_exactly_once(self):
-        from agent.chat_completion_helpers import _reasoning_config_for_wire
+        from hermes_agent.agent.chat_completion_helpers import _reasoning_config_for_wire
 
         agent = _AgentStandIn({"enabled": True, "effort": "high"})
         # Without the flag the reasoning config passes through untouched.
@@ -61,7 +61,7 @@ class TestReasoningOffOneShotOverride:
         }
 
     def test_flag_with_no_user_reasoning_config(self):
-        from agent.chat_completion_helpers import _reasoning_config_for_wire
+        from hermes_agent.agent.chat_completion_helpers import _reasoning_config_for_wire
 
         agent = _AgentStandIn(None)
         agent._ephemeral_reasoning_off = True
@@ -73,7 +73,7 @@ class TestReasoningOffOneShotOverride:
         SAME provider cache key as every prior request: the ephemeral
         continuation override is discarded and the user's own config goes
         out unchanged. A config that is itself a disable is omitted."""
-        from agent.chat_completion_helpers import _reasoning_config_for_wire
+        from hermes_agent.agent.chat_completion_helpers import _reasoning_config_for_wire
 
         agent = _AgentStandIn({"enabled": True, "effort": "high"})
         agent._reasoning_disable_rejected = True
@@ -88,8 +88,8 @@ class TestReasoningOffOneShotOverride:
         """"Reasoning is mandatory ... cannot be disabled" understands the field: the session's
         disable becomes the floor effort (closest to what the user asked for), while a config that
         already reasons still goes out verbatim (cache key preserved)."""
-        from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
-        from agent.chat_completion_helpers import _reasoning_config_for_wire
+        from hermes_agent.agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+        from hermes_agent.agent.chat_completion_helpers import _reasoning_config_for_wire
 
         agent = _AgentStandIn({"enabled": False})
         agent._reasoning_disable_rejected = True
@@ -102,12 +102,12 @@ class TestReasoningOffOneShotOverride:
 
 @pytest.fixture()
 def loop_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",

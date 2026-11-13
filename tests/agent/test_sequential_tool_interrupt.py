@@ -16,8 +16,8 @@ import time
 
 import pytest
 
-from agent import tool_executor
-from agent.tool_executor import (
+from hermes_agent.agent import tool_executor
+from hermes_agent.agent.tool_executor import (
     _ManagedToolResult,
     _ToolCancelledResult,
     _run_sequential_tool_execution_middleware,

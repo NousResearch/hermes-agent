@@ -651,7 +651,7 @@ def snapshot_local_automation(authority, adapter, event, identity, entry):
             raise RuntimeStoreError('invalid_params')
         descriptor['resumes_parent'] = True
     if event.metadata.get('turn_author') is not None:
-        from agent.turn_author import parse_turn_author
+        from hermes_agent.agent.turn_author import parse_turn_author
         descriptor['turn_author'] = parse_turn_author(event.metadata['turn_author'])
         if descriptor['turn_author'] is None:
             raise RuntimeStoreError('invalid_params')

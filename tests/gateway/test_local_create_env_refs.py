@@ -32,7 +32,7 @@ def _created_model(owner, actor, home, request_id):
 
 @pytest.mark.asyncio
 async def test_new_session_expands_config_refs_against_current_profile_env(tmp_path, monkeypatch):
-    from agent.secret_scope import current_secret_scope
+    from hermes_agent.agent.secret_scope import current_secret_scope
     home = tmp_path / 'home'
     home.mkdir()
     (home / 'config.yaml').write_text(
@@ -138,7 +138,7 @@ async def test_new_alias_session_uses_the_current_profile_env(tmp_path, monkeypa
 def test_bound_scope_is_kept(tmp_path, monkeypatch):
     """A served profile's owner scope (multiplex) is already the right source: never rebuilt from
     another home."""
-    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
     from hermes_agent.gateway.session_local import load_profile_config
     home = tmp_path / 'home'
     home.mkdir()

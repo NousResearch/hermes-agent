@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.runtime_scope import bind_state
+from hermes_agent.agent.runtime_scope import bind_state
 from hermes_scope import Principal, Scope
 from tests.tools.test_sandbox_scope_conformance import A, B
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
@@ -113,13 +113,13 @@ def _null():
 
 
 def _make_agent(tmp_path: Path):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("run_agent._hermes_home", tmp_path),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.run_agent._hermes_home", tmp_path),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1", quiet_mode=True,
                         skip_context_files=True, skip_memory=True)
@@ -152,7 +152,7 @@ def test_every_agent_loop_route_is_refused_before_its_executor(tmp_path, monkeyp
     """Memory-provider tools, inline agent tools (catalog, memory, session_search, todo) and registry
     tools all reach their executor only through the one chokepoint, on both execution paths."""
     import hermes_agent.tools.connectors.catalog_tool as catalog
-    from agent import tool_executor as te
+    from hermes_agent.agent import tool_executor as te
 
     agent = _make_agent(tmp_path)
     agent._memory_manager = provider_tools = _ProviderTools()
@@ -174,7 +174,7 @@ def test_every_agent_loop_route_is_refused_before_its_executor(tmp_path, monkeyp
 
 
 def test_a_local_agent_loop_still_reaches_every_executor(tmp_path):
-    from agent import tool_executor as te
+    from hermes_agent.agent import tool_executor as te
 
     agent = _make_agent(tmp_path)
     agent._memory_manager = provider_tools = _ProviderTools()
@@ -190,7 +190,7 @@ def test_the_inline_executor_table_refuses_on_its_own(monkeypatch):
     """Callers that use the inline table directly (outside the loop) meet the same allowlist."""
     import hermes_agent.tools.connectors.catalog_tool as catalog
     import hermes_agent.tools.connectors.tool as connector
-    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+    from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
     reached = []
     monkeypatch.setattr(catalog, "search", lambda *a, **k: reached.append("host catalog") or {})
@@ -225,7 +225,7 @@ def test_handle_function_call_refuses_connectors_and_bridges(monkeypatch):
 
 
 def test_inline_memory_writes_no_host_store():
-    from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+    from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
     from hermes_agent.tools.memory_tool import MemoryStore, get_memory_dir
     with bind_state(A):
         store = MemoryStore()
@@ -274,7 +274,7 @@ def test_session_search_reads_no_host_history():
 
 def test_recall_never_opens_the_profile_state_db(monkeypatch):
     from hermes_agent import hermes_state_registry
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     opened = []
     monkeypatch.setattr(hermes_state_registry, "acquire", lambda *a, **k: opened.append(1) or object())
     agent = SimpleNamespace(_persist_disabled=False, _session_db=None)
@@ -335,7 +335,7 @@ def test_video_is_not_materialized_on_host():
 
 
 def test_startup_context_reads_no_host_file(tmp_path, monkeypatch):
-    from agent.prompt_builder import build_context_files_prompt, load_soul_md
+    from hermes_agent.agent.prompt_builder import build_context_files_prompt, load_soul_md
     from hermes_constants import get_hermes_home
     (tmp_path / "AGENTS.md").write_text("HOST-STARTUP-PRIVATE")
     (get_hermes_home() / "SOUL.md").write_text("HOST-SOUL-PRIVATE")
@@ -347,7 +347,7 @@ def test_startup_context_reads_no_host_file(tmp_path, monkeypatch):
 
 
 def test_subdirectory_hints_read_no_host_file(tmp_path):
-    from agent.subdirectory_hints import SubdirectoryHintTracker
+    from hermes_agent.agent.subdirectory_hints import SubdirectoryHintTracker
     sub = tmp_path / "src"
     sub.mkdir()
     (sub / "AGENTS.md").write_text("HOST-INSTRUCTIONS-PRIVATE")
@@ -365,7 +365,7 @@ def test_subdirectory_hints_read_no_host_file(tmp_path):
 
 
 def test_built_in_memory_and_providers_are_not_initialized(tmp_path, monkeypatch):
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
     resolved = []
     monkeypatch.setattr(agent_init, "resolve_memory_provider", lambda *a, **k: resolved.append(a))
     agent = SimpleNamespace(enabled_toolsets=["memory"], disabled_toolsets=None, tools=[],
@@ -376,7 +376,7 @@ def test_built_in_memory_and_providers_are_not_initialized(tmp_path, monkeypatch
 
 
 def test_background_review_is_not_spawned(monkeypatch):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     spawned = []
     agent = SimpleNamespace(_spawn_background_review_now=lambda **kw: spawned.append(kw), _delegate_depth=0)
     with bind_state(A):
@@ -385,7 +385,7 @@ def test_background_review_is_not_spawned(monkeypatch):
 
 
 def test_trajectory_is_not_written_on_host(tmp_path, monkeypatch):
-    from agent.session_persistence import SessionPersistenceMixin
+    from hermes_agent.agent.session_persistence import SessionPersistenceMixin
     monkeypatch.chdir(tmp_path)
     agent = SimpleNamespace(save_trajectories=True, model="stub",
                             _convert_to_trajectory_format=lambda *a: [{"from": "human", "value": "TENANT-TRANSCRIPT"}])
@@ -397,7 +397,7 @@ def test_trajectory_is_not_written_on_host(tmp_path, monkeypatch):
 
 
 def test_failed_write_bookkeeping_does_not_stat_host(provider, tmp_path):
-    from agent.turn_explainers import TurnExplainersMixin
+    from hermes_agent.agent.turn_explainers import TurnExplainersMixin
     target = tmp_path / "target.txt"
     target.write_text("HOST-ONLY")
     agent = SimpleNamespace(_turn_failed_file_mutations={})
@@ -412,7 +412,7 @@ def test_failed_write_bookkeeping_does_not_stat_host(provider, tmp_path):
 def test_no_checkpoint_preflight_in_a_hosted_scope(tmp_path):
     """The preflight's sandbox-path check and ``CheckpointManager``'s ``checkpoints`` feature consult
     (mutation-checked in test_hosted_tool_refusals) keep a hosted call from snapshotting anything."""
-    from agent.tool_executor import _ToolCallRef, _begin_tool_execution
+    from hermes_agent.agent.tool_executor import _ToolCallRef, _begin_tool_execution
     mgr = MagicMock(enabled=True)
     agent = SimpleNamespace(_checkpoint_mgr=mgr, quiet_mode=True, verbose_logging=False, tool_progress_callback=None,
                             tool_start_callback=None, _touch_activity=lambda *_: None)
@@ -433,7 +433,7 @@ def test_every_host_feature_is_off_in_a_hosted_scope_and_on_locally():
 
 
 def test_no_backend_probe_environment_is_built_in_a_hosted_scope(monkeypatch):
-    from agent import prompt_builder
+    from hermes_agent.agent import prompt_builder
     ran = []
     monkeypatch.setattr(prompt_builder, "_run_backend_probe", lambda *a: ran.append(a) or "")
     monkeypatch.setattr(prompt_builder, "_BACKEND_PROBE_CACHE", {})

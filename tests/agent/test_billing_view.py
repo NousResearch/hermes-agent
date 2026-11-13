@@ -18,8 +18,8 @@ from decimal import Decimal
 
 import pytest
 
-import agent.billing_view as bv
-from agent.billing_view import (
+import hermes_agent.agent.billing_view as bv
+from hermes_agent.agent.billing_view import (
     AutoReload,
     AutoReloadCard,
     BillingState,

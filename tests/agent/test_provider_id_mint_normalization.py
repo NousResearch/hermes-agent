@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.chat_completion_helpers import _assistant_tool_call_dict
-from run_agent import AIAgent
+from hermes_agent.agent.chat_completion_helpers import _assistant_tool_call_dict
+from hermes_agent.run_agent import AIAgent
 
 
 def _tool_call(raw_id, n, **extra):
@@ -29,7 +29,7 @@ def _agent():
 
 def _mint(tool_calls):
     """Run the real mint path and return the rows that would be stored and replayed."""
-    from agent.turn_tool_validation import validate_tool_calls
+    from hermes_agent.agent.turn_tool_validation import validate_tool_calls
 
     agent = _agent()
     verdict = validate_tool_calls(
@@ -98,8 +98,8 @@ def _mixed_until_dedup(calls):
 @pytest.mark.parametrize("shape", [None, _padded, _blank_call_id, _mixed_until_dedup],
                          ids=["plain", "padded", "blank_call_id", "mixed_until_dedup"])
 def test_final_staged_batch_never_reaches_wire_all_provider_prefixed(shape, monkeypatch):
-    import agent.turn_tool_round as round_module
-    from agent.transports.chat_completions import ChatCompletionsTransport
+    import hermes_agent.agent.turn_tool_round as round_module
+    from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
     class _Staged(Exception):
         pass
@@ -138,9 +138,9 @@ def test_final_staged_batch_never_reaches_wire_all_provider_prefixed(shape, monk
 
 @pytest.mark.parametrize("api", ["responses", "chat"])
 def test_real_transport_tool_calls_normalize_without_crashing(api):
-    from agent.transports.chat_completions import ChatCompletionsTransport
-    from agent.transports.codex import ResponsesApiTransport
-    from agent.turn_tool_validation import validate_tool_calls
+    from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_agent.agent.transports.codex import ResponsesApiTransport
+    from hermes_agent.agent.turn_tool_validation import validate_tool_calls
 
     if api == "responses":
         # Production ToolCall exposes call_id as a read-only view of provider_data.

@@ -58,7 +58,7 @@ def _multiplexed_runner(profile_home: Path) -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_voice_note_auto_tts_reads_the_routed_profiles_settings(tmp_path, monkeypatch):
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     profile_home = tmp_path / "profiles" / "coder"
     profile_home.mkdir(parents=True)

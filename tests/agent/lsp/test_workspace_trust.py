@@ -13,9 +13,9 @@ import json
 import os
 from types import SimpleNamespace
 
-from agent.lsp import manager
-from agent.lsp.servers import UNTRUSTED_SAFE_SERVERS
-from agent.lsp.workspace import clear_cache, is_inside_workspace
+from hermes_agent.agent.lsp import manager
+from hermes_agent.agent.lsp.servers import UNTRUSTED_SAFE_SERVERS
+from hermes_agent.agent.lsp.workspace import clear_cache, is_inside_workspace
 
 _SERVERS = {"pyright": "a.py", "typescript": "a.ts", "vue-language-server": "a.vue",
             "svelte-language-server": "a.svelte", "rust-analyzer": "a.rs", "jdtls": "A.java",

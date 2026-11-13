@@ -88,7 +88,7 @@ def set_runtime(config: dict, new_value: str) -> str:
 def check_codex_binary_ok(codex_bin: str = "codex") -> tuple[bool, Optional[str]]:
     """Best-effort codex CLI install/version check → ``(ok, version_or_message)``."""
     try:
-        from agent.transports.codex_app_server import check_codex_binary
+        from hermes_agent.agent.transports.codex_app_server import check_codex_binary
 
         return check_codex_binary(codex_bin=codex_bin)
     except Exception as exc:  # pragma: no cover

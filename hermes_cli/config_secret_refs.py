@@ -312,6 +312,6 @@ def masked_display_value(key: str, value: Any) -> Any:
     ``${VAR}`` reference is not a secret and is shown as is."""
     from hermes_cli.config import _is_secret_config_key
     if _is_secret_config_key(key) and isinstance(value, str) and value and not is_env_reference(value):
-        from agent.redact import mask_secret
+        from hermes_agent.agent.redact import mask_secret
         return mask_secret(value)
     return value

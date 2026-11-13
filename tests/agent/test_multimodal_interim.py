@@ -14,7 +14,7 @@ These tests pin the two fixed surfaces:
 * ``chat_completion_helpers.build_assistant_message`` (non-streaming /
   gateway path) — now normalizes ``content`` with ``flatten_message_text``
   before the inline ``<think>`` regex and the surrogate sanitizer.
-* ``run_agent.AIAgent._interim_assistant_visible_text`` (used by the
+* ``hermes_agent.run_agent.AIAgent._interim_assistant_visible_text`` (used by the
   duplicate-previous-interim dedup in the tool-call path) — now safe for
   any role/content shape because ``flatten_message_text`` handles lists.
 
@@ -34,8 +34,8 @@ from unittest.mock import MagicMock
 
 def _make_agent():
     """Minimal AIAgent with the real text helpers the fix relies on."""
-    from agent.message_sanitization import _sanitize_surrogates
-    from run_agent import AIAgent
+    from hermes_agent.agent.message_sanitization import _sanitize_surrogates
+    from hermes_agent.run_agent import AIAgent
 
     agent = MagicMock(spec=AIAgent)
     agent._extract_reasoning = lambda msg: AIAgent._extract_reasoning(agent, msg)
@@ -69,7 +69,7 @@ def _vision_tool_result(text="The image shows a red stop sign."):
 class TestBuildAssistantMessageMultimodal:
     def test_list_content_does_not_crash(self):
         """A list content (vision result) must build without TypeError."""
-        from agent.chat_completion_helpers import build_assistant_message
+        from hermes_agent.agent.chat_completion_helpers import build_assistant_message
 
         agent = _make_agent()
         sdk_msg = SimpleNamespace(
@@ -97,7 +97,7 @@ class TestBuildAssistantMessageMultimodal:
 class TestInterimVisibleTextMultimodal:
     def test_tool_list_content_does_not_crash(self):
         """A tool message with list content must return a string, not raise."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = _make_agent()
         tool_msg = _vision_tool_result()
@@ -107,7 +107,7 @@ class TestInterimVisibleTextMultimodal:
 
     def test_assistant_list_content_flattened(self):
         """An assistant message with list content yields flattened visible text."""
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = _make_agent()
         assistant_msg = {

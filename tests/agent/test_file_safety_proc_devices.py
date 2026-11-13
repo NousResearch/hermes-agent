@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from agent.file_safety import get_read_block_error
+from hermes_agent.agent.file_safety import get_read_block_error
 
 
 @pytest.mark.platforms("linux")

@@ -13,7 +13,7 @@ import logging
 
 import pytest
 
-from agent.agent_runtime_helpers import (
+from hermes_agent.agent.agent_runtime_helpers import (
     _empty_heal_log_state,
     _empty_heal_pending_notice,
     _empty_heal_user_notified,
@@ -22,7 +22,7 @@ from agent.agent_runtime_helpers import (
     get_sanitizer_heal_stats,
     repair_empty_non_final_messages,
 )
-from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
+from hermes_agent.agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from hermes_logging import clear_session_context, set_session_context
 
 
@@ -89,13 +89,13 @@ class TestFillEmptyNonFinalWirePayload:
 
 class TestHealLogEscalation:
     def test_warning_then_one_error_then_silence(self, monkeypatch, caplog):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 3)
         set_session_context("sess-heal")
         durable = _poisoned_rows()
 
-        with caplog.at_level(logging.WARNING, logger="run_agent"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
             for _ in range(5):
                 out = repair_empty_non_final_messages(
                     [dict(m) for m in durable]
@@ -109,10 +109,10 @@ class TestHealLogEscalation:
         assert len(errors) == 1
 
     def test_sessions_do_not_share_heal_counters(self, monkeypatch, caplog):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 3)
-        with caplog.at_level(logging.WARNING, logger="run_agent"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
             set_session_context("sess-a")
             repair_empty_non_final_messages([dict(m) for m in _poisoned_rows()])
             set_session_context("sess-b")
@@ -139,7 +139,7 @@ class TestOneTimeUserNotice:
             )
 
     def test_notice_queued_once_at_threshold(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 3)
         set_session_context("sess-notice")
@@ -155,7 +155,7 @@ class TestOneTimeUserNotice:
         assert consume_pending_sanitizer_heal_notice() is None
 
     def test_notice_never_rearms_in_new_window(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 2)
         set_session_context("sess-rearm")
@@ -171,7 +171,7 @@ class TestOneTimeUserNotice:
         assert consume_pending_sanitizer_heal_notice() is None
 
     def test_notice_scoped_to_session(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 2)
         set_session_context("sess-x")
@@ -183,17 +183,17 @@ class TestOneTimeUserNotice:
         assert consume_pending_sanitizer_heal_notice() is not None
 
     def test_threshold_zero_disables_escalation(self, monkeypatch, caplog):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 0)
         set_session_context("sess-off")
-        with caplog.at_level(logging.WARNING, logger="run_agent"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.run_agent"):
             self._heal_n(6)
         assert consume_pending_sanitizer_heal_notice() is None
         assert not [r for r in caplog.records if r.levelno == logging.ERROR]
 
     def test_threshold_read_from_config(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(
             "hermes_cli.config.load_config_readonly",
@@ -202,7 +202,7 @@ class TestOneTimeUserNotice:
         assert arh._heal_escalation_threshold() == 7
 
     def test_threshold_defaults_when_config_unreadable(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         def _boom():
             raise RuntimeError("no config")
@@ -215,7 +215,7 @@ class TestOneTimeUserNotice:
 
 class TestHealStatsSurface:
     def test_counters_visible_and_escalation_flagged(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 3)
         set_session_context("sess-stats")
@@ -230,7 +230,7 @@ class TestHealStatsSurface:
         assert stats["sess-stats"]["escalated"] is True
 
     def test_debug_report_includes_heal_counters(self, monkeypatch):
-        import agent.agent_runtime_helpers as arh
+        import hermes_agent.agent.agent_runtime_helpers as arh
         from hermes_cli.debug import collect_debug_report, LogSnapshot
 
         monkeypatch.setattr(arh, "_heal_escalation_threshold", lambda: 2)
@@ -256,12 +256,12 @@ class TestProjectionStopsReheal:
     def _loop_agent(self):
         from unittest.mock import MagicMock, patch
 
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         with (
             patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
             patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-            patch("agent.process_bootstrap.OpenAI"),
+            patch("hermes_agent.agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
@@ -283,7 +283,7 @@ class TestProjectionStopsReheal:
         unmarked empty row so the sanitizer heals 0 (#96870 / #88955)."""
         from unittest.mock import patch
 
-        import agent.agent_runtime_helpers as _arh
+        import hermes_agent.agent.agent_runtime_helpers as _arh
         from tests.agent.test_run_agent import _mock_response
 
         agent = self._loop_agent()
@@ -342,7 +342,7 @@ class TestProjectionStopsReheal:
         the durable history — message-flow / caching invariants (#96870)."""
         from unittest.mock import patch
 
-        import agent.agent_runtime_helpers as _arh
+        import hermes_agent.agent.agent_runtime_helpers as _arh
         from tests.agent.test_run_agent import _mock_response
 
         agent = self._loop_agent()

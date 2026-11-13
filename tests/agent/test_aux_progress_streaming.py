@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.auxiliary_client import (
+from hermes_agent.agent.auxiliary_client import (
     _AnthropicCompletionsAdapter,
     _ChatStreamAccumulator,
     _ClassifiedAttempt,
@@ -32,8 +32,8 @@ from agent.auxiliary_client import (
     _provider_requires_stream,
     aux_progress_hook,
 )
-from agent.codex_runtime import _codex_event_has_content
-from agent.conversation_compression import CompressionCommitFence
+from hermes_agent.agent.codex_runtime import _codex_event_has_content
+from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
 
 # ---------------------------------------------------------------------------
@@ -327,15 +327,15 @@ class TestAggregateChatStream:
 
         gates = {name: threading.Event() for name in ("release", "a", "b", "b_started", "usage")}
         server = self._sse_server(gates)
-        monkeypatch.setattr("agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 3.0)
-        monkeypatch.setattr("agent.auxiliary_client._get_task_no_progress_timeout",
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client._AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS", 3.0)
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client._get_task_no_progress_timeout",
                             lambda task: 0.4 if task == "compression" else None)
         # Loopback stands in for a remote endpoint: the first-token window applies to non-local ones.
-        monkeypatch.setattr("agent.model_metadata.is_local_endpoint", lambda _url: False)
+        monkeypatch.setattr("hermes_agent.agent.model_metadata.is_local_endpoint", lambda _url: False)
         client = openai.OpenAI(api_key="k", base_url=f"http://127.0.0.1:{server.server_port}/v1", max_retries=0)
 
         def call(model, task, *, via_relay_seam=False, provider=None):
-            from agent.auxiliary_client import _relay_aux_call_scope, _relay_sync_completion
+            from hermes_agent.agent.auxiliary_client import _relay_aux_call_scope, _relay_sync_completion
 
             request = {"model": model, "messages": [], "timeout": 20.0}
             with aux_progress_hook(lambda: None):
@@ -357,7 +357,7 @@ class TestAggregateChatStream:
         """#100501: an endpoint that sends one chunk then goes silent fails at the task's no-progress
         window as a timeout (so retry/fallback run), not at the request read timeout. Recovery rungs
         go through the default relay callback and must keep the task's window."""
-        from agent.auxiliary_client import _classify_failure, _should_skip_same_provider_retry
+        from hermes_agent.agent.auxiliary_client import _classify_failure, _should_skip_same_provider_retry
 
         _gates, call = sse
         started = time.monotonic()
@@ -609,7 +609,7 @@ class TestContentBearingProgress:
             return SimpleNamespace(output=[], usage=None)
 
         with (
-            patch("agent.codex_runtime._consume_codex_event_stream", _consume),
+            patch("hermes_agent.agent.codex_runtime._consume_codex_event_stream", _consume),
             aux_progress_hook(_touch),
         ):
             adapter.create(messages=[{"role": "user", "content": "summarize"}])
@@ -651,11 +651,11 @@ class TestContentBearingProgress:
 
         with (
             patch(
-                "agent.anthropic_adapter.build_anthropic_kwargs",
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_kwargs",
                 return_value={"model": "claude-sonnet-4-6", "messages": []},
             ),
             patch(
-                "agent.anthropic_adapter.create_anthropic_message",
+                "hermes_agent.agent.anthropic_adapter.create_anthropic_message",
                 side_effect=_create_message,
             ),
             aux_progress_hook(_touch),
@@ -674,7 +674,7 @@ class TestContentBearingProgress:
         through _ChatStreamAccumulator ticked the fence, so a stalled
         summary stream never hit the inactivity timeout."""
         now = [10.0]
-        monkeypatch.setattr("agent.conversation_compression.time.monotonic", lambda: now[0])
+        monkeypatch.setattr("hermes_agent.agent.conversation_compression.time.monotonic", lambda: now[0])
         fence = CompressionCommitFence()
         now[0] = 20.0
         accumulator = _ChatStreamAccumulator()
@@ -697,7 +697,7 @@ class TestContentBearingProgress:
         #96707 gating: the provider-response (time_to_first_progress_ms)
         hook must fire on the FIRST frame of any kind (transport liveness),
         not only on the first token."""
-        from agent.auxiliary_client import (
+        from hermes_agent.agent.auxiliary_client import (
             _aux_provider_response,
             _aux_thread_local_hook,
         )

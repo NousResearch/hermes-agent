@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from agent.runtime_scope import bind_state
+from hermes_agent.agent.runtime_scope import bind_state
 from tests.tools.test_sandbox_scope_conformance import A
 from tests.tools.test_sandbox_scope_conformance import host_dir as _conformance_host_dir
 from tests.tools.test_sandbox_scope_conformance import provider as _conformance_provider
@@ -89,8 +89,8 @@ def _plant_skill(monkeypatch):
 
 
 def test_preloaded_skills_never_read_host(monkeypatch):
-    from agent import skill_commands
-    from agent.prompt_builder import build_skills_system_prompt
+    from hermes_agent.agent import skill_commands
+    from hermes_agent.agent.prompt_builder import build_skills_system_prompt
     from hermes_agent.tools.skills_tool import skill_view, skills_list
     root = _plant_skill(monkeypatch)
     read = []
@@ -112,7 +112,7 @@ def test_preloaded_skills_never_read_host(monkeypatch):
 
 
 def test_local_skills_still_preload(monkeypatch):
-    from agent.skill_commands import build_preloaded_skills_prompt
+    from hermes_agent.agent.skill_commands import build_preloaded_skills_prompt
     _plant_skill(monkeypatch)
     prompt, loaded, missing = build_preloaded_skills_prompt(["private_probe"], task_id="t")
     assert "HOST-SKILL-PRIVATE" in prompt and loaded == ["private_probe"] and not missing
@@ -148,7 +148,7 @@ def test_a_hosted_write_is_not_judged_by_this_hosts_skill_locks(provider, host_d
 
 
 def _capture_hook(tmp_path, monkeypatch, event="post_tool_call", matcher="memory"):
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
     from hermes_cli import plugins
     captured = tmp_path / f"{event}.json"
     script = tmp_path / "capture.py"
@@ -163,7 +163,7 @@ def _capture_hook(tmp_path, monkeypatch, event="post_tool_call", matcher="memory
 
 
 def _memory_call(tmp_path):
-    from agent import tool_executor as te
+    from hermes_agent.agent import tool_executor as te
     from tests.tools.test_hosted_deny_by_default import _call, _make_agent
     agent, messages = _make_agent(tmp_path), []
     te.execute_tool_calls_sequential(agent, SimpleNamespace(tool_calls=[_call("c1", "memory", {
@@ -181,7 +181,7 @@ def test_shell_hook_cannot_write_refused_tool_payload_to_host(tmp_path, monkeypa
 
 def test_shell_hook_never_spawns_in_hosted_scope(tmp_path, monkeypatch):
     """The subprocess site itself refuses, whichever event or caller reaches it."""
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
     from hermes_cli.plugins import invoke_hook
     captured = _capture_hook(tmp_path, monkeypatch, event="on_session_start", matcher=None)
     spec = shell_hooks.ShellHookSpec(event="on_session_start", command=f"{shlex.quote(sys.executable)} -c pass")
@@ -206,7 +206,7 @@ def test_middleware_never_sees_a_refused_hosted_call(tmp_path, monkeypatch):
 def test_a_fail_closed_host_hook_neither_runs_nor_blocks_a_hosted_tool(tmp_path):
     """A hosted turn is outside the host's hooks: a fail-closed pre_tool_call hook is skipped, not
     turned into a block on the agent's own allowed tool."""
-    from agent import shell_hooks
+    from hermes_agent.agent import shell_hooks
     marker = tmp_path / "ran"
     spec = shell_hooks.ShellHookSpec(event="pre_tool_call", matcher="terminal", fail_closed=True,
                                      command=f"{shlex.quote(sys.executable)} -c 'open({str(marker)!r}, \"w\")'")
@@ -296,7 +296,7 @@ def test_terminal_output_spill_and_blocked_scripts_stay_off_host():
 
 
 def test_verification_ledger_records_nothing_for_a_hosted_agent(monkeypatch):
-    from agent import verification_evidence as ve
+    from hermes_agent.agent import verification_evidence as ve
     monkeypatch.setenv("HERMES_VERIFY_ON_STOP", "1")
     with bind_state(A):
         assert ve._ledger_enabled() is False

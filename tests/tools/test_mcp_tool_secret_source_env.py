@@ -34,7 +34,7 @@ def test_secret_source_injected_vars_are_passed(monkeypatch):
 def test_secret_source_vars_resolve_through_active_profile_scope(monkeypatch):
     """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
     never the launch profile's os.environ copy; a name the profile lacks is omitted."""
-    from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+    from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
     from hermes_cli import env_loader
     from hermes_agent.tools.mcp_tool_config import _build_safe_env
 

@@ -10,7 +10,7 @@ os.environ.setdefault("HERMES_HOME", os.path.expanduser("~/.hermes"))
 if "--hermes-home" in sys.argv:
     os.environ["HERMES_HOME"] = sys.argv[sys.argv.index("--hermes-home") + 1]
 arm = sys.argv[2] if len(sys.argv) > 2 else "A"
-import agent.anthropic_message_convert as amc
+import hermes_agent.agent.anthropic_message_convert as amc
 if arm == "B":
     def _keep_all(result, base_url, model):
         for idx, m in amc._assistant_block_lists(result):
@@ -20,7 +20,7 @@ if arm == "B":
     amc._manage_thinking_signatures = _keep_all
 # Capture every outbound Anthropic-format payload
 captured = []
-import agent.anthropic_adapter as ad
+import hermes_agent.agent.anthropic_adapter as ad
 _orig_convert = None
 for name in ("convert_messages_to_anthropic", "to_anthropic_messages", "convert_to_anthropic", "build_anthropic_messages"):
     if hasattr(amc, name): _orig_convert = (name, getattr(amc, name)); break
@@ -42,7 +42,7 @@ def _wrapped(*a, **k):
 setattr(amc, name, _wrapped)
 if hasattr(ad, name): setattr(ad, name, _wrapped)
 print("hooked converter:", name)
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 from hermes_cli.runtime_provider import resolve_runtime_provider
 rt = resolve_runtime_provider(requested="nous", target_model="anthropic/claude-fable-5.1")
 sid = f"f0wire_{arm}_{int(time.time())}"

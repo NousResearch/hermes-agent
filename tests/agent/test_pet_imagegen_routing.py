@@ -8,9 +8,9 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from agent import image_gen_registry
-from agent.image_gen_provider import ImageGenProvider
-from agent.pet.generate import imagegen
+from hermes_agent.agent import image_gen_registry
+from hermes_agent.agent.image_gen_provider import ImageGenProvider
+from hermes_agent.agent.pet.generate import imagegen
 
 
 class RecordingProvider(ImageGenProvider):

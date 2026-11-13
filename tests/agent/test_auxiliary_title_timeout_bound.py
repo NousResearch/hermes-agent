@@ -9,7 +9,7 @@ the only WARNING came from the fallback provider complaining about a model it ne
 import logging
 from unittest.mock import MagicMock, patch
 
-from agent.auxiliary_client import call_llm
+from hermes_agent.agent.auxiliary_client import call_llm
 
 class _Timeout(Exception):
     pass
@@ -18,12 +18,12 @@ _Timeout.__name__ = "APITimeoutError"
 
 def _route_patches(client):
     return (
-        patch("agent.auxiliary_client._resolve_task_provider_model",
+        patch("hermes_agent.agent.auxiliary_client._resolve_task_provider_model",
               return_value=("mac-ollama", "qwen3.6:27b", None, None, None)),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3.6:27b")),
-        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
-        patch("agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
-        patch("agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3.6:27b")),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+        patch("hermes_agent.agent.auxiliary_client._try_configured_fallback_chain", return_value=(None, None, "")),
+        patch("hermes_agent.agent.auxiliary_client._try_main_agent_model_fallback", return_value=(None, None, "")),
     )
 
 def test_title_timeout_hits_the_provider_once_and_names_the_deadline(caplog):
@@ -31,7 +31,7 @@ def test_title_timeout_hits_the_provider_once_and_names_the_deadline(caplog):
     primary.base_url = "http://100.121.173.79:11434/v1"
     primary.chat.completions.create.side_effect = _Timeout("Request timed out.")
     p = _route_patches(primary)
-    caplog.set_level(logging.INFO, logger="agent.auxiliary_client")
+    caplog.set_level(logging.INFO, logger="hermes_agent.agent.auxiliary_client")
     with p[0], p[1], p[2], p[3], p[4]:
         try:
             call_llm(task="title_generation", messages=[{"role": "user", "content": "hi"}], timeout=30)

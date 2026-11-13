@@ -3,7 +3,7 @@
 Photon used to fork ``BasePlatformAdapter._send_with_retry`` and so missed three landed fixes
 (server ``retry_after`` honoured, the inline wait cap, no failure notice inside a flood penalty).
 It now overrides two hooks. Slack and Discord parsed ``Retry-After`` by hand and only understood
-the numeric form; both now go through ``agent.retry_utils.parse_retry_after_seconds``.
+the numeric form; both now go through ``hermes_agent.agent.retry_utils.parse_retry_after_seconds``.
 """
 
 from email.utils import format_datetime

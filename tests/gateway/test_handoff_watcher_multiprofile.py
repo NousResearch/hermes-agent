@@ -292,7 +292,7 @@ async def test_slow_profile_secret_load_does_not_block_event_loop(monkeypatch, t
         lambda _runner: [(None, None), ("slow", profile_home)],
     )
 
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     load_started = threading.Event()
     ticker_progressed = threading.Event()

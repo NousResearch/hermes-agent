@@ -156,7 +156,7 @@ def _stale(receipt: dict) -> bool:
 def report_pending_installs(home: Path) -> None:
     """Record each receipt once, on a consented day (see the module docstring). Never raises."""
     try:
-        from agent import relay_runtime
+        from hermes_agent.agent import relay_runtime
 
         from . import shared_metrics_contract as contract
         from .shared_metrics_events import emit_saved

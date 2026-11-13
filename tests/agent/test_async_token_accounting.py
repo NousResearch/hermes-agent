@@ -408,7 +408,7 @@ class TestDurability:
         the crash window is at most the in-flight call's delta."""
         import os
         monkeypatch.setitem(os.environ, "OPENROUTER_API_KEY", "test-key")
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         db = SessionDB(db_path=tmp_path / "finalize.db")
         try:

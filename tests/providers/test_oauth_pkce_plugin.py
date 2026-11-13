@@ -43,7 +43,7 @@ def _browser_hits(url: str) -> bool:
 
 
 def test_pkce_handler_add_status_refresh_logout_against_fake_idp(idp, monkeypatch, tmp_path, request):
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     monkeypatch.setattr(pkce.webbrowser, "open", _browser_hits)
     monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
@@ -109,7 +109,7 @@ def test_token_url_off_authorize_allowlist_refused_before_any_request(idp, monke
 
 def test_spent_refresh_token_is_grant_dead_and_marks_the_pool_row_dead(idp, monkeypatch, tmp_path, request):
     """RFC 6749 invalid_grant on refresh is terminal. The pool must DEAD the row, not EXHAUST it."""
-    from agent.credential_pool import STATUS_DEAD, load_pool
+    from hermes_agent.agent.credential_pool import STATUS_DEAD, load_pool
 
     monkeypatch.setattr(pkce.webbrowser, "open", _browser_hits)
     monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
@@ -140,7 +140,7 @@ def test_spent_refresh_token_is_grant_dead_and_marks_the_pool_row_dead(idp, monk
 
 def test_alias_login_stores_the_row_under_the_canonical_profile_name(idp, monkeypatch, tmp_path, request):
     """hermes auth add <alias> must write the pool under ProviderProfile.name, not the typed alias."""
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     alias = "example-pkce-alias"
     monkeypatch.setattr(pkce.webbrowser, "open", _browser_hits)

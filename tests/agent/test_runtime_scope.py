@@ -1,4 +1,4 @@
-"""The runtime scope (``hermes_scope`` + ``agent/runtime_scope.py``) is one value.
+"""The runtime scope (``hermes_scope`` + ``hermes_agent/agent/runtime_scope.py``) is one value.
 
 Inside a bound scope, home, secrets and terminal policy always describe the same profile. The
 legacy setters cannot split them: on a local install a call naming another profile moves the
@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.runtime_scope import bind_profile_scope, bind_state, bind_turn, claim_fence, scope_for_profile
-from agent.secret_scope import (
+from hermes_agent.agent.runtime_scope import bind_profile_scope, bind_state, bind_turn, claim_fence, scope_for_profile
+from hermes_agent.agent.secret_scope import (
     build_profile_secret_scope,
     current_secret_scope,
     current_secret_scope_home,
@@ -371,7 +371,7 @@ def test_a_mirrored_hermes_home_is_not_mistaken_for_the_launch_profile(tmp_path,
     launch.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("OPENAI_API_KEY", "launch-only-key")
-    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", False)
     pin_process_hermes_home(launch)
     try:
         activate_multi_profile_hosting()

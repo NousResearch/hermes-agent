@@ -1,4 +1,4 @@
-"""Tests for Bug #12905 fixes in agent/anthropic_adapter.py — macOS Keychain support."""
+"""Tests for Bug #12905 fixes in hermes_agent/agent/anthropic_adapter.py — macOS Keychain support."""
 
 import json
 import platform
@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from agent.anthropic_credentials import (
+from hermes_agent.agent.anthropic_credentials import (
     _read_claude_code_credentials_from_keychain,
     read_claude_code_credentials,
     _refresh_oauth_token,
@@ -41,13 +41,13 @@ class TestReadClaudeCodeCredentialsFromKeychain:
 
     def test_returns_none_when_security_command_not_found(self):
         """OSError from missing security binary must be handled gracefully."""
-        with patch("agent.anthropic_adapter.subprocess.run",
+        with patch("hermes_agent.agent.anthropic_adapter.subprocess.run",
                    side_effect=OSError("security not found")):
             assert _read_claude_code_credentials_from_keychain() is None
 
     def test_returns_none_on_nonzero_exit_code(self):
         """security returns non-zero when the Keychain entry doesn't exist."""
-        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("hermes_agent.agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
             assert _read_claude_code_credentials_from_keychain() is None
 
@@ -73,10 +73,10 @@ class TestReadClaudeCodeCredentialsPriority:
                 "expiresAt": 9999999999999,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
         # Mock Keychain to return a "newer" token
-        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("hermes_agent.agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout=json.dumps({
@@ -106,9 +106,9 @@ class TestReadClaudeCodeCredentialsPriority:
                 "expiresAt": 9999999999999,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("hermes_agent.agent.anthropic_adapter.subprocess.run") as mock_run:
             # Simulate Keychain entry not found
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
             creds = read_claude_code_credentials()
@@ -119,9 +119,9 @@ class TestReadClaudeCodeCredentialsPriority:
 
     def test_returns_none_when_neither_keychain_nor_json_has_creds(self, tmp_path, monkeypatch):
         """No credentials anywhere — must return None cleanly."""
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("hermes_agent.agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
             creds = read_claude_code_credentials()
 
@@ -153,7 +153,7 @@ class TestReadClaudeCodeCredentialsDesync:
                 "expiresAt": file_expires_at,
             }
         }))
-        monkeypatch.setattr("agent.anthropic_credentials.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.Path.home", lambda: tmp_path)
 
     def _keychain_payload(self, *, access_token, expires_at, refresh_token="kc-refresh"):
         return MagicMock(
@@ -176,7 +176,7 @@ class TestReadClaudeCodeCredentialsDesync:
         ``No Anthropic credentials found`` error.)
         """
         self._setup(tmp_path, monkeypatch, file_expires_at=self._FRESH, file_token="fresh-file-token")
-        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("hermes_agent.agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = self._keychain_payload(
                 access_token="stale-keychain-token", expires_at=self._EXPIRED,
             )
@@ -194,7 +194,7 @@ class TestReadClaudeCodeCredentialsDesync:
         succeed at the OAuth refresh endpoint.
         """
         self._setup(tmp_path, monkeypatch, file_expires_at=self._EXPIRED + 5, file_token="newer-expired-file")
-        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("hermes_agent.agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = self._keychain_payload(
                 access_token="older-expired-keychain", expires_at=self._EXPIRED,
             )
@@ -217,7 +217,7 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         the network refresh entirely.
         """
         monkeypatch.setattr(
-            "agent.anthropic_credentials.claude_code_credentials_path",
+            "hermes_agent.agent.anthropic_credentials.claude_code_credentials_path",
             lambda: tmp_path / ".claude" / ".credentials.json",
         )
         fresh = {
@@ -226,7 +226,7 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
             "expiresAt": self._FRESH,
         }
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials",
             lambda: fresh,
         )
 
@@ -234,7 +234,7 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
             raise AssertionError("refresh_anthropic_oauth_pure must not be called")
 
         monkeypatch.setattr(
-            "agent.anthropic_credentials.refresh_anthropic_oauth_pure",
+            "hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure",
             _should_not_be_called,
         )
 
@@ -248,12 +248,12 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         ourselves using the freshest available refresh token.
         """
         monkeypatch.setattr(
-            "agent.anthropic_credentials.claude_code_credentials_path",
+            "hermes_agent.agent.anthropic_credentials.claude_code_credentials_path",
             lambda: tmp_path / ".claude" / ".credentials.json",
         )
         # Live read returns an expired credential carrying a refresh token.
         monkeypatch.setattr(
-            "agent.anthropic_credentials.read_claude_code_credentials",
+            "hermes_agent.agent.anthropic_credentials.read_claude_code_credentials",
             lambda: {"accessToken": "expired", "refreshToken": "live-refresh", "expiresAt": 1},
         )
         captured = {}
@@ -267,10 +267,10 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
             }
 
         monkeypatch.setattr(
-            "agent.anthropic_credentials.refresh_anthropic_oauth_pure", _fake_refresh
+            "hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure", _fake_refresh
         )
         monkeypatch.setattr(
-            "agent.anthropic_credentials._write_claude_code_credentials",
+            "hermes_agent.agent.anthropic_credentials._write_claude_code_credentials",
             lambda *a, **k: None,
         )
 
@@ -283,7 +283,7 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
         """Direct resolver refreshes must not spend one Claude token twice."""
         shared_credentials_path = tmp_path / ".claude" / ".credentials.json"
         monkeypatch.setattr(
-            "agent.anthropic_credentials.claude_code_credentials_path",
+            "hermes_agent.agent.anthropic_credentials.claude_code_credentials_path",
             lambda: shared_credentials_path,
         )
 
@@ -321,9 +321,9 @@ class TestRefreshOAuthTokenAdoptsFreshCredential:
                     "expires_at_ms": self._FRESH,
                 }
 
-        monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", read_credentials)
-        monkeypatch.setattr("agent.anthropic_credentials._write_claude_code_credentials", write_credentials)
-        monkeypatch.setattr("agent.anthropic_credentials.refresh_anthropic_oauth_pure", refresh)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.read_claude_code_credentials", read_credentials)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials._write_claude_code_credentials", write_credentials)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.refresh_anthropic_oauth_pure", refresh)
 
         results = {}
         errors = {}
@@ -427,7 +427,7 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
     @pytest.mark.platforms("macos")
     def test_no_write_when_no_entry_exists(self, monkeypatch):
         """Never create a Keychain item the user has not."""
-        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: None)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials._find_claude_code_keychain_item", lambda: None)
         run = MagicMock(return_value=MagicMock(returncode=0))
         monkeypatch.setattr(subprocess, "run", run)
 
@@ -440,7 +440,7 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
         """A different pair in the Keychain is another login or a rotation Claude Code already made;
         overwriting it would be the bug in the other direction."""
         item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
-        monkeypatch.setattr("agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
+        monkeypatch.setattr("hermes_agent.agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item)
         run = MagicMock(return_value=MagicMock(returncode=0))
         monkeypatch.setattr(subprocess, "run", run)
 

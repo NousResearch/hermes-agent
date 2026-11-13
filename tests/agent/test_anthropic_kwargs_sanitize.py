@@ -6,7 +6,7 @@ leaking in under an api_mode-flip race. The Anthropic SDK raises a
 non-retryable ``TypeError`` on any of them, killing the whole turn.
 """
 
-from agent.anthropic_adapter import (
+from hermes_agent.agent.anthropic_adapter import (
     sanitize_anthropic_kwargs,
 )
 

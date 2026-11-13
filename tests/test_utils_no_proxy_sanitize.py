@@ -7,7 +7,7 @@ Every bare ``httpx.Client()`` in the process then raises — codex login, doctor
 chat transport (explicit mounts) keeps working. ``utils.normalize_proxy_env_vars`` (already the
 in-place env sanitizer called when chat transports are built) rewrites those entries to the bare
 ``::1`` literal that httpx compiles into a working ``all://[::1]`` bypass and that urllib, requests
-and the repo's own ``agent.proxy_bypass`` matcher all understand.
+and the repo's own ``hermes_agent.agent.proxy_bypass`` matcher all understand.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ class TestSanitizedEnvYieldsAWorkingHttpxClient:
             client.close()
 
     def test_bypass_still_matches_after_normalization(self, proxy_env, monkeypatch):
-        from agent.proxy_bypass import should_bypass_proxy
+        from hermes_agent.agent.proxy_bypass import should_bypass_proxy
 
         monkeypatch.setenv("NO_PROXY", _CLASH_NO_PROXY)
         normalize_proxy_env_vars()

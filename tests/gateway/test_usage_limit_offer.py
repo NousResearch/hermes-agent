@@ -262,7 +262,7 @@ async def test_a_turn_that_ran_during_the_switch_is_not_retried(monkeypatch):
 
 
 def test_a_messaging_refusal_points_at_the_portal_not_topup():
-    from agent.plan_limits import portal_wording
+    from hermes_agent.agent.plan_limits import portal_wording
     assert portal_wording("You've hit your daily limit · resets 15:56 · turn on Keep going in /topup") == (
         "You've hit your daily limit · resets 15:56 · turn on Keep going in the Portal")
     assert "/topup" not in portal_wording("You've hit your weekly limit · /topup to add credits")

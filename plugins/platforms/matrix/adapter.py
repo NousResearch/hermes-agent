@@ -46,8 +46,8 @@ from html import escape as _html_escape
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from agent.i18n import t
-from agent.secret_scope import get_secret
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.secret_scope import get_secret
 from hermes_agent.gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
@@ -148,7 +148,7 @@ def _resolve_matrix_bang_command(name: str) -> str | None:
     except Exception:
         logger.debug("Matrix: is_gateway_known_command failed for %r", name, exc_info=True)
     try:
-        from agent.skill_commands import get_skill_commands
+        from hermes_agent.agent.skill_commands import get_skill_commands
         skill_commands = get_skill_commands() or {}  # keys are slash-prefixed ("/arxiv")
         for candidate in candidates:
             if f"/{candidate}" in skill_commands:

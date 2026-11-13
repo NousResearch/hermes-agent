@@ -16,7 +16,7 @@ tests/gateway/test_telegram_noise_filter.py pins that suite unchanged.
 import pytest
 
 import hermes_agent.gateway.run as gateway_run
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     COMPACTION_DONE_STATUS,
     COMPRESSION_REFUSED_WOULD_GROW_WARNING,
     ROUTINE_COMPRESSION_STATUS_SAMPLES,

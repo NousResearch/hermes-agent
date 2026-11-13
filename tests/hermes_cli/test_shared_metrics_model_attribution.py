@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.portal_tags import reset_conversation_context, set_conversation_context
+from hermes_agent.agent.portal_tags import reset_conversation_context, set_conversation_context
 from hermes_cli import lifecycle
 from hermes_cli.observability import relay_shared_metrics
 from tests.hermes_cli.test_relay_shared_metrics_runtime import (
@@ -323,7 +323,7 @@ def test_cli_undo_counts_friction_only_when_something_was_undone(direct_runtime,
 
 
 def test_cli_undo_n_counts_the_user_turns_actually_undone_not_compaction_handoffs(direct_runtime, tmp_path):
-    from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, SUMMARY_PREFIX
+    from hermes_agent.agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, SUMMARY_PREFIX
 
     cli = _cli(None)
     cli.conversation_history = [

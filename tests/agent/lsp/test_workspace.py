@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.workspace import (
+from hermes_agent.agent.lsp.workspace import (
     clear_cache,
     find_git_worktree,
     is_inside_workspace,
@@ -88,7 +88,7 @@ def test_resolve_workspace_for_file_survives_deleted_cwd(tmp_path: Path, monkeyp
     assert gated is True
     # The diagnostics path logs through eventlog; its cwd-relative shortener must
     # not raise either, or the write succeeds with diagnostics silently dropped.
-    from agent.lsp.eventlog import _short_path
+    from hermes_agent.agent.lsp.eventlog import _short_path
 
     assert _short_path(str(file_path)) == str(file_path)
 
@@ -110,7 +110,7 @@ def test_normalize_path_expands_tilde(monkeypatch):
 
 def test_find_git_worktree_cache_is_capped(tmp_path: Path, monkeypatch):
     """The start-dir cache resets past _WORKSPACE_CACHE_CAP instead of growing per distinct dir touched."""
-    import agent.lsp.workspace as ws
+    import hermes_agent.agent.lsp.workspace as ws
 
     monkeypatch.setattr(ws, "_WORKSPACE_CACHE_CAP", 4)
     for i in range(6):

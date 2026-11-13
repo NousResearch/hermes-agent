@@ -63,7 +63,7 @@ class TestAnthropicMcpPrefixStrip:
     """Verify strip_tool_prefix reverses the ``mcp__`` wire prefix correctly."""
 
     def _get_transport(self):
-        from agent.transports.anthropic import AnthropicTransport
+        from hermes_agent.agent.transports.anthropic import AnthropicTransport
         return AnthropicTransport()
 
     def test_strips_prefix_for_oauth_injected_native_tool(self):
@@ -102,7 +102,7 @@ class TestAnthropicOAuthAliasRoundTrip:
     the mapping so the dispatcher still sees the real tool."""
 
     def _get_transport(self):
-        from agent.transports.anthropic import AnthropicTransport
+        from hermes_agent.agent.transports.anthropic import AnthropicTransport
         return AnthropicTransport()
 
     def test_oauth_session_search_alias_round_trips_to_registry_name(self):
@@ -157,7 +157,7 @@ class TestAnthropicOAuthOutgoingPrefix:
     the OAuth wire — bare names and MCP server names both land on ``mcp__``."""
 
     def _build(self, tools, is_oauth=True, messages=None, tool_choice=None):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
         return build_anthropic_kwargs(
             model="claude-sonnet-4-6",
             messages=messages or [{"role": "user", "content": "Hi"}],
@@ -198,7 +198,7 @@ class TestAnthropicOAuthClassifierAlias:
     name, tool description, system-prompt prose, and named tool_choice."""
 
     def _build(self, tools, is_oauth=True, messages=None, tool_choice=None):
-        from agent.anthropic_adapter import build_anthropic_kwargs
+        from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
         return build_anthropic_kwargs(
             model="claude-sonnet-4-6",
             messages=messages or [{"role": "user", "content": "Hi"}],

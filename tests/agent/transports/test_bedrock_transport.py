@@ -3,13 +3,13 @@
 import pytest
 from types import SimpleNamespace
 
-from agent.transports import get_transport
-from agent.transports.types import NormalizedResponse
+from hermes_agent.agent.transports import get_transport
+from hermes_agent.agent.transports.types import NormalizedResponse
 
 
 @pytest.fixture
 def transport():
-    import agent.transports.bedrock
+    import hermes_agent.agent.transports.bedrock
     return get_transport("bedrock_converse")
 
 

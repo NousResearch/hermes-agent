@@ -31,17 +31,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.tool_dispatch_helpers import make_tool_result_message
-from agent.agent_runtime_helpers import sanitize_api_messages
-from agent.tool_executor import execute_tool_calls_segmented
+from hermes_agent.agent.tool_dispatch_helpers import make_tool_result_message
+from hermes_agent.agent.agent_runtime_helpers import sanitize_api_messages
+from hermes_agent.agent.tool_executor import execute_tool_calls_segmented
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 @pytest.fixture(autouse=True)
 def _disable_background_titles(monkeypatch):
     # Persistence assertions must not race a title worker writing to pytest capture.
-    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.agent.title_generator.maybe_auto_title", lambda *args, **kwargs: None)
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -67,9 +67,9 @@ def _make_agent():
             return_value=_make_tool_defs("web_search"),
         ),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("run_agent._hermes_home", hermes_home),
-        patch("agent.model_metadata.fetch_model_metadata", return_value={}),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.run_agent._hermes_home", hermes_home),
+        patch("hermes_agent.agent.model_metadata.fetch_model_metadata", return_value={}),
     ):
         agent = AIAgent(
             api_key="test-key",
@@ -364,7 +364,7 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     with (
         patch("hermes_agent.model_tools.handle_function_call", side_effect=_fake_dispatch) as disp,
         patch(
-            "agent.tool_executor.maybe_persist_tool_result",
+            "hermes_agent.agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
         ),
     ):
@@ -416,7 +416,7 @@ def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     with (
         patch("hermes_agent.model_tools.handle_function_call", side_effect=_interrupt_dispatch),
         patch(
-            "agent.tool_executor.maybe_persist_tool_result",
+            "hermes_agent.agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
         ),
         pytest.raises(KeyboardInterrupt),
@@ -474,7 +474,7 @@ def test_tool_result_is_durable_before_ui_completion_on_abnormal_exit(
         with (
             dispatch_patch,
             patch(
-                "agent.tool_executor.maybe_persist_tool_result",
+                "hermes_agent.agent.tool_executor.maybe_persist_tool_result",
                 side_effect=lambda **kwargs: kwargs["content"],
             ),
             pytest.raises(GeneratorExit, match="simulated process termination"),
@@ -522,7 +522,7 @@ def test_connector_data_use_rides_the_tool_message_and_survives_a_reload(tmp_pat
 
     try:
         with (patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
-              patch("agent.tool_executor.maybe_persist_tool_result", side_effect=lambda **kw: kw["content"])):
+              patch("hermes_agent.agent.tool_executor.maybe_persist_tool_result", side_effect=lambda **kw: kw["content"])):
             getattr(agent, f"_execute_tool_calls_{executor_mode}")(
                 SimpleNamespace(content="", tool_calls=[_mock_tool_call(call_id="mail-call")]), messages, "task-1")
     finally:
@@ -552,7 +552,7 @@ def test_failed_tool_result_persist_blocks_completion_projection(executor_mode):
     with (
         dispatch_patch,
         patch(
-            "agent.tool_executor.maybe_persist_tool_result",
+            "hermes_agent.agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
         ),
     ):
@@ -585,7 +585,7 @@ def test_segmented_batch_stops_before_later_segment_after_persist_failure():
         patch.object(agent, "_invoke_tool", return_value="first result") as invoke,
         patch("hermes_agent.model_tools.handle_function_call", return_value="second result") as dispatch,
         patch(
-            "agent.tool_executor.maybe_persist_tool_result",
+            "hermes_agent.agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
         ),
     ):
@@ -636,7 +636,7 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
     with (
         patch.object(agent, "_invoke_tool", side_effect=_fake_invoke) as inv,
         patch(
-            "agent.tool_executor.maybe_persist_tool_result",
+            "hermes_agent.agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
         ),
     ):
@@ -664,7 +664,7 @@ def test_empty_final_response_updates_already_flushed_blank_assistant_row(tmp_pa
     append-only, so a re-insert would leave the empty row and add a second
     assistant (assistant→assistant on reload).
     """
-    from agent.turn_finalizer import finalize_turn
+    from hermes_agent.agent.turn_finalizer import finalize_turn
 
     agent = _make_agent()
     db_path = tmp_path / "state.db"
@@ -788,8 +788,8 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
     The row-version digest must not be priced by the token estimator, and a row another writer changed after our
     flush must survive the re-flush (the concurrent winner is adopted, never clobbered or duplicated).
     """
-    from agent.message_sanitization import _sanitize_messages_surrogates
-    from agent.model_metadata import estimate_messages_tokens_rough
+    from hermes_agent.agent.message_sanitization import _sanitize_messages_surrogates
+    from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
 
     agent = _make_agent()
     session_id = "sess-sanitized-active-rows"
@@ -849,7 +849,7 @@ def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_
 
 def test_flush_sanitized_archived_user_and_tool_rows_do_not_append_duplicates(tmp_path):
     """Sanitizer rewrites retain durable identity for every persisted transcript role."""
-    from agent.message_sanitization import _sanitize_messages_surrogates
+    from hermes_agent.agent.message_sanitization import _sanitize_messages_surrogates
 
     agent = _make_agent()
     db_path = tmp_path / "state.db"
@@ -910,7 +910,7 @@ def test_flush_archived_same_session_row_id_fills_active_clone(tmp_path):
     ``id + session_id`` updates the inactive row, stamps persistence, and
     skips INSERT — reload then still sees the blank clone (#95514 P0).
     """
-    from agent.turn_finalizer import finalize_turn
+    from hermes_agent.agent.turn_finalizer import finalize_turn
 
     agent = _make_agent()
     db_path = tmp_path / "state.db"

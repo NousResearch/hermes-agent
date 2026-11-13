@@ -127,7 +127,7 @@ def _set_aux(**blocks):
 
 
 def test_inheriting_task_follows_base_until_pinned(aux_home, patched_manager):
-    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+    from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config as resolve
 
     _register(patched_manager, "plug_aux", inherit_from="compression", defaults={"timeout": 90})
     _set_aux(compression={"provider": "openrouter", "model": "vendor/a", "base_url": "https://base.example",
@@ -159,7 +159,7 @@ def test_inheriting_task_follows_base_until_pinned(aux_home, patched_manager):
 def test_bad_inherit_from_warns_and_registers_without_inheritance(aux_home, patched_manager, caplog, bad):
     import logging
 
-    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+    from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config as resolve
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
         _register(patched_manager, "plug_aux", inherit_from=bad)
@@ -172,12 +172,12 @@ def test_inheritance_cycle_does_not_recurse(aux_home, patched_manager, caplog):
     """Same-owner re-registration can close a loop; reads must warn and cut it, not blow the stack."""
     import logging
 
-    from agent.auxiliary_client import _get_auxiliary_task_config as resolve
+    from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config as resolve
 
     _register(patched_manager, "plug_a", inherit_from="mcp", defaults={"timeout": 90})
     _register(patched_manager, "plug_b", inherit_from="plug_a")
     _register(patched_manager, "plug_a", inherit_from="plug_b", defaults={"timeout": 90})
 
-    with caplog.at_level(logging.WARNING, logger="agent.auxiliary_task_config"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_task_config"):
         assert resolve("plug_a")["timeout"] == 90
     assert "circular inherit_from" in caplog.text

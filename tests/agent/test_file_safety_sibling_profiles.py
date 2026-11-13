@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import agent.file_safety as fs
+import hermes_agent.agent.file_safety as fs
 
 READ_DENIED = (
     "auth.json", ".anthropic_oauth.json", "auth/google_oauth.json", "mcp-tokens/github.json",

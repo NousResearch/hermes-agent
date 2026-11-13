@@ -5,7 +5,7 @@ and asserts the output is identical. This catches any behavioral drift between t
 """
 
 import pytest
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 from providers import get_provider_profile
 
 

@@ -1,5 +1,5 @@
 """HX016: a new direct call to a legacy profile setter blocks; an existing call is grandfathered,
-even when its function changes, until it is migrated to ``agent.runtime_scope.bind_profile_scope``."""
+even when its function changes, until it is migrated to ``hermes_agent.agent.runtime_scope.bind_profile_scope``."""
 
 from __future__ import annotations
 

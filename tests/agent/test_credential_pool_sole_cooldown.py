@@ -46,7 +46,7 @@ def _load(tmp_path, monkeypatch, entries: list[dict]):
         tmp_path,
         {"version": 1, "credential_pool": {"openrouter": entries}},
     )
-    from agent.credential_pool import load_pool
+    from hermes_agent.agent.credential_pool import load_pool
 
     return load_pool("openrouter")
 
@@ -101,7 +101,7 @@ def test_sole_credential_next_available_at_uses_short_cooldown(tmp_path, monkeyp
     hour for a 60s cooldown, keeping the agent on a fallback provider far
     longer than necessary.
     """
-    from agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
+    from hermes_agent.agent.credential_pool import EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS
 
     pool = _load(tmp_path, monkeypatch, [_entry(429, age_seconds=10)])
     next_at = pool.next_available_at()
@@ -171,7 +171,7 @@ def test_multi_key_unverified_billing_400_recovers_quickly(tmp_path, monkeypatch
 def test_unverified_billing_ttl_values(tmp_path, monkeypatch):
     """Direct TTL contract: unverified billing is transient-sized; confirmed
     billing keeps the full bench; a true 402 wins over a stray unverified tag."""
-    from agent.credential_pool import (
+    from hermes_agent.agent.credential_pool import (
         EXHAUSTED_TTL_DEFAULT_SECONDS,
         EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS,
         _exhausted_ttl,

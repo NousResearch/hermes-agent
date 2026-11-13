@@ -187,7 +187,7 @@ async def _session_stream_tool_frames(api, owner, produce):
 async def test_session_chat_stream_carries_the_producers_tool_verdict_and_preview(api, owner):
     """A Codex command that exits 1 with no output is tool.failed (its result text is only "[exit 1]"),
     and the start frame keeps Codex's own 120-character preview, as the direct progress path does."""
-    from agent.codex_runtime import make_codex_app_server_event_bridge
+    from hermes_agent.agent.codex_runtime import make_codex_app_server_event_bridge
 
     def produce(turn):
         bridge = make_codex_app_server_event_bridge(_wired_agent(turn))
@@ -206,7 +206,7 @@ async def test_session_chat_stream_keeps_a_bounded_worker_failure(api, owner):
     """A managed worker bounds a large failing terminal result into an envelope with no exit_code;
     the stream reports the frame's own verdict, tool.failed."""
     import json
-    from agent.managed_worker import tool_frame
+    from hermes_agent.agent.managed_worker import tool_frame
     from hermes_agent.gateway.run_turn_progress import publish_worker_tool_event
 
     def produce(turn):

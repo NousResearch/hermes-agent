@@ -14,7 +14,7 @@ We deliberately DO NOT mock ``time.sleep`` here — some tests
 the real ``time.sleep`` for threading coordination or assert that it
 was called with specific values. Tests that want to additionally
 fast-path direct ``time.sleep(N)`` calls in production code should
-monkeypatch ``run_agent.time.sleep`` locally (see
+monkeypatch ``hermes_agent.run_agent.time.sleep`` locally (see
 ``test_anthropic_error_handling.py`` for the pattern).
 """
 
@@ -27,7 +27,7 @@ import pytest
 def _fresh_structured_output_memo(monkeypatch):
     """The aux client remembers routes that rejected ``response_format`` for the whole process;
     a rejection recorded by one test must not strip the field from the next test's request."""
-    from agent import auxiliary_structured_output
+    from hermes_agent.agent import auxiliary_structured_output
     monkeypatch.setattr(auxiliary_structured_output, "_REJECTED_ROUTES", set())
 
 
@@ -41,7 +41,7 @@ def _fast_retry_backoff(request, monkeypatch):
     if request.node.get_closest_marker("real_retry_backoff"):
         return
     # The agent.turn_* retry paths import ``jittered_backoff`` lazily from
-    # ``agent.retry_utils``; patch it there so rate-limit / invalid-response /
+    # ``hermes_agent.agent.retry_utils``; patch it there so rate-limit / invalid-response /
     # server-error retries don't burn real wall-clock seconds.
-    from agent import retry_utils as _retry_utils
+    from hermes_agent.agent import retry_utils as _retry_utils
     monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)

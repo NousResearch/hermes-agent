@@ -3,14 +3,14 @@
 Covers the full chain for providers that reject list-type content in
 ``role: "tool"`` messages (Xiaomi MiMo's 400 "text is not set", etc.):
 
-  1. agent/error_classifier.py: 400 with the right wording classifies as
+  1. hermes_agent/agent/error_classifier.py: 400 with the right wording classifies as
      ``FailoverReason.multimodal_tool_content_unsupported``.
-  2. run_agent._try_strip_image_parts_from_tool_messages downgrades tool
+  2. hermes_agent.run_agent._try_strip_image_parts_from_tool_messages downgrades tool
      messages whose ``content`` is a list-with-image to a string text
      summary, in-place, and records the active (provider, model) in
      ``self._no_list_tool_content_models`` so future tool results in this
      session preemptively downgrade.
-  3. run_agent._tool_result_content_for_active_model short-circuits to a
+  3. hermes_agent.run_agent._tool_result_content_for_active_model short-circuits to a
      text summary when the (provider, model) is in the cache, even though
      ``_model_supports_vision`` returns True — avoiding a wasted round
      trip on every subsequent screenshot in the session.
@@ -26,7 +26,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/27344
 from __future__ import annotations
 
 
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 
 class _FakeApiError(Exception):
@@ -41,7 +41,7 @@ class _FakeApiError(Exception):
 
 def _make_agent(provider: str = "xiaomi", model: str = "mimo-v2.5"):
     """Build a bare AIAgent for method-level testing, no provider setup."""
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     agent = object.__new__(AIAgent)
     agent.provider = provider
     agent.model = model
@@ -157,7 +157,7 @@ class TestToolResultContentShortCircuit:
 class TestRecoveryEndToEndClassification:
     """Lock in that the patterns used by the recovery path classify to
     the right ``FailoverReason``. (The recovery hook in
-    ``agent.conversation_loop`` consumes this reason directly.)
+    ``hermes_agent.agent.conversation_loop`` consumes this reason directly.)
     """
 
     def test_xiaomi_mimo_classifies(self):

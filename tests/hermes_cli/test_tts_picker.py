@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from agent import tts_registry
-from agent.tts_provider import TTSProvider
+from hermes_agent.agent import tts_registry
+from hermes_agent.agent.tts_provider import TTSProvider
 from hermes_cli import tools_config
 
 

@@ -242,7 +242,7 @@ def routing_agent_kwargs(config, model, provider, base_url):
     """The provider-routing ``AIAgent`` arguments every in-process surface passes (the CLI's
     ``provider_routing`` / ``openrouter.min_coding_score`` / ``agent.service_tier``, a static fast
     tier's request overrides), from a managed worker's frozen session config."""
-    from agent.fast_mode import STATIC_TIERS, parse_service_tier
+    from hermes_agent.agent.fast_mode import STATIC_TIERS, parse_service_tier
     from hermes_cli.models import resolve_fast_mode_overrides
     pr = config.get('provider_routing') or {}
     score = (config.get('openrouter') or {}).get('min_coding_score')

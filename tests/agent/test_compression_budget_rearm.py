@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _tool_call():
@@ -97,9 +97,9 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[_tool_definition()]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
-        patch("agent.model_metadata.get_model_context_length", return_value=256_000),
-        patch("agent.context_compressor.get_model_context_length", return_value=256_000),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=256_000),
+        patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=256_000),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -198,15 +198,15 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
 
     with (
         patch(
-            "agent.turn_context.estimate_request_tokens_rough",
+            "hermes_agent.agent.turn_context.estimate_request_tokens_rough",
             return_value=10,
         ),
         patch(
-            "agent.model_metadata.estimate_messages_tokens_rough",
+            "hermes_agent.agent.model_metadata.estimate_messages_tokens_rough",
             side_effect=_next_estimate,
         ),
         patch(
-            "agent.conversation_loop._estimate_tools_tokens_rough",
+            "hermes_agent.agent.conversation_loop._estimate_tools_tokens_rough",
             return_value=0,
         ),
         patch.object(agent, "_compress_context", side_effect=_fake_compress),

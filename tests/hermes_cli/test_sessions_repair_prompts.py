@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.prompt_builder import SKILLS_GUIDANCE
+from hermes_agent.agent.prompt_builder import SKILLS_GUIDANCE
 from hermes_cli import sessions_cmd
 from hermes_cli.sessions_cmd import _cmd_repair_prompts
 from hermes_agent.hermes_state import SessionDB

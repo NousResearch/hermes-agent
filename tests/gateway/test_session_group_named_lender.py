@@ -13,7 +13,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer, TestClient
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.api_server import APIServerAdapter
 from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempotencyStore

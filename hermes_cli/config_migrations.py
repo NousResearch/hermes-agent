@@ -606,7 +606,7 @@ def _migrate_to_45(results: dict[str, Any], quiet: bool) -> None:
     # (an explicit list treats absence as unchecked). Skipped when `known_builtin_toolsets`
     # already records `connections` (a decline) or `agent.disabled_toolsets` names it (the
     # resolver subtracts that list last, so the append would have no effect).
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
     from hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys
     from hermes_cli.toolset_scope import toolset_allowed_for_platform
 

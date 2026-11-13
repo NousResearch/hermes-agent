@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from agent.delegation_context import delegated_child_context
+from hermes_agent.agent.delegation_context import delegated_child_context
 from hermes_agent.gateway.session_context import (
     _SESSION_ID,
     _UNSET,

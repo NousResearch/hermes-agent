@@ -7,8 +7,8 @@ import logging
 import threading
 from typing import Optional
 
-from agent.proxy_bypass import loopback_request_kwargs
-from agent.redact import redact_cdp_url
+from hermes_agent.agent.proxy_bypass import loopback_request_kwargs
+from hermes_agent.agent.redact import redact_cdp_url
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def live_cdp_override() -> str:
 
     On a multiplexed gateway a context with no profile bound answers "" rather than the launch
     profile's endpoint, the way ``get_secret`` fails closed."""
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None and is_multiplex_active():
         return ""
@@ -92,7 +92,7 @@ def live_cdp_generation(home_key: Optional[str] = None) -> int:
 def env_cdp_url() -> str:
     """``BROWSER_CDP_URL`` from this profile's secret scope. A routed profile reads only its own ``.env``
     (``os.environ`` holds the launch profile's value)."""
-    from agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
+    from hermes_agent.agent.secret_scope import current_secret_scope, get_secret, serves_routed_profile
     if serves_routed_profile():
         value = (current_secret_scope() or {}).get("BROWSER_CDP_URL")
     else:

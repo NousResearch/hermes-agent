@@ -237,7 +237,7 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
         # scope's verdict. Only the unscoped default-profile path
         # (UnscopedSecretError) reads the env; any other failure stays empty.
         try:
-            from agent.secret_scope import UnscopedSecretError, get_secret
+            from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
 
             try:
                 api_key = (get_secret("ELEVENLABS_API_KEY") or "").strip()

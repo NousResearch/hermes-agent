@@ -475,7 +475,7 @@ class ModelCapabilities(Result):
 
     fast: bool
     ultrafast: bool = False
-    # This account's Codex catalog lists ``daybreak_blue`` for the model (``agent/codex_service_tiers.py``).
+    # This account's Codex catalog lists ``daybreak_blue`` for the model (``hermes_agent/agent/codex_service_tiers.py``).
     daybreak: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
@@ -491,7 +491,7 @@ class ProviderLimit(Result):
 
 
 class ProviderUsageWindow(Result):
-    """One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour
+    """One subscription usage window (``hermes_agent/agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour
     session or the weekly cap, with how much of it is spent and when it rolls over (ISO).
 
     ``scope``: ``account`` — exhausting the window exhausts the whole login (Codex session/weekly,
@@ -800,7 +800,7 @@ class VerificationStatusParams(ProfileParams):
 
 
 class VerificationEvidenceRow(OpenModel):
-    """One ``verification_events`` row (``agent/verification_evidence.py``)."""
+    """One ``verification_events`` row (``hermes_agent/agent/verification_evidence.py``)."""
 
     id: int | None = None
     created_at: str | None = None

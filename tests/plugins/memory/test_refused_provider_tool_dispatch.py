@@ -15,7 +15,7 @@ import sys
 
 import pytest
 
-from agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_manager import MemoryManager
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 _TOOL = "sharedmem_recall"
@@ -24,7 +24,7 @@ _SHARED_MODULE = '''
 import json
 from functools import partial
 
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 _provider = None
 
@@ -83,7 +83,7 @@ def homes(tmp_path, monkeypatch):
             "# MemoryProvider\nfrom sharedmem_singleton import register\n", encoding="utf-8")
         (home / "config.yaml").write_text("memory:\n  provider: sharedmem\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
     from hermes_cli.plugins import _reset_plugin_managers_for_tests
     _reset_plugin_managers_for_tests()
     token = set_multiplex_context(True)

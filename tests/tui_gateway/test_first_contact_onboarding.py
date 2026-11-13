@@ -13,7 +13,7 @@ import types
 
 import pytest
 
-from agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
+from hermes_agent.agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
 from hermes_yaml import safe_dump, safe_load
 from hermes_agent.tui_gateway import server
 
@@ -94,7 +94,7 @@ def test_skips_when_offer_already_latched(monkeypatch, onboarding_home):
     agent = types.SimpleNamespace()
     _stage(_session(agent), agent, history_empty=True)
 
-    from agent.onboarding import PLAIN_INTRO_NOTE
+    from hermes_agent.agent.onboarding import PLAIN_INTRO_NOTE
 
     assert agent._gateway_turn_context_notes == PLAIN_INTRO_NOTE.strip()
 

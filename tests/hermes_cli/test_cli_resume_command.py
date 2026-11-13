@@ -294,7 +294,7 @@ class TestResumeOpensTheTargetOnTheGateway:
 
     @pytest.mark.parametrize("refusal", ["not_found", "permission_denied", "profile_mismatch"])
     def test_a_refused_target_keeps_the_current_session(self, refusal):
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
 
         cli_obj, conn, calls, printed = self._switch(refusal)
 

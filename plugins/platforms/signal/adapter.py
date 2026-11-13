@@ -24,7 +24,7 @@ from urllib.parse import quote, unquote
 import httpx
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import (
     BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.repetition_guard import STOP_PATH_MIN_CHARS
+from hermes_agent.agent.repetition_guard import STOP_PATH_MIN_CHARS
 from hermes_constants import FINISH_REASON_LENGTH, PARTIAL_STREAM_STUB_ID
 
 # The exact sentence from the #86581 incident.
@@ -21,12 +21,12 @@ _INCIDENT_ECHO = "好，你幫我更改成 Google Gemini 4 31B。"
 
 @pytest.fixture()
 def loop_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",

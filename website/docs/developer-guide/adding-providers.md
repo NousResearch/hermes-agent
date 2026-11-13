@@ -27,9 +27,9 @@ A built-in provider has to line up across a few layers:
    - `base_url`
    - `api_key`
    - `source`
-3. `run_agent.py` uses `api_mode` to decide how requests are built and sent.
+3. `hermes_agent/run_agent.py` uses `api_mode` to decide how requests are built and sent.
 4. `hermes_cli/models.py` and `hermes_cli/main.py` make the provider show up in the CLI. (`hermes_cli/setup.py` delegates to `main.py` automatically — no changes needed there.)
-5. `agent/auxiliary_client.py` and `agent/model_metadata.py` keep side tasks and token budgeting working.
+5. `hermes_agent/agent/auxiliary_client.py` and `hermes_agent/agent/model_metadata.py` keep side tasks and token budgeting working.
 
 The important abstraction is `api_mode`.
 
@@ -41,7 +41,7 @@ The important abstraction is `api_mode`.
 
 ### Tool-call wire format
 
-Hermes stores conversation history in the OpenAI chat-completions shape internally, so the `chat_completions` transport's `convert_messages` / `convert_tools` (`agent/transports/chat_completions.py`) are near-identity, and every other transport converts *from* that shape into its native protocol. The canonical reference for the shape — `tools` definitions with JSON-schema `parameters`, assistant `tool_calls` entries with stringified `function.arguments`, and `role: "tool"` result messages keyed by `tool_call_id` — is the [OpenAI chat completions API reference](https://platform.openai.com/docs/api-reference/chat/create). When you write a native adapter, that page defines the input side of your conversion; your provider's docs define the output side.
+Hermes stores conversation history in the OpenAI chat-completions shape internally, so the `chat_completions` transport's `convert_messages` / `convert_tools` (`hermes_agent/agent/transports/chat_completions.py`) are near-identity, and every other transport converts *from* that shape into its native protocol. The canonical reference for the shape — `tools` definitions with JSON-schema `parameters`, assistant `tool_calls` entries with stringified `function.arguments`, and `role: "tool"` result messages keyed by `tool_call_id` — is the [OpenAI chat completions API reference](https://platform.openai.com/docs/api-reference/chat/create). When you write a native adapter, that page defines the input side of your conversion; your provider's docs define the output side.
 
 ## Choose the implementation path first
 
@@ -72,7 +72,7 @@ Examples in-tree today:
 This path includes everything from Path A plus:
 
 - a provider adapter in `agent/`
-- `run_agent.py` branches for request building, dispatch, usage extraction, interrupt handling, and response normalization
+- `hermes_agent/run_agent.py` branches for request building, dispatch, usage extraction, interrupt handling, and response normalization
 - adapter tests
 
 ## File checklist
@@ -83,8 +83,8 @@ This path includes everything from Path A plus:
 2. `hermes_cli/models.py`
 3. `hermes_cli/runtime_provider.py`
 4. `hermes_cli/main.py`
-5. `agent/auxiliary_client.py`
-6. `agent/model_metadata.py`
+5. `hermes_agent/agent/auxiliary_client.py`
+6. `hermes_agent/agent/model_metadata.py`
 7. tests
 8. user-facing docs under `website/docs/`
 
@@ -95,7 +95,7 @@ This path includes everything from Path A plus:
 ### Additional for native / non-OpenAI providers
 
 10. `agent/<provider>_adapter.py`
-11. `run_agent.py`
+11. `hermes_agent/run_agent.py`
 12. `pyproject.toml` if a provider SDK is required
 
 ## Fast path: Simple API-key providers
@@ -254,7 +254,7 @@ Update these in `hermes_cli/main.py`:
 
 Two files matter here:
 
-### `agent/auxiliary_client.py`
+### `hermes_agent/agent/auxiliary_client.py`
 
 Add a cheap / fast default aux model to `_API_KEY_PROVIDER_AUX_MODELS` if this is a direct API-key provider.
 
@@ -266,15 +266,15 @@ Auxiliary tasks include things like:
 
 If the provider has no sensible aux default, side tasks may fall back badly or use an expensive main model unexpectedly.
 
-### `agent/model_metadata.py`
+### `hermes_agent/agent/model_metadata.py`
 
 Add context lengths for the provider's models so token budgeting, compression thresholds, and limits stay sane.
 
-## Step 7: If the provider is native, add an adapter and `run_agent.py` support
+## Step 7: If the provider is native, add an adapter and `hermes_agent/run_agent.py` support
 
 If the provider is not plain chat completions, isolate the provider-specific logic in `agent/<provider>_adapter.py`.
 
-Keep `run_agent.py` focused on orchestration. It should call adapter helpers, not hand-build provider payloads inline all over the file.
+Keep `hermes_agent/run_agent.py` focused on orchestration. It should call adapter helpers, not hand-build provider payloads inline all over the file.
 
 A native provider usually needs work in these places:
 
@@ -286,10 +286,10 @@ Typical responsibilities:
 - resolve tokens
 - convert OpenAI-style conversation messages to the provider's request format
 - convert tool schemas if needed
-- normalize provider responses back into what `run_agent.py` expects
+- normalize provider responses back into what `hermes_agent/run_agent.py` expects
 - extract usage and finish-reason data
 
-### `run_agent.py`
+### `hermes_agent/run_agent.py`
 
 Search for `api_mode` and audit every switch point. At minimum, verify:
 
@@ -304,7 +304,7 @@ Search for `api_mode` and audit every switch point. At minimum, verify:
 - fallback-model activation can switch into the new provider cleanly
 - summary-generation and memory-flush paths still work
 
-Also search `run_agent.py` for `self.client.`. Any code path that assumes the standard OpenAI client exists can break when a native provider uses a different client object or `self.client = None`.
+Also search `hermes_agent/run_agent.py` for `self.client.`. Any code path that assumes the standard OpenAI client exists can break when a native provider uses a different client object or `self.client = None`.
 
 ### Prompt caching and provider-specific request fields
 
@@ -395,8 +395,8 @@ Use this if the provider is standard chat completions.
 - [ ] model catalog added in `hermes_cli/models.py`
 - [ ] runtime branch added in `hermes_cli/runtime_provider.py`
 - [ ] CLI wiring added in `hermes_cli/main.py` (setup.py inherits automatically)
-- [ ] aux model added in `agent/auxiliary_client.py`
-- [ ] context lengths added in `agent/model_metadata.py`
+- [ ] aux model added in `hermes_agent/agent/auxiliary_client.py`
+- [ ] context lengths added in `hermes_agent/agent/model_metadata.py`
 - [ ] runtime / CLI tests updated
 - [ ] user docs updated
 
@@ -406,7 +406,7 @@ Use this when the provider needs a new protocol path.
 
 - [ ] everything in the OpenAI-compatible checklist
 - [ ] adapter added in `agent/<provider>_adapter.py`
-- [ ] new `api_mode` supported in `run_agent.py`
+- [ ] new `api_mode` supported in `hermes_agent/run_agent.py`
 - [ ] interrupt / rebuild path works
 - [ ] usage and finish-reason extraction works
 - [ ] fallback path works
@@ -431,7 +431,7 @@ If the service is just OpenAI-compatible, a custom provider may already solve th
 
 The main chat path can work while summarization, memory flushes, or vision helpers fail because aux routing was never updated.
 
-### 5. Native-provider branches hiding in `run_agent.py`
+### 5. Native-provider branches hiding in `hermes_agent/run_agent.py`
 
 Search for `api_mode` and `self.client.`. Do not assume the obvious request path is the only one.
 

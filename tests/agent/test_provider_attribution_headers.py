@@ -7,10 +7,10 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.version_info import get_version_info
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_ai_gateway_base_url_applies_attribution_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(
@@ -30,7 +30,7 @@ def test_ai_gateway_base_url_applies_attribution_headers(mock_openai):
     assert headers["User-Agent"] == f"HermesAgent/{get_version_info().base_version}"
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_nvidia_cloud_base_url_applies_billing_origin_header(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(
@@ -51,7 +51,7 @@ def test_nvidia_cloud_base_url_applies_billing_origin_header(mock_openai):
     assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_opencode_go_applies_attribution_via_profile_fallback(mock_openai):
     """OpenCode (Zen/Go) attributes traffic by header like OpenRouter does.
     Without profile.default_headers the relay only sees the OpenAI SDK's
@@ -75,7 +75,7 @@ def test_opencode_go_applies_attribution_via_profile_fallback(mock_openai):
     assert headers["User-Agent"] == f"HermesAgent/{get_version_info().base_version}"
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_routed_client_preserves_openai_sdk_custom_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     routed_client = SimpleNamespace(
@@ -84,7 +84,7 @@ def test_routed_client_preserves_openai_sdk_custom_headers(mock_openai):
         _custom_headers={"X-BILLING-INVOKE-ORIGIN": "HermesAgent"},
     )
 
-    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(
+    with patch("hermes_agent.agent.auxiliary_client.resolve_provider_client", return_value=(
         routed_client,
         "nvidia/test-model",
     )):
@@ -100,7 +100,7 @@ def test_routed_client_preserves_openai_sdk_custom_headers(mock_openai):
     assert headers["X-BILLING-INVOKE-ORIGIN"] == "HermesAgent"
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_openrouter_headers_include_response_cache_when_enabled(mock_openai):
     """When openrouter.response_cache is True, the cache header is injected."""
     mock_openai.return_value = MagicMock()
@@ -131,7 +131,7 @@ def test_openrouter_headers_include_response_cache_when_enabled(mock_openai):
 # ---------------------------------------------------------------------------
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_user_default_headers_override_sdk_user_agent(mock_openai):
     """``model.default_headers`` lets a custom endpoint swap the OpenAI SDK
     User-Agent that some gateways/WAFs reject (the #40033 reproduction)."""
@@ -158,7 +158,7 @@ def test_user_default_headers_override_sdk_user_agent(mock_openai):
     assert headers["X-Extra"] == "1"
 
 
-@patch("agent.process_bootstrap.OpenAI")
+@patch("hermes_agent.agent.process_bootstrap.OpenAI")
 def test_openrouter_headers_no_cache_when_disabled(mock_openai):
     """When openrouter.response_cache is False, no cache headers are sent."""
     mock_openai.return_value = MagicMock()

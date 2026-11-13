@@ -12,10 +12,10 @@ import threading
 
 import pytest
 
-import agent.agent_runtime_helpers as arh
-import agent.auxiliary_client as aux
-import agent.model_metadata as mm
-import agent.skill_commands as sc
+import hermes_agent.agent.agent_runtime_helpers as arh
+import hermes_agent.agent.auxiliary_client as aux
+import hermes_agent.agent.model_metadata as mm
+import hermes_agent.agent.skill_commands as sc
 
 
 def test_endpoint_catalog_memo_drops_expired_credentials_on_write(monkeypatch):

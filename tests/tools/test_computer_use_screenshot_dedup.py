@@ -149,7 +149,7 @@ class TestScreenshotDedup:
     def test_compaction_boundary_redelivers_pixels(self):
         """The summary may have dropped the frame an "unchanged" note points at, so the first
         capture after compaction must carry the image even when the screen is byte-identical."""
-        from agent.conversation_compression import _reset_read_dedup_caches
+        from hermes_agent.agent.conversation_compression import _reset_read_dedup_caches
 
         cu_tool._capture_response(_cap(seed=1), session_id="s1")
         assert not _is_multimodal(cu_tool._capture_response(_cap(seed=1), session_id="s1"))

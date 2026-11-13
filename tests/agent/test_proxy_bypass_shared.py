@@ -1,4 +1,4 @@
-"""Invariant: the LLM transport (``agent/process_bootstrap``) and the platform adapters
+"""Invariant: the LLM transport (``hermes_agent/agent/process_bootstrap``) and the platform adapters
 (``hermes_agent/gateway/platforms/base``) answer "is this host in NO_PROXY" with the same matcher, so a
 corporate ``NO_PROXY=10.0.0.0/8`` bypasses the proxy for a self-hosted ``10.x`` model endpoint
 exactly as it does for Telegram/Discord/Slack.
@@ -6,8 +6,8 @@ exactly as it does for Telegram/Discord/Slack.
 
 import pytest
 
-from agent.process_bootstrap import _get_proxy_for_base_url
-from agent.proxy_bypass import should_bypass_proxy
+from hermes_agent.agent.process_bootstrap import _get_proxy_for_base_url
+from hermes_agent.agent.proxy_bypass import should_bypass_proxy
 from hermes_agent.gateway.platforms.base import is_host_excluded_by_no_proxy, resolve_proxy_url
 
 _PROXY_KEYS = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",

@@ -20,8 +20,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.lsp.manager import LSPService
-from agent.lsp.workspace import clear_cache
+from hermes_agent.agent.lsp.manager import LSPService
+from hermes_agent.agent.lsp.workspace import clear_cache
 
 
 @pytest.fixture(autouse=True)
@@ -130,7 +130,7 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
 def test_skipped_request_on_broken_root_is_logged_at_info(tmp_path, monkeypatch, caplog):
     """A request skipped because its root is broken must leave a visible trace (#116446): at default
     levels ``log_clean`` is DEBUG, so a silently skipped file was indistinguishable from a clean one."""
-    from agent.lsp import eventlog
+    from hermes_agent.agent.lsp import eventlog
 
     repo = _make_git_workspace(tmp_path)
     src = repo / "x.py"

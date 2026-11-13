@@ -40,7 +40,7 @@ import pytest
 
 
 def _make_agent():
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     agent = AIAgent(
         api_key="test-key",
@@ -57,7 +57,7 @@ def _make_agent():
 @contextmanager
 def _managed_relay_turn(agent, tmp_path, monkeypatch):
     pytest.importorskip("nemo_relay")
-    from agent import relay_runtime
+    from hermes_agent.agent import relay_runtime
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
     relay_runtime._reset_for_tests()
@@ -268,7 +268,7 @@ def test_direct_api_call_abort_is_atomic_with_holder_read():
     before the inline finally can pop + cache the client — otherwise the
     delayed abort poisons the slot and kills the NEXT request's sockets.
     """
-    from agent.chat_completion_helpers import direct_api_call
+    from hermes_agent.agent.chat_completion_helpers import direct_api_call
 
     agent = _make_agent()
 
@@ -366,7 +366,7 @@ def test_codex_stream_close_failure_poisons_slot():
     with the leaked connection (the codex sibling of the chat-streaming
     interrupt-break leak).
     """
-    from agent.codex_runtime import run_codex_stream
+    from hermes_agent.agent.codex_runtime import run_codex_stream
 
     agent = _make_agent()
     stream = _FakeCodexEventStream(
@@ -392,7 +392,7 @@ def test_codex_stream_close_failure_poisons_slot():
 def test_codex_stream_close_failure_on_primary_client_does_not_abort():
     """``client=None`` means the shared primary client — never reuse-cached,
     and its sockets must not be force-shut by the close-failure handler."""
-    from agent.codex_runtime import run_codex_stream
+    from hermes_agent.agent.codex_runtime import run_codex_stream
 
     agent = _make_agent()
     stream = _FakeCodexEventStream(

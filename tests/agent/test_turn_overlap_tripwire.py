@@ -10,8 +10,8 @@ import logging
 
 import pytest
 
-from agent import agent_runtime_helpers as _helpers
-from agent.agent_runtime_helpers import note_turn_start, note_turn_persisted
+from hermes_agent.agent import agent_runtime_helpers as _helpers
+from hermes_agent.agent.agent_runtime_helpers import note_turn_start, note_turn_persisted
 
 
 class _FakeAgent:
@@ -30,7 +30,7 @@ def _clear_inflight_registry():
 
 def test_clean_serial_turns_no_warning(caplog):
     agent = _FakeAgent()
-    with caplog.at_level(logging.WARNING, logger="agent.agent_runtime_helpers"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.agent_runtime_helpers"):
         assert note_turn_start(agent, "s1:t1:aaaa") is None
         note_turn_persisted(agent)
         assert note_turn_start(agent, "s1:t2:bbbb") is None
@@ -49,7 +49,7 @@ def test_cross_agent_same_session_overlap_warns(caplog):
     turns on two different agent objects (the gateway agent cache is keyed
     by routing key), so per-agent state alone can never see the overlap."""
     agent_a, agent_b = _FakeAgent(), _FakeAgent()
-    with caplog.at_level(logging.WARNING, logger="agent.agent_runtime_helpers"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.agent_runtime_helpers"):
         assert note_turn_start(agent_a, "s1:t1:aaaa") is None
         prev = note_turn_start(agent_b, "s1:t2:bbbb")
     assert prev == "s1:t1:aaaa"
@@ -64,7 +64,7 @@ def test_distinct_sessions_never_cross_warn(caplog):
     """Concurrent turns on different session_ids are legitimate parallelism."""
     agent_a, agent_b = _FakeAgent(), _FakeAgent()
     agent_b.session_id = "s2"
-    with caplog.at_level(logging.WARNING, logger="agent.agent_runtime_helpers"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.agent_runtime_helpers"):
         note_turn_start(agent_a, "s1:t1:aaaa")
         assert note_turn_start(agent_b, "s2:t2:bbbb") is None
     assert not caplog.records
@@ -83,7 +83,7 @@ def test_persist_disabled_fork_neither_registers_nor_warns(caplog):
     against the parent's real in-flight turn (in either direction)."""
     parent, fork = _FakeAgent(), _FakeAgent()
     fork._persist_disabled = True
-    with caplog.at_level(logging.WARNING, logger="agent.agent_runtime_helpers"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.agent_runtime_helpers"):
         note_turn_start(parent, "s1:t1:aaaa")     # real turn in flight
         assert note_turn_start(fork, "s1:tr:ffff") is None  # fork: silent
         note_turn_persisted(fork)                 # fork's funnel still runs

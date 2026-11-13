@@ -44,7 +44,7 @@ def test_max_turns_and_fallback_chain_follow_routed_profile(two_homes, monkeypat
     from hermes_agent.gateway.run import GatewayRunner
 
     monkeypatch.setattr(gateway_run, "_hermes_home", a)
-    monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope.is_multiplex_active", lambda: True)
     runner = SimpleNamespace(_fallback_model=None)
     refresh = GatewayRunner._refresh_fallback_model.__get__(runner)
 
@@ -60,7 +60,7 @@ def test_max_turns_and_fallback_chain_follow_routed_profile(two_homes, monkeypat
 
 def test_aux_nous_auth_reads_routed_profile_auth_json(two_homes, monkeypatch):
     a, b = two_homes
-    import agent.auxiliary_client as aux
+    import hermes_agent.agent.auxiliary_client as aux
 
     for home, token in ((a, "TOKEN_A"), (b, "TOKEN_B")):
         (home / "auth.json").write_text(json.dumps({
@@ -146,6 +146,6 @@ def test_routed_media_policy_bridge_never_writes_the_shared_env(two_homes, monke
     # process-wide "serves a routed profile" gate would skip it for every caller.
     (a / "config.yaml").write_text(yaml.safe_dump(
         {"gateway": {"media_delivery_allow_dirs": ["/srv/a"]}}), encoding="utf-8")
-    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", True)
     media_policy.apply_media_policy_env(load_config())
     assert media_policy.media_delivery_allow_dirs() == "/srv/a"

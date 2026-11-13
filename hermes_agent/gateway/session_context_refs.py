@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 async def expand_references(text, *, cwd, context_length, plugins=True):
     """``(text, refusal)``: the expanded text, or the refusal when the injection was refused. A failed
     expansion leaves the text as typed."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     try:
-        from agent.context_references import preprocess_context_references_async
+        from hermes_agent.agent.context_references import preprocess_context_references_async
         expand = partial(preprocess_context_references_async, cwd=cwd, context_length=context_length, allowed_root=cwd)
         result = await (expand(text) if plugins else expand(text, plugins=False))
     except Exception as exc:
@@ -92,7 +92,7 @@ async def managed_turn_text(authority, row, policy):
     if not isinstance(text, str) or "@" not in text:
         return None, None
     try:
-        from agent.model_metadata import get_model_context_length_async
+        from hermes_agent.agent.model_metadata import get_model_context_length_async
         model_config = policy.config(authority).get('model') or {}
         pinned = model_config.get('context_length') if isinstance(model_config, dict) else None
         with suppress(TypeError, ValueError):

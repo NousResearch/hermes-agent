@@ -282,7 +282,7 @@ async def execute(authority, ref, row, policy):
             or row['principal_id'] != authority.sessions[ref.session_id].source.user_id):
         # A cron session only runs its own frozen fire; anything else typed into it fails with a
         # descriptor the viewer can render (and offer a new chat for), never a generic failure.
-        from agent.i18n import t
+        from hermes_agent.agent.i18n import t
         text = t('gateway.errors.cron_session_read_only')
         authority.pending_results[row['admission_id']] = {'result': {
             'final_response': '', 'messages': [], 'failed': True, 'completed': False,
@@ -299,7 +299,7 @@ async def execute(authority, ref, row, policy):
         from hermes_agent.cron.cancellation import CancelRequest, _CombinedCancelEvent
 
         db_path = await asyncio.to_thread(Path(authority.db.db_path).resolve)
-        from agent.runtime_scope import bind_turn, claim_fence
+        from hermes_agent.agent.runtime_scope import bind_turn, claim_fence
         with _profile_runtime_scope(db_path.parent), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
             # The forwarded ``cron.cancel`` carries no reason, so the operator's marker is read here
             # first: a stopped agent run reports "cancelled on request", not a lost fire claim.

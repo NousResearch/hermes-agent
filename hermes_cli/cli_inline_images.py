@@ -22,7 +22,7 @@ import random
 import sys
 from collections.abc import Iterable
 
-from agent.terminal_image import (
+from hermes_agent.agent.terminal_image import (
     InlineImage,
     half_block,
     local_image_path,

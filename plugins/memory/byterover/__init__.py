@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, spawn_context_thread
+from hermes_agent.agent.memory_provider import MemoryProvider, spawn_context_thread
 from hermes_agent.tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ def _brv_child_env(brv_path: str) -> dict[str, str]:
     secret scope, so they are resolved through the scope — a miss means no cloud key, never
     another profile's — and the launch profile's ``.env`` residue is stripped. Outside multiplex
     the process env IS this profile's own and is passed through unchanged."""
-    from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
     from hermes_constants import get_hermes_home_override
     from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
 

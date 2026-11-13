@@ -292,7 +292,7 @@ def test_process_tool_redacts_explicit_kill_output(monkeypatch):
 
 
 def test_autonomous_completion_redacts_real_command_and_output_secrets(monkeypatch):
-    import agent.redact as redact_module
+    import hermes_agent.agent.redact as redact_module
     import hermes_agent.tools.process_registry as pr_module
 
     secret = "abc123randomopaquetokenvalue999"
@@ -510,7 +510,7 @@ def test_coalesced_format_bounds_details_and_reports_omitted_count():
 
 def test_coalesced_format_force_redacts_output_when_redaction_disabled(monkeypatch):
     """A user setting cannot disable the gateway's outbound secret floor."""
-    import agent.redact as redact_module
+    import hermes_agent.agent.redact as redact_module
 
     secret = "abc123randomopaquetokenvalue999"
     monkeypatch.setattr(redact_module, "_REDACT_ENABLED", False)
@@ -536,7 +536,7 @@ def test_coalesced_format_force_redacts_output_when_redaction_disabled(monkeypat
 
 def test_coalesced_format_redacts_before_truncating_output(monkeypatch):
     """Truncation cannot remove the prefix needed to recognize a secret."""
-    import agent.redact as redact_module
+    import hermes_agent.agent.redact as redact_module
 
     marker = "SHOULD_NOT_SURVIVE"
     monkeypatch.setattr(redact_module, "_REDACT_ENABLED", False)

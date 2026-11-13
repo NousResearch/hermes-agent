@@ -165,7 +165,7 @@ def _load_hermes_env() -> None:
         home = get_hermes_home()
     except Exception:
         return
-    from agent.secret_scope import current_secret_scope, is_multiplex_active
+    from hermes_agent.agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() if is_multiplex_active() else None
     if isinstance(scope, dict):
         target: dict = scope

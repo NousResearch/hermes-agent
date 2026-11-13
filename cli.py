@@ -327,7 +327,7 @@ def format_token_count_compact(*args, **kwargs):
     return f"{value:,}"
 
 
-realign_markdown_tables = _lazy_shim("agent.markdown_tables", "realign_markdown_tables")
+realign_markdown_tables = _lazy_shim("hermes_agent.agent.markdown_tables", "realign_markdown_tables")
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -335,7 +335,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # ~/.hermes/.env first, project .env as dev fallback; user env files override stale shell exports.
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
-from agent.i18n import t as _t
+from hermes_agent.agent.i18n import t as _t
 
 _hermes_home = get_hermes_home()
 _project_env = Path(project_root_str()) / '.env'
@@ -352,7 +352,7 @@ _init_logging_and_display_from_config()
 # transports bound to dead worker loops ("Event loop is closed" / "Press ENTER to
 # continue..."). A meta_path finder patches ``openai._base_client`` at first import —
 # eager import costs ~166ms/30MB cold, and the patch is guaranteed to land before
-# instantiation. See ``agent.auxiliary_client.neuter_async_httpx_del``.
+# instantiation. See ``hermes_agent.agent.auxiliary_client.neuter_async_httpx_del``.
 try:
     import sys as _httpx_neuter_sys
     import importlib.util as _httpx_neuter_imp_util
@@ -722,7 +722,7 @@ def _slash_args(cmd: str) -> str:
 def _ensure_skill_commands() -> dict:
     if _skill_commands is not None:
         return _skill_commands
-    from agent.skill_commands import get_interactive_skill_commands
+    from hermes_agent.agent.skill_commands import get_interactive_skill_commands
     return get_interactive_skill_commands()
 
 
@@ -738,20 +738,20 @@ def _session_skill_commands(cli) -> dict:
     return _ensure_skill_commands() if found is None else found
 
 
-build_skill_invocation_message = _lazy_shim("agent.skill_commands", "build_skill_invocation_message")
-build_preloaded_skills_prompt = _lazy_shim("agent.skill_commands", "build_preloaded_skills_prompt")
+build_skill_invocation_message = _lazy_shim("hermes_agent.agent.skill_commands", "build_skill_invocation_message")
+build_preloaded_skills_prompt = _lazy_shim("hermes_agent.agent.skill_commands", "build_preloaded_skills_prompt")
 
 
 def get_skill_bundles() -> dict:
     global _skill_bundles
     if _skill_bundles is None:
-        from agent.skill_bundles import get_skill_bundles as _impl
+        from hermes_agent.agent.skill_bundles import get_skill_bundles as _impl
 
         _skill_bundles = _impl()
     return _skill_bundles
 
 
-build_bundle_invocation_message = _lazy_shim("agent.skill_bundles", "build_bundle_invocation_message")
+build_bundle_invocation_message = _lazy_shim("hermes_agent.agent.skill_bundles", "build_bundle_invocation_message")
 
 
 def _get_plugin_cmd_handler_names() -> set:
@@ -961,7 +961,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
-        from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+        from hermes_agent.agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
         set_unlock_prompt_callback(self._vault_unlock_callback)
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
@@ -1004,7 +1004,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
             return
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
-            from agent.skill_commands import format_missing_skills
+            from hermes_agent.agent.skill_commands import format_missing_skills
             # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
             if not loaded_skills:
                 raise ValueError(format_missing_skills(missing_skills))
@@ -1061,7 +1061,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         # label it by its tagged source and never invoke it (that would mint a token just to mask
         # it). Prefer the LIVE agent's key: the constructor seeds self.api_key from env before
         # provider resolution, so on non-OpenAI providers it can be another vendor's key.
-        from agent.credential_source import credential_label
+        from hermes_agent.agent.credential_source import credential_label
 
         display_key = self.api_key
         if self.agent is not None and getattr(self.agent, "api_key", None):
@@ -1265,7 +1265,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
             # See #56747.
             output = result.stdout.strip() or result.stderr.strip()
             if output:
-                from agent.redact import redact_sensitive_text
+                from hermes_agent.agent.redact import redact_sensitive_text
                 self._console_print(_rich_text_from_ansi(redact_sensitive_text(output)))
             else:
                 self._console_print(f"[dim]{_t('cli.quick.no_output')}[/]")
@@ -1322,7 +1322,7 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
         from hermes_cli import gateway_plugin_commands
         if gateway_plugin_commands.run_skill(self, base_cmd, rest):
             return  # the gateway session's skill, loaded there
-        from agent.skill_commands import build_stacked_skill_invocation_message, split_stacked_skill_commands
+        from hermes_agent.agent.skill_commands import build_stacked_skill_invocation_message, split_stacked_skill_commands
 
         # Interactive surface: stacked tokens resolve against the interactive
         # map so plugin skills stack in the CLI like native skills.
@@ -1534,7 +1534,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         # platform resolver reads plugin toolsets, which only the gateway loads: adopted when the session
         # opens). Neither is a pick: this list only feeds the display.
         try:
-            from agent.coding_context import coding_selection
+            from hermes_agent.agent.coding_context import coding_selection
             toolsets_list = coding_selection(platform="cli", config=CLI_CONFIG)
         except Exception:
             toolsets_list = None
@@ -1573,7 +1573,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
     # skills.auto_load rides the same background preload as -s; --ignore-rules skips it with
     # the rest of the auto-injected context. Resolved here (not lazily in the agent) so the
     # session id is real for ${HERMES_SESSION_ID} and -s can dedupe against it.
-    from agent.skill_commands import build_auto_load_prompt, resolve_auto_load_skills
+    from hermes_agent.agent.skill_commands import build_auto_load_prompt, resolve_auto_load_skills
     auto_load_names = [] if getattr(cli, "ignore_rules", ignore_rules) else resolve_auto_load_skills(CLI_CONFIG)
     if not auto_load_names:
         cli._auto_load_skills_result = ("", [], [])
@@ -1775,7 +1775,7 @@ def main(
     if _join_worktree is not None and not wt_info:
         return
 
-    # The worktree note is rendered by the gateway from the session's folder (agent/coding_context.py).
+    # The worktree note is rendered by the gateway from the session's folder (hermes_agent/agent/coding_context.py).
 
     if list_tools or list_toolsets:
         cli.show_banner()

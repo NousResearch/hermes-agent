@@ -8,7 +8,7 @@ skills index / provider blocks and every later fresh agent restored those degrad
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent import conversation_compression as cc
+from hermes_agent.agent import conversation_compression as cc
 from hermes_agent.gateway.run import _seed_hygiene_system_prompt
 
 STORED = "You are Hermes.\n\n## Skills (mandatory)\n<available_skills>\n- a: b\n</available_skills>"
@@ -34,7 +34,7 @@ def _agent(**over):
 
 def _rebuild(agent):
     with patch.object(cc, "_refresh_agent_tool_definitions", return_value=False), \
-         patch("agent.system_prompt.reconstruct_static_prefix"):
+         patch("hermes_agent.agent.system_prompt.reconstruct_static_prefix"):
         return cc._rebuild_system_prompt_at_boundary(agent, "")
 
 

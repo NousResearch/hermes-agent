@@ -10,11 +10,11 @@ session can still auto-compact after it grows real compressible material.
 import time
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 def _compressor(protect_first_n: int = 1) -> ContextCompressor:
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+    with patch("hermes_agent.agent.context_compressor.get_model_context_length", return_value=100000):
         return ContextCompressor(
             model="test/model",
             threshold_percent=0.85,
@@ -132,7 +132,7 @@ def test_forced_attempt_and_success_lift_the_backoff():
     compressor._structural_no_op_backoff_until = time.monotonic() + 300.0
 
     with patch(
-        "agent.context_compressor.call_llm",
+        "hermes_agent.agent.context_compressor.call_llm",
         return_value=_response(SUMMARY_RESPONSE),
     ):
         compressed = compressor.compress(

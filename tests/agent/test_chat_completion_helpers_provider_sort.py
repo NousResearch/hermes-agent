@@ -1,4 +1,4 @@
-from agent.chat_completion_helpers import _validated_openrouter_provider_sort
+from hermes_agent.agent.chat_completion_helpers import _validated_openrouter_provider_sort
 
 
 def test_validated_openrouter_provider_sort_accepts_valid_values():

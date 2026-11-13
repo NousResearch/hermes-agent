@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from agent.secret_scope import (
+from hermes_agent.agent.secret_scope import (
     build_profile_secret_scope,
     current_secret_scope,
     is_multiplex_active,

@@ -9,7 +9,7 @@ the same gap.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 SENTINEL = "SENTINEL_XYZZY_shpat_0123456789abcdef"
 ECHOED_BLOCK = (
@@ -26,7 +26,7 @@ def _make_agent() -> AIAgent:
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",

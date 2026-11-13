@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 logger = logging.getLogger("hermes_agent.tools.process_registry")
 

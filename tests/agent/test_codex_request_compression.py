@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from agent.process_bootstrap import build_keepalive_http_client
+from hermes_agent.agent.process_bootstrap import build_keepalive_http_client
 
 zstd = pytest.importorskip("compression.zstd")
 

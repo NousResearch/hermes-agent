@@ -22,7 +22,7 @@ def isolated_home(tmp_path, monkeypatch):
     import hermes_constants
     monkeypatch.setattr(hermes_constants, "_hermes_home_cache", None, raising=False)
 
-    from agent import skill_utils as su
+    from hermes_agent.agent import skill_utils as su
     su._external_dirs_cache_clear()
 
     from hermes_agent.tools import skills_tool
@@ -35,7 +35,7 @@ def isolated_home(tmp_path, monkeypatch):
 
 def _write_config(home: Path, body: str):
     (home / "config.yaml").write_text(body, encoding="utf-8")
-    from agent import skill_utils as su
+    from hermes_agent.agent import skill_utils as su
     su._raw_config_cache_clear()
     su._external_dirs_cache_clear()
 
@@ -50,47 +50,47 @@ def _skill_md(name: str) -> str:
 
 class TestGetSkillCreateDir:
     def test_unset_returns_none(self, isolated_home):
-        from agent.skill_utils import get_skill_create_dir
+        from hermes_agent.agent.skill_utils import get_skill_create_dir
         _write_config(isolated_home, "skills:\n  external_dirs: []\n")
         assert get_skill_create_dir() is None
 
     def test_absolute_path(self, isolated_home, tmp_path):
-        from agent.skill_utils import get_skill_create_dir
+        from hermes_agent.agent.skill_utils import get_skill_create_dir
         brain = tmp_path / "brain-skills"
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
         assert get_skill_create_dir() == brain.resolve()
 
     def test_relative_path_resolves_against_home(self, isolated_home):
-        from agent.skill_utils import get_skill_create_dir
+        from hermes_agent.agent.skill_utils import get_skill_create_dir
         _write_config(isolated_home, "skills:\n  create_dir: brain\n")
         assert get_skill_create_dir() == (isolated_home / "brain").resolve()
 
     def test_tilde_expansion(self, isolated_home):
-        from agent.skill_utils import get_skill_create_dir
+        from hermes_agent.agent.skill_utils import get_skill_create_dir
         _write_config(isolated_home, "skills:\n  create_dir: ~/brain-skills\n")
         assert get_skill_create_dir() == (Path.home() / "brain-skills").resolve()
 
     def test_local_skills_dir_treated_as_unset(self, isolated_home):
-        from agent.skill_utils import get_skill_create_dir
+        from hermes_agent.agent.skill_utils import get_skill_create_dir
         _write_config(
             isolated_home, f"skills:\n  create_dir: {isolated_home / 'skills'}\n"
         )
         assert get_skill_create_dir() is None
 
     def test_empty_string_treated_as_unset(self, isolated_home):
-        from agent.skill_utils import get_skill_create_dir
+        from hermes_agent.agent.skill_utils import get_skill_create_dir
         _write_config(isolated_home, "skills:\n  create_dir: ''\n")
         assert get_skill_create_dir() is None
 
 
 class TestDisplaySkillCreateDir:
     def test_default_renders_local_skills_path(self, isolated_home):
-        from agent.skill_utils import display_skill_create_dir
+        from hermes_agent.agent.skill_utils import display_skill_create_dir
         _write_config(isolated_home, "skills: {}\n")
         assert display_skill_create_dir().endswith("/skills/")
 
     def test_configured_renders_configured_path(self, isolated_home, tmp_path):
-        from agent.skill_utils import display_skill_create_dir
+        from hermes_agent.agent.skill_utils import display_skill_create_dir
         brain = tmp_path / "opt-brain"
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
         assert "opt-brain" in display_skill_create_dir()
@@ -110,7 +110,7 @@ def test_tool_schema_stays_stable_when_skill_creation_home_changes(isolated_home
 
 class TestDiscovery:
     def test_create_dir_in_all_skills_dirs(self, isolated_home, tmp_path):
-        from agent.skill_utils import get_all_skills_dirs
+        from hermes_agent.agent.skill_utils import get_all_skills_dirs
         brain = tmp_path / "brain-skills"
         brain.mkdir()
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
@@ -119,13 +119,13 @@ class TestDiscovery:
         assert brain.resolve() in dirs
 
     def test_missing_create_dir_not_scanned(self, isolated_home, tmp_path):
-        from agent.skill_utils import get_all_skills_dirs
+        from hermes_agent.agent.skill_utils import get_all_skills_dirs
         brain = tmp_path / "does-not-exist"
         _write_config(isolated_home, f"skills:\n  create_dir: {brain}\n")
         assert brain.resolve() not in [d.resolve() for d in get_all_skills_dirs()]
 
     def test_no_duplicate_when_also_in_external_dirs(self, isolated_home, tmp_path):
-        from agent.skill_utils import get_all_skills_dirs
+        from hermes_agent.agent.skill_utils import get_all_skills_dirs
         brain = tmp_path / "brain-skills"
         brain.mkdir()
         _write_config(

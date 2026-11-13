@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.conversation_compression import run_compress_context_with_progress_timeout
-from agent.turn_context import PreflightCompressionTimedOut
-from agent.turn_context_compaction import CompactionOutcome, _run_preflight_passes
+from hermes_agent.agent.conversation_compression import run_compress_context_with_progress_timeout
+from hermes_agent.agent.turn_context import PreflightCompressionTimedOut
+from hermes_agent.agent.turn_context_compaction import CompactionOutcome, _run_preflight_passes
 
 
 def _agent(*, context_length):
@@ -37,8 +37,8 @@ def _preflight(agent, request_tokens):
         messages=[{"role": "user", "content": "hi"}], active_system_prompt="sys",
         conversation_history=None, current_turn_user_idx=0,
     )
-    with patch("agent.turn_context._preflight_request_tokens", return_value=request_tokens), patch(
-        "agent.turn_context_compaction.automatic_compaction_status_message", return_value=""
+    with patch("hermes_agent.agent.turn_context._preflight_request_tokens", return_value=request_tokens), patch(
+        "hermes_agent.agent.turn_context_compaction.automatic_compaction_status_message", return_value=""
     ):
         _run_preflight_passes(agent, out, agent.context_compressor, request_tokens, "sys", "t")
     return out

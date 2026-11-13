@@ -1,7 +1,7 @@
 """Credential-vault JSON-RPC handlers — the Desktop's door to the local vault.
 
 The Desktop's Settings → Credential Vault panel manages the encrypted,
-model-blind vault (``agent/vault_store.py``) over the same localhost WS
+model-blind vault (``hermes_agent/agent/vault_store.py``) over the same localhost WS
 JSON-RPC channel every other Settings surface uses. Contracts:
 
 - ``vault.list``   → metadata only ({id, kind, label, origin, created_at,
@@ -48,7 +48,7 @@ def _(rid, params: dict) -> dict:
     """Metadata-only listing across every enabled backend (local + unlocked password managers).
     Each item carries ``backend``; locked managers contribute nothing (see vault.sources)."""
     try:
-        from agent.vault_backends import enabled_backends
+        from hermes_agent.agent.vault_backends import enabled_backends
 
         items = []
         for backend in enabled_backends():
@@ -64,8 +64,8 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
-    from agent.vault_backends import enabled_backends
-    from agent.vault_backends.base import external_backend_classes, is_installed
+    from hermes_agent.agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends.base import external_backend_classes, is_installed
 
     enabled = {b.name: b for b in enabled_backends()}
     rows = [{"name": "local", "display_name": "Hermes vault", "enabled": True, "needs_unlock": False,
@@ -82,8 +82,8 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Enable/disable an external manager: writes ``vault.<name>.enabled`` and locks it when disabling."""
-    from agent.vault_backends.base import external_backend_classes
-    from agent.vault_backends.unlock import lock
+    from hermes_agent.agent.vault_backends.base import external_backend_classes
+    from hermes_agent.agent.vault_backends.unlock import lock
     from hermes_cli.config import _ensure_dict, load_config, save_config
 
     name = str(params.get("name") or "")
@@ -106,7 +106,7 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
-    from agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends import enabled_backends
 
     name = str(params.get("name") or "")
     password = str(params.get("password") or "")
@@ -128,7 +128,7 @@ def _(rid, params: dict) -> dict:
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     """Forget a manager's session token (or every one when ``name`` is omitted)."""
-    from agent.vault_backends.unlock import lock
+    from hermes_agent.agent.vault_backends.unlock import lock
 
     name = params.get("name")
     lock(str(name) if name else None)
@@ -144,7 +144,7 @@ def _(rid, params: dict) -> dict:
     ``secret`` (dict). Result: ``{id}`` — metadata only. Exception text is
     scrubbed of secret values before it can reach a response or a log line.
     """
-    from agent.vault_store import (
+    from hermes_agent.agent.vault_store import (
         VaultError,
         get_vault_store,
         scrub_secret_from_text,
@@ -173,7 +173,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Remove a vault item by id. Result: ``{removed: bool}``."""
     try:
-        from agent.vault_store import get_vault_store
+        from hermes_agent.agent.vault_store import get_vault_store
 
         item_id = str(params.get("id") or "")
         if not item_id:
@@ -197,7 +197,7 @@ def _(rid, params: dict) -> dict:
     from hermes_agent.tui_gateway import server_requests
     from hermes_agent.tui_gateway.transport import current_transport
 
-    from agent.vault_backends import UnlockRequired, backend_for_handle
+    from hermes_agent.agent.vault_backends import UnlockRequired, backend_for_handle
 
     handle, target = str(params.get("handle") or ""), str(params.get("target") or "")
     if not handle or not target:

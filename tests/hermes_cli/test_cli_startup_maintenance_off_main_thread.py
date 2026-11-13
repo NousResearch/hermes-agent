@@ -8,7 +8,7 @@ import threading
 import time
 from unittest.mock import MagicMock
 
-import agent.curator as curator_mod
+import hermes_agent.agent.curator as curator_mod
 
 
 def test_startup_maintenance_returns_while_curator_still_running(monkeypatch):

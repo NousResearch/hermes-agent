@@ -10,7 +10,7 @@ import dataclasses
 import sys
 from pathlib import Path
 
-from agent.lsp import manager, servers
+from hermes_agent.agent.lsp import manager, servers
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 

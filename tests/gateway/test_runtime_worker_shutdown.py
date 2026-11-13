@@ -213,7 +213,7 @@ async def test_side_agent_is_owner_work_until_its_thread_unwinds(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('exit_type', [asyncio.CancelledError, KeyboardInterrupt, SystemExit])
 async def test_side_agent_thread_killed_by_a_base_exception_releases_owner_work(monkeypatch, exit_type):
-    """The agent re-raises cancellation and exit (``agent/turn_facade.py``). A side-agent thread
+    """The agent re-raises cancellation and exit (``hermes_agent/agent/turn_facade.py``). A side-agent thread
     that dies that way must still leave the ledger, or idle exit, retirement, the persisted count
     and the SessionDB close gate stay blocked on work that no longer exists."""
     from hermes_agent.gateway import session_tui_side
@@ -246,14 +246,14 @@ async def test_side_agent_thread_killed_by_a_base_exception_releases_owner_work(
 async def test_btw_side_question_does_not_hold_profile_retirement(monkeypatch, path):
     """``/btw`` is counted owner work (``_spawn``), so retirement must be able to stop it too.
 
-    Its fork is interrupted through the holder; the one-shot fallback (``agent/side_question.py``,
+    Its fork is interrupted through the holder; the one-shot fallback (``hermes_agent/agent/side_question.py``,
     ``timeout=180.0``) is an uncancellable aux call that never mutates anything, so retirement
     abandons it instead of keeping the profile's reservation for the full settle window."""
     import contextlib
     from hermes_agent.gateway import session_tui_side
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.gateway.session_runtime_workers import join_authority_work, uncounted_runtime_work
-    from agent import side_question
+    from hermes_agent.agent import side_question
 
     started, release, interrupts, events = threading.Event(), threading.Event(), [], []
 

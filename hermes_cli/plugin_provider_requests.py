@@ -44,8 +44,8 @@ class ProviderResponse:
 
 def _codex_auth(url: str) -> tuple[dict[str, str], str]:
     """``(auth headers, credential base URL)`` from Hermes's own locked-refresh resolver."""
-    from agent.codex_headers import codex_account_headers
-    from agent.turn_failure_copy import oauth_relogin_command
+    from hermes_agent.agent.codex_headers import codex_account_headers
+    from hermes_agent.agent.turn_failure_copy import oauth_relogin_command
     from hermes_cli.auth_codex import resolve_codex_runtime_credentials
     from hermes_cli.auth_constants import AuthError
 

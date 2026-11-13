@@ -248,7 +248,7 @@ def _agent_container_path(
         from hermes_agent.tools.terminal_scope import (
             build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope,
         )
-        from agent.runtime_scope import bind_terminal_policy
+        from hermes_agent.agent.runtime_scope import bind_terminal_policy
 
         candidate = Path(raw)
         with _agent_path_scope(profile_home):

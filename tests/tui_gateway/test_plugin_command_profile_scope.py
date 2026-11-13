@@ -25,7 +25,7 @@ def _plugin_pkg(home, slug: str, command: str) -> None:
         "def register(ctx):\n"
         "    def _handler(args):\n"
         "        import hermes_constants\n"
-        "        from agent.secret_scope import get_secret\n"
+        "        from hermes_agent.agent.secret_scope import get_secret\n"
         "        try:\n"
         "            key = get_secret('PROBE_KEY')\n"
         "        except Exception as exc:\n"
@@ -122,7 +122,7 @@ def test_launch_profile_chat_reads_its_own_secret_once_multiplexed(plugin_homes)
     """The repro from #133244: with multiplexing active even the launch profile's own chat has no
     ambient scope, so the bare dispatch failed closed on get_secret. The scoped dispatch must read
     the launch profile's .env instead of raising UnscopedSecretError."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
 
     from hermes_agent.tui_gateway import server
 
@@ -170,7 +170,7 @@ def test_builtin_slash_exec_runs_when_the_profile_secret_bind_fails(plugin_homes
 def test_sessionless_dispatch_runs_the_named_profiles_plugin(plugin_homes, monkeypatch, name, expected):
     """``command.dispatch`` with ``profile`` and no session resolves AND runs in that profile: its
     own plugin with its own secret, and never the launch profile's plugin with the launch secret."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
 
     from hermes_agent.tui_gateway import server
 
@@ -191,7 +191,7 @@ def test_plugin_that_reads_a_secret_while_registering_loads_in_its_profile(plugi
     """The first plugin-command lookup discovers the profile's plugins, so ``register(ctx)`` runs
     then: it must run under the profile's secret scope, or a plugin that reads a secret while
     registering fails to load (UnscopedSecretError) and its command is never found."""
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
 
     from hermes_agent.tui_gateway import server
 
@@ -201,7 +201,7 @@ def test_plugin_that_reads_a_secret_while_registering_loads_in_its_profile(plugi
     (pkg / "plugin.yaml").write_text("name: probe-reg\nversion: 1.0.0\ndescription: p\nauthor: p\n", encoding="utf-8")
     (pkg / "__init__.py").write_text(
         "def register(ctx):\n"
-        "    from agent.secret_scope import get_secret\n"
+        "    from hermes_agent.agent.secret_scope import get_secret\n"
         "    key = get_secret('PROBE_KEY')\n"
         "    ctx.register_command('regkey', handler=lambda args: 'reg:' + str(key), description='p')\n",
         encoding="utf-8")

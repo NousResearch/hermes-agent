@@ -111,8 +111,8 @@ def test_undo_returns_prefill_with_target_text(server, session_with_history):
 def test_undo_notifies_memory_providers_from_the_session_profile(server, session_with_history):
     # On a multiplexed process the memory manager refuses a hook whose caller names no profile, so a
     # launch-profile session's /undo must enter the session's profile scope before notifying it.
-    from agent.memory_caller_scope import _explicit_caller_home
-    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from hermes_agent.agent.memory_caller_scope import _explicit_caller_home
+    from hermes_agent.agent.secret_scope import reset_multiplex_context, set_multiplex_context
     sid, _session_key, _s, agent = session_with_history
     callers = []
     agent._memory_manager.on_session_switch.side_effect = lambda *a, **k: callers.append(_explicit_caller_home())

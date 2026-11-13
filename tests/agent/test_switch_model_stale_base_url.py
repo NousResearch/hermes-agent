@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
-from agent.context_compressor import ContextCompressor
+from hermes_agent.run_agent import AIAgent
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 def _make_agent_with_compressor(provider="copilot", base_url="https://api.githubcopilot.com") -> AIAgent:
@@ -39,7 +39,7 @@ def _make_agent_with_compressor(provider="copilot", base_url="https://api.github
     return agent
 
 
-@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+@patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=131_072)
 def test_switch_model_rejects_stale_base_url_on_provider_change(mock_ctx_len):
     """A provider change with no resolved base_url must fail loud instead of
     silently keeping the previous provider's endpoint (#47828)."""

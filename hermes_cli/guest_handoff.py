@@ -213,7 +213,7 @@ def _refresh_account_token() -> None:
 
 
 def _post(anon_token: str, bearer: str, account: dict[str, Any]) -> tuple[str, dict[str, Any], Optional[float]]:
-    from agent.retry_utils import parse_retry_after_seconds
+    from hermes_agent.agent.retry_utils import parse_retry_after_seconds
     from hermes_cli.anon_auth import _anon_headers
     from hermes_cli.auth import _nous_portal_base_url, _resolve_verify
     from hermes_cli.auth_constants import httpx

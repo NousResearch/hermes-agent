@@ -49,12 +49,12 @@ from hermes_cli.config import (
 from hermes_cli.config_backend import ConfigBackendUnavailable
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
-from agent.interrupt_compat import request_hard_interrupt
-from agent.delegation_context import (
+from hermes_agent.agent.interrupt_compat import request_hard_interrupt
+from hermes_agent.agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
-from agent.memory_provider import ctx_bound
-from agent.session_activity import AwakeIdleMeter
-from agent.turn_failure_copy import is_max_iteration_handoff
+from hermes_agent.agent.memory_provider import ctx_bound
+from hermes_agent.agent.session_activity import AwakeIdleMeter
+from hermes_agent.agent.turn_failure_copy import is_max_iteration_handoff
 from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
@@ -430,7 +430,7 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     else:
         disabled = ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
-    from agent.skill_utils import parse_config_string_list
+    from hermes_agent.agent.skill_utils import parse_config_string_list
 
     user_disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
     for name in user_disabled:
@@ -1812,7 +1812,7 @@ def _load_credential_pool(runtime: dict, job_id: str):
     if not runtime_provider:
         return None
     try:
-        from agent.credential_pool import load_pool
+        from hermes_agent.agent.credential_pool import load_pool
         pool = load_pool(runtime_provider)
         if pool.has_credentials():
             logger.info(
@@ -1857,7 +1857,7 @@ def _open_cron_session_db(job: dict):
     # timeout proceeds without a session store instead of blocking the run forever.
     from hermes_agent.gateway.session_cron import current_execution
     owner = current_execution()
-    from agent.runtime_session_store import WorkerPersistenceError, is_worker_process
+    from hermes_agent.agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if owner is None and is_worker_process():
         # Do not turn an unsupported worker assignment into the legacy None
         # fallback: that would run billed inference without durable persistence.
@@ -2570,7 +2570,7 @@ def run_job(
     early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
         return early
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     _cron_session_id = (owner_execution[1] if owner_execution is not None else
                         f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}")
@@ -2698,7 +2698,7 @@ def _teardown_cron_agent(
             logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
         # Worker-thread event loop dies with the executor; reap httpx clients cached under it.
         try:
-            from agent.auxiliary_client import cleanup_stale_async_clients
+            from hermes_agent.agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
         except Exception as e:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
@@ -3212,7 +3212,7 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     here rather than at the tick means no read is ever fail-closed without a scope to read — the
     restart-safe handoff in ``run_one_job`` runs before this and keeps today's semantics (#107692).
     """
-    from agent.secret_scope import set_multiplex_context, set_secret_scope
+    from hermes_agent.agent.secret_scope import set_multiplex_context, set_secret_scope
     from hermes_agent.cron.scheduler_provider import routed_profile_fire
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
@@ -3227,7 +3227,7 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
 def _reset_fire_secret_scope(tokens: tuple[contextvars.Token, Optional[contextvars.Token]]) -> None:
     """Undo ``_install_fire_secret_scope`` — the context first, so multiplex semantics never
     outlive the scope they depend on."""
-    from agent.secret_scope import reset_multiplex_context, reset_secret_scope
+    from hermes_agent.agent.secret_scope import reset_multiplex_context, reset_secret_scope
 
     scope_token, context_token = tokens
     if context_token is not None:
@@ -3629,7 +3629,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         str(ack_path),
     ]
 
-    from agent.secret_scope import is_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active
     from hermes_agent.cron.scheduler_provider import routed_profile_fire
     from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from hermes_agent.tools.process_registry import (
@@ -3860,7 +3860,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         except OSError:
             pass
 
-    from agent.secret_scope import (
+    from hermes_agent.agent.secret_scope import (
         build_profile_secret_scope,
         is_multiplex_active,
         reset_secret_scope,

@@ -13,9 +13,9 @@ import base64
 
 import pytest
 
-from agent.anthropic_message_convert import _evict_old_screenshots
-from agent.context_compressor import evict_stale_outbound_tool_images
-from agent.image_eviction_policy import (
+from hermes_agent.agent.anthropic_message_convert import _evict_old_screenshots
+from hermes_agent.agent.context_compressor import evict_stale_outbound_tool_images
+from hermes_agent.agent.image_eviction_policy import (
     IMAGE_EVICTION_BATCH,
     OUTBOUND_IMAGE_BUDGET_BYTES,
     OUTBOUND_IMAGE_FLOOR,
@@ -288,7 +288,7 @@ def test_a_small_new_screenshot_never_restores_retired_ones():
     """#133999 review: appending a small screenshot after large ones widened the byte-derived
     quantum, so the retire count fell (8 -> 5) and three retired screenshots came back inside
     already-sent history. Retirement must only grow as the conversation does, on both passes."""
-    from agent.anthropic_adapter import build_anthropic_kwargs
+    from hermes_agent.agent.anthropic_adapter import build_anthropic_kwargs
 
     def retired(sizes: list[int]) -> tuple[set[str], set[str]]:
         rows = _mixed_tool_history(sizes, uploads=OUTBOUND_IMAGE_LIMIT + 1)
@@ -316,8 +316,8 @@ def test_retirement_is_latched_when_an_upload_leaves_the_request(tmp_path, monke
     """#133999 x #136216 review: once the replay window drops an oversized upload, the request
     relaxes to the 100-image ceiling and a from-scratch decision restored all eight retired
     screenshots into already-sent history. Driven through the agent's request builder."""
-    from agent.chat_completion_helpers import _iteration_summary_api_messages
-    from run_agent import AIAgent
+    from hermes_agent.agent.chat_completion_helpers import _iteration_summary_api_messages
+    from hermes_agent.run_agent import AIAgent
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     agent = AIAgent(api_key="k", base_url="https://api.anthropic.com", provider="anthropic",

@@ -28,9 +28,9 @@ from rich.panel import Panel
 
 from hermes_constants import display_hermes_home
 from hermes_agent.hermes_state_ids import new_session_id as mint_session_id
-from agent.i18n import t
-from agent.message_metadata import message_identity
-from agent.turn_context import extract_api_content_sidecar
+from hermes_agent.agent.i18n import t
+from hermes_agent.agent.message_metadata import message_identity
+from hermes_agent.agent.turn_context import extract_api_content_sidecar
 from hermes_cli.cli_agent_setup_mixin import _gateway_open, _retire_agent
 from hermes_cli.cli_commands_session_tools import (
     CLICommandsSessionToolsMixin, _TTYBuf, _accent, _accent_line, _command_arg, _cp, _dim,
@@ -847,7 +847,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             self._session_db.reopen_session(target_id)
         _sync_agent_to_session(self, target_id, parent_session_id=old_session_id, reason="resume")
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
-        from agent.context_compressor import is_user_originated_turn
+        from hermes_agent.agent.context_compressor import is_user_originated_turn
         # Count only user-originated turns: legacy compaction handoffs are durable role=user rows
         # without display_kind.
         msg_count = len([m for m in self._resume_display_history if is_user_originated_turn(m)])
@@ -1104,8 +1104,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_pet_command(self, cmd: str):
         """Handle /pet [toggle|list|scale <n>|off|<slug>] — the petdex mascot. Writes
         ``display.pet.*`` to config; pet surfaces pick it up on their next poll."""
-        from agent.pet import store
-        from agent.pet.manifest import ManifestError
+        from hermes_agent.agent.pet import store
+        from hermes_agent.agent.pet.manifest import ManifestError
         from hermes_cli.pets import (
             _set_active, _set_enabled, print_pet_gallery, set_pet_scale, toggle_pet_display)
         arg = _command_arg(cmd)
@@ -1138,9 +1138,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Generate ("hatch") a new petdex pet from a description: base look, one animation row
         per state, spritesheet, then adopt. Progress streams inline (~a minute of image calls).
         The desktop app opens a richer overlay for this command instead."""
-        from agent.pet import store
-        from agent.pet.generate import orchestrate
-        from agent.pet.generate.imagegen import GenerationError
+        from hermes_agent.agent.pet import store
+        from hermes_agent.agent.pet.generate import orchestrate
+        from hermes_agent.agent.pet.generate.imagegen import GenerationError
         from hermes_cli.pets import _set_active
         concept = _command_arg(cmd)
         if not concept:
@@ -1304,14 +1304,14 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Handle /learn — distill a reusable skill from anything the user describes (a directory,
         a URL, "what we just did", pasted notes). The live agent gathers the material with the
         tools it already has and authors the skill via ``skill_manage``."""
-        from agent.learn_prompt import build_learn_prompt
+        from hermes_agent.agent.learn_prompt import build_learn_prompt
         user_request = _command_arg(cmd)
         self._queue_prompt_turn(build_learn_prompt(user_request), "/learn", _t("learn.from_description" if user_request else "learn.from_conversation"))
 
     def _handle_plan_command(self, cmd: str):
         """Handle /plan — write a markdown implementation plan, no execution. The live agent
         inspects the workspace read-only and saves the plan under ``.hermes/plans/``."""
-        from agent.plan_prompt import build_plan_prompt
+        from hermes_agent.agent.plan_prompt import build_plan_prompt
         task = _command_arg(cmd)  # optional — empty infers the task from conversation context
         self._queue_prompt_turn(build_plan_prompt(task), "/plan", _t("plan.planning", task=_ellipsize(task, 80)) if task else _t("plan.from_conversation"))
 
@@ -1344,7 +1344,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 f"  {_t('background.task_id', task_id=task_id)}", f"  {_t('background.keep_chatting')}\n")
             return self._start_background_worker(task_id, task_num, preview, wait)
         from cli import set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
         if not self._ensure_runtime_credentials():
             return _cp(f"  {_t('background.no_credentials')}")
@@ -1354,7 +1354,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         runtime = turn_route["runtime"]
 
         def produce():
-            from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+            from hermes_agent.agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
             from hermes_agent.gateway.session_context import declare_stateless_channel
             declare_stateless_channel()  # nothing drains a bg_* session's completions later: delegations join (#140569)
             set_sudo_password_callback(self._sudo_password_callback)
@@ -1537,7 +1537,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         _cp(*_lines(_gt("btw.started", preview=preview)), "")
 
         def produce():
-            from agent.side_question import answer_side_question
+            from hermes_agent.agent.side_question import answer_side_question
             return answer_side_question(
                 question, history_snapshot, parent_agent=parent_agent, main_runtime=main_runtime)
 
@@ -1683,7 +1683,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return _cp(_dim_line(_t("review.nothing_yet")))
         snapshot = list(getattr(self, "conversation_history", None) or [])
         try:
-            from agent.review_engine import format_dispatch_note, start_review
+            from hermes_agent.agent.review_engine import format_dispatch_note, start_review
             result = start_review(agent, snapshot, prompt)
         except ValueError as exc:
             return _cp(_dim_line(str(exc)))
@@ -1849,7 +1849,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_focus_command(self, cmd_original: str) -> None:
         """``/focus [on|off|status]`` — DISPLAY-ONLY reduced output. Reuses the ``/verbose``
         suppression path: on stashes tool_progress_mode and snaps it to "off" (what
-        ``agent/tool_executor.py`` gates on); off restores the stash verbatim. Never touches
+        ``hermes_agent/agent/tool_executor.py`` gates on); off restores the stash verbatim. Never touches
         history, system prompt, or request payloads."""
         from hermes_cli.colors import Colors as _Colors
         from hermes_cli.focus_view import (
@@ -1893,7 +1893,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _set_tool_progress_mode(self, mode: str) -> None:
         """Set the live tool-progress mode on both the CLI and the agent (one write path for
-        /focus and /verbose — the agent copy is what ``agent/tool_executor.py`` gates on)."""
+        /focus and /verbose — the agent copy is what ``hermes_agent/agent/tool_executor.py`` gates on)."""
         from hermes_cli.focus_view import normalize_tool_progress_mode
         normalized = normalize_tool_progress_mode(mode)
         self.tool_progress_mode = normalized
@@ -1983,7 +1983,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Handle /reasoning [<level> [--global]|show|hide|full|clamp] — effort level (session
         scope unless --global) and thinking display toggles (always saved)."""
         from cli import CLI_CONFIG, _parse_reasoning_config
-        from agent.reasoning_effort import effort_display_label
+        from hermes_agent.agent.reasoning_effort import effort_display_label
         raw = _command_arg(cmd)
         from hermes_cli.codex_runtime_switch import get_current_runtime
         # The live agent's api_mode, else the configured runtime: ``ultra`` is verbatim on the Codex app-server.
@@ -2071,14 +2071,14 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         raw = _command_arg(cmd)
         usage = _dim_line(_t("fast.usage"))
         if not raw or raw.lower() == "status":
-            from agent.fast_mode import service_tier_word
+            from hermes_agent.agent.fast_mode import service_tier_word
             status = service_tier_word(self.service_tier)
             return _cp(_accent_line(_t("fast.status", feature=feature_name, status=status)), usage)
         arg, explicit_global = _split_scope_flags(raw)
         if arg not in _FAST_TIERS:
             return _cp(_dim_line(_t("shared.unknown_argument", arg=arg)), usage)
         if _FAST_TIERS[arg][0] == "ultrafast":
-            if not _probe("agent.codex_service_tiers", "ultrafast_offered_for", False, self, model):
+            if not _probe("hermes_agent.agent.codex_service_tiers", "ultrafast_offered_for", False, self, model):
                 return _cp(_dim_line(_t("fast.ultrafast_not_supported", model=model or "?")), usage)
             feature_name = _t("fast.feature_ultrafast")
         self.service_tier, saved_value = _FAST_TIERS[arg]

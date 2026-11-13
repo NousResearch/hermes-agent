@@ -2,7 +2,7 @@
 
 Plugins must NOT park state in ``<hermes home>/plugins/<name>/`` (the install dir, deleted by
 ``remove`` and git-pulled by ``update``). Secrets are deliberately NOT part of this convention —
-credential reads go through ``agent.secret_scope`` / ``.env``.
+credential reads go through ``hermes_agent.agent.secret_scope`` / ``.env``.
 Usage: ``plugin_data_dir("my-plugin") / "state.json"``; ``plugin_db("my-plugin")`` → ``data.db``.
 """
 

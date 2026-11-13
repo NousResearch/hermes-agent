@@ -247,7 +247,7 @@ def _blocked(*a, **kw):
     raise RuntimeError("schema_dedupe eval: the real connector backend is blocked")
 
 
-# The agent loop runs manage_connections inline (agent/inline_tool_executors.py imports it from
+# The agent loop runs manage_connections inline (hermes_agent/agent/inline_tool_executors.py imports it from
 # tools.connectors at call time), so the package attribute is the seam; the registry handler is the
 # fallback path. The real backends are blocked outright: a missed seam must fail the cell, never mint
 # a connect link on the operator's account.
@@ -267,7 +267,7 @@ FAMILY_TOOLSETS = {"mem": ["memory", "skills", "file", "terminal"],
                    "search": ["file", "terminal"], "term": ["file", "terminal"]}
 TOOLSETS = FAMILY_TOOLSETS[TASK_ID.split("_", 1)[0]]
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 agent = AIAgent(base_url=INFER_URL, api_key=INFER_KEY, provider="custom", model=MODEL, quiet_mode=True,
                 skip_context_files=True, skip_memory=False, skip_background_review=True, enabled_toolsets=TOOLSETS,

@@ -18,11 +18,11 @@ from typing import Any, Callable, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
-from agent.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
+from hermes_agent.agent.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
     CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,
     load_pool,
 )
-from agent.secret_scope import get_secret_str
+from hermes_agent.agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, _qwen_base_url, format_auth_error, resolve_provider,
@@ -174,7 +174,7 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     normalized = _config_mod._canonical_api_mode(raw).lower() if isinstance(raw, str) else ""
     if not normalized:
         return None
-    from agent.transports import registered_api_modes
+    from hermes_agent.agent.transports import registered_api_modes
     return normalized if normalized in _VALID_API_MODES or normalized in registered_api_modes() else None
 
 
@@ -275,7 +275,7 @@ def _profile_runtime_api_mode(provider: str, model_cfg: dict[str, Any], api_key:
                               target_model: Optional[str] = None) -> str:
     """api_mode for a provider that routes per model: its hard per-model wire wins over a stale persisted
     ``codex_responses`` (pure check, no network); otherwise the profile decides with the live key."""
-    from agent.provider_route_hooks import model_api_mode
+    from hermes_agent.agent.provider_route_hooks import model_api_mode
     profile = _per_model_profile(provider)
     configured_mode = _configured_api_mode(provider, model_cfg)
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
@@ -410,7 +410,7 @@ def _anthropic_cfg_base_url(model_cfg: dict[str, Any]) -> str:
 
 
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
-    from agent.anthropic_credentials import resolve_anthropic_token
+    from hermes_agent.agent.anthropic_credentials import resolve_anthropic_token
     token = resolve_anthropic_token(model=model)
     if not token:
         # A key the pool benched for *this* model is not a missing credential; telling the
@@ -550,7 +550,7 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     cfg_provider = _get_model_config().get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
-    from agent.session_client_env import bound_client_env
+    from hermes_agent.agent.session_client_env import bound_client_env
     client = bound_client_env()  # a local session's turn: its client's export, never the daemon's
     requested = client.get("HERMES_INFERENCE_PROVIDER", "") if client is not None else get_secret_str("HERMES_INFERENCE_PROVIDER", "")
     return requested.strip().lower() or "auto"
@@ -987,10 +987,10 @@ def _raise_if_local_alias_missing_endpoint(requested_provider: str, explicit_bas
 def _resolve_vertex_runtime(requested_provider: str) -> dict[str, Any]:
     """Vertex AI (OAuth2). The credential *path* (GOOGLE_APPLICATION_CREDENTIALS) must never be
     treated as a static API key; a short-lived token is minted per call, and mid-session expiry is
-    recovered on 401 by run_agent._try_refresh_vertex_client_credentials(). Under
+    recovered on 401 by hermes_agent.run_agent._try_refresh_vertex_client_credentials(). Under
     :func:`deferred_token_mint` the credentials are loaded (same failure copy) but the token is a
     callable minted on first use, so a process that only routes never exchanges a JWT."""
-    from agent.vertex_adapter import get_vertex_base_url, get_vertex_config, vertex_access_token
+    from hermes_agent.agent.vertex_adapter import get_vertex_base_url, get_vertex_config, vertex_access_token
     if _DEFER_TOKEN_MINT.get():
         token, base_url = vertex_access_token, get_vertex_base_url()
     else:

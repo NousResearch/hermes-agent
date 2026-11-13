@@ -371,7 +371,7 @@ class TestCuaCaptureImageDimensions:
 
 class TestAnthropicAdapterMultimodal:
     def test_multimodal_envelope_becomes_tool_result_with_image_block(self):
-        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
 
         fake_png = "iVBORw0KGgo="
         messages = [
@@ -411,7 +411,7 @@ class TestAnthropicAdapterMultimodal:
 
     def test_old_screenshots_are_evicted_beyond_max_keep(self):
         """Image blocks in old tool_results get replaced with placeholders."""
-        from agent.anthropic_message_convert import convert_messages_to_anthropic
+        from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
 
         fake_png = "iVBORw0KGgo="
 
@@ -432,7 +432,7 @@ class TestAnthropicAdapterMultimodal:
 
         # Build screenshots interleaved with assistant messages. The eviction frontier
         # advances in whole batches, so use a count that lands exactly on one advance.
-        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+        from hermes_agent.agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
 
         total = OUTBOUND_IMAGE_LIMIT + 1
         messages: list[dict[str, Any]] = [{"role": "user", "content": "start"}]
@@ -480,8 +480,8 @@ class TestAnthropicAdapterMultimodal:
     def test_parallel_batch_retires_the_oldest_siblings_first(self):
         """Sibling tool_results in one user message are oldest-first; eviction must not
         retire the newest of them (#103217)."""
-        from agent.anthropic_message_convert import _evict_old_screenshots
-        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+        from hermes_agent.agent.anthropic_message_convert import _evict_old_screenshots
+        from hermes_agent.agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
 
         img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
         n = OUTBOUND_IMAGE_LIMIT + 1
@@ -506,8 +506,8 @@ class TestAnthropicAdapterMultimodal:
         a floor of three counted in carriers would retire nothing and ship a request the
         API rejects. With no reserved uploads the breach is fixable, so it must be fixed.
         """
-        from agent.anthropic_message_convert import _evict_old_screenshots
-        from agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
+        from hermes_agent.agent.anthropic_message_convert import _evict_old_screenshots
+        from hermes_agent.agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
 
         img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
         result = [{
@@ -523,8 +523,8 @@ class TestAnthropicAdapterMultimodal:
     def test_a_batch_that_would_blind_the_model_stops_at_the_floor(self):
         """Fifteen reserved uploads plus six one-frame tool_results: one eight-wide batch would
         retire every frame although keeping the newest three already clears the ceiling."""
-        from agent.anthropic_message_convert import _evict_old_screenshots
-        from agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
+        from hermes_agent.agent.anthropic_message_convert import _evict_old_screenshots
+        from hermes_agent.agent.image_eviction_policy import OUTBOUND_IMAGE_LIMIT
 
         img = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "A"}}
         result = [{"role": "user", "content": [dict(img) for _ in range(OUTBOUND_IMAGE_LIMIT - 5)]}]
@@ -547,8 +547,8 @@ class TestAnthropicAdapterMultimodal:
         forcing a full-prefix re-write that costs far more than the image tokens it
         reclaims.
         """
-        from agent.anthropic_message_convert import convert_messages_to_anthropic
-        from agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
+        from hermes_agent.agent.anthropic_message_convert import convert_messages_to_anthropic
+        from hermes_agent.agent.image_eviction_policy import IMAGE_EVICTION_BATCH, OUTBOUND_IMAGE_LIMIT
 
         fake_png = "iVBORw0KGgo="
 
@@ -608,7 +608,7 @@ class TestAnthropicAdapterMultimodal:
 
 class TestCompressorScreenshotPruning:
     def _make_compressor(self):
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
         # Minimal constructor — _prune_old_tool_results doesn't need a real client.
         c = ContextCompressor.__new__(ContextCompressor)
         return c
@@ -672,7 +672,7 @@ class TestCompressorScreenshotPruning:
 class TestImageAwareTokenEstimator:
 
     def test_multimodal_envelope_counts_images(self):
-        from agent.model_metadata import estimate_messages_tokens_rough
+        from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough
         messages = [
             {"role": "tool", "tool_call_id": "c1", "content": {
                 "_multimodal": True,
@@ -695,7 +695,7 @@ class TestImageAwareTokenEstimator:
 class TestRunAgentMultimodalHelpers:
 
     def test_append_subdir_hint_to_multimodal_appends_to_text_part(self):
-        from agent.tool_dispatch_helpers import _append_subdir_hint_to_multimodal
+        from hermes_agent.agent.tool_dispatch_helpers import _append_subdir_hint_to_multimodal
         env = {
             "_multimodal": True,
             "content": [

@@ -205,7 +205,7 @@ def load_profile_config(home=None):
 def profile_env_scope(home=None):
     """Bind the profile's current ``.env`` (see ``load_profile_config``) unless a scope is bound."""
     from pathlib import Path
-    from agent.secret_scope import build_profile_secret_scope, current_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import build_profile_secret_scope, current_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_agent.gateway.run import _gateway_config_home
     if current_secret_scope() is not None:
         yield
@@ -413,8 +413,8 @@ def _reasoning_fields(agent, policy, model, authority=None, override=None):
     """Main's session-info effort/tier fields, from the built agent or (lazy) what the policy's next turn
     resolves (a following session's current profile): a resumed Desktop slice holds its reasoning pill
     pending until ``reasoning_effort`` arrives."""
-    from agent.fast_mode import parse_service_tier
-    from agent.voice_turn_route import session_runtime_view
+    from hermes_agent.agent.fast_mode import parse_service_tier
+    from hermes_agent.agent.voice_turn_route import session_runtime_view
     if agent is None and policy is None:
         return {}
     view = session_runtime_view(agent) if agent is not None else None
@@ -433,8 +433,8 @@ def _reasoning_fields(agent, policy, model, authority=None, override=None):
 
 def effort_fields(config, tier, model, provider, base_url, api_mode=None):
     """Session-info ``reasoning_effort`` / ``_wire`` / ``service_tier`` / ``fast`` for one resolved route."""
-    from agent.fast_mode import STATIC_TIERS
-    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+    from hermes_agent.agent.fast_mode import STATIC_TIERS
+    from hermes_agent.agent.reasoning_effort import clamp_effort, route_supported_efforts
     from hermes_cli.models import resolve_fast_mode_overrides
     tier = tier or ''
     effort = ''
@@ -489,7 +489,7 @@ def local_session_info(authority, ref):
         from hermes_agent.gateway.session_client import policy_client
         if (client := policy_client(policy)) is not None:  # only a client that named itself
             info['client'] = client
-        from agent.session_client_env import NOT_LOCAL_WARNING
+        from hermes_agent.agent.session_client_env import NOT_LOCAL_WARNING
         # Session-start notices main's TUI already renders as ``config_warning``.
         notices = (project_plugins_warning(policy), NOT_LOCAL_WARNING if policy.client_env_remote else None)
         if warning := ' '.join(filter(None, notices)):
@@ -522,7 +522,7 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
             api_mode = (policy.effective(authority, secrets=False)[0].get('model') or {}).get('api_mode')
     hint = None
     if agent is not None and getattr(agent, 'api_key', None):
-        from agent.redact import mask_secret
+        from hermes_agent.agent.redact import mask_secret
         hint = mask_secret(str(agent.api_key))
     tools = getattr(agent, 'tools', None) if agent is not None else None
     started = row.get('started_at')

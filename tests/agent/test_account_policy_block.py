@@ -13,8 +13,8 @@ import httpx
 import openai
 import pytest
 
-import run_agent
-from agent.error_classifier import FailoverReason, classify_api_error
+from hermes_agent import run_agent
+from hermes_agent.agent.error_classifier import FailoverReason, classify_api_error
 
 BAN = (
     "Policy Violation: this user has been blocked for a previous policy violation. "

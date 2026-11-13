@@ -152,7 +152,7 @@ def test_no_agent_script_gets_owning_profiles_declared_secret_never_launch_resid
     """Routed profile B declares JOB_SVC_TOKEN in terminal.env_passthrough and defines it only in
     its own .env (never in the process env); the launch profile A's .env credential is in the
     process env. B's script sees its own secret and not A's (#114209)."""
-    from agent.secret_scope import (
+    from hermes_agent.agent.secret_scope import (
         build_profile_secret_scope, reset_secret_scope, set_multiplex_active, set_secret_scope)
     from hermes_agent.cron.scheduler_script import _run_job_script
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -345,10 +345,10 @@ def test_a_routed_profile_script_never_receives_a_launch_only_name(hermes_env, m
     routed profile's own values come through, and the parent ``os.environ`` is never mutated."""
     import os
 
-    from agent import secret_scope
-    from agent.secret_sources import registry as reg_module
-    from agent.secret_sources.base import FetchResult
-    from agent.secret_sources.registry import ApplyReport, SourceReport
+    from hermes_agent.agent import secret_scope
+    from hermes_agent.agent.secret_sources import registry as reg_module
+    from hermes_agent.agent.secret_sources.base import FetchResult
+    from hermes_agent.agent.secret_sources.registry import ApplyReport, SourceReport
     from hermes_agent.cron.scheduler_script import _run_job_script
     from hermes_cli import env_loader
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
@@ -402,7 +402,7 @@ def test_a_routed_profile_script_keeps_administrator_managed_values_over_its_own
     precedence the launch process does."""
     import os
 
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_agent.cron.scheduler_script import _run_job_script
     from hermes_cli import env_loader, managed_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override

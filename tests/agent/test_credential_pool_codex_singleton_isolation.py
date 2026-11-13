@@ -14,7 +14,7 @@ import time
 import pytest
 
 import hermes_cli.auth as auth_mod
-from agent.credential_pool import load_pool
+from hermes_agent.agent.credential_pool import load_pool
 
 
 def _jwt(account: str, sub: str, exp: float) -> str:

@@ -32,7 +32,7 @@ def test_note_setup_failure_reaches_the_setup_metric(monkeypatch):
 def test_secret_source_label_names_an_external_source(monkeypatch):
     monkeypatch.setattr("hermes_cli.env_loader.get_secret_source",
                         lambda name: "bitwarden" if name == "FAKE_TOKEN" else None)
-    from agent.secret_scope import secret_source_label
+    from hermes_agent.agent.secret_scope import secret_source_label
 
     assert secret_source_label("FAKE_TOKEN") == " (from Bitwarden)"
     assert secret_source_label("OTHER_TOKEN") == ""

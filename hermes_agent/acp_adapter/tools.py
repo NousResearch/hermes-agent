@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, List, Optional
 import acp
 from acp.schema import ToolCallLocation, ToolCallProgress, ToolCallStart, ToolKind
 
-from agent.display import build_tool_preview
+from hermes_agent.agent.display import build_tool_preview
 
 logger = logging.getLogger(__name__)
 
@@ -676,7 +676,7 @@ def _build_tool_complete_content(
     """Build structured ACP completion content, falling back to plain text."""
     if tool_name == "skill_manage":
         try:
-            from agent.display import extract_edit_diff
+            from hermes_agent.agent.display import extract_edit_diff
 
             diff_text = extract_edit_diff(tool_name, result, function_args=function_args, snapshot=snapshot)
             if isinstance(diff_text, str) and diff_text.strip():
@@ -782,7 +782,7 @@ def build_tool_start(tool_call_id: str, tool_name: str, arguments: Args, *, edit
     ignoring the schema) must never abort the render — this runs on the live
     tool-progress callback and during history replay — so any failure in the
     title/content/location builders falls back to a minimal valid start event
-    (mirrors ``get_cute_tool_message`` in ``agent/display.py``)."""
+    (mirrors ``get_cute_tool_message`` in ``hermes_agent/agent/display.py``)."""
     try:
         return _build_tool_start(tool_call_id, tool_name, arguments, edit_diff=edit_diff)
     except Exception as exc:

@@ -16,7 +16,7 @@ from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
     _plugin_aux_tasks, _prepare_main_assignment,
 )
-from agent.model_metadata import is_local_endpoint
+from hermes_agent.agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
 from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
@@ -54,7 +54,7 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
 
 
 # Blocking budget for /api/model/info's context-length resolution. The resolver
-# chain (agent.model_metadata.get_model_context_length) runs several sequential
+# chain (hermes_agent.agent.model_metadata.get_model_context_length) runs several sequential
 # provider probes, each with its own multi-second timeout, so an unreachable or
 # blackholed model.base_url can hold this response for tens of seconds — and the
 # Desktop Model Settings page waits on it (#63214).
@@ -68,7 +68,7 @@ def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> i
     by its own per-request timeouts) while the response degrades to
     ``auto_context_length = 0`` ("auto-detected: unknown").
     """
-    from agent.model_metadata import get_model_context_length
+    from hermes_agent.agent.model_metadata import get_model_context_length
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
     try:
@@ -114,7 +114,7 @@ def get_model_info(profile: Optional[str] = None):
 
         caps = {}
         try:
-            from agent.models_dev import get_model_capabilities
+            from hermes_agent.agent.models_dev import get_model_capabilities
             mc = get_model_capabilities(provider=provider, model=model_name)
             if mc is not None:
                 caps = {name: getattr(mc, name) for name in _CAPABILITY_FIELDS}
@@ -229,7 +229,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
     ``inherit_from`` (base slot key or null). An inheriting row also carries ``effective``: the
     route it resolves to right now, which is the base's while the row itself is unpinned.
     ``provider``/``model``/``base_url`` stay the slot's own stored values on every row."""
-    from agent.auxiliary_client import _get_auxiliary_task_config
+    from hermes_agent.agent.auxiliary_client import _get_auxiliary_task_config
 
     with http_failure("GET /api/model/auxiliary failed", 500, detail="Failed to read auxiliary config"):
         with _profile_scope(profile):

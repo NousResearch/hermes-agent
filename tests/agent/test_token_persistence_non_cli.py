@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import json
 import sys
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 def _mock_response(*, usage: dict, content: str = "done"):
     msg = SimpleNamespace(content=content, tool_calls=None)
@@ -18,7 +18,7 @@ def _make_agent(session_db, *, platform: str):
     with (
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
-        patch("agent.process_bootstrap.OpenAI"),
+        patch("hermes_agent.agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             api_key="test-key",

@@ -16,7 +16,7 @@ import sys
 import threading
 
 from rich.markup import escape as _escape
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from utils import base_url_host_matches
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
 
@@ -181,7 +181,7 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
             raise
         ctx = None
     if ctx:
-        from agent.context_pin import context_window_suffix
+        from hermes_agent.agent.context_pin import context_window_suffix
         _cprint(f"    {t('gateway.model.context_label', tokens=f'{ctx:,}')}" + context_window_suffix(
             ctx, getattr(agent, '_config_context_length', None) if agent else None, model=result.new_model,
             provider=result.target_provider, base_url=result.base_url or cli.base_url or ""))
@@ -237,7 +237,7 @@ def _one_turn_selection_context(cli):
     live = selection_context_for_agent(agent)
     if live is not None:
         return live
-    from agent.usage_anchor import persisted_anchor_tokens
+    from hermes_agent.agent.usage_anchor import persisted_anchor_tokens
     db = getattr(cli, "_session_db", None)
     sid = getattr(cli, "session_id", None)
     if db is None or not sid or not callable(getattr(db, "get_messages_as_conversation", None)):

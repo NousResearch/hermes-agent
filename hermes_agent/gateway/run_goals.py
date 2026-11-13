@@ -164,7 +164,7 @@ class GatewayGoalsMixin:
             or self._queue_depth(quick_key, adapter=adapter) > 0
         ):
             return  # keep missed intervals due until user work has drained
-        from agent.estop import check_paused
+        from hermes_agent.agent.estop import check_paused
 
         if check_paused("heartbeat", logger):
             return  # `hermes pause`: leave the tick unclaimed so it fires after `hermes resume`
@@ -489,7 +489,7 @@ class GatewayGoalsMixin:
         mgr = LoopManager(session_id=sid)
         if not mgr.is_due(now):
             return
-        from agent.estop import check_paused
+        from hermes_agent.agent.estop import check_paused
 
         # Loop wakeups are injected as internal events, which bypass the inbound estop gate; without
         # this a `hermes pause` would still start agent turns. Not claiming the tick keeps it due.

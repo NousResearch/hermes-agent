@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     _SUMMARY_END_MARKER,
@@ -151,7 +151,7 @@ def test_retry_fails_closed_when_transcript_changes_after_snapshot(
 def test_rewind_matches_warm_raw_carrier_to_durable_sanitized_sidecar(
     tmp_path, command
 ):
-    from agent.memory_context import sanitize_context
+    from hermes_agent.agent.memory_context import sanitize_context
 
     cli = _make_cli()
     cli._session_db.close()

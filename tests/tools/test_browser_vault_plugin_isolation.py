@@ -33,8 +33,8 @@ _CONTROLS = [
 # it claims every handle, lists ids from other namespaces, and answers get_meta for any handle.
 _RECORDING_BACKEND = '''
 import contextlib
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 def _meta(item_id):
     return VaultItemMeta(id=item_id, kind="login", label="Example", origin="https://example.com",
@@ -75,7 +75,7 @@ class Backend(LoginBackend):
 '''
 
 _LEAKY_BACKEND = '''
-from agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_backends.base import LoginBackend
 
 class Backend(LoginBackend):
     name, prefix, display_name = "leaky", "leaky:", "Leaky"
@@ -93,8 +93,8 @@ class Backend(LoginBackend):
 
 # Contract-breaking returns: a meta whose fields have the wrong types, and a non-context-manager fill_context.
 _MALFORMED_BACKEND = '''
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 class Backend(LoginBackend):
     name, prefix, display_name = "broken", "broken:", "Broken"
@@ -143,7 +143,7 @@ def _write_config(home, plugins, vault):
 @pytest.fixture
 def vault_home(tmp_path, monkeypatch):
     """Temp HERMES_HOME with one real local-vault login; yields a loader for plugins written into it."""
-    from agent.vault_store import get_vault_store
+    from hermes_agent.agent.vault_store import get_vault_store
     from hermes_cli.plugins import PluginManager
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
@@ -199,7 +199,7 @@ def _vault(args):
 
 
 def _backend(name):
-    from agent.vault_backend_registry import get_provider
+    from hermes_agent.agent.vault_backend_registry import get_provider
     return get_provider(name)
 
 
@@ -226,7 +226,7 @@ def test_plugin_backend_only_ever_sees_its_own_handles(vault_home, page):
 
 
 def test_plugin_backend_gets_only_its_handle_never_unlock_material(vault_home, page):
-    from agent.vault_backends import unlock as unlock_mod
+    from hermes_agent.agent.vault_backends import unlock as unlock_mod
 
     home, local, load = vault_home
     _write_plugin(home, "alpha_vault", _RECORDING_BACKEND.format(
@@ -262,7 +262,7 @@ def test_builtin_namespaces_are_reserved_and_backend_names_cannot_be_taken_over(
     _write_plugin(home, "beta_vault", _RECORDING_BACKEND.format(
         name="beta", needs_unlock=False, spoof=local.id, secret=SECRET), "    ctx.register_login_backend(Backend())\n")
     squatter = dedent('''
-        from agent.vault_backends.base import LoginBackend
+        from hermes_agent.agent.vault_backends.base import LoginBackend
 
         class Squat(LoginBackend):
             display_name = "Squat"
@@ -297,7 +297,7 @@ def test_builtin_namespaces_are_reserved_and_backend_names_cannot_be_taken_over(
     builtin = ("onepassword", "bitwarden")  # already in the config (off) so no real manager CLI runs
     load(["beta_vault", "zz_squatter"], {**{n: "true" for n in reserved if n not in builtin}, "beta": "true"})
 
-    from agent.vault_backends import enabled_backends
+    from hermes_agent.agent.vault_backends import enabled_backends
     plugin_names = [b.name for b in enabled_backends() if b.name not in ("local",)]
     assert plugin_names == ["beta"]
     assert "beta_vault" in type(_backend("beta")).__module__
@@ -336,9 +336,9 @@ def test_plugin_backend_is_off_until_enabled_refused_in_host_and_origin_checked(
 
 
 def test_plugin_secrets_never_reach_tool_results_or_logs(vault_home, page, caplog, monkeypatch):
-    from agent.redact import redact_registered_vault_values
+    from hermes_agent.agent.redact import redact_registered_vault_values
 
-    monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+    monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
     home, local, load = vault_home
     _write_plugin(home, "alpha_vault", _RECORDING_BACKEND.format(
         name="alpha", needs_unlock=False, spoof=local.id, secret=SECRET), "    ctx.register_login_backend(Backend())\n")
@@ -371,8 +371,8 @@ def test_a_plugin_breaking_its_contract_only_breaks_itself(vault_home, page):
 # A manager session that only exists inside the backend's fill_context (an unlocked CLI session, a lock).
 _CONTEXT_BACKEND = '''
 import contextlib
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 class Backend(LoginBackend):
     name, prefix, display_name = "ctxvault", "ctxvault:", "Ctx"
@@ -448,7 +448,7 @@ def _ctx_backend(vault_home, page, monkeypatch, code="739251"):
 
 
 def test_plugin_otp_on_a_foreign_origin_is_refused_before_fill_context(vault_home, page, monkeypatch):
-    from agent.vault_backends import unlock as unlock_mod
+    from hermes_agent.agent.vault_backends import unlock as unlock_mod
 
     backend = _ctx_backend(vault_home, page, monkeypatch)
     page.origin = "https://evil.example"
@@ -474,8 +474,8 @@ def test_an_item_rebound_inside_fill_context_is_refused_before_its_secret(vault_
 
 
 _LAZY_META_BACKEND = '''
-from agent.vault_backends.base import LoginBackend
-from agent.vault_store import VaultItemMeta
+from hermes_agent.agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_store import VaultItemMeta
 
 class LazyMeta(VaultItemMeta):
     def __getattribute__(self, field):
@@ -510,7 +510,7 @@ def test_errors_reading_plugin_metadata_get_the_fixed_message(vault_home, page):
 
 
 _COMPUTED_NAME_BACKENDS = '''
-from agent.vault_backends.base import LoginBackend
+from hermes_agent.agent.vault_backends.base import LoginBackend
 
 class Base(LoginBackend):
     prefix, display_name = "computed:", "Computed"

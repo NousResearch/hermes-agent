@@ -17,7 +17,7 @@ import pytest
 
 class TestAuxProbeMode:
     def test_probe_mode_returns_stub_without_openai_import(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         with aux.aux_probe_mode():
             client = aux._create_openai_client(api_key="k", base_url="https://x.invalid/v1")
@@ -25,7 +25,7 @@ class TestAuxProbeMode:
         assert client.api_key == "k"
 
     def test_probe_stub_never_cached(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         stub = aux._AuxProbeClientStub()
         key = ("probe-test", False, "", "", "", (), False, "", None, "m")
@@ -40,7 +40,7 @@ class TestAuxProbeMode:
         land under the runtime key; the next probe then hit _compat_model() on the stub
         and check_vision_requirements() flipped to False for the process (#87654).
         """
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         def _resolve(*a, **k):
             stub = aux._AuxProbeClientStub(api_key="k", base_url="https://x.invalid/v1")
@@ -54,14 +54,14 @@ class TestAuxProbeMode:
             assert not [k for k in aux._client_cache if k[1:2] == (False,) and k[-1] == "vendor/model"]
 
     def test_probe_stub_raises_on_runtime_use(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         stub = aux._AuxProbeClientStub()
         with pytest.raises(RuntimeError, match="availability checks only"):
             _ = stub.chat
 
     def test_probe_mode_is_scoped_and_reentrant(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         assert not aux._aux_probe_active()
         with aux.aux_probe_mode():
@@ -73,7 +73,7 @@ class TestAuxProbeMode:
         assert not aux._aux_probe_active()
 
     def test_probe_mode_is_thread_local(self):
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         seen = {}
 
@@ -89,7 +89,7 @@ class TestAuxProbeMode:
 class TestVisionCheckUsesProbeMode:
     def test_check_vision_requirements_enters_probe_mode(self):
         from hermes_agent.tools import vision_tools
-        import agent.auxiliary_client as aux
+        import hermes_agent.agent.auxiliary_client as aux
 
         states = []
 

@@ -33,7 +33,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 
 def _make_agent(provider: str = "", model: str = "", base_url: str = "") -> AIAgent:
@@ -294,7 +294,7 @@ class TestReapplyReasoningEchoForProviderSwitch:
         ]
 
     def test_switch_to_deepseek_pads_bare_turns(self) -> None:
-        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        from hermes_agent.agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
 
         agent = _make_agent(provider="deepseek", model="deepseek-v4-pro")
         msgs = self._codex_built_history()
@@ -312,7 +312,7 @@ class TestReapplyReasoningEchoForProviderSwitch:
         the fallback request 400/422s ("Extra inputs are not permitted").
         Refs #45655 — DeepSeek primary → Mistral fallback 422 on the " " pad.
         """
-        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        from hermes_agent.agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
 
         agent = _make_agent(
             provider="openai-codex",
@@ -364,7 +364,7 @@ class TestReasoningPrimaryToStrictFallback:
         ]
 
     def test_mistral_fallback_strips_space_pad(self) -> None:
-        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        from hermes_agent.agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
 
         mistral = _make_agent(
             provider="mistral",
@@ -380,7 +380,7 @@ class TestReasoningPrimaryToStrictFallback:
     def test_roundtrip_back_to_deepseek_repads(self) -> None:
         """Strict fallback strips, then switching back to DeepSeek re-pads —
         no regression on the #15748 echo-back requirement."""
-        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        from hermes_agent.agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
 
         msgs = self._deepseek_built_history()
         mistral = _make_agent(

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 def _agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
     return AIAgent(api_key="k", base_url="https://inference-api.nousresearch.com/v1", provider="nous",
                    api_mode="chat_completions", model="anthropic/claude-fable-5.1", session_id="t", platform="cli",
                    quiet_mode=True, skip_context_files=True, skip_memory=True, save_trajectories=False, enabled_toolsets=["file"])
@@ -20,9 +20,9 @@ def _usage(read, write, prompt):
 
 
 def _line(agent, caplog, resp):
-    from agent import turn_usage
+    from hermes_agent.agent import turn_usage
     caplog.clear()
-    with caplog.at_level(logging.INFO, logger="agent.turn_usage"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.agent.turn_usage"):
         turn_usage.record_response_usage(agent, resp, messages=[{"role": "user", "content": "hi"}], api_call_count=1,
                                          api_duration=0.2, compression_attempts=0, max_compression_attempts=3)
     return next(r.getMessage() for r in caplog.records if r.getMessage().startswith("API call #"))

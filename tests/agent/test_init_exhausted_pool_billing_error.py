@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.credential_pool import (
+from hermes_agent.agent.credential_pool import (
     STATUS_EXHAUSTED,
     STATUS_OK,
     CredentialPool,
@@ -75,7 +75,7 @@ def _exhausted_pool_429(provider="openrouter"):
 
 def _patch_no_routed_client(monkeypatch):
     monkeypatch.setattr(
-        "agent.auxiliary_client.resolve_provider_client", lambda *a, **k: (None, None)
+        "hermes_agent.agent.auxiliary_client.resolve_provider_client", lambda *a, **k: (None, None)
     )
     monkeypatch.setattr(
         "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
@@ -92,12 +92,12 @@ def _patch_no_routed_client(monkeypatch):
 )
 def test_exhausted_pool_raises_typed_billing_error(monkeypatch, provider, model):
     """Every provider with a fully burned pool names the billing failure, not setup/missing-key."""
-    from agent import agent_init
-    from agent.auxiliary_unavailable import ProviderCredentialsExhaustedError
+    from hermes_agent.agent import agent_init
+    from hermes_agent.agent.auxiliary_unavailable import ProviderCredentialsExhaustedError
 
     _patch_no_routed_client(monkeypatch)
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda p: _exhausted_pool(provider)
+        "hermes_agent.agent.credential_pool.load_pool", lambda p: _exhausted_pool(provider)
     )
 
     with pytest.raises(ProviderCredentialsExhaustedError) as excinfo:
@@ -116,11 +116,11 @@ def test_exhausted_pool_raises_typed_billing_error(monkeypatch, provider, model)
 
 def test_healthy_pool_keeps_the_existing_diagnostic(monkeypatch):
     """A usable credential must not be misreported as exhausted."""
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
 
     _patch_no_routed_client(monkeypatch)
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda p: _healthy_pool("openrouter")
+        "hermes_agent.agent.credential_pool.load_pool", lambda p: _healthy_pool("openrouter")
     )
 
     with pytest.raises(RuntimeError, match="No LLM provider configured"):
@@ -129,11 +129,11 @@ def test_healthy_pool_keeps_the_existing_diagnostic(monkeypatch):
 
 def test_empty_pool_keeps_the_existing_diagnostic(monkeypatch):
     """No read of the pool (empty / unreadable) must not invent an exhaustion verdict."""
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
 
     _patch_no_routed_client(monkeypatch)
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda p: CredentialPool("openrouter", [])
+        "hermes_agent.agent.credential_pool.load_pool", lambda p: CredentialPool("openrouter", [])
     )
 
     with pytest.raises(RuntimeError, match="No LLM provider configured"):
@@ -141,7 +141,7 @@ def test_empty_pool_keeps_the_existing_diagnostic(monkeypatch):
 
 
 def test_pool_billing_message_names_billing_entry():
-    from agent.auxiliary_unavailable import pool_billing_message
+    from hermes_agent.agent.auxiliary_unavailable import pool_billing_message
 
     message = pool_billing_message(
         "openrouter", model="z-ai/glm-5.3", pool=_exhausted_pool("openrouter")
@@ -154,7 +154,7 @@ def test_pool_billing_message_names_billing_entry():
 
 
 def test_pool_billing_message_none_when_pool_is_usable():
-    from agent.auxiliary_unavailable import pool_billing_message
+    from hermes_agent.agent.auxiliary_unavailable import pool_billing_message
 
     assert pool_billing_message("openrouter", pool=_healthy_pool()) is None
     assert pool_billing_message("openrouter", pool=CredentialPool("openrouter", [])) is None
@@ -162,7 +162,7 @@ def test_pool_billing_message_none_when_pool_is_usable():
 
 def test_pool_billing_message_defers_non_billing_cooldown():
     """A plain 429/quota bench is not billing: the caller keeps the cooldown wording (#56810)."""
-    from agent.auxiliary_unavailable import pool_billing_message
+    from hermes_agent.agent.auxiliary_unavailable import pool_billing_message
 
     entry = _credential(
         "openrouter",
@@ -181,7 +181,7 @@ def test_openrouter_quota_cooldown_still_reports_the_cooldown(monkeypatch, tmp_p
     Regression guard for the openrouter/custom fall-through this fix widens: previously only named
     providers reached ``pool_cooldown_message``.
     """
-    from agent import agent_init
+    from hermes_agent.agent import agent_init
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -217,7 +217,7 @@ def test_openrouter_quota_cooldown_still_reports_the_cooldown(monkeypatch, tmp_p
 
     _patch_no_routed_client(monkeypatch)
     monkeypatch.setattr(
-        "agent.credential_pool.load_pool", lambda p: _exhausted_pool_429("openrouter")
+        "hermes_agent.agent.credential_pool.load_pool", lambda p: _exhausted_pool_429("openrouter")
     )
 
     with pytest.raises(RuntimeError) as excinfo:

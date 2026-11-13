@@ -1005,7 +1005,7 @@ def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
     resp.choices[0].message.content = content
     # specify_task routes through call_llm now (#35566) — mock it directly.
     fake_call = MagicMock(return_value=resp)
-    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client.call_llm", fake_call)
     return fake_call
 
 def test_specify_happy_path(client, monkeypatch):
@@ -1051,7 +1051,7 @@ def test_specify_resolves_each_profiles_key_under_multiplex(kanban_home, tmp_pat
     UnscopedSecretError``). The plugin router is mounted the way ``_mount_plugin_api_routes``
     mounts every plugin router — behind ``_plugin_route_secret_scope`` — so the launch profile
     (A) and a ``?profile=`` request (B) each resolve their OWN key, and B never leaks into A."""
-    import agent.secret_scope as ss
+    import hermes_agent.agent.secret_scope as ss
     from fastapi import Depends
     from hermes_cli import profiles
     from hermes_cli.web_server_dashboard import _plugin_route_secret_scope
@@ -1074,7 +1074,7 @@ def test_specify_resolves_each_profiles_key_under_multiplex(kanban_home, tmp_pat
         resp.choices[0].message.content = json.dumps({"title": "Polished", "body": "**Goal**\nDo it."})
         return resp
 
-    monkeypatch.setattr("agent.auxiliary_client.call_llm", fake_call_llm)
+    monkeypatch.setattr("hermes_agent.agent.auxiliary_client.call_llm", fake_call_llm)
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban",
                        dependencies=[Depends(_plugin_route_secret_scope)])

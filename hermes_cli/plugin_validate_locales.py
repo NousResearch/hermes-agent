@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from agent.i18n_layers import CORE_SURFACE, flatten, non_text_leaves, scan_locale_dir
+from hermes_agent.agent.i18n_layers import CORE_SURFACE, flatten, non_text_leaves, scan_locale_dir
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ _KEY_EXPORTS = {"tui": "_keys.tui.json", "desktop": "_keys.desktop.json"}
 
 
 def _bundled_locales_dir() -> Path:
-    from agent.i18n import _locales_dir
+    from hermes_agent.agent.i18n import _locales_dir
     return _locales_dir()
 
 
@@ -33,7 +33,7 @@ def reference_keys(surface: str) -> Optional[set[str]]:
     locales = _bundled_locales_dir()
     try:
         if surface == CORE_SURFACE:
-            from agent.i18n_layers import parse_locale_file
+            from hermes_agent.agent.i18n_layers import parse_locale_file
             return set(parse_locale_file(locales / "en.yaml"))
         export = locales / _KEY_EXPORTS[surface]
         if not export.is_file():

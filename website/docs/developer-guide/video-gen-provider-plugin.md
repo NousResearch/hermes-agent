@@ -41,14 +41,14 @@ plugins/video_gen/my-backend/
 
 ## The VideoGenProvider ABC
 
-Subclass `agent.video_gen_provider.VideoGenProvider`. Required: `name` property and `generate()` method.
+Subclass `hermes_agent.agent.video_gen_provider.VideoGenProvider`. Required: `name` property and `generate()` method.
 
 ```python
 # plugins/video_gen/my-backend/__init__.py
 from typing import Any, Dict, List, Optional
 import os
 
-from agent.video_gen_provider import (
+from hermes_agent.agent.video_gen_provider import (
     VideoGenProvider,
     error_response,
     success_response,

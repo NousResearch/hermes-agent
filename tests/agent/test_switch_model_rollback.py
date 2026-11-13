@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 def _make_agent_openrouter():
     """Agent on openrouter (openai-compatible) with sentinel client + kwargs."""
@@ -119,14 +119,14 @@ def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
 
     with (
         patch(
-            "agent.anthropic_adapter.build_anthropic_client",
+            "hermes_agent.agent.anthropic_adapter.build_anthropic_client",
             side_effect=RuntimeError("simulated anthropic build failure"),
         ),
         patch(
-            "agent.anthropic_credentials.resolve_anthropic_token",
+            "hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
             return_value="sk-ant-resolved",
         ),
-        patch("agent.anthropic_credentials._is_oauth_token", return_value=False),
+        patch("hermes_agent.agent.anthropic_credentials._is_oauth_token", return_value=False),
         patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None),
     ):
         with pytest.raises(RuntimeError, match="simulated anthropic build failure"):

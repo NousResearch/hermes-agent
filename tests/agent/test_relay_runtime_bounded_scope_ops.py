@@ -27,8 +27,8 @@ from typing import Any
 
 import pytest
 
-from agent import relay_runtime
-from agent.relay_runtime import (
+from hermes_agent.agent import relay_runtime
+from hermes_agent.agent.relay_runtime import (
     RelayRuntime,
     RelaySessionCoordinator,
 )

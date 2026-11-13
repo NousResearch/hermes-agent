@@ -3,7 +3,7 @@
 import json
 import shlex
 
-from agent.redact import redact_sensitive_text
+from hermes_agent.agent.redact import redact_sensitive_text
 
 
 def test_json_headers_remain_parseable_without_exposing_credentials():

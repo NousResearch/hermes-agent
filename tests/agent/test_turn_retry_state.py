@@ -17,7 +17,7 @@ def test_refresh_provider_check_accepts_alias_spellings():
     """`/model` and profile configs can leave an alias (any case) as the
     provider spelling; the recovery gates must not silently skip them."""
     import providers
-    from agent.conversation_loop import _credential_refresh_profile
+    from hermes_agent.agent.conversation_loop import _credential_refresh_profile
 
     providers.list_providers()  # discover first so the patched registry restores to the real one
     acme = _RefreshingProfile(name="acme-refresh", aliases=("acme-cloud-refresh", "acme"),

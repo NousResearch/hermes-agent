@@ -14,7 +14,7 @@ def test_legacy_user_caps_do_not_change_runtime(tmp_path, monkeypatch):
     from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs
     from hermes_agent.gateway.platforms.api_server import _resolve_request_runtime_agent_kwargs
     from hermes_cli.moa_config import _normalize_preset
-    from agent.models_dev import _override_to_catalog_shape
+    from hermes_agent.agent.models_dev import _override_to_catalog_shape
 
     runtime = _resolve_runtime_agent_kwargs()
     assert runtime.get("max_tokens") is None
@@ -25,7 +25,7 @@ def test_legacy_user_caps_do_not_change_runtime(tmp_path, monkeypatch):
     assert "max_tokens" not in preset and "reference_max_tokens" not in preset
     patch, _ = _override_to_catalog_shape({"context_window": 10000, "max_output_tokens": 31})
     assert patch["limit"] == {"context": 10000}
-    from agent.auxiliary_client import _compression_fast_lane_controls
+    from hermes_agent.agent.auxiliary_client import _compression_fast_lane_controls
     route = {"provider": "custom", "model": "fixture", "reasoning_effort": "none", "max_output_tokens": 47}
     cap, body = _compression_fast_lane_controls(
         "compression", actual_provider="custom", actual_model="fixture",
@@ -37,9 +37,9 @@ def test_legacy_user_caps_do_not_change_runtime(tmp_path, monkeypatch):
 
 
 def test_optional_wire_caps_omitted_required_and_internal_preserved():
-    from agent.transports.chat_completions import ChatCompletionsTransport
-    from agent.transports.bedrock import BedrockTransport
-    from agent.transports.anthropic import AnthropicTransport
+    from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
+    from hermes_agent.agent.transports.bedrock import BedrockTransport
+    from hermes_agent.agent.transports.anthropic import AnthropicTransport
 
     messages = [{"role": "user", "content": "fixture"}]
     chat = ChatCompletionsTransport().build_kwargs(

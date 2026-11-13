@@ -25,7 +25,7 @@ logger = logging.getLogger("hermes_agent.tools.browser_supervisor")
 
 def _redact_supervisor_text(value: str) -> str:
     """Redact page-originated text before exposing supervisor snapshots."""
-    from agent.redact import redact_sensitive_text
+    from hermes_agent.agent.redact import redact_sensitive_text
 
     return redact_sensitive_text(value, force=True)
 

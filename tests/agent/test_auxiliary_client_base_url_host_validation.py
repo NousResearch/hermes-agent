@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 def _extract_base_url_passed_to_build(mock_build):
     """Pull the base_url that `_try_anthropic()` actually handed to build_anthropic_client."""
     args, _kwargs = mock_build.call_args
-    # build_anthropic_client(token, base_url) per agent/auxiliary_client.py line 2180
+    # build_anthropic_client(token, base_url) per hermes_agent/agent/auxiliary_client.py line 2180
     assert len(args) >= 2, f"expected (token, base_url), got args={args}"
     return args[1]
 
@@ -24,7 +24,7 @@ class TestTryAnthropicBaseUrlHostValidation:
     def test_openrouter_base_url_does_not_leak_into_auxiliary(self, tmp_path, monkeypatch):
         """cfg.model.base_url=https://openrouter.ai/api/v1 must NOT override aux base_url."""
         import hermes_yaml as yaml
-        from agent.auxiliary_client import _try_anthropic
+        from hermes_agent.agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
@@ -36,14 +36,14 @@ class TestTryAnthropicBaseUrlHostValidation:
 
         with (
             patch(
-                "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
+                "hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                "hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                 return_value="***",
             ),
             patch(
-                "agent.anthropic_adapter.build_anthropic_client"
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client"
             ) as mock_build,
         ):
             mock_build.return_value = MagicMock()
@@ -59,7 +59,7 @@ class TestTryAnthropicBaseUrlHostValidation:
     def test_anthropic_default_host_is_preserved(self, tmp_path, monkeypatch):
         """The common case (operator sets model.base_url to api.anthropic.com) must still apply."""
         import hermes_yaml as yaml
-        from agent.auxiliary_client import _try_anthropic
+        from hermes_agent.agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
@@ -71,14 +71,14 @@ class TestTryAnthropicBaseUrlHostValidation:
 
         with (
             patch(
-                "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
+                "hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                "hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                 return_value="***",
             ),
             patch(
-                "agent.anthropic_adapter.build_anthropic_client"
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client"
             ) as mock_build,
         ):
             mock_build.return_value = MagicMock()
@@ -91,7 +91,7 @@ class TestTryAnthropicBaseUrlHostValidation:
     def test_openai_base_url_does_not_leak(self, tmp_path, monkeypatch):
         """Generic non-Anthropic host must not be applied as auxiliary base_url."""
         import hermes_yaml as yaml
-        from agent.auxiliary_client import _try_anthropic
+        from hermes_agent.agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
@@ -103,14 +103,14 @@ class TestTryAnthropicBaseUrlHostValidation:
 
         with (
             patch(
-                "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
+                "hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                "hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                 return_value="***",
             ),
             patch(
-                "agent.anthropic_adapter.build_anthropic_client"
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client"
             ) as mock_build,
         ):
             mock_build.return_value = MagicMock()
@@ -128,7 +128,7 @@ class TestTryAnthropicBaseUrlHostValidation:
         must be honored — the same convention the primary path already trusts —
         so auxiliary/fallback calls hit the configured endpoint, not the default."""
         import hermes_yaml as yaml
-        from agent.auxiliary_client import _try_anthropic
+        from hermes_agent.agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
@@ -140,14 +140,14 @@ class TestTryAnthropicBaseUrlHostValidation:
 
         with (
             patch(
-                "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
+                "hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                "hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                 return_value="***",
             ),
             patch(
-                "agent.anthropic_adapter.build_anthropic_client"
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client"
             ) as mock_build,
         ):
             mock_build.return_value = MagicMock()
@@ -162,7 +162,7 @@ class TestTryAnthropicBaseUrlHostValidation:
     def test_anthropic_suffix_host_check_direct(self):
         """Unit-level: the host check trusts native hosts and /anthropic gateways,
         and still rejects a bare non-Anthropic host (the #52608 guard)."""
-        from agent.auxiliary_client import _is_anthropic_compatible_host as ok
+        from hermes_agent.agent.auxiliary_client import _is_anthropic_compatible_host as ok
         assert ok("https://api.anthropic.com") is True
         assert ok("https://gateway.example.com/anthropic") is True
         assert ok("http://127.0.0.1:8080/anthropic/v1") is True
@@ -173,7 +173,7 @@ class TestTryAnthropicBaseUrlHostValidation:
     def test_anthropic_host_with_path_is_preserved(self, tmp_path, monkeypatch):
         """api.anthropic.com with a path suffix must still pass the host check."""
         import hermes_yaml as yaml
-        from agent.auxiliary_client import _try_anthropic
+        from hermes_agent.agent.auxiliary_client import _try_anthropic
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {
@@ -185,14 +185,14 @@ class TestTryAnthropicBaseUrlHostValidation:
 
         with (
             patch(
-                "agent.auxiliary_client._select_pool_entry", return_value=(False, None)
+                "hermes_agent.agent.auxiliary_client._select_pool_entry", return_value=(False, None)
             ),
             patch(
-                "agent.anthropic_credentials.resolve_anthropic_token",
+                "hermes_agent.agent.anthropic_credentials.resolve_anthropic_token",
                 return_value="***",
             ),
             patch(
-                "agent.anthropic_adapter.build_anthropic_client"
+                "hermes_agent.agent.anthropic_adapter.build_anthropic_client"
             ) as mock_build,
         ):
             mock_build.return_value = MagicMock()

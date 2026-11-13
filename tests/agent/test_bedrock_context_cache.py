@@ -16,9 +16,9 @@ from unittest.mock import Mock
 import pytest
 import hermes_yaml as yaml
 
-from agent import bedrock_adapter as ba
-from agent import model_metadata as mm
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent import bedrock_adapter as ba
+from hermes_agent.agent import model_metadata as mm
+from hermes_agent.agent.context_compressor import ContextCompressor
 
 
 @pytest.fixture(autouse=True)
@@ -66,8 +66,8 @@ def test_bedrock_resolution_migrates_ambiguous_cache_and_preserves_probe(
     else:
         script = '''
 import json, sys
-from agent import bedrock_adapter as ba
-from agent.context_compressor import ContextCompressor
+from hermes_agent.agent import bedrock_adapter as ba
+from hermes_agent.agent.context_compressor import ContextCompressor
 ba.probe_bedrock_context_length = lambda *a, **k: (_ for _ in ()).throw(AssertionError("reprobed persisted success"))
 c = ContextCompressor(sys.argv[1], provider="bedrock", base_url=sys.argv[2], quiet_mode=True)
 print(json.dumps([c.context_length, c.threshold_tokens]))
@@ -140,8 +140,8 @@ def test_unknown_model_fallback_and_host_inference(monkeypatch):
 @pytest.mark.parametrize("base_url", ["", "https://bedrock-runtime.us-east-1.amazonaws.com"])
 @pytest.mark.parametrize("writer", ["overflow", "usage"])
 def test_provider_confirmed_writers_survive_restart(monkeypatch, base_url, writer):
-    from agent.turn_overflow import _adopt_provider_context_limit
-    from agent.turn_usage import record_response_usage
+    from hermes_agent.agent.turn_overflow import _adopt_provider_context_limit
+    from hermes_agent.agent.turn_usage import record_response_usage
 
     model = "global.xai.grok-4.6"
     compressor = ContextCompressor(model, base_url=base_url, provider="bedrock", quiet_mode=True)
@@ -165,7 +165,7 @@ def test_provider_confirmed_writers_survive_restart(monkeypatch, base_url, write
     assert mm.get_cached_context_length(model, base_url or "bedrock://") == 96_000
     script = '''
 import sys
-from agent import model_metadata as mm, bedrock_adapter as ba
+from hermes_agent.agent import model_metadata as mm, bedrock_adapter as ba
 ba.probe_bedrock_context_length = lambda *a, **k: (_ for _ in ()).throw(AssertionError("lost provider limit"))
 assert mm.get_model_context_length(sys.argv[1], base_url=sys.argv[2], provider="bedrock") == 96000
 '''

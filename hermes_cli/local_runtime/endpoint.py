@@ -13,7 +13,7 @@ import logging
 import threading
 import urllib.request
 
-from agent.deadline import poll_until
+from hermes_agent.agent.deadline import poll_until
 
 LLAMACPP_ALIASES = frozenset({"llamacpp", "llama.cpp", "llama-cpp"})
 
@@ -139,7 +139,7 @@ def _kick_managed_boot(config: dict | None) -> None:
         finally:
             _KICK_LOCK.release()
 
-    from agent.memory_provider import spawn_context_thread
+    from hermes_agent.agent.memory_provider import spawn_context_thread
 
     # The caller's profile scope: ``config=None`` resolves (and the boot prices) under it.
     spawn_context_thread(_boot, name="lr-on-demand-boot").start()

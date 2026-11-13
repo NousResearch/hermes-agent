@@ -2,7 +2,7 @@
 is local, one deterministic line about Python tooling (python3/python versions, missing
 pip, pip bound to another Python, PEP 668) so models don't discover it by hitting
 walls. Cached per process; "" when clean. Remote backends are skipped (the sandbox has
-its own probe in agent/prompt_builder). Toggle: ``agent.environment_probe`` in config.yaml."""
+its own probe in hermes_agent/agent/prompt_builder). Toggle: ``agent.environment_probe`` in config.yaml."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ _PROBE_GEN = 0  # bumped on reset so a stale worker can't publish into the fresh
 _PROBE_WAIT_TIMEOUT = 10.0  # healthy runtime ~0.5s
 _WAIT_ALREADY_TIMED_OUT = False  # after one full wait, later callers only peek
 
-# Keep in sync with agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
+# Keep in sync with hermes_agent/agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
 # Duplicated rather than imported to avoid a circular import.
 _REMOTE_BACKENDS = frozenset({
     "docker", "modal", "daytona", "ssh", "managed_modal",
@@ -44,7 +44,7 @@ def _plugin_backend_is_remote(backend: str) -> bool:
     if not backend or backend in _REMOTE_BACKENDS or backend == "local":
         return False
     try:
-        from agent.terminal_env_registry import provider_flag
+        from hermes_agent.agent.terminal_env_registry import provider_flag
 
         return bool(provider_flag(backend, "is_remote", False))
     except Exception:

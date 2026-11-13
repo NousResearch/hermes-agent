@@ -88,7 +88,7 @@ def _arg_preview(name: str, arguments: Any) -> str:
     if not isinstance(arguments, dict) or not arguments:
         return ""
     try:
-        from agent.display import build_tool_preview
+        from hermes_agent.agent.display import build_tool_preview
         return build_tool_preview(name, arguments) or ""
     except Exception:
         logger.debug("argument preview failed for %s", name, exc_info=True)
@@ -98,7 +98,7 @@ def _arg_preview(name: str, arguments: Any) -> str:
 def _local_tool_label(name: str, arguments: Any) -> ToolLabel:
     verb = ""
     try:
-        from agent.display import get_tool_verb
+        from hermes_agent.agent.display import get_tool_verb
         verb = get_tool_verb(name) or ""
     except Exception:
         logger.debug("friendly verb lookup failed for %s", name, exc_info=True)

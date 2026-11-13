@@ -9,7 +9,7 @@ until someone shows it acts only through the agent's sandbox:
   :data:`HOSTED_TOOL_ALLOWLIST`, the tools whose every effect goes through the agent's own sandbox
   (``hermes_agent.tools.environments.sandbox_scope``). Everything else (memory, recall, todo, vision, browser, web,
   MCP, connectors, catalog, delegation, skills, cron, ...) is refused before its handler. The agent
-  loop asks once per call, in ``agent.tool_executor._dispatch_authorized_once``: the one function every
+  loop asks once per call, in ``hermes_agent.agent.tool_executor._dispatch_authorized_once``: the one function every
   sequential, concurrent and batched call goes through, whatever executes it (inline agent tools,
   memory-provider and context-engine tools, the registry, connectors). The execution primitives also
   ask, for callers outside the loop: ``ToolRegistry.dispatch`` (execute_code RPC, the session kernel,

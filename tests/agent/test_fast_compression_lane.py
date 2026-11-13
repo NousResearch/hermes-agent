@@ -6,10 +6,10 @@ from unittest.mock import MagicMock, patch
 
 
 def _resolve(config, *, provider="ollama", model="qwen3:8b", requested_model=None):
-    from agent.auxiliary_client import resolve_compression_fast_lane
+    from hermes_agent.agent.auxiliary_client import resolve_compression_fast_lane
 
     with patch(
-        "agent.auxiliary_client._get_auxiliary_task_config",
+        "hermes_agent.agent.auxiliary_client._get_auxiliary_task_config",
         return_value=config,
     ):
         return resolve_compression_fast_lane(
@@ -51,7 +51,7 @@ def test_inherited_auto_or_uncertified_compression_routes_remain_uncapped():
 
 
 def test_inherited_reasoning_control_is_preserved_without_enabling_a_cap():
-    from agent.auxiliary_client import _get_task_extra_body
+    from hermes_agent.agent.auxiliary_client import _get_task_extra_body
 
     certified = {
         "provider": "ollama",
@@ -66,11 +66,11 @@ def test_inherited_reasoning_control_is_preserved_without_enabling_a_cap():
         "max_output_tokens": 1400,
     }
 
-    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=certified):
+    with patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=certified):
         assert _get_task_extra_body("compression")["reasoning"] == {
             "enabled": False,
         }
-    with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=inherited):
+    with patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=inherited):
         assert _get_task_extra_body("compression")["reasoning"] == {
             "enabled": False,
         }
@@ -102,7 +102,7 @@ def test_summary_model_override_is_certified_against_the_effective_model():
 
 
 def test_compression_latency_records_delayed_first_provider_chunk():
-    from agent.auxiliary_client import _notify_aux_progress, call_llm
+    from hermes_agent.agent.auxiliary_client import _notify_aux_progress, call_llm
 
     class _DelayedSemaphore:
         def acquire(self):
@@ -138,8 +138,8 @@ def test_compression_latency_records_delayed_first_provider_chunk():
     client.chat.completions.create.side_effect = lambda **_kwargs: _chunks()
 
     with (
-        patch("agent.auxiliary_client._acquire_sync_aux_semaphore", return_value=_DelayedSemaphore()),
-        patch("agent.auxiliary_client._get_cached_client", side_effect=_resolve_client),
+        patch("hermes_agent.agent.auxiliary_client._acquire_sync_aux_semaphore", return_value=_DelayedSemaphore()),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", side_effect=_resolve_client),
     ):
         response = call_llm(
             task="compression",
@@ -156,7 +156,7 @@ def test_compression_latency_records_delayed_first_provider_chunk():
 
 
 def test_certified_fast_lane_ignores_legacy_cap_and_preserves_reasoning():
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     config = {
         "provider": "ollama",
@@ -170,9 +170,9 @@ def test_certified_fast_lane_ignores_legacy_cap_and_preserves_reasoning():
     client.chat.completions.create.return_value = response
 
     with (
-        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3:8b")),
-        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+        patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3:8b")),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", return_value=response),
     ):
         assert call_llm(
             task="compression",
@@ -189,7 +189,7 @@ def test_certified_fast_lane_ignores_legacy_cap_and_preserves_reasoning():
 
 
 def test_uncertified_effective_primary_route_does_not_receive_fast_cap():
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     config = {
         "provider": "ollama",
@@ -203,12 +203,12 @@ def test_uncertified_effective_primary_route_does_not_receive_fast_cap():
     client.chat.completions.create.return_value = response
 
     with (
-        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
         patch(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "server-selected-model"),
         ),
-        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", return_value=response),
     ):
         assert call_llm(
             task="compression",
@@ -222,7 +222,7 @@ def test_uncertified_effective_primary_route_does_not_receive_fast_cap():
 
 
 def test_legacy_boolean_cap_does_not_bypass_route_certification():
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     config = {
         "provider": "ollama",
@@ -236,12 +236,12 @@ def test_legacy_boolean_cap_does_not_bypass_route_certification():
     client.chat.completions.create.return_value = response
 
     with (
-        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
         patch(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "server-selected-model"),
         ),
-        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", return_value=response),
     ):
         assert call_llm(
             task="compression",
@@ -255,7 +255,7 @@ def test_legacy_boolean_cap_does_not_bypass_route_certification():
 
 
 def test_bedrock_converse_ttfp_waits_for_the_nonstreaming_response():
-    from agent.auxiliary_client import BedrockAuxiliaryClient, call_llm
+    from hermes_agent.agent.auxiliary_client import BedrockAuxiliaryClient, call_llm
 
     config = {
         "provider": "auto",
@@ -279,12 +279,12 @@ def test_bedrock_converse_ttfp_waits_for_the_nonstreaming_response():
         return response
 
     with (
-        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
         patch(
-            "agent.auxiliary_client._get_cached_client",
+            "hermes_agent.agent.auxiliary_client._get_cached_client",
             return_value=(client, "amazon.nova-lite-v1:0"),
         ),
-        patch("agent.bedrock_adapter.call_converse", side_effect=_delayed_converse),
+        patch("hermes_agent.agent.bedrock_adapter.call_converse", side_effect=_delayed_converse),
     ):
         assert call_llm(
             task="compression",
@@ -298,7 +298,7 @@ def test_bedrock_converse_ttfp_waits_for_the_nonstreaming_response():
 
 
 def test_summary_model_override_cap_uses_the_actual_primary_request():
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     config = {
         "provider": "ollama",
@@ -312,9 +312,9 @@ def test_summary_model_override_cap_uses_the_actual_primary_request():
     client.chat.completions.create.return_value = response
 
     with (
-        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3:14b")),
-        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+        patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3:14b")),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", return_value=response),
     ):
         assert call_llm(
             task="compression",
@@ -328,7 +328,7 @@ def test_summary_model_override_cap_uses_the_actual_primary_request():
 
 
 def test_fallback_reasoning_requires_independent_route_certification():
-    from agent.auxiliary_client import _call_fallback_candidate_sync
+    from hermes_agent.agent.auxiliary_client import _call_fallback_candidate_sync
 
     response = object()
 
@@ -344,8 +344,8 @@ def test_fallback_reasoning_requires_independent_route_certification():
         client.base_url = "http://127.0.0.1:11434/v1"
         client.chat.completions.create.return_value = response
         with (
-            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
-            patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+            patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+            patch("hermes_agent.agent.auxiliary_client._validate_llm_response", return_value=response),
         ):
             assert _call_fallback_candidate_sync(
                 client,
@@ -413,7 +413,7 @@ def test_timing_hooks_propagate_to_protected_call_worker_thread():
     protected path (the common case: aux_interrupt_protection + hard-cancel
     source both active).
     """
-    from agent.auxiliary_client import (
+    from hermes_agent.agent.auxiliary_client import (
         _aux_thread_local_hook,
         _aux_dispatch,
         _aux_provider_response,
@@ -455,7 +455,7 @@ def test_explicit_caller_max_tokens_keeps_provider_quirk_handling():
     passthrough and was misread as a lane cap — forcing the param onto
     providers where the omission was intentional (pre-fast-lane behavior).
     """
-    from agent.auxiliary_client import call_llm
+    from hermes_agent.agent.auxiliary_client import call_llm
 
     config = {"provider": "auto", "model": "", "max_output_tokens": 0}
     client = MagicMock()
@@ -464,9 +464,9 @@ def test_explicit_caller_max_tokens_keeps_provider_quirk_handling():
     client.chat.completions.create.return_value = response
 
     with (
-        patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
-        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3:8b")),
-        patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+        patch("hermes_agent.agent.auxiliary_client._get_auxiliary_task_config", return_value=config),
+        patch("hermes_agent.agent.auxiliary_client._get_cached_client", return_value=(client, "qwen3:8b")),
+        patch("hermes_agent.agent.auxiliary_client._validate_llm_response", return_value=response),
     ):
         assert call_llm(
             task="compression",

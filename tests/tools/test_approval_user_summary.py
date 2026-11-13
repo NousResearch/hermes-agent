@@ -22,7 +22,7 @@ def test_denied_result_carries_a_user_summary_beside_the_model_text(monkeypatch)
 
 
 def test_cli_completion_line_prefers_user_summary_over_blocked_text():
-    from agent.display import _detect_tool_failure
+    from hermes_agent.agent.display import _detect_tool_failure
     result = json.dumps({"output": "", "exit_code": -1, "status": "blocked",
                          "error": "BLOCKED: User denied this command. The user has NOT consented ...",
                          "user_summary": "You denied this command — it did not run."})

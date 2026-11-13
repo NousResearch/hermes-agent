@@ -328,7 +328,7 @@ def test_launch_external_worker_treats_a_routed_fire_as_multiplexed(tmp_path, mo
     worker env must not carry a launch-only value — and the context must not outlive the handoff."""
     from hermes_agent.cron import scheduler
     import hermes_constants
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.process_registry import GatewayChildDispatch
 
@@ -388,7 +388,7 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     spawned, payloads, handoff, get = _stub_external_worker_launch(scheduler, monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-cross-profile")
     monkeypatch.setenv("SERVICE_TOKEN", "default-profile-token")
-    from agent.secret_scope import set_multiplex_active
+    from hermes_agent.agent.secret_scope import set_multiplex_active
 
     set_multiplex_active(True)
     try:
@@ -1002,7 +1002,7 @@ def test_dispatch_failure_notice_resolves_the_owning_profiles_home_channel(
     from hermes_agent.cron import incidents
     from hermes_agent.cron import scheduler
     import hermes_agent.cron.scheduler_delivery as delivery
-    from agent import secret_scope
+    from hermes_agent.agent import secret_scope
 
     home = tmp_path / "profiles" / "worker"
     home.mkdir(parents=True)

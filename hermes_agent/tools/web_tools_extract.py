@@ -50,7 +50,7 @@ def _disabled_plugin_error(capability: str, disabled_key: str) -> str:
 
 def _no_provider_error(capability: str, fallback: str) -> str:
     """Error when no provider resolved: point at a disabled bundled plugin if that is the real cause."""
-    from agent.web_search_registry import _disabled_web_plugin_for
+    from hermes_agent.agent.web_search_registry import _disabled_web_plugin_for
     disabled_key = _disabled_web_plugin_for(capability=capability)
     return _disabled_plugin_error(capability, disabled_key) if disabled_key else fallback
 
@@ -91,7 +91,7 @@ def _validate_extract_urls(urls: list[Any]):
     """Normalize model-supplied items and block URLs carrying secrets (percent-encoded forms are unquoted
     and checked too). Returns ``(normalized_urls, normalized_indices, invalid_urls, blocked_json)``;
     ``blocked_json`` is a whole-call refusal (exfiltration prevention) or None."""
-    from agent.redact import _PREFIX_RE
+    from hermes_agent.agent.redact import _PREFIX_RE
     from urllib.parse import unquote
 
     normalized_urls, normalized_indices, invalid_urls = [], [], {}
@@ -117,7 +117,7 @@ def _resolve_extract_provider(backend: str):
     A registered search-only backend is a typed error (never a silent switch). An unregistered name with
     a stored web selection is a strict-selection error; with no selection, fall through to the walk.
     """
-    from agent.web_search_registry import get_active_extract_provider, get_provider as _wsp_get_provider
+    from hermes_agent.agent.web_search_registry import get_active_extract_provider, get_provider as _wsp_get_provider
     provider = _wsp_get_provider(backend) if backend else None
     if provider is not None and provider.supports_extract():
         return provider, None

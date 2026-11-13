@@ -11,7 +11,7 @@ import asyncio
 import contextlib
 import uuid
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 
 
 def _local_session(runner, source):
@@ -42,7 +42,7 @@ async def refine_local_session(runner, source, focus):
     target, history = await asyncio.to_thread(load)
     if not history:
         return t('gateway.refine.nothing_yet')
-    from agent.background_review import finish_background_review_run, prepare_background_review_run
+    from hermes_agent.agent.background_review import finish_background_review_run, prepare_background_review_run
     from hermes_agent.gateway.session_tui_side import _side_agent, _side_scope, _spawn
     # The guard is the session's (its side agent is per call): a /refine while one runs joins it, as
     # the resident agent's does, and the session's next turn cancels it (``_execute_claimed``).
@@ -70,8 +70,8 @@ async def refine_local_session(runner, source, focus):
         return ''  # the summary (if any) was published above; an empty review.summary draws nothing
 
     def review_body():
-        from agent.background_review import spawn_background_review_thread
-        from agent.turn_finalizer import _clone_background_review_messages
+        from hermes_agent.agent.background_review import spawn_background_review_thread
+        from hermes_agent.agent.turn_finalizer import _clone_background_review_messages
         with _side_scope(authority, policy, task_id):
             # The session's own id: the review's usage is recorded against it, and the agent never
             # runs a turn of its own, so it writes no row. close() would tear down that id's terminal,

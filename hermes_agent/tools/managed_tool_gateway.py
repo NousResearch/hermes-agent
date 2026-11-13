@@ -65,7 +65,7 @@ def _read_user_token_override() -> Optional[str]:
     when installed (a scoped miss must NOT borrow the process env under multiplex); ``os.environ`` only
     when unscoped. Any non-UnscopedSecretError failure propagates -- a failed scoped read must never
     silently borrow the ambient env."""
-    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_agent.agent.secret_scope import UnscopedSecretError, get_secret
 
     try:
         explicit = get_secret("TOOL_GATEWAY_USER_TOKEN")

@@ -76,7 +76,7 @@ def _can_deliver_completion() -> bool:
 
     Finite turns (non-interactive ``hermes chat -q`` / ``-z``, as ``delegate_task`` decides inline execution) end
     the run when the turn ends, so a promised notice would never arrive."""
-    from agent.delegation_context import is_delegated_child_context
+    from hermes_agent.agent.delegation_context import is_delegated_child_context
     from hermes_agent.gateway.session_context import async_delivery_supported, get_session_env
     from hermes_agent.gateway.session_finite import finite_turn_required
     finite = finite_turn_required()

@@ -20,7 +20,7 @@ _WORKER_TOKEN = "worker-profile-token-456"
 
 @pytest.fixture(autouse=True)
 def _reset_multiplex_flag():
-    from agent import secret_scope as ss
+    from hermes_agent.agent import secret_scope as ss
 
     ss.set_multiplex_active(False)
     yield
@@ -114,7 +114,7 @@ class TestProfileEnvIsNotThePrimaryClaim:
 class TestHostGatewaySpawnEnv:
     def test_restart_watcher_uses_settled_default_on_when_config_is_unset(self, tmp_path, monkeypatch):
         """A resolved default-on decision survives restart even when raw config is unset."""
-        from agent.secret_scope import set_multiplex_active
+        from hermes_agent.agent.secret_scope import set_multiplex_active
         from hermes_agent.gateway.run_shutdown import GatewayShutdownMixin
 
         default_home, worker_home = _two_homes(tmp_path)

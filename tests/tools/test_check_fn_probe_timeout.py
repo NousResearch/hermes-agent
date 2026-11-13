@@ -105,7 +105,7 @@ def test_an_uncached_check_answers_for_its_own_caller_while_another_runs(monkeyp
     so a concurrent caller must never inherit another caller's verdict."""
     from contextlib import nullcontext
 
-    from agent.delegation_context import delegated_child_context
+    from hermes_agent.agent.delegation_context import delegated_child_context
     from hermes_agent.tools import kanban_tools
 
     entered, release, results = threading.Event(), threading.Event(), {}
@@ -140,7 +140,7 @@ def test_an_uncached_check_answers_for_its_own_caller_while_another_runs(monkeyp
 
 
 def test_a_bounded_probe_keeps_scope_errors_and_contextvar_publication():
-    from agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
+    from hermes_agent.agent.secret_scope import get_secret, reset_secret_scope, set_secret_scope
 
     def publishing_probe():
         _published.set(get_secret("PROBE_ONLY_KEY"))

@@ -1,6 +1,6 @@
 """Tests for stale tool-call marker session repair (hermes_state, #78148).
 
-Before the root-cause fix in ``agent.conversation_loop``, a local tool-call
+Before the root-cause fix in ``hermes_agent.agent.conversation_loop``, a local tool-call
 template could emit a bare bracketed marker (e.g. "[memory]") as assistant
 content alongside a real tool call. The loop cached that marker as a
 fallback and, when the following turn came back empty, replayed it as the

@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.lsp import eventlog
-from agent.lsp.manager import LSPService, _client_key
-from agent.lsp.servers import find_server_for_file
-from agent.lsp.workspace import clear_cache
+from hermes_agent.agent.lsp import eventlog
+from hermes_agent.agent.lsp.manager import LSPService, _client_key
+from hermes_agent.agent.lsp.servers import find_server_for_file
+from hermes_agent.agent.lsp.workspace import clear_cache
 
 
 @pytest.fixture(autouse=True)

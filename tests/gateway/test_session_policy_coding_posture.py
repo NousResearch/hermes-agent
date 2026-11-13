@@ -67,7 +67,7 @@ def test_plugin_mcp_servers_stay_in_the_posture(project, monkeypatch):
 @pytest.mark.parametrize('source', ['tool', 'gui'])
 def test_the_daemons_own_directory_is_not_a_workspace(project, monkeypatch, source):
     monkeypatch.chdir(project)
-    monkeypatch.setattr('agent.runtime_cwd.resolve_agent_cwd', lambda: project)
+    monkeypatch.setattr('hermes_agent.agent.runtime_cwd.resolve_agent_cwd', lambda: project)
     assert 'coding' not in create({'source': source}, FOCUS, profile_terminal=False).toolsets
 
 

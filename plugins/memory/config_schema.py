@@ -6,7 +6,7 @@ provider's runtime into the web server; they may import only this pure-data modu
 Only ``STORAGE_PROVIDER`` reads/writes load the provider itself (in the plugin host when
 ``plugins.isolation`` is ``host``). ``web_server`` owns read/write, dispatching on ``storage``: a flat JSON file
 core reads and writes, or ``provider``, where the provider's ``read_config_fields`` /
-``write_config_fields`` own the file layout (``agent.memory_provider.MemoryProvider``).
+``write_config_fields`` own the file layout (``hermes_agent.agent.memory_provider.MemoryProvider``).
 """
 
 from __future__ import annotations

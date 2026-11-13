@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
-from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION
+from hermes_agent.agent.context_compressor import ContextCompressor
+from hermes_agent.agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION
 
 
 def _response(content: str) -> SimpleNamespace:
@@ -36,7 +36,7 @@ def _user_turns() -> list[dict]:
 @pytest.fixture()
 def compressor() -> ContextCompressor:
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         instance = ContextCompressor(
@@ -65,7 +65,7 @@ def _captured_prompt(compressor: ContextCompressor) -> str:
         )
         return _response("## Goal\nStub summary.")
 
-    with patch("agent.context_compressor.call_llm", side_effect=_capture):
+    with patch("hermes_agent.agent.context_compressor.call_llm", side_effect=_capture):
         compressor._generate_summary(_user_turns())
     return captured.get("prompt", "")
 

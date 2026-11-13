@@ -22,11 +22,11 @@ import json
 
 import pytest
 
-from agent.message_sanitization import (
+from hermes_agent.agent.message_sanitization import (
     _sanitize_structure_surrogates,
     _sanitize_surrogates,
 )
-from agent.turn_finalizer import finalize_turn
+from hermes_agent.agent.turn_finalizer import finalize_turn
 from tests.agent.test_turn_finalizer_final_response_persistence import FakeAgent
 
 LONE_HIGH = "\ud83d"  # unpaired high surrogate (half of an emoji pair)

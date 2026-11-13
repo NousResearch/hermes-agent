@@ -610,7 +610,7 @@ async def get_session_latest_descendant(session_id: str, profile: Optional[str] 
 
 
 def _stored_tool_call_labels(message: dict) -> dict:
-    from agent.display import tool_labels_for_call
+    from hermes_agent.agent.display import tool_labels_for_call
     from hermes_agent.tools.tool_labels import BRIDGE_TOOL_NAMES
 
     out = {}
@@ -680,13 +680,13 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     every retry (``refusing truncation without fallback``). Hide them the same way the
     Desktop collapses other display-only rows; typed notices stay for the timeline.
     """
-    from agent.compaction_display import project_compaction_message_for_display
-    from agent.context_compressor import is_compaction_summary_message
-    from agent.conversation_compression import _extract_steer_text_from_message
-    from agent.history_commentary import project_history_commentary
-    from agent.message_metadata import withheld_prompt_text
-    from agent.prompt_builder import STEER_DISPLAY_KIND
-    from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, untyped_failed_turn_display_kind
+    from hermes_agent.agent.compaction_display import project_compaction_message_for_display
+    from hermes_agent.agent.context_compressor import is_compaction_summary_message
+    from hermes_agent.agent.conversation_compression import _extract_steer_text_from_message
+    from hermes_agent.agent.history_commentary import project_history_commentary
+    from hermes_agent.agent.message_metadata import withheld_prompt_text
+    from hermes_agent.agent.prompt_builder import STEER_DISPLAY_KIND
+    from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, untyped_failed_turn_display_kind
 
     # inline_images=False (#116511): render content through the gateway's ``_coerce_message_text``
     # projection so a data-URI image part becomes ``[image]`` — the same branch session.resume's

@@ -74,9 +74,9 @@ def pin(server, name, version="1", *, bad_hash=False, payload=None, signature=No
 
 def consumer(name):
     if name == "bws":
-        from agent.secret_sources.bitwarden import find_bws, install_bws
+        from hermes_agent.agent.secret_sources.bitwarden import find_bws, install_bws
         return find_bws, install_bws
-    from agent.proxy_sources.iron_proxy import find_iron_proxy, install_iron_proxy
+    from hermes_agent.agent.proxy_sources.iron_proxy import find_iron_proxy, install_iron_proxy
     return find_iron_proxy, install_iron_proxy
 
 
@@ -150,8 +150,8 @@ def test_signature_rejection_preserves_previous_selection(consumer_store, tmp_pa
 
 @pytest.mark.platforms("posix")
 def test_managed_consumers_run_their_business_protocol(consumer_store, monkeypatch):
-    from agent.secret_sources.bitwarden import fetch_bitwarden_secrets, install_bws
-    from agent.proxy_sources.iron_proxy import install_iron_proxy, iron_proxy_version
+    from hermes_agent.agent.secret_sources.bitwarden import fetch_bitwarden_secrets, install_bws
+    from hermes_agent.agent.proxy_sources.iron_proxy import install_iron_proxy, iron_proxy_version
 
     monkeypatch.setenv("PATH", "")
     monkeypatch.setenv("MY_PRIVATE_TOKEN", "not-for-proxy")

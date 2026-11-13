@@ -128,7 +128,7 @@ def test_real_cli_startup_and_commands_run_no_plugin_code_in_the_cli(tmp_path, m
     after a rescan here or by another client; each recognized command fires ``pre_command`` once, in the gateway, in typed order,
     with main's values. The CLI starts in a trusted repo the gateway does not run from: its project skill
     is listed and loaded from the session's folder."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     root = Path(__file__).resolve().parents[2]
     with _gateway(tmp_path, project=True) as (proc, _desc, home, work, env, log, _peer):
         probe = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/cli_plugin_free_startup.py'),
@@ -175,7 +175,7 @@ def test_real_cli_startup_and_commands_run_no_plugin_code_in_the_cli(tmp_path, m
 @pytest.mark.platforms("linux")
 def test_pre_command_fires_once_in_the_gateway_and_cli_plugins_reads_its_list(tmp_path, monkeypatch, capsys):
     import hermes_cli.plugins as plugins_mod
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     from cli import HermesCLI
     root = Path(__file__).resolve().parents[2]
     home, user, work = tmp_path / 'state', tmp_path / 'user', tmp_path / 'work'
@@ -405,7 +405,7 @@ def test_commands_refused_during_a_turn_fire_nothing(tmp_path):
     ``busy_policy``): through ``slash.exec`` and ``command.dispatch`` it is refused and fires nothing.
     A mid-run variant that refuses its arguments (``/goal <new text>``, ``/loop <new loop>``) fires
     nothing either; the same variant accepting a control verb (``/goal status``) fires once."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
     with _gateway(tmp_path) as (_proc, desc, home, work, _env, log, peer):
         wire = _Wire(home, desc)
         try:

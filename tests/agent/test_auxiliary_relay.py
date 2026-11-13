@@ -5,7 +5,7 @@ import pytest
 
 pytest.importorskip("nemo_relay")
 
-from agent import auxiliary_client, relay_llm, relay_runtime
+from hermes_agent.agent import auxiliary_client, relay_llm, relay_runtime
 from hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_cli.observability.shared_metrics_contract import MODEL_ROUTE_METRIC
 from hermes_cli.observability.shared_metrics_subscriber import SharedMetricsSubscriber

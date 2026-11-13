@@ -26,9 +26,9 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import agent.conversation_compression as cc
+import hermes_agent.agent.conversation_compression as cc
 
-from agent.conversation_compression import (
+from hermes_agent.agent.conversation_compression import (
     CompressionCommitFence,
     _claim_compressor_attempt,
     _mark_compressor_working_attempt,
@@ -44,7 +44,7 @@ def _build_agent(tmp_path: Path, session_id: str, db: SessionDB | None = None):
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session(session_id, source="cli")
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -237,7 +237,7 @@ class TestDurableAttemptBackoff:
         """The ladder's first rung (60s) undercut a 120s idle stall window, so the next oversized turn
         re-entered the same silent route ~1 min after burning the whole window (#112420). The recorded
         cooldown must cover at least one idle window; a window below the rung leaves the ladder as is."""
-        import agent.conversation_compression as cc
+        import hermes_agent.agent.conversation_compression as cc
 
         db, agent = _build_agent(tmp_path, "BACKOFF_FLOOR")
         compressor = agent.context_compressor
@@ -353,7 +353,7 @@ class TestProviderOverflowBypassesCooldown:
             {"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i} " * 400}
             for i in range(20)
         ]
-        with patch("agent.context_compressor.call_llm", fake_call_llm):
+        with patch("hermes_agent.agent.context_compressor.call_llm", fake_call_llm):
             out, _ = compress_context(
                 agent, live, "sys", approx_tokens=500_000, bypass_cooldown=True
             )
@@ -374,7 +374,7 @@ class TestProviderOverflowBypassesCooldown:
 
         live = _messages()
         before = copy.deepcopy(live)
-        with patch("agent.context_compressor.call_llm", fake_call_llm):
+        with patch("hermes_agent.agent.context_compressor.call_llm", fake_call_llm):
             out, _ = compress_context(agent, live, "sys", approx_tokens=500_000)
         assert calls == [] and out == before
         assert compression_blocked_transiently(agent) is True, (

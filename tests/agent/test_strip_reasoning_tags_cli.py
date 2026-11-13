@@ -3,14 +3,14 @@ XML stripping added in openclaw/openclaw#67318 port.
 
 The CLI has its own copy of the stripper because it needs to run on the
 final displayed assistant text (after streaming) without depending on the
-AIAgent instance. It must stay in sync with run_agent.py::_strip_think_blocks
+AIAgent instance. It must stay in sync with hermes_agent/run_agent.py::_strip_think_blocks
 for tool-call tag coverage."""
 
 from functools import partial
 
 import pytest
 
-from agent.agent_runtime_helpers import strip_think_blocks
+from hermes_agent.agent.agent_runtime_helpers import strip_think_blocks
 from cli import _strip_reasoning_tags
 
 # GLM text-channel tool call cut mid-serialization by a stream drop (#101899):

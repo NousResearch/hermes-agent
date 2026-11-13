@@ -102,7 +102,7 @@ def _print_curator_config(curator) -> None:
 
 
 def _cmd_status(args) -> int:
-    from agent import curator
+    from hermes_agent.agent import curator
     from hermes_agent.tools import skill_usage
     _print_curator_config(curator)
     if locked := skill_usage.locked_skill_names():
@@ -146,7 +146,7 @@ def _cmd_status(args) -> int:
 
 
 def _cmd_run(args) -> int:
-    from agent import curator
+    from hermes_agent.agent import curator
     if not curator.is_enabled():
         print("curator: disabled via config; enable with `curator.enabled: true`")
         return 1
@@ -190,7 +190,7 @@ def _cmd_run(args) -> int:
 
 
 def _set_paused(paused: bool) -> int:
-    from agent import curator
+    from hermes_agent.agent import curator
     curator.set_paused(paused)
     print("curator: paused" if paused else "curator: resumed")
     return 0
@@ -365,7 +365,7 @@ def _idle_days(record: dict) -> Optional[int]:
 
 def _cmd_prune(args) -> int:
     """Bulk-archive curator-managed skills idle for >= N days (pinned exempt, archived skipped)."""
-    from agent import curator
+    from hermes_agent.agent import curator
     from hermes_agent.tools import skill_usage
     days = getattr(args, "days", None)
     if days is None:
@@ -403,7 +403,7 @@ def _cmd_prune(args) -> int:
 
 def _cmd_backup(args) -> int:
     """Manual skills-tree snapshot (same mechanism as the automatic pre-run snapshot)."""
-    from agent import curator_backup
+    from hermes_agent.agent import curator_backup
     if not curator_backup.is_enabled():
         print(
             "curator: backups are disabled via config "
@@ -544,7 +544,7 @@ def _rollback_ledger_entry(args, entry_id: str) -> int:
 
 def _cmd_rollback(args) -> int:
     """Restore the skills tree from a snapshot, or a single mutation from the audit ledger."""
-    from agent import curator_backup
+    from hermes_agent.agent import curator_backup
     entry_id = getattr(args, "entry_id", None)
     if entry_id:
         return _rollback_ledger_entry(args, entry_id)

@@ -16,7 +16,7 @@ import logging
 
 class TestAuxiliaryOpenrouterDefaultIsFree:
     def test_builtin_openrouter_default_is_free_sku(self):
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         assert ac._is_free_model(ac._OPENROUTER_MODEL), (
             "the built-in auxiliary OpenRouter fallback model must be a :free "
@@ -26,7 +26,7 @@ class TestAuxiliaryOpenrouterDefaultIsFree:
 
     def test_user_configured_model_still_honored(self, monkeypatch):
         """auxiliary.openrouter_model from config wins over the built-in default."""
-        from agent import auxiliary_client as ac
+        from hermes_agent.agent import auxiliary_client as ac
 
         monkeypatch.setattr(
             "hermes_cli.config.load_config_readonly",
@@ -46,7 +46,7 @@ class TestEnvIngestionWarning:
 
     def test_warns_on_new_openrouter_env_ingestion(self, tmp_path, monkeypatch, caplog):
         self._fresh_home(tmp_path, monkeypatch)
-        from agent import credential_pool as cp
+        from hermes_agent.agent import credential_pool as cp
 
         monkeypatch.setattr(cp, "_ENV_INGESTION_WARNED", set())
         entries = []
@@ -64,7 +64,7 @@ class TestEnvIngestionWarning:
 
     def test_warning_once_per_process(self, tmp_path, monkeypatch, caplog):
         self._fresh_home(tmp_path, monkeypatch)
-        from agent import credential_pool as cp
+        from hermes_agent.agent import credential_pool as cp
 
         monkeypatch.setattr(cp, "_ENV_INGESTION_WARNED", set())
         with caplog.at_level(logging.WARNING, logger=cp.logger.name):
@@ -80,7 +80,7 @@ class TestEnvIngestionWarning:
     def test_no_warning_when_entry_unchanged(self, tmp_path, monkeypatch, caplog):
         """Re-seeding an already-present, identical credential stays silent."""
         self._fresh_home(tmp_path, monkeypatch)
-        from agent import credential_pool as cp
+        from hermes_agent.agent import credential_pool as cp
 
         entries = []
         changed, _ = cp._seed_from_env("openrouter", entries)

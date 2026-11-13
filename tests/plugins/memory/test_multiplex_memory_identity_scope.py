@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 
 _DEFAULT_ENV = {
     "RETAINDB_PROJECT": "proj-default", "RETAINDB_BASE_URL": "https://rdb.default",

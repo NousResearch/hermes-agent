@@ -1,4 +1,4 @@
-"""Tests for agent.credits_tracker — CreditsState + parse_credits_headers.
+"""Tests for hermes_agent.agent.credits_tracker — CreditsState + parse_credits_headers.
 
 Covers the 9-state matrix plus validation edge cases.  All header values
 arrive as STRINGS (the producer calls String(...) on every field).
@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 import pytest
 
-from agent.credits_tracker import CreditsState, parse_credits_headers
+from hermes_agent.agent.credits_tracker import CreditsState, parse_credits_headers
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

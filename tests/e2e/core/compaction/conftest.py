@@ -42,7 +42,7 @@ def make_scenario(provider, tmp_path, monkeypatch):
         if slow:
             # The compression request timeout has a 300 s production floor; pin it (and the host idle
             # watchdog) to seconds so a hung summarizer is judged inside a unit-test budget.
-            import agent.auxiliary_client as aux
+            import hermes_agent.agent.auxiliary_client as aux
 
             monkeypatch.setattr(aux, "_COMPRESSION_TIMEOUT_FLOOR_SECONDS", SLOW_SUMMARY_TIMEOUT_SECONDS)
             extra += f"  context_timeout_seconds: {SLOW_SUMMARY_TIMEOUT_SECONDS}\n"

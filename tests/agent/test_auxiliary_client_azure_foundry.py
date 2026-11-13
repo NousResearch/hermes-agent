@@ -1,6 +1,6 @@
 """Tests for auxiliary client routing of the ``azure-foundry`` provider.
 
-Covers the dedicated branch in ``agent.auxiliary_client.resolve_provider_client``
+Covers the dedicated branch in ``hermes_agent.agent.auxiliary_client.resolve_provider_client``
 that delegates to :func:`hermes_cli.runtime_provider._resolve_azure_foundry_runtime`
 instead of falling into the generic ``resolve_api_key_provider_credentials``
 path (which only knows about ``AZURE_FOUNDRY_API_KEY`` and would 401 for
@@ -33,7 +33,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset_credential_cache():
-    from agent.azure_identity_adapter import reset_credential_cache
+    from hermes_agent.agent.azure_identity_adapter import reset_credential_cache
     reset_credential_cache()
     yield
     reset_credential_cache()
@@ -43,7 +43,7 @@ def _reset_credential_cache():
 def fake_azure_identity(monkeypatch):
     """Stand-in for azure.identity (keeps CI hermetic when the SDK is
     not installed)."""
-    from agent import azure_identity_adapter as _adapter
+    from hermes_agent.agent import azure_identity_adapter as _adapter
 
     last = {"scope": None}
 
@@ -87,7 +87,7 @@ def patch_load_config(monkeypatch):
 
 class TestAuxAzureFoundryApiKey:
     def test_chat_completions_returns_plain_openai_client(self, monkeypatch, patch_load_config):
-        from agent.auxiliary_client import _try_azure_foundry
+        from hermes_agent.agent.auxiliary_client import _try_azure_foundry
         from openai import OpenAI as _OpenAI
 
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "sk-azure-static-key")
@@ -105,7 +105,7 @@ class TestAuxAzureFoundryApiKey:
 
 
     def test_no_key_returns_none(self, monkeypatch, patch_load_config):
-        from agent.auxiliary_client import _try_azure_foundry
+        from hermes_agent.agent.auxiliary_client import _try_azure_foundry
 
         monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
         patch_load_config({
@@ -140,7 +140,7 @@ class TestAuxAzureFoundryEntra:
         per request to mint ``Authorization: Bearer <token>``; that
         behaviour is the documented Microsoft/OpenAI contract we rely on.
         """
-        from agent import auxiliary_client as _aux
+        from hermes_agent.agent import auxiliary_client as _aux
 
         received = {}
 
@@ -178,7 +178,7 @@ class TestAuxAzureFoundryEntra:
         """GPT-5.x deployment on Entra ID — auto-upgraded to
         codex_responses, wrapped in CodexAuxiliaryClient, callable
         api_key handed to the underlying OpenAI SDK."""
-        from agent import auxiliary_client as _aux
+        from hermes_agent.agent import auxiliary_client as _aux
 
         received = {}
 
@@ -214,8 +214,8 @@ class TestAuxAzureFoundryEntra:
         detects the callable and installs the bearer-injecting httpx
         event hook on a custom ``httpx.Client`` passed to the
         Anthropic SDK via ``http_client=``."""
-        from agent import auxiliary_client as _aux
-        from agent import anthropic_adapter as _anthropic
+        from hermes_agent.agent import auxiliary_client as _aux
+        from hermes_agent.agent import anthropic_adapter as _anthropic
 
         received = {}
 
@@ -274,7 +274,7 @@ class TestResolveProviderClientAzureFoundry:
         generic api-key registry path that would call
         ``resolve_api_key_provider_credentials`` and return None for
         Entra users."""
-        from agent import auxiliary_client as _aux
+        from hermes_agent.agent import auxiliary_client as _aux
 
         received = {}
 
@@ -307,7 +307,7 @@ class TestResolveProviderClientAzureFoundry:
         ``explicit_api_key``. That api_key is the Entra token-provider callable — it must reach
         ``OpenAI(api_key=...)`` as the same object, never stringified into a function repr that
         Azure rejects with 401."""
-        from agent import auxiliary_client as _aux
+        from hermes_agent.agent import auxiliary_client as _aux
 
         received = {}
 
@@ -343,7 +343,7 @@ class TestResolveProviderClientAzureFoundry:
         (e.g. no model + no key), we return (None, None) and log a
         clear warning pointing at ``hermes doctor``."""
         import logging
-        from agent.auxiliary_client import resolve_provider_client
+        from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
         monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
         patch_load_config({
@@ -352,7 +352,7 @@ class TestResolveProviderClientAzureFoundry:
             "api_mode": "chat_completions",
             # No default → resolver yields no model → bail
         })
-        with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.agent.auxiliary_client"):
             client, resolved = resolve_provider_client("azure-foundry")
         assert client is None
         assert resolved is None
@@ -379,7 +379,7 @@ class TestAzureFoundryResponsesAlias:
         plain chat-completions client (401 from /chat/completions on a Responses-only
         deployment, #39750); the alias must reach the Codex/Responses adapter and keep the
         first-class provider identity."""
-        from agent import auxiliary_client as _aux
+        from hermes_agent.agent import auxiliary_client as _aux
 
         cfg = {"model": {"provider": "openrouter", "default": "x"}, "auxiliary": {"vision": dict(self._AUX_VISION)}}
         monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
@@ -393,7 +393,7 @@ class TestAzureFoundryResponsesAlias:
 
     def test_explicit_responses_alias_kwarg_wraps_in_codex_adapter(self, monkeypatch, patch_load_config):
         """A caller-supplied ``api_mode="responses"`` is canonicalized at the resolver chokepoint."""
-        from agent import auxiliary_client as _aux
+        from hermes_agent.agent import auxiliary_client as _aux
 
         patch_load_config({"provider": "azure-foundry", "base_url": "https://r.services.ai.azure.com/openai/v1"})
         monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "k")

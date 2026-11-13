@@ -12,8 +12,8 @@ import threading
 import time
 from typing import Any, Dict, List
 
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_manager import MemoryManager
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 
 class _RecordingProvider(MemoryProvider):

@@ -4,7 +4,7 @@ Damien's incident (Discord, 2026-05-28): a long Hermes session in a Discord
 gateway hit the compression threshold at the end of a turn.  The parent agent
 finished delivering the response and ``conversation_loop.py`` fired
 ``_spawn_background_review(...)`` — which builds a forked ``AIAgent`` that
-inherits ``agent.session_id`` (see ``agent/background_review.py``::
+inherits ``agent.session_id`` (see ``hermes_agent/agent/background_review.py``::
 ``review_agent.session_id = agent.session_id``).  Roughly two seconds later
 a synthetic ``Background process proc_… completed`` event arrived and
 started a fresh turn on the same parent ``session_id`` (still cached in the
@@ -50,7 +50,7 @@ def _build_agent_with_db(
 ):
     """Build an AIAgent that's wired to ``db`` and pinned to ``session_id``."""
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
-        from run_agent import AIAgent
+        from hermes_agent.run_agent import AIAgent
 
         agent = AIAgent(
             api_key="test-key",
@@ -168,7 +168,7 @@ def test_compression_activity_heartbeat_emits_client_status_events(tmp_path: Pat
     status heartbeats a long compression is killed mid-flight and retriggers
     forever on sessions near the context ceiling.
     """
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         COMPACTION_HEARTBEAT_STATUS,
         is_compaction_progress_status,
     )
@@ -216,7 +216,7 @@ def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Pat
     """A context engine that suppresses the routine start status opens no
     visible compaction phase; the heartbeat must not open one either (there
     would be no terminal edge to close it)."""
-    from agent.conversation_compression import COMPACTION_HEARTBEAT_STATUS
+    from hermes_agent.agent.conversation_compression import COMPACTION_HEARTBEAT_STATUS
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "HEARTBEAT_QUIET_TEST"
@@ -240,7 +240,7 @@ def test_compression_heartbeat_is_silent_for_quiet_context_engines(tmp_path: Pat
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
     with patch(
-        "agent.conversation_compression.automatic_compaction_status_message",
+        "hermes_agent.agent.conversation_compression.automatic_compaction_status_message",
         return_value="",
     ):
         agent._compress_context(messages, "sys", approx_tokens=120_000)
@@ -255,7 +255,7 @@ def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) 
     unless ``compression.progress_notices`` is enabled.  The low-level event
     must remain available so the desktop can retire its compaction phase.
     """
-    from agent.conversation_compression import COMPACTION_DONE_STATUS
+    from hermes_agent.agent.conversation_compression import COMPACTION_DONE_STATUS
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "LOCK_CONTENDER_STATUS_TEST"
@@ -279,7 +279,7 @@ def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) 
 
 def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
     """A failed durable split must not emit a successful completion edge."""
-    from agent.conversation_compression import COMPACTION_DONE_STATUS
+    from hermes_agent.agent.conversation_compression import COMPACTION_DONE_STATUS
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "FAILED_SPLIT_STATUS_TEST"
@@ -304,7 +304,7 @@ def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Pa
 
 def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
     """An in-place persistence failure must not emit a completion edge."""
-    from agent.conversation_compression import COMPACTION_DONE_STATUS
+    from hermes_agent.agent.conversation_compression import COMPACTION_DONE_STATUS
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "FAILED_IN_PLACE_STATUS_TEST"
@@ -417,8 +417,8 @@ def test_compression_heartbeat_stop_persists_completed_over_in_progress(
     rate-limited out. stop() must force-persist the terminal label so idle
     sessions show "context compression completed", not a stale "in progress".
     """
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-    from agent.session_activity import ActivityProvenance
+    from hermes_agent.agent.conversation_compression import _CompressionActivityHeartbeat
+    from hermes_agent.agent.session_activity import ActivityProvenance
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "HEARTBEAT_PERSIST_COMPLETED_TEST"
@@ -452,8 +452,8 @@ def test_compression_heartbeat_does_not_clobber_timeout_provenance() -> None:
     """Detached heartbeat/stop must not overwrite a host timeout stamp."""
     from types import SimpleNamespace
 
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-    from agent.session_activity import ActivityProvenance
+    from hermes_agent.agent.conversation_compression import _CompressionActivityHeartbeat
+    from hermes_agent.agent.session_activity import ActivityProvenance
 
     agent = SimpleNamespace(
         _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
@@ -480,8 +480,8 @@ def test_compression_heartbeat_start_republishes_after_terminal_provenance() -> 
     """A new compression episode may overwrite a prior timeout/cooldown stamp."""
     from types import SimpleNamespace
 
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-    from agent.session_activity import ActivityProvenance
+    from hermes_agent.agent.conversation_compression import _CompressionActivityHeartbeat
+    from hermes_agent.agent.session_activity import ActivityProvenance
 
     agent = SimpleNamespace(
         _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
@@ -514,8 +514,8 @@ def test_compression_heartbeat_does_not_rearm_after_unknown_provenance() -> None
     """After a terminal stamp, UNKNOWN must not re-arm a detached heartbeat."""
     from types import SimpleNamespace
 
-    from agent.conversation_compression import _CompressionActivityHeartbeat
-    from agent.session_activity import ActivityProvenance
+    from hermes_agent.agent.conversation_compression import _CompressionActivityHeartbeat
+    from hermes_agent.agent.session_activity import ActivityProvenance
 
     agent = SimpleNamespace(
         _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
@@ -547,11 +547,11 @@ def test_compression_heartbeat_stops_when_commit_fence_cancelled() -> None:
     """Host fence cancel must silence detached heartbeat refresh and late stop."""
     from types import SimpleNamespace
 
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         CompressionCommitFence,
         _CompressionActivityHeartbeat,
     )
-    from agent.session_activity import ActivityProvenance
+    from hermes_agent.agent.session_activity import ActivityProvenance
 
     agent = SimpleNamespace(
         _last_activity_provenance=ActivityProvenance.AGENT_COMPRESSION,
@@ -623,7 +623,7 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     # contention the winner's child ``create_session`` can exhaust its retry
     # budget, and ``_compress_context`` deliberately rolls the live id back to
     # the (still-indexed) parent rather than stranding an orphan child — see
-    # the create-failure rollback in agent/conversation_compression.py. That
+    # the create-failure rollback in hermes_agent/agent/conversation_compression.py. That
     # safe rollback leaves 0 children and is correct. So the contract is
     # ``children <= 1``; only ``>= 2`` is the bug. Asserting an exact ``== 1``
     # made this test flaky under the concurrent CI load that triggers the
@@ -718,7 +718,7 @@ def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) ->
     would silently block every future compaction for the session until TTL
     expiry.
     """
-    from agent.conversation_compression import CompressionCommitFence
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "HYGIENE_LOCK_REACQUIRE"
@@ -783,7 +783,7 @@ def test_fence_cancelled_compression_leaves_lock_reacquirable(tmp_path: Path) ->
 
 def test_commit_fence_waits_for_an_active_commit() -> None:
     """A timeout that loses the fence race cannot overlap the live turn."""
-    from agent.conversation_compression import CompressionCommitFence
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
     fence = CompressionCommitFence()
     assert fence.begin_commit() is True
@@ -811,7 +811,7 @@ def test_commit_fence_waits_for_an_active_commit() -> None:
 
 def test_total_deadline_cancellation_retains_lock_until_worker_cleanup() -> None:
     """A total-ceiling timeout must exclude retries while its worker is alive."""
-    from agent.conversation_compression import CompressionCommitFence
+    from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
     released = threading.Event()
     fence = CompressionCommitFence(total_ceiling_seconds=1.0)
@@ -820,7 +820,7 @@ def test_total_deadline_cancellation_retains_lock_until_worker_cleanup() -> None
 
     now = time.monotonic()
     with patch(
-        "agent.conversation_compression.time.monotonic",
+        "hermes_agent.agent.conversation_compression.time.monotonic",
         return_value=now + 2.0,
     ):
         assert fence.is_cancelled
@@ -881,7 +881,7 @@ def test_restored_anchor_never_creates_consecutive_user_roles() -> None:
     turn, or a bare scaffolding-only transcript), producing user/user
     adjacency that strict chat templates reject.
     """
-    from agent.conversation_compression import _insert_real_user_anchor
+    from hermes_agent.agent.conversation_compression import _insert_real_user_anchor
 
     anchor = {"role": "user", "content": "REAL HUMAN ASK"}
 
@@ -1066,7 +1066,7 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Capability inspection failures must not leak the acquired lock lease."""
-    from agent.conversation_compression import (
+    from hermes_agent.agent.conversation_compression import (
         _CompressionLockLeaseRefresher as RealLeaseRefresher,
     )
 
@@ -1078,7 +1078,7 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
             return super().start()
 
     monkeypatch.setattr(
-        "agent.conversation_compression._CompressionLockLeaseRefresher",
+        "hermes_agent.agent.conversation_compression._CompressionLockLeaseRefresher",
         RecordingLeaseRefresher,
     )
 
@@ -1174,7 +1174,7 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
       • the parent's durable transcript, session row, and child-session graph
         are byte-for-byte unchanged after the compaction ran.
     """
-    import agent.background_review as br
+    import hermes_agent.agent.background_review as br
 
     parent_sid = "REVIEW_FORK_IN_MEMORY_COMPACTION_93057"
 
@@ -1246,9 +1246,9 @@ def test_review_fork_compacts_oversized_snapshot_in_memory(tmp_path: Path) -> No
             model="test/model",
         )
 
-    # The worker does a local ``from run_agent import AIAgent``; patching the
+    # The worker does a local ``from hermes_agent.run_agent import AIAgent``; patching the
     # class method covers that import path.
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     real_run_conversation = AIAgent.run_conversation
 
@@ -1420,8 +1420,8 @@ def test_review_fork_fails_closed_when_compressor_rebind_raises(
     behavior. The review still runs (the iteration cap and the
     aggregate input budget still bound it).
     """
-    import agent.background_review as br
-    from agent.context_compressor import ContextCompressor
+    import hermes_agent.agent.background_review as br
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     parent_sid = "REVIEW_FORK_REBIND_FAIL_CLOSED_93057"
 
@@ -1452,9 +1452,9 @@ def test_review_fork_fails_closed_when_compressor_rebind_raises(
             "api_call_count": 0,
         }
 
-    # The worker does a local ``from run_agent import AIAgent``; patching the
+    # The worker does a local ``from hermes_agent.run_agent import AIAgent``; patching the
     # class method covers that import path.
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     _real_bind = ContextCompressor.bind_session_state
 
@@ -1527,7 +1527,7 @@ def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
     never hold the lock past its TTL. We assert that relationship directly
     rather than freezing a literal cap (behavior contract over snapshot).
     """
-    from agent.conversation_compression import _CompressionLockLeaseRefresher
+    from hermes_agent.agent.conversation_compression import _CompressionLockLeaseRefresher
 
     ttl, interval = 10.0, 2.0  # cap should be int(10/2) = 5
     db = _FlakyRefreshDB([False] * 50)  # never recovers (lost ownership)
@@ -1549,7 +1549,7 @@ def test_lease_refresher_failure_window_is_bounded_by_ttl() -> None:
 def test_hard_interrupt_aborts_compression_and_unblocks_session_writes(tmp_path: Path) -> None:
     """Ctrl+C must abort an interrupt-protected summary without leaving the
     session write-blocked behind its compression lease."""
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "HARD_INTERRUPT_COMPRESSION_TEST"
@@ -1678,8 +1678,8 @@ def test_force_cancel_restores_newer_durable_cooldown_captured_under_lease(
     tmp_path: Path,
 ) -> None:
     """A stale forced attempt rolls back to the lease-protected durable row."""
-    from agent.auxiliary_client import AuxiliaryExplicitCancellation
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "FORCE_CANCEL_DURABLE_COOLDOWN"
@@ -1787,7 +1787,7 @@ def test_unrelated_interrupted_error_propagates_and_releases_compression_lease(
 def test_redirect_interrupt_remains_protected_during_compression(tmp_path: Path) -> None:
     """Redirects use interrupt_requested=True/message=None; only the atomic
     hard-cancel event may override summary protection."""
-    from agent import auxiliary_client as aux
+    from hermes_agent.agent import auxiliary_client as aux
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "REDIRECT_COMPRESSION_TEST"
@@ -1920,8 +1920,8 @@ def test_force_cancel_restores_exact_expired_or_expiring_cooldown_row(
     deadline_offset: float | None,
 ) -> None:
     """Cancellation preserves raw cooldown columns even after their deadline."""
-    from agent.auxiliary_client import AuxiliaryExplicitCancellation
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = f"RAW_COOLDOWN_{deadline_offset}"
@@ -2016,8 +2016,8 @@ def test_cooldown_rollback_failure_surfaces_and_releases_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed compensating write cannot masquerade as a mutation-free cancel."""
-    from agent.auxiliary_client import AuxiliaryExplicitCancellation
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.auxiliary_client import AuxiliaryExplicitCancellation
+    from hermes_agent.agent.context_compressor import ContextCompressor
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "COOLDOWN_ROLLBACK_WRITE_FAILURE"

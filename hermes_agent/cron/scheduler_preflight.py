@@ -173,8 +173,8 @@ def _primary_profile_routes_for_current_home() -> list:
         # a satellite key of the same name was substituted into the primary's config (#148606).
         # Bind only home + secrets: the terminal policy is not read here, and hydrating external
         # secret sources every housekeeping tick is the primary's boot job, not this read's.
-        from agent.runtime_scope import bind_state, scope_for_profile
-        from agent.secret_scope import _is_process_home
+        from hermes_agent.agent.runtime_scope import bind_state, scope_for_profile
+        from hermes_agent.agent.secret_scope import _is_process_home
         with bind_state(scope_for_profile(primary_home), hydrate_secrets=False, terminal=False,
                         stamp_home=not _is_process_home(primary_home)):
             layered = read_yaml_layers(primary_home.expanduser())

@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch
 
 from hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
-from agent.models_dev import list_agentic_models
+from hermes_agent.agent.models_dev import list_agentic_models
 
 
 # ── Provider Aliases ──
@@ -79,7 +79,7 @@ class TestOllamaCloudModelCatalog:
             }
         }
         with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
-             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = provider_model_ids("ollama-cloud", force_refresh=True)
 
         assert len(result) > 0
@@ -105,7 +105,7 @@ class TestOllamaCloudModelPicker:
             }
         }
         with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
-             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             providers = list_authenticated_providers(current_provider="ollama-cloud")
 
         ollama = next((p for p in providers if p["slug"] == "ollama-cloud"), None)
@@ -143,7 +143,7 @@ class TestOllamaCloudMergedDiscovery:
             }
         }
         with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b", "glm-5"]), \
-             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         # Live models first, then models.dev additions (deduped)
@@ -167,7 +167,7 @@ class TestOllamaCloudMergedDiscovery:
                 }
             }
         }
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         assert result == ["glm-5"]
@@ -186,14 +186,14 @@ class TestOllamaCloudMergedDiscovery:
         before = (cache.read_text(), cache.stat().st_mtime_ns)
 
         mock_mdev = {"ollama-cloud": {"models": {"shared": {"tool_call": True}, "mdev-only": {"tool_call": True}}}}
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev), \
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev), \
              patch("hermes_cli.models.fetch_api_models", side_effect=AssertionError("network probe ran")):
             result = fetch_ollama_cloud_models(cache_only=True)
 
         assert result == ["live-only", "shared"]
         assert (cache.read_text(), cache.stat().st_mtime_ns) == before
 
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev), \
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev), \
              patch("hermes_cli.models.fetch_api_models", return_value=["live-only", "shared", "new-live"]) as live:
             assert fetch_ollama_cloud_models() == ["live-only", "shared", "new-live", "mdev-only"]
         assert live.called  # the stale cache still triggers a probe on the next non-cache_only call
@@ -215,7 +215,7 @@ class TestOllamaCloudModelsDev:
                 }
             }
         }
-        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+        with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_data):
             result = list_agentic_models("ollama-cloud")
         assert "qwen3.5:397b" in result
         assert "glm-5" in result
@@ -259,7 +259,7 @@ class TestOllamaCloudSuffixStripping:
             }
         }
         with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-k2.6", "glm-5.1"]), \
-             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+             patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
         assert result.count("kimi-k2.6") == 1

@@ -19,8 +19,8 @@ from typing import Any, Dict
 import pytest
 import hermes_yaml as yaml
 
-from agent import image_gen_registry
-from agent.image_gen_provider import ImageGenProvider
+from hermes_agent.agent import image_gen_registry
+from hermes_agent.agent.image_gen_provider import ImageGenProvider
 
 
 @pytest.fixture(autouse=True)
@@ -256,7 +256,7 @@ class TestPluginDispatchImageToImage:
     def test_dispatch_forwards_image_url(self, cfg_home, monkeypatch):
         import hermes_agent.tools.image_generation_tool as image_tool
         from hermes_cli import plugins as plugins_module
-        from agent import image_gen_registry as reg
+        from hermes_agent.agent import image_gen_registry as reg
 
         provider = _EditCapableProvider()
         reg.register_provider(provider)
@@ -279,7 +279,7 @@ class TestPluginDispatchImageToImage:
     def test_legacy_provider_edit_request_surfaces_clear_error(self, cfg_home, monkeypatch):
         import hermes_agent.tools.image_generation_tool as image_tool
         from hermes_cli import plugins as plugins_module
-        from agent import image_gen_registry as reg
+        from hermes_agent.agent import image_gen_registry as reg
 
         provider = _LegacyProvider()
         reg.register_provider(provider)

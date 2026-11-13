@@ -120,7 +120,7 @@ def register_all_web_providers():
     This is the single source of truth for the provider list used by
     test classes that need the registry populated for dispatch checks.
     """
-    from agent.web_search_registry import register_provider, _reset_for_tests
+    from hermes_agent.agent.web_search_registry import register_provider, _reset_for_tests
     from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
     from plugins.web.ddgs.provider import DDGSWebSearchProvider
     from plugins.web.exa.provider import ExaWebSearchProvider
@@ -170,7 +170,7 @@ def web_registry_populated():
     """Populate the web-search-provider registry for one test, then reset."""
     register_all_web_providers()
     yield
-    from agent.web_search_registry import _reset_for_tests
+    from hermes_agent.agent.web_search_registry import _reset_for_tests
     _reset_for_tests()
 
 

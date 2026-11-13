@@ -85,7 +85,7 @@ right profile while credentials and `TERMINAL_*` policy still come from the laun
 Off-turn paths bind the same way: `session_lifecycle.py::_finalize_session` / `_teardown_session`
 enter `_session_profile_runtime_scope(session)` around `on_session_end`, the memory commit and
 `agent.close()` (their callers are unscoped reapers, Timers, atexit and pool threads); background
-threads start via `agent.memory_provider.spawn_context_thread`, never bare `threading.Thread`;
+threads start via `hermes_agent.agent.memory_provider.spawn_context_thread`, never bare `threading.Thread`;
 children act for the served profile through `hermes_agent/tools/environments/local.py::served_profile_child_env`
 (`hermes -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Grep for
 unscoped handlers before adding one: `rg -n "^(async )?def " hermes_agent/tui_gateway/methods_*.py | rg -v

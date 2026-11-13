@@ -9,7 +9,7 @@ from pathlib import Path
 import hermes_yaml as yaml
 import pytest
 
-from agent import i18n, i18n_layers
+from hermes_agent.agent import i18n, i18n_layers
 
 LOCALES_DIR = Path(__file__).resolve().parents[2] / "locales"
 TUI_KEYS = set(json.loads((LOCALES_DIR / "_keys.tui.json").read_text(encoding="utf-8")))

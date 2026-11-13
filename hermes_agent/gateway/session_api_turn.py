@@ -178,7 +178,7 @@ def admit_api_steps(adapter, **kwargs):
     if existing is not None and existing['source'] not in ('api_server', 'bot_room'):
         raise RuntimeStoreError('permission_denied')
     if kwargs.get('turn_author') is not None:
-        from agent.turn_author import parse_turn_author
+        from hermes_agent.agent.turn_author import parse_turn_author
         author = parse_turn_author(kwargs['turn_author'])
         if author is None:
             raise RuntimeStoreError('invalid_params')

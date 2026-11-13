@@ -22,7 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from hermes_agent.hermes_state import SessionDB
-from run_agent import AIAgent
+from hermes_agent.run_agent import AIAgent
 
 def _flush_agent(db, session_id):
     """Bind the real flush methods onto a stand-in over a live SessionDB."""

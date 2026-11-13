@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from agent.secret_scope import (
+from hermes_agent.agent.secret_scope import (
     UnscopedSecretError,
     get_secret,
     reset_secret_scope,

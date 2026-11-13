@@ -7,7 +7,7 @@ from websockets.exceptions import ConnectionClosed
 
 
 def test_worker_persistence_explicitly_bypasses_proxy(tmp_path, monkeypatch):
-    from agent.runtime_session_store import WorkerRPC
+    from hermes_agent.agent.runtime_session_store import WorkerRPC
     monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:1')
     monkeypatch.delenv('NO_PROXY', raising=False)
     endpoint = SimpleNamespace(api_origin='http://127.0.0.1:1234')

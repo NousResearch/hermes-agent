@@ -210,7 +210,7 @@ def test_status_does_not_mix_launch_runtime_into_another_profile(hermes_root):
 
 
 def test_status_includes_named_profile_runtime_in_multiplex(hermes_root):
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
     from hermes_constants import (
         hermes_home_key,
         reset_hermes_home_override,
@@ -419,7 +419,7 @@ def test_add_catalog_id_in_profile_param_saves_manifest_in_that_profile(hermes_r
 def test_oauth_catalog_add_follows_routed_profile_not_payload(hermes_root):
     """OAuth add sends {name, preset} only. requestGatewayForAgent carries the
     profile as routing metadata, so the write follows the bound scope."""
-    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+    from hermes_agent.agent.secret_scope import is_multiplex_active, set_multiplex_active
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     entry = _catalog_http_entry(auth="oauth")

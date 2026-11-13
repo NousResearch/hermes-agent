@@ -1,11 +1,11 @@
 """Invariant: every rough token estimate in the tree derives from ``estimate_tokens_rough`` /
-``CHARS_PER_TOKEN`` in ``agent/model_metadata.py``, so the ``/context`` breakdown's static
+``CHARS_PER_TOKEN`` in ``hermes_agent/agent/model_metadata.py``, so the ``/context`` breakdown's static
 categories, the conversation slice and native-compaction retention agree on non-Latin text.
 """
 
-from agent.context_breakdown import _bytes_to_tokens, _chars_to_tokens
-from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
-from agent.native_compaction import _approx_tokens
+from hermes_agent.agent.context_breakdown import _bytes_to_tokens, _chars_to_tokens
+from hermes_agent.agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
+from hermes_agent.agent.native_compaction import _approx_tokens
 
 
 CYRILLIC = "Привет мир, это проверка оценки токенов. " * 40
@@ -23,7 +23,7 @@ def test_breakdown_and_retention_use_the_canonical_estimator():
 
 
 def test_byte_and_ratio_consumers_share_one_constant():
-    from agent.context_compressor import _CHARS_PER_TOKEN as compressor_ratio
+    from hermes_agent.agent.context_compressor import _CHARS_PER_TOKEN as compressor_ratio
     from hermes_agent.tools.budget_config import _CHARS_PER_TOKEN as budget_ratio
     from hermes_agent.tools.transcription_command import _PROMPT_CHARS_PER_TOKEN as whisper_ratio
 

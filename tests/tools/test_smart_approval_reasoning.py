@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent import auxiliary_client
+from hermes_agent.agent import auxiliary_client
 from hermes_agent.tools.approval_smart import _smart_approve
 
 LOCAL = "http://127.0.0.1:18434/v1"
@@ -22,9 +22,9 @@ def _reply(text):
 
 def _verdict_wire(task_config):
     """The request the guardian's verdict call puts on the wire to a local llama-server."""
-    with patch("agent.auxiliary_task_config._get_auxiliary_task_config", return_value=task_config), \
+    with patch("hermes_agent.agent.auxiliary_task_config._get_auxiliary_task_config", return_value=task_config), \
             patch.object(auxiliary_client, "_get_auxiliary_task_config", return_value=task_config), \
-            patch("agent.auxiliary_client.call_llm", return_value=_reply("APPROVE")) as call_llm:
+            patch("hermes_agent.agent.auxiliary_client.call_llm", return_value=_reply("APPROVE")) as call_llm:
         assert _smart_approve("python -c \"print('hi')\"", "script execution via -c flag") == "approve"
         sent = call_llm.call_args.kwargs
         return auxiliary_client._build_call_kwargs(

@@ -42,10 +42,10 @@ def _client_base_url(client) -> str:
 
 def test_anthropic_fallback_entry_base_url_is_the_resolved_endpoint():
     """A fallback entry pointing anthropic at an Anthropic-protocol relay must be honoured."""
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     fake_anthropic = MagicMock(name="anthropic_sdk_client")
-    with patch("agent.anthropic_adapter.build_anthropic_client", return_value=fake_anthropic) as mock_build:
+    with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=fake_anthropic) as mock_build:
         client, _model = resolve_provider_client(
             "anthropic", model="claude-haiku-4-5-20251001", raw_codex=True,
             explicit_base_url=_RELAY_ANTHROPIC, explicit_api_key="sk-test-not-a-real-key")
@@ -62,9 +62,9 @@ def test_anthropic_fallback_entry_refuses_a_non_anthropic_endpoint():
     credential to a host the caller did not ask for. No client is produced and the SDK
     builder is never reached.
     """
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
-    with patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build:
+    with patch("hermes_agent.agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build:
         client, _model = resolve_provider_client(
             "anthropic", model="claude-haiku-4-5-20251001", raw_codex=True,
             explicit_base_url="http://127.0.0.1:9002/openai/v1", explicit_api_key="sk-test-not-a-real-key")
@@ -75,7 +75,7 @@ def test_anthropic_fallback_entry_refuses_a_non_anthropic_endpoint():
 
 def test_openrouter_fallback_entry_base_url_is_the_resolved_endpoint():
     """A fallback entry pointing openrouter at a relay must not resolve to openrouter.ai."""
-    from agent.auxiliary_client import resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
     client, _model = resolve_provider_client(
         "openrouter", model="some/model", raw_codex=True,
@@ -87,7 +87,7 @@ def test_openrouter_fallback_entry_base_url_is_the_resolved_endpoint():
 
 def test_openrouter_without_an_entry_base_url_keeps_the_configured_default():
     """No override: resolution is unchanged (no relay invented)."""
-    from agent.auxiliary_client import OPENROUTER_BASE_URL, resolve_provider_client
+    from hermes_agent.agent.auxiliary_client import OPENROUTER_BASE_URL, resolve_provider_client
 
     client, _model = resolve_provider_client(
         "openrouter", model="some/model", raw_codex=True, explicit_api_key="sk-test-not-a-real-key")

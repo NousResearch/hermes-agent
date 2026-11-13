@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent import chat_completion_helpers as cch
+from hermes_agent.agent import chat_completion_helpers as cch
 
 
 class _FakeAgent:
@@ -68,12 +68,12 @@ def test_bedrock_stream_interrupt_not_swallowed_post_worker():
 
     fake_client = SimpleNamespace(converse_stream=lambda **kw: {"stream": []})
 
-    with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=fake_client), \
-         patch("agent.bedrock_adapter.stream_converse_with_callbacks", side_effect=_fake_stream), \
-         patch("agent.bedrock_adapter.normalize_converse_response", side_effect=lambda r: r), \
-         patch("agent.bedrock_adapter.is_stale_connection_error", return_value=False), \
-         patch("agent.bedrock_adapter.is_streaming_access_denied_error", return_value=False), \
-         patch("agent.bedrock_adapter.invalidate_runtime_client", lambda *a, **k: None), \
+    with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client", return_value=fake_client), \
+         patch("hermes_agent.agent.bedrock_adapter.stream_converse_with_callbacks", side_effect=_fake_stream), \
+         patch("hermes_agent.agent.bedrock_adapter.normalize_converse_response", side_effect=lambda r: r), \
+         patch("hermes_agent.agent.bedrock_adapter.is_stale_connection_error", return_value=False), \
+         patch("hermes_agent.agent.bedrock_adapter.is_streaming_access_denied_error", return_value=False), \
+         patch("hermes_agent.agent.bedrock_adapter.invalidate_runtime_client", lambda *a, **k: None), \
          patch.object(cch, "_record_interrupted_provider_wait") as record_wait:
         api_kwargs = {"__bedrock_region__": "us-east-1", "__bedrock_converse__": True}
         with pytest.raises(InterruptedError):
@@ -106,12 +106,12 @@ def test_bedrock_stream_returns_normally_when_not_interrupted():
         converse_stream=lambda **kw: {"stream": provider_stream}
     )
 
-    with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=fake_client), \
-         patch("agent.bedrock_adapter.stream_converse_with_callbacks", return_value=resp), \
-         patch("agent.bedrock_adapter.normalize_converse_response", side_effect=lambda r: r), \
-         patch("agent.bedrock_adapter.is_stale_connection_error", return_value=False), \
-         patch("agent.bedrock_adapter.is_streaming_access_denied_error", return_value=False), \
-         patch("agent.bedrock_adapter.invalidate_runtime_client", lambda *a, **k: None):
+    with patch("hermes_agent.agent.bedrock_adapter._get_bedrock_runtime_client", return_value=fake_client), \
+         patch("hermes_agent.agent.bedrock_adapter.stream_converse_with_callbacks", return_value=resp), \
+         patch("hermes_agent.agent.bedrock_adapter.normalize_converse_response", side_effect=lambda r: r), \
+         patch("hermes_agent.agent.bedrock_adapter.is_stale_connection_error", return_value=False), \
+         patch("hermes_agent.agent.bedrock_adapter.is_streaming_access_denied_error", return_value=False), \
+         patch("hermes_agent.agent.bedrock_adapter.invalidate_runtime_client", lambda *a, **k: None):
         api_kwargs = {"__bedrock_region__": "us-east-1", "__bedrock_converse__": True}
         out = cch.interruptible_streaming_api_call(agent, api_kwargs)
         assert out is resp

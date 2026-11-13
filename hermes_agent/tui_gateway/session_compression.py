@@ -32,7 +32,7 @@ def _compressor_ctor_default(name: str, fallback: Any) -> Any:
     """
     try:
         import inspect
-        from agent.context_compressor import ContextCompressor
+        from hermes_agent.agent.context_compressor import ContextCompressor
         default = inspect.signature(ContextCompressor.__init__).parameters[name].default
         return fallback if default is inspect.Parameter.empty else default
     except Exception:
@@ -60,8 +60,8 @@ def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
     except (TypeError, ValueError):
         pct = 0.50
     try:
-        from agent.agent_init import _resolve_compression_threshold
-        from agent.auxiliary_client import _compression_threshold_for_model, _is_codex_gpt54_or_gpt55, _is_codex_spark
+        from hermes_agent.agent.agent_init import _resolve_compression_threshold
+        from hermes_agent.agent.auxiliary_client import _compression_threshold_for_model, _is_codex_gpt54_or_gpt55, _is_codex_spark
         model, provider = getattr(agent, "model", "") or "", getattr(agent, "provider", "") or ""
         autoraise_enabled = str(compression.get("codex_gpt55_autoraise", True)).lower() in {"true", "1", "yes"}
         pct, _notice = _resolve_compression_threshold(
@@ -96,7 +96,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     """
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
-    from agent.agent_init import config_context_length_for_runtime, set_config_context_length
+    from hermes_agent.agent.agent_init import config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
     agent.compression_enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).lower() in {"true", "1", "yes"}
     agent.codex_responses_native_compaction = is_truthy_value(compression.get("codex_responses_native", False))
@@ -133,7 +133,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     } if isinstance(raw_thresholds, dict) else {}
     # threshold: present value wins; absence derives via the agent_init resolution (default + autoraise).
     # resolve_model_threshold returns ``pct`` unchanged when model_thresholds is empty.
-    from agent.context_compressor import resolve_model_threshold
+    from hermes_agent.agent.context_compressor import resolve_model_threshold
     pct: float | None = None
     if "threshold" in compression:
         with contextlib.suppress(TypeError, ValueError):
@@ -264,11 +264,11 @@ def _compress_session_history(
     before_messages: list | None = None, history_version: int | None = None,
 ) -> tuple[int, dict]:
     """Single choke point for all manual-compress routes. ``focus_topic`` is the RAW argument string after
-    ``/compress``; the shared core (``agent.conversation_compression_manual``) parses boundary forms
+    ``/compress``; the shared core (``hermes_agent.agent.conversation_compression_manual``) parses boundary forms
     (``here [N]``, ``up to here``, ``--keep N``) so a partial compress triggers on EVERY route instead of a
     FULL compress focused on the literal text. ``--preview`` returns without touching history."""
-    from agent.conversation_compression import finalize_context_engine_compression_notification
-    from agent.conversation_compression_manual import (
+    from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
+    from hermes_agent.agent.conversation_compression_manual import (
         AGGRESSIVE_UNSUPPORTED, MIN_MESSAGES, compress_now, parse_compress_args)
     agent = session["agent"]
     # Snapshot under the lock so the LLM-bound compression call does NOT hold history_lock for the

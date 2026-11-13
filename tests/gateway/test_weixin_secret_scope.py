@@ -9,7 +9,7 @@ that profile's own value, instead of raising ``UnscopedSecretError``.
 
 import pytest
 
-from agent import secret_scope
+from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.weixin.adapter import WeixinAdapter, _wx_secret
 

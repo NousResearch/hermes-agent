@@ -146,7 +146,7 @@ async def test_command_authority_precedes_resolution_and_mutation(tmp_path, monk
     from hermes_agent.gateway.session import SessionSource
     from hermes_agent.gateway.session_authority import SessionAuthority, LiveSession
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from agent import skill_commands
+    from hermes_agent.agent import skill_commands
 
     runner = SimpleNamespace(_draining=False)
     authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='owned', db=None, epoch=1)

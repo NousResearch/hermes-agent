@@ -890,7 +890,7 @@ optional_env:
 
 ```python
 # plugins/memory/my-memory/__init__.py
-from agent.memory_provider import MemoryProvider
+from hermes_agent.agent.memory_provider import MemoryProvider
 
 class MyMemoryProvider(MemoryProvider):
     @property
@@ -922,7 +922,7 @@ def register(ctx):
 
 ```python
 # plugins/context_engine/my-engine/__init__.py
-from agent.context_engine import ContextEngine
+from hermes_agent.agent.context_engine import ContextEngine
 
 class MyContextEngine(ContextEngine):
     @property
@@ -946,7 +946,7 @@ def register(ctx):
 
 ```python
 # plugins/image_gen/my-imggen/__init__.py
-from agent.image_gen_provider import ImageGenProvider
+from hermes_agent.agent.image_gen_provider import ImageGenProvider
 
 class MyImageGenProvider(ImageGenProvider):
     @property

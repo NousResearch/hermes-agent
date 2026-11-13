@@ -11,7 +11,7 @@ the conversation thread instead of the interrupt worker.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from agent.chat_completion_helpers import (
+from hermes_agent.agent.chat_completion_helpers import (
     direct_api_call,
 )
 
@@ -41,7 +41,7 @@ def test_direct_api_call_keeps_activity_alive_during_slow_wait(monkeypatch):
     import threading
     import time
 
-    from agent import chat_completion_helpers as helpers
+    from hermes_agent.agent import chat_completion_helpers as helpers
 
     monkeypatch.setattr(helpers, "_DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS", 0.05)
 
@@ -92,7 +92,7 @@ def test_direct_api_call_heartbeat_stops_on_exception(monkeypatch):
     import threading
     import time
 
-    from agent import chat_completion_helpers as helpers
+    from hermes_agent.agent import chat_completion_helpers as helpers
 
     monkeypatch.setattr(helpers, "_DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS", 0.05)
 

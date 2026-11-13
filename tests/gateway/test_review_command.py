@@ -66,7 +66,7 @@ class _Event:
 @pytest.mark.asyncio
 async def test_review_command_dispatches_background_subagent(monkeypatch):
     import hermes_agent.tools.delegate_tool as dt
-    from agent import review_engine as re_mod
+    from hermes_agent.agent import review_engine as re_mod
 
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"

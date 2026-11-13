@@ -61,7 +61,7 @@ class TestSmartApproval:
         response = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
         )
-        with mock_patch("agent.auxiliary_client.call_llm", return_value=response):
+        with mock_patch("hermes_agent.agent.auxiliary_client.call_llm", return_value=response):
             result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
 
         assert result == "approve"
@@ -1942,7 +1942,7 @@ class TestApprovalPromptRedaction:
     @pytest.fixture(autouse=True)
     def _redaction_on(self, monkeypatch):
         # The switch is a launch snapshot; an earlier file in the same process may have imported it off.
-        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        monkeypatch.setattr("hermes_agent.agent.redact._REDACT_ENABLED", True)
 
     SECRET_CMD = (
         'curl -H "Authorization: Bearer sk-proj-abc123xyz4567890abcdef" '

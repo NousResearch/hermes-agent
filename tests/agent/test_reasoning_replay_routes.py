@@ -7,11 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.message_sanitization import (
+from hermes_agent.agent.message_sanitization import (
     apply_reasoning_content_policy, reapply_reasoning_echo, reasoning_replay_route, rejected_reasoning_carriers,
     rejected_reasoning_fields,
 )
-from agent.transports.chat_completions import ChatCompletionsTransport
+from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 
 _DETAILS = [{"type": "reasoning.text", "text": "thought"}]
 _TURN = {"role": "assistant", "content": "", "reasoning": "thought", "reasoning_content": "thought",
@@ -87,7 +87,7 @@ def _agent(model, db=None):
 
 
 def _recover(agent, body, sent):
-    from agent.turn_recovery import recover_before_classification
+    from hermes_agent.agent.turn_recovery import recover_before_classification
 
     return recover_before_classification(
         agent, _Rejection(body), messages=[], api_messages=sent,
@@ -128,8 +128,8 @@ def test_named_field_rejection_strips_once_per_model_and_never_loops(tmp_path):
 def test_route_shaping_keeps_private_native_carrier_for_the_transport():
     """A resumed Gemini/Copilot row carries its signature only as a private reasoning_details record;
     route shaping must leave it for ``shape_wire_carriers`` even on routes that never read the array."""
-    from agent.message_sanitization import apply_reasoning_content_policy, reasoning_replay_route
-    from agent.reasoning_carriers import CARRIER_TYPE, shape_wire_carriers
+    from hermes_agent.agent.message_sanitization import apply_reasoning_content_policy, reasoning_replay_route
+    from hermes_agent.agent.reasoning_carriers import CARRIER_TYPE, shape_wire_carriers
 
     base = "https://generativelanguage.googleapis.com/v1beta/openai"
     record = {"type": CARRIER_TYPE, "extra_content": {"google": {"thought_signature": "SIG"}}}
@@ -144,7 +144,7 @@ def test_route_shaping_keeps_private_native_carrier_for_the_transport():
 
 def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route():
     from types import SimpleNamespace
-    from agent.message_sanitization import record_reasoning_field_rejection
+    from hermes_agent.agent.message_sanitization import record_reasoning_field_rejection
 
     agent = SimpleNamespace(provider="deepseek", model="deepseek-v4-flash", base_url="https://api.deepseek.com/v1",
                             api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)
@@ -169,7 +169,7 @@ def test_duplicate_field_rejection_strips_the_alias_and_keeps_reasoning_content(
     strip must drop the alias carrier and keep ``reasoning_content`` (the field the schema reads) on
     every route; an identical repeat must not retry."""
     from types import SimpleNamespace
-    from agent.message_sanitization import record_reasoning_field_rejection
+    from hermes_agent.agent.message_sanitization import record_reasoning_field_rejection
 
     agent = SimpleNamespace(provider=provider, model=model, base_url=base_url,
                             api_mode="chat_completions", _reasoning_rejecting_routes={}, session_id=None)

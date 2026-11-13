@@ -8,7 +8,7 @@ but …"), the matcher did not, and a blank install got a dead-end toast instead
 
 import pytest
 
-from agent.auxiliary_unavailable import ProviderNotConfiguredError
+from hermes_agent.agent.auxiliary_unavailable import ProviderNotConfiguredError
 from hermes_agent.tui_gateway import server
 
 
@@ -72,11 +72,11 @@ class TestAgentInitRaisesTheNamedError:
     def test_no_provider_configured_at_all(self, monkeypatch, tmp_path):
         from types import SimpleNamespace
 
-        from agent.agent_init import _routed_client_kwargs
+        from hermes_agent.agent.agent_init import _routed_client_kwargs
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Nothing resolves and no fallback chain: the end of the ladder.
-        monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", lambda *a, **kw: (None, None))
+        monkeypatch.setattr("hermes_agent.agent.auxiliary_client.resolve_provider_client", lambda *a, **kw: (None, None))
         agent = SimpleNamespace(provider="auto", model="m", base_url=None, api_key=None,
                                 _fallback_activated=False, _explicit_provider="")
 
@@ -86,7 +86,7 @@ class TestAgentInitRaisesTheNamedError:
     def test_explicit_provider_without_credentials(self, monkeypatch, tmp_path):
         from types import SimpleNamespace
 
-        from agent.agent_init import _routed_client_kwargs
+        from hermes_agent.agent.agent_init import _routed_client_kwargs
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         agent = SimpleNamespace(provider="minimax-oauth", model="m", base_url=None, api_key=None,

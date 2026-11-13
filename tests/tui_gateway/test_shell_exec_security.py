@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 
-from agent import redact
+from hermes_agent.agent import redact
 from hermes_agent.tui_gateway import server
 
 

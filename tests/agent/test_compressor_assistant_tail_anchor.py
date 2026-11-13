@@ -37,7 +37,7 @@ Pinned here:
   assistant message.
 
 * ``TestSourceGuardrail`` — static asserts on
-  ``agent/context_compressor.py`` so a future refactor can't
+  ``hermes_agent/agent/context_compressor.py`` so a future refactor can't
   silently drop the anchor.
 """
 
@@ -51,9 +51,9 @@ import pytest
 def compressor():
     """ContextCompressor with mocked deps and a tight tail budget so
     the helpers' anchor behaviour is observable."""
-    from agent.context_compressor import ContextCompressor
+    from hermes_agent.agent.context_compressor import ContextCompressor
     with patch(
-        "agent.context_compressor.get_model_context_length",
+        "hermes_agent.agent.context_compressor.get_model_context_length",
         return_value=100_000,
     ):
         c = ContextCompressor(
@@ -75,7 +75,7 @@ class TestFindLastAssistantMessageIdx:
         """A persisted assistant-role handoff is internal continuity state,
         not the last reply the user saw. Tool-call-only assistant messages
         after it must remain eligible for the fallback anchor."""
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         messages = [
             {"role": "assistant", "content": f"{SUMMARY_PREFIX}\nold handoff"},
@@ -282,7 +282,7 @@ class TestCompactionRollupReproduction:
     in ``web/src/pages/SessionsPage.tsx``)."""
 
     def test_compress_keeps_visible_reply_text(self, compressor):
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             SUMMARY_PREFIX,
             COMPRESSED_SUMMARY_METADATA_KEY,
         )
@@ -349,7 +349,7 @@ class TestCompactionRollupReproduction:
         as its OWN assistant message — not merged with anything.
         This is the common case; the merge-into-tail path is the
         edge case for double-collision."""
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             SUMMARY_PREFIX,
             COMPRESSED_SUMMARY_METADATA_KEY,
         )
@@ -420,7 +420,7 @@ class TestFindLastUserMessageIdxSkipsSummaryMarker:
     """
 
     def test_skips_user_role_context_summary_marker(self, compressor):
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         messages = [
             {"role": "system", "content": "sys"},
@@ -443,7 +443,7 @@ class TestFindLastUserMessageIdxSkipsSummaryMarker:
         assert compressor._find_last_user_message_idx(messages, head_end=1) == 3
 
     def test_all_user_messages_are_summaries_returns_minus_one(self, compressor):
-        from agent.context_compressor import SUMMARY_PREFIX
+        from hermes_agent.agent.context_compressor import SUMMARY_PREFIX
 
         messages = [
             {"role": "system", "content": "sys"},

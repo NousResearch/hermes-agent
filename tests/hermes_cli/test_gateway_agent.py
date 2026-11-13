@@ -235,8 +235,8 @@ SESSION_USAGE = {"input_tokens": 500, "output_tokens": 80, "cache_read_tokens": 
 def test_session_usage_event_feeds_mains_status_bar_attributes(make_agent):
     """The wave_a2 `session.usage` frame (session-cumulative) lands on the attributes main's status
     bar, spinner and /usage read: counters, pin, estimate marker, latency/velocity, rate limits."""
-    from agent.context_breakdown import context_display_source
-    from agent.context_pin import is_context_pinned
+    from hermes_agent.agent.context_breakdown import context_display_source
+    from hermes_agent.agent.context_pin import is_context_pinned
     agent, _ = make_agent([frame("session.usage", {"usage": SESSION_USAGE}, admission=None),
                            frame("message.complete", {"text": "x", "outcome": "completed"})])
     agent.run_conversation("q")
@@ -292,7 +292,7 @@ def test_turn_end_reads_session_stats_cumulative(make_agent):
 def test_status_bar_context_is_the_gateways_anchored_figure_with_mains_estimate_marker(make_agent):
     """Main's bar re-derives context_tokens from _turn_base_usage_anchor over _session_messages and
     shows `~` when rows follow the turn's first response; an interrupted turn (no response) is `~`."""
-    from agent.usage_anchor import anchored_context_tokens
+    from hermes_agent.agent.usage_anchor import anchored_context_tokens
     usage = dict(SESSION_USAGE, context_tokens=700, api_calls=2)
     suffix = [{"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function",
                "function": {"name": "read_file", "arguments": "{}"}}]},
@@ -503,7 +503,7 @@ def test_gateway_vault_requests_open_mains_panels_and_reply_with_the_value(make_
                                                                            callback, expected):
     """The gateway's ``vault.*`` server→client requests are answered by main's vault panels (the turn's
     registered callbacks); a classic CLI viewer no longer leaves them to time out."""
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     request = {"jsonrpc": "2.0", "id": "srq-vault", "method": method, "params": {"session_id": SID, **params}}
     agent, _ = make_agent([request, frame("message.complete", {"text": "ok", "outcome": "completed"})])
     replies = []
@@ -628,7 +628,7 @@ def test_first_turn_on_a_rebuilt_gateway_agent_keeps_the_exact_figure(make_agent
 def test_native_image_parts_are_staged_and_submitted_as_attachments(make_agent):
     """Main hands run_conversation OpenAI content parts for a vision model (images read locally);
     prompt.submit takes text + attachments, so each image is staged with image.attach_bytes first."""
-    from agent.image_routing import build_native_content_parts
+    from hermes_agent.agent.image_routing import build_native_content_parts
     import base64
     import tempfile
     from pathlib import Path
@@ -930,7 +930,7 @@ def test_another_viewer_answering_a_vault_prompt_releases_mains_panel(make_agent
     first, the gateway withdraws the request and the CLI's panel must close, or the pump sits in the modal
     until its own 120-180 s deadline instead of reading the rest of the turn."""
     from unittest.mock import MagicMock
-    from agent.vault_backends import unlock
+    from hermes_agent.agent.vault_backends import unlock
     from tests.hermes_cli.test_cli_clarify_batch import _make_cli_stub
     panel = _make_cli_stub()
     panel._sudo_state = None
@@ -982,7 +982,7 @@ def test_ctrl_c_during_the_first_api_call_keeps_mains_estimate_marker(make_agent
     """T4: Ctrl+C while the turn's first request is in flight. The gateway agent counted the attempt
     (``api_calls: 1`` in the turn result) but no response priced the ask, so main's in-process bar kept
     the previous turn's anchor and estimated the ask (``~``). The stand-in must not anchor after the ask."""
-    from agent.usage_anchor import anchored_context_tokens
+    from hermes_agent.agent.usage_anchor import anchored_context_tokens
     usage = dict(SESSION_USAGE, context_tokens=700, api_calls=2)  # no response: cumulative calls unchanged
     agent, client = make_agent([frame("message.complete", {"text": "", "outcome": "cancelled", "status": "interrupted"})],
                                result={"final_response": "", "api_calls": 1, "interrupted": True, "messages": []})
@@ -1005,7 +1005,7 @@ def test_a_voice_stopped_reply_returns_without_waiting_for_a_turn():
     """TUI-26: the owner answers a typed stop phrase in a LOCAL voice chat (turned on by another
     viewer) with ``{voice_stopped: true}`` and admits nothing, so no ``message.complete`` will ever
     come: the classic CLI returns at once with the stop notice instead of pumping forever."""
-    from agent.i18n import t
+    from hermes_agent.agent.i18n import t
 
     class Client(FakeClient):
         async def rpc(self, method, *, _timeout=None, **params):

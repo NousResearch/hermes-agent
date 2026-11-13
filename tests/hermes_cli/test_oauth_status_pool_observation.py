@@ -15,8 +15,8 @@ import time
 
 import pytest
 
-from agent import credential_pool
-from agent.credential_pool import load_pool
+from hermes_agent.agent import credential_pool
+from hermes_agent.agent.credential_pool import load_pool
 from hermes_cli.auth import AuthError, DEFAULT_CODEX_BASE_URL, get_codex_auth_status
 
 

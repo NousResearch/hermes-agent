@@ -77,14 +77,14 @@ class RewindOutcome:
 
 
 def _user_indices(messages: list[dict[str, Any]]) -> list[int]:
-    from agent.context_compressor import user_originated_turn_view
+    from hermes_agent.agent.context_compressor import user_originated_turn_view
     return [i for i, m in enumerate(messages) if user_originated_turn_view(m) is not None]
 
 
 def _comparison_content(message: dict[str, Any]) -> Any:
     """Project content the way the durable row stores it (flush projection, then the read-side sanitize) so a
     warm row and its durable twin compare equal."""
-    from agent.session_persistence import _durable_content
+    from hermes_agent.agent.session_persistence import _durable_content
     from hermes_agent.hermes_state_messages import SessionMessagesMixin
     return SessionMessagesMixin._loaded_view_content(message.get("role"), _durable_content(message.get("content")))
 
@@ -114,7 +114,7 @@ class SessionRewindMixin:
 
         OWNER-side only (CLI/ACP direct store, and the gateway's async store); never a worker call.
         """
-        from agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
+        from hermes_agent.agent.turn_failure_copy import CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY
         plan = self._plan_refused_retention(session_id, boundary_row_id)
         if plan is None:
             return False
@@ -160,7 +160,7 @@ class SessionRewindMixin:
         pin ``rewind_user_turn`` needs is unnecessary here. Falls back to the newest user turn when no
         usable boundary was supplied.
         """
-        from agent.context_compressor import split_user_originated_turn
+        from hermes_agent.agent.context_compressor import split_user_originated_turn
         if isinstance(boundary_row_id, int) and boundary_row_id > 0:
             with self._read_ctx() as conn:
                 row = conn.execute(
@@ -192,9 +192,9 @@ class SessionRewindMixin:
         carrier. ``adopt_row_ids`` (TUI): copy durable ``_row_id`` identities onto the installed warm prefix so
         clients can address follow-ups by row; the CLI leaves its history shape alone. Out-of-range /
         wrong-shape targets raise :class:`RewindTargetUnavailableError`."""
-        from agent.context_compressor import _DB_PERSISTED_MARKER
-        from agent.message_content import flatten_message_text
-        from agent.message_metadata import MESSAGE_UID, message_uid_or_none
+        from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
+        from hermes_agent.agent.message_content import flatten_message_text
+        from hermes_agent.agent.message_metadata import MESSAGE_UID, message_uid_or_none
 
         plan = self.plan_user_turn_rewind(session_id, user_ordinal, warm_history=warm_history,
                                           require_retryable=require_retryable, require_composite=require_composite)
@@ -240,10 +240,10 @@ class SessionRewindMixin:
         """Every read and check :meth:`rewind_user_turn` makes before its write, with no write: the
         gateway ``/retry`` commits the planned rewind inside its re-send's admission transaction
         (``rewind_in_transaction`` with the plan's pins), so a refused re-send leaves it unapplied."""
-        from agent.context_compressor import (
+        from hermes_agent.agent.context_compressor import (
             history_before_user_originated_turn, retryable_user_text,
             split_user_originated_turn, user_originated_turn_view)
-        from agent.session_persistence import _is_ephemeral_scaffolding
+        from hermes_agent.agent.session_persistence import _is_ephemeral_scaffolding
 
         expected_active_ids = self.get_active_message_ids(session_id)
         stored = self.get_messages_as_conversation(session_id, include_row_ids=True)

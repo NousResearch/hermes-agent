@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.lsp.manager import LSPService
-from agent.lsp.servers import SERVERS, ServerContext, custom_servers, find_server_for_file, language_id_for
+from hermes_agent.agent.lsp.manager import LSPService
+from hermes_agent.agent.lsp.servers import SERVERS, ServerContext, custom_servers, find_server_for_file, language_id_for
 
 _MOCK = os.path.join(os.path.dirname(__file__), "_mock_lsp_server.py")
 

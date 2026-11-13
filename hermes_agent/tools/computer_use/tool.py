@@ -1,6 +1,6 @@
 """`computer_use` tool entry point: any-model desktop control (macOS/Windows/Linux) via cua-driver.
 Return contract: text-only results are a JSON string; captures / `capture_after=True` return
-``{"_multimodal": True, "content": [text, image_url], "text_summary": <fallback>}`` (run_agent.py /
+``{"_multimodal": True, "content": [text, image_url], "text_summary": <fallback>}`` (hermes_agent/run_agent.py /
 the Anthropic adapter turn it into provider-specific image tool content)."""
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_dir_acl import make_user_dir
 
-from agent.image_eviction_policy import image_dimensions_from_bytes
+from hermes_agent.agent.image_eviction_policy import image_dimensions_from_bytes
 from hermes_agent.tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
 
 logger = logging.getLogger(__name__)
@@ -895,7 +895,7 @@ def _should_route_through_aux_vision() -> bool:
     ``image_input_mode`` edit applies to the next screenshot instead of a stale verdict."""
     stage = "import"
     try:
-        from agent.auxiliary_client import _read_main_model, _read_main_provider
+        from hermes_agent.agent.auxiliary_client import _read_main_model, _read_main_provider
         from hermes_cli.config import load_config_readonly
         from hermes_agent.tools.vision_tools import _native_tool_result_images
         stage = "decision"

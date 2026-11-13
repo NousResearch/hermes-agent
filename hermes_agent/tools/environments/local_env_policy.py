@@ -61,7 +61,7 @@ def _secret_source_bootstrap_env() -> frozenset[str]:
     ``OP_SERVICE_ACCOUNT_TOKEN``, ...): the one token that unlocks every other secret.
     No spawned child needs it; each source hands it to its own CLI explicitly
     (``_run_bws_list``, ``_op_child_env``), so it is Tier 1 on every spawn path."""
-    from agent.secret_sources.registry import list_sources
+    from hermes_agent.agent.secret_sources.registry import list_sources
     return frozenset(name for source in list_sources() if (name := source.token_env({})))
 
 
@@ -444,7 +444,7 @@ def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
     ``<NAME>_<PROFILE>`` source name that hydration also applies as ``<NAME>``
     (``secret_sources.registry._profile_alias_target``). Resolved per call: pool rows, config,
     plugin adapters and the profile differ per served profile."""
-    from agent.secret_sources.registry import _active_profile_name, _profile_alias_target
+    from hermes_agent.agent.secret_sources.registry import _active_profile_name, _profile_alias_target
     from hermes_cli.auth import read_credential_pool
     from hermes_cli.config import load_config_readonly
     from hermes_cli.managed_scope import load_managed_config
@@ -552,7 +552,7 @@ def _plugin_terminal_env_strip_keys() -> frozenset:
     stripped from every spawned subprocess). Computed at call time because plugins
     register after import; fail-soft to empty."""
     try:
-        from agent.terminal_env_registry import plugin_strip_env_keys
+        from hermes_agent.agent.terminal_env_registry import plugin_strip_env_keys
 
         return plugin_strip_env_keys()
     except Exception:

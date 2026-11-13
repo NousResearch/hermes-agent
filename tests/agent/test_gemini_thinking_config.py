@@ -10,7 +10,7 @@ lowest universally supported level ("low").
 
 import pytest
 
-from agent.transports.chat_completions import (
+from hermes_agent.agent.transports.chat_completions import (
     _build_gemini_thinking_config,
     _snake_case_gemini_thinking_config,
 )

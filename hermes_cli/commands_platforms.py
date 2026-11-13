@@ -8,7 +8,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from agent.i18n import t
+from hermes_agent.agent.i18n import t
 from hermes_cli.commands import (
     COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries, _resolve_config_gates)
 
@@ -195,8 +195,8 @@ def _iter_gateway_skills(platform: str):
     """
     from pathlib import Path
 
-    from agent.skill_commands import get_skill_commands
-    from agent.skill_utils import (
+    from hermes_agent.agent.skill_commands import get_skill_commands
+    from hermes_agent.agent.skill_utils import (
         get_disabled_skill_names, get_external_skills_dirs, get_project_skills_dirs)
     from hermes_agent.tools.skills_tool import SKILLS_DIR
 
@@ -234,7 +234,7 @@ def _gateway_bundles() -> list[tuple[str, dict]]:
     """Sorted ``(cmd_key, info)`` skill bundles for a platform catalog; a bundle directory that cannot
     be scanned (e.g. a hand-edited non-UTF-8 file) is logged and lists none, so it never hides the
     menu's other commands."""
-    from agent.skill_bundles import get_skill_bundles
+    from hermes_agent.agent.skill_bundles import get_skill_bundles
     try:
         return sorted(get_skill_bundles().items())
     except Exception:
@@ -281,7 +281,7 @@ def _collect_gateway_skill_entries(
     plugin_entries = _entries(_plugin_rows())
     reserved_names.update(n for n, *_rest in plugin_entries)
 
-    from agent.skill_commands import resolve_slash_key
+    from hermes_agent.agent.skill_commands import resolve_slash_key
     bundles = dict(_gateway_bundles())
     # A bundle whose menu name was shortened/renamed (32-char clamp) cannot dispatch: the platform
     # sends the displayed name and bundle lookup resolves full slugs only. Advertise only names that

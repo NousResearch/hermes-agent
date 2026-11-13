@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from agent.video_gen_provider import VideoGenProvider, error_response, success_response
+from hermes_agent.agent.video_gen_provider import VideoGenProvider, error_response, success_response
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def _media_ref_to_xai_url(value: str, *, kind: str, fallback_mime: str) -> str:
     if not ref or ref.lower().startswith(_REMOTE_PREFIXES + (f"data:{kind}/",)) or not path.is_file():
         return ref
     try:
-        from agent.file_safety import raise_if_read_blocked
+        from hermes_agent.agent.file_safety import raise_if_read_blocked
     except Exception as exc:
         logger.debug("xAI media input read guard unavailable: %s", exc)
     else:

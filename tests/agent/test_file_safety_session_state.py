@@ -35,7 +35,7 @@ def fake_homes(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("relative", ["state.db", "sessions/session_abc.json"])
 def test_session_state_paths_are_write_denied(fake_homes, relative):
-    from agent.file_safety import is_write_denied
+    from hermes_agent.agent.file_safety import is_write_denied
 
     _root, profile = fake_homes
     target = profile / relative

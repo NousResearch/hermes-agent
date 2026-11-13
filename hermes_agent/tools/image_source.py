@@ -125,12 +125,12 @@ def _guard_credential_read(host_target: Path, src: str) -> None:
     """Shared credential-read guard: refuse secret-bearing files (.env, auth.json) with a specific
     error. Guard import is best-effort; a real block always propagates."""
     try:
-        # Shared credential-read guard (agent.file_safety, #57698): refuse secret-bearing files (.env,
+        # Shared credential-read guard (hermes_agent.agent.file_safety, #57698): refuse secret-bearing files (.env,
         # auth.json, ...) with an intentional, specific error instead of relying on the magic-byte sniff to
         # reject them incidentally. Same chokepoint the image-gen/video-gen provider plugins enforce on
         # model-supplied local paths. Import is best-effort (guard unavailability must not break image
         # loading); a real block always propagates.
-        from agent.file_safety import raise_if_read_blocked
+        from hermes_agent.agent.file_safety import raise_if_read_blocked
     except Exception:
         return
     try:

@@ -21,7 +21,7 @@ ATTEMPT = "Done, the deploy key SECRET-321 is in place."
 
 
 def _agent(server, db, session_id: str, **kwargs):
-    from run_agent import AIAgent
+    from hermes_agent.run_agent import AIAgent
 
     kwargs.setdefault("enabled_toolsets", ["todo"])
     return AIAgent(base_url=server.base_url, api_key="sk-fake-e2e", provider="custom", model="fake-model",
@@ -114,7 +114,7 @@ def test_provider_error_after_a_capped_fragment_delivers_only_the_rewrite(held):
 
 
 def test_answer_sent_back_by_a_late_lsp_verdict_stays_out_of_history(held, monkeypatch):
-    from agent.lsp import deferred
+    from hermes_agent.agent.lsp import deferred
 
     verdicts = [[("app.py", "app.py:3: error: name 'deploy' is not defined")]]
     monkeypatch.setattr(deferred, "settle_for_agent", lambda agent, **_: verdicts.pop() if verdicts else [])

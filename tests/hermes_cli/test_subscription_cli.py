@@ -12,10 +12,10 @@ from decimal import Decimal
 
 import pytest
 
-import agent.billing_usage as bu
-import agent.subscription_view as sv
+import hermes_agent.agent.billing_usage as bu
+import hermes_agent.agent.subscription_view as sv
 import hermes_cli.nous_billing as nb
-from agent.subscription_view import CurrentSubscription, SubscriptionState, SubscriptionTier
+from hermes_agent.agent.subscription_view import CurrentSubscription, SubscriptionState, SubscriptionTier
 from cli import HermesCLI
 
 
@@ -159,7 +159,7 @@ def test_open_url_in_browser_refuses_remote_session(cli, monkeypatch):
 def _no_card_lookup(monkeypatch):
     # The charge_now confirm best-effort-fetches billing state to NAME the card
     # being charged; keep unit tests offline (generic line) unless overridden.
-    import agent.billing_view as bv
+    import hermes_agent.agent.billing_view as bv
 
     def _offline(*a, **kw):
         raise RuntimeError("offline")
@@ -181,9 +181,9 @@ def test_upgrade_confirm_names_the_subscription_card(cli, monkeypatch, capsys):
     # picker → ultra; charge confirm → back out (we only assert the card line)
     monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _scripted_modal("change", "ultra", "cancel"), raising=False)
     monkeypatch.setattr(nb, "post_subscription_preview", lambda **kw: {"effect": "charge_now", "targetTierName": "Ultra", "amountDueNowCents": 4630})
-    import agent.billing_view as bv
-    from agent.billing_view import BillingState as _BS
-    from agent.billing_view import CardInfo as _CI
+    import hermes_agent.agent.billing_view as bv
+    from hermes_agent.agent.billing_view import BillingState as _BS
+    from hermes_agent.agent.billing_view import CardInfo as _CI
 
     _state = _BS(logged_in=True, card=_CI(brand="Visa", last4="4242", resolved_via="subPin"))
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: _state, raising=False)

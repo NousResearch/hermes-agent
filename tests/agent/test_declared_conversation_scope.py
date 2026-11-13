@@ -21,19 +21,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.portal_tags import (
+from hermes_agent.agent.portal_tags import (
     get_affinity_scope,
     reset_affinity_scope,
     reset_conversation_context,
     set_affinity_scope,
     set_conversation_context,
 )
-from agent.prompt_cache_scope import (
+from hermes_agent.agent.prompt_cache_scope import (
     declared_conversation_scope,
     declared_conversation_scope_safe,
     resolve_prompt_cache_scope,
 )
-from agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
+from hermes_agent.agent.transports.codex import _cache_scope_from_session_id, _content_cache_key
 from hermes_agent.hermes_state import SessionDB
 
 # One room member, two consecutive replies: the Studio group-chat shape
@@ -318,7 +318,7 @@ class TestPromptCacheKeyStability:
         assert self._key_for(_agent(RUN_1, db)) != self._key_for(_agent(RUN_2, db))
 
     def test_codex_transport_key_matches_across_responses(self, db):
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         db.create_session(RUN_1, source="api_server")
         db.create_session(RUN_2, source="api_server")
@@ -341,7 +341,7 @@ class TestPromptCacheKeyStability:
         assert key(RUN_1) == key(RUN_2)
 
     def test_chat_completions_key_matches_across_responses(self, db):
-        from agent.transports.chat_completions import _add_prompt_cache_key
+        from hermes_agent.agent.transports.chat_completions import _add_prompt_cache_key
 
         db.create_session(RUN_1, source="api_server")
         db.create_session(RUN_2, source="api_server")
@@ -365,7 +365,7 @@ class TestPromptCacheKeyStability:
 
     def test_transcript_identity_is_not_rewritten(self, db):
         """#57012: the session header still carries the physical id."""
-        from agent.transports.codex import ResponsesApiTransport
+        from hermes_agent.agent.transports.codex import ResponsesApiTransport
 
         db.create_session(RUN_1, source="api_server")
         kwargs = ResponsesApiTransport().build_kwargs(
@@ -783,7 +783,7 @@ class TestSourceOverrideDomain:
     KEY = "agent:main:telegram:dm:888"
 
     def test_the_pre_row_source_matches_persistence(self, db, monkeypatch):
-        from agent.prompt_cache_scope import _agent_source
+        from hermes_agent.agent.prompt_cache_scope import _agent_source
 
         monkeypatch.setenv("HERMES_SESSION_SOURCE", "override-src")
         agent = SimpleNamespace(

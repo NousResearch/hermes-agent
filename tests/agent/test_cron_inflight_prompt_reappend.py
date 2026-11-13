@@ -20,7 +20,7 @@ still be left with nothing to act on.
 from typing import Any, Dict, List
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import (
+from hermes_agent.agent.context_compressor import (
     _SUMMARY_END_MARKER,
     SUMMARY_PREFIX,
     ContextCompressor,
@@ -33,7 +33,7 @@ JOB_SENTINEL = "CRON_JOB_PROMPT_sentinel_brief_the_inbox_and_write_a_digest"
 
 def _make_compressor() -> ContextCompressor:
     with patch(
-        "agent.context_compressor.get_model_context_length", return_value=100_000
+        "hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000
     ):
         compressor = ContextCompressor(
             model="test",
@@ -89,7 +89,7 @@ def _compress(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "## Summary\nRan a bunch of terminal steps."
     )
     compressor = _make_compressor()
-    with patch("agent.context_compressor.call_llm", return_value=response):
+    with patch("hermes_agent.agent.context_compressor.call_llm", return_value=response):
         return compressor.compress(messages, current_tokens=200_000, force=True)
 
 
@@ -246,7 +246,7 @@ def _compress_with(protect_first_n: int, compression_count: int, messages):
     response.choices = [MagicMock()]
     response.choices[0].message.content = SUMMARY_PREFIX + "\n## Summary\nran steps."
     with patch(
-        "agent.context_compressor.get_model_context_length", return_value=100_000
+        "hermes_agent.agent.context_compressor.get_model_context_length", return_value=100_000
     ):
         compressor = ContextCompressor(
             model="test",
@@ -276,7 +276,7 @@ def test_merged_restatement_is_not_anchored_twice():
     the restatement is MERGED onto the carrier. The later
     _ensure_compressed_has_user_turn pass must see intent as present instead
     of inserting a second copy of the job prompt."""
-    from agent.conversation_compression import _ensure_compressed_has_user_turn
+    from hermes_agent.agent.conversation_compression import _ensure_compressed_has_user_turn
 
     original = [{"role": "user", "content": JOB_SENTINEL}, *_tool_pairs(40)]
     out = _compress_with(2, 1, original)
@@ -291,7 +291,7 @@ def test_merged_restatement_is_not_anchored_twice():
 def test_restatement_survives_repeated_compactions_without_stacking():
     """A task alive across three compactions is restated exactly once per
     output — one copy, one header, always after the summary."""
-    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER
+    from hermes_agent.agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER
 
     out = [{"role": "user", "content": JOB_SENTINEL}, *_tool_pairs(40)]
     for cycle in (1, 2, 3):
@@ -312,7 +312,7 @@ def test_replay_row_does_not_carry_the_original_timestamp():
     puts the question after its own answer in timestamp-ordered views."""
     import time
 
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         _INFLIGHT_TASK_REPLAY_HEADER,
         COMPRESSED_SUMMARY_METADATA_KEY,
     )
@@ -365,12 +365,12 @@ def test_flagged_scaffolding_row_is_never_the_inflight_task():
 
 def test_replay_replaces_surviving_user_row_with_same_message_uid():
     """A protected copy of the in-flight request must not remain active beside its replay."""
-    from agent.context_compressor import (
+    from hermes_agent.agent.context_compressor import (
         _INFLIGHT_TASK_REPLAY_HEADER,
         COMPRESSED_SUMMARY_METADATA_KEY,
         _template_visible_role,
     )
-    from agent.message_metadata import ABSORBED_MESSAGE_UIDS
+    from hermes_agent.agent.message_metadata import ABSORBED_MESSAGE_UIDS
 
     uid = "request-uid"
     carrier = {

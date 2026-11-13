@@ -166,6 +166,17 @@ VALID_HOOKS: set[str] = {
     # spawn; completed/blocked fire in the WORKER (or whichever process drove it). Kwargs: task_id,
     # board, assignee, run_id, profile_name; completed adds summary, blocked adds reason.
     "kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
+    # pre_kanban_complete: DIRECTIVE (pre-commit) gate on a card close. Fired in
+    # hermes_cli.kanban_db.complete_task BEFORE the created-cards / empty-completion gates
+    # and the write txn, so a plugin can veto the close (receipt-on-close / C-13 provenance).
+    # Unlike the kanban_task_* observers above (which fire AFTER commit, returns ignored),
+    # this one fires BEFORE any state mutation and its return is honored. Kwargs: task_id,
+    # profile_name, board, assignee, run_id, status, result, summary. Return None (or anything
+    # but a block directive) to allow; {"action": "block", "message"} (or "reason") to veto —
+    # the first block in registration order wins and is raised as
+    # kanban_db.PreKanbanCompleteVetoError. Fail-open: a plugin that raises never blocks the
+    # close; a block directive without a message is ignored.
+    "pre_kanban_complete",
     # Kanban worker/mutation/tick observers; returns ignored; fire sites short-circuit on
     # has_hook(). Kwargs: task_id, profile_name, board, assignee, run_id plus, per hook:
     # worker_spawned (DISPATCHER, after PID persisted, inside the dispatch lock — stay fast):

@@ -25,10 +25,9 @@ logger = logging.getLogger(__name__)
 def _startup_env(name: str) -> str:
     """One A2A setting from the active profile's scope, else the env. Inside a secondary
     profile's scope a miss yields "" and never falls through to the default profile's env.
-    Unscoped, the profile's own secret scope is the final rung: a systemd-style launch loads
-    the token into the secret store and scrubs the env var, so ``os.environ`` alone is not
-    authoritative at gateway startup (#148961). A token that exists nowhere still yields ""
-    — localhost-only stays fail-closed."""
+    Unscoped, a miss in ``os.environ`` falls back to the profile's own secret scope (``.env``
+    plus external secret sources, via ``external_fallback``). A token that exists nowhere still
+    yields "" — localhost-only stays fail-closed."""
     if _profile_scoped():
         from agent.secret_scope import get_secret
         return (get_secret(name) or "").strip()

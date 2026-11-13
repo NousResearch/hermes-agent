@@ -14,7 +14,7 @@ source: https://docs.datadoghq.com/bits_ai/mcp_server/
 # exchange, and refresh.
 transport:
   type: http
-  url: https://mcp.datadoghq.com/api/unstable/mcp-server/mcp
+  url: https://mcp.datadoghq.com/v1/mcp
 
 auth:
   type: oauth

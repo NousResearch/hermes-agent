@@ -353,6 +353,10 @@ This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
 
+The gate covers writes made through the `memory` tool. It is not a file-system
+lock: the generic file tools (`write_file`, `patch`) and the terminal can still
+edit `MEMORY.md` / `USER.md` directly.
+
 A staged `patch` or `remove` (the background review stages these even with the
 gate off) records the full entry it targets, and `/memory pending` shows it.
 Approval applies to exactly that entry: if it changed after the write was staged,
@@ -524,8 +528,10 @@ skills:
 ```
 
 When `write_approval: true`, skill writes (create / edit / patch / write_file /
-delete) always **stage** regardless of origin. You review the one-line gist
-inline, but the full diff stays out-of-band:
+delete) always **stage** regardless of origin. Like the memory gate, it covers
+writes made through the `skill_manage` tool, not direct edits of skill files by
+the generic file tools or the terminal. You review the one-line gist inline, but
+the full diff stays out-of-band:
 
 ```
 /skills pending             # list staged skill writes + a one-line gist each

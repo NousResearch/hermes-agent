@@ -563,14 +563,17 @@ class ProviderProfile:
         custom_base = bool(caller_base) and (
             caller_base.rstrip("/") != (self.base_url or "").rstrip("/")
         )
-        if custom_base:
-            url = caller_base.rstrip("/") + "/models"
-        else:
-            url = (self.models_url or "").strip()
-            if not url:
-                if not effective_base:
-                    return None
-                url = effective_base.rstrip("/") + "/models"
+        url = "" if custom_base else (self.models_url or "").strip()
+        if not url:
+            if not effective_base:
+                return None
+            url = effective_base.rstrip("/")
+            # Anthropic-wire bases (``.../anthropic``) are SDK roots: the SDK posts to
+            # ``{base}/v1/messages``, so the catalog is ``{base}/v1/models``; ``{base}/models``
+            # 404s and silently disabled live discovery (MiniMax, #152406).
+            if self.api_mode == "anthropic_messages" and not url.endswith("/v1"):
+                url += "/v1"
+            url += "/models"
 
         import json
         import urllib.request

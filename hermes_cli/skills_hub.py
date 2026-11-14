@@ -814,7 +814,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     with ExitStack() as stack:
         # Held fetch→lock.json so a concurrent CLI/dashboard install can't swap the target between
         # this install's scan and its move. A filesystem without flock degrades to unlocked, like
-        # HubLockFile._update; a held lock fails this install instead of queueing behind it.
+        # HubLockFile._update; a held lock queues this install behind the running one.
         try:
             stack.enter_context(hub_install_lock())
         except TimeoutError as exc:
@@ -910,33 +910,37 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
         _invalid_path(c, bundle, exc)
         attempt["failure_class"] = "invalid_bundle"
         return bundle, failed, False
-    c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
+    c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parents[3])}[/]")
 
-    result = _scan_quarantined(c, q_path, bundle, meta, identifier)
-    allowed, _reason = should_allow_install(result, force=force)
-    if not allowed:
-        _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
-                         f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
-        attempt["failure_class"] = "scan_blocked"
-        return bundle, failed, False
-    # Advisory second opinion — warn-and-continue by design (PII-class findings are
-    # informational); the install confirmation below is where the user decides.
-    _print_tier1_advisory(q_path, c)
-    metadata_lines = _format_extra_metadata_lines(extra_metadata)
-    if metadata_lines:
-        c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
-
-    # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
-    if not force and not skip_confirm and not _confirm_install(c, bundle, category):
-        discard_quarantine(q_path)
-        return bundle, None, None
-
+    # Each quarantine is a unique staging dir; drop it on every exit (scan error, Ctrl-C at the
+    # prompt) so leftovers don't pile up as "pending review" in ``hermes doctor``.
     try:
-        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
-    except ValueError as exc:
-        _invalid_path(c, bundle, exc, q_path)
-        attempt["failure_class"] = "invalid_bundle"
-        return bundle, failed, False
+        result = _scan_quarantined(c, q_path, bundle, meta, identifier)
+        allowed, _reason = should_allow_install(result, force=force)
+        if not allowed:
+            _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
+                             f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
+            attempt["failure_class"] = "scan_blocked"
+            return bundle, failed, False
+        # Advisory second opinion — warn-and-continue by design (PII-class findings are
+        # informational); the install confirmation below is where the user decides.
+        _print_tier1_advisory(q_path, c)
+        metadata_lines = _format_extra_metadata_lines(extra_metadata)
+        if metadata_lines:
+            c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
+
+        # skip_confirm bypasses the prompt (TUI mode, where input() hangs).
+        if not force and not skip_confirm and not _confirm_install(c, bundle, category):
+            return bundle, None, None
+
+        try:
+            install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+        except ValueError as exc:
+            _invalid_path(c, bundle, exc, q_path)
+            attempt["failure_class"] = "invalid_bundle"
+            return bundle, failed, False
+    finally:
+        discard_quarantine(q_path)
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.resolve().relative_to(Path(SKILLS_DIR).resolve()).as_posix()}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")

@@ -70,7 +70,8 @@ def test_install_from_quarantine_leaves_no_staging_dir(hub_dirs):
     assert list((hub_dir / "quarantine").iterdir()) == []
 
 
-def test_install_fails_fast_while_another_install_holds_the_profile_lock(hub_dirs, monkeypatch):
+def test_same_profile_install_queues_behind_the_running_one(hub_dirs, monkeypatch):
+    """Profile create spawns one install per hub skill at once: each must wait its turn, not fail."""
     calls: list = []
     monkeypatch.setattr(cli_hub, "_install_skill", lambda *a, **k: calls.append(a) or (None, None, True))
     held, release = threading.Event(), threading.Event()
@@ -82,16 +83,37 @@ def test_install_fails_fast_while_another_install_holds_the_profile_lock(hub_dir
 
     holder = threading.Thread(target=other_install)
     holder.start()
+    results: list = []
+    queued = threading.Thread(target=lambda: results.append(cli_hub.do_install("official/demo", skip_confirm=True)))
     try:
         assert held.wait(10)
-        printed: list = []
-        console = type("C", (), {"print": lambda self, *a, **k: printed.append(" ".join(map(str, a)))})()
-        assert cli_hub.do_install("official/demo", console=console, skip_confirm=True) is False
-        assert calls == []
-        assert any("already running" in line for line in printed)
+        queued.start()
+        queued.join(1.5)
+        assert queued.is_alive() and calls == []  # waiting on the lock, not installing alongside
+        release.set()
+        queued.join(10)
     finally:
         release.set()
         holder.join(10)
 
-    assert cli_hub.do_install("official/demo", skip_confirm=True) is True
+    assert results == [True]
     assert len(calls) == 1
+
+
+def test_scan_error_still_removes_the_staging_dir(hub_dirs, monkeypatch):
+    _skills_dir, hub_dir = hub_dirs
+    bundle = _bundle()
+    bundle.metadata = {}
+    source = type("Source", (), {"source_id": lambda self: "official"})()
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [source])
+    monkeypatch.setattr(cli_hub, "_resolve_source_meta_and_bundle", lambda *_a: (None, bundle, source))
+    monkeypatch.setattr(cli_hub, "_record_skill_install", lambda *a, **k: None)
+
+    def _boom(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_hub, "_scan_quarantined", _boom)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli_hub.do_install("official/demo", skip_confirm=True)
+    assert list((hub_dir / "quarantine").iterdir()) == []

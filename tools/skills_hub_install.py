@@ -94,18 +94,22 @@ def discard_quarantine(q_path: Path) -> None:
 
 
 _INSTALL_LOCK_HOLDER = threading.local()
+# Same-profile installs queue: profile create spawns one install per hub skill at once, and two
+# quick Desktop Install clicks must both land. Long enough to cover one fetch + scan + move.
+_INSTALL_LOCK_TIMEOUT_S = 600.0
 
 
 def hub_install_lock():
     """One profile's Skills Hub install lock (fetch through lock.json persistence), so a CLI and a
-    dashboard install cannot interleave their target rmtree/move. Raises ``TimeoutError`` after a
-    short wait rather than queueing behind a long install."""
+    dashboard install cannot interleave their target rmtree/move. Waits for the running install;
+    raises ``TimeoutError`` only when one holds it past ``_INSTALL_LOCK_TIMEOUT_S``."""
     from hermes_cli.auth import _file_lock
     from tools.skills_hub import _hub_dir, ensure_hub_dirs
 
     ensure_hub_dirs()
-    return _file_lock(_hub_dir() / "install.lock", _INSTALL_LOCK_HOLDER, 1.0,
-                      "Another Skills Hub install is already running for this profile; try again shortly")
+    return _file_lock(_hub_dir() / "install.lock", _INSTALL_LOCK_HOLDER, _INSTALL_LOCK_TIMEOUT_S,
+                      f"Another Skills Hub install for this profile held the install lock for over "
+                      f"{int(_INSTALL_LOCK_TIMEOUT_S // 60)} minutes; try again once it finishes")
 
 
 def _category_skill_dirs(directory: Path) -> list[str]:

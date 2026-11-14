@@ -7,6 +7,7 @@ process. Before the ``profile`` parameter existed, toggling a skill after
 These tests pin the new behavior: reads and writes land in the REQUESTED
 profile's HERMES_HOME, and the dashboard's own profile stays untouched.
 """
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -181,13 +182,24 @@ class TestProfileScopedHubActions:
         from tools.skills_hub_models import SkillBundle
 
         seen_homes = []
+        skills_lock_free = []
         bundle = SkillBundle(
             name="demo", files={"SKILL.md": "---\\nname: demo\\n---\\n"},
             source="official", identifier="official/demo", trust_level="builtin",
         )
 
+        def _probe_skills_lock():
+            # The process-wide skills lock must stay free for other dashboard requests mid-scan.
+            got = _web_server_profiles._SKILLS_PROFILE_LOCK.acquire(blocking=False)
+            if got:
+                _web_server_profiles._SKILLS_PROFILE_LOCK.release()
+            skills_lock_free.append(got)
+
         def _quarantine(_bundle):
             seen_homes.append(get_hermes_home())
+            probe = threading.Thread(target=_probe_skills_lock)
+            probe.start()
+            probe.join(5)
             path = get_hermes_home() / "skills" / ".hub" / "quarantine" / "scan-demo"
             path.mkdir(parents=True)
             return path
@@ -207,6 +219,7 @@ class TestProfileScopedHubActions:
 
         assert response.status_code == 200, response.text
         assert seen_homes == [isolated_profiles["worker_alpha"]]
+        assert skills_lock_free == [True]
 
     def test_hub_install_spawns_with_profile_flag(
         self, client, isolated_profiles, monkeypatch

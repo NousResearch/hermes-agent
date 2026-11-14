@@ -2442,3 +2442,10 @@ updates:
 #   # This runs ONCE per process at startup, so it cannot replace a credential
 #   # that expires mid-session. For a single provider whose token needs
 #   # re-minting during a session, use `providers.<name>.key_cmd` instead.
+
+# Desktop shell: false leaves assistive technology detection to Electron.
+# Set true for dictation tools that cannot reach the composer; forcing the tree
+# may interfere with macOS window managers or Windows accessibility clients.
+# Desktop reads the default profile's config; fully quit and relaunch to apply.
+desktop:
+  renderer_accessibility: false

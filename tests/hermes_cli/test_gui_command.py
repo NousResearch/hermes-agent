@@ -1172,10 +1172,8 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        # Absent key stays ON — the composer must be reachable by
-        # accessibility-driven dictation out of the box (#118083 family:
-        # #118271 / #92607).
-        (None, True),
+        # Absent key leaves native detection in control (#133652).
+        (None, False),
         (True, True),
         (False, False),
         ("on", True),
@@ -1203,21 +1201,26 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
     ],
 )
 def test_desktop_launch_options_normalizes_renderer_accessibility(raw, expected):
-    """``desktop.renderer_accessibility`` defaults to ON; only explicit false words opt out."""
+    """Force accessibility only when configured; keep explicit dictation opt-ins."""
     cfg = {"desktop": {} if raw is None else {"renderer_accessibility": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
         _, _, _, _, renderer_a11y = main_desktop._desktop_launch_options()
     assert renderer_a11y is expected
 
 
-def test_desktop_environment_bridges_only_the_accessibility_opt_out(monkeypatch):
-    """ON (the default) sets nothing; the opt-out bridges to
-    HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0, and an explicit env var wins."""
+def test_desktop_environment_bridges_accessibility_opt_in_and_opt_out(monkeypatch):
+    """Both config values reach Electron, and an explicit env var wins."""
     monkeypatch.delenv("HERMES_DESKTOP_RENDERER_ACCESSIBILITY", raising=False)
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"desktop": {}})
 
     env, _ = main_desktop._desktop_launch_env(_ns())
-    assert "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in env
+    assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"desktop": {"renderer_accessibility": True}})
+    env, _ = main_desktop._desktop_launch_env(_ns())
+    assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "1"
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
@@ -1226,7 +1229,9 @@ def test_desktop_environment_bridges_only_the_accessibility_opt_out(monkeypatch)
     assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
 
     monkeypatch.setenv("HERMES_DESKTOP_RENDERER_ACCESSIBILITY", "0")
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"desktop": {}})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"desktop": {"renderer_accessibility": True}})
     env, _ = main_desktop._desktop_launch_env(_ns())
     assert env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] == "0"
 

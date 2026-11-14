@@ -3350,6 +3350,24 @@ onboarding:
 - `seen` — internal state. Hermes latches each shown hint here so it never fires again; the first-message offer is also recorded here once shown. Don't hand-edit it — wipe the whole `onboarding` section if you want to re-see all hints.
 - `run` — whether the desktop app opens its first-run onboarding chat on the next launch. Unset means only on a fresh install (no sessions and no profiles yet). Hermes writes `true` when onboarding starts and `false` when it is finished or skipped. It always lives in the default profile's `config.yaml`, whichever profile the app runs. Set `false` to never show it; managed installs can pin it in the managed config.
 
+## Desktop accessibility
+
+```yaml
+desktop:
+  renderer_accessibility: false
+```
+
+`desktop.renderer_accessibility` defaults to `false`: Electron detects assistive
+technology normally. Set `true` to force the renderer accessibility tree on macOS
+and Windows for dictation tools that cannot otherwise reach the composer. Forcing
+it can interfere with Magnet window management on macOS; unexpected speech in
+third-party Windows apps has also been reported. `false` stops forcing the tree
+without disabling native assistive technology detection. Linux is unaffected.
+Desktop reads this from the default profile's `config.yaml`; fully quit and
+relaunch the app after changing it. An explicit
+`HERMES_DESKTOP_RENDERER_ACCESSIBILITY` environment value takes precedence.
+See [Desktop accessibility compatibility](./desktop.md#dictation-and-accessibility-compatibility).
+
 ## Webapp
 
 The gateway can serve the [Desktop workspace in a browser](./desktop.md#use-the-desktop-workspace-from-a-browser) on its own listener. It is off until you turn it on.

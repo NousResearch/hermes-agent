@@ -9,14 +9,13 @@
  * (#118271) and on Windows (#92607) alike. Electron's manual switch for that
  * is `app.setAccessibilitySupportEnabled(true)` once the app is ready.
  *
- * Default ON for the platforms where the typed API exists (darwin, win32) —
- * the composer being reachable by every accessibility-driven input method is
- * the point of the bug fix; the tree's rendering cost is the price. A
- * perf-sensitive setup can opt out with `desktop.renderer_accessibility:
- * false` in config.yaml, which becomes HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0
- * — bridged by the `hermes desktop` launcher and, for packaged launches, by
- * main.ts's pre-ready config read (readDesktopLaunchConfig). Setting the
- * variable directly works too.
+ * Leave Electron's assistive technology detection in control by default:
+ * forcing the tree can interfere with macOS window managers and Windows
+ * accessibility clients (#133652). Dictation tools that cannot register
+ * can opt in with `desktop.renderer_accessibility: true` in config.yaml,
+ * bridged as HERMES_DESKTOP_RENDERER_ACCESSIBILITY=1 by both the launcher
+ * and main.ts's pre-ready config read. False skips forcing; it does not
+ * disable accessibility requested by an actual assistive technology.
  *
  * Extracted dependency-free — the Electron app object is injected — so the
  * platform/env decision is unit-testable per branch without booting Electron,
@@ -45,7 +44,17 @@ export function shouldEnableRendererAccessibility(
 
   const raw = (env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY ?? '').trim().toLowerCase()
 
-  return !RENDERER_ACCESSIBILITY_OFF_WORDS.has(raw)
+  return raw.length > 0 && !RENDERER_ACCESSIBILITY_OFF_WORDS.has(raw)
+}
+
+/** Bridge the packaged launch config without overriding an explicit environment value. */
+export function bridgeRendererAccessibilityConfig(
+  configured: boolean | undefined,
+  env: { HERMES_DESKTOP_RENDERER_ACCESSIBILITY?: string | undefined } = process.env
+): void {
+  if (configured !== undefined && env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY === undefined) {
+    env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY = configured ? '1' : '0'
+  }
 }
 
 /** Minimal slice of Electron's app API this module needs — injected so the

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from tools.mcp_oauth_endpoints import OAuthEndpointRefused
 from tools.mcp_oauth_provider import HermesProviderMixin
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             except httpx.HTTPError as exc:
                 logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
                 return None
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        from tools.mcp_oauth_endpoints import oauth_client_event_hooks
+        async with httpx.AsyncClient(timeout=10.0, event_hooks=oauth_client_event_hooks(httpx, server_url)) as client:
             # PRM discovery to learn the authorization_server URL.
             for url in build_protected_resource_metadata_discovery_urls(None, server_url):
                 resp = await _send(client, url, "PRM")
@@ -204,6 +206,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             # Drop the in-memory client so the SDK re-registers next flow.
             self.context.client_info = None
             self._initialized = False
+        except OAuthEndpointRefused:
+            raise  # the body broke the OAuth response bound: the endpoint failed, not the sniff
         except Exception as exc:  # pragma: no cover — must not throw
             self._log_nonfatal("invalid_client detection", exc)
 
@@ -288,7 +292,11 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     break
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
-                await self._maybe_flag_poisoned_client(incoming)
+                try:
+                    await self._maybe_flag_poisoned_client(incoming)
+                except OAuthEndpointRefused:
+                    await inner.aclose()  # release the SDK's context.lock and the refresh fence now
+                    raise
                 outgoing = await inner.asend(incoming)
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch

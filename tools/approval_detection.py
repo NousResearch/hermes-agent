@@ -1638,7 +1638,7 @@ def _mask_quoted_newlines(command: str) -> str:
     ``_iter_shell_command_starts``. Unquoted newlines pass through and ``_mark_command_starts``
     still re-inserts newlines at genuine starts; an unclosed quote absorbs following newlines
     exactly as the shell would, so masking them cannot hide a runnable command."""
-    if "\n" not in command:
+    if "\n" not in command and "\r" not in command:
         return command
     return _mask_quoted_newlines_span(command, 0, len(command))
 
@@ -1658,7 +1658,7 @@ def _mask_quoted_newlines_span(command: str, start: int, end: int) -> str:
             out.append(command[i:body_start])
             out.append(_mask_quoted_newlines_span(command, body_start, body_end))
             out.append(command[body_end:j])
-        elif quote and kind == "char" and command[i] == "\n":
+        elif quote and kind == "char" and command[i] in "\r\n":  # a CR too: PowerShell rules treat it as a break
             out.append(" ")
         else:
             out.append(command[i:j])

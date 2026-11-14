@@ -161,3 +161,31 @@ def test_whatif_data_or_a_later_real_power_off_stays_hardline(cmd):
 def test_clear_disk_whatif_preview_is_not_hardline(cmd):
     assert not detect_hardline_command(cmd)[0], cmd
     assert detect_dangerous_command(cmd)[0], cmd
+
+
+CR, LF = chr(13), chr(10)
+
+
+# PowerShell reads a bare CR as a statement break, so the second cmdlet is a real command (and a quoted `pwsh -c`
+# newline, masked to a space for detection, must not leave the first `-WhatIf` covering a later cmdlet).
+@pytest.mark.parametrize("cmd", [
+    "Clear-Disk -Number 0 -WhatIf" + CR + "Clear-Disk -Number 1 -RemoveData -Confirm:$false",
+    'pwsh -c "Clear-Disk -Number 0 -WhatIf' + CR + 'Clear-Disk 1"',
+    "Get-Date" + CR + "Clear-Disk 1",
+    "Restart-Computer -WhatIf" + CR + "Restart-Computer",
+    "Stop-Computer -WhatIf" + CR + " Stop-Computer",
+    'pwsh -c "Clear-Disk -Number 0 -WhatIf' + LF + 'Clear-Disk 1"',
+    'pwsh -c "Restart-Computer -WhatIf' + LF + 'Restart-Computer"',
+])
+def test_bare_cr_starts_a_new_powershell_statement(cmd):
+    assert detect_hardline_command(cmd)[0], cmd
+
+
+# A CR inside quotes is data, like a quoted newline.
+@pytest.mark.parametrize("cmd", [
+    "git commit -m 'a" + CR + "Clear-Disk 1'",
+    "echo 'a" + CR + "Restart-Computer'",
+])
+def test_quoted_cr_is_not_a_statement_break(cmd):
+    assert not detect_hardline_command(cmd)[0], cmd
+

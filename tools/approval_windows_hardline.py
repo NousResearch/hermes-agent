@@ -18,7 +18,9 @@ _PS_INCLUDE_NARROWS = r'(?!(?!(?:[^\n;&|]*\s)?(?:/s\b|--(?:\s|$)))(?:[^\n;&|#"\'
 _CMDLET_END = r'(?![\w.\\/-])'
 # A bare `-WhatIf` of the same invocation only previews; a quote/variable/splat/subexpression/comment before it, a
 # comma right before it (`srv1, -WhatIf` is an array element), or any `-WhatIf:<value>`, voids that (a closing quote may only end it: `pwsh -c "… -WhatIf"`).
-_PS_NOT_WHATIF = r'(?!(?=(?:[^\n;&|"\'`(){}$@#]*[^\n;&|"\'`(){}$@#\s,])?\s+-whatif(?:\s|["\']?$))(?![^\n;&|"\'`(){}$@#]*-whatif:))'
+# A bare CR ends the statement too, and a guarded cmdlet named again later voids it: a quoted `pwsh -c` newline is
+# masked to a space, so `-WhatIf\nClear-Disk 1` reaches this as `-WhatIf Clear-Disk 1`.
+_PS_NOT_WHATIF = r'(?!(?=(?:[^\r\n;&|"\'`(){}$@#]*[^\r\n;&|"\'`(){}$@#\s,])?\s+-whatif(?:\s|["\']?$))(?![^\r\n;&|"\'`(){}$@#]*-whatif:)(?![^\r\n;&|]*\s(?:clear-disk|(?:restart|stop)-computer)(?![\w.\\/-])))'
 
 
 def windows_hardline_patterns(cmdpos: str) -> list[tuple[str, str]]:
@@ -26,7 +28,8 @@ def windows_hardline_patterns(cmdpos: str) -> list[tuple[str, str]]:
     # cmdpos, optionally followed by a powershell/pwsh/cmd launcher and its switches (a switch may
     # take one bare value: `-ExecutionPolicy Bypass`) and an opening quote around the script.
     # `-File` is not skipped: its operand is a script path (`pwsh -File Stop-Computer.ps1`), not code.
-    win_cmdpos = (cmdpos + r'(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
+    # PowerShell's tokenizer also reads a bare CR as a statement break (bash does not, so only here).
+    win_cmdpos = (r'(?:\r\s*|' + cmdpos + r')(?:(?:[^\s;&|"\'`]*[\\/])?(?:powershell|pwsh|cmd)(?:\.exe)?'
                   r'(?:\s+(?:-(?!f(?:i(?:le?)?)?(?:[\s:]|$))|/)[^\s"\']+(?:\s+\w+(?=\s+[-/"\']))?)*\s+["\']?)?')
     return [
         # Windows analogues of the shutdown / mkfs / dd / root-rm rules. Command-position anchored like

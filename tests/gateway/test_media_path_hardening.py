@@ -132,3 +132,25 @@ def test_escaped_control_letter_needs_a_boundary_after_it():
         text = "MEDIA:C:" + BS + "out" + BS + "a.png" + BS + suffix
         assert [m.group("path") for m in MEDIA_TAG_CLEANUP_RE.finditer(text)] == [
             "C:" + BS + "out" + BS + "a.png"]
+
+
+def test_profile_home_credentials_denied_when_gateway_runs_on_the_real_home(tmp_path, monkeypatch):
+    """``terminal.home_mode: profile`` puts tool logins under ``{HERMES_HOME}/home`` (and each
+    ``profiles/<name>/home``) while the gateway itself keeps ``HOME`` = the account home."""
+    real_home, profile_home = _rehomed_profile(tmp_path, monkeypatch, strict=False)
+    for var in ("HOME", "USERPROFILE", "HERMES_REAL_HOME"):
+        monkeypatch.setenv(var, str(real_home))
+    other_home = tmp_path / "hermes-home" / "profiles" / "work" / "home"
+    for home in (profile_home, other_home):
+        for rel in (".ssh/id_ed25519", ".config/gh/hosts.yml"):
+            assert base.validate_media_delivery_path(_fixture(home / rel)) is None, home / rel
+        artifact = _fixture(home / "out" / "chart.png")  # positive control: ordinary file still delivers
+        assert base.validate_media_delivery_path(artifact) == str(Path(artifact).resolve())
+
+
+def test_quoted_tilde_nul_tag_is_removed_from_the_caption():
+    """``expanduser`` raises on ``~<NUL>``; the tag must still be dropped like any NUL path."""
+    for text in ('MEDIA:"~' + chr(0) + '/a.png" ok', "MEDIA:'~" + chr(0) + "x/a.png' ok"):
+        media, cleaned = BasePlatformAdapter.extract_media(text)
+        assert media == []
+        assert cleaned == "ok"

@@ -846,6 +846,8 @@ def _media_delivery_denied_paths() -> list[Path]:
     # Native ``~``, an operator ``$HOME``, AND the account home a re-homed child keeps only in HERMES_REAL_HOME.
     real_home = _or_default(get_real_home, "", exc=(OSError, RuntimeError, ValueError))
     homes = dict.fromkeys(Path(h) for h in (os.path.expanduser("~"), os.environ.get("HOME"), real_home) if h)
+    # ...plus every ``{home}/home`` that ``terminal.home_mode: profile`` gives tool subprocesses as HOME.
+    homes.update(dict.fromkeys(r / "home" for r in _credential_home_roots()))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for home in homes for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
             *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
@@ -3194,11 +3196,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                 media.append((path, has_voice_tag and os.path.splitext(path)[1].lower() in _AUDIO_EXTS))
         for match in MEDIA_TAG_CLEANUP_RE.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
-            if path:
-                try:
-                    _add(os.path.expanduser(path))
-                except (OSError, RuntimeError, ValueError):
-                    continue  # crafted ~\x00 path: skip it, keep the rest
+            if path:  # never expanduser a NUL path: it raises, and _add must still see it to drop its tag
+                _add(path if "\x00" in path else os.path.expanduser(path))
         for _, safe_path, _ in _extensionless_media_matches(scan_content):
             _add(safe_path)
         # Locate tag spans on a masked copy, delete them from the unmasked text (protected spans

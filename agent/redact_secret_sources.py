@@ -15,6 +15,7 @@ evicted while it is still applied. Memory only: never persisted or logged.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 REDACTED_SECRET_SOURCE_VALUE = "«redacted:secret-source»"
@@ -26,18 +27,28 @@ REDACTED_SECRET_SOURCE_VALUE = "«redacted:secret-source»"
 # masks, or it is multi-line (keys, certificates, service-account JSON). Values under 8 characters
 # never register: a short secret-named value echoed bare is left to the ``KEY=VALUE`` pattern pass.
 _MIN_VALUE_CHARS = 8
+# The name test matches settings ABOUT credentials too (``AUTH_MODE=password``, ``AUTH_PROVIDER=localhost``,
+# ``SECRET_BACKEND=bitwarden``, ``API_KEY_HEADER=Authorization``); registering those would scrub the
+# word or host from every later result. Under a secret name, a single dictionary-style word or a
+# lowercase hostname is configuration, not the credential (a value with a credential shape still
+# registers through the shape arm). ``*PASSWORD``/``*PASSWD`` names keep any value: a passphrase is
+# often exactly a lowercase word.
+_PLAIN_WORD_OR_HOST_RE = re.compile(r"[A-Za-z][a-z]*|[a-z0-9-]+(?:\.[a-z0-9-]+)+")
 
 _VALUES_BY_HOME: dict[str, tuple[str, ...]] = {}
 
 
 def _worth_registering(name: str, value: str) -> bool:
-    from agent.redact import _key_has_secret_keyword, redact_credential_shapes
+    from agent.redact import _has_password_keyword, _key_has_secret_keyword, redact_credential_shapes
 
     stripped = value.strip()
     if len(stripped) < _MIN_VALUE_CHARS:
         return False
-    return ("\n" in stripped or _key_has_secret_keyword(name)
-            or redact_credential_shapes(stripped, force=True) != stripped)
+    if "\n" in stripped or redact_credential_shapes(stripped, force=True) != stripped:
+        return True
+    if _has_password_keyword(name):
+        return True
+    return _key_has_secret_keyword(name) and not _PLAIN_WORD_OR_HOST_RE.fullmatch(stripped)
 
 
 def publish_secret_source_values(hermes_home: str | Path, values: dict[str, str]) -> None:

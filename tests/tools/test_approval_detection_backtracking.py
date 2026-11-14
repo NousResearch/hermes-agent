@@ -263,3 +263,16 @@ def test_quoted_heredoc_following_an_unquoted_one_is_inert():
     # The same nesting in the unquoted first body really expands and must still fail closed.
     expanding_first = "cat <<DATA <<'CODE'\n" + nested + "\nDATA\nplain\nCODE"
     assert detect_hardline_command(expanding_first) == (True, _PARSER_LIMIT_DESCRIPTION)
+
+
+@pytest.mark.parametrize("layout", [
+    # `a\` + `D` is the body line `aD` to bash, so the `D` body runs on through the nest.
+    pytest.param("cat <<D <<'C'\na\\\nD\n{nest}\nD\nlit\nC", id="two-heredocs"),
+    # The quoted `C` body is not joined (`lit\` then `C` ends it); the unquoted `D` body is.
+    pytest.param("cat <<'C' <<D <<'E'\nlit\\\nC\na\\\nD\n{nest}\nD\nx\nE", id="three-heredocs"),
+])
+def test_a_continuation_cannot_fake_an_unquoted_heredoc_terminator(layout):
+    from tools.approval_detection import _PARSER_LIMIT_DESCRIPTION, detect_hardline_command
+
+    command = layout.format(nest="$(" * 40 + "x" + ")" * 40)
+    assert detect_hardline_command(command) == (True, _PARSER_LIMIT_DESCRIPTION)

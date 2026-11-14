@@ -126,23 +126,32 @@ def _quoted_heredoc_body_spans(
     """Bodies of quoted-delimiter heredocs, even after earlier unquoted bodies.
 
     Heredoc bodies follow their redirections in order. Only quoted ones are skipped by the
-    substitution-depth walk: unquoted bodies still expand command substitutions.
+    substitution-depth walk: unquoted bodies still expand command substitutions. In an unquoted
+    body bash joins a backslash-newline before it compares a line with the delimiter, so `a\\`
+    then `D` is the body line `aD`, not the end of a `<<D` body: matching physical lines would
+    end that body early and skip the rest of it, expanding nesting included, as a quoted one.
     """
     spans: list[tuple[int, int]] = []
     for delimiter, strip_tabs, quoted in pending:
         body_start = newline + 1
+        line = ""
         while newline < len(command):
             end = command.find("\n", newline + 1)
             end = len(command) if end < 0 else end
-            line = command[newline + 1:end]
+            line += command[newline + 1:end]
             newline = end
+            if not quoted and end < len(command) and (len(line) - len(line.rstrip("\\"))) % 2:
+                line = line[:-1]  # a continuation: the next physical line belongs to this one
+                continue
             if (line.lstrip("\t") if strip_tabs else line) == delimiter:
                 break
+            line = ""
         if quoted:
             spans.append((body_start, newline))
         if newline == len(command):
             break
     return spans
+
 
 def substitution_depth(command: str) -> int:
     """Deepest ``$(`` nesting under shell quoting of the raw command: a quoted ``)`` or ``$(``

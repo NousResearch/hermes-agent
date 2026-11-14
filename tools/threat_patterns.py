@@ -40,7 +40,9 @@ FORGET_RULES_RE = (rf"(?:(?<![^\W_])(?<![’'])(?!{_NEGATOR}[ \t])(?:[^\W_]|[’
 # A negator hard-wrapped onto the line above (`Do not⏎forget …`), emphasised (`**Don't** forget`) or followed by
 # `ever` still negates: callers blank that `forget` before matching FORGET_RULES_RE. One line break at most, so a
 # heading separated from the payload by a blank line cannot suppress it. Same length and newlines, so offsets hold.
-_NEGATED_FORGET = re.compile(rf"(?<![\w*’'])([*_]*{_NEGATOR}[*_]*[ \t]*(?:\n[ \t]*)?(?:ever[ \t]+)?[*_]*)"
+# The run after the negator is possessive (`*+`): two plain `[*_]*` with only optional tokens between them backtrack
+# quadratically.
+_NEGATED_FORGET = re.compile(rf"(?<![\w*’'])([*_]*{_NEGATOR}[*_]*+[ \t]*(?:\n[ \t]*)?(?:ever[ \t]+)?[*_]*)"
                              r"forget(?![^\W_])", re.IGNORECASE)
 
 

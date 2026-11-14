@@ -41,7 +41,10 @@ export function resolveDesktopUserData(defaultPath, env = process.env) {
 export function resolveDesktopHermesHome({ home, env = process.env, platform = process.platform, directoryExists = () => false, readWindowsHome = () => null }) {
   const paths = platform === 'win32' ? path.win32 : path.posix
   if (env.HERMES_HOME) {
-    return normalizeHermesHomeRoot(env.HERMES_HOME, paths)
+    // A literal `~` is the user's home, as backend-env.ts resolves it, never a folder under cwd.
+    const raw = env.HERMES_HOME
+    const tilde = raw === '~' || raw.startsWith('~/') || (paths === path.win32 && raw.startsWith('~\\'))
+    return normalizeHermesHomeRoot(tilde ? paths.join(home, raw.slice(1)) : raw, paths)
   }
   // Fresh-install rehearsals must not touch the real Hermes home.
   if (env.HERMES_DESKTOP_USER_DATA_DIR) {

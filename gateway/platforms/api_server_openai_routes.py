@@ -17,6 +17,7 @@ from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
 from agent.i18n import t
+from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
 
 try:
     from aiohttp import web
@@ -74,7 +75,14 @@ def _budget_exhausted(result: Any) -> bool:
     return reason.startswith(("budget_exhausted", "max_iterations_reached("))
 
 
-def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None, *, budget_exhausted=False) -> str:
+def _vetoed(result: Any) -> bool:
+    """A ``pre_llm_call`` hook blocked the turn before any model call (#154234)."""
+    reason = str(result.get("turn_exit_reason") or "") if isinstance(result, dict) else ""
+    return reason == PRE_LLM_BLOCK_EXIT_REASON
+
+
+def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None, *, budget_exhausted=False,
+                   vetoed=False) -> str:
     """OpenAI ``finish_reason``: "length" for truncation, "error" for failure, else "stop"."""
     # OpenAI uses "length" for truncation, "stop" for normal completion, and downstream SDKs accept "error"
     # / custom codes. See issue #22496.
@@ -86,6 +94,9 @@ def _finish_reason(completed, is_partial, is_failed, err_msg, agent_error=None, 
     # and a broker reading "cancelled" discards a usable wrap-up answer.
     if budget_exhausted:
         return "length"
+    # Same for a policy veto: the turn answered with the block message, it was not cancelled (#154234).
+    if vetoed:
+        return "stop"
     return 'cancelled' if not completed else 'stop'
 
 
@@ -1022,7 +1033,9 @@ class OpenAICompatRoutesMixin:
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
         budget_exhausted = _budget_exhausted(result)
-        finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, budget_exhausted=budget_exhausted)
+        vetoed = _vetoed(result)
+        finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, budget_exhausted=budget_exhausted,
+                                       vetoed=vetoed)
         # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
         # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
         # id the agent actually resolved, so headerless clients still learn where the turn went.
@@ -1204,8 +1217,9 @@ class OpenAICompatRoutesMixin:
                 is_failed = True
                 err_msg = err_msg or str(agent_error)
             budget_exhausted = _budget_exhausted(result)
+            vetoed = _vetoed(result)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error,
-                                           budget_exhausted=budget_exhausted)
+                                           budget_exhausted=budget_exhausted, vetoed=vetoed)
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
             presentation_muted = (
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)

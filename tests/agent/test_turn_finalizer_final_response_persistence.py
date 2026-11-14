@@ -479,3 +479,23 @@ def test_hard_failure_exit_reasons_still_fail_the_turn(monkeypatch):
     result = _finalize(FakeAgent(), exit_reason="repeated_outer_errors(RuntimeError)", final_response="stopped")
     assert result["failed"] is True and result["completed"] is False
     assert result["failure_reason"] == "loop_error" and result["error"] == "stopped"
+
+
+def test_pre_llm_veto_is_not_a_completed_turn_and_exits_nonzero(monkeypatch):
+    """A ``pre_llm_call`` block answers with the block message and no model call, so the
+    result must not read as completed: ``hermes -z`` maps it to exit 2 the same way as any
+    other turn that stopped without doing the work (#154234). ``failed`` stays False — the
+    gateway settlement and the F-only consumers keep treating a block as a block."""
+    from agent.turn_context import PRE_LLM_BLOCK_EXIT_REASON
+    from hermes_cli.oneshot import _oneshot_exit_code
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    message = "Blocked by policy."
+    result = _finalize(FakeAgent(), exit_reason=PRE_LLM_BLOCK_EXIT_REASON, final_response=message, api_calls=0)
+
+    assert result["final_response"] == message
+    assert result["turn_exit_reason"] == PRE_LLM_BLOCK_EXIT_REASON
+    assert result["api_calls"] == 0
+    assert result["failed"] is False
+    assert result["completed"] is False
+    assert _oneshot_exit_code(message, result) == 2

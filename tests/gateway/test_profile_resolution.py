@@ -64,6 +64,7 @@ class TestResolutionOrder:
     
     def test_source_profile_wins_over_routing(self, mock_runner, discord_source):
         """source.profile should be used even if routing would match."""
+        mock_runner.config.multiplex_profiles = False  # single-profile gateway: launch-home fallback
         discord_source.profile = "from-source"
         
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
@@ -84,6 +85,7 @@ class TestMissingProfileWarning:
     
     def test_nonexistent_profile_warning(self, mock_runner, discord_source, caplog):
         """When source.profile points to a nonexistent profile, log a WARNING."""
+        mock_runner.config.multiplex_profiles = False  # single-profile gateway: launch-home fallback
         discord_source.profile = "nonexistent"
         
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
@@ -113,6 +115,7 @@ class TestExceptionHandling:
     
     def test_get_profile_dir_exception_logs_warning(self, mock_runner, discord_source, caplog):
         """When get_profile_dir raises an exception, log a WARNING with context."""
+        mock_runner.config.multiplex_profiles = False  # single-profile gateway: launch-home fallback
         discord_source.profile = "bad-profile"
         
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):

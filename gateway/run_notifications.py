@@ -23,6 +23,7 @@ from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.run_profile_home import completion_event_scope_or_refuse
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 from gateway.run_notifications_update import GatewayUpdateNotificationsMixin
 from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin, _local_completion_card
@@ -758,7 +759,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 # instead of re-attempting admission every 2 s (#140899).
                 completion_queue.put(evt)
                 continue
-            async with self._completion_event_scope(evt):
+            scope = completion_event_scope_or_refuse(self, evt, "watch notification")
+            if scope is None:
+                continue  # only this event: the rest of the batch still delivers
+            async with scope:
                 from tools.process_registry_notifications import should_surface_notification
                 if not should_surface_notification(evt):
                     continue
@@ -1300,7 +1304,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         True means adapter admission, not model execution; None means deduplicated or
         terminal. False remains retryable. Claims are settled together for every sibling.
         """
-        async with self._completion_event_scope(evt):
+        scope = completion_event_scope_or_refuse(self, evt, "completion notification")
+        if scope is None:
+            return None  # terminal: never retried
+        async with scope:
             return await self._deliver_completion_notification_scoped(
                 synth_text, evt, sibling_claims=sibling_claims)
 
@@ -1491,7 +1498,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Fan in policy-admitted process completions with compatible pinned owners."""
         # Filter each event before it can contaminate (or suppress) a foreground batch.
         # The shared queue may be drained outside the owning profile's runtime scope.
-        async with self._completion_event_scope(evt):
+        scope = completion_event_scope_or_refuse(self, evt, "process completion")
+        if scope is None:
+            return None
+        async with scope:
             from tools.process_registry_notifications import should_surface_notification
             if not should_surface_notification(evt):
                 return None
@@ -1545,7 +1555,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         their claims are acked only after adapter acceptance). True after acceptance, False to requeue
         the group, None when nothing is deliverable here (retry siblings requeued)."""
         # The group shares one session_key, hence one profile: scope the pre-checks and sibling claims too.
-        async with self._completion_event_scope(group[0]):
+        scope = completion_event_scope_or_refuse(self, group[0], "async delegation completions")
+        if scope is None:
+            return None  # dropped from the queue, not requeued: no retry storm
+        async with scope:
             return await self._deliver_async_delegation_group_scoped(group)
 
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
@@ -1862,7 +1875,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Run :meth:`_watch_process` inside the owning profile's scope, start to finish. A watcher starts
         in an empty context (live-armed from a tool thread, or recovered at startup), and the output it
         prepares runs that profile's own ``transform_terminal_output`` hooks before any delivery."""
-        async with self._completion_event_scope(watcher):
+        scope = completion_event_scope_or_refuse(self, watcher, "process watcher")
+        if scope is None:
+            return
+        async with scope:
             await self._watch_process(watcher)
 
     async def _watch_process(self, watcher: dict) -> None:

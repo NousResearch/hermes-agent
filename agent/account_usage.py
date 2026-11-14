@@ -908,9 +908,125 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+def _zai_reset_ms(value: Any) -> Optional[datetime]:
+    if _is_finite_num(value):
+        # Z.AI returns epoch milliseconds for quota reset times.
+        try:
+            return datetime.fromtimestamp(float(value) / 1000.0, tz=UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+    return _parse_dt(value)
+
+
+_ZAI_WINDOW_LABELS = {
+    # Pro credits and Lite tokens use the same duration codes.
+    (3, 5): "5-hour window",
+    (6, 1): "Weekly window",
+}
+
+
+def _zai_window_label(item: dict[str, Any]) -> str:
+    kind = str(item.get("type") or "").strip().upper()
+    if kind == "TIME_LIMIT":
+        return "Monthly MCP/tools" if (item.get("unit"), item.get("number")) == (5, 1) else "MCP/tools"
+    try:
+        unit = int(item.get("unit", -1))
+        number = int(item.get("number", -1))
+    except (OverflowError, TypeError, ValueError):
+        unit = number = -1
+    mapped = _ZAI_WINDOW_LABELS.get((unit, number)) if kind in {"CREDIT_LIMIT", "TOKENS_LIMIT"} else None
+    if mapped:
+        return mapped
+    return kind.replace("_", " ").title() or "Quota"
+
+
+def _fetch_zai_account_usage(
+    base_url: Optional[str], api_key: Optional[str]
+) -> Optional[AccountUsageSnapshot]:
+    """Z.AI (GLM Coding Plan) quota snapshot.
+
+    Uses the monitor endpoint consumed by the Z.AI usage dashboard. The
+    endpoint returns CREDIT_LIMIT (Pro) or TOKENS_LIMIT (Lite) model windows,
+    plus a separate TIME_LIMIT MCP/tool-call pool. Failures are caught by
+    fetch_account_usage rather than displaying invented numbers.
+    """
+    # The monitor endpoint and payload below were verified only for the global
+    # Coding Plan route. Do not send unrelated Z.AI, China, or custom-route
+    # credentials to it, or label their metered usage as subscription quota.
+    if str(base_url or "").strip().rstrip("/").lower() != "https://api.z.ai/api/coding/paas/v4":
+        return None
+
+    runtime = resolve_runtime_provider(
+        requested="zai",
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(
+            "https://api.z.ai/api/monitor/usage/quota/limit", headers=headers
+        )
+        response.raise_for_status()
+    payload = response.json() or {}
+    if payload.get("success") is False:
+        return AccountUsageSnapshot(
+            provider="zai",
+            source="quota_api",
+            fetched_at=_utc_now(),
+            title="Z.AI (GLM) quotas",
+            unavailable_reason=str(payload.get("msg") or "quota API unavailable"),
+        )
+    data = payload.get("data") or {}
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+    for item in data.get("limits") or ():
+        if not isinstance(item, dict):
+            continue
+        pct = item.get("percentage")
+        used_percent = max(0.0, min(100.0, float(pct))) if _is_finite_num(pct) else None
+        detail = None
+        if item.get("remaining") is not None and item.get("currentValue") is not None:
+            detail = f"remaining {item.get('remaining')} / used {item.get('currentValue')}"
+        windows.append(
+            AccountUsageWindow(
+                label=_zai_window_label(item),
+                used_percent=used_percent,
+                reset_at=_zai_reset_ms(item.get("nextResetTime")),
+                detail=detail,
+                # Tool calls can be exhausted while model inference still works.
+                scope="tool" if str(item.get("type") or "").strip().upper() == "TIME_LIMIT" else "account",
+            )
+        )
+        for usage_detail in item.get("usageDetails") or ():
+            if (isinstance(usage_detail, dict) and usage_detail.get("modelCode")
+                    and usage_detail.get("usage") is not None):
+                details.append(
+                    f"{usage_detail.get('modelCode')}: {usage_detail['usage']}"
+                )
+
+    details.append("Usage dashboard: https://z.ai/manage-apikey/subscription")
+    return AccountUsageSnapshot(
+        provider="zai",
+        source="quota_api",
+        fetched_at=_utc_now(),
+        title="Z.AI (GLM) quotas",
+        plan=_title_case_slug(data.get("level")),
+        windows=tuple(windows),
+        details=tuple(details),
+    )
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    **{alias: _fetch_zai_account_usage for alias in ("zai", "glm", "z-ai", "z.ai", "zhipu", "zai-coding")},
 }
 
 # Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by

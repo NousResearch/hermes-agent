@@ -543,6 +543,7 @@ class TestMultiGenerationTeardownBarrier:
         assert current is not old
         return db_path, old, current
 
+    @pytest.mark.platforms("posix")  # _two_generations replaces an open file, as TestInodeReplacement
     def test_retired_drain_does_not_lift_a_pending_current_teardown(self, tmp_path, monkeypatch):
         """close_all() must not report a finished sweep over a pending close."""
         db_path, old, current = self._two_generations(tmp_path, monkeypatch)
@@ -585,6 +586,7 @@ class TestMultiGenerationTeardownBarrier:
         assert current._conn is None
         assert registry._tearing_down.get(resolved) is None
 
+    @pytest.mark.platforms("posix")  # _two_generations replaces an open file, as TestInodeReplacement
     def test_replacement_is_not_published_before_the_last_close_settles(self, tmp_path, monkeypatch):
         """acquire() must not open a writer on top of an unfinished close."""
         db_path, old, current = self._two_generations(tmp_path, monkeypatch)

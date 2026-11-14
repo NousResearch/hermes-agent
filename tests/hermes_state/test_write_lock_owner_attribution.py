@@ -18,6 +18,7 @@ import pytest
 from hermes_state_lockowners import parse_proc_locks, state_db_write_lock_holders
 
 
+@pytest.mark.platforms("linux")  # /proc/locks device numbers decode through os.makedev
 def test_parse_proc_locks_keeps_only_write_locks_on_our_inodes_and_decodes_the_wal_write_byte():
     inodes = {(os.makedev(0x103, 0x02), 4194737): "-shm", (os.makedev(0x103, 0x02), 4228330): ""}
     text = textwrap.dedent("""\

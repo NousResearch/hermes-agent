@@ -1,0 +1,30 @@
+name: theme-catalog
+repo: https://github.com/0-CYBERDYNE-SYSTEMS-0/hermes-theme-catalog
+sha: 253a08f7914b078ca422dd0ce75cf399407ec93c
+title: Theme Catalog
+description: >-
+  606 terminal color profiles (iTerm2-Color-Schemes) as Hermes desktop themes and
+  TUI skins, with in-app authoring. Browse and filter the catalog, apply a theme,
+  then click the background or body-text chip to repaint it with the system color
+  picker, hex, RGB, a page-wide hover lens or a screen eyedropper; repainting a
+  catalog theme saves your version as a separate copy and leaves the catalog entry
+  as shipped. Every derived token recomputes so the 4.5:1 readability floor still
+  holds. Export/import JSON, star favorites, sort by minimum contrast. All 606
+  register through THEMES_AREA, so they also appear in Settings → Appearance, the
+  ⌘K picker and /skin. Disclosure — on plugin load the Python half materializes 606
+  skin YAMLs into ~/.hermes/skins/ and copies a picker widget to
+  ~/.hermes/tui-widgets/ (outside the plugin's data directory, stamp-guarded, no
+  network); color edits, saved themes and favorites live in the plugin's own
+  storage. No network calls, no shell commands, no credentials required.
+maintainer: 0-CYBERDYNE-SYSTEMS-0
+tier: community
+category: desktop
+version: "0.4.0"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/0-CYBERDYNE-SYSTEMS-0/hermes-theme-catalog#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

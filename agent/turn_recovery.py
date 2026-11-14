@@ -1926,9 +1926,11 @@ def route_classified_error(
     # P0-1 Hybrid Router: trip the europe-west2 15s cooldown and pin the interactive/subagent
     # session to locations/global on any Vertex 429 or stream-stale timeout, even when
     # _fallback_chain is empty (e.g. delegate_task subagents) or on retry #1 of a timeout.
+    _is_stale_kill = bool(getattr(api_error, "_stale_stream_killed", False))
     if str(getattr(agent, "provider", "") or "").lower() == "vertex" and (
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or classified.reason == FailoverReason.timeout
+        or _is_stale_kill
     ):
         try:
             from agent.vertex_adapter import (
@@ -1943,7 +1945,9 @@ def route_classified_error(
                 else 0
             )
             _preserve_deep_ew2_cache = (
-                _tr_prompt_tok >= GLOBAL_STICKY_EPOCH_MIN_TOKENS and retry_count < 2
+                _tr_prompt_tok >= GLOBAL_STICKY_EPOCH_MIN_TOKENS
+                and retry_count < 2
+                and not _is_stale_kill
             )
             _v_sid = (
                 None

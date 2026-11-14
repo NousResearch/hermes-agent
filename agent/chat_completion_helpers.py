@@ -2022,8 +2022,13 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
     # See #22548, #62984, #70893.
     from agent.backend_identity import BackendIdentity, should_skip_candidate
+    _effective_current_base_url = str(
+        getattr(agent, "_last_routed_base_url", None)
+        or getattr(agent, "base_url", "")
+        or ""
+    )
     current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
-        model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
+        model=getattr(agent, "model", ""), base_url=_effective_current_base_url)
     fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
     if should_skip_candidate(fb_ident, current_ident):
         logger.warning(
@@ -3720,6 +3725,14 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
         _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
+        _stale_killed_this_attempt = (
+            int(self.stream_attempt_state.get("current", 0)) in getattr(self, "_stale_counted_attempts", set())
+        )
+        if _stale_killed_this_attempt:
+            try:
+                e._stale_stream_killed = True
+            except Exception:
+                pass
 
         if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
             # Nothing streamed yet: drop the usage extension on this route and re-open.
@@ -3737,7 +3750,7 @@ class _StreamingCall(StreamingWaitMonitor):
             # text). Exception: a tool call in flight — aborting discards it, so
             # retry TRANSIENT errors (a "reconnecting" marker + duplicated
             # preamble beats a failed action; no tool has executed yet).
-            if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
+            if not (_partial_tool_in_flight and _is_transient and attempt < max_retries and not _stale_killed_this_attempt):
                 logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
                 self.result["error"] = e
                 return False
@@ -3751,9 +3764,11 @@ class _StreamingCall(StreamingWaitMonitor):
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")
             return True
 
-        if _is_transient or _is_empty_stream:
+        if _is_transient or _is_empty_stream or _stale_killed_this_attempt:
             # Transient network / timeout error: retry with a fresh connection first.
-            if attempt < max_retries:
+            # Do not burn 2 more 600s inner attempts if _kill_stale_stream already killed this attempt;
+            # escalate immediately to turn_recovery so Vertex regional->global failover can fire.
+            if attempt < max_retries and not _stale_killed_this_attempt:
                 self._retry_after_drop(e, attempt, max_retries, mid_tool_call=False, reason="stream_retry_cleanup")
                 return True
             # Exhausted: log full diagnostics (chain, headers, bytes/elapsed).

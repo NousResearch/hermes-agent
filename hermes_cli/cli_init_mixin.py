@@ -156,6 +156,7 @@ class CLIInitMixin:
         self.verbose = bool(verbose) if verbose is not None else False
 
         self.streaming_enabled = display.get("streaming", False)
+        self._interim_assistant_messages = display.get("interim_assistant_messages", True)
         self.show_timestamps = display.get("timestamps", False)
         self.timestamp_format = display.get("timestamp_format", "%H:%M")
         _frm = str(display.get("final_response_markdown", "strip")).strip().lower()

@@ -123,6 +123,41 @@ def test_a_removed_plugin_sources_boot_write_leaves_the_frozen_launch_env(launch
         set_multiplex_active(False)
 
 
+def test_a_rotated_then_removed_sources_write_leaves_the_frozen_launch_env(launch_home):
+    """An override source rotates its value after activation, then is removed: the frozen launch env
+    must lose the pre-rotation value too, not only the source's last write."""
+    from agent.secret_scope import current_secret_scope, set_multiplex_active
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.plugins import get_plugin_manager
+    from tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
+
+    plugin = launch_home / "plugins" / "fixture-secret-source" / "__init__.py"
+    plugin.write_text(plugin.read_text(encoding="utf-8").replace(
+        "'VAULT_ONLY_KEY': 'from-plugin'", "'VAULT_ONLY_KEY': open(f'{home_path}/vault.txt').read()"), encoding="utf-8")
+    config = launch_home / "config.yaml"
+    config.write_text(config.read_text(encoding="utf-8").replace(
+        "enabled: true\n", "enabled: true\n    override_existing: true\n"), encoding="utf-8")
+    (launch_home / "vault.txt").write_text("v1", encoding="utf-8")
+    manager = get_plugin_manager()
+    manager.discover_and_load()  # boot: writes v1, and SYSTEMD_ONLY_TOKEN over the operator's value
+    activate_multi_profile_hosting()
+    try:
+        (launch_home / "vault.txt").write_text("v2", encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)
+            assert current_secret_scope().get("VAULT_ONLY_KEY") == "v2"
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "enabled: [fixture-secret-source]", "enabled: []"), encoding="utf-8")
+        with _profile_runtime_scope(launch_home):
+            manager.discover_and_load(force=True)
+            assert "VAULT_ONLY_KEY" not in current_secret_scope()
+        fresh = launch_secret_scope(launch_home)
+        assert "VAULT_ONLY_KEY" not in fresh
+        assert fresh.get("SYSTEMD_ONLY_TOKEN") == "env-only"
+    finally:
+        set_multiplex_active(False)
+
+
 def test_a_refresh_for_one_home_never_replaces_another_homes_installed_scope(launch_home):
     """A scope stamped for a secondary (no home override) is not the launch home's to refresh: the
     launch profile's files and frozen env must not replace it."""

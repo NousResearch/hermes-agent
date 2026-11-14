@@ -733,7 +733,8 @@ def _make_callback_handler() -> tuple[type, dict]:
     return _Handler, result
 
 
-def _paste_callback_reader(result: dict, lock: threading.Lock | None = None) -> None:
+# Quoted: threading.Lock is a function, not a type, before 3.13 (an eager ``|`` raises on import).
+def _paste_callback_reader(result: dict, lock: "threading.Lock | None" = None) -> None:
     """Read one stdin line as an OAuth redirect (full URL, bare query, or a ``_SKIP_TOKENS`` word that
     exits without auth) into *result*. Parse failures, EOF and interrupts are swallowed — best-effort
     fallback racing the HTTP listener, which stays primary. *lock* is the flow's handler ``result_lock``."""

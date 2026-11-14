@@ -1,16 +1,42 @@
 import asyncio
+import os
+import signal
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import gateway.run as gateway_run
+import hermes_systemd_planned_stop as systemd_planned_stop
+from gateway import status
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 from tools import browser_session_lifecycle as bt_lifecycle
+
+
+def test_sigterm_with_planned_stop_marker_is_classified_as_planned(tmp_path, monkeypatch):
+    """The real handler consumes an ExecStop marker without marking SIGTERM unexpected."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    assert systemd_planned_stop.main([str(os.getpid())]) == 0
+    assert status.planned_stop_marker_targets_self() is False
+    monkeypatch.setattr("gateway.shutdown_forensics.snapshot_shutdown_context", lambda *_: None)
+    monkeypatch.setattr(gateway_run.asyncio, "create_task", lambda coro: coro.close())
+    runner = SimpleNamespace(_signal_initiated_shutdown=False, stop=lambda: asyncio.sleep(0))
+    unplanned_signal = [False]
+    handler = gateway_run._start_gateway_make_shutdown_signal_handler(
+        runner, unplanned_signal
+    )
+
+    handler(signal.SIGTERM)
+
+    assert unplanned_signal == [False]
+    assert runner._signal_initiated_shutdown is False
+    assert runner._stop_requested_by_signal is True
+    assert not (tmp_path / ".gateway-planned-stop.json").exists()
 
 
 @pytest.mark.asyncio

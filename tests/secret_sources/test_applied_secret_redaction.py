@@ -42,7 +42,7 @@ def _clean(monkeypatch):
     reg._reset_registry_for_tests()
     monkeypatch.setattr(reg, "_ensure_builtin_sources", lambda: None)
     monkeypatch.setattr(redact_secret_sources, "_VALUES_BY_HOME", {})
-    monkeypatch.setattr("agent.redact._VAULT_REDACTION_VALUES", {})
+    monkeypatch.setattr("agent.redact_vault_values._VAULT_REDACTION_VALUES", {})
     env_loader.reset_secret_source_cache()
     environ_before = dict(os.environ)
     yield

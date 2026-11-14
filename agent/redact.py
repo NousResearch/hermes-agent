@@ -26,6 +26,7 @@ from agent.redact_headers import (
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
     redact_header_credentials,
 )
+from agent.redact_partial_keys import _redact_partial_private_keys
 from agent.redact_pattern_shape import _pattern_structure
 from agent.redact_secret_sources import redact_secret_source_values
 from agent.redact_spaced_cfg import redact_spaced_cfg_assignments
@@ -672,12 +673,6 @@ def _is_b64_pem_key(blob: str) -> bool:
     text = decoded[:64]
     return text.startswith(b"-----BEGIN") and b"PRIVATE KEY" in text
 
-# A partial print keeps only one armor line: ``head`` of a key file has BEGIN + body, ``tail``
-# has body + END. The full-block pattern needs both, so those body lines leaked verbatim.
-_PRIVATE_KEY_ARMOR_RE = re.compile(r"-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----")
-# A pure-hex line is a digest in docs, not key material: a base64 body line is never all hex.
-_PEM_BODY_LINE_RE = re.compile(r"[ \t]*(?![0-9A-Fa-f]+[ \t]*$)[A-Za-z0-9+/=]{16,}[ \t]*")
-_PEM_TRAILER_RE = re.compile(r"[ \t]*(?:[A-Za-z0-9+/]{1,15}={0,2}|==?)[ \t]*")  # ecdsa can end on a bare ``==``
 
 # Database connection strings: protocol://user:PASSWORD@host. The userinfo and
 # password groups forbid whitespace so a match can never span a line break (a
@@ -1538,38 +1533,6 @@ def _mask_network_path_userinfo(m) -> str:
     if _is_userinfo_placeholder(m.group(3)):
         return m.group(0)
     return f"{m.group(1)}{m.group(2)}:***@"
-
-
-def _redact_partial_private_keys(text: str) -> str:
-    """Mask the base64 body run next to a lone BEGIN (forward) or END (backward) armor line.
-
-    Walks lines instead of regex-backtracking over the run, so a megabyte base64 blob with a
-    stray armor line elsewhere stays linear. A body slice with no armor at all is invisible to
-    any shape rule; secret-source values cover that case through exact-line registration.
-    """
-    lines = text.split("\n")
-    drop: set[int] = set()
-    for i, line in enumerate(lines):
-        m = _PRIVATE_KEY_ARMOR_RE.search(line)
-        if not m:
-            continue
-        step = 1 if m.group(1) == "BEGIN" else -1
-        j = i + step
-        if step < 0 and j > 0 and _PEM_TRAILER_RE.fullmatch(lines[j].rstrip("\r")) and _PEM_BODY_LINE_RE.fullmatch(lines[j - 1].rstrip("\r")):
-            drop.add(j)
-            j -= 1  # a key's last body line can be short: ed25519 with a 30-35 char comment ends on ``QFBgc=``
-        while 0 <= j < len(lines) and j not in drop and _PEM_BODY_LINE_RE.fullmatch(lines[j].rstrip("\r")):
-            drop.add(j)
-            j += step
-        # Forward, only a padded line: an unpadded short word after the run is output (``echo $?``, ``done``).
-        if step > 0 and i + 1 < j < len(lines) and _PEM_TRAILER_RE.fullmatch(lines[j].rstrip("\r")) \
-                and lines[j].rstrip().endswith("="):
-            drop.add(j)
-        if j != i + step:
-            lines[i] = "[REDACTED PRIVATE KEY]"
-    if not drop:
-        return text
-    return "\n".join(line for k, line in enumerate(lines) if k not in drop)
 
 
 def _redact_phone(m):

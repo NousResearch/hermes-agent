@@ -1,7 +1,7 @@
 name: hermes-unlimited
 repo: https://github.com/rrglab/hermes-unlimited
 sha: 9836141dedf12239e5558d4ccd6be910f657f34f
-description: "AI-native company operating tools with scoped Hermes Kanban tasks, missions, memory and economic evaluation. Disclosure — Uses the local Hermes Kanban CLI, configured SQLite storage, a loopback JustYou validator, and optional opt-in feedback recording. Optional live worker uses in-process Hermes runtime imports, subprocess and provider network APIs; see known issues. No live settlement or independently verified customer fulfillment."
+description: "AI-native company operating tools with scoped Hermes Kanban tasks, missions, memory and economic evaluation. Disclosure — Uses the local Hermes Kanban CLI, configured SQLite storage and a loopback JustYou validator. Consent-gated feedback hooks record aggregate local usage data only; publication is separately opt-in. External model work requires an explicitly host-provisioned, authorized worker and independent verifier. No live payment settlement or independently verified customer fulfillment."
 maintainer: rrglab
 tier: community
 category: platform
@@ -12,7 +12,7 @@ readme: true
 known_issues:
   - "Requires configured JustYou validator, signed Ed25519 profile bindings and isolated tenant boards."
   - "No live payment settlement or independently attested customer fulfillment."
-  - "Opt-in feedback observer registers three runtime hooks; verify disclosure, consent and hook compatibility before release."
+  - "Three feedback hooks are registered; local observations require explicit unexpired consent and do not independently verify customer outcomes."
 capabilities:
   provides_tools:
     - hermes_unlimited_status

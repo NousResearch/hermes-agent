@@ -52,6 +52,7 @@ class FailoverReason(enum.Enum):
     provider_policy_blocked = "provider_policy_blocked"  # Aggregator account data/privacy policy excluded the only endpoint
     data_policy_denied = "data_policy_denied"  # Context holds a connector result needing a no-training model; none serves it
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — deterministic per-request, don't retry unchanged
+    guardrail_blocked = "guardrail_blocked"  # Provider-side prompt-injection guardrail (OpenRouter Guardrails) rejected the request payload — account setting, not the key
     model_entitlement = "model_entitlement"  # This account cannot use the requested model — rotate credential (model-scoped), else fall back
     incomplete_response = "incomplete_response"  # Codex/Responses turn stuck emitting reasoning only (no answer, no tool call) after replay + nudge — hand to a different provider
     format_error = "format_error"        # 400 bad request — abort or strip + retry
@@ -71,7 +72,8 @@ class FailoverReason(enum.Enum):
 # Transient transport verdicts: the provider is expected back (the aux same-provider retry, the turn ladder).
 TRANSIENT_REASONS = frozenset({FailoverReason.timeout, FailoverReason.overloaded, FailoverReason.server_error})
 # A refusal of the request's content or data policy: no resend, field strip or quota reading changes it.
-POLICY_REFUSAL_REASONS = frozenset({FailoverReason.data_policy_denied, FailoverReason.content_policy_blocked})
+POLICY_REFUSAL_REASONS = frozenset({FailoverReason.data_policy_denied, FailoverReason.content_policy_blocked,
+                                    FailoverReason.guardrail_blocked})
 
 
 @dataclass
@@ -450,6 +452,14 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "content exists risk", "data may contain inappropriate content", "data_inspection_failed",
 )
 
+# Aggregator prompt-injection guardrails (OpenRouter Guardrails' regex detector): the platform
+# scanned the request payload and rejected it before any model was contacted. These scan all
+# message roles by default, so tool output carrying role-tag-looking text trips them as easily
+# as user text (#155460). Verbatim phrase from OpenRouter's documented guardrail-block body;
+# checked in _provider_special_cases ahead of the 403 status rules because its
+# "Request blocked: …" wording collides with the generic "request blocked" WAF pattern below.
+_PROMPT_INJECTION_GUARDRAIL_PATTERNS = ("prompt injection patterns detected",)
+
 # Auth patterns (non-status-code signals).
 _AUTH_PATTERNS = (
     "invalid api key", "invalid_api_key", "gateway_auth_failed", "authentication", "unauthorized",
@@ -557,6 +567,7 @@ _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
 _V_UPSTREAM_BLOCKED = _v(_R.upstream_blocked, **_ABORT_FALLBACK)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
+_V_GUARDRAIL_BLOCKED = _v(_R.guardrail_blocked, **_ABORT_FALLBACK)
 # Another account in the same pool may hold the entitlement; the credential itself is healthy.
 _V_MODEL_ENTITLEMENT = _v(_R.model_entitlement, retryable=False, **_ROTATE_FALLBACK)
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
@@ -972,6 +983,13 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS) or _is_gemini_prompt_block(c.error):
         return _V_CONTENT_BLOCKED
+    # A prompt-injection guardrail block (OpenRouter Guardrails) before status classification:
+    # its "Request blocked: …" body would otherwise be swallowed by the generic "request
+    # blocked" WAF pattern on the 403 rules and surface User-Agent/extra_headers advice, or
+    # fall to auth on the streaming path (#155460). Deterministic for the payload; the fix is
+    # the account's guardrail setting, not the key or a header.
+    if any(p in msg for p in _PROMPT_INJECTION_GUARDRAIL_PATTERNS):
+        return _V_GUARDRAIL_BLOCKED
     # xAI's expired OAuth token: 403 "unauthenticated:bad-credentials", semantically a 401.
     if "bad-credentials" in msg and (status in (403, None) or "unauthenticated" in msg):
         return _V_AUTH_ROTATE

@@ -738,6 +738,11 @@ class TestGithubCurlNotExempt:
         ):
             assert "exfil_curl_auth_header" in _scan_cron_prompt(prompt), prompt
 
+    def test_refusal_names_the_supported_routes(self):
+        # The refusal is all an upgraded job's owner or the creating model sees.
+        error = _scan_cron_prompt(self.GH)
+        assert "gh api" in error and "--script" in error and "env_passthrough" in error
+
     def test_gh_cli_and_unauthenticated_github_curl_allowed(self):
         assert _scan_cron_prompt("Run `gh api /rate_limit` and report the remaining quota.") == ""
         assert _scan_cron_prompt("curl -s https://api.github.com/repos/NousResearch/hermes-agent") == ""

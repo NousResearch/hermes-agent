@@ -511,7 +511,7 @@ def _report_catalog_plugin_updates() -> None:
     report_catalog_updates_after_hermes_update(home, _sibling_profile_homes(home))
 
 
-def _print_bundled_skills_sync_report() -> None:
+def _print_bundled_skills_sync_report(*, interactive: bool = True) -> None:
     """Run ``sync_skills`` (copies new, updates changed, respects user deletions) and print its summary."""
     from tools.skills_sync import sync_skills
     result = sync_skills(quiet=True)
@@ -521,12 +521,17 @@ def _print_bundled_skills_sync_report() -> None:
         print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
     if result.get("user_modified"):
         print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-        print("    → see them: hermes skills list-modified  (diff/reset to resume updates)")
+        for name in result["user_modified"]:
+            print(f"    → review/resolve: hermes skills resolve {name}")
+            if interactive and sys.stdin.isatty() and sys.stdout.isatty():
+                from hermes_cli.skills_merge import do_resolve
+
+                do_resolve(name)
     if result.get("cleaned"):
         print(f"  − {len(result['cleaned'])} removed from manifest")
     if result.get("relocated"):
         print(f"  → {len(result['relocated'])} moved to new upstream paths: {', '.join(result['relocated'])}")
-    if not result["copied"] and not result.get("updated"):
+    if not result["copied"] and not result.get("updated") and not result.get("user_modified"):
         print("  ✓ Skills are up to date")
 
 
@@ -1059,7 +1064,7 @@ def _run_post_update_maintenance(
     with _best_effort('Skills sync during update failed: %s'):
         print()
         print("→ Syncing bundled skills...")
-        _print_bundled_skills_sync_report()
+        _print_bundled_skills_sync_report(interactive=not assume_yes and not gateway_mode)
 
     owed_step("profile_sync", _sync_profiles_after_update)
 

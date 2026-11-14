@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Skills Sync -- manifest-based seeding and updating of bundled skills. Copies repo skills/ into
-~/.hermes/skills/, tracking each synced skill's origin hash in .bundled_manifest (v2 "name:hash"
-lines; v1 plain names auto-migrate). NEW skills are copied and recorded; EXISTING skills update
-only when bundled changed AND the user copy still matches the origin hash (else user-customized
--> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest once no active or
-archived copy remains (the entry is that copy's only built-in provenance record)."""
+"""Seed bundled skills and reconcile updates against upstream snapshots.
+
+Pristine copies update directly; customized copies receive clean three-way merges.
+Conflicts and unknown legacy bases leave active content and provenance untouched,
+with manual review evidence outside skills/. User deletions stay deleted.
+"""
 
 import hashlib
 import logging
@@ -30,6 +30,7 @@ from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
 from utils import atomic_write_text
+from tools.skills_sync_merge import safe_destination, save_base, state_dir, try_merge
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +316,7 @@ def _install_new_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: P
             # byte-identical: a differing copy's bundled_hash reads as "user-modified" forever.
             st.skipped += 1
             if dir_hash(dest) == bundled_hash:
+                save_base(_hermes_home(), skill_name, skill_src, bundled_hash)
                 st.manifest[skill_name] = bundled_hash
             else:
                 st.say(
@@ -323,6 +325,7 @@ def _install_new_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: P
                     f"replace it with the bundled version.")
         else:
             _copy_dir(skill_src, dest)
+            save_base(_hermes_home(), skill_name, skill_src, bundled_hash)
             st.copied.append(skill_name)
             st.manifest[skill_name] = bundled_hash
             st.say(f"  + {skill_name}")
@@ -358,24 +361,32 @@ def _replace_skill_dir(skill_src: Path, dest: Path) -> None:
 def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: Path, bundled_hash: str) -> None:
     """Handle a skill that is in the manifest AND on disk."""
     origin_hash = st.manifest.get(skill_name, "")
+    if (state_dir(_hermes_home(), skill_name) / "pending").exists():
+        st.user_modified.append(skill_name)
+        return
     if origin_hash and bundled_hash == origin_hash:  # bundled unchanged: skip without hashing the user copy
+        save_base(_hermes_home(), skill_name, skill_src, bundled_hash)
         st.skipped += 1
         return
     user_hash = dir_hash(dest)
-    if not origin_hash:  # v1 migration: baseline from user's copy (can't tell edit from upstream)
-        st.manifest[skill_name] = user_hash
+    if not origin_hash and user_hash == bundled_hash:
+        save_base(_hermes_home(), skill_name, skill_src, bundled_hash)
+        st.manifest[skill_name] = bundled_hash
         st.skipped += 1
         return
     if not _matches_origin_hash(dest, origin_hash, user_hash):
-        st.user_modified.append(skill_name)
-        st.say(f"  ~ {skill_name} (user-modified, skipping)")
-        return
-    # bundled changed and the user copy is pristine -> update
-    try:
-        _replace_skill_dir(skill_src, dest)
-    except OSError as e:
-        st.say(f"  ! Failed to update {skill_name}: {e}")
-        return
+        if not try_merge(_hermes_home(), skill_name, origin_hash, skill_src, dest):
+            st.user_modified.append(skill_name)
+            st.say(f"  ~ {skill_name} (user-modified, skipping)")
+            return
+    else:
+        # bundled changed and the user copy is pristine -> update
+        try:
+            _replace_skill_dir(skill_src, dest)
+        except OSError as e:
+            st.say(f"  ! Failed to update {skill_name}: {e}")
+            return
+    save_base(_hermes_home(), skill_name, skill_src, bundled_hash)
     st.manifest[skill_name] = bundled_hash
     st.updated.append(skill_name)
     st.say(f"  ↑ {skill_name} (updated)")
@@ -386,6 +397,8 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]
     seeding to the essential skills' categories on opted-out profiles."""
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
         dest_desc = _skills_dir() / desc_md.relative_to(bundled_dir)
+        if not safe_destination(_skills_dir(), dest_desc):
+            continue
         if (only_dirs is not None and dest_desc.parent not in only_dirs) or dest_desc.exists():
             continue
         try:
@@ -420,6 +433,10 @@ def sync_skills(quiet: bool = False) -> dict:
             st.suppressed.append(skill_name)
             continue
         dest = _compute_relative_dest(skill_src, bundled_dir)
+        if not safe_destination(_skills_dir(), dest):
+            st.user_modified.append(skill_name)
+            st.say(f"  ! {skill_name}: linked or out-of-profile destination kept unchanged")
+            continue
         bundled_hash = dir_hash(skill_src)
         # Recoveries run BEFORE classification so a missing dest isn't misread as user-deleted.
         _recover_orphan_backup(dest)

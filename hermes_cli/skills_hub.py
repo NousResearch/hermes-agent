@@ -1579,7 +1579,11 @@ def _tap_cli(args) -> None:
 
 # `hermes skills <action>` -> handler(args). Lambdas late-bind the do_* names so
 # tests that patch("hermes_cli.skills_hub.do_install") still intercept.
+from hermes_cli.skills_merge import do_resolve
+
+
 _CLI_ACTIONS = {
+    "resolve": lambda a: do_resolve(a.name, getattr(a, "accept", None), getattr(a, "refresh", False)),
     "browse": lambda a: do_browse(page=a.page, page_size=a.size, source=a.source),
     "search": lambda a: do_search(a.query, source=a.source, limit=a.limit,
                                   as_json=getattr(a, "json", False)),

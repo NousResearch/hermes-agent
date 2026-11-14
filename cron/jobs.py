@@ -2401,6 +2401,11 @@ def _record_run_outcome(
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
     cancelled = status == "cancelled"  # an operator stop is not a failure
+    # Sticky stamps written before #155355 can hold raw credentials, and every outcome below
+    # rewrites jobs.json while keeping whichever of them it doesn't replace: scrub them in place.
+    for retained in (job.get("last_failure"), job.get("last_fire_error")):
+        if isinstance(retained, dict) and retained.get("detail"):
+            retained["detail"] = jobs_error_text.sanitize_persisted_error(str(retained["detail"]))
     job["last_error"] = None if success or cancelled else jobs_error_text.sanitize_persisted_error(error)
     if success:
         # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
@@ -2408,11 +2413,6 @@ def _record_run_outcome(
         job.pop("preflight_alerted", None)
         job.pop("last_fire_error", None)
         job["failure_streak"] = 0
-        # A success retains the sticky failure from pre-redaction versions (#118354).
-        # Scrub it before writing the updated jobs.json, without losing the diagnostic.
-        prior_failure = job.get("last_failure")
-        if isinstance(prior_failure, dict) and prior_failure.get("detail"):
-            prior_failure["detail"] = jobs_error_text.sanitize_persisted_error(prior_failure["detail"])
     elif not cancelled:
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).

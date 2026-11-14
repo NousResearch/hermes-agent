@@ -985,6 +985,16 @@ platform:
     denied: "❌ تم الرفض."
     approval_expired: "⌛ انتهت صلاحية الموافقة — لم يُنفَّذ الأمر (انتهت مهلته أو حُسم في مكان آخر)."
   shared:
+    vault_code:
+      title: "🔐 رمز التحقق لـ {site}"
+      body: "يطلب {site} رمزًا لمرة واحدة (رسالة نصية أو بريد إلكتروني). اضغط الزر واكتبه في النموذج الذي يظهر: يُدخل مباشرة في الصفحة ولا يُنشر هنا أبدًا."
+      button: "إدخال الرمز"
+      modal_title: "رمز {site}"
+      input_label: "رمز لمرة واحدة"
+      submitted: "تم إرسال الرمز؛ جارٍ إدخاله في الصفحة."
+      ended: "انتهى طلب الرمز هذا؛ لم يُدخل أي شيء."
+      not_author: "يمكن فقط لمن بدأ هذا الطلب إدخال الرمز."
+      submitted_footer: "✓ تم إرسال الرمز"
     response_as_file: "📎 ردّ طويل: النص الكامل مرفق."
     truncated_suffix: "\n...(مقتطع)"
     unknown: "غير معروف"
@@ -1197,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ تعذّر إرفاق `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord لهذه القناة وهو {limit_mb} MB. اضغط الملف أو شارك رابطًا بدلًا من ذلك."
       image_skipped_too_large: "⚠️ تم تخطّي `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord وهو {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "رُدّ على هذه الرسالة بالرمز. يحذف Hermes ردّك فورًا ويُدخل الرمز في الصفحة؛ لا يرى النموذج الرمز أبدًا."
+      delete_failed: "تعذّر حذف ردّك هنا. يُرجى حذفه بنفسك."
     approval:
       action_once: "✅ السماح مرة"
       action_session: "✅ للجلسة"
@@ -3315,6 +3328,10 @@ cli:
     total: "📚 {count} مهارة متاحة"
     added_header: "➕ المهارات المضافة:"
     removed_header: "➖ المهارات المُزالة:"
+  gateway_restart:
+    waiting: "يُعاد تشغيل Hermes لإكمال تحديث أو إعادة تشغيل؛ بانتظار عودته…"
+    timed_out: "لم يعد Hermes من إعادة التشغيل في الوقت المحدد. تحقّق من `hermes gateway status` ثم شغّل `hermes` مجددًا."
+    stopped: "توقّف الانتظار لإعادة تشغيل Hermes؛ لم يبدأ أي شيء."
   session_store:
     unavailable_rich: "[bold yellow]⚠ مخزن الجلسات غير متاح[/bold yellow] — هذه المحادثة [bold]لن تُحفظ[/bold] ولا يمكن استئنافها لاحقًا. البحث في الجلسات السابقة معطّل أيضًا.\n  السبب: {reason}.\n  {action}\n  [dim]التفاصيل: {details}[/dim]"
     unavailable_plain: "تحذير: مخزن الجلسات غير متاح — هذه المحادثة لن تُحفظ ولا يمكن استئنافها لاحقًا. السبب: {reason}. {action}"

@@ -39,9 +39,9 @@ def _pip_install(
     args: list[str], *, timeout: int = 300, capture_output: bool = True
 ) -> NoReturn:
     # Shim to suppress old updater work until relaunch, not install or report success.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.tools_config._pip_install", ImportError)
 
 
 logger = logging.getLogger(__name__)
@@ -50,9 +50,9 @@ logger = logging.getLogger(__name__)
 def install_cua_driver(*args, **kwargs) -> NoReturn:
     # A running pre-PM updater can still import the vendor installer here.
     # Stop it before any old retry or completion branch can run.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.tools_config.install_cua_driver", ImportError)
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: set[str] = set()

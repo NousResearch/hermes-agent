@@ -8,7 +8,7 @@ success, so those call paths stop for relaunch instead.
 from pathlib import Path
 from typing import NoReturn
 
-from hermes_cli._old_updater import stop_for_relaunch
+from hermes_cli._old_updater import stop_historical_updater
 
 
 # Shim to stop the old updater doing work until relaunch. Retain the filename
@@ -26,7 +26,7 @@ class ShimQuarantineError(RuntimeError):
 
 def _desktop_stamp_path() -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not select a build stamp.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._desktop_stamp_path")
 
 
 def _detect_broken_lazy_refresh_imports(
@@ -38,46 +38,46 @@ def _detect_broken_lazy_refresh_imports(
 
 def _expected_windows_pe_machines() -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not approve a binary.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._expected_windows_pe_machines")
 
 
 def _hermes_exe_shims(scripts_dir: Path) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not select files to rename.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._hermes_exe_shims")
 
 
 def _insert_python_pin(args: list[str]) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not prepare an install.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._insert_python_pin")
 
 
 def _interpreter_scripts_dir() -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not target live launchers.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._interpreter_scripts_dir")
 
 
 def _load_installable_optional_extras(group: str = "all") -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not select dependency retries.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._load_installable_optional_extras")
 
 
 def _parse_pe_machine(path: Path) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not trigger a binary fallback.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._parse_pe_machine")
 
 
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 4, failed_out: list[str] | None = None,
 ) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not rename live executables.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._quarantine_running_hermes_exe")
 
 
 def _repair_broken_lazy_refresh_imports(
     install_cmd_prefix: list[str], packages: list[str], *, env: dict[str, str] | None = None,
 ) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not repair or claim health.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._repair_broken_lazy_refresh_imports")
 
 
 def _resolve_install_target_python(
@@ -96,12 +96,12 @@ def _run_install_with_heartbeat(
     cmd: list[str], *, env: dict[str, str] | None = None, heartbeat_interval_seconds: int = 30,
 ) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not run pip/uv or report success.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._run_install_with_heartbeat")
 
 
 def _run_package_only_install(cmd: list[str], *, env: dict[str, str] | None = None) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not run a package-only retry.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._run_package_only_install")
 
 
 def _run_quarantined_install(
@@ -109,7 +109,7 @@ def _run_quarantined_install(
     strict_quarantine: bool = False,
 ) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not install or enable fallback.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._run_quarantined_install")
 
 
 def _run_with_idle_timeout(
@@ -117,41 +117,41 @@ def _run_with_idle_timeout(
     env: dict[str, str] | None = None,
 ) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not build or synthesize success.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._run_with_idle_timeout")
 
 
 def _self() -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not expose live process scans.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._self")
 
 
 def _verify_console_scripts_installed(
     install_cmd_prefix: list[str], *, env: dict[str, str] | None = None,
 ) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not reinstall entry points.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._verify_console_scripts_installed")
 
 
 def _verify_core_dependencies_installed(
     install_cmd_prefix: list[str], *, env: dict[str, str] | None = None, group: str = "all",
 ) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not reinstall missing packages.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._verify_core_dependencies_installed")
 
 
 def _web_ui_build_needed(web_dir: Path) -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not claim an unbuilt UI is current.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._web_ui_build_needed")
 
 
 def _windows_native_machine() -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not approve a fallback architecture.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._windows_native_machine")
 
 
 def _windows_shim_in_process_chain() -> NoReturn:
     # Shim to stop the old updater doing work until relaunch, not spawn an install handoff.
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.old_updater_main._windows_shim_in_process_chain")
 
 
 def _write_web_ui_build_stamp(project_root: Path, web_dir: Path) -> None:

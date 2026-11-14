@@ -985,6 +985,16 @@ platform:
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
   shared:
+    vault_code:
+      title: "🔐 {site} の確認コード"
+      body: "{site} がワンタイムコード（SMS またはメール）を求めています。ボタンを押して、開いたフォームに入力してください。コードはページに直接入力され、ここには投稿されません。"
+      button: "コードを入力"
+      modal_title: "{site} のコード"
+      input_label: "ワンタイムコード"
+      submitted: "コードを送信しました。ページに入力しています。"
+      ended: "このコードのリクエストは終了しました。何も入力されていません。"
+      not_author: "このリクエストを開始した人だけがコードを入力できます。"
+      submitted_footer: "✓ コードを送信しました"
     response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"
@@ -1197,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ `{filename}` を添付できませんでした — {size_mb} MB はこのチャンネルの Discord アップロード上限 {limit_mb} MB を超えています。ファイルを圧縮するか、代わりにリンクを共有してください。"
       image_skipped_too_large: "⚠️ `{filename}` をスキップしました — {size_mb} MB は Discord のアップロード上限 {limit_mb} MB を超えています。"
   telegram:
+    vault_code:
+      body: "このメッセージにコードを返信してください。Hermes は返信をすぐに削除し、コードをページに入力します。モデルがコードを見ることはありません。"
+      delete_failed: "ここで返信を削除できませんでした。ご自身で削除してください。"
     approval:
       action_once: "✅ 一度だけ許可"
       action_session: "✅ セッション中"
@@ -3315,6 +3328,10 @@ cli:
     total: "📚 {count} 件のスキルが利用可能"
     added_header: "➕ 追加されたスキル:"
     removed_header: "➖ 削除されたスキル:"
+  gateway_restart:
+    waiting: "Hermes は更新または再起動を完了するため再起動しています。戻るのを待っています…"
+    timed_out: "Hermes が時間内に再起動から戻りませんでした。`hermes gateway status` を確認してから、もう一度 `hermes` を起動してください。"
+    stopped: "Hermes の再起動待ちを中止しました。何も開始されていません。"
   session_store:
     unavailable_rich: "[bold yellow]⚠ セッションストアが利用できません[/bold yellow] — この会話は[bold]保存されず[/bold]、後から再開することもできません。過去のセッション検索も無効です。\n  理由: {reason}。\n  {action}\n  [dim]詳細: {details}[/dim]"
     unavailable_plain: "警告: セッションストアが利用できません — この会話は保存されず、後から再開することもできません。理由: {reason}。{action}"

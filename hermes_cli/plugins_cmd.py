@@ -460,6 +460,13 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     try:
         target = _sanitize_plugin_name(name, plugins_dir, allow_subdir=True)
     except ValueError as e:
+        from pm.filesystem import is_junction
+        link = plugins_dir / name.strip("/")
+        if link.parent == plugins_dir and (link.is_symlink() or is_junction(link)):
+            from rich.markup import escape
+            _fail(console, f"[red]Error:[/red] Plugin '{escape(name)}' is a link to {escape(os.path.realpath(link))}, outside the "
+                           "plugins directory, and Hermes does not change files there. Pull updates in that "
+                           "checkout, or delete the link to remove the plugin.")
         _fail(console, f"[red]Error:[/red] {e}")
     if not target.exists():
         target = _resolved_user_plugin_dir(name)
@@ -487,9 +494,9 @@ _get_enabled_set = functools.partial(_config_name_set, "plugins", "enabled")
 
 def _save_enabled_set(enabled: set) -> None:
     """Frozen old-updater import: never resurrect a raw plugin-selection write."""
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_cli._old_updater import stop_historical_updater
 
-    stop_for_relaunch()
+    stop_historical_updater("hermes_cli.plugins_cmd._save_enabled_set")
 
 
 def _plugin_selection_version() -> str:

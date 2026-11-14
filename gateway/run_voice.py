@@ -47,6 +47,20 @@ def _is_legacy_voice_key(key: str) -> bool:
     return not (_is_platform_name(parts[0]) or (len(parts) == 3 and _is_platform_name(parts[1])))
 
 
+def _owner_voice_config(owner_profile: Optional[str]) -> dict:
+    """The ``voice`` block of the adapter OWNER's config. Secondary startup and reconnect sync after
+    leaving ``_profile_runtime_scope``, so an ambient read would copy the launch profile's settings."""
+    from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
+
+    if not isinstance(owner_profile, str):  # primary adapter (None): the launch profile IS the owner
+        return load_config().get("voice") or {}
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.profiles import get_profile_dir
+
+    with _profile_runtime_scope(get_profile_dir(owner_profile), hydrate_secrets=False):
+        return load_config().get("voice") or {}
+
+
 class GatewayVoiceMixin:
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
@@ -134,7 +148,8 @@ class GatewayVoiceMixin:
 
     def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
         """Restore persisted /voice state into a live adapter: ``_auto_tts_default`` from
-        ``voice.auto_tts``; enabled (voice_only/all) / disabled (off) sets from ``_voice_mode``."""
+        ``voice.auto_tts`` and scope from ``voice.auto_tts_mode``; enabled (voice_only/all) /
+        disabled (off) sets from ``_voice_mode``."""
         platform = getattr(adapter, "platform", None)
         if not isinstance(platform, Platform):
             return
@@ -146,10 +161,16 @@ class GatewayVoiceMixin:
         if not chat_sets:
             return
         try:
-            from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
-            auto_tts_default = bool((load_config().get("voice") or {}).get("auto_tts", False))
+            voice_cfg = _owner_voice_config(getattr(adapter, "_owner_profile", None))
+            auto_tts_default = bool(voice_cfg.get("auto_tts", False))
+            auto_tts_mode = str(voice_cfg.get("auto_tts_mode", "all")).strip().lower()
+            if auto_tts_mode not in {"all", "voice_only"}:
+                logger.warning("Invalid voice.auto_tts_mode=%r; falling back to 'all'", auto_tts_mode)
+                auto_tts_mode = "all"
         except Exception:
+            logger.warning("Failed to load global voice settings", exc_info=True)
             auto_tts_default = False
+            auto_tts_mode = "all"
         if hasattr(adapter, "_auto_tts_default"):
             # A2A never inherits the global speak default. The flag is written by
             # Desktop "Read replies aloud" / voice.auto_tts and is meant for human
@@ -160,6 +181,8 @@ class GatewayVoiceMixin:
                 adapter._auto_tts_default = False
             else:
                 adapter._auto_tts_default = auto_tts_default
+        if hasattr(adapter, "_auto_tts_mode"):
+            adapter._auto_tts_mode = auto_tts_mode
         prefix = self._voice_key(platform, "", profile=getattr(adapter, "_owner_profile", None))
         explicit = {key[len(prefix):] for key in self._voice_mode if key.startswith(prefix)}
         # A legacy unprefixed ``off`` row predates platform and profile keys, so it can only have
@@ -428,12 +451,15 @@ class GatewayVoiceMixin:
         is_voice_input = event.message_type == MessageType.VOICE
         adapter = self._delivery_adapter_for(event.source)
         adapter_auto_tts = False
+        adapter_auto_tts_mode = "all"
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
+            adapter_auto_tts_mode = getattr(adapter, "_auto_tts_mode", "all")
         # ``voice.auto_tts`` (synced into the adapter at startup) is the fallback only when the
         # chat has no explicit mode; the chat-level all/voice_only/off choice takes precedence.
         if not (voice_mode == "all" or (voice_mode == "voice_only" and is_voice_input)
-                or (voice_mode is None and adapter_auto_tts)):
+                or (voice_mode is None and adapter_auto_tts
+                    and (adapter_auto_tts_mode == "all" or is_voice_input))):
             logger.debug(
                 "Auto voice reply skipped: mode=%s adapter_auto_tts=%s chat=%s platform=%s",
                 voice_mode, adapter_auto_tts, chat_id, event.source.platform.value)

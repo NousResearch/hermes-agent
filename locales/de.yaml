@@ -985,6 +985,16 @@ platform:
     denied: "❌ Abgelehnt."
     approval_expired: "⌛ Genehmigung abgelaufen — Befehl wurde nicht ausgeführt (Zeitüberschreitung oder bereits anderswo entschieden)."
   shared:
+    vault_code:
+      title: "🔐 Bestätigungscode für {site}"
+      body: "{site} verlangt einen Einmalcode (SMS oder E-Mail). Drücke die Schaltfläche und gib ihn im geöffneten Formular ein: Er wird direkt in die Seite eingetragen und nie hier gepostet."
+      button: "Code eingeben"
+      modal_title: "Code für {site}"
+      input_label: "Einmalcode"
+      submitted: "Code gesendet; er wird in die Seite eingetragen."
+      ended: "Diese Code-Anfrage ist beendet; es wurde nichts eingetragen."
+      not_author: "Nur die Person, die diese Anfrage gestartet hat, kann den Code eingeben."
+      submitted_footer: "✓ Code gesendet"
     response_as_file: "📎 Lange Antwort: Der vollständige Text ist angehängt."
     truncated_suffix: "\n...(gekürzt)"
     unknown: "unbekannt"
@@ -1197,6 +1207,9 @@ platform:
       upload_too_large: "⚠️ `{filename}` konnte nicht angehängt werden — {size_mb} MB überschreiten das Discord-Upload-Limit von {limit_mb} MB für diesen Kanal. Komprimieren Sie die Datei oder teilen Sie stattdessen einen Link."
       image_skipped_too_large: "⚠️ `{filename}` übersprungen — {size_mb} MB überschreiten das Discord-Upload-Limit von {limit_mb} MB."
   telegram:
+    vault_code:
+      body: "Antworte auf diese Nachricht mit dem Code. Hermes löscht deine Antwort sofort und trägt den Code in die Seite ein; das Modell sieht ihn nie."
+      delete_failed: "Deine Antwort konnte hier nicht gelöscht werden. Bitte lösche sie selbst."
     approval:
       action_once: "✅ Einmalig"
       action_session: "✅ Sitzung"
@@ -3315,6 +3328,10 @@ cli:
     total: "📚 {count} Skill(s) verfügbar"
     added_header: "➕ Hinzugefügte Skills:"
     removed_header: "➖ Entfernte Skills:"
+  gateway_restart:
+    waiting: "Hermes startet neu, um ein Update oder einen Neustart abzuschließen; warte, bis es zurück ist…"
+    timed_out: "Hermes ist nicht rechtzeitig vom Neustart zurückgekehrt. Prüfe `hermes gateway status` und starte `hermes` erneut."
+    stopped: "Warten auf den Hermes-Neustart abgebrochen; nichts wurde gestartet."
   session_store:
     unavailable_rich: "[bold yellow]⚠ Sitzungsspeicher nicht verfügbar[/bold yellow] — diese Konversation wird [bold]NICHT gespeichert[/bold] und kann später nicht fortgesetzt werden. Die Suche in früheren Sitzungen ist ebenfalls deaktiviert.\n  Grund: {reason}.\n  {action}\n  [dim]Details: {details}[/dim]"
     unavailable_plain: "WARNUNG: Sitzungsspeicher nicht verfügbar — diese Konversation wird NICHT gespeichert und kann später nicht fortgesetzt werden. Grund: {reason}. {action}"

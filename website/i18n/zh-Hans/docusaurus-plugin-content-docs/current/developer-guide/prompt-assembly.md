@@ -30,7 +30,7 @@ Hermes 刻意将以下内容分离：
 
 1. **stable（稳定）** — 身份（`SOUL.md` 或回退值）、工具/模型指引、编码工作简报
 2. **context（上下文）** — 调用方提供的 `system_message`、项目上下文文件（`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`），然后是依赖工作树（worktree）的 git 工作区快照、操作者指令和平台提示
-3. **volatile（易变）** — skills 索引、内置记忆快照（`MEMORY.md`）、用户档案快照（`USER.md`）、外部记忆 provider 块、时间戳/会话/模型/提供商行，然后是运行时环境提示（host / home / **当前工作目录**）
+3. **volatile（易变）** — skills 索引、内置记忆快照（`MEMORY.md`）、用户档案快照（`USER.md`）、外部记忆 provider 块、时间戳/会话/模型/提供商，然后是运行时环境提示（host / home / **当前工作目录**）
 
 最终系统 prompt 按如下顺序拼接：`stable` → `context` → `volatile`。
 

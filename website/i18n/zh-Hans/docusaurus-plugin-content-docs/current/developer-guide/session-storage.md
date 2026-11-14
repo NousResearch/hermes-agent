@@ -18,7 +18,7 @@ CLI 启动流程在导入 Hermes 其余部分之前调用 `_apply_profile_overri
 
 ### 测试隔离守卫
 
-测试必须使用临时 `HERMES_HOME` 或显式的临时数据库路径。实时系统守卫会在测试上下文进程打开真实默认 Hermes 根目录或真实命名 profile 下的生产 `state.db` 之前抛出异常，防止 fixture 数据或 SQLite 副作用触及正在使用的安装。
+测试必须使用临时 `HERMES_HOME` 或显式的临时数据库路径。实时系统守卫会在测试上下文进程打开真实默认 Hermes 根目录或真实命名 profile 下的生产 `state.db` 之前抛出异常，防止 fixture 数据或 SQLite side effect 触及正在使用的安装。
 
 `HERMES_STATE_DB_GUARD_BYPASS=1` 是仅供测试使用的逃生口，用于确实必须访问实时数据库的派生子进程。进程内的等价逃生口是 `@pytest.mark.live_system_guard_bypass`。不要在普通 Hermes 命令、开发 shell 或应用配置中设置任一绕过：它会禁用保护实时会话历史的守卫（一个硬性的 `RuntimeError`），而导出了它的 shell 会把该绕过传给之后的每一次 pytest 运行。
 
@@ -64,7 +64,7 @@ gateway 异常可能发生在 agent 构造之前，或在其输入到达 SQLite 
 
 `session_admissions`、`worker_executions` 和 `worker_receipts` 通过 `ON DELETE RESTRICT` 引用 `sessions`：删除或修剪一个会话会在同一事务里 retire 其 terminal 账本行，并在存在进行中的工作或 `unknown` 时拒绝。一个在 owner 死亡时处于 `started` 的输入会在下一个 owner 启动时变为 `unknown` 且绝不重放；它后面的输入会等待，直到它被解决（`prompt.resolve_unknown`）。
 
-`hermes sessions recover` 把上面承载行的表复制进恢复后的数据库（FTS 索引和 `schema_version` 会被重新生成），包括源那里存在的、惰性创建的 `delivery_obligations` 账本——其行数会像 `sessions`/`messages` 那样被校验。四个运行时账本表（`runtime_epoch`、`session_admissions`、`worker_executions`、`worker_receipts`）会被盘点并报告为「排除在外」而非复制：一个部分的账本可能重放已启动的副作用，或领养另一个 owner 的 worker。完整的 `hermes backup` 恢复则为启动对账保留完整账本。
+`hermes sessions recover` 把上面承载行的表复制进恢复后的数据库（FTS 索引和 `schema_version` 会被重新生成），包括源那里存在的、惰性创建的 `delivery_obligations` 账本——其行数会像 `sessions`/`messages` 那样被校验。四个运行时账本表（`runtime_epoch`、`session_admissions`、`worker_executions`、`worker_receipts`）会被盘点并报告为「排除在外」而非复制：一个部分的账本可能重放已启动的 side effect，或领养另一个 owner 的 worker。完整的 `hermes backup` 恢复则为启动对账保留完整账本。
 
 关键设计决策：
 - **WAL 模式**：支持并发读取 + 单写入者（gateway 多平台）

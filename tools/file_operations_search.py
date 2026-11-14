@@ -592,7 +592,7 @@ class SearchMixin:
     # --- native rg transport (local POSIX) --------------------------------------
 
     def _run_rg_native(self, argv: list[str], fetch_limit: int, timeout: int,
-                       merge_stderr: bool = False) -> ExecuteResult:
+                       merge_stderr: bool = False, cwd: Optional[str] = None) -> ExecuteResult:
         """Run ``argv`` (shell-quoted rg words) natively and stop reading after
         ``fetch_limit`` lines — the ``| head -n`` of the shell pipeline without the
         two bash spawns. ``shlex.split`` undoes the escaping the builders apply for
@@ -606,7 +606,7 @@ class SearchMixin:
         stderr is drained on its own pipe so diagnostics never use up the
         ``fetch_limit`` lines meant for results; it is prepended to stdout."""
         from tools.environments.local import _kill_process_group_posix, _make_run_env
-        cwd = getattr(self.env, "cwd", None) or self.cwd
+        cwd = os.path.join(getattr(self.env, "cwd", None) or self.cwd, cwd or "")
         args = shlex.split(" ".join(argv))
         try:
             proc = subprocess.Popen(
@@ -681,15 +681,44 @@ class SearchMixin:
 
     def _run_rg_bounded(self, words: list[str], fetch_limit: int, timeout: int, *,
                         merge_stderr: bool = False, native_ok: bool = True,
-                        shell_prefix: str = "") -> ExecuteResult:
+                        shell_prefix: str = "", anchor: Optional[str] = None) -> ExecuteResult:
         """Run an rg command (shell-quoted words) and keep the first ``fetch_limit``
         lines: natively on a local POSIX host, else through the backend shell as
         ``<prefix><words> | head -n N``. ``native_ok=False`` keeps a form the native
- lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is shell-only."""
+ lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is shell-only.
+        ``anchor``: run rg inside this directory (the words search ``.``) and print
+        paths under it again, see ``_glob_anchor``."""
         if native_ok and self._native_read_enabled():
-            return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr)
-        stderr = "" if merge_stderr else " 2>/dev/null"
-        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}", timeout=timeout)
+            result = self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr, cwd=anchor)
+        else:
+            stderr = "" if merge_stderr else " 2>/dev/null"
+            rg = " ".join(words)
+            # A subshell: the backend shell is persistent, so a bare cd would move it.
+            rg = f"(cd -- {self._escape_shell_arg(anchor)} && {rg}{stderr})" if anchor else f"{rg}{stderr}"
+            result = self._exec(f"{shell_prefix}{rg} | head -n {fetch_limit}", timeout=timeout)
+        if anchor:
+            prefix = anchor.rstrip("/\\") + "/"
+            result.stdout = re.sub(r"(?m)^(rg: )?\.[/\\]", lambda m: (m.group(1) or "") + prefix, result.stdout)
+        return result
+
+    def _glob_anchor(self, glob: Optional[str], root: str) -> tuple[Optional[str], Optional[str]]:
+        """``(glob, anchor)`` for rg. ripgrep matches a glob that names folders
+        (``migrations/*.js``) against paths relative to ITS working directory, never
+        the search root, so such a glob found nothing unless the root was that cwd.
+        For a directory root, rg then runs inside the root (``anchor``) with a leading
+        ``./`` dropped from the glob; basename globs and file roots keep anchor None."""
+        if not glob:
+            return glob, None
+        glob = glob.removeprefix("./")
+        if "/" not in glob.removeprefix("**/"):
+            return glob, None
+        if self._native_read_enabled():
+            full = os.path.join(getattr(self.env, "cwd", None) or self.cwd, root)
+            is_dir = os.path.isdir(full)
+        else:
+            probe = self._exec(f"test -d {self._escape_shell_arg(root)} && echo dir || echo other")
+            is_dir = probe.stdout.strip().endswith("dir")
+        return glob, (root if is_dir else None)
 
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
@@ -1049,7 +1078,7 @@ class SearchMixin:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = (
                 f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-                f"! -name '.*' -name {escaped_pattern} 2>/dev/null"
+                f"! -name '.*' -name {escaped_pattern} -print 2>/dev/null"
             )
             result = self._exec(cmd_simple, timeout=30)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -1077,8 +1106,7 @@ class SearchMixin:
         """Search for files by name (glob-like) across one or more roots: rg --files,
         else a bounded find. ``order``: "discovery" (fast, bounded) or "modified"
         (exact global newest-first; needs rg 14+ or GNU find)."""
-        search_pattern = pattern if (not pattern.startswith('**/') and '/' not in pattern) \
-            else pattern.split('/')[-1]
+        search_pattern = pattern
         roots = [path] if isinstance(path, str) else path
         if not roots:
             return SearchResult(error="File search requires at least one search root in 'path'.")
@@ -1113,6 +1141,15 @@ class SearchMixin:
                 error="File search requires 'rg' (ripgrep) or 'find'. "
                       "Install ripgrep for best results: "
                       "https://github.com/BurntSushi/ripgrep#installation")
+
+        # find already traverses descendants: a leading **/ before a basename
+        # does not require path-aware matching. Keep scoped path globs rejected.
+        search_pattern = pattern.removeprefix("**/")
+        if '/' in search_pattern:
+            return SearchResult(error=(
+                "Path-aware file globs require ripgrep. Set `path` to the "
+                "directory to search and use a basename glob such as `*.py`, "
+                "or install ripgrep."))
 
         # Prune hidden descendant dirs (and hidden files, matching rg's default) while
         # still allowing an explicitly selected hidden root; dash-prefixed roots get
@@ -1214,14 +1251,17 @@ class SearchMixin:
                 return SearchResult(error=capability_error)
         rg = self._quote_executable(rg_executable)
         sort_arg = " --sortr=modified" if order == "modified" else ""
-        root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
+        anchor = None
+        if len(roots) == 1 and not scoped_common:
+            glob_pattern, anchor = self._glob_anchor(glob_pattern, roots[0])
+        root_args = "." if anchor else " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
         rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
                   f"{exclusion_args} -- {root_args}")
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
                                       merge_stderr=True,
-                                      shell_prefix=f"set -o pipefail; {cd_prefix}")
+                                      shell_prefix=f"set -o pipefail; {cd_prefix}", anchor=anchor)
         stdout, limit_reason = _search_stdout_and_limit(result)
         # Files-mode transport mixes stderr into stdout, but file paths may contain
         # spaces — the content-mode shape matcher (_SEARCH_OUTPUT_RE) would drop
@@ -1311,7 +1351,7 @@ class SearchMixin:
 
     def _run_search_pipeline(self, cmd_parts: list[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
-                             line_cap: bool = False) -> SearchResult:
+                             line_cap: bool = False, anchor: Optional[str] = None) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
         rows report the true total (context mode also emits "--" separators, so
         grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
@@ -1327,7 +1367,7 @@ class SearchMixin:
             result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
-                                          shell_prefix="set -o pipefail; ")
+                                          shell_prefix="set -o pipefail; ", anchor=anchor)
         return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
@@ -1352,6 +1392,7 @@ class SearchMixin:
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         cmd_parts.extend(self._rg_exclusion_globs(path))
+        file_glob, anchor = self._glob_anchor(file_glob, path)
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
@@ -1359,12 +1400,13 @@ class SearchMixin:
         # Quoting protects shell syntax, not rg's option parser (also on native argv).
         cmd_parts.extend(["-e", self._escape_shell_arg(pattern, translate_path=False), "--"])
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
-        cmd_parts.append(self._escape_native_tool_arg(path))
+        cmd_parts.append("." if anchor else self._escape_native_tool_arg(path))
         ml_note = (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note,
+                                         anchor=anchor)
 
     def _grep_cmd(self, head: list[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> list[str]:

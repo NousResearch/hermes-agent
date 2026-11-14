@@ -4225,6 +4225,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             return
 
         async def _typing_loop() -> None:
+            this_task = asyncio.current_task()
             try:
                 while True:
                     try:
@@ -4250,7 +4251,9 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
             except asyncio.CancelledError:
                 pass
             finally:
-                self._typing_tasks.pop(chat_id, None)
+                # Drop only our own entry: a stop+start in the same tick may have registered a newer loop.
+                if self._typing_tasks.get(chat_id) is this_task:
+                    self._typing_tasks.pop(chat_id, None)
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
     async def stop_typing(self, chat_id: str) -> None:

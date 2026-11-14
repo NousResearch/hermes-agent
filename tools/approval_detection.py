@@ -514,8 +514,9 @@ DANGEROUS_PATTERNS = [
     # (under DOTALL a WHERE on the *next* line would otherwise count), a statement or shell
     # separator (; & |), a comment start (-- /* #), and any quote or dollar-quote opener, so a
     # WHERE inside a comment, literal, identifier, later statement or later shell command cannot.
-    # Bare $VAR / ${VAR} stay transparent so templated table names still clear.
-    (r'\bDELETE\s+FROM\b(?!(?:(?!--|/\*)(?:[^\n;&|#\'"`$]|\$(?![A-Za-z_0-9]*\$)))*\bWHERE\b)',
+    # Bare $VAR / ${VAR} stay transparent so templated table names still clear. Tag chars mirror
+    # PostgreSQL's scan.l dolq_cont ([A-Za-z\200-\377_0-9]): any non-ASCII char, so $é$ opens a quote.
+    (r'\bDELETE\s+FROM\b(?!(?:(?!--|/\*)(?:[^\n;&|#\'"`$]|\$(?![A-Za-z_0-9\x80-\U0010ffff]*\$)))*\bWHERE\b)',
      "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),

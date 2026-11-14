@@ -17,6 +17,8 @@ from tools.approval import detect_dangerous_command
     'psql -c "DELETE FROM t RETURNING \'WHERE\'"',
     'psql -c "DELETE FROM t RETURNING $$WHERE$$"',
     'psql -c "DELETE FROM t RETURNING $q$WHERE$q$"',
+    "psql -c 'DELETE FROM t RETURNING $é$ WHERE $é$'",
+    "psql -c 'DELETE FROM t RETURNING $日本$ WHERE $日本$'",
     'psql -c "DELETE FROM t" ; echo "WHERE"',
     'psql -c "DELETE FROM t" && echo WHERE',
     "bash -c \"psql -c 'DELETE FROM t'\"",
@@ -33,6 +35,7 @@ def test_where_outside_the_delete_statement_does_not_clear(cmd):
     'sqlite3 x.db "DELETE FROM t WHERE y = $$z$$"',
     'psql -c "DELETE FROM t USING u WHERE t.id = u.id"',
     'psql -c "DELETE FROM ${TABLE} WHERE id = 1"',
+    "psql -c 'DELETE FROM t WHERE name = $é$x$é$'",
     "delete from t where x = 1",
 ])
 def test_real_where_clause_still_clears(cmd):

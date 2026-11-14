@@ -320,9 +320,9 @@ def _discover_repos_payload(
 # Not user conversations; subagent/compression children are dropped by include_children=False.
 # Messaging-platform rows are user conversations, but the desktop lists them in their own
 # per-platform Messaging section. With no workspace cwd they would all fall into Home too, so the
-# same chat showed twice. Must equal MESSAGING_SESSION_SOURCE_IDS in
-# apps/desktop/src/lib/session-source.ts (a test enforces it): dropping a source the desktop does
-# not render under Messaging would hide its rows from the sidebar entirely.
+# same chat showed twice. Keep in step with MESSAGING_SESSION_SOURCE_IDS in
+# apps/desktop/src/lib/session-source.ts: dropping a source the desktop does not render under
+# Messaging would hide its rows from the sidebar entirely.
 _MESSAGING_SESSION_SOURCES = (
     "telegram", "discord", "slack", "mattermost", "matrix", "signal", "whatsapp", "bluebubbles",
     "photon", "homeassistant", "email", "sms", "webhook", "api_server", "weixin", "wecom", "qqbot",

@@ -213,7 +213,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         try:
             from tools.async_delegation import active_count
             return active_count()
-        except Exception:
+        except Exception:  # health: allow BLE001 -- a count probe on the stop path must never raise
             return 0
 
     @staticmethod
@@ -1591,111 +1591,23 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged,
                               "restart_safe": bool(job.get("restart_safe"))})
-        units.extend(uncounted_runtime_work_units(self, os.getpid()))
-        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count()),
-                            ("async_delegation", self._active_async_delegation_count())):
+        units.extend(uncounted_runtime_work_units(self))
+        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
+        with suppress(Exception):
+            from gateway.restart_when_idle import background_units
+            units.extend(background_units(self))
         return units
 
     async def _await_active_work_before_restart(self) -> bool:
-        """Wait for in-flight work before ``stop()`` so the requesting turn isn't force-interrupted.
-
-        Wedged turns are excluded (restart is their remedy). True when drained to zero, False when the
-        cap elapsed or only wedged work remains (caller proceeds to ``stop()``).
-        """
-        active = self._active_work_count()
-        if active <= 0:
-            return True
-        if self._awaitable_work_count() <= 0:
-            logger.warning(
-                "Restart requested with %d active work unit(s), none awaitable "
-                "(%d wedged past the inactivity timeout, %d in restart-safe external cron "
-                "workers that outlive this process); skipping the after-turn wait and "
-                "proceeding to stop()/drain", active,
-                self._wedged_agent_count(), self._restart_safe_cron_count(),
-            )
-            return False
-        timeout = float(getattr(self, "_restart_after_turn_timeout", 0.0) or 0.0)
-        if timeout <= 0:
-            logger.info(
-                "Restart requested with %d active work unit(s); "
-                "restart_after_turn_timeout=0 — entering stop()/drain immediately", active,
-            )
-            return False
-        logger.info(
-            "Restart requested with %d active work unit(s); "
-            "deferring stop() until they finish (cap=%.0fs) so in-flight "
-            "turns are not amputated (#77184)", active, timeout,
-        )
-        self._scale_to_zero_status("draining", "restart wait: status mark failed")
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        last_status_at = 0.0
-        while self._awaitable_work_count() > 0:
-            now = loop.time()
-            if now >= deadline:
-                logger.warning(
-                    "Restart after-turn wait timed out after %.0fs with %d "
-                    "still active; proceeding to stop()/drain which may "
-                    "interrupt remaining work (#77184)", timeout, self._active_work_count(),
-                )
-                return False
-            if (now - last_status_at) >= 30.0:
-                logger.info(
-                    "Restart deferred: waiting on %d active work unit(s) "
-                    "(%d wedged and excluded, %d restart-safe and excluded; "
-                    "%.0fs remaining before force drain): %s",
-                    self._awaitable_work_count(), self._wedged_agent_count(),
-                    self._restart_safe_cron_count(), deadline - now,
-                    self._describe_active_work(),
-                )
-                self._scale_to_zero_status("draining", "restart wait: status mark failed")
-                last_status_at = now
-            await asyncio.sleep(0.1)
-        if self._active_work_count() > 0:
-            logger.warning(
-                "Restart deferred wait: %d excluded work unit(s) remain "
-                "(%d wedged, %d restart-safe external cron); proceeding to stop()/drain",
-                self._active_work_count(), self._wedged_agent_count(),
-                self._restart_safe_cron_count(),
-            )
-            return False
-        logger.info("Restart deferred wait complete — active work drained; proceeding to stop()")
-        return True
+        """Serve normally until idle; True when idle, False when a forced restart cut the wait."""
+        from gateway.restart_when_idle import await_idle
+        return await await_idle(self)
 
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
-        if self._restart_task_started:
-            return False
-        self._restart_requested = True
-        self._restart_detached = detached
-        self._restart_via_service = via_service
-        self._restart_task_started = True
-        # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
-        self._draining = True
-        from gateway.drain_control import open_restart_wait
-        open_restart_wait(self)  # clients may still answer a turn parked on approval/clarify (#139041)
-        # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
-        # the boundary from the moment new turns are refused, not only once stop() begins (#115133).
-        self._mark_api_runs_shutdown_requested()
-
-        async def _run_restart() -> None:
-            await self._await_active_work_before_restart()
-            # Detached helper only AFTER the after-turn wait, or its drain_timeout+5 deadline fires mid-turn.
-            if detached:
-                with _log_suppressed(logging.ERROR, "Failed to launch detached gateway restart helper: %s"):
-                    await self._launch_detached_restart_command()
-            await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
-
-        # NOT in _background_tasks: _stop_impl cancels those, which would cancel _run_restart while it
-        # awaits _stop_task and skip _shutdown_event.set() / _exit_code = 75 (#12875). We still hold a strong reference in
-        # self._restart_task: a bare asyncio.create_task() keeps only a weak reference, so the event loop
-        # may garbage-collect a still-pending task mid-flight. The cancel loop in _stop_impl explicitly
-        # skips _restart_task for the same reason it skips _stop_task.
-        # Empty Context: /restart is handled inside the requester's profile scope, and a copied context
-        # would run the HOST restart as that profile (watcher HERMES_HOME, stop()'s flushes).
-        self._restart_task = Context().run(lambda: asyncio.create_task(_run_restart()))
-        return True
+        """Restart when idle: admission stays open until ``stop()`` begins (gateway/restart_when_idle.py)."""
+        from gateway.restart_when_idle import request_restart
+        return request_restart(self, detached=detached, via_service=via_service)
 
     def _start_systemd_watchdog(self) -> bool:
         """Start sd_notify only after a configured gateway is truly running."""

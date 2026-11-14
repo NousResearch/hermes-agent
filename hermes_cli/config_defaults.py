@@ -103,11 +103,11 @@ DEFAULT_CONFIG = {
         # inherit restart_drain_timeout's 0 (#82161, #132989). Clamped to the shutdown-watchdog
         # leash minus teardown headroom (~50s unless TimeoutStopSec is raised). 0 = opt out.
         "cron_drain_timeout": 30,
-        # In-band restart (/restart, SIGUSR1): refuse new work, then wait up to this many seconds
-        # for in-flight agents/cron/api runs to finish before stop(). 0 = enter stop() at once. 30
-        # min is a safety valve for wedged agents, not a target; raise for long unattended turns.
-        # Default 30 min is a safety valve for wedged agents, not a target latency — an interactive `hermes
-        # gateway restart` must never block for hours on a turn that wedged (#79133).
+        # In-band restart (/restart, SIGUSR1, `hermes update`) is "restart when idle": the gateway
+        # keeps serving (new turns, notices, delegation completions) and restarts at the first moment
+        # no work is in flight. Live work is never interrupted on a timer: each time this many seconds
+        # pass with work still running, a WARNING names every unit and the wait continues. Only a
+        # forced restart (`pause-for-update` with force) or SIGTERM stops live work.
         "restart_after_turn_timeout": 1800,
         # Max seconds a submitted prompt waits for the deferred agent build (MCP discovery, model
         # metadata, skills scan) before failing visibly. The prompt is delivered as soon as the

@@ -145,9 +145,8 @@ async def test_request_restart_is_idempotent():
     assert runner._restart_task is not None
     assert runner._restart_task not in runner._background_tasks
     assert runner.request_restart(detached=True, via_service=False) is False
-    # In-band restart marks draining immediately so new turns are refused
-    # while any after-turn wait runs (#77184).
-    assert runner._draining is True
+    # Restart when idle: admission stays open until stop() begins.
+    assert runner._draining is False
 
     await runner._restart_task
 
@@ -168,7 +167,7 @@ async def test_request_restart_defers_stop_until_active_turn_finishes():
     runner._running_agents[session_key] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
-    assert runner._draining is True
+    assert runner._draining is False  # keeps serving while the turn runs
 
     # While the requesting turn is still active, stop() must not run.
     await asyncio.sleep(0.25)
@@ -195,15 +194,16 @@ async def test_request_restart_waits_for_async_delegation(monkeypatch):
     monkeypatch.setattr(
         "tools.async_delegation.active_count", lambda: active_delegations[0]
     )
+    monkeypatch.setattr("tools.async_delegation.list_async_delegations", lambda: [
+        {"delegation_id": "d1", "status": "running", "parent_session_id": "parent-s", "goal": "g"}
+    ] if active_delegations[0] else [])
 
     assert runner.request_restart(detached=False, via_service=True) is True
 
-    await asyncio.sleep(0.25)
+    await asyncio.sleep(0.25)  # health: allow HX013 -- proves stop() is not reached while the delegation runs
     runner.stop.assert_not_awaited()
-    assert any(
-        unit["kind"] == "async_delegation"
-        for unit in runner._describe_active_work()
-    )
+    assert {"kind": "delegation", "delegation_id": "d1", "session": "parent-s"}.items() <= next(
+        u for u in runner._describe_active_work() if u["kind"] == "delegation").items()
 
     active_delegations[0] = 0
     await runner._restart_task
@@ -214,47 +214,39 @@ async def test_request_restart_waits_for_async_delegation(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_restart_wait_for_async_delegation_is_bounded(monkeypatch):
-    """A delegation that outlives restart_after_turn_timeout must not block the restart."""
+async def test_restart_wait_never_interrupts_a_delegation_at_the_cap(monkeypatch, caplog):
+    """Ruling 2026-11-13: the cap only warns; a live delegation keeps the restart waiting."""
     runner, _adapter = make_restart_runner()
-    runner._restart_after_turn_timeout = 0.2
+    runner._restart_after_turn_timeout = 0.05
+    runner._scale_to_zero_status = MagicMock()
     monkeypatch.setattr("tools.async_delegation.active_count", lambda: 1)
-
-    assert await runner._await_active_work_before_restart() is False
-
-
-@pytest.mark.asyncio
-async def test_request_restart_after_turn_timeout_zero_enters_stop_immediately():
-    """restart_after_turn_timeout=0 preserves legacy immediate drain."""
-    runner, _adapter = make_restart_runner()
-    runner.stop = AsyncMock()
-    runner._restart_after_turn_timeout = 0.0
-    runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
-
-    assert runner.request_restart(detached=False, via_service=True) is True
-    await runner._restart_task
-
-    runner.stop.assert_awaited_once_with(
-        restart=True, detached_restart=False, service_restart=True
-    )
+    monkeypatch.setattr("gateway.restart_when_idle.background_units",
+                        lambda _r: [{"kind": "delegation", "delegation_id": "d1", "session": "parent-s"}])
+    with caplog.at_level("WARNING"), pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(runner._await_active_work_before_restart(), timeout=0.5)
+    assert any("NOT interrupted" in r.getMessage() and "d1" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_request_restart_after_turn_cap_elapsed_still_calls_stop():
-    """Safety valve: wedged turns cannot pin the gateway forever."""
+async def test_request_restart_after_turn_cap_elapsed_keeps_waiting_and_serving():
+    """Ruling 2026-11-13: the cap no longer forces stop(); only a forced restart does."""
+    from gateway.restart_when_idle import force_restart
     runner, _adapter = make_restart_runner()
     runner.stop = AsyncMock()
-    runner._restart_after_turn_timeout = 0.2
+    runner._scale_to_zero_status = MagicMock()
+    runner._restart_after_turn_timeout = 0.05
     runner._running_agents["agent:main:telegram:dm:1"] = MagicMock()
 
     assert runner.request_restart(detached=False, via_service=True) is True
-    await runner._restart_task
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(runner._restart_task), timeout=0.3)
+    runner.stop.assert_not_awaited()
+    assert runner._draining is False
 
-    runner.stop.assert_awaited_once_with(
-        restart=True, detached_restart=False, service_restart=True
-    )
-    # Agent was still present — stop() owns the interrupt path from here.
-    assert runner._running_agents
+    assert force_restart(runner) is True
+    await asyncio.wait_for(runner._restart_task, timeout=2.0)
+    runner.stop.assert_awaited_once_with(restart=True, detached_restart=False, service_restart=True)
+    assert runner._restart_drain_timeout == 0.0
 
 
 @pytest.mark.asyncio

@@ -1266,7 +1266,7 @@ it lets in-flight chat turns keep running before it interrupts them:
 agent:
   restart_drain_timeout: 0          # default: interrupt in-flight chat turns at once
   cron_drain_timeout: 30            # floor for cron jobs and api_server (/v1) runs
-  restart_after_turn_timeout: 1800  # /restart and `gateway restart`: wait for turns BEFORE stopping
+  restart_after_turn_timeout: 1800  # /restart and `gateway restart` restart when idle; warn (never interrupt) every N s
 ```
 
 With the default `0`, a restart interrupts a running turn immediately. The turn settles as

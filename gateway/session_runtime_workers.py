@@ -29,11 +29,24 @@ def managed_worker_units(authority):
             for sid, worker in list(getattr(authority, '_managed_workers', {}).items()) if not worker.closed.is_set()]
 
 
-def uncounted_runtime_work_units(runner, pid):
-    """One ``active_work`` entry per unit ``uncounted_runtime_work`` counts. Managed workers are named
-    (``managed_worker_units``); the rest of that work carries only the gateway's *pid*."""
-    units = [unit for authority in all_authorities(runner) for unit in managed_worker_units(authority)]
-    return units + [{'kind': 'managed', 'pid': pid}] * max(0, uncounted_runtime_work(runner) - len(units))
+def uncounted_runtime_work_units(runner):
+    """One ``active_work`` entry per unit ``uncounted_runtime_work`` counts, each naming the real
+    unit: a managed worker's session and process, an executing session's id and route, a tracked
+    mutation task, a side agent (/bg, /btw) thread."""
+    import os
+    running = getattr(runner, '_running_agents', {})
+    units = []
+    for authority in all_authorities(runner):
+        units.extend(managed_worker_units(authority))
+        workers = getattr(authority, '_managed_workers', {})
+        units.extend({'kind': 'session', 'session': sid, 'route': live.route, 'pid': os.getpid()}
+                     for sid, live, _ in executing_sessions(authority)
+                     if live.route not in running and sid not in workers)
+        units.extend({'kind': 'mutation', 'task': task.get_name(), 'pid': os.getpid()}
+                     for task in mutation_tasks(authority))
+        units.extend({'kind': 'side_agent', 'thread': thread.name, 'pid': os.getpid()}
+                     for thread, _ in side_agents(authority))
+    return units
 
 
 def side_agents(authority):

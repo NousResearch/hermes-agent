@@ -108,13 +108,17 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # applet selection (busybox --help reboot must remain harmless).
 # A path-spelled verb (/sbin/reboot, ./rm, C:/.../shutdown.exe) is still that verb. A segment never crosses
 # the `)` closing a substitution that _CMDPOS anchored inside: `ls $(pwd)/reboot` is data.
-_CMD_PATH = r'(?:/?(?:[^\s/)]+/)*)?'
-_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s+)?'
+# Every run is possessive: a failed command-name match must not re-split a whitespace run, a
+# directory path or a busybox run (cubic on a long blank-line run, and re.search holds the GIL).
+# Only the last newline of a whitespace run starts a match: an earlier one consumes the same run and
+# reaches the same command word, so trying each would rescan the run once per newline.
+_CMD_PATH = r'(?:/?+(?:[^\s/)]++/)*+)?+'
+_MULTI_CALL_PREFIX = r'(?:' + _CMD_PATH + r'(?:busybox|toybox)\b\s++)?+'
 
 _CMDPOS = (
-    r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?' r'(?:env\s+(?:\w+=\S*\s+)*)?'  # optional sudo with flags, env VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*' r'\s*'  # optional wrapper commands
+    r'(?:^|\n(?![^\S\n]*+\n)|`|\$\()' r'\s*+'  # start position, optional whitespace
+    r'(?:sudo\s++(?:-[^\s]++\s++)*+)?' r'(?:env\s++(?:\w+=\S*+\s++)*+)?'  # optional sudo with flags, env VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s++)*+' r'\s*+'  # optional wrapper commands
     + _MULTI_CALL_PREFIX
     # Other wrappers (nice, timeout, command ...) are peeled structurally by tools.approval_wrappers.
     + _CMD_PATH

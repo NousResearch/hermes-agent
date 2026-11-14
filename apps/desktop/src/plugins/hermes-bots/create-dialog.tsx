@@ -213,7 +213,7 @@ function saveDraftLook(
 /** Delete a draft profile the New Agent dialog minted, on the `target` it was
  *  created on: a remote connection (`cli.exec`) or '' for local. Fire-and-forget
  *  with a toast. A cancel while profiles.create is still in flight is caught by
- *  that flight itself (the dialog's draftGenRef), since the draft is only
+ *  that flight itself (its draft lease goes stale), since the draft is only
  *  recorded once the RPC returns (#141623). */
 function discardDraftProfile(draft: string, target: string) {
   const discard = target

@@ -866,9 +866,9 @@ def _restart_launchd_gateway_after_update(
         # scratch HERMES_HOME shaped like the native default derives the live install's label.
         # Same ownership rule as the sibling loop (#93349): never refresh or restart another
         # home's job.
-        from hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
-        if (foreign_home := launchd_label_foreign_home(current_label)) is not None:
-            print(describe_skipped_runtime("launchd job", current_label, foreign_home))
+        from hermes_cli.update_fleet_scope import launchd_label_skip_notice
+        if (notice := launchd_label_skip_notice(current_label)) is not None:
+            print(notice)
             return [], []
         # Snapshot BEFORE the restart: "supervising some pid" was true before too, so only a pid that
         # actually changed distinguishes a restart from a no-op (the sibling loop's contract). Read-only
@@ -963,14 +963,15 @@ def _restart_macos_launchd_gateways(
     legacy_labels = legacy_launchd_labels_for_install(exclude=set(derived_labels) | {current_label})
     if legacy_labels:
         print(f"  ↻ legacy-labelled units of this install join the restart: {', '.join(legacy_labels)}")
-    from hermes_cli.update_fleet_scope import describe_skipped_runtime, launchd_label_foreign_home
+    from hermes_cli.update_fleet_scope import launchd_label_skip_notice
     for label in derived_labels + legacy_labels:
         if label == current_label or label in resumed:
             continue
         # Labels are account-global: root B's default profile derives the same bare label root A
-        # installed. A plist pinning a foreign HERMES_HOME is another install's job (#93349).
-        if (foreign_home := launchd_label_foreign_home(label)) is not None:
-            print(describe_skipped_runtime("launchd job", label, foreign_home))
+        # installed. A plist pinning a foreign HERMES_HOME, or launching another checkout, is another
+        # install's job (#93349).
+        if (notice := launchd_label_skip_notice(label)) is not None:
+            print(notice)
             continue
         try:
             # Locate = liveness + domain in one probe; kickstart and fresh-PID checks
@@ -1541,6 +1542,8 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     # ``all_profiles`` is host-wide: a sibling install's gateway matches too. Only this update's
     # homes are stopped; the profile-mapped PIDs come from this install's own PID files (#93349).
     manual_pids = _scoped_manual_gateway_pids(manual_pids, keep=profile_processes)
+    # A profile-mapped PID running another checkout was dropped above: never arm or stop it.
+    profile_processes = {pid: proc for pid, proc in profile_processes.items() if pid in manual_pids}
     # Profile gateways we couldn't arm a relaunch for must NOT keep running stale:
     # the unmapped sweep below stops them and lists them under "Restart manually".
     # These must NOT be left running: their modules are the pre-update ones and every lazy import from here

@@ -173,7 +173,9 @@ def launchd_label_foreign_home(label: str, scope: set[Path] | None = None) -> st
     return None
 
 
-_EMBEDDED_PATH = re.compile(r"""(/[^\s'"]+)""")
+# A path inside an argument that is code (``python -I -c "...sys.path.insert(0, '<root>')..."``):
+# a quoted literal first, so a checkout path with spaces is read whole; bare tokens as a fallback.
+_EMBEDDED_PATH = re.compile(r"""'(/[^']+)'|"(/[^"]+)"|(/[^\s'"]+)""")
 
 
 def _checkouts_named(strings) -> set[Path]:
@@ -182,7 +184,8 @@ def _checkouts_named(strings) -> set[Path]:
     from hermes_cli.update_receipt import _code_root_for_path
     roots: set[Path] = set()
     for raw in strings:
-        for candidate in (str(raw), *_EMBEDDED_PATH.findall(str(raw))):
+        embedded = (next(group for group in match if group) for match in _EMBEDDED_PATH.findall(str(raw)))
+        for candidate in (str(raw), *embedded):
             if (root := _code_root_for_path(candidate)) is not None:
                 roots.add(root)
     return roots
@@ -252,6 +255,19 @@ def systemd_unit_foreign_checkout(scope_cmd: list, svc_name: str) -> str | None:
         return None
     fragment = (getattr(shown, "stdout", "") or "").strip() if getattr(shown, "returncode", 1) == 0 else ""
     return definition_foreign_checkout(fragment) if fragment else None
+
+
+def launchd_label_skip_notice(label: str, scope: set[Path] | None = None) -> str | None:
+    """The left-alone notice for launchd job *label* when this update does not own it (its plist pins
+    another home, or launches another checkout), else None. The one ownership decision every launchd
+    restart and pause path shares."""
+    if (home := launchd_label_foreign_home(label, scope)) is not None:
+        return describe_skipped_runtime("launchd job", label, home)
+    with suppress(Exception):
+        from hermes_cli.gateway import get_launchd_plist_path
+        if (checkout := definition_foreign_checkout(get_launchd_plist_path().with_name(f"{label}.plist"))) is not None:
+            return describe_skipped_runtime("launchd job", label, None, checkout=checkout)
+    return None
 
 
 def describe_skipped_runtime(kind: str, name: str, home: str | None, *, checkout: str | None = None) -> str:

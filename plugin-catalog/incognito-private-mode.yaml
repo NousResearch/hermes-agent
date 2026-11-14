@@ -1,6 +1,6 @@
 name: incognito-private-mode
-repo: https://github.com/Tranquil-Flow/incognito-private-mode
-sha: cdae5d2ee026d08a8eac51deef13ec017e4a5465
+repo: https://github.com/Tranquil-Flow/hermes-incognito-private-mode
+sha: e59a3ce03cb68f804da667a087a74925de1d1be8
 version: 0.3.0
 description: >-
   Private mode, honestly: provider privacy flags, memory blocks stripped from

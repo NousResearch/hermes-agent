@@ -29,6 +29,105 @@ def _span_end(command: str, cursor: int, closer: str) -> int:
     return end
 
 
+def _header_backtick_end(command: str, cursor: int) -> int | None:
+    """Refuse backtick spans with shell comments or unresolved ownership."""
+    end = _span_end(command, cursor, "`")
+    span = command[cursor:end]
+    if len(span) <= 1 or not span.endswith("`") or "\n" in span or "<<" in span:
+        return None
+    quote = None
+    index = cursor + 1
+    while index < end - 1:
+        char = command[index]
+        if char == "\\" and quote != "'":
+            index += 2
+            continue
+        if char == quote:
+            quote = None
+        elif quote is None and char in "'\"":
+            quote = char
+        elif quote is None and char == "#" and (index == cursor + 1 or command[index - 1] in " \t;|&()"):
+            return None
+        index += 1
+    return end
+
+
+def _header_expansion_end(command: str, cursor: int) -> int | None:
+    """Find a complete one-line substitution, refusing nested heredoc syntax.
+
+    Quotes are local to each ``$(...)`` frame: the quotes in ``"$(pwd "$DIR")"``
+    do not close the outer word. Multiline/nested heredoc ownership stays conservative.
+    """
+    if command[cursor] == "`":
+        return _header_backtick_end(command, cursor)
+    quotes: list[str | None] = [None]
+    cursor += 2
+    while cursor < len(command):
+        char = command[cursor]
+        if char == "\n" or command.startswith("<<", cursor):
+            return None
+        # A shell comment consumes apparent closers until the next line, which
+        # is outside the single-line substitutions we can classify as inert.
+        if char == "#" and quotes[-1] is None and command[cursor - 1] in " \t;|&()":
+            return None
+        if char == "\\":
+            cursor += 2
+        elif char == "'" and quotes[-1] is None:
+            end = command.find("'", cursor + 1)
+            if end == -1 or "\n" in command[cursor:end]:
+                return None
+            cursor = end + 1
+        elif char == "`":
+            end = _header_expansion_end(command, cursor)
+            if end is None:
+                return None
+            cursor = end
+        elif char == '"':
+            quotes[-1] = None if quotes[-1] else '"'
+            cursor += 1
+        elif command.startswith("$(", cursor) or (char == "(" and quotes[-1] is None):
+            quotes.append(None)
+            cursor += 2 if command.startswith("$(", cursor) else 1
+        elif char == ")" and quotes[-1] is None:
+            quotes.pop()
+            cursor += 1
+            if not quotes:
+                return cursor
+        else:
+            cursor += 1
+    return None
+
+
+def _mask_header_expansions(command: str) -> str:
+    """Hide substitutions for ownership classification ONLY, retaining offsets.
+
+    The returned command is never scanned or executed. The original opener remains
+    visible to all guards, including commands executed while expanding a redirect.
+    """
+    parts = []
+    cursor = 0
+    quote = None
+    while cursor < len(command):
+        char = command[cursor]
+        if char == "\\" and quote != "'":
+            parts.append(command[cursor:cursor + 2])
+            cursor += 2
+        elif quote != "'" and (command.startswith(("$(", "<(", ">("), cursor) or char == "`"):
+            end = _header_expansion_end(command, cursor)
+            if end is None:
+                return command
+            parts.append("x" * (end - cursor))
+            cursor = end
+        else:
+            if char == quote:
+                quote = None
+            elif quote is None and char in "'\"":
+                quote = char
+            parts.append(char)
+            cursor += 1
+    return "".join(parts)
+
+
 def _mask_simple_quotes(command: str) -> str:
     """Blank inert quoted spans; keep ``$(``/backtick-bearing ones visible."""
     result = []
@@ -128,7 +227,16 @@ def _scan_heredoc_command_unit(command: str, start: int):
             break
         # Backslash escapes (incl. line continuations) outside single quotes skip the next char.
         escaped = char == "\\" and quote != "'" and not comment and cursor + 1 < len(command)
-        if comment or quote is not None or escaped:
+        if not comment and not escaped and quote != "'" and (
+            command.startswith(("$(", "<(", ">("), cursor) or (char == "`" and quote != "`")
+        ):
+            end = _header_expansion_end(command, cursor)
+            if end is None:
+                unknown_operator = True
+                cursor += 1
+            else:
+                cursor = end
+        elif comment or quote is not None or escaped:
             if char == quote:
                 quote = None
             cursor += 2 if escaped else 1
@@ -214,8 +322,9 @@ def strip_inert_heredoc_bodies(command: str) -> str:
             all(quoted for _delimiter, _strip_tabs, quoted in specs)
             and not post_heredoc_list_operator
         ):
-            masked_opener = _mask_simple_quotes(command[command_start:command_end])
-            masked_owner = _mask_simple_quotes(command[owner_start:command_end])
+            header = _mask_header_expansions(command[command_start:command_end])
+            masked_opener = _mask_simple_quotes(header)
+            masked_owner = _mask_simple_quotes(header[owner_start - command_start:])
             if not any(
                 marker in masked_opener
                 for marker in ("$(", "`", "<(", ">(", "(", ")", "{", "}")

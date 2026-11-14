@@ -116,7 +116,10 @@ def substitution_depth(command: str) -> int:
     deepest, i, n = 0, 0, len(command)
     while i < n:
         char, frame = command[i], frames[-1]
-        if char == "#" and frame[0] is None and _is_shell_comment_start(command, i):
+        # A `#` glued to a `)` that closes `$(`/`$((` is inside the same word, so it is literal and
+        # what follows runs. Not telling that `)` from a subshell or case `)` here only over-counts.
+        if (char == "#" and frame[0] is None and command[i - 1:i] != ")"
+                and _is_shell_comment_start(command, i)):
             i = command.find("\n", i)
             if i < 0:
                 break

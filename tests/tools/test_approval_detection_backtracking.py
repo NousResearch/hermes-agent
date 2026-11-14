@@ -207,6 +207,19 @@ def test_real_nesting_around_comments_and_heredocs_still_fails_closed():
         assert detect_hardline_command(command) == (True, _PARSER_LIMIT_DESCRIPTION), command[:40]
 
 
+def test_hash_glued_to_a_closing_paren_does_not_hide_the_nest_after_it():
+    # `$(echo x)#...` is one word: bash prints `x#y` for `echo $(echo x)#$(echo y)`, so the nest
+    # after the `#` runs. A subshell `)` is not told apart and also keeps the nest counted.
+    from tools.approval_detection import (
+        _PARSER_LIMIT_DESCRIPTION, detect_dangerous_command, detect_hardline_command)
+
+    payload = "$'\\x72'eboot"
+    for prefix, k in (("echo $(echo x)#", 40), ("echo $(echo x)#", 300), ("(echo x)#", 300)):
+        command = prefix + "$(" * k + payload + ")" * k
+        assert detect_hardline_command(command) == (True, _PARSER_LIMIT_DESCRIPTION), (prefix, k)
+        assert detect_dangerous_command(command)[1] == _PARSER_LIMIT_DESCRIPTION, (prefix, k)
+
+
 def test_ansi_c_quoted_empty_opener_is_scanned_to_its_payload():
     # `$''(` nests once normalization drops the empty ANSI-C quote, but its scan stays linear.
     _run_bounded('''

@@ -217,6 +217,40 @@ def _read_container_argv() -> tuple[str, ...]:
     return ()
 
 
+#: Shells a compose/manifest ``command:`` wraps the hermes invocation in. The image's own wrapper
+#: execs ``hermes <sub>`` directly, but compose files use ``sh -lc '<bootstrap>; exec hermes <sub>'``
+#: to do work first. Unwrapped, the role detector sees ``sh`` and reads EVERY container as "not the
+#: dashboard" — so the dashboard container reconciled and booted its own ``gateway-default``, which
+#: won the shared ``$HERMES_HOME`` host lock and starved the real gateway container (hermes-gateway
+#: exited 75 on every boot; 8642/8789 never bound).
+_SHELL_BASENAMES = frozenset({"sh", "bash", "dash", "ash", "zsh"})
+
+
+def _shell_payload_hermes_args(args: Sequence[str]) -> list[str]:
+    """``['-lc', '<script>']`` → the hermes args inside ``<script>``; ``[]`` when it has none.
+
+    Only the exec target counts, so a script that merely mentions a ``hermes`` path (a package
+    name, a directory) cannot masquerade as the container's subcommand.
+    """
+    import shlex
+
+    if not args or Path(args[0]).name not in _SHELL_BASENAMES:
+        return []
+    # A `-c`-family flag is what makes the next non-flag token the script; `-l`/`-e` alone do not.
+    if not any("c" in flag[1:] for flag in args[1:] if flag.startswith("-") and not flag.startswith("--")):
+        return []
+    command = next((arg for arg in args[1:] if not arg.startswith("-")), "")
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return []
+    candidates = [i for i, token in enumerate(tokens) if Path(token).name == "hermes"]
+    if not candidates:
+        return []
+    exec_idx = next((i for i in candidates if i and tokens[i - 1] == "exec"), candidates[-1])
+    return tokens[exec_idx + 1 :]
+
+
 def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
     """Strip the s6/wrapper prefix off the container argv, leaving the hermes args.
 
@@ -233,6 +267,12 @@ def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
         args = args[1:]
     if args and Path(args[0]).name == "hermes":  # the wrapper re-execs `hermes <subcommand>`
         args = args[1:]
+    # A compose `command:` shell wrapper hides the subcommand one level down (see
+    # _SHELL_BASENAMES). An empty payload means this really is a shell command, not hermes — keep
+    # the args as-is so the role still reads as "not the dashboard".
+    payload = _shell_payload_hermes_args(args)
+    if payload:
+        args = payload
     return _strip_python_launcher(args)
 
 

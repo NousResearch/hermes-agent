@@ -4897,12 +4897,12 @@ def _owner_is_standalone() -> bool:
     is treated as a multiplexer, which keeps the second-gateway refusal as the default.
     """
     try:
-        from gateway.host_attach import host_gateway, profile_name_for_home, request_serve_profile
+        from gateway import host_attach
 
-        owner = host_gateway()
+        owner = host_attach.host_gateway(wait_for_channel=host_attach.ATTACH_CHANNEL_WAIT_S)
         if owner is None or owner.pid == os.getpid():
             return False
-        answered = request_serve_profile(profile_name_for_home(get_hermes_home()), owner=owner)
+        answered = host_attach.request_serve_profile(host_attach.profile_name_for_home(get_hermes_home()), owner=owner)
         return bool(answered is not None and answered.standalone)
     except Exception:
         logger.debug("standalone-owner probe failed; keeping the second-gateway refusal",

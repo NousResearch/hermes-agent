@@ -4193,9 +4193,8 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
         suffix = _current_profile_name()
         from hermes_constants import profile_name_for_home
         from hermes_cli.profiles import profile_is_standalone
-        # A profile that authored gateway.standalone: true opted out of the host multiplexer: it is
-        # allowed a gateway of its own without --force. Only a RUNNING host record that still lists
-        # it (the host has not rescanned since the key was set) is refused with the rescan remedy.
+        # A gateway.standalone: true profile opted out of the host multiplexer and may run its own gateway
+        # without --force; only a RUNNING host still listing it (not rescanned yet) is refused with the rescan remedy.
         standalone = (profile_name_for_home(get_hermes_home()) not in (None, "default")
                       and profile_is_standalone(get_hermes_home()))
         # A unit/plist/task already registered for this home was installed with --force: that fleet
@@ -4207,7 +4206,8 @@ def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
     owner = _served_by_another_host_gateway()
     served = owner is not None or named_profile_served_by_running_multiplexer()
     if standalone:
-        if not served:
+        from hermes_cli.gateway_multiplex_served import booting_multiplexer_excludes
+        if not served or (owner is None and booting_multiplexer_excludes(suffix)):  # pid before roster at boot
             return False
         from gateway.host_attach import standalone_rescan_message
         print_error(standalone_rescan_message(suffix))

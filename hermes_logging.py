@@ -276,10 +276,13 @@ def _install_session_record_factory() -> None:
         sid = getattr(_session_context, "session_id", None)
         record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
         # QueueListener formats on its own thread, after the profile-scoped
-        # ContextVar is gone; keep the resolved home on the record so a
-        # multiplex desktop ticker can route to the job owner's files (#97489).
+        # ContextVar is gone; keep the home on the record so a multiplex
+        # desktop ticker can route to the job owner's files (#97489). Left
+        # unresolved: this runs on the caller's thread for every record,
+        # event loops included, and _home_for_record resolves it on the
+        # listener thread.
         try:
-            record.hermes_home = str(get_hermes_home().resolve())  # type: ignore[attr-defined]
+            record.hermes_home = str(get_hermes_home())  # type: ignore[attr-defined]
         except Exception:
             record.hermes_home = ""  # type: ignore[attr-defined]
         return record
@@ -692,7 +695,7 @@ class _ProfileRoutingFileHandler(logging.Handler):
         raw_home = getattr(record, "hermes_home", "")
         try:
             candidate = Path(raw_home).expanduser().resolve()
-        except (TypeError, ValueError, OSError):
+        except (TypeError, ValueError, OSError, RuntimeError):
             candidate = self._default_home
         if candidate == self._default_home or candidate not in self._profile_homes:
             return self._default_home

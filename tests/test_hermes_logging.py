@@ -135,6 +135,61 @@ class TestSetupLogging:
         default_log = hermes_home / "logs" / "agent.log"
         assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text(encoding="utf-8-sig")
 
+    def test_log_calls_do_not_resolve_the_home_on_the_calling_thread(self, hermes_home, monkeypatch):
+        """The record factory runs on the caller's thread for every log call, the gateway's event
+        loop included, so a burst of warnings must not cost a realpath per record (#150687)."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        caller = threading.get_ident()
+        resolved = []
+        real_resolve = Path.resolve
+
+        def spying_resolve(path, *args, **kwargs):
+            if threading.get_ident() == caller:  # the listener thread blocks nobody
+                resolved.append(path)
+            return real_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", spying_resolve)
+        logger = logging.getLogger("gateway.record-home-burst-test")
+        logger.warning("first record of the burst")
+        after_first = len(resolved)
+        for index in range(50):
+            logger.warning("burst record %d", index)
+
+        assert len(resolved) == after_first, (
+            f"{len(resolved) - after_first} extra Path.resolve calls on the calling thread across 50 log calls")
+
+    def test_a_profile_reached_through_a_link_still_gets_its_own_records(self, hermes_home, tmp_path):
+        """Records carry the home as the context spelled it and the router resolves it, so each
+        record lands with its owning profile however that home is spelled, and a switch back and
+        forth between profiles does not stick to the previous one (#97489)."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_a = tmp_path / "profile-a"
+        profile_b = tmp_path / "profile-b"
+        profile_a.mkdir()
+        profile_b.mkdir()
+        link_to_a = tmp_path / "link-to-a"
+        try:
+            link_to_a.symlink_to(profile_a, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("this platform or account cannot create symlinks")
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_a, profile_b]) is True
+
+        logger = logging.getLogger("cron.scheduler.linked-profile-test")
+        for home, message in ((link_to_a, "first a record"), (profile_b, "only b record"), (link_to_a, "second a record")):
+            token = set_hermes_home_override(home)
+            try:
+                logger.info(message)
+            finally:
+                reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        log_a = (profile_a / "logs" / "agent.log").read_text(encoding="utf-8-sig")
+        log_b = (profile_b / "logs" / "agent.log").read_text(encoding="utf-8-sig")
+        assert "first a record" in log_a and "second a record" in log_a and "only b record" not in log_a
+        assert "only b record" in log_b and "first a record" not in log_b and "second a record" not in log_b
+
     @pytest.mark.parametrize("launch_redacts, routed_opt_out, routed_redacted", [
         (False, None, True),      # the launch profile opted out, the routed one did not
         (True, "env", False),     # the routed profile opted out in its own .env

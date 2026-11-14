@@ -89,3 +89,65 @@ def test_request_review_shares_the_live_worker_fence(conn):
     ok, reason = kb.request_review(conn, tid2, summary="steal", with_reason=True)
     assert ok is False and "live claim" in reason
     assert kb.request_review(conn, tid2, summary="own", expected_run_id=run2) is True
+
+
+def test_claimless_block_refuses_live_run_until_forced(conn):
+    """Sibling of the complete fence: a claim-less ``block_task`` must not clear
+    a live worker's claim and close its run (a delegate_task child blocked its
+    parent worker's task exactly this way after stripping the env fence)."""
+    tid, run_id = _claimed_running_task(conn)
+
+    with pytest.raises(kb.LiveClaimError):
+        kb.block_task(conn, tid, reason="someone else says blocked")
+
+    # Nothing moved: the worker's run is still open and it can still block its own card.
+    run = conn.execute("SELECT ended_at FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    assert run["ended_at"] is None
+    assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"] == "running"
+    assert kb.block_task(conn, tid, reason="worker blocked", expected_run_id=run_id) is True
+
+    # Explicit operator override still closes a live run.
+    tid2, run2 = _claimed_running_task(conn)
+    assert kb.block_task(conn, tid2, reason="operator override", force=True) is True
+    run = conn.execute("SELECT ended_at, outcome FROM task_runs WHERE id = ?", (run2,)).fetchone()
+    assert run["ended_at"] is not None and run["outcome"] == "blocked"
+
+
+def test_claimless_block_of_claim_without_live_worker_unchanged(conn):
+    """A claim whose worker never spawned (or is gone) protects no live run: the
+    human/library flow that claims a card and then blocks it keeps working."""
+    tid, _ = _claimed_running_task(conn, live_worker=False)
+    assert kb.block_task(conn, tid, reason="manual") is True
+    assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_claimless_block_of_unclaimed_card_unchanged(conn):
+    """The legitimate manual flow — blocking a card nobody is working on — needs no proof."""
+    tid = kb.create_task(conn, title="admin", assignee="coder")
+    assert kb.block_task(conn, tid, reason="manual") is True
+    assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_claimless_schedule_refuses_live_run_until_forced(conn):
+    """``schedule_task`` clears the same claim columns and closes the run; it
+    carries the identical fence."""
+    tid, run_id = _claimed_running_task(conn)
+
+    with pytest.raises(kb.LiveClaimError):
+        kb.schedule_task(conn, tid, reason="later")
+
+    run = conn.execute("SELECT ended_at FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    assert run["ended_at"] is None
+    assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"] == "running"
+    assert kb.schedule_task(conn, tid, reason="worker parked", expected_run_id=run_id) is True
+
+    tid2, run2 = _claimed_running_task(conn)
+    assert kb.schedule_task(conn, tid2, reason="operator override", force=True) is True
+    run = conn.execute("SELECT ended_at, outcome FROM task_runs WHERE id = ?", (run2,)).fetchone()
+    assert run["ended_at"] is not None and run["outcome"] == "scheduled"
+
+
+def test_claimless_schedule_of_claim_without_live_worker_unchanged(conn):
+    tid, _ = _claimed_running_task(conn, live_worker=False)
+    assert kb.schedule_task(conn, tid, reason="manual") is True
+    assert kb.get_task(conn, tid).status == "scheduled"

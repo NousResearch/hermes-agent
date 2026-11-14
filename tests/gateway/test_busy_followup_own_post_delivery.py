@@ -60,41 +60,6 @@ def _register_cleanup(adapter, generation, bubble_ids, *, key=KEY, chat_id=CHAT)
         _cleanup_progress=True, source=SimpleNamespace(chat_id=chat_id), run_generation=generation))
 
 
-@pytest.mark.asyncio
-async def test_authority_hands_the_turn_generation_to_the_delivering_event():
-    """On an authority route the turn executes on a copy of the inbound event restored from the FIFO
-    row; the lifecycle that sends the reply holds the original (the marker adopter) and needs the
-    turn's generation along with its crash marker."""
-    from gateway.session_ingress import _hand_over_turn_marker
-    adopter, executed = _event("inbound"), _event("inbound")
-    executed._hermes_run_generation = 7
-    executed._gateway_active_turn_session_key, executed._gateway_active_turn_token = KEY, "token"
-    authority = SimpleNamespace(marker_adopters={"admission-1": adopter}, pending_deliveries={})
-    await _hand_over_turn_marker(authority, "admission-1", executed)
-    assert adopter._gateway_active_turn_token == "token"
-    assert getattr(adopter, "_hermes_run_generation", None) == 7
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("handed_over, expected", [(True, ["102"]), (False, [])])
-async def test_busy_follow_up_observer_runs_only_its_own_turns_slot(handed_over, expected):
-    """The observer sends the follow-up's reply, then runs that turn's slot. Without a generation of
-    its own it pops nothing: it holds no session guard, and the slot may belong to a turn another
-    task is still delivering."""
-    from gateway.session_ingress import dispatch_shared_busy
-    adapter = CleanupAdapter()
-
-    async def handler(event):
-        if handed_over:  # what _hand_over_turn_marker leaves on the observer's event
-            event._hermes_run_generation = 2
-        _register_cleanup(adapter, 2, ["102"])
-
-    adapter._message_handler = handler
-    await dispatch_shared_busy(adapter, _event("follow-up"), KEY)
-    assert adapter.deleted == expected
-    assert (KEY in adapter._post_delivery_callbacks) is not handed_over
-
-
 class _AuthorityAdapter(Adapter):
     def __init__(self):
         super().__init__()

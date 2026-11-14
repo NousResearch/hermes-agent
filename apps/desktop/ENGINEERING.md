@@ -26,6 +26,13 @@ rename sibling of `dropTilesForProfile`. Add any new profile-keyed localStorage
 family to BOTH, or a rename leaves it pointing at a backend that no longer
 exists ("Couldn't open this session" on every restore).
 
+Tile rotation stays coordinated by `store/session-states.ts`; its owner comparisons
+and placement-preserving merge live in `store/session-tile-identity.ts`. Matching
+stored ids alone must not merge tiles from different backend routes or Bot owners.
+Live-turn silence deadlines use the same monotonic clock as their latest-event
+stamp. A timer armed before newer activity waits out the remaining silence window
+instead of probing a turn that is still producing events.
+
 When an id is verifiably gone anyway (`goneSessionVerdict` → `'draft'`), the
 window drops to a fresh draft without toasting or looping — and the unsent
 text stashed under the dead key follows it: the verdict calls
@@ -52,9 +59,17 @@ assume:
   into the shared view; background work updates its own cache quietly.
 - **Coalesce noise, flush signal.** Batch high-frequency cosmetic updates, but
   let terminal transitions (a turn finishing, needing input, failing) reach the
-  user immediately.
+  user immediately. Frame-batched console logs follow the bottom in the same
+  layout commit, before another append can mistake DOM growth for a user scroll.
 - **Preserve reference identity on no-ops.** Handing React a fresh array that
   contains the same data re-renders expensive trees for nothing.
+
+In `use-message-stream`, stream-row lookup probes the tail before searching sealed
+history; unchanged parts and pending state preserve the original transcript reference.
+`gateway-event/session-info.ts` reconciles foreground preferences separately from
+workspace ownership and per-runtime turn state. A terminal running=false still
+flushes owned queued text before settling. Watchdog deadlines use the monotonic
+clock for both activity stamps and remaining-delay calculations.
 
 ## Voice detection follows audio, not paint
 

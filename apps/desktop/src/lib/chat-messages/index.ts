@@ -24,6 +24,7 @@ export {
   isLocalSystemNotice,
   preserveLocalAssistantErrors,
   preserveLocalSystemNotices,
+  reconcileLocalAssistantTimeline,
   spliceOlderPreservedRows
 } from './reconciliation'
 export {

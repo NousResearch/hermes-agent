@@ -32,7 +32,7 @@ vi.mock('@/api/client', async importOriginal => ({
   ownerScoped: (value: unknown) => value ?? {},
   profileScoped: (value: unknown) => value
 }))
-vi.mock('./use-mic-recorder', () => ({ useMicRecorder: () => ({ handle: mocks.mic, level: 0 }) }))
+vi.mock('./use-mic-recorder', () => ({ useMicRecorder: () => ({ handle: mocks.mic, levelStore: { get: () => 0, listen: () => () => {}, set: () => {} } }) }))
 vi.mock('@/lib/voice-barge-in', () => ({ monitorSpeechDuringPlayback: () => vi.fn() }))
 vi.mock('@/lib/thinking-sound', () => ({ startThinkingSound: vi.fn(), stopThinkingSound: vi.fn() }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))

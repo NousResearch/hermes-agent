@@ -165,6 +165,9 @@ function PlaybackWaveform({ audioElement }: { audioElement: HTMLAudioElement | n
 
 export function VoiceActivity({ state }: { state: VoiceActivityState }) {
   const { t } = useI18n()
+  // Subscribe the meter only: the recorder publishes level at the audio rate,
+  // and re-rendering the whole composer for it was measurable voice-mode CPU.
+  const level = useStore(state.levelStore)
 
   if (state.status === 'idle') {
     return null
@@ -200,7 +203,7 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
         </span>
       </div>
 
-      <VoiceLevelBars active={recording} level={state.level} />
+      <VoiceLevelBars active={recording} level={level} />
     </div>
   )
 }

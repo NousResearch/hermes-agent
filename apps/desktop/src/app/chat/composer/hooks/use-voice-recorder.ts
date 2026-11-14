@@ -41,7 +41,7 @@ export function useVoiceRecorder({
 }: VoiceRecorderOptions) {
   const { t } = useI18n()
   const voiceCopy = t.notifications.voice
-  const { handle, level, recording } = useMicRecorder(voiceCopy)
+  const { handle, levelStore, recording } = useMicRecorder(voiceCopy)
   // The scope's session owner (a Bot tile's own connection + profile); the
   // main composer leaves it unset and the ambient scope fills it at mic-open.
   const { connectionId: ownerConnectionId, profile: ownerProfile } = useComposerScope()
@@ -265,7 +265,7 @@ export function useVoiceRecorder({
 
   const voiceActivityState: VoiceActivityState = {
     elapsedSeconds,
-    level,
+    levelStore,
     partial,
     status: voiceStatus
   }

@@ -43,6 +43,27 @@ message; actual partial assistant text remains visible. Terminal outcomes come
 from the gateway's structured execution result, not from assistant prose or a
 session-wide cancellation flag.
 
+### Background run boundaries (opt-in)
+
+An automation admission (an async-delegation wake or a background-process result) runs
+with no `session/prompt` behind it, so ACP v1 gives the editor no turn boundary for it. An
+editor that advertises `clientCapabilities._meta["bb.dev"] = {"stateUpdate": 1}` receives
+ACP v2's `state_update` for each such run, carried as the v1 extension notification
+`_bb.dev/state_update` with `{sessionId, update}`. The update's `_meta.runId` is the
+admission id.
+
+- `running` when the admission's `message.start` carries an automation card.
+- `idle` at its `message.complete`: `stopReason` `end_turn`, `cancelled`, or `error` with
+  `error.message` for a failed run.
+- A run whose completion cannot arrive still ends with `idle`. A newer admission's start
+  reports `end_turn`; a replay gap that lost the run, or a dropped gateway link, reports
+  `error`. A re-attach that finds the run still started reports `running` again.
+- With no prompt of its own running, the editor's `session/cancel` cancels the open
+  background run.
+
+A prompt's own admission keeps its prompt response as its boundary. Editors that do not opt
+in see no change.
+
 ## Major components
 
 ### `HermesACPAgent`

@@ -56,6 +56,8 @@ _hosted_executors: dict[str, ThreadPoolExecutor] = {}
 # for this long, so 404 probes can't force a disk scan per request. An explicit rescan clears it.
 _UNKNOWN_PLUGIN_RESCAN_SECS = 10.0
 _unknown_plugins: dict[tuple[str, str], float] = {}
+# ``(home key, plugin)`` pairs already logged for a dropped ``Set-Cookie``: one warning each.
+_cookie_droppers: set[tuple[str, str]] = set()
 
 
 def secondary_profile_home() -> Optional[Path]:
@@ -196,13 +198,31 @@ def plugin_request_scope(scope) -> Iterator[None]:
         yield
 
 
-def hosted_response(result: dict[str, Any]) -> Response:
-    """A plugin host's buffered ``asgi`` answer as a response."""
+def hosted_response(result: dict[str, Any], home: Path, name: str) -> Response:
+    """A plugin host's buffered ``asgi`` answer as a response, without ``Set-Cookie``: the answer is
+    served from the gateway's own origin, so a cookie would land on the dashboard's site (#140051)."""
     response = Response(content=result["body"], status_code=int(result["status"]))
-    for key, value in result["headers"]:  # a list, so repeated headers (Set-Cookie) all survive
-        if key.lower() not in {"content-length", "transfer-encoding", "connection"}:
+    dropped = False
+    for key, value in result["headers"]:  # a list, so repeated headers all survive
+        lowered = key.lower()
+        if lowered == "set-cookie":
+            dropped = True
+        elif lowered not in {"content-length", "transfer-encoding", "connection"}:
             response.headers.append(key, value)
+    if dropped:
+        _note_dropped_cookie(home, name)
     return response
+
+
+def _note_dropped_cookie(home: Path, name: str) -> None:
+    from hermes_constants import hermes_home_key
+    key = (hermes_home_key(home), name)
+    with _profile_plugins_lock:
+        if key in _cookie_droppers:
+            return
+        _cookie_droppers.add(key)
+    _log.warning("Plugin %s: dropped Set-Cookie from its plugin host's answer; hosted plugins cannot set "
+                 "cookies on the gateway's site", name)
 
 
 def _hosted_executor(home: Path) -> ThreadPoolExecutor:
@@ -225,7 +245,7 @@ async def run_hosted_request(home: Path, name: str, call: Callable[[float], dict
     job = asyncio.get_running_loop().run_in_executor(
         _hosted_executor(home), context.run, lambda: call(max(deadline - time.monotonic(), 0.01)))
     try:
-        return hosted_response(await asyncio.wait_for(job, timeout))
+        return hosted_response(await asyncio.wait_for(job, timeout), home, name)
     except TimeoutError:
         _log.warning("Plugin %s: its plugin host did not answer within %gs", name, timeout)
         return JSONResponse({"detail": f"plugin {name!r} did not answer within {timeout:g}s"}, status_code=504)

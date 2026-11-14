@@ -14,8 +14,9 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
-# A gateway session's frozen effective ``auxiliary:`` section (recovered secrets applied, a task whose
-# secret changed returned to the primary route). Set for the turn; never the live config.yaml.
+# A bypass session's (``--ignore-user-config``, safe mode) own saved ``auxiliary:`` section (code defaults
+# only), set by its ``policy_scope`` so its side tasks never read the profile. None (the default) reads
+# config.yaml.
 _SESSION_AUXILIARY: ContextVar = ContextVar("session_auxiliary", default=None)
 
 
@@ -69,22 +70,43 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
         task_config = {}
     try:
         from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        for _entry in get_plugin_auxiliary_tasks():
-            if _entry.get("key") == task:
-                _defaults = _entry.get("defaults") or {}
-                if isinstance(_defaults, dict):
-                    _inherit = _entry.get("inherit_from")
-                    if _inherit and task in _seen:
-                        logger.warning("Auxiliary task %r has a circular inherit_from chain — "
-                                       "ignoring inheritance", task)
-                    if not _inherit or task in _seen:
-                        return {**_defaults, **task_config}
-                    base = _get_auxiliary_task_config(_inherit, _seen | {task})
-                    return _layer_over_inherited({**base, **_defaults}, task_config)
-                break
+        entries = {e.get("key"): e for e in get_plugin_auxiliary_tasks()}
+        _entry = entries.get(task)
+        if _entry is not None:
+            _defaults = _entry.get("defaults") or {}
+            if isinstance(_defaults, dict):
+                _inherit = _entry.get("inherit_from")
+                if _inherit and task in _seen:
+                    logger.warning("Auxiliary task %r has a circular inherit_from chain — "
+                                   "ignoring inheritance", task)
+                if not _inherit or task in _seen:
+                    return {**_defaults, **task_config}
+                base = _get_auxiliary_task_config(_inherit, _seen | {task})
+                if _core_rooted(_inherit, entries) and not _holds_task_override(_entry.get("plugin")):
+                    base = {k: v for k, v in base.items() if k not in _INHERITED_ROUTE_KEYS}
+                return _layer_over_inherited({**base, **_defaults}, task_config)
     except Exception:  # health: allow BLE001 -- plugin discovery must never break aux config reads
         logger.debug("plugin auxiliary task lookup failed for %r", task, exc_info=True)
     return task_config
+
+
+def _core_rooted(base: str, entries: dict) -> bool:
+    """True when ``base`` takes its route from a core ``auxiliary.<block>``: it is one, or a plugin
+    task whose inherit_from chain ends in one."""
+    seen: set = set()
+    while base in entries and base not in seen:
+        seen.add(base)
+        base = entries[base].get("inherit_from")
+        if not base:
+            return False
+    return base not in seen
+
+
+def _holds_task_override(plugin_id: Any) -> bool:
+    """``plugins.entries.<id>.llm.allow_task_override``: the operator's grant to spend through a
+    built-in auxiliary route (agent/plugin_llm.py)."""
+    from agent.plugin_llm import _resolve_trust_policy
+    return isinstance(plugin_id, str) and _resolve_trust_policy(plugin_id).allow_task_override
 
 
 # The fields that together pick WHERE a call goes. They travel as one unit: a provider pinned on an
@@ -92,6 +114,10 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
 # to another's endpoint).
 _AUX_ROUTE_KEYS = frozenset({"provider", "model", "base_url", "api_key", "api_mode", "key_env",
                              "api_key_env", "reasoning_effort"})
+# What a plugin task inheriting a core block gets only with ``llm.allow_task_override``: the route,
+# plus the fields that can steer it (``extra_body`` carries provider routing and model lists,
+# ``fallback_chain`` names alternative routes). Non-route policy (timeout, ...) always inherits.
+_INHERITED_ROUTE_KEYS = _AUX_ROUTE_KEYS | {"extra_body", "fallback_chain"}
 
 
 def _layer_over_inherited(inherited: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:

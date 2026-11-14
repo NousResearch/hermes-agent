@@ -1,0 +1,34 @@
+name: brainvault
+title: "Wave | BrainVault Mint"
+repo: https://github.com/xBuildyTeam/wave-os-hermes
+sha: 3bb8a91fc1d1bfd909d59700a91adf3d3bf99aab
+subdir: brainvault
+version: "0.6.2"
+description: "Memory you own for Hermes, by Wave OS. Hermes remembers on this computer right away, and a pasted page becomes memory cards. You mint the ones worth keeping to your own wallet's vault on the Theta blockchain with one approval in Wave Web (private by default, encrypted to you and this Hermes), and any Hermes you pair reads them back, fingerprint-checked. Ask Wavey answers Wave questions from chain-verified public cards. Disclosure — never signs, mints or holds wallet keys: minting happens on web.oswave.io, approved in the Wave Wallet Mint browser extension, and costs a one-time TFUEL network fee. Network calls go only to web.oswave.io (your vault's card index, sending your public wallet address; one-time end-to-end encrypted drops for pairing and Send to Wave, with the key kept in the link fragment; Wavey's public cards) and Theta's public RPC eth-rpc-api.thetatoken.org (read-only card reads and gas price). Stores a decrypt-only, wallet-revocable agent key in the OS keyring if installed, else a 0600 file in $HERMES_HOME/brainvault; reads Hermes's config.yaml only for its setup check, and Hermes's plugin list (names and versions, never sent anywhere) to show which Wave plugins you have. A background thread syncs every 10 minutes. Opens Wave Web in the browser for pairing and minting. No telemetry, no shell commands, no self-updating. Recall runs locally; recalled memories reach the user's model provider like any context."
+maintainer: xBuildyTeam
+tier: community
+category: memory
+docs_url: https://oswave.io/hermes
+image: https://raw.githubusercontent.com/xBuildyTeam/wave-os-hermes/3bb8a91fc1d1bfd909d59700a91adf3d3bf99aab/brainvault/docs/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/xBuildyTeam/wave-os-hermes/3bb8a91fc1d1bfd909d59700a91adf3d3bf99aab/brainvault/docs/wave-brainvault-webapp.png
+  - https://raw.githubusercontent.com/xBuildyTeam/wave-os-hermes/3bb8a91fc1d1bfd909d59700a91adf3d3bf99aab/brainvault/docs/wave-web-quick-mint.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - brainvault_recall
+    - brainvault_remember
+    - brainvault_make_cards
+    - brainvault_forget
+    - brainvault_status
+    - brainvault_send_to_wave
+    - brainvault_set_wallet
+    - brainvault_pair
+    - brainvault_sync
+    - wave_guide
+    - brainvault_doctor
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.7"

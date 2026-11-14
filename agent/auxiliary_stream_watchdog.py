@@ -144,12 +144,12 @@ def chat_stream_windows(client: Any, kwargs: dict, task: Optional[str]) -> tuple
     from agent.auxiliary_client import (
         _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS, _RELAY_AUX_CALL_CONTEXT, _get_task_no_progress_timeout)
     from agent.chat_completion_helpers import _cloud_stale_timeout_for
-    from agent.model_metadata import is_local_endpoint
+    from agent.process_transport import waits_like_local
     window = _get_task_no_progress_timeout(task or "") or _AUX_STREAM_NO_PROGRESS_TIMEOUT_SECONDS
     first = None
-    if not is_local_endpoint(str(getattr(client, "base_url", "") or "")):
-        route = SimpleNamespace(provider=(_RELAY_AUX_CALL_CONTEXT.get() or {}).get("stream_provider") or "",
-                                model=kwargs.get("model"))
+    provider = (_RELAY_AUX_CALL_CONTEXT.get() or {}).get("stream_provider") or ""
+    if not waits_like_local(getattr(client, "base_url", ""), provider):
+        route = SimpleNamespace(provider=provider, model=kwargs.get("model"))
         first = max(window, _cloud_stale_timeout_for(route, kwargs))
     timeout = kwargs.get("timeout")
     if isinstance(timeout, (int, float)) and timeout > 0:
@@ -171,12 +171,10 @@ def consume_chat_stream(chunks: Any, acc: Any, no_progress: Optional[tuple[float
         for chunk in chunks:
             if acc.feed(chunk):
                 watchdog.progress()
-    except Exception as exc:
+    except Exception:
         if not watchdog.fired:
             raise
-        if not acc.finish_reason:
-            raise watchdog.timeout_error() from exc
     finally:
         watchdog.finish()
-    if watchdog.fired and not acc.finish_reason:
+    if watchdog.fired and not acc.finish_reason:  # outside the handler: no context, the deadline is the verdict
         raise watchdog.timeout_error()

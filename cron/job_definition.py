@@ -7,6 +7,7 @@ into a live one (profile distributions) import this rather than duplicating the 
 from typing import Any, Dict
 
 from cron.jobs import _apply_schedule_update, _jobs_lock, is_job_runnable, load_jobs, parse_schedule, save_jobs
+from cron.jobs_time import normalize_timezone, prune_inherited_knobs
 from cron.quota_hold import clear_state as _clear_quota_hold
 from hermes_time import now as _hermes_now
 
@@ -15,6 +16,7 @@ JOB_DEFINITION_FIELDS = frozenset({
     "script", "no_agent", "monitor_script", "monitor_url", "context_from",
     "schedule", "schedule_display", "deliver", "origin", "enabled_toolsets",
     "workdir", "attach_to_session", "reasoning_effort", "failure_deliver",
+    "timezone", "grace_minutes", "catch_up",
 })
 
 
@@ -29,10 +31,19 @@ def merge_job_definition(local: dict[str, Any], authored: dict[str, Any]) -> dic
         "completed": (local.get("repeat") or {}).get("completed", 0),
         "times": (authored.get("repeat") or {}).get("times"),
     }
+    # The zone gate create_job/update_job apply: a typo'd shipped zone would otherwise be stored
+    # and every installer's job would silently fall back to that user's own profile zone.
+    if "timezone" in merged:
+        merged["timezone"] = normalize_timezone(merged["timezone"])
+        prune_inherited_knobs(merged)
+
     if isinstance(merged.get("schedule"), str):
         merged["schedule"] = parse_schedule(merged["schedule"])
 
-    if local.get("schedule") != merged.get("schedule"):
+    # A zone change moves every wall-clock occurrence exactly like an expr change: the instant on
+    # file belongs to the old zone and the next scan would re-anchor past it without firing.
+    if (local.get("schedule") != merged.get("schedule")
+            or local.get("timezone") != merged.get("timezone")):
         merged.pop("pending_slot", None)
         _clear_quota_hold(merged)
         if is_job_runnable(merged):

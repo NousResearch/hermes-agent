@@ -77,6 +77,16 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="Apply the update even when the security scan returns a caution verdict (a dangerous verdict "
              "still blocks). Without it, a terminal asks first")
 
+    plugins_auto = plugins_subparsers.add_parser(
+        "auto-update", aliases=["autoupdate"],
+        help="Show or set unattended plugin updates (plugins.auto_apply)",
+        description=(
+            "With auto-update on, the gateway's update check (every plugins.auto_update_check_hours) "
+            "applies the catalog and tracked Git updates `hermes plugins update` would apply, through the "
+            "same security scan. Updated code loads in new sessions; a widened catalog pin or new "
+            "capabilities are never accepted unattended. Off by default."))
+    plugins_auto.add_argument("state", nargs="?", choices=["on", "off"], help="Omit to show the current setting")
+
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",
         help="Adopt a self-cloned plugin dir into provenance tracking",
@@ -157,6 +167,14 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_capabilities.add_argument(
         "name", nargs="?", default=None,
         help="Plugin id to inspect (omit to list all plugins with capabilities)")
+
+    plugins_idle = plugins_subparsers.add_parser(
+        "idle-tasks", help="List plugin idle tasks (ctx.register_idle_task) or pause/resume one",
+        description="Show each plugin idle task's last run, status and next due time in this profile.")
+    plugins_idle.add_argument("name", nargs="?", default=None, help="Plugin id (required with --pause/--resume)")
+    _idle_toggle = plugins_idle.add_mutually_exclusive_group()
+    _idle_toggle.add_argument("--pause", metavar="TASK", help="Stop running TASK until resumed")
+    _idle_toggle.add_argument("--resume", metavar="TASK", help="Resume a paused TASK")
 
     plugins_doctor = plugins_subparsers.add_parser(
         "doctor", help="Validate a plugin with the real runtime contracts")

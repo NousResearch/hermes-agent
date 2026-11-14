@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from hermes_agent.compat.paths import current_path
+
 REPO = Path(__file__).resolve().parents[3]
 GEN = REPO / "scripts" / "gen_gateway_contracts.py"
 
@@ -43,7 +45,6 @@ _LITERAL_FRAME = re.compile(r"\"method\":\s*\"event\".{0,120}?\"type\":\s*\"([a-
 _SIDE_AGENT = re.compile(r"_spawn_side_agent\((?:[^()]|\([^()]*\))*?\"([a-z_][a-z0-9_.]*\.complete)\"", re.DOTALL)
 _SUBAGENT_RELAY = re.compile(r"\"(subagent\.[a-z_]+)\"")
 _DESKTOP_UI_EMIT = re.compile(r"desktop_ui\.(?:emit|emit_or_error)\(\s*\"([a-z_][a-z0-9_.]*)\"")
-_BROKER_FRAME = re.compile(r"^FRAME_[A-Z_]+ = \"(browser\.controller\.[a-z_]+)\"", re.MULTILINE)
 _SETUP_READY = re.compile(r"^SETUP_READY_EVENT = \"([a-z_.]+)\"", re.MULTILINE)
 _FREE_TIER_CHALLENGE = re.compile(r"^CHALLENGE_EVENT = \"([a-z_.]+)\"", re.MULTILINE)
 # Session-authority local-viewer turn projections (gateway/local_viewer_events.py).
@@ -56,7 +57,7 @@ def _read(path: Path) -> str:
 
 def emitted_event_names() -> set[str]:
     names: set[str] = set()
-    for src in (REPO / "tui_gateway").glob("*.py"):
+    for src in (REPO / current_path("tui_gateway")).glob("*.py"):
         text = _read(src)
         names.update(_LITERAL_EMIT.findall(text))
         names.update(_LITERAL_FRAME.findall(text))
@@ -66,23 +67,22 @@ def emitted_event_names() -> set[str]:
 
     names.update(_CHANGE_WATCHES)
     names.update(_CHILD_DELTA_EVENTS.values())
-    for src in (REPO / "tools").glob("delegate_tool*.py"):
+    for src in (REPO / current_path("tools")).glob("delegate_tool*.py"):
         names.update(_SUBAGENT_RELAY.findall(_read(src)))
     names.discard("subagent.text")  # mirrored into the watch window as message.delta, never emitted
     from tools.registry import _tool_module_candidates
 
-    for src in _tool_module_candidates(REPO / "tools"):
+    for src in _tool_module_candidates(REPO / current_path("tools")):
         names.update(_DESKTOP_UI_EMIT.findall(_read(src)))
-    names.update(_BROKER_FRAME.findall(_read(REPO / "gateway" / "browser_control_broker.py")))
-    names.update(_SETUP_READY.findall(_read(REPO / "hermes_cli" / "free_tier_bootstrap.py")))
-    names.update(_FREE_TIER_CHALLENGE.findall(_read(REPO / "hermes_cli" / "anon_challenge.py")))
-    names.update(_LOCAL_VIEWER_PUBLISH.findall(_read(REPO / "gateway" / "local_viewer_events.py")))
+    names.update(_SETUP_READY.findall(_read(REPO / current_path("hermes_cli/free_tier_bootstrap.py"))))
+    names.update(_FREE_TIER_CHALLENGE.findall(_read(REPO / current_path("hermes_cli/anon_challenge.py"))))
+    names.update(_LOCAL_VIEWER_PUBLISH.findall(_read(REPO / current_path("gateway/local_viewer_events.py"))))
     return names
 
 
 def sent_server_requests() -> set[str]:
     names: set[str] = set()
-    for src in (REPO / "tui_gateway").glob("*.py"):
+    for src in (REPO / current_path("tui_gateway")).glob("*.py"):
         names.update(_LITERAL_REQUEST.findall(_read(src)))
     return names
 

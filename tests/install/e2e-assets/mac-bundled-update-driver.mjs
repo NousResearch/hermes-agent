@@ -14,20 +14,21 @@
 //     process-close.cjs releases our stdio pipes instead of tree-killing,
 //     so ShipIt's detached relaunch of the NEW bundle survives our exit.
 //
-// Usage (from the scratch dir with the driver's own @playwright/test):
+// Usage (Playwright resolves from the checkout's tests-js):
 //   node mac-bundled-update-driver.mjs --app-bin <.app/Contents/MacOS/Hermes> \
 //     --shots <dir> --close-timeout-ms 420000
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { _electron } from '@playwright/test';
 import { createRequire } from 'node:module';
 import { runUpdateWindowChat } from './update-window-chat.mjs';
 import { updateWindowEnvironment } from './smoke-env.mjs';
 
 const require = createRequire(import.meta.url);
-const { observeProcessClose } = require('./process-close.cjs');
+// The checkout's tests-js declares the driver's Playwright.
+const { _electron } = createRequire(new URL('../../../tests-js/package.json', import.meta.url))('@playwright/test');
+const { observeProcessClose, recordProcessOutput } = require('./process-close.cjs');
 const { prepareWindowForInput } = require('./window-input.cjs');
 const { pickAppWindow, openAbout, waitForUpdate } = require('./update-ui.cjs');
 
@@ -71,6 +72,7 @@ const app = await _electron.launch({
   timeout: 120_000,
 });
 const child = app.process();
+recordProcessOutput(child, path.join(values['chat-out'], 'old-app-output.log'));
 const waitForProcessClose = observeProcessClose(child);
 const oldPid = await app.evaluate(() => process.pid);
 log(`launched Electron pid=${oldPid}`);

@@ -39,7 +39,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/new [name]`（别名：`/reset`） | 开始新会话（全新会话 ID + 历史记录）。可选的 `[name]` 设置初始会话标题——例如 `/new my-experiment` 打开一个已命名为 `my-experiment` 的新会话，便于之后用 `/resume` 或 `/sessions` 查找。追加 `now`、`--yes` 或 `-y` 可跳过确认弹窗——例如 `/reset now`、`/new --yes my-experiment`。 |
 | `/clear` | 清屏并开始新会话 |
 | `/history` | 显示对话历史 |
-| `/save` | 保存当前对话 |
+| `/save <json\|md\|html> [文件名] [redact]` | 将当前会话导出为 JSON 快照、Markdown 记录或独立的 HTML 页面（也接受别名 `markdown` 和 `snapshot`）。`redact` 会在写入前清除 API 密钥、令牌和凭据，且始终放在可选文件名之后的最后一位：`/save md notes.md redact`。即使会话运行在远程网关上，文件也写在你自己的机器上（不支持 `session.export` 的旧版网关只能在其自身主机上保存默认命名的 JSON）。CLI 和 TUI：指定的文件名相对于当前目录解析，否则自动命名并保存在 `~/.hermes/sessions/saved/` 下。Desktop 会打开保存对话框（如提供文件名则预先填入）。直接输入 `/save` 在经典 CLI 中显示用法，在 TUI 和 Desktop 中保存为 JSON。 |
 | `/retry` | 重试最后一条消息（重新发送给 agent） |
 | `/undo` | 移除最后一轮用户/助手对话 |
 | `/title` | 为当前会话设置标题（用法：/title My Session Name） |
@@ -115,7 +115,7 @@ Hermes 有两个斜杠命令入口，均由 `hermes_cli/commands.py` 中的中�
 | `/paste` | 附加剪贴板图片 |
 | `/copy [number]` | 将最后一条助手回复复制到剪贴板（或用数字指定倒数第 N 条）。仅限 CLI。 |
 | `/image <path>` | 为下一条 prompt 附加本地图片文件。 |
-| `/debug` | 上传调试报告（系统信息 + 日志）并获取可分享链接。消息平台中也可用。 |
+| `/debug [upload]` | 单独的 `/debug` 只显示隐私说明，不上传任何内容；`/debug upload` 上传调试摘要（版本、配置键名、错误计数；不含日志或消息文本）并获取可分享链接。消息平台中也可用。 |
 | `/profile` | 显示活动 profile 名称和主目录 |
 
 ### 退出
@@ -214,6 +214,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/sethome`（别名：`/set-home`） | 将当前聊天标记为该平台的 home 频道，用于消息投递。 |
 | `/compress [focus topic]` | 手动压缩对话上下文。可选的焦点主题可缩小摘要保留的范围。 |
 | `/topic [off\|help\|session-id]` | **仅限 Telegram DM。** 管理用户自主的多会话话题模式。`/topic` 启用或显示状态；`/topic off` 禁用并清除绑定；`/topic help` 显示用法；在话题中执行 `/topic <session-id>` 可恢复之前的会话。见 [多会话 DM 模式](../user-guide/messaging/telegram.md#multi-session-dm-mode-topic)。 |
+| `/save <json\|md\|html> [文件名] [redact]` | 将当前会话导出为 JSON、Markdown 或 HTML，并作为文档发送到聊天中。直接输入 `/save` 显示用法；`redact` 会先清除密钥等敏感信息。 |
 | `/title [name]` | 设置或显示会话标题。 |
 | `/resume [name]` | 恢复之前命名的会话。 |
 | `/usage` | 显示 token 用量、估算费用明细（输入/输出）、上下文窗口状态、会话时长，以及——当活动提供商支持时——从提供商 API 实时拉取的**账户限额**部分，包含剩余配额/积分。 |
@@ -242,13 +243,13 @@ hermes config set model.aliases.grok x-ai/grok-4
 | `/deny` | 拒绝待处理的危险命令。 |
 | `/update` | 将 Hermes Agent 更新到最新版本。 |
 | `/restart` | 在排空活动运行后优雅重启 gateway。gateway 重新上线后，会向请求者的聊天/线程发送确认消息。 |
-| `/debug` | 上传调试报告（系统信息 + 日志）并获取可分享链接。 |
+| `/debug [upload]` | 单独的 `/debug` 只显示隐私说明，不上传任何内容；`/debug upload` 上传调试摘要（版本、配置键名、错误计数；不含日志或消息文本）并获取可分享链接。 |
 | `/help` | 显示消息平台帮助。 |
 | `/<skill-name>` | 按名称调用任意已安装的 skill。 |
 
 ## 注意事项
 
-- `/skin`、`/snapshot`、`/reload`、`/tools`、`/toolsets`、`/browser`、`/config`、`/cron`、`/platforms`、`/paste`、`/image`、`/statusbar`、`/plugins`、`/indicator`、`/redraw`、`/clear`、`/history`、`/save`、`/copy`、`/handoff`、`/billing` 和 `/quit` 是**仅限 CLI** 的命令。
+- `/skin`、`/snapshot`、`/reload`、`/tools`、`/toolsets`、`/browser`、`/config`、`/cron`、`/platforms`、`/paste`、`/image`、`/statusbar`、`/plugins`、`/indicator`、`/redraw`、`/clear`、`/history`、`/copy`、`/handoff`、`/billing` 和 `/quit` 是**仅限 CLI** 的命令。
 - `/skills` **仅在搜索/浏览/安装时属于 CLI-only**；其写入审批子命令（`pending`、`approve`、`reject`、`diff`、`approval`）在 `skills.write_approval` 开启时也可在消息平台使用。`/memory` 可在**两个表面**使用。
 - `/verbose` **默认仅限 CLI**，但可通过在 `config.yaml` 中设置 `display.tool_progress_command: true` 为消息平台启用。启用后，它会循环切换 `display.tool_progress` 模式并保存到配置。
 - `/sethome`、`/update`、`/restart`、`/approve`、`/deny`、`/topic`、`/platform` 和 `/commands` 是**仅限消息平台**的命令。

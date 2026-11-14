@@ -15,12 +15,11 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_host_browser_use_cli():
-    """Keep the host's PM-managed browser-use install out of tests.
+    """Keep the host's browser-harness install out of tests.
 
-    Browser Use mode is default-on when the CLI is runnable, so a developer
-    machine with the CLI installed would silently flip every built-in-browser test
-    into CLI mode. Pin discovery to "not installed"; tests that exercise the
-    CLI path monkeypatch ``bu_cli._find_cli`` themselves.
+    browser_exec is advertised whenever browser-harness is importable, so a developer machine
+    would expose (and could spawn) the real harness in every tool-surface test. Pin discovery to
+    "not installed"; tests that exercise the CLI path monkeypatch ``bu_cli._find_cli`` themselves.
     """
     try:
         import tools.browser_use_cli as bu_cli
@@ -32,6 +31,19 @@ def _no_host_browser_use_cli():
     if not hasattr(bu_cli, "_find_cli_unpatched"):
         bu_cli._find_cli_unpatched = bu_cli._find_cli
     with patch.object(bu_cli, "_find_cli", lambda: None):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_chromium_download():
+    """A test that reaches the launcher without a fake binary must never start PM's ~170 MB Chromium
+    download; the one-shot auto-install is pinned to "declined"."""
+    try:
+        import tools.browser_launcher as launcher
+    except Exception:
+        yield
+        return
+    with patch.object(launcher, "_maybe_autoinstall_chromium", lambda: False):
         yield
 
 

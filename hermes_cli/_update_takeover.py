@@ -27,7 +27,7 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     publish_stage("Updating Python dependencies (PM)")
     from pm import receipt
     from pm.client import ensure_tools_for_sync, sync_venv, venv_is_current
-    from pm.environments import activation_environment, install_state_dir, runtime_facts_path
+    from pm.environments import activation_environment, install_state_dir
     from hermes_cli._launchers import resolve_store_python
     from hermes_cli.venv_sync import (
         arm_completion, collect_superseded_generations, publish_launchers, refuse_foreign_owned_venv)
@@ -43,9 +43,9 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
         # A pre-PM installation has no required-tool facts. A current Python
         # generation alone does not prove its Node/Git/tool closure is ready.
         ensure_tools_for_sync()
-        from pm.extras import legacy_selection
+        from pm.extras import first_generation_selection
 
-        extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None
+        extras = first_generation_selection(root)
         repair_marker = install_state_dir(root) / ".repair-incomplete"
         # Repair preserves the old stamp. Changed source inputs instead need
         # an ordinary sync, which builds and validates a fresh generation too.
@@ -135,6 +135,9 @@ def main() -> int:
     context, result = map(Path, sys.argv[1:3])
     request = json.loads(context.read_text(encoding="utf-8-sig"))
     sys.path.insert(0, request["root"])
+    from hermes_agent.compat import install
+
+    install()
     if "stopped_serves" in request:
         # Historical atexit cleanup may run after the update's result is fixed.
         # It must reuse that installation, never start a second update/repair.

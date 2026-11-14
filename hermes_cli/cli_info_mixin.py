@@ -18,7 +18,7 @@ from typing import Any, NamedTuple
 from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname, file_signature
+from utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -105,7 +105,7 @@ class BannerPlan(NamedTuple):
 def banner_plan(cli, console) -> BannerPlan:
     """The welcome banner's plan. The compact banner (``banner_kw`` None) is for a narrow terminal,
     ``display.compact``, or a gateway session with no snapshot yet."""
-    from agent.context_pin import is_context_pinned
+    from agent.context_pin import agent_context_marker
     from hermes_cli.gateway_tools_notify import gateway_store
     store = gateway_store(cli)
     inventory = store.banner_inventory() if store is not None else None
@@ -117,8 +117,7 @@ def banner_plan(cli, console) -> BannerPlan:
     return BannerPlan(store, inventory, ctx_len, dict(
         console=console, model=cli.model, cwd=os.getenv("TERMINAL_CWD", os.getcwd()),
         enabled_toolsets=cli.enabled_toolsets, session_id=cli.session_id, context_length=ctx_len,
-        provider=cli.provider,
-        context_pinned=is_context_pinned(ctx_len, getattr(agent, "_config_context_length", None))))
+        provider=cli.provider, context_marker=agent_context_marker(agent) if agent is not None else ""))
 
 
 class CLIInfoMixin:
@@ -223,7 +222,8 @@ class CLIInfoMixin:
                 self._show_tool_availability_warnings()
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        from agent.process_transport import is_local_server
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(f"[yellow]{t('cli.banner.context_too_low', tokens=f'{ctx_len:,}')}[/]")
@@ -238,7 +238,7 @@ class CLIInfoMixin:
                 fix = t("cli.banner.fix_ollama", tokens=str(MINIMUM_CONTEXT_LENGTH))
             elif _port == 1234:
                 fix = t("cli.banner.fix_lm_studio")
-            elif is_local_endpoint(base_url):  # llama.cpp / vLLM / any local server — not Ollama
+            elif is_local_server(base_url, getattr(self, "provider", None)):  # llama.cpp / vLLM / any local server — not Ollama
                 fix = t("cli.banner.fix_local_server",
                         tokens_k=str(MINIMUM_CONTEXT_LENGTH // 1000), tokens=str(MINIMUM_CONTEXT_LENGTH))
             else:
@@ -776,8 +776,8 @@ class CLIInfoMixin:
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source
         mark = "~" if context_display_source(compressor) != "provider_usage" else ""
-        from agent.context_pin import context_pin_suffix
-        pin_suffix = context_pin_suffix(ctx_len, getattr(agent, '_config_context_length', None))
+        from agent.context_pin import agent_context_suffix
+        pin_suffix = agent_context_suffix(agent)  # " (pinned)" / " (fallback)"
         print(f"  {t('cli.usage.label_current_context'):<17} {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%){pin_suffix}")
         print(f"  {t('cli.usage.label_messages'):<17} {len(self.conversation_history)}")
         print(f"  {t('cli.usage.label_compressions'):<17} {compressor.compression_count}")
@@ -864,7 +864,7 @@ class CLIInfoMixin:
         cache** (the next message re-sends the full input prefix, expensive on long-context / high-reasoning
         models). See #1474.
         """
-        import hermes_yaml as _yaml
+        from hermes_cli.config_backend import config_version_or_none, read_config_doc
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -873,19 +873,15 @@ class CLIInfoMixin:
 
         from hermes_cli.config import get_config_path as _get_config_path
         cfg_path = _get_config_path()
-        if not cfg_path.exists():
-            return
-        try:
-            sig = file_signature(cfg_path.stat())
-        except OSError:
+        sig = config_version_or_none(cfg_path)
+        if sig is None:
             return
         if sig == self._config_sig:
             return  # unchanged — fast path
 
         self._config_sig = sig
         try:
-            with open(cfg_path, encoding="utf-8-sig") as f:
-                new_cfg = _yaml.safe_load(f) or {}
+            new_cfg = read_config_doc(cfg_path) or {}
         except Exception:
             return
 

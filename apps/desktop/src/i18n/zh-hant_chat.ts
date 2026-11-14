@@ -121,14 +121,14 @@ export const zhHantChat = {
       '/init': '掃描儲存庫並產生或更新 AGENTS.md 專案指引',
       '/suggestions': '檢視建議的自動化項目（接受或略過）',
       '/blueprint': '使用 blueprint 範本設定自動化',
-      '/browser': '管理代理瀏覽器 [connect|disconnect|status|use]',
+      '/browser': '管理代理瀏覽器 [connect|disconnect|status]',
       '/palette': '開啟模糊搜尋指令面板（也可使用 Ctrl+P）',
       '/usage': '顯示 Token 用量與速率限制；`reset` 可兌換保留的 Codex 限額重設',
       '/subscription': '檢視你的 Nous 方案，並在瀏覽器中變更',
       '/topup': '顯示你的 Nous 餘額，並在 Portal 管理帳務',
       '/platform': '暫停、恢復或列出故障的閘道平台',
       '/version': '顯示 Hermes Agent 版本',
-      '/debug': '上傳偵錯報告（系統資訊與記錄），並取得可分享連結',
+      '/debug': '除錯報告（版本、設定鍵名、錯誤計數；不含日誌文字）：先顯示隱私聲明；/debug upload 分享連結',
       '/model': '切換此工作階段的模型'
     },
     hotkeyDescs: {
@@ -487,6 +487,7 @@ export const zhHantChat = {
     imageAttach: '附加圖片',
     imageWriteFailed: '無法將圖片寫入磁碟。',
     imageAttachFailed: '附加圖片失敗',
+    attachFailed: '附加失敗',
     pastedContent: '貼上內容',
     pasteAttachFailed: '無法附加貼上的文字',
     attachImages: '附加圖片',
@@ -494,6 +495,7 @@ export const zhHantChat = {
     noClipboardImage: '剪貼簿中沒有圖片',
     clipboardPasteFailed: '剪貼簿貼上失敗',
     dropFiles: '拖曳檔案',
+    dropFilesMore: (count: number) => `以及另外 ${count} 項`,
     handoff: {
       pickPlatform: '選擇目標平台',
       success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,

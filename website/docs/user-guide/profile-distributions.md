@@ -214,6 +214,8 @@ This mirrors the [hard-excluded paths](#whats-not-in-a-distribution-ever) that t
 
 For cron, commit only `cron/jobs.json`. Hermes treats every other entry under `cron/` as runtime state (locks, ledgers, output, suggestions, and future scheduler sidecars) and never installs or replaces it from a distribution. Root-level hidden entries under `skills/` are likewise local Hermes bookkeeping; hidden files inside an authored skill directory remain part of that skill.
 
+A shipped job can pin its own `timezone` (for example a 09:00 `America/New_York` market update that every installer gets at the same instant) while the others follow each user's profile timezone. See [Pinned and local-time jobs in a shipped profile](./features/cron.md#pinned-and-local-time-jobs-in-a-shipped-profile).
+
 ### Step 4 — Push to a git repo
 
 ```bash

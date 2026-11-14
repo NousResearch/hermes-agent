@@ -57,19 +57,31 @@ function applyStatus(status: QuickEntryStatus | undefined): void {
   })
 }
 
+type QuickEntryBridge = NonNullable<Window['hermesDesktop']['quickEntry']>
+
+/** The shell's Quick Entry settings call, or undefined where there is none
+ *  (outside Electron, the Webapp's bridge). */
+function quickEntrySettingsCall<K extends 'getSettings' | 'setSettings'>(name: K): QuickEntryBridge[K] | undefined {
+  const call = typeof window === 'undefined' ? undefined : window.hermesDesktop?.quickEntry?.[name]
+
+  return typeof call === 'function' ? call : undefined
+}
+
 /** True when the shell exposes the Quick Entry capability (desktop only). */
 export function canUseQuickEntry(): boolean {
-  return typeof window !== 'undefined' && typeof window.hermesDesktop?.quickEntry?.getSettings === 'function'
+  return quickEntrySettingsCall('getSettings') !== undefined
 }
 
 /** Read the live registration state into the store (Settings mount). */
 export async function loadQuickEntrySettings(): Promise<void> {
-  if (!canUseQuickEntry()) {
+  const getSettings = quickEntrySettingsCall('getSettings')
+
+  if (!getSettings) {
     return
   }
 
   try {
-    applyStatus(await window.hermesDesktop.quickEntry.getSettings())
+    applyStatus(await getSettings())
   } catch {
     // A failed read leaves the store as-is; the row keeps its last known copy.
   }
@@ -81,7 +93,9 @@ export async function loadQuickEntrySettings(): Promise<void> {
  * instead of a silently-lost setting.
  */
 export async function saveQuickEntrySettings(patch: { enabled?: boolean; shortcut?: string }): Promise<void> {
-  if (!canUseQuickEntry()) {
+  const setSettings = quickEntrySettingsCall('setSettings')
+
+  if (!setSettings) {
     return
   }
 
@@ -91,7 +105,7 @@ export async function saveQuickEntrySettings(patch: { enabled?: boolean; shortcu
   $quickEntry.set({ ...previous, ...patch, registered: previous.registered })
 
   try {
-    applyStatus(await window.hermesDesktop.quickEntry.setSettings(patch))
+    applyStatus(await setSettings(patch))
   } catch {
     $quickEntry.set(previous)
   }

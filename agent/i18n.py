@@ -83,7 +83,8 @@ def _locales_dir() -> Path:
             "HERMES_BUNDLED_LOCALES points to a non-directory path (%s); "
             "falling back to bundled/source locale resolution", override,
         )
-    return Path(__file__).resolve().parent.parent / "locales"
+    from hermes_cli._startup_fast import project_root_str
+    return Path(project_root_str()) / "locales"
 
 
 def _current_home() -> str:
@@ -104,6 +105,29 @@ def supported_languages(home: str | None = None) -> tuple[str, ...]:
     with _catalog_lock:
         _supported_cache[home] = result
     return result
+
+
+@lru_cache(maxsize=4)
+def _bundled_surfaces(locales_dir: str) -> frozenset[tuple[str, str]]:
+    """``(lang, surface)`` for every bundled ``locales/<lang>[.<surface>].yaml``. Keyed by directory so a
+    ``HERMES_BUNDLED_LOCALES`` switch re-scans; cleared with the other layer views by
+    :func:`reset_language_cache`."""
+    return frozenset((lang, surface) for lang, surface, _path in i18n_layers.scan_locale_dir(Path(locales_dir)))
+
+
+def language_surfaces(home: str | None = None) -> dict[str, tuple[str, ...]]:
+    """Per language, the surfaces some layer has strings for (bundled ∪ user overlay ∪ plugin packs), in
+    ``SURFACES`` order. An overlay file or pack that loaded no strings (empty, comment-only, unparseable)
+    does not count. A renderer that bundles its own catalog for a language does not need this; for any
+    other language a missing surface means that renderer would show English."""
+    home = home or _current_home()
+    layered = {(lang, surface) for lang, surface in i18n_layers.overlay_surfaces(home) | i18n_layers.pack_surfaces()
+               if i18n_layers.overlay_layer(home, lang, surface) or i18n_layers.pack_layer(lang, surface)}
+    pairs = _bundled_surfaces(str(_locales_dir())) | layered
+    found: dict[str, set[str]] = {}
+    for lang, surface in pairs:
+        found.setdefault(lang, set()).add(surface)
+    return {lang: tuple(s for s in i18n_layers.SURFACES if s in surfaces) for lang, surfaces in found.items()}
 
 
 def resolve_language_id(value: Any, home: str | None = None) -> str | None:
@@ -198,6 +222,7 @@ def reset_language_cache() -> None:
     ``save_config`` changes ``display.language``, after a pack registers/unregisters, or after editing
     an overlay file)."""
     _config_language_cached.cache_clear()
+    _bundled_surfaces.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
         _supported_cache.clear()
@@ -248,6 +273,7 @@ __all__ = [
     "SUPPORTED_LANGUAGES",
     "get_language",
     "language_options",
+    "language_surfaces",
     "reset_language_cache",
     "resolve_language_id",
     "supported_languages",

@@ -1,0 +1,17 @@
+name: hey-pcb
+repo: https://github.com/imperator-clawdius/hermes-hey-pcb
+sha: 15e5a25636e65bc52074251caa4d9ee7e71c37a7
+description: "Agent-driven PCB engineering through HeyPCB's first-party MCP server: design real KiCad boards from a text brief, instant fabrication estimates, and production tracking, with a workflow skill bundled. Portable Agent Plugins v1 package (mcp.json + skills/), no plugin code. The server is declared untrusted with per-tool costs and a per-chat spend limit, so Hermes names the cost and asks before any call that can spend (design reads stay free). The HEYPCB_API_KEY is forwarded from the user's environment and never stored in plugin files. Disclosure — the MCP server talks to api.heypcb.ai; npx fetches the pinned @heypcb/mcp@0.1.8 from npm on first launch; open_kicad_project and upload_kicad_project upload a local KiCad project folder to HeyPCB, and save_export/restore_local write files on your computer (each after Hermes approval); engine runs and design-agent turns are billed to the user's HeyPCB account at its plan rate; ordering on heypcb.ai is still a human decision. Not affiliated with HeyPCB."
+maintainer: imperator-clawdius
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/imperator-clawdius/hermes-hey-pcb#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - HEYPCB_API_KEY

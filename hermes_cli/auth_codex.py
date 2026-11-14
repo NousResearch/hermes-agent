@@ -22,7 +22,8 @@ from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_LOCK_TIMEOUT_SECONDS, AuthError,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
-    CODEX_OAUTH_USER_AGENT, CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
+    CODEX_RATE_LIMITED_CODE, DEFAULT_CODEX_BASE_URL, _codex_err, httpx)
+from hermes_cli.version_info import hermes_user_agent
 from utils import env_float, normalize_proxy_env_vars
 
 if TYPE_CHECKING:  # annotation-only; the runtime import would be a cycle
@@ -68,7 +69,25 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
 
 
 def _codex_base_url() -> str:
-    return os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+    """The owning profile's ``HERMES_CODEX_BASE_URL`` override, else canonical chatgpt.com (the
+    singleton route itself goes through ``_codex_pool_route_base_url``, which adds ``model.base_url``).
+
+    Read through the profile scope, never ``os.environ``, for the same reason the pooled route does
+    (#121486): on a multiplexed gateway the raw process env is the *launch* profile's gateway, so a
+    routed sibling's token would be addressed to it. Outside multiplexing ``get_secret_str`` still
+    falls through to the process env, so single-profile deployments are unaffected.
+
+    An unscoped read while multiplexing is on cannot name the owning profile, so it degrades to the
+    canonical host — the same answer ``_codex_pool_route_base_url`` already produces in that state,
+    rather than a new failure mode on the credential path.
+    """
+    from agent.secret_scope import UnscopedSecretError, get_secret_str
+    try:
+        override = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+    except UnscopedSecretError:
+        logger.debug("No profile secret scope bound; Codex base URL falls back to canonical", exc_info=True)
+        override = ""
+    return override or DEFAULT_CODEX_BASE_URL
 
 
 def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
@@ -95,7 +114,8 @@ def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
 def _codex_runtime_result(
     api_key: str, *, source: str, last_refresh: Optional[str], base_url: Optional[str] = None) -> dict[str, Any]:
     return {
-        "provider": "openai-codex", "base_url": base_url or _codex_base_url(), "api_key": api_key,
+        "provider": "openai-codex",
+        "base_url": base_url or _codex_pool_route_base_url(DEFAULT_CODEX_BASE_URL), "api_key": api_key,
         "source": source, "last_refresh": last_refresh, "auth_mode": "chatgpt"}
 
 
@@ -489,7 +509,7 @@ def refresh_codex_oauth_pure(
                          "codex_auth_missing_refresh_token", relogin=True)
     with _codex_http_client(
         timeout=httpx.Timeout(max(5.0, float(timeout_seconds))),
-        headers={"Accept": "application/json", "User-Agent": CODEX_OAUTH_USER_AGENT}) as client:
+        headers={"Accept": "application/json", "User-Agent": hermes_user_agent()}) as client:
         response = client.post(
             CODEX_OAUTH_TOKEN_URL, headers={"Content-Type": "application/x-www-form-urlencoded"},
             data={

@@ -11,6 +11,7 @@ interpreter before it publishes either command.
 
 from __future__ import annotations
 
+from contextlib import suppress
 import json
 import os
 import shlex
@@ -20,7 +21,7 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pm.environments import owning_home_root, store_root
+from pm.environments import owning_home_root, payload_command_dir, store_root
 
 # ``sys`` attribute a launcher sets before ``import hermes_bootstrap``: pin HERMES_HOME to the
 # install's default root once the launch-time repair ran (``hermes_bootstrap._pin_launcher_home``).
@@ -92,10 +93,35 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     the managed Python pin changes.
     """
     root = Path(repo_root)
+    prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
+    if (sealed := sealed_service_launcher(root)) is not None:
+        return [str(sealed), *prefix, *args]
     if resolve_store_python(root) is None:
         return runtime_command(root, args, module=module, python=python, home=home)
-    prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
     return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
+
+
+def sealed_service_launcher(repo_root: Path) -> Path | None:
+    """A macOS bundle's own signed ``bin/hermes``, which its services run; None for other installs.
+
+    Publishing a launcher into the app breaks its code signature, and the next app update deletes
+    it. The app's own launcher keeps its path across updates and caches bytecode outside the app.
+    The canonical name, never a channel's qualified alias: gateway identity checks match ``hermes``.
+    Only macOS: a Linux bundle is an AppImage that mounts at a new path on every launch.
+    """
+    root = Path(repo_root).resolve()
+    if sys.platform != "darwin" or not _is_bundled_payload(root):
+        return None
+    commands = payload_command_dir(root)
+    launcher = commands / "hermes" if commands is not None else None
+    return launcher if launcher is not None and launcher.is_file() else None
+
+
+def publishes_service_launcher(repo_root: Path) -> bool:
+    """Whether service definitions run a store launcher this install must publish first."""
+    return (sealed_service_launcher(repo_root) is None
+            and resolve_store_python(repo_root, publication=True) is not None)
+
 
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Publish-UserCommand and hermes_cli/_install_repair.py.
@@ -166,6 +192,39 @@ def _load_script_maker():
         return None
 
 
+def _store_script_maker(python_exe: Path):
+    """ScriptMaker from the pip that ships with the interpreter being bound.
+
+    A launch activates only the dependency environment, which carries no
+    distlib and drops the store's site-packages, so the update that repins
+    Python could only publish a .cmd and retire hermes.exe -- which Desktop's
+    backend sweep, shortcuts and terminal profiles name. python-build-standalone
+    ships pip (the installer mints the first hermes.exe through it), and its
+    vendored distlib is self-contained. It loads under a private name so the
+    store's pip never answers an ``import pip`` in this process."""
+    package = Path(python_exe).parent / "Lib" / "site-packages" / "pip" / "_vendor" / "distlib"
+    if not (package / "scripts.py").is_file():
+        return None
+    import hashlib
+    import importlib
+    import importlib.util
+
+    # One private package per store copy: a later repin's pip never reuses the first one's.
+    name = f"_hermes_store_distlib_{hashlib.sha256(str(package).encode()).hexdigest()[:12]}"
+    try:
+        if name not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                name, package / "__init__.py", submodule_search_locations=[str(package)])
+            if spec is None or spec.loader is None:
+                return None
+            sys.modules[name] = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(sys.modules[name])
+        return importlib.import_module(f"{name}.scripts").ScriptMaker
+    except (ImportError, OSError, SyntaxError, AttributeError):  # a torn or foreign pip: mint a .cmd
+        sys.modules.pop(name, None)
+        return None
+
+
 def exe_is_venv_bound(exe: Path, venv_dir: Path | None) -> bool:
     """True when an existing launcher exe embeds the venv interpreter —
     i.e. it is a copied venv console-script trampoline from the pre-pm
@@ -226,7 +285,7 @@ def mint_launcher(
     if not _is_windows():
         return _mint_shell_launcher(name, out_dir, python_exe, script)
 
-    script_maker_cls = _load_script_maker()
+    script_maker_cls = _load_script_maker() or _store_script_maker(python_exe)
     if script_maker_cls is not None:
         class _PathedScriptMaker(script_maker_cls):  # type: ignore[misc,valid-type]
             def _get_script_text(self, entry):
@@ -556,15 +615,50 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     store_python = resolve_store_python(repo_root, publication=True)
     if store_python is not None:
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
-        if path is not None and path.suffix == ".cmd":
+        if path is None:
+            return None
+        # Any publication collects copies retired by an earlier one, whatever
+        # launcher form it writes now (distlib may be back since).
+        _collect_retired(Path(out_dir) / f"{name}.exe")
+        if path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
             # newly published command when distlib is unavailable.
-            try:
-                (Path(out_dir) / f"{name}.exe").unlink(missing_ok=True)
-            except OSError:
+            if not _retire_exe(Path(out_dir) / f"{name}.exe"):
                 return None
         return path
     return None
+
+
+def _collect_retired(exe: Path) -> None:
+    """Delete aside copies of ``exe`` whose process has since exited: ours
+    (``.<pid>.deleteme``) and distlib's own (``.deleteme``)."""
+    for leftover in exe.parent.glob(f"{exe.name}*.deleteme"):
+        with suppress(OSError):
+            leftover.unlink()
+
+
+def _retire_exe(exe: Path) -> bool:
+    """Remove ``exe``; a running one is renamed aside instead.
+
+    Windows refuses to delete a mapped image but allows renaming it, and the
+    launcher a Python repin has to retire is usually the one running
+    ``hermes update`` (or the launch retrying its owed launcher step), so a
+    plain unlink left every repinned update owing launchers -- and the install
+    stamp -- forever. The aside copy goes on the next publication once its
+    process has exited."""
+    try:
+        exe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        pass
+    aside = exe.with_name(f"{exe.name}.{os.getpid()}.deleteme")
+    try:
+        os.replace(exe, aside)
+    except OSError:
+        return False
+    with suppress(OSError):
+        aside.unlink()
+    return True
 
 
 def _first_token(line: str) -> Path | None:
@@ -647,6 +741,71 @@ def _launcher_python(target: Path) -> Path | None:
         return None
 
 
+def _launcher_checkout(target: Path) -> Path | None:
+    """Checkout an existing Windows launcher starts, else None.
+
+    Reads the script ``_launcher_script`` wrote: the ``__main__.py`` of the
+    distlib executable, or the base64 payload of the ``.cmd`` fallback. Its
+    first ``sys.path.insert`` names the checkout.
+    """
+    import ast
+    import base64
+    import re
+    from zipfile import BadZipFile, ZipFile
+
+    try:
+        if Path(target).suffix.lower() == ".exe":
+            with ZipFile(target) as archive:
+                script = archive.read("__main__.py").decode("utf-8")
+        else:
+            encoded = re.search(r"exec\(base64\.b64decode\('([A-Za-z0-9+/=]+)'\)\)",
+                                Path(target).read_text(encoding="utf-8-sig"))
+            if encoded is None:
+                return None
+            script = base64.b64decode(encoded[1], validate=True).decode("utf-8")
+        inserted = re.search(r"""^sys\.path\.insert\(0, ('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")\)\r?$""",
+                             script, re.MULTILINE)
+        return Path(ast.literal_eval(inserted[1])) if inserted else None
+    except (OSError, BadZipFile, KeyError, ValueError, SyntaxError):
+        # binascii.Error and UnicodeDecodeError are ValueErrors.
+        return None
+
+
+def _launcher_of_another_checkout(directory: Path, root: Path) -> Path | None:
+    """A working command in *directory* that starts a checkout other than *root*, else None.
+
+    Only the file Windows runs counts: PATHEXT resolves ``.exe`` before
+    ``.cmd``. A launcher whose checkout or interpreter is gone does not count,
+    and neither does one this module cannot read.
+    """
+    for name in WINDOWS_BIN_LAUNCHERS:
+        try:
+            runs = next((target for target in (directory / f"{name}.exe", directory / f"{name}.cmd")
+                         if target.is_file()), None)
+            if runs is None:
+                continue
+            checkout, python = _launcher_checkout(runs), _launcher_python(runs)
+            if (checkout is not None and python is not None and checkout != root
+                    and checkout.is_dir() and python.is_file()):
+                return runs
+        except OSError:
+            continue
+    return None
+
+
+def _is_home_checkout(root: Path, store: Path) -> bool:
+    """Is *root* the checkout the default data root was installed with?
+
+    That checkout sits at ``<home>/<checkout>`` and runs ``<home>/tools``. The
+    layout alone is not proof: a root that only borrows the checkout can match
+    it through HERMES_RUNTIME_DIR=<home>/tools, so the home must also own it.
+    """
+    from hermes_constants import get_default_hermes_root
+    home = get_default_hermes_root().resolve()
+    return (root.parent == home and store.resolve() == (home / "tools").resolve()
+            and owning_home_root(root) is None)
+
+
 def _kept_shared_launcher(name: str, local: Path, store: Path, own: Path | None) -> Path | None:
     """Existing checkout launcher already bound outside this root's store.
 
@@ -704,15 +863,9 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     local.mkdir(parents=True, exist_ok=True)
     store = store_root(root)
     own = resolve_store_python(root)
-    from hermes_constants import get_default_hermes_root
-    home = get_default_hermes_root().resolve()
-    # The data root this checkout was installed into (<home>/hermes-agent with
-    # <home>/tools) always republishes, which also heals an install that an
-    # earlier foreign launch already rebound. The layout alone is not proof: a
-    # root that only borrows the checkout can match it through
-    # HERMES_RUNTIME_DIR=<home>/tools, so it must also own the checkout.
-    owner = (root.parent == home and store.resolve() == (home / "tools").resolve()
-             and owning_home_root(root) is None)
+    # The checkout this data root was installed with always republishes, which
+    # also heals an install that an earlier foreign launch already rebound.
+    owner = _is_home_checkout(root, store)
     written = []
     for name in WINDOWS_BIN_LAUNCHERS:
         # ponytail: one guard here covers every caller (launch, sync, repair,
@@ -942,6 +1095,10 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
     so an update converges a machine installed under the older venv\\Scripts
     convention instead of leaving it there forever. The registration happens
     only when new consoles resolve this home (``owns_user_path``).
+
+    Commands there that start another checkout which still exists stay in
+    place unless *root* is the home's own checkout: a review tree or worktree
+    started against the home leaves the installed ``hermes`` alone.
     """
     from hermes_constants import get_default_hermes_root
 
@@ -951,6 +1108,9 @@ def _expose_windows_user_bin(root: Path, *, create: bool) -> dict:
             # Bootstrap: repair only commands we already own, enable nothing new.
             published = _publish_conveniences(root, directory, WINDOWS_BIN_LAUNCHERS, create=False)
             return {"ok": True, "written": [path.name for path, changed in published.items() if changed]}
+        if not _is_home_checkout(root, store_root(root)) and (
+                other := _launcher_of_another_checkout(directory, root)) is not None:
+            return {"ok": True, "skipped": f"{other} starts another checkout"}
         directory.mkdir(parents=True, exist_ok=True)
         written = ensure_install_launchers(root, directory)
         if len(written) != len(WINDOWS_BIN_LAUNCHERS):

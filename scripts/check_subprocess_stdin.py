@@ -189,21 +189,24 @@ def main() -> int:
     # Add repo root to sys.path so we can import hermes_constants (this script
     # runs as a standalone subprocess, not as a module).
     sys.path.insert(0, str(repo_root))
+    from hermes_agent.compat.paths import current_path, original_path
     from hermes_constants import get_hermes_home
 
     all_violations = []
 
     for tui_dir in TUI_CONTEXT_DIRS:
-        dirpath = repo_root / tui_dir
-        if not dirpath.exists():
-            continue
+        dirpath = repo_root / current_path(tui_dir)
+        if not dirpath.is_dir():
+            print(f"{tui_dir} does not exist: update TUI_CONTEXT_DIRS, or this check scans nothing there",
+                  file=sys.stderr)
+            return 2
 
         for py_file in dirpath.rglob("*.py"):
             rel = str(py_file.relative_to(repo_root))
 
             # Skip known-safe files.  ``relative_to`` returns a host-separated
             # path (backslashes on Windows) while KNOWN_SAFE is forward-slash.
-            if py_file.relative_to(repo_root).as_posix() in KNOWN_SAFE:
+            if original_path(py_file.relative_to(repo_root).as_posix()) in KNOWN_SAFE:
                 continue
 
             # Skip test files inside tools/ etc.

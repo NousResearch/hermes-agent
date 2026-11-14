@@ -1,0 +1,87 @@
+name: creator-studio
+title: Creator Studio
+repo: https://github.com/flabanabba8/creator-studio
+sha: c22011c442beb7e5e457b1b596df8a1670178822
+version: 0.4.2
+description: "Make media with Hermes from one request: researched lesson videos, two-host podcast episodes, captions for any recording, and narrated step-by-step tutorials. Bundles four plugins (YouTube Studio, Podcast Studio, Caption Studio, Tutorial Creator) into one entry. Disclosure — Research pages are fetched through the Camoufox browser you set in the plugin settings, in a fresh anonymous profile (public addresses only). On first use it lists the voices and speech recognizers this computer has and asks you which to use; it never picks one for you. If you choose Gemini narration, each spoken line is sent to Google, either to Vertex AI (aiplatform.googleapis.com) with a Google sign-in that Hermes holds for your own OAuth client (hermes auth add creator-studio:google; the plugin never sees the token), or to generativelanguage.googleapis.com with the Gemini API key in this plugin's settings (GEMINI_API_KEY, the same variable Hermes' own Gemini provider uses), behind a spend guard (default 0.50 USD). To find speech servers it sends read-only GET requests (/v1/models, /openapi.json) to 127.0.0.1 only, on ports 2022, 5000, 5002, 7860, 8000, 8001, 8020, 8080, 8880 and 9000, plus any loopback address you set. Caption Studio runs the recognizer command you set in the plugin settings, or uploads audio to the HTTPS speech service you set (public addresses only) or to Groq (api.groq.com) with your key, only when you allow uploads; the model cannot set commands, endpoints, keys or upload consent. Programs it starts get a minimal environment (paths, locale, display/audio session and proxy settings), never your provider keys. Runs FFmpeg and ffprobe, an installed speech program if you choose one (espeak-ng, flite, piper), and for screen tutorials xwininfo, xprop, xdotool, pactl and xclip; the recorder starts one detached FFmpeg worker per take, and tutorial steps click and type through Hermes computer_use, so its approvals apply. Stores projects privately in plugin storage. Nothing is published."
+maintainer: flabanabba8
+tier: community
+category: tools
+requires_hermes: '>=0.22.3'
+docs_url: https://github.com/flabanabba8/creator-studio/blob/c22011c442beb7e5e457b1b596df8a1670178822/README.md
+image: https://raw.githubusercontent.com/flabanabba8/creator-studio/c22011c442beb7e5e457b1b596df8a1670178822/assets/thumbnail.jpg
+platforms:
+- linux
+capabilities:
+  provides_tools:
+  - youtube_make_visual
+  - youtube_generate_image
+  - youtube_start_topic
+  - youtube_research_fetch
+  - youtube_source_add
+  - youtube_source_read
+  - youtube_write_script
+  - youtube_material_add
+  - youtube_narrate
+  - youtube_speech_setup
+  - youtube_assemble_project
+  - youtube_project_status
+  - youtube_check_timeline
+  - youtube_render_short
+  - youtube_make_slides
+  - youtube_render_slides
+  - youtube_description
+  - youtube_render_still
+  - youtube_render_clips
+  - youtube_stitch_segments
+  - podcast_start_topic
+  - podcast_research_fetch
+  - podcast_source_add
+  - podcast_source_read
+  - podcast_write_script
+  - podcast_material_add
+  - podcast_narrate
+  - podcast_speech_setup
+  - podcast_assemble_project
+  - podcast_episode_files
+  - podcast_project_status
+  - podcast_load_episode
+  - podcast_lint_episode
+  - podcast_preflight
+  - podcast_check_script
+  - podcast_check_review
+  - podcast_pagecast_plan
+  - podcast_check_pagecast_cast
+  - podcast_show_notes
+  - podcast_caption_cues
+  - podcast_start_from_video
+  - podcast_mix
+  - podcast_mix_timeline
+  - captions_generate
+  - captions_for_latest
+  - captions_inspect
+  - captions_retime
+  - captions_suggest_alignment
+  - captions_recognizer_options
+  - captions_recognizer_setup
+  - captions_analyse_audio
+  - captions_audio_status
+  - captions_audio_review
+  - captions_audio_propose
+  - captions_audio_preview
+  - captions_audio_export
+  - captions_audio_cancel
+  - capture_sources
+  - capture_start
+  - capture_status
+  - capture_mark
+  - capture_stop
+  - capture_export
+  - tutorial_timeline
+  - tutorial_narrate
+  - tutorial_speech_setup
+  - tutorial_step
+  - tutorial_frame
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

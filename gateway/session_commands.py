@@ -401,13 +401,16 @@ def _session_workspace(runner, source):
     import json
     from agent.runtime_cwd import reset_session_cwd, set_session_cwd
     from gateway.session_policy import policy_for_source
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from agent.runtime_scope import bind_terminal_policy
+    from tools.terminal_scope import reset_terminal_scope
     policy = policy_for_source(runner, source)
     if policy is None:
         yield
         return
+    from gateway.session_authorities import active_authority
     cwd_token = set_session_cwd(policy.cwd)
-    terminal_token = set_terminal_scope(json.loads(policy.terminal_json))
+    owner = getattr(active_authority(runner), 'profile_id', None)
+    terminal_token = bind_terminal_policy(json.loads(policy.terminal_json), profile_home=owner)
     try:
         yield
     finally:
@@ -456,6 +459,9 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     if verdict == 'refused' or (verdict == 'control' and canonical in _OWNER_COMMANDS
                                 and ref.session_id in connection.subscriptions):
         raise RuntimeStoreError('unsupported_command', detail=REFUSAL_HINTS.get(canonical))
+    from gateway.session_history_mount import is_history_mount, read_only
+    if is_history_mount(live):
+        raise read_only()  # no policy or agent to run even a read command against
     from gateway.session_local import authorize_local_source
     if authorize_local_source(authority.runner, live.source) is not True:
         raise RuntimeStoreError('permission_denied')
@@ -465,7 +471,9 @@ async def execute_command(connection, ref, params, *, dispatch=False):
                                    or authority._handle(ref).execution_state == 'idle'):
         await before()  # mid-run the busy dispatcher fires it once it accepts the command (``BUSY_ACCEPTED``)
     if runner_command is not None:
-        with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
+        from gateway.plugin_command_choice import viewer_choices
+        with (_profile_runtime_scope(home), _session_workspace(authority.runner, live.source),
+              viewer_choices(live, ref.session_id)):
             output = await _run_runner_command(authority.runner, live, name, arg, *runner_command)
         return {'type': 'exec', 'output': _text(output)}
     if definition is None:

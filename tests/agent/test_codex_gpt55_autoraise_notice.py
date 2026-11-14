@@ -24,7 +24,7 @@ from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
-from agent.agent_init import (
+from agent.agent_init_compression_notice import (
     _codex_gpt55_autoraise_notice_marker,
     _codex_gpt55_autoraise_notice_seen,
     _record_codex_gpt55_autoraise_notice,

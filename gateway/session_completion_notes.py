@@ -8,8 +8,18 @@ it (``completion_admission``), results already admitted are left out of a new ba
 outcome, note or turn, covers the whole batch. When that admission comes up for execution with no
 viewer attached (the authority's own subscriber records) the executor records it in the session's
 history, where the next turn sees it, and settles the admission without a model call. Queue order, restart survival and
-exactly-once are the admission contract's. With a viewer attached it runs as the turn it always was;
-messaging, cron, Kanban, ``/loop`` and heartbeat wakes never reach here.
+exactly-once are the admission contract's. With a viewer attached it runs as the turn it always was,
+except a local cron result, which is always a note; messaging, Kanban, ``/loop`` and heartbeat wakes
+never reach here.
+
+A result the parent carries on from (``resumes_parent``: an async delegation's final result, a
+background process's exit) runs as a turn with no viewer too. A viewer going away is not the user
+ending the work: a laptop asleep, a dropped socket or a closed browser tab leaves the session's plan
+mid-flight, and the parent dispatched that work to carry on when it finished. Only a chat the user
+closed (exit, /new, a resume or branch switch) keeps its results as notes. An async delegation whose
+final result has a failed child (``wakes_parent``) is a resume too, bounded: at most
+``UNATTENDED_WAKE_LIMIT`` failed-result wakes in a row while nobody watches. Only failed delegations
+spend that limit: successful results and process exits, whatever their exit code, are not counted.
 """
 import json
 from functools import partial
@@ -17,6 +27,13 @@ from functools import partial
 # ``_completion_delivery_identity`` kinds: an async delegation's result, a background process's exit
 # and its watch-pattern notices.
 _NOTED_PRODUCERS = frozenset({'async_delegation', 'completion', 'watch_match', 'watch_disabled'})
+# A cron result for a local chat (``session_cron.deliver_to_local_chat``) is finished text: a note
+# with or without a viewer, since a turn over it would only spend a model call (#143547 CRON-11).
+_ALWAYS_NOTED = frozenset({'cron'})
+# Failed-delegation wakes one session may run in a row with nobody watching. A woken parent that
+# re-dispatches into the same failure (billing, a usage limit) would otherwise wake itself forever; past
+# the limit the failure is a note again until a viewer attaches or the user sends something.
+UNATTENDED_WAKE_LIMIT = 3
 
 
 def _producer(identity):
@@ -27,26 +44,78 @@ def _producer(identity):
 
 
 def noted_completion(row):
-    """*row* is a local completion admission: a note when it runs with no viewer attached."""
+    """*row* is a local completion admission: a note when it runs with no viewer attached (unless it
+    wakes its parent, which ``note_if_unviewed`` decides when it runs)."""
     descriptor = (row or {}).get('payload', {}).get('local_automation_v1')
-    return descriptor is not None and _producer(descriptor['identity']) in _NOTED_PRODUCERS
+    return descriptor is not None and _producer(descriptor['identity']) in _NOTED_PRODUCERS | _ALWAYS_NOTED
+
+
+def _closed_by_user(authority, session_id):
+    """The user ended this chat's work: exit or /new refused its dispatches (``refuse_for_session``,
+    held in memory), its close is still pending in ``pending_closes`` (re-armed from the store after a
+    restart, while its FIFO is busy), or its row ended for a reason recovery does not resume (which
+    outlives a restart). An orphan reap (the last viewer vanished) and an agent close are not the user's.
+    A wake in a closed chat would also run its re-dispatched child inside the wake turn, refused the
+    background."""
+    from tools.async_delegation import refused_for_session
+    from gateway.session_viewer_close import ORPHAN_REASONS, _physical_target
+    # A close still pending (its FIFO was busy) outlives a restart in ``pending_closes``; the refusal does not.
+    pending = authority.pending_closes.get(session_id)
+    if refused_for_session((authority.profile_id, session_id)) or (
+            pending is not None and pending.reason not in ORPHAN_REASONS):
+        return True
+    from hermes_state_common import _RECOVERABLE_END_REASONS
+    row = authority.db.get_session(_physical_target(authority, session_id)) or {}
+    return bool(row.get('ended_at')) and row.get('end_reason') not in _RECOVERABLE_END_REASONS
+
+
+def _wakes_unviewed_parent(authority, session_id, live, descriptor):
+    """A result the parent carries on from (``resumes_parent``) or a failed async delegation
+    (``wakes_parent``) with no viewer attached: the parent dispatched that work and is waiting on it,
+    so it runs as the parent's turn instead of stalling until a human returns. Not in a chat the user
+    closed (``_closed_by_user``); a failed delegation not past ``UNATTENDED_WAKE_LIMIT`` (a process
+    exit is a resume whatever its exit code)."""
+    failed = descriptor.get('wakes_parent')
+    if not (failed or descriptor.get('resumes_parent')) or _closed_by_user(authority, session_id):
+        return False
+    if not failed:
+        return True
+    if live.unattended_wakes >= UNATTENDED_WAKE_LIMIT:
+        return False
+    live.unattended_wakes += 1
+    return True
+
+
+async def reopen_for_turn(authority, ref):
+    """A turn (never a note) makes *ref*'s finalized row live again: a local session's receipt tip, or
+    the row of a conversation its chat moved past (gateway/session_detached.py), which the chat's /new
+    ended."""
+    from gateway.session_runtime_workers import tracked_write
+    live = authority.sessions.get(ref.session_id)
+    if live is not None and live.detached:
+        from gateway.session_api import reopen_api_session as reopen
+    else:
+        from gateway.session_local_recovery import reopen_local_session as reopen
+    await tracked_write(authority, partial(reopen, authority, ref))
 
 
 async def note_if_unviewed(authority, ref, row):
     """The claimed *row*'s response when it was written as a note instead of running, else None.
     It is the FIFO head, so the note lands after every input committed before it and before every
     input committed after; the viewer check and the decision share one loop step."""
+    live = authority.sessions.get(ref.session_id)
+    if live is not None and (live.subscribers or 'local_automation_v1' not in row['payload']):
+        live.unattended_wakes = 0  # someone is watching, or the user sent this: recoveries count afresh
     if not noted_completion(row):
         return None
     from gateway.session_runtime_workers import tracked_write
-    live = authority.sessions.get(ref.session_id)
-    if live is None or live.subscribers:
+    descriptor = row['payload']['local_automation_v1']
+    if (live is None or (live.subscribers and _producer(descriptor['identity']) not in _ALWAYS_NOTED)
+            or _wakes_unviewed_parent(authority, ref.session_id, live, descriptor)):
         # The claim left a closed row closed for a note; the turn reopens it as any first turn does.
-        from gateway.session_local_recovery import reopen_local_session
-        await tracked_write(authority, partial(reopen_local_session, authority, ref))
+        await reopen_for_turn(authority, ref)
         return None
     from gateway.session_viewer_close import _physical_target
-    descriptor = row['payload']['local_automation_v1']
     metadata = {'completion_note': sorted(set(descriptor.get('identities') or ()) | {descriptor['identity']})}
     metadata.update({key: descriptor[key] for key in ('display_text', 'notification_category') if key in descriptor})
     target = _physical_target(authority, ref.session_id)

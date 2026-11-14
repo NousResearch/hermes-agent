@@ -27,6 +27,16 @@ class RelayDiscordInteractionMixin:
 
     _DISCORD_LABELS_MAX = 2048
 
+    def _capture_ingress_scope(self, event) -> None:
+        """``_capture_scope`` for a connector-delivered event, on every Relay ingress path. A
+        single-profile gateway serves the connector's profile route from its one profile, so once the
+        stamp is kept for egress (persona attribution) it is cleared before admission, command
+        dispatch or a passthrough turn. A bare adapter with no runner keeps it."""
+        self._capture_scope(event)
+        config = getattr(getattr(self._message_handler, '__self__', None), 'config', None)
+        if config is not None and not getattr(config, 'multiplex_profiles', False):
+            event.source.profile = None
+
     async def _remember_discord_labels(self, source) -> None:
         """Keep the text lane's Discord chat labels for the interaction lane: the pinned
         session-context prompt renders them, so a slash turn without them re-rendered the cached
@@ -93,10 +103,17 @@ class RelayDiscordInteractionMixin:
             if platform == "discord":
                 event = self._discord_interaction_to_event(forward)
                 if event is not None:
-                    self._capture_scope(event)
+                    self._capture_ingress_scope(event)
                     # A prompt-token component press is consumed (same gate as _on_inbound).
                     if await self._consume_prompt_response(event):
                         return
+                    if not self._interaction_admitted(event):
+                        logger.info("relay: Discord interaction from a sender not admitted here dropped")
+                        return
+                    from datetime import UTC, datetime
+                    # Retries carry one provider identity and fingerprint, just like relayed text.
+                    event.message_id = event.source.message_id
+                    event.timestamp = datetime.fromtimestamp(0, UTC)
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
                         str(src.scope_id or ""), src.chat_id)
@@ -110,6 +127,14 @@ class RelayDiscordInteractionMixin:
             )
         except Exception:
             logger.warning("relay passthrough_forward handling failed", exc_info=True)
+
+    def _interaction_admitted(self, event) -> bool:
+        from gateway.approval_actor import runner_answer_policy
+        from gateway.relay.admitted_authors import interaction_admitted
+
+        # Identity first, as for a prompt press: the admin lookup reads the bot-owning profile's policy.
+        self._canonicalize(event.source)
+        return interaction_admitted(event, runner_answer_policy(event.source).admin_user_ids)
 
     def _discord_interaction_to_event(self, forward):
         """Convert a forwarded Discord interaction body to a MessageEvent, or None for

@@ -62,6 +62,25 @@ def test_registry_add_get_roundtrip_persists(tmp_path):
     assert "added_at" in entry
 
 
+@pytest.mark.platforms("posix")
+def test_registry_update_tightens_permissive_token_file(tmp_path):
+    """A nodes.json left 0644 (older Hermes, hand-made) must not keep that mode on rewrite."""
+    import os
+    import stat
+
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    p = tmp_path / "nodes.json"
+    p.write_text('{"nodes": {}}', encoding="utf-8")
+    p.chmod(0o644)
+    old_umask = os.umask(0o022)
+    try:
+        NodeRegistry(path=p).add("mac", "ws://mac.local:18789", "deadbeef")
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+
 # ---------------------------------------------------------------------------
 # server.py — token + dispatch
 # ---------------------------------------------------------------------------

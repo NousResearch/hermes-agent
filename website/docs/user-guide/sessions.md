@@ -224,7 +224,7 @@ hermes --resume 20250305_091523_a1b2c3 --no-restore-cwd
 
 A `↪ restored workspace dir: …` line confirms the switch. Restore failures never break the resume itself.
 
-Resuming an idle session picks up the profile's current config: toolsets, MCP servers, `terminal` settings, `max_turns`, checkpoints and the default reasoning effort. The session keeps its model, its launch flags and any `/reasoning` or workspace change you made. Any difference starts a new prompt-cache prefix, so the first turn after the resume costs more. A change to the `terminal` settings, even an unrelated one like `terminal.timeout`, also resets an earlier `cd` to the session's directory.
+Resuming an idle session picks up the profile's current config: toolsets, MCP servers, `terminal` settings, `max_turns`, checkpoints and the default reasoning effort. The session keeps its model, its launch flags and any `/reasoning` or workspace change you made. Side-task models (the `auxiliary:` section: compression, vision, title generation and the other helper calls) always come from the profile's current `config.yaml`, with their keys and the `providers:` entries they name, so an edit reaches existing sessions from their next side-task call. A session started with `--ignore-user-config` or `--safe-mode` never reads them. Any difference starts a new prompt-cache prefix, so the first turn after the resume costs more. A change to the `terminal` settings, even an unrelated one like `terminal.timeout`, also resets an earlier `cd` to the session's directory.
 
 ### Filtering Sessions by Workspace
 
@@ -290,7 +290,7 @@ What happens:
 
 6. From that point, the conversation lives on the platform. Reply in the new thread — anyone authorized in that channel shares the same session, and any later real user message in the thread joins seamlessly because thread sessions key without `user_id`.
 
-**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
+**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off. Handing off again moves the conversation to the new Telegram topic; the earlier topic starts a fresh conversation at its next message.
 
 **Failure modes:**
 - No home channel configured → CLI refuses with a `/sethome` hint.
@@ -701,6 +701,47 @@ Database size: 12.4 MB
 
 For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](../reference/cli-commands.md#hermes-insights).
 
+### Refresh Prompts After a Profile Update
+
+A continuing session sends the same system prompt on every turn, the bytes it
+built on its first turn. Keeping those bytes fixed is what lets the provider
+reuse its prompt cache across a long conversation. The side effect: changes to
+`SOUL.md`, installed or edited skills, or project context files (`AGENTS.md`
+and friends) do not reach a session that is already running. A gateway
+restart does not change that, because the gateway restores each session's
+stored prompt. Until now the only way in was `/new`, which also drops the
+conversation.
+
+After updating a profile's prompt sources, ask its sessions to adopt them:
+
+```bash
+# Every session in the active profile (add -p <profile> for another one)
+hermes sessions refresh-prompts
+
+# One session (id or unique prefix)
+hermes sessions refresh-prompts --session SESSION_ID
+```
+
+The command records a refresh request in the profile's `state.db` and prints
+how many sessions hold a stored prompt. On each session's next turn, Hermes
+rebuilds the system prompt from the current sources and then sends the
+message. The conversation history, the session id and the session's tool list
+stay as they were. The rebuilt prompt is saved, so every later turn reuses it
+byte for byte.
+
+- **Cost:** each refreshed session pays one prompt-cache miss, on the turn
+  that rebuilds. Later turns are cached again.
+- **No restart needed:** the request is read at the start of every turn, by
+  agents the gateway keeps in memory and by agents it restores from the
+  database. It also survives restarts. Run it once the new files are in
+  place: an update script can call it before or after replacing the gateway.
+- **What gets rebuilt:** the whole system prompt goes through the normal
+  builder, so memory and `USER.md` blocks also pick up their latest saved
+  state on that turn. Tool definitions do not change. A session started after
+  the request already has the new prompt and does not rebuild again.
+- **Without the command** nothing changes: sessions keep replaying their
+  stored prompt as before.
+
 ### Repair Stranded Gateway Sessions
 
 If a gateway conversation ever "jumps back in time" after a restart — resuming
@@ -751,14 +792,14 @@ live session. After the root fix in PR #122825 is installed, use
 `hermes sessions repair-prompts` to find rows that were already degraded.
 
 The scan is conservative: it only proposes a repair when the stored prompt is
-missing the `## Skill Safety` guidance **and** the persisted `tools[]` pin
+missing the `skill_manage` guidance line **and** the persisted `tools[]` pin
 contains `skill_manage` (which always emits that guidance). Rows with no
 readable pin, or with a `memory`-only pin (which is also a legitimate
 `toolsets: [memory]` setup), are reported as **unverifiable** and are not
 changed by this scan; clear them explicitly by `SESSION_ID` if needed. A
 memory-only row also becomes repairable on its own: once the session is resumed, its
 `tools[]` pin re-pins the full tool surface, after which a scan sees
-`skill_manage` without the Skill Safety guidance and clears it.
+`skill_manage` without that guidance line and clears it.
 
 ```bash
 # Report verified candidates and unverifiable rows; writes nothing
@@ -983,6 +1024,12 @@ The keyword mode supports standard FTS5 query syntax:
 - `detail` — `adaptive` (default) fully hydrates only the top discovery result; `full` hydrates every discovery result.
 - `role_filter` — comma-separated roles to include. Discovery defaults to `user,assistant` (tool output is usually noise). Pass `user,assistant,tool` to include tool output (debugging tool behaviour) or `tool` to search tool output only.
 
+### Who can search what
+
+`session_search` reads the whole session store of the profile it runs in: every chat, from every platform and every user in that profile's allowlist. On a shared or family bot, anyone allowed to talk to it can ask the agent to find and read anyone else's conversations with it. Hermes does not separate users inside one profile (see `SECURITY.md` §2.6), and profiles on one host are not isolated from each other either: the default profile reads every profile's sessions (below), and an agent with terminal or code-execution tools can read any profile's files. Give each person who needs private history their own instance, under a separate OS user or container (`SECURITY.md` §2.2).
+
+`profile=` (and an `@session:<profile>/<id>` link) reads another profile's store. When one process serves several profiles (a multiplexed gateway, a dashboard or `hermes serve` backend on a host with more than one profile), only the **default** profile may do that, except in your own Desktop, TUI, CLI and editor (ACP) sessions; a call from any other profile that names a different profile is refused with an error. A process running a single profile on its own keeps cross-profile reads.
+
 ### When It's Used
 
 The agent is prompted to use session search automatically:
@@ -1193,6 +1240,20 @@ deleted by a *later* pass after a further full retention window. Messaging
 platform sessions (Telegram, Discord, …), TUI/desktop sessions, pinned
 sessions, and sessions with a live turn or compression in progress are
 never closed by this sweep.
+
+**Local sessions nobody closed.** A CLI, TUI or Desktop session whose last
+viewer disappeared without closing it (a killed terminal, a dropped connection,
+or a gateway stop or restart while it was open) is ended by the gateway
+`sessions.orphan_end_grace_s` seconds later (default `300`; `0` never ends it),
+`end_reason: ws_orphan_reap` (or `startup_orphan_reap` after a restart, no
+sooner than 6 hours after its last activity, since an idle classic CLI only
+reconnects when you next use it). While `orphan_end_grace_s` is unset, the
+legacy `dashboard.ws_orphan_reap_grace_s: 0` turns this off, and
+`dashboard.startup_orphan_sweep: false` turns off the after-restart end. A turn
+still running keeps running, and the session ends once it settles; one paused on
+an interrupted turn stays open until you Discard it. A viewer that reconnects
+within the grace keeps the session open. Ending is non-destructive: the session
+stays resumable, and its next message reopens it on the same id.
 
 ### Oversized-Transcript Guards
 

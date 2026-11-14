@@ -46,7 +46,8 @@ class OptionalSkillSource(SkillSource):
     def __init__(self, auth: Optional[GitHubAuth] = None):
         from hermes_constants import get_optional_skills_dir
 
-        self._optional_dir = get_optional_skills_dir(Path(__file__).parent.parent / "optional-skills")
+        from hermes_cli._startup_fast import project_root_str
+        self._optional_dir = get_optional_skills_dir(Path(project_root_str()) / "optional-skills")
         self._auth = auth
         # GitHubSource for the live-repo fallback, created only when a skill is missing locally.
         self._github: Optional[GitHubSource] = None

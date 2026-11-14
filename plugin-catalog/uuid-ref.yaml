@@ -1,0 +1,18 @@
+name: uuid-ref
+repo: https://github.com/olric3015/hermes-plugins
+sha: 12882e9923ff12eb1ae5cf9074d08fd162999c28
+subdir: uuid-ref
+description: "@uuid: context references that decode a UUID or ULID for the model: @uuid:<id> takes a UUID in any common spelling (hyphens or not, braces, upper case, urn:uuid:) or a ULID, and attaches what its bits say, read the way RFC 9562 lays them out: version and variant in words, the creation time a v1, v6, v7 or ULID carries in UTC with how long ago, the clock sequence and node of a v1 or v6 and whether the node is random or looks like a network card (MAC) address, the local id and domain of a v2, a ULID's 128 bits written as a UUID, and the Nil, Max and RFC namespace UUIDs by name; up to 10 identifiers in one reference are compared by creation time; the TUI and Desktop composer preview an identifier as you type it. Disclosure — reads only the text of the reference itself and the system clock, using Python's re, datetime and fractions; nothing is looked up; no network, no files read or written, no subprocess, no credentials read; the plugin keeps no copy of the identifiers, but the @uuid: reference and the decoded text become part of the message sent to your model provider and saved in the session history; register() only adds the @uuid: reference provider."
+maintainer: olric3015
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/olric3015/hermes-plugins/tree/main/uuid-ref
+version: "1.0.0"
+image: https://raw.githubusercontent.com/olric3015/hermes-plugins/12882e9923ff12eb1ae5cf9074d08fd162999c28/docs/uuid-ref-card.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

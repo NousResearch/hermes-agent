@@ -114,7 +114,7 @@ class TestCwdHandling:
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/vercel/sandbox"
 
-    @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona"])
+    @pytest.mark.parametrize("backend", ["modal", "docker", "daytona"])
     def test_default_cwd_is_root_for_container_backends(self, backend, monkeypatch):
         """Container backends should default to /root, not ~."""
         monkeypatch.setenv("TERMINAL_ENV", backend)
@@ -264,6 +264,10 @@ class TestDockerHostBindApproval:
         assert _tt_mod._docker_has_host_access(
             {"env_type": "docker", "host_cwd": "/home/u/p",
              "docker_mount_cwd_to_workspace": True}) is True
+        # Flag on without a launch-dir host_cwd: a session workspace may still be bound.
+        assert _tt_mod._docker_has_host_access(
+            {"env_type": "docker", "host_cwd": None,
+             "docker_mount_cwd_to_workspace": True}) is True
         # Windows host path -> host access.
         assert _tt_mod._docker_has_host_access(
             {"env_type": "docker", "docker_volumes": ["C:\\Users:/data"]}) is True
@@ -277,7 +281,6 @@ class TestDockerHostBindApproval:
         assert A._should_skip_container_guards("docker", has_host_access=False) is True
         assert A._should_skip_container_guards("docker", has_host_access=True) is False
         assert A._should_skip_container_guards("modal", has_host_access=True) is True
-        assert A._should_skip_container_guards("singularity") is True
         assert A._should_skip_container_guards("daytona") is True
         assert A._should_skip_container_guards("local") is False
 

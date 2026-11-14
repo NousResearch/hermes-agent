@@ -13,9 +13,7 @@ from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
-from hermes_cli.web_models import MCPServerCreate
 from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
-from hermes_cli.web_server_mcp import _normalize_mcp_server_create
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
@@ -145,15 +143,14 @@ def _parse_model_ids(resp: Any) -> list[str]:
 def _fallback_profile_entry(profiles_mod, name: str, home: Path, *, is_default: bool,
                             has_env: bool, gateway_running: Callable[[], bool]) -> dict[str, Any]:
     model, provider = _safe(lambda: profiles_mod._read_config_model(home), (None, None))
-    meta = lambda key, default: _safe(
-        lambda: profiles_mod.read_profile_meta(home).get(key, default), default)
+    meta = _safe(lambda: profiles_mod.read_profile_meta(home), {}).get
     return {
         "name": name, "path": str(home), "is_default": is_default, "model": model,
         "provider": provider, "has_env": has_env,
         "skill_count": _safe(lambda: profiles_mod._cached_skill_count(home), 0),
         "gateway_running": _safe(gateway_running, False),
         "description": meta("description", ""), "description_auto": meta("description_auto", False),
-        "bot_title": meta("bot_title", ""),
+        "bot_title": meta("bot_title", ""), "ui_meta": meta("ui_meta", {}),
         "distribution_name": None, "distribution_version": None, "distribution_source": None,
         "has_alias": False}
 
@@ -197,38 +194,6 @@ def _resolve_profile_dir(name: str) -> Path:
     if not profiles_mod.profile_exists(name):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
     return profiles_mod.get_profile_dir(name)
-
-
-def _write_profile_mcp_servers(profile_dir: Path, servers: list[MCPServerCreate]) -> int:
-    """Write MCP server entries into ``profile_dir``'s config.yaml (HERMES_HOME-scoped).
-
-    Mirrors the per-server shape ``POST /api/mcp/servers`` builds, batched so the whole
-    profile-create write is one config save. Returns the number of servers written.
-    """
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.mcp_config import _save_bearer_auth_token
-    written = 0
-    with _hermes_home_scope(profile_dir):
-        cfg = load_config()
-        mcp = cfg.setdefault("mcp_servers", {})
-        for server in servers:
-            try:
-                name, entry, bearer_token = _normalize_mcp_server_create(server)
-            except ValueError as exc:
-                display_name = (server.name or "").strip() or "<unnamed>"
-                _log.warning("Profile-create: skipping MCP server '%s': %s", display_name, exc)
-                continue
-            if bearer_token is not None:
-                entry["headers"] = _save_bearer_auth_token(name, bearer_token)
-            mcp[name] = entry
-            written += 1
-        if written:
-            save_config(cfg)
-        elif not mcp:
-            # Don't leave the stray empty key we just created in the new profile's config.
-            cfg.pop("mcp_servers", None)
-            save_config(cfg)
-    return written
 
 
 # Skills & Tools endpoints accept an optional ``profile`` query param so the dashboard can
@@ -338,8 +303,6 @@ _TERMINAL_BACKENDS: list[dict[str, str]] = [
         ("local", "Local", "Run commands directly on this machine. No isolation."),
         ("docker", "Docker / Podman",
          "Run commands in an isolated Docker or Podman container with a persistent workspace."),
-        ("singularity", "Singularity / Apptainer",
-         "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),
         ("daytona", "Daytona", "Run commands in a Daytona cloud sandbox."),
         ("ssh", "SSH", "Run commands on a remote host over SSH."))]
@@ -467,8 +430,13 @@ def _hub_action_name(verb: str, key: str) -> str:
 
 def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     """identifier -> installed lock entry for hub-installed skills (UI marks installed search
-    results). Scoped to ``profile``'s skills/.hub/lock.json when given — HubLockFile takes an
-    explicit path, sidestepping the import-time LOCK_FILE binding. {} when unreadable."""
+    results and catalog cards). Scoped to ``profile``'s skills/.hub/lock.json when given —
+    HubLockFile takes an explicit path, sidestepping the import-time LOCK_FILE binding. {} when
+    unreadable.
+
+    Keyed by ``HubLockFile.by_identifier``, so a ClawHub install also answers to the
+    ``clawhub/<slug>`` id a catalog card installs. Search lists a ClawHub skill by its bare
+    slug; a client looks such a hit up under that card id, going by the hit's source."""
     try:
         from tools.skills_hub import HubLockFile
         if _is_current_profile(profile):
@@ -477,8 +445,8 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
             profile_dir = _resolve_profile_dir(profile.strip())
             lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
         keys = ("name", "trust_level", "scan_verdict")
-        return {entry["identifier"]: {k: entry.get(k) for k in keys}
-                for entry in lock.list_installed() if entry.get("identifier")}
+        return {identifier: {k: entry.get(k) for k in keys}
+                for identifier, entry in lock.by_identifier().items()}
     except HTTPException:
         raise  # an unknown profile is the scope's 404, not an unreadable lock file
     except Exception:

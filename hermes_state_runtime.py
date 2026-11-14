@@ -3,6 +3,7 @@
 No execution, transport, or authority objects live here. Every mutation uses the
 SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
+import heapq
 import json
 import uuid
 from typing import NamedTuple, Optional
@@ -30,6 +31,12 @@ class RuntimeStoreError(ValueError):
         self.field = _one_line(field, 80)
         self.detail = _one_line(detail, 160)
         super().__init__(reason)
+
+
+#: The one ``admission_conflict`` that proves the request was already admitted: this principal's
+#: request id on this target holds an admission with another payload. Every other conflict (route,
+#: binding, lineage) carries no such proof, so a client tells them apart by this field.
+ADMITTED_REQUEST_CONFLICT = {'field': 'request_id', 'detail': 'this request id was already admitted with another payload'}
 
 
 def _one_line(value, limit):
@@ -150,7 +157,7 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             WHERE principal_id=? AND target_session_id=? AND request_id=?''', (principal_id, session_id, request_id)).fetchone()
         if old is not None:
             if old['payload_digest'] != digest:
-                raise RuntimeStoreError('admission_conflict')
+                raise RuntimeStoreError('admission_conflict', **ADMITTED_REQUEST_CONFLICT)
             if _replay_guard is not None:
                 _replay_guard(conn)
             return _row(old)
@@ -192,6 +199,24 @@ def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -
         sql = ("SELECT * FROM session_admissions WHERE target_session_id=? "
                + ("AND status IN ('queued','started','unknown') " if pending_only else "") + "ORDER BY seq")
         return [_row(row) for row in conn.execute(sql, (session_id,))]
+
+
+_ADMISSION_STATUSES = ('queued', 'started', 'unknown', 'terminal')  # the table's status CHECK
+
+
+def latest_session_admission(db, *, session_id: str, accept) -> dict | None:
+    """The newest admission whose payload ``accept`` takes, stopping at the first match: a restored
+    lane needs only its latest envelope, not the session's whole history. One newest-first stream
+    per status, merged by ``seq``, so each walks the (target, status, seq) index with no sort."""
+    sql = "SELECT * FROM session_admissions WHERE target_session_id=? AND status=? ORDER BY seq DESC"
+    with db._read_ctx() as conn:
+        cursors = [conn.execute(sql, (session_id, status)) for status in _ADMISSION_STATUSES]
+        try:
+            rows = heapq.merge(*cursors, key=lambda row: row['seq'], reverse=True)
+            return next((row for row in map(_row, rows) if accept(row['payload'])), None)
+        finally:
+            for cursor in cursors:  # before the connection goes back to the pool
+                cursor.close()
 
 
 _ANY_HEAD = object()

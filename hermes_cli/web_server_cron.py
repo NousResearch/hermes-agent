@@ -68,6 +68,53 @@ def _validate_dashboard_cron_effective_job(job: dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="agent cron jobs require a prompt, skill, or script")
 
 
+def _validate_dashboard_cron_security(
+    profile: str, effective: dict[str, Any], updates: Optional[dict[str, Any]] = None,
+) -> None:
+    """Prompt-scan and credential-safety guards the agent tool path applies
+    (``tools/cronjob_tools.py``). A dashboard-created or -edited job must not
+    bypass them.
+
+    ``updates=None`` (create, blueprint instantiate) validates every field
+    present. A mapping scopes the prompt/deliver checks to touched fields —
+    mirroring the tool's update path — while ``base_url`` always checks the
+    EFFECTIVE pair so an unrelated edit cannot leave an unsafe
+    provider+endpoint combination schedulable. A ``pinned`` update is resolved
+    into ``updates`` here (popped, provider/model written), so the pair checked
+    is the pair ``update_job`` stores.
+
+    The base_url check reads ``providers:`` and stored secrets, so it runs in the
+    OWNING profile's config+secret scope: the launch profile's same-named provider
+    must not vouch for an endpoint that would receive another profile's key.
+    """
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    from tools.cronjob_job_args import (
+        _normalize_deliver_param, _validate_bot_chat_deliver, _validate_cron_base_url)
+    from tools.cronjob_prompt_scan import _scan_cron_prompt
+
+    def _touched(key: str) -> bool:
+        return updates is None or key in updates
+
+    prompt = _cron_optional_text(effective.get("prompt"))
+    with _config_profile_scope(profile):
+        if updates and "pinned" in updates:
+            # Resolve ``pinned`` into provider/model HERE, in the owning profile's scope, so
+            # update_job stores exactly the pair checked below instead of re-resolving it unscoped.
+            from cron.jobs import _apply_pin_update
+            _apply_pin_update(effective, updates)
+            effective = {**effective, **updates}
+        base_url_error = _validate_cron_base_url(effective.get("provider"), effective.get("base_url"))
+    error = (
+        (_touched("prompt") and prompt and _scan_cron_prompt(prompt))
+        or base_url_error
+        or (_touched("deliver") and _validate_bot_chat_deliver(
+            _normalize_deliver_param(effective.get("deliver"))))
+        or (_touched("failure_deliver") and _validate_bot_chat_deliver(
+            _normalize_deliver_param(effective.get("failure_deliver")))))
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+
 def _validate_dashboard_cron_context_from(refs: Optional[list[str]], profile_name: str) -> None:
     for ref in refs or ():
         # "self" (the continuity toggle) resolves to the job's own id at run time — it can't be
@@ -262,6 +309,12 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             repeat = normalize_repeat_value(repeat)
         _validate_dashboard_cron_effective_job(
             {"prompt": body.prompt, "skills": skills, "script": script, "no_agent": no_agent})
+        _validate_dashboard_cron_security(profile_name, {
+            "prompt": body.prompt,
+            "provider": _cron_optional_text(body.provider),
+            "base_url": _cron_optional_text(body.base_url, strip_trailing_slash=True),
+            "deliver": _cron_optional_text(body.deliver) or "local",
+        })
         return _mutate_cron_for_profile(
             profile_name,
             "create_job",
@@ -279,7 +332,9 @@ def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):
             enabled_toolsets=_cron_string_list(body.enabled_toolsets),
             workdir=_cron_optional_text(body.workdir),
             no_agent=no_agent,
-            **{key: getattr(body, key) for key in ("paused", "paused_reason")
+            timezone=_cron_optional_text(body.timezone),
+            grace_minutes=body.grace_minutes,
+            **{key: getattr(body, key) for key in ("paused", "paused_reason", "catch_up")
                if key in body.model_fields_set})
     except HTTPException:
         raise
@@ -317,45 +372,41 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
 
 
 def _profile_env_value(home: Path, key: str) -> str:
-    """One value from a profile's .env (``""`` when absent/unreadable)."""
-    from agent.secret_scope import load_env_file
+    """One value from a profile's own secret scope (``""`` when absent): ``build_profile_secret_scope``
+    expands ``${VAR}`` references the way that profile's gateway does, so a templated
+    ``API_SERVER_PORT=${PORT}`` is the port it listens on, not the literal template (#137080)."""
+    from agent.secret_scope import build_profile_secret_scope
 
-    return load_env_file(home / ".env").get(key, "")
+    return build_profile_secret_scope(home).get(key, "")
 
 
-def _gateway_fire_endpoint(profile: str, home: Path) -> str:
-    """Loopback URL of the gateway api_server's cron-fire route.
-
-    Port resolution mirrors gateway/config.py's api_server load order for the LISTENER-OWNER
-    profile: ``platforms.api_server.extra.port`` in its config.yaml, then ``API_SERVER_PORT``
-    (process env for the active profile, the profile's own .env otherwise), then 8642. Loopback
-    is safe: dashboard and gateway share a network namespace in every supported deployment.
+def _gateway_listener(profile: str, home: Path) -> tuple[bool, str, Path]:
+    """``(multiplex, listener profile, listener home)`` of the gateway api_server serving *profile*.
 
     In multiplex mode only the DEFAULT profile's api_server is bound and exposes per-profile
-    mirrors under ``/p/<profile>/…``, so a non-default profile's port must be read from the
-    default home (a secondary's own API_SERVER_PORT is a port nothing listens on).
+    mirrors under ``/p/<profile>/…``, so a non-default profile's listener is the default home (a
+    secondary's own API_SERVER_PORT is a port nothing listens on).
     """
-    from hermes_cli.config import load_config
-    import os as _os
     multiplex = False
     try:
         # The live default gateway's own record, else the explicit flag — never the merged default:
         # an unset gateway.multiplex_profiles is settled by the gateway at boot, not by this process.
         from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
         multiplex = default_gateway_multiplexes()
-    except Exception:
-        _log.debug("cron fire: multiplex detection failed; assuming single-profile", exc_info=True)
-
-    listener_profile, listener_home = profile, home
+    except Exception:  # health: allow BLE001 -- moved from _gateway_fire_endpoint; detection must never fail a request
+        _log.debug("gateway api_server: multiplex detection failed; assuming single-profile", exc_info=True)
     if multiplex and profile != "default":
         from hermes_constants import get_default_hermes_root
-        listener_profile, listener_home = "default", get_default_hermes_root()
         _log.info(
-            "cron fire: multiplex gateway — resolving api_server port for %s "
-            "from the default profile's listener (%s)", profile, listener_home,
-        )
+            "gateway api_server: multiplex gateway; %s is served by the default profile's "
+            "listener", profile)
+        return True, "default", get_default_hermes_root()
+    return multiplex, profile, home
 
-    port = 0
+
+def _listener_api_server_extra(listener_home: Path) -> dict:
+    """``platforms.api_server.extra`` of the listener profile's config ({} when unreadable)."""
+    from hermes_cli.config import load_config
     try:
         # Profile-scoped read through the CANONICAL loader (managed-scope overlay, ${ENV_VAR}
         # expansion) — never a raw yaml.safe_load (tests/hermes_cli/test_config_read_guard.py).
@@ -365,24 +416,81 @@ def _gateway_fire_endpoint(profile: str, home: Path) -> str:
             profile_cfg = load_config()
         finally:
             reset_hermes_home_override(token)
-        raw = cfg_get(profile_cfg, "platforms", "api_server", "extra", "port", default=None)
-        if raw:
-            port = int(raw)
-    except Exception:
-        port = 0
-    if not port:
-        raw = (
-            _os.getenv("API_SERVER_PORT", "")
-            if listener_profile == _cron_default_profile()
-            else _profile_env_value(listener_home, "API_SERVER_PORT"))
-        try:
-            port = int(raw) if raw else 0
-        except ValueError:
-            port = 0
-    port = port or 8642
+        extra = cfg_get(profile_cfg, "platforms", "api_server", "extra", default=None)
+        return extra if isinstance(extra, dict) else {}
+    except Exception:  # health: allow BLE001 -- moved from _gateway_fire_endpoint; unreadable config falls back to env
+        return {}
+
+
+def _profile_setting(profile: str, home: Path, key: str) -> str:
+    """*key* from the process env for the active profile, the profile's own .env otherwise."""
+    import os as _os
+    return _os.getenv(key, "") if profile == _cron_default_profile() else _profile_env_value(home, key)
+
+
+def _gateway_api_base(profile: str, home: Path) -> str:
+    """Loopback base URL of the gateway api_server serving *profile* (:func:`_listener_base`)."""
+    listener = _gateway_listener(profile, home)
+    return _listener_base(profile, listener, _listener_api_server_extra(listener[2]))
+
+
+def _gateway_api_target(profile: str, home: Path) -> tuple[str, str]:
+    """``(loopback base URL, API_SERVER_KEY)`` of the gateway api_server serving *profile*, from one
+    listener lookup. The key is the one that listener checks (the api_server's ``_expected_api_key``):
+    a multiplexed profile's own key, never the default's; otherwise a usable ``API_SERVER_KEY``,
+    which the gateway loads over ``platforms.api_server.extra.key`` (gateway/config_env.py), then
+    that configured key. ``""`` when there is none."""
+    listener = _gateway_listener(profile, home)
+    multiplex, listener_profile, listener_home = listener
+    extra = _listener_api_server_extra(listener_home)
+    base = _listener_base(profile, listener, extra)
+    from hermes_cli.auth import has_usable_secret
     if multiplex and profile != "default":
-        return f"http://127.0.0.1:{port}/p/{profile}/api/cron/fire"
-    return f"http://127.0.0.1:{port}/api/cron/fire"
+        # The secret mapping the gateway binds for this profile's requests (its .env plus external
+        # secret sources and managed env), which ``_expected_api_key`` reads through get_secret.
+        from gateway.run import _load_profile_secret_scope
+        key = (_load_profile_secret_scope(home).get("API_SERVER_KEY") or "").strip()
+        return base, key if has_usable_secret(key, min_length=16) else ""
+    key = _profile_setting(listener_profile, listener_home, "API_SERVER_KEY").strip()
+    if has_usable_secret(key, min_length=16):
+        return base, key
+    configured = extra.get("key")
+    return base, configured.strip() if isinstance(configured, str) else ""
+
+
+def _listener_base(profile: str, listener: tuple[bool, str, Path], extra: dict) -> str:
+    """Loopback base URL of *listener* (from :func:`_gateway_listener`) for *profile*.
+
+    Port resolution mirrors the gateway's for the LISTENER-OWNER profile (process env for the active
+    profile, the profile's own .env otherwise): ``API_SERVER_PORT`` when ``API_SERVER_KEY`` is
+    usable, which the gateway loads over the configured port (gateway/config_env.py), then
+    ``platforms.api_server.extra.port`` in its config.yaml (*extra*), then ``API_SERVER_PORT``
+    (the adapter's own fallback), then 8642. Loopback is safe: dashboard and gateway share a
+    network namespace in every supported deployment.
+    """
+    from hermes_cli.auth import has_usable_secret
+    multiplex, listener_profile, listener_home = listener
+    try:
+        configured = int(extra.get("port") or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    try:
+        env_port = int(_profile_setting(listener_profile, listener_home, "API_SERVER_PORT") or 0)
+    except ValueError:
+        env_port = 0
+    env_key = _profile_setting(listener_profile, listener_home, "API_SERVER_KEY")
+    if env_port and has_usable_secret(env_key, min_length=16):
+        port = env_port
+    else:
+        port = configured or env_port or 8642
+    if multiplex and profile != "default":
+        return f"http://127.0.0.1:{port}/p/{profile}"
+    return f"http://127.0.0.1:{port}"
+
+
+def _gateway_fire_endpoint(profile: str, home: Path) -> str:
+    """Loopback URL of the gateway api_server's cron-fire route."""
+    return f"{_gateway_api_base(profile, home)}/api/cron/fire"
 
 
 async def _forward_cron_fire_to_gateway(

@@ -99,21 +99,28 @@ exit $status
 }
 
 # name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml, plus the
-# unconditional guards CI runs in their own workflows (case-collision-check.yml,
-# lazy-deps-guard.yml, profile-artifact-check.yml, blob-size-check.yml).
+# unconditional guards CI runs as steps of repo-guards.yml (case collisions, lazy_deps imports,
+# profile archives, blob size).
 _GUARDS = {
     "footguns": ["scripts/check-windows-footguns.py", "--all"],
     "shebangs": ["scripts/check_bash_shebangs.py"],
     "no-tmp": ["scripts/check_no_tmp_literals.py"],
+    "detached-spawns": ["scripts/check_detached_spawns.py"],
+    "install-root": ["scripts/install_root_lint.py"],
     "config-writers": ["scripts/check_config_yaml_writers.py"],
+    "config-readers": ["scripts/check_config_yaml_readers.py"],
+    "profile-create-entry": ["scripts/check_profile_create_entry.py"],
     "os-marker-fakes": ["scripts/ci/check_os_marker_fakes.py"],
     "agents-md": ["scripts/ci/check_agents_md_size.py"],
+    "shims": ["scripts/move/generate_shims.py", "--check"],
     "case-collisions": ["scripts/check-case-collisions.py"],
+    "line-endings": ["scripts/ci/check_line_endings.py"],
+    "dockerfile-downloads": ["scripts/ci/check_dockerfile_downloads.py"],
     "lazy-deps": ["scripts/ci/check_lazy_deps_imports.py"],
     "profile-archives": ["scripts/ci/check_profile_archive_boundary.py"],
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
-# (blob-size-check.yml).
+# (the blob-size step of repo-guards.yml).
 _DIFF_GUARDS = {"blob-size": ["scripts/ci/check_blob_size.py"]}
 _CHECKS = (*_GUARDS, *_DIFF_GUARDS, "ruff", "health")
 

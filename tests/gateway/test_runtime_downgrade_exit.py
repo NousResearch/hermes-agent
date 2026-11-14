@@ -79,6 +79,10 @@ def test_the_tree_probe_reads_the_checkout_on_disk(tmp_path):
     assert rde.tree_predates_runtime(tmp_path) is False
     git("checkout", "-q", "--detach", "old")
     assert rde.tree_predates_runtime(tmp_path) is True
+    nested = tmp_path / "hermes_agent" / "hermes_state"
+    nested.mkdir(parents=True)
+    (nested / "common.py").write_text("SCHEMA = 'CREATE TABLE IF NOT EXISTS session_admissions'\n")
+    assert rde.tree_predates_runtime(tmp_path) is False  # the store moved into the package still counts
     assert rde.tree_predates_runtime(tmp_path / "missing") is False  # nothing readable proves nothing
 
 

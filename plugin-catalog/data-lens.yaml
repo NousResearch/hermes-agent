@@ -1,0 +1,22 @@
+name: data-lens
+repo: https://github.com/itsolaph/data-lens
+sha: "00b83750c2cb6a5901fab71542957975716c5584"
+version: "0.1.0"
+description: "Automatic full-scan structural maps for eligible local CSV, JSON-array and JSONL reads, followed by bounded structured queries with exact Decimal sums. Opt-in host roots; no SQL, network, credentials or persistent runtime state. Disclosure — replaces the default (no offset/limit) `read_file` result for large CSV/JSON/JSONL files inside the folders you list in `roots` with a derived structural map of the whole file, and its two tools read files under those roots directly on the host using the plugin's own path and credential-name guards rather than core's read guards. Nothing is readable until you set `roots` and `host_local: true`; no network calls."
+maintainer: itsolaph
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/itsolaph/data-lens
+image: https://raw.githubusercontent.com/itsolaph/data-lens/00b83750c2cb6a5901fab71542957975716c5584/docs/header.svg
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - data_lens_profile
+    - data_lens_query
+  provides_hooks: []
+  provides_middleware:
+    - tool_execution
+  requires_env: []

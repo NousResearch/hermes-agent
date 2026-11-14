@@ -1,11 +1,22 @@
 """Canary policy on real Git refs; GitHub publication stays an inert boundary."""
 from datetime import datetime, timezone, UTC
+import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 import subprocess
 
 import pytest
 
 from tests.scripts.test_release_tags import release, release_repo
+
+_SPEC = importlib.util.spec_from_file_location(
+    "render_builds_table", Path(__file__).resolve().parents[2] / "scripts/render-builds-table.py")
+assert _SPEC and _SPEC.loader
+builds_table = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(builds_table)
+
+real_generate_changelog = release.generate_changelog
+GITHUB_BODY_LIMIT = 125_000
 
 
 @pytest.fixture
@@ -121,6 +132,105 @@ def test_incomplete_canary_redispatches_the_existing_receipt(canary_repo, monkey
 
     assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
     assert not any(call[1:3] == ["release", "create"] for call in calls)
+
+
+@pytest.fixture
+def github_bodies(canary_repo, monkeypatch):
+    """Draft bodies by tag. Like GitHub, the fixture refuses one over the limit, its own generated notes included."""
+    bodies = {}
+    fixture_run = subprocess.run
+    busy_repository_generated_notes = "* a merged pull request\n" * GITHUB_BODY_LIMIT
+
+    def run(argv, *args, **kwargs):
+        if argv[:3] == ["gh", "release", "create"]:
+            if "--generate-notes" in argv:
+                body = busy_repository_generated_notes
+            else:
+                source = argv[argv.index("--notes-file") + 1]
+                body = kwargs["input"] if source == "-" else Path(source).read_text(encoding="utf-8")
+            if len(body) > GITHUB_BODY_LIMIT:
+                return subprocess.CompletedProcess(
+                    argv, 1, "",
+                    "HTTP 422: Validation Failed (https://api.github.com/repos/fixture/release/releases)\n"
+                    "body is too long (maximum is 125000 characters)",
+                )
+            bodies[argv[3]] = body
+        return fixture_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(release, "generate_changelog", real_generate_changelog)
+    return bodies
+
+
+def _commits(count):
+    return [{
+        "sha": f"{n:040x}", "short_sha": f"{n:08x}",
+        "author_name": "Fixture", "author_email": "fixture@example.invalid",
+        "subject": f"fix(gateway): keep fixture session {n} attached across a reconnect (#{100000 + n})",
+        "category": "fixes", "github_author": f"@contributor{n % 300}", "coauthors": [],
+    } for n in range(count)]
+
+
+def _most_commits_github_accepts(tag):
+    low, high = 0, 2000
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(real_generate_changelog(_commits(middle), tag, tag[1:])) <= GITHUB_BODY_LIMIT:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def _every_download(tag):
+    version = tag[1:]
+    names = [
+        f"releases/tag/{tag}/{app}-{version}-{os_name}-{arch}.{extension}"
+        for app in ("HermesBundled", "HermesLight")
+        for os_name, arch, extension in (("mac", "arm64", "dmg"), ("win", "x64", "msix"), ("win", "arm64", "msix"),
+                                         ("linux", "x64", "AppImage"), ("linux", "arm64", "AppImage"))
+    ]
+    return builds_table.render_tables(
+        builds_table.parse_assets(names), "https://hermes-assets.example.invalid",
+        ["termux-deb (failure)", "smoke-windows (failure)"],
+        "https://github.com/fixture/release/actions/runs/1",
+    )
+
+
+@pytest.mark.parametrize("day", ["busy", "just under GitHub's limit"])
+def test_canary_draft_keeps_room_for_its_builds_table(canary_repo, github_bodies, monkeypatch, day):
+    git, _remote, calls = canary_repo
+    git("commit", "--allow-empty", "-qm", "stable")
+    git("tag", "v1.2.3")
+    git("commit", "--allow-empty", "-qm", "feat: next")
+    tag = "v1.2.3+canary.20260818T103000Z"
+    count = 1500 if day == "busy" else _most_commits_github_accepts(tag)
+    monkeypatch.setattr(release, "get_commits", lambda **_kwargs: _commits(count))
+
+    release.cmd_canary(SimpleNamespace(date="20260818T103000Z", publish=True, no_changelog=False, remote="origin"))
+
+    body = github_bodies[tag]
+    assert len(builds_table.splice(body, _every_download(tag))) <= GITHUB_BODY_LIMIT
+    assert f"**Full Changelog**: [{tag}]" in body
+    assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
+
+
+def test_canary_tag_pushed_without_a_draft_is_recovered_on_a_busy_repository(canary_repo, github_bodies):
+    git, _remote, calls = canary_repo
+    git("commit", "--allow-empty", "-qm", "stable")
+    git("tag", "v1.2.3")
+    git("commit", "--allow-empty", "-qm", "feat: next")
+    tag = "v1.2.3+canary.20260818T103000Z"
+    git("tag", "-a", tag, "-m", "Hermes Agent canary 20260818T103000Z")
+    git("push", "origin", f"refs/tags/{tag}")
+
+    release.cmd_canary(SimpleNamespace(date="20260819T103000Z", publish=True, no_changelog=False, remote="origin"))
+
+    body = github_bodies[tag]
+    assert builds_table.MARKER in body
+    assert f"(https://github.com/fixture/release/commits/{tag})" in body
+    assert len(builds_table.splice(body, _every_download(tag))) <= GITHUB_BODY_LIMIT
+    assert [call[1:3] for call in calls].count(["workflow", "run"]) == 1
 
 
 def test_tag_shape_and_prune_use_canonical_receipts(canary_repo, monkeypatch, capsys):

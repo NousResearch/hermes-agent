@@ -11,6 +11,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 
 # ── Voice state: HERMES_VOICE / HERMES_VOICE_TTS are runtime-only env flags (never config.yaml)
@@ -354,7 +355,8 @@ def _speak_text_with_barge(text: str) -> None:
             done.set()
             with _fd_listener_lock:
                 _fd_speak_pipelines.discard((stop, done))
-    threading.Thread(target=_speak, daemon=True).start()
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(_speak, name="voice-tts-speak").start()
     _arm_barge_listener_if_enabled()
 
 
@@ -363,7 +365,7 @@ def _voice_cfg_dict() -> dict:
 
     ``_load_cfg()`` does not deep-merge DEFAULT_CONFIG, so both the root AND ``voice`` may be any YAML
     scalar / list / None. A hand-edit like ``voice: true`` or a malformed top-level config that parses to a
-    scalar would otherwise break ``.get("…")`` and take every ``voice.*`` branch down with it (Copilot
+    scalar would otherwise break ``.get("…")`` and take every ``voice.*`` branch down with it (review
     round-3..7 review on 19835). Coerce through ``isinstance`` at every level so malformed config falls back
     to an empty dict instead of crashing /voice. See #19835.
     """
@@ -504,6 +506,7 @@ def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
         try:
             _emit("wake.detected", sid, {
                 "phrase": matched_phrase or phrase, "profile": matched_profile or None,
+                # detached-spawn: ok — not a spawn: a wake.detected event field
                 "start_new_session": new_session})
         finally:
             reset_transport(token)
@@ -523,10 +526,21 @@ def _(rid, params: dict) -> dict:
     """What the calling client handles. ``server_requests: true`` marks this connection as one that answers
     server→client requests; a WebSocket client that never sends it gets every such request failed fast
     instead of stalling the agent for the deadline (#112548)."""
+    from hermes_cli.process_identity import local_desktop_client
     from tui_gateway import server_requests
     from tui_gateway.contracts import registry as contracts
-    server_requests.advertise(_caller_transport(), bool(params.get("server_requests")))
-    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True})
+    transport = _caller_transport()
+    # Each call updates what it names: the Desktop sends ``desktop_local`` on its own, so a backend older
+    # than the field refuses only that call and keeps the ``server_requests`` it already accepted.
+    if "server_requests" in params:
+        server_requests.advertise(transport, bool(params.get("server_requests")))
+    if "desktop_local" in params and hasattr(transport, "auth_identity"):
+        transport.desktop_local = local_desktop_client(transport.auth_identity, params.get("desktop_local"))
+        if transport.desktop_local:
+            from tui_gateway import server
+            server.begin_local_desktop_boot()
+    return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True,
+                     "canonical_clarify_batch": True})
 
 
 @method("ping")
@@ -838,7 +852,7 @@ def _(rid, params: dict) -> dict:
         # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list) must not crash /voice with a 5025
         # — fall back to VAD defaults. Exclude ``bool`` from the numeric check since Python's bool is a
         # subclass of int — a hand-edit like ``silence_threshold: true`` would otherwise forward as ``1``
-        # instead of falling back to the documented 200 / 3.0 defaults (Copilot round-12 on #19835).
+        # instead of falling back to the documented 200 / 3.0 defaults (review round-12 on #19835).
         voice_cfg = _voice_cfg_dict()
         max_rec = _voice_cfg_number(voice_cfg.get("max_recording_seconds"), 120.0)
         # Hand the mic to STT if the wake detector holds it; a terminal capture event resumes it.
@@ -872,6 +886,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("voice.tts")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     text = params.get("text", "")
     if not text:
@@ -880,7 +895,8 @@ def _(rid, params: dict) -> dict:
         import hermes_cli.voice
     except Exception as e:
         return _err(rid, 5026, "voice module not available" if isinstance(e, ImportError) else str(e))
-    threading.Thread(target=_speak_text_with_barge, args=(text,), daemon=True).start()
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(_speak_text_with_barge, name="voice-tts-rpc", args=(text,)).start()
     return _ok(rid, {"status": "speaking"})
 
 

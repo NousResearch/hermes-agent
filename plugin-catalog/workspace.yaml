@@ -1,0 +1,33 @@
+name: workspace
+title: Hermes Workspace
+repo: https://github.com/kaosjammo/hermes-workspace
+sha: 3eeb9986101a3d75c4f9cddc26bb5a3e31bcb9f5
+subdir: dist/workspace
+description: Local rich documents and typed databases with passage-linked comments and native Hermes review.
+maintainer: kaosjammo
+tier: community
+category: desktop
+version: "0.1.2"
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/kaosjammo/hermes-workspace/blob/3eeb9986101a3d75c4f9cddc26bb5a3e31bcb9f5/docs/PRODUCTION-FEATURES.md
+readme: true
+platforms:
+  - linux
+screenshots:
+  - https://raw.githubusercontent.com/kaosjammo/hermes-workspace/3eeb9986101a3d75c4f9cddc26bb5a3e31bcb9f5/docs/screenshots/database-demo.png
+known_issues:
+  - "Exact tested installed bundle is preserved; clean-build byte identity of the narrow function transplant is not claimed for this pin."
+  - "Development preview: private native owner/admission/database contracts require maintainer adjudication before admission."
+  - "SDK-component selector cautions require maintainer review; automated validation is not approval."
+  - "Provider-positive saved editing, active-provider cancellation and native Electron acceptance remain unqualified."
+  - "Shared-workspace and executor primitives are retained but not a completed default UX."
+  - "Workspace's own reuse licence is unselected; the bundled React DOM MIT notice is included."
+  - "Screenshot is earlier-build synthetic demo media, not acceptance of this pin."
+capabilities:
+  provides_tools:
+    - workspace_apply
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

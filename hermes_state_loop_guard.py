@@ -8,8 +8,9 @@ worker (``asyncio.to_thread``, ``gateway.session_runtime_workers.tracked_write``
 Off by default and free when off: nothing is wrapped until :func:`install` runs. The gateway installs
 it at startup when config.yaml sets ``gateway.sessiondb_loop_guard`` (``warn`` logs each call site once with its
 stack; ``raise`` raises :class:`LoopSessionDBCall` at the call). Tests call ``install('record')`` and
-read :func:`recorded`. Only ``SessionDB``'s two storage choke points are wrapped (``_read_ctx`` and
-``_execute_write``); every public read and write goes through one of them.
+read :func:`recorded`. Only the store holder's two storage choke points are wrapped
+(``StoreHolder._read_ctx`` and ``_execute_write``); every read and write, through ``SessionDB`` or a
+backend repository, goes through one of them.
 """
 import asyncio
 import logging
@@ -46,10 +47,13 @@ def _caller(stack):
     """The innermost frame outside the store and this guard: the code that made the call."""
     from hermes_cli._startup_fast import project_root_str
     here = os.path.normcase(project_root_str())
+    backend = os.path.join(here, 'persistence', 'sqlite')
     for frame in reversed(stack):
         name = os.path.basename(frame.filename)
-        if os.path.normcase(os.path.realpath(os.path.dirname(frame.filename))) == here and (
-                name.startswith('hermes_state') or name == 'contextlib.py'):
+        folder = os.path.normcase(os.path.realpath(os.path.dirname(frame.filename)))
+        if folder == here and (name.startswith('hermes_state') or name == 'contextlib.py'):
+            continue
+        if folder == backend or folder.startswith(backend + os.sep):
             continue
         if name == 'contextlib.py':
             continue
@@ -80,14 +84,14 @@ def _check(kind):
 
 
 def install(mode):
-    """Wrap ``SessionDB``'s storage choke points in ``mode``. Idempotent: a second call only
+    """Wrap ``StoreHolder``'s storage choke points in ``mode``. Idempotent: a second call only
     changes the mode. Returns the active mode (None: not installed)."""
     if mode not in _MODES:
         logger.warning('%s=%r is not one of %s; guard not installed', CONFIG_KEY, mode, '/'.join(_MODES))
         return _state['mode']
-    from hermes_state import SessionDB
-    if not getattr(SessionDB, '_loop_guard_installed', False):
-        read, write = SessionDB._read_ctx, SessionDB._execute_write
+    from persistence.sqlite._holder import StoreHolder
+    if not getattr(StoreHolder, '_loop_guard_installed', False):
+        read, write = StoreHolder._read_ctx, StoreHolder._execute_write
 
         def _read_ctx(self, *args, **kwargs):
             _check('read')
@@ -97,19 +101,19 @@ def install(mode):
             _check('write')
             return write(self, *args, **kwargs)
         _read_ctx.__wrapped__, _execute_write.__wrapped__ = read, write
-        SessionDB._read_ctx, SessionDB._execute_write = _read_ctx, _execute_write
-        SessionDB._loop_guard_installed = True
+        StoreHolder._read_ctx, StoreHolder._execute_write = _read_ctx, _execute_write
+        StoreHolder._loop_guard_installed = True
     _state['mode'] = mode
     return mode
 
 
 def uninstall():
     """Restore the unwrapped methods (tests)."""
-    from hermes_state import SessionDB
-    if getattr(SessionDB, '_loop_guard_installed', False):
-        SessionDB._read_ctx = SessionDB._read_ctx.__wrapped__
-        SessionDB._execute_write = SessionDB._execute_write.__wrapped__
-        SessionDB._loop_guard_installed = False
+    from persistence.sqlite._holder import StoreHolder
+    if getattr(StoreHolder, '_loop_guard_installed', False):
+        StoreHolder._read_ctx = StoreHolder._read_ctx.__wrapped__
+        StoreHolder._execute_write = StoreHolder._execute_write.__wrapped__
+        StoreHolder._loop_guard_installed = False
     _state['mode'] = None
     clear()
 

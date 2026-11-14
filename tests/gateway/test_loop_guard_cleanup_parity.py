@@ -38,8 +38,19 @@ def test_loop_guard_attributes_storage_calls_to_external_caller(tmp_path, alias_
         assert module._caller(stack) is caller
         callers.append(module._caller(stack).name)
     assert callers == ["first_caller", "second_caller"]
-    # An unrelated file sharing a storage-module basename remains attributable.
+    # A call through a backend repository is attributed past the repository and the holder.
+    caller = FrameSummary(str(root / "gateway/session_authority.py"), 120, "repository_caller")
+    stack = [
+        caller,
+        FrameSummary(str(root / "persistence/sqlite/conversation/sessions.py"), 680, "get"),
+        FrameSummary(str(root / "persistence/sqlite/_holder.py"), 950, "_read_retrying_ioerr"),
+        FrameSummary(str(root / "hermes_state_loop_guard.py"), 90, "_read_ctx"),
+    ]
+    assert module._caller(stack) is caller
+    # An unrelated file sharing a storage-module basename or package path remains attributable.
     foreign = FrameSummary(str(tmp_path / "foreign/hermes_state.py"), 1, "foreign_call")
+    assert module._caller([foreign]) is foreign
+    foreign = FrameSummary(str(tmp_path / "foreign/persistence/sqlite/_holder.py"), 1, "foreign_call")
     assert module._caller([foreign]) is foreign
 
 

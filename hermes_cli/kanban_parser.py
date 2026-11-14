@@ -15,6 +15,35 @@ from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_notify as kbn
 
 
+class _KanbanArgumentParser(argparse.ArgumentParser):
+    """Opt individual leaf commands into interspersed optional positionals."""
+
+    def __init__(self, *args, intermixed=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._intermixed = intermixed
+
+    def parse_known_args(self, args=None, namespace=None):
+        if not self._intermixed:
+            return super().parse_known_args(args, namespace)
+        # Standard parsing preserves '--' and option-value errors. With '*',
+        # text after an intervening option can be left in extras; recover only
+        # plain words before the delimiter and its literal tail, never flags.
+        if args is not None and "--" in args:
+            parsed, extras = super().parse_known_args(args, namespace)
+            if "--" in extras:
+                delimiter = extras.index("--")
+                words = extras[:delimiter]
+                if all(not word.startswith("-") or word == "-" for word in words):
+                    parsed.text.extend([*words, *extras[delimiter + 1:]])
+                    extras = []
+            return parsed, extras
+        self._intermixed = False
+        try:
+            return self.parse_known_intermixed_args(args, namespace)
+        finally:
+            self._intermixed = True
+
+
 def _arg(*flags: str, **kw):
     return (flags, kw)
 
@@ -279,10 +308,11 @@ _SPECS = [
     ], help="Atomically claim a ready task (prints resolved workspace path)"),
     _cmd("comment", [
         _TASK_ID,
-        _arg("text", nargs="+", help="Comment body"),
+        _arg("text", nargs="*", help="Comment body (mutually exclusive with --body-file)"),
+        _arg("--body-file", help="Read comment from a UTF-8 file ('-' for stdin; local CLI only)"),
         _arg("--author", help="Author name (default: $HERMES_PROFILE or 'user')"),
         _arg("--max-len", type=int, help="Trim the stored comment body to this many characters"),
-    ], help="Append a comment"),
+    ], help="Append a comment", intermixed=True, allow_abbrev=False),
     _cmd("attach", [
         _TASK_ID,
         _arg("path", help="Path to the local file to attach"),
@@ -472,6 +502,6 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                     "via `hermes kanban boards switch <slug>` or the "
                                     "HERMES_KANBAN_BOARD env var). Use `hermes kanban boards "
                                     "list` to see all boards.")
-    _add_commands(kanban_parser.add_subparsers(dest="kanban_action"), _SPECS)
+    _add_commands(kanban_parser.add_subparsers(dest="kanban_action", parser_class=_KanbanArgumentParser), _SPECS)
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser

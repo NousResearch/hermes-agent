@@ -966,6 +966,7 @@ hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
 hermes kanban claim <id> [--ttl SECONDS]
 hermes kanban comment <id> "<text>" [--author NAME]
+hermes kanban comment <id> --body-file <path|-> [--author NAME] # local CLI only; - reads stdin
 
 # Bulk verbs — accept multiple ids:
 hermes kanban complete <id>... [--result "..."] [--force]

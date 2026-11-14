@@ -4,14 +4,7 @@ repo: https://github.com/abundantbeing/hermes-browser-extension
 sha: 438460d460e67855d1183f6fc7a149292f3f722f
 subdir: companion-plugin
 version: "0.4.1"
-description: >-
-  Connects Hermes to the separately installed Hermes Browser Extension for
-  user-shared page context, opt-in control of explicitly attached browser
-  tabs, and opt-in background task tabs that a local gateway chat opens in its
-  own Chrome tab group. Full browser control requires Chromium; Firefox
-  supports chat, page context and restricted control. Serves authenticated
-  routes on the Hermes API server and stores bounded redacted receipts and
-  screenshots in profile-scoped plugin data.
+description: "Connects Hermes to the separately installed Hermes Browser Extension for user-shared page context, opt-in control of explicitly attached browser tabs, and opt-in background task tabs that a local gateway chat opens in its own Chrome tab group. Full browser control requires Chromium; Firefox supports chat, page context and restricted control. Serves authenticated routes on the Hermes API server and stores bounded redacted receipts and screenshots in profile-scoped plugin data. Disclosure — when Background task tabs is turned on in the extension, any chat of that Hermes profile, including messaging-platform chats, can open, read and act on pages in background tabs of your signed-in Chrome; leave it off unless you want that."
 maintainer: abundantbeing
 tier: community
 category: web

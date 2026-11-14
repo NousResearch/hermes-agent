@@ -1,0 +1,70 @@
+# Research State
+# Central tracking file for autoresearch project
+# Updated automatically by the agent — do not edit manually
+
+project:
+  name: "{{PROJECT_NAME}}"
+  created_at: "{{CREATED_AT}}"
+  research_question: "{{RESEARCH_QUESTION}}"
+  status: "bootstrapping"  # bootstrapping | active | paused | concluding | completed
+
+bootstrap:
+  literature_searched: false
+  initial_hypotheses_formed: false
+  evaluation_metric_defined: false
+  baseline_established: false
+
+loops:
+  inner_loop_count: 0
+  outer_loop_count: 0
+  last_inner_loop_at: null
+  last_outer_loop_at: null
+
+direction:
+  current: "explore"  # explore | deepen | broaden | pivot | conclude
+  rationale: "Initial exploration phase"
+  next_milestone: "Complete first 3 experiments"
+
+hypotheses:
+  # Example structure — replace with actual hypotheses
+  H001:
+    description: "{{HYPOTHESIS_DESCRIPTION}}"
+    status: "untested"  # untested | running | completed | refuted | supported
+    prediction: "{{PREDICTION}}"
+    priority: 1
+    created_at: "{{CREATED_AT}}"
+    completed_at: null
+    result_summary: null
+    experiment_slug: null
+
+metrics:
+  primary: "{{PRIMARY_METRIC}}"  # e.g., "val_loss", "accuracy", "convergence_steps"
+  baseline_value: null
+  target_value: null
+  current_best: null
+  optimization_direction: "minimize"  # minimize | maximize
+
+trajectory:
+  # Auto-populated from experiments
+  # - experiment_id: run_001
+  #   hypothesis: H001
+  #   metric_value: 0.847
+  #   baseline: 0.812
+  #   delta: "+0.035"
+  #   wall_time_min: 23
+  #   change_summary: "Added cosine annealing"
+
+resources:
+  literature_papers: []
+  related_work_notes: null
+  code_references: []
+
+continuity:
+  last_session_at: "{{CREATED_AT}}"
+  next_scheduled_loop: null
+  current_experiment: null
+  pending_tasks: []
+
+notes: |
+  # Agent notes — context for next session
+  # What was I doing? What's next?

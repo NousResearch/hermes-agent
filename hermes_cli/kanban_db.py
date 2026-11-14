@@ -1154,6 +1154,78 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+def skill_pin_error(assignee: Optional[str], missing: Iterable[str]) -> str:
+    """The one honest error text for a refused skill pin, shared by the create gate,
+    the dispatcher's pre-spawn gate and the worker's turn-time loader. ``missing``
+    entries already labelled AMBIGUOUS (an existing-name collision, not a gap) keep
+    their own wording."""
+    from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
+    profile = assignee or "default"
+    parts = [m if m.startswith(AMBIGUOUS_SKILL_PREFIX) else f"skill not found: {m} (assignee={profile})"
+             for m in missing]
+    return "; ".join(parts)
+
+
+def missing_pinned_skills(assignee: Optional[str], skills: Optional[Iterable[str]]) -> list[str]:
+    """Skill names *skills* the assignee's profile cannot load, in order, deduplicated.
+
+    Profiles are islands: a worker only sees the search roots under ITS OWN home
+    (``<home>/skills``, ``skills.create_dir``, ``skills.external_dirs`` — the same roots
+    ``agent.skill_utils`` resolves for that home), so a pin that exists in another
+    profile's tree is still a dead pin here. Unverifiable names pass — an unknown/ghost
+    assignee is the dispatcher's existing refusal to make, and a ``namespace:skill``
+    qualified name lives in the assignee's plugin registry, which cannot be enumerated
+    from another profile's process. A skill that exists but is disabled on the assignee
+    is NOT reported here: the worker's own preload gate refuses those at turn time with
+    its own wording.
+    """
+    names = list(dict.fromkeys(str(s).strip() for s in (skills or ()) if str(s).strip()))
+    if not names or not assignee:
+        return []
+    from hermes_cli.profiles import resolve_profile_env
+    try:
+        home = str(resolve_profile_env(str(assignee)))
+    except Exception:
+        return []
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    loadable: set[str] = set()
+    roots: list[Path] = []
+    try:
+        from agent.skill_utils import get_skill_search_roots, iter_skill_index_files, parse_frontmatter
+        local = Path(home) / "skills"
+        # include_project=False: a pin names a profile skill, not a cwd-local project skill.
+        roots = [d for _tier, d in get_skill_search_roots(local, include_project=False)]
+        for root in roots:
+            with contextlib.suppress(OSError):
+                for skill_md in iter_skill_index_files(root, "SKILL.md"):
+                    with contextlib.suppress(OSError):
+                        loadable.add(skill_md.parent.name)
+                        loadable.add(str(skill_md.relative_to(root).parent))
+                        frontmatter, _ = parse_frontmatter(skill_md.read_text(encoding="utf-8")[:4000])
+                        if frontmatter.get("name"):
+                            loadable.add(str(frontmatter["name"]).strip())
+    except Exception:
+        # The gate must never brick creation with its own scan failure: an unreadable
+        # skills tree reads as "everything loadable" and the worker's runtime gate stays
+        # honest with the same error text.
+        return []
+    finally:
+        reset_hermes_home_override(token)
+    missing = []
+    for name in names:
+        if ":" in name or name in loadable:
+            continue
+        # Direct relative-path form (devops/sdlc-review) — path-guarded so a pin like
+        # "../x" can never make the scan answer for a file outside the seat's home.
+        candidate = Path(name)
+        if not candidate.is_absolute() and ".." not in candidate.parts:
+            if any((root / candidate / "SKILL.md").is_file() for root in roots):
+                continue
+        missing.append(name)
+    return missing
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1221,6 +1293,12 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+    # Refuse a dead pin at creation: it would only surface as a worker that exits in
+    # seconds, and the submitter side has historically mislabelled that as an owner
+    # refusal. The dispatcher re-checks before every spawn (assignee may change later).
+    _bad_pins = missing_pinned_skills(assignee, skills_list)
+    if _bad_pins:
+        raise ValueError(skill_pin_error(assignee, _bad_pins))
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.

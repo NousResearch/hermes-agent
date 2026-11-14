@@ -1394,7 +1394,7 @@ DEFAULT_CONFIG = {
         "min_interval_seconds": 30,  # smallest fixed interval; tighter cadences raised to it
         "max_ticks": 100,  # auto-pause after this many wakeups unless --times set; 0 = unlimited
         "self_paced_floor_seconds": 60,  # Self-paced cadence bounds (seconds).
-        "self_paced_ceiling_seconds": 900,
+        "self_paced_ceiling_seconds": 900,  # capped at 3300 (55m) to stay under the 1h prompt cache
     },
     # Mixture of Agents — named presets used by /moa. A preset is an execution mode around the main
     # model, not a model itself: references + aggregator synthesize private guidance before each

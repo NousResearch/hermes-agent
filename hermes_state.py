@@ -291,10 +291,10 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
         db_path.with_name(db_path.name + "-wal"),
         db_path.with_name(db_path.name + "-shm"),
     ):
-        # fchmod on an fd of a pre-existing file cannot be used here: close(fd)
-        # would release this process's POSIX locks on that inode, stripping the
-        # locks of any live SQLite connection to the same database. chmod(2)
-        # never opens the file, so it leaves the lock state untouched.
+        # fchmod on an ordinary fd of a pre-existing file cannot be used here:
+        # close(fd) would release this process's POSIX locks on that inode,
+        # stripping the locks of any live SQLite connection to the same database.
+        # _chmod_pinned_inode never takes a lock-bearing descriptor.
         try:
             st = os.lstat(path)
         except FileNotFoundError:
@@ -321,11 +321,20 @@ def _chmod_pinned_inode(path: Path, mode: int) -> None:
     which applies to the link itself, never to a swapped-in target.
     """
     if hasattr(os, "O_PATH"):
+        # O_PATH|O_NOFOLLOW pins a swapped-in symlink itself instead of failing.
         fd = os.open(path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            st_mode = os.fstat(fd).st_mode
+            if stat.S_ISLNK(st_mode):
+                raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), str(path))
+            if not stat.S_ISREG(st_mode):
                 return
-            os.chmod(f"/proc/self/fd/{fd}", mode)
+            try:
+                os.chmod(f"/proc/self/fd/{fd}", mode)
+            except FileNotFoundError:
+                # No /proc (minimal chroot/sandbox): leave the mode as is rather
+                # than fall back to a pathname chmod that could follow a swap.
+                logger.debug("state db: /proc unavailable; not tightening %s", path)
         finally:
             os.close(fd)
     else:

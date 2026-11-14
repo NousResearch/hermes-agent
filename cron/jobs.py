@@ -1751,6 +1751,15 @@ def _normalize_catch_up(value: Any) -> Optional[bool]:
     raise ValueError("catch_up must be true, false, or null (use the default).")
 
 
+def _normalize_wrap_response(value: Any) -> Optional[bool]:
+    """``wrap_response``: True wraps delivered output, False delivers it raw, None inherits the
+    global ``cron.wrap_response``. Strict like ``catch_up``: ``bool("false")`` is True, so a string
+    must never be coerced into an override."""
+    if value is None or isinstance(value, bool):
+        return value
+    raise ValueError("wrap_response must be true, false, or null (inherit cron.wrap_response).")
+
+
 _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "model": _normalize_job_optional_text,
     "provider": _normalize_job_optional_text,
@@ -1767,6 +1776,7 @@ _CREATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
+    "wrap_response": _normalize_wrap_response,
 }
 _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     # [] is an explicit zero-tool allowlist and must survive the update path as [] too (#82010).
@@ -1781,6 +1791,7 @@ _UPDATE_FIELD_NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "timezone": jobs_time.normalize_timezone,
     "grace_minutes": jobs_time.normalize_grace_minutes,
     "catch_up": _normalize_catch_up,
+    "wrap_response": _normalize_wrap_response,
 }
 
 
@@ -1835,6 +1846,7 @@ def create_job(
     interpreter: Optional[str] = None,
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
+    wrap_response: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1847,7 +1859,7 @@ def create_job(
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation). timezone: IANA key pinning the schedule's
     wall clock (None/'' = inherit the profile zone). grace_minutes: catch-up window override
-    (0 = never catch up)."""
+    (0 = never catch up). wrap_response: None inherits cron.wrap_response, a bool overrides it."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1938,7 +1950,7 @@ def create_job(
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
         ("timezone", f["timezone"]), ("grace_minutes", f["grace_minutes"]),
-        ("catch_up", f["catch_up"]),
+        ("catch_up", f["catch_up"]), ("wrap_response", f["wrap_response"]),
     ):
         if value is not None:
             job[key] = value

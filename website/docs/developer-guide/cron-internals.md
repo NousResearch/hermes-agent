@@ -429,6 +429,8 @@ By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 - A header identifying the cron job name and task
 - A footer noting the agent cannot see the delivered message in conversation
 
+`_should_wrap_cron_response(job, user_cfg)` in `cron/scheduler_delivery.py` makes the decision: a bool `wrap_response` stored on the job overrides the global setting, and `None` (the default) inherits it. `_normalize_wrap_response` in `cron/jobs.py` only ever stores true, false or None.
+
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 
 ### Session Isolation

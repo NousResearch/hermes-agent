@@ -127,6 +127,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_lazy_deps_imports.py
 
+      # Every retired updater shim must be listed in tests/fixtures/retired_updater_shims.json,
+      # the data tests/hermes_cli/test_retired_shims_runtime.py calls for real (tests never read
+      # source). AST-based; an empty scan fails.
+      - name: Check the retired updater shim manifest
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_retired_shims_manifest.py
+
       # ── Pull requests: unrelated histories ────────────────────────────────────────────────
 
       # PR #25045 was merged from a branch disconnected from main's history; GitHub's merge UI

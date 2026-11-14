@@ -1,34 +1,16 @@
 """Retired updater shims hand off only from a historical updater's own call stack (#122656)."""
-import ast
 import importlib
 import inspect
+import json
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-
-
-def _retired_shims():
-    """Every function in the shipped tree that can start the takeover (a bare stop_for_relaunch
-    or the shared gate), found by AST so a new shim cannot skip these contracts."""
-    found = []
-    for path in sorted(p for d in ("hermes_cli", "tools", "gateway") for p in (ROOT / d).rglob("*.py")):
-        if path.name == "_old_updater.py":
-            continue
-        module = ".".join(path.relative_to(ROOT).with_suffix("").parts)
-        for fn in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(fn, ast.FunctionDef):
-                continue
-            if any(isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-                   and call.func.id in {"stop_for_relaunch", "stop_historical_updater"}
-                   and not call.keywords for call in ast.walk(fn)):
-                found.append((module, fn.name))
-    # hermes_cli.main's lazy frozen export, resolved through main.__getattr__.
-    found.append(("hermes_cli.main", "_write_update_incomplete_marker"))
-    assert len(found) > 40, found  # the scan itself must not silently find nothing
-    return found
+# Every gated shim, as data. scripts/ci/check_retired_shims_manifest.py (a repo-guards step) fails
+# when a function that can start the takeover is missing here; `--write` regenerates it.
+SHIMS = [tuple(item) for item in json.loads(
+    (Path(__file__).resolve().parents[1] / "fixtures/retired_updater_shims.json").read_text(encoding="utf-8-sig"))]
 
 
 def _call(module, name):
@@ -49,7 +31,7 @@ def takeover(monkeypatch):
     return child
 
 
-@pytest.mark.parametrize("module,name", _retired_shims(), ids="{0[0]}.{0[1]}".format)
+@pytest.mark.parametrize("module,name", SHIMS, ids="{0[0]}.{0[1]}".format)
 @pytest.mark.parametrize("frame", ["live", "current-updater"])
 def test_current_code_never_starts_the_takeover(module, name, frame, takeover):
     # A live serve/gateway/plugin, or the CURRENT `hermes update` (sentinel local), reaching a
@@ -65,7 +47,7 @@ def test_current_code_never_starts_the_takeover(module, name, frame, takeover):
     takeover.assert_not_called()
 
 
-@pytest.mark.parametrize("module,name", _retired_shims(), ids="{0[0]}.{0[1]}".format)
+@pytest.mark.parametrize("module,name", SHIMS, ids="{0[0]}.{0[1]}".format)
 def test_historical_updater_frame_still_hands_off(module, name, takeover):
     # A historical on-disk `_cmd_update_impl` (no sentinel local) keeps handing off exactly as before.
     namespace = {"__name__": "hermes_cli.update_cmd", "_call": _call}
@@ -75,3 +57,40 @@ def test_historical_updater_frame_still_hands_off(module, name, takeover):
         namespace["_cmd_update_impl"](module, name)
     assert stopped.value.code == 0
     takeover.assert_called_once()
+
+
+def test_module_mode_historical_updater_still_hands_off(takeover):
+    # `python -m hermes_cli.main update` from a release before update_cmd.py existed: its
+    # cmd_update runs as `__main__`, compiled from this checkout's hermes_cli/main.py.
+    from hermes_cli import _old_updater
+
+    main_py = str(Path(_old_updater.__file__).resolve().with_name("main.py"))
+    namespace = {"__name__": "__main__", "_call": _call}
+    exec(compile("def cmd_update(m, n):\n    pre_update_version = '1.0'\n    _call(m, n)\n",
+                 main_py, "exec"), namespace)
+    with pytest.raises(SystemExit) as stopped:
+        namespace["cmd_update"]("tools.lazy_deps", "install_specs")
+    assert stopped.value.code == 0
+    takeover.assert_called_once()
+
+
+def test_a_main_script_elsewhere_is_live_code(takeover):
+    # Any other `__main__` cmd_update (a user script, a tool) is not the updater.
+    namespace = {"__name__": "__main__", "_call": _call}
+    exec(compile("def cmd_update(m, n):\n    _call(m, n)\n", "/elsewhere/main.py", "exec"), namespace)
+    with pytest.raises(Exception, match="retired"):
+        namespace["cmd_update"]("tools.lazy_deps", "install_specs")
+    takeover.assert_not_called()
+
+
+def test_current_module_mode_updater_is_live_code(takeover):
+    # The current tree's own cmd_update run via `python -m` carries the sentinel local.
+    from hermes_cli import _old_updater
+
+    main_py = str(Path(_old_updater.__file__).resolve().with_name("main.py"))
+    namespace = {"__name__": "__main__", "_call": _call}
+    exec(compile("def cmd_update(m, n):\n    _hermes_current_updater_frame = True\n    _call(m, n)\n",
+                 main_py, "exec"), namespace)
+    with pytest.raises(Exception, match="retired"):
+        namespace["cmd_update"]("tools.lazy_deps", "install_specs")
+    takeover.assert_not_called()

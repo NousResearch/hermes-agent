@@ -11,6 +11,7 @@ attribute path). INI ``password = hunter2`` (short, unquoted, identifier-shaped)
 import functools
 import re
 
+_SPACED_EQ_RE = re.compile(r"[ \t]=|=[ \t]")
 _SPACED_SEP = r"(?:[ \t]++=(?![=>~])[ \t]*+|=(?![=>~])[ \t]++)"
 _QUOTED = r"(?P<q>['\"])(?P<qv>(?:\\.|(?!(?P=q))[^\\\n])++)(?P=q)(?=[ \t]*+(?:[;,#]|//|\r?$))"
 # The value must end its line (an INI ``;``/``#`` comment may follow): ``auth = a or b`` is code.
@@ -81,6 +82,8 @@ def redact_spaced_cfg_assignments(text: str, mask) -> str:
         start, end = (m.span("qv") if quoted else m.span("uv"))
         return m.group(0)[:start - m.start()] + mask(value) + m.group(0)[end - m.start():]
 
+    if not _SPACED_EQ_RE.search(text):  # the common case: nothing spaced around ``=`` to look at
+        return text
     for pattern in _patterns():
         text = pattern.sub(_sub, text)
     return text

@@ -65,6 +65,59 @@ class TestStreamingDisplayStripCodeBlocks:
         assert "```" in out
 
 
+class TestSpacedExtensionAfterDot:
+    """A model echoing a human document title splits the name from the extension with a space
+    (``… (I9-2022). docx``). No tag regex matched it, so the file was never uploaded and the
+    literal tag reached the chat with no log line at all."""
+
+    def test_space_before_extension_delivers_the_file(self, tmp_path):
+        p = tmp_path / "23. Breviar de calcul - Casa Balaj (I9-2022).docx"
+        p.write_text("brecht\n")
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"Cap. MEDIA:{p.with_suffix('')}. docx"
+        )
+        assert [os.path.realpath(x) for x, _ in media] == [os.path.realpath(str(p))]
+        assert "MEDIA:" not in cleaned
+        assert cleaned.startswith("Cap.")
+
+    def test_two_spaced_tags_on_one_line(self, tmp_path):
+        docx = tmp_path / "22. Breviar (I9-2022).docx"
+        pdf = tmp_path / "22. Breviar (I9-2022).pdf"
+        docx.write_text("d")
+        pdf.write_text("p")
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"MEDIA:{docx.with_suffix('')}. docx MEDIA:{pdf.with_suffix('')}. pdf"
+        )
+        assert sorted(os.path.realpath(x) for x, _ in media) == sorted(
+            [os.path.realpath(str(docx)), os.path.realpath(str(pdf))]
+        )
+        assert "MEDIA:" not in cleaned
+
+    def test_space_before_dot_delivers(self, tmp_path):
+        target = tmp_path / "raport.docx"
+        target.write_bytes(b"PK\x03\x04")
+        media, cleaned = BasePlatformAdapter.extract_media(
+            f"MEDIA:{tmp_path / 'raport'} .docx"
+        )
+        assert [os.path.realpath(p) for p, _ in media] == [os.path.realpath(str(target))]
+        assert "MEDIA:" not in cleaned
+
+    def test_spaced_tag_with_no_file_stays_visible(self, tmp_path):
+        missing = tmp_path / "17. Nearsurat (I9-2022)"
+        media, cleaned = BasePlatformAdapter.extract_media(f"MEDIA:{missing}. pdf")
+        assert media == []
+        assert "MEDIA:" in cleaned
+
+    def test_display_strip_joins_the_extension(self, tmp_path):
+        p = tmp_path / "23. Breviar (I9-2022).pdf"
+        p.write_text("p")
+        out = BasePlatformAdapter.strip_media_directives_for_display(
+            f"Vezi breviarul. MEDIA:{p.with_suffix('')}. pdf"
+        )
+        assert "MEDIA:" not in out
+        assert out.startswith("Vezi breviarul.")
+
+
 class TestHistoryMediaDedupe:
     def test_assistant_message_tags_collected(self):
         history = [

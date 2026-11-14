@@ -1112,11 +1112,41 @@ export function newSessionInProfile(name: string): void {
   leaveForeignProjectScope(target)
   requestFreshSession()
   // #81094: surface the failed dial instead of failing silently.
-  void activateOnCurrentSource(target).catch((error: unknown) => {
-    if (!notifyRemoteOverrideAuthFailure(target, error)) {
-      notifyError(error, `Failed to open profile "${target}"`)
-    }
-  })
+  void activateOnCurrentSource(target).catch((error: unknown) => notifyDialFailure(target, error))
+}
+
+// The wake-word door of newSessionInProfile (#149779): same steps, pin scoped
+// to the swap — a wake phrase is ambient, nobody picked a profile — so the pin
+// the wake draft needs while the socket is mid-swap (#79005: send must land in
+// `name`, not the pre-swap active profile) must not outlive the dial the way a
+// deliberate pick's does. Once the dial settles, session.create resolves from
+// $activeGatewayProfile — now `name` — so the pin is dropped and the window's
+// later "+"/⌘T sessions resolve from their own state again. A failed dial
+// keeps the pin: the wake draft's send still names the target, and the failure
+// is surfaced (#81094).
+export function wakeSessionInProfile(name: string): Promise<void> {
+  const target = pinNewChatProfile(name)
+  // The pin above bumped the intent revision (captureNewChatSource); anything
+  // that re-pins mid-dial — a deliberate pick, same profile or not — bumps it
+  // again and wins over the ambient pin at settle time.
+  const intentRevision = newChatIntentRevision
+  leaveForeignProjectScope(target)
+  requestFreshSession()
+
+  return activateOnCurrentSource(target)
+    .then(() => {
+      if (newChatIntentRevision === intentRevision && $newChatProfile.get() === target) {
+        $newChatProfile.set(null)
+      }
+    })
+    .catch((error: unknown) => notifyDialFailure(target, error))
+}
+
+// #81094: surface the failed dial instead of failing silently.
+function notifyDialFailure(target: string, error: unknown): void {
+  if (!notifyRemoteOverrideAuthFailure(target, error)) {
+    notifyError(error, `Failed to open profile "${target}"`)
+  }
 }
 
 /** Pin the next new chat to an exact registry agent; session.create reads this route. */

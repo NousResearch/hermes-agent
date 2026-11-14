@@ -13,6 +13,7 @@ import {
   clearSelectedRosterKey,
   focusedRosterOwner,
   parseRosterKey,
+  reconcileSelectionToFocusedChat,
   saveSelectedRosterBot
 } from './bot-state'
 import { $canonicalRoomLive } from './canonical-group-details'
@@ -221,6 +222,12 @@ function useReconcileRosterOwner(
     $rosterHydrated.set(true)
 
     if (selectionHydrated) {
+      if (!$groupChatWorkspace.get()) {
+        // Follow the chat on screen before publishing (#154651 — see
+        // reconcileSelectionToFocusedChat).
+        reconcileSelectionToFocusedChat()
+      }
+
       reconcileRosterSelection(roster, sourceSnapshot, allMeta)
       const selected = selectedRosterBot(roster, $selectedRosterKey.get())
 

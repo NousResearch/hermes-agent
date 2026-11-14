@@ -35,7 +35,8 @@ import {
   $selectedBot,
   $selectedRosterHydrated,
   $selectedRosterKey,
-  focusedMentionProfile
+  focusedMentionProfile,
+  reconcileSelectionToFocusedChat
 } from './bot-state'
 import { isCanonicalChatOnScreen, openBotCanonicalChat } from './canonical-chat'
 import { BotChatEmpty } from './chat-empty'
@@ -577,6 +578,13 @@ export default {
           restoreDismissedOnRegister = true
 
           const group = $groupChatWorkspace.get()
+
+          if (!group) {
+            // Follow the chat on screen before publishing (#154651 — see
+            // reconcileSelectionToFocusedChat).
+            reconcileSelectionToFocusedChat()
+          }
+
           const selected = selectedRosterBot($lastRoster.get(), $selectedRosterKey.get())
 
           // Owner routing only. With neither a group nor a selected bot there

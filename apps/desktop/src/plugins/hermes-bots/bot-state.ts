@@ -10,7 +10,7 @@
 
 import { atom, host } from '@hermes/plugin-sdk'
 
-import { botRosterKey, botSelectionKey } from './data'
+import { $lastRoster, botRosterKey, botSelectionKey } from './data'
 import { getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
@@ -180,5 +180,42 @@ export function focusedRosterOwner(
     authoritative: owner.authoritative !== false,
     connectionId: String(owner.connectionId || '').trim(),
     name
+  }
+}
+
+/** Follow the chat the user is LOOKING AT (#154651): when a session owns the
+ *  workspace, the roster selection must name its owner — the same owner the
+ *  row highlight already follows (botRowOwnsWorkspace). A selection left
+ *  behind by an earlier click (a restored tab, a cron-opened chat, a
+ *  canonical open that skipped the click path) otherwise re-owns the
+ *  workspace on the next roster hydrate or pane-visibility flip: the stale
+ *  row re-highlights and the "+" aims at a bot nobody is reading.
+ *
+ *  Transient by design: focus moves without a click, so adoption updates the
+ *  window's atoms only. The durable selection and its storage stay with the
+ *  user's last click — an ambient view must not plant a selection a later
+ *  boot would publish. Authoritative owners only — the legacy profile-only
+ *  fallback carries no source identity and fails closed (see
+ *  $focusedBotOwner). A focused owner with no roster row (a plain session on
+ *  an unlisted profile) leaves the selection alone. Callers gate on group
+ *  rooms, which own no single row. */
+export function reconcileSelectionToFocusedChat(): void {
+  if (!$botChatFocused.get() || !$selectedRosterHydrated.get()) {
+    return
+  }
+
+  const focused = focusedRosterOwner($focusedBotOwner.get())
+
+  if (!focused?.authoritative) {
+    return
+  }
+
+  const key = botRosterKey({ connectionId: focused.connectionId, name: focused.name })
+  const bot = $lastRoster.get().find(row => botRosterKey(row) === key)
+
+  if (bot && botRosterKey(bot) !== $selectedRosterKey.get()) {
+    // See the docstring: transient adoption, never persisted.
+    $selectedBot.set(botSelectionKey(bot))
+    $selectedRosterKey.set(key)
   }
 }

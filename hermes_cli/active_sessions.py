@@ -492,7 +492,7 @@ class ActiveSessionLease:
     released: bool = False
     # Pinned at acquisition: a lease taken under the root HERMES_HOME must release
     # against the same registry even inside a profile-home override, or phantom
-    # leases fill the session cap.
+    # ownership keeps fencing a conversation after its runtime is gone.
     # See #85431.
     state_path: Optional[Path] = None
     lock_path: Optional[Path] = None
@@ -574,15 +574,15 @@ def try_acquire_active_session(
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot: ``(lease, None)`` or ``(None, ActiveSessionRefusal)``.
 
-    Per-session exclusivity is CORRECTNESS, enforced unconditionally (at most one live
-    owner per stored session); ``max_concurrent_sessions`` is resource POLICY, applied
-    only when configured. ``registry_home`` lets profile-scoped backends share the owning
+    Per-session exclusivity is enforced unconditionally (at most one live owner per
+    stored session). Execution capacity is a separate host-root permit, enforced in
+    ``execution_budget``; ``config`` remains accepted for existing lease callers.
+    ``registry_home`` lets profile-scoped backends share the owning
     profile's registry. Ownership uncertainty fails CLOSED (SESSION_COORDINATION_UNAVAILABLE).
 
     Liveness tracking keeps richer desktop lifecycle semantics; ``registry_home`` lets profile-scoped
     backends share the owning profile's registry even when launched from another home. See #94595.
     """
-    max_sessions = resolve_max_concurrent_sessions(config)
     lease_id = uuid.uuid4().hex
     key = str(session_id or "")
 
@@ -649,14 +649,8 @@ def try_acquire_active_session(
                     key, existing.get("pid"), existing.get("surface"),
                 )
 
-        # Capacity second, and only when an operator asked for one.
-        if max_sessions is not None and len(entries) >= max_sessions:
-            return refuse(
-                active_session_limit_message(len(entries), max_sessions, entries),
-                MAX_CONCURRENT_SESSIONS,
-                "Active session limit reached: active=%d max=%d surface=%s",
-                len(entries), max_sessions, surface,
-            )
+        # This registry fences writers, including idle open conversations. Actual
+        # work is admitted separately by execution_budget against the host root.
         entries.append(entry)
         _write_entries(state_path, entries)
 

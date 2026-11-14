@@ -1,6 +1,7 @@
 """Tests for the gateway max_concurrent_sessions active-session cap."""
 
 import asyncio
+from pathlib import Path
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,7 +15,10 @@ from gateway.session import SessionSource, build_session_key
 
 @pytest.fixture(autouse=True)
 def _isolated_active_session_registry(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("max_concurrent_sessions: 1\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
 
 
 class _FakeAdapter:
@@ -75,6 +79,8 @@ def _make_runner(max_concurrent_sessions: int | None = None) -> GatewayRunner:
     runner.hooks.emit = AsyncMock()
     runner.session_store = MagicMock()
     runner.delivery_router = MagicMock()
+    from hermes_constants import get_hermes_home
+    runner._resolve_profile_home_for_source = lambda source: Path(get_hermes_home())
     return runner
 
 
@@ -94,17 +100,22 @@ def _silence_global_gateway_hooks(monkeypatch):
 
 
 def test_new_session_gets_clean_error_at_active_session_limit(monkeypatch):
+    from hermes_cli.execution_budget import try_acquire_execution_permit
     _silence_global_gateway_hooks(monkeypatch)
     runner = _make_runner(max_concurrent_sessions=1)
-    _occupy_session(runner, "busy")
+    held, refusal = try_acquire_execution_permit(execution_id="busy", surface="desktop")
+    assert refusal is None
     event = _make_event(chat_id="new")
     new_key = build_session_key(event.source)
 
     async def fail_if_agent_runs(self_inner, ev, src, qk, generation):
         raise AssertionError("_handle_message_with_agent should not run at capacity")
 
-    with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
-        result = asyncio.run(runner._handle_message(event))
+    try:
+        with patch.object(GatewayRunner, "_handle_message_with_agent", fail_if_agent_runs):
+            result = asyncio.run(runner._handle_message(event))
+    finally:
+        held.release()
 
     assert "(1/1)" in result
     assert new_key not in runner._running_agents

@@ -5,7 +5,7 @@ from hermes_cli.active_sessions import (
 )
 
 
-def test_cli_claim_active_session_respects_global_limit(tmp_path, monkeypatch):
+def test_idle_cli_claim_preserves_writer_exclusion_without_spending_execution_capacity(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     cfg = {"max_concurrent_sessions": 1}
     held, message = try_acquire_active_session(
@@ -24,17 +24,14 @@ def test_cli_claim_active_session_respects_global_limit(tmp_path, monkeypatch):
     cli._console_print = lambda text: printed.append(text)
 
     try:
-        assert cli._claim_active_session("cli") is False
-        assert len(printed) == 1
-        # Names the holding surface ("tui"), not the blocked one.
-        assert "tui" in printed[0]
-
-        held.release()
-
         assert cli._claim_active_session("cli") is True
-        assert [entry["session_id"] for entry in active_session_registry_snapshot()] == [
-            "new-cli-session"
-        ]
+        assert printed == []
+        assert {entry["session_id"] for entry in active_session_registry_snapshot()} == {
+            "held-session", "new-cli-session"}
+        duplicate, refusal = try_acquire_active_session(
+            session_id="new-cli-session", surface="gateway", config=cfg)
+        assert duplicate is None
+        assert refusal.reason == "SESSION_NOT_OWNED"
     finally:
         held.release()
         cli._release_active_session()

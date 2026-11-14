@@ -2778,38 +2778,32 @@ The master `streaming.enabled` switch is `false` by default — nothing streams 
 
 ## Group Chat Session Isolation
 
-Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
-and messaging gateway:
+Limit how many conversations execute at once on one host, across profiles, CLI,
+Desktop/TUI/dashboard and messaging:
 
 ```yaml
-max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
+max_concurrent_sessions: null  # null/0 = unlimited; positive integer = running-work cap
 ```
 
-A slot is taken when a session runs its **first turn**, not when a chat window
-is opened. Opening, resuming or reconnecting to a chat costs nothing until you
-send a message, so idle desktop tabs (and the background resumes a flaky
-websocket triggers) cannot starve the messaging gateway that shares this cap.
+A slot is reserved before work starts and released after the turn and its local
+followups settle. Opening, resuming or leaving a finished Desktop chat open does
+not consume a slot. Two idle Desktop chats therefore cannot block a new messaging
+turn. Two genuinely running conversations still consume two slots.
 
-When the cap is reached, Hermes returns a direct limit message naming which
-surfaces hold the slots. Existing active sessions keep their normal behavior.
-Run `hermes status --full` to see the current slot usage and every holder.
+Conversation writer ownership remains separate: another live process cannot
+write to the same stored conversation, even when execution capacity is available.
+Managed child workers borrow their owner's execution reservation; a child still
+running keeps it held after its parent releases its own reference.
 
-This is the only cap on concurrent gateway turns: the gateway runs each turn body
-on its own thread, so with the default (unset) every accepted turn starts
-immediately instead of queuing behind other running turns.
+At capacity, Hermes reports the executing surfaces. `hermes status --full` shows
+execution slot usage separately from retained conversation ownership. An unreadable
+or uncertain execution registry refuses new work until coordination is restored;
+it does not discard a potentially live owner based on age.
 
-The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
-`gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when
-both are set.
-
-The cap is enforced with a local runtime lease file and is best-effort: Hermes
-fails open if the registry cannot be read or locked so users are not stranded.
-It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
-mounted across multiple machines. A lease whose owning process exists but whose
-liveness cannot be proved (for example an unreadable `/proc` entry inside a
-container after `hermes update` restarts the backend) still counts toward the
-cap and still fences its own session id, but it no longer blocks claiming or
-releasing a different session.
+The canonical key is top-level `max_concurrent_sessions` on the owning host root.
+`gateway.max_concurrent_sessions` is a fallback when the top-level key is absent.
+Profiles on the same host share this budget; separate PC and Cloud hosts have
+separate budgets. This is not a distributed limit for state mounted across hosts.
 
 Control whether shared chats keep one conversation per room or one conversation per participant:
 

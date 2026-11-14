@@ -718,6 +718,21 @@ SESSION_OWNER_BUSY = "SESSION_OWNER_BUSY"
 SESSION_OWNER_UNCONFIRMED = "SESSION_OWNER_UNCONFIRMED"
 
 
+def _prompt_admission_refusal(sid, session):
+    from hermes_cli.execution_budget import execution_capacity_refusal
+
+    # An existing canonical owner keeps its FIFO even when the host is full.
+    if (canonical := _canonical_ledger_refusal(session)) is not None:
+        return canonical
+    # Busy inputs keep their existing queue policy. The actual worker still
+    # reserves atomically, since this preflight cannot promise future capacity.
+    if not session.get("running"):
+        refusal = execution_capacity_refusal(profile_home=session.get("profile_home"))
+        if refusal is not None:
+            return refusal
+    return _ensure_active_session_slot(sid, session)
+
+
 def _slot_refusal(rid, sid, session, text, params, refusal, internal_hosted_submit) -> dict:
     """The answer to a refused slot: a ledger refusal of a client submit goes to the owner's FIFO."""
     if getattr(refusal, "ledger_status", None) is not None and not internal_hosted_submit:
@@ -879,7 +894,7 @@ def _(rid, params: dict) -> dict:
         if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
+    if (limit_message := _prompt_admission_refusal(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
         return _slot_refusal(rid, sid, session, text, params, limit_message, internal_hosted_submit)

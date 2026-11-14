@@ -79,7 +79,18 @@ def _owner(monkeypatch, db, key, epoch):
     return authority
 
 
-def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(monkeypatch, tmp_path):
+@pytest.mark.parametrize("full_capacity", [False, True])
+def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(monkeypatch, tmp_path, full_capacity):
+    from hermes_constants import get_hermes_home
+    from hermes_cli.execution_budget import try_acquire_execution_permit
+
+    held = []
+    if full_capacity:
+        (get_hermes_home() / "config.yaml").write_text("max_concurrent_sessions: 2\n", encoding="utf-8")
+        for key in ("busy-one", "busy-two"):
+            permit, refusal = try_acquire_execution_permit(execution_id=key, surface="managed")
+            assert refusal is None
+            held.append(permit)
     db = SessionDB(db_path=tmp_path / "state.db")
     sid, key, turns, emitted = _legacy(monkeypatch, db)
     try:
@@ -132,6 +143,8 @@ def test_desktop_prompt_during_a_gateway_turn_runs_after_it_in_the_owner_fifo(mo
         assert [r["status"] for r in list_session_admissions(db, session_id=key, pending_only=False)] == [
             "terminal", "terminal"]
     finally:
+        for permit in held:
+            permit.release()
         server._sessions.pop(sid, None)
         db.close()
 

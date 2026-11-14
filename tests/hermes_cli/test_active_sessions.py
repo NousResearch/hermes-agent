@@ -10,6 +10,23 @@ import pytest
 from hermes_cli import active_sessions
 
 
+@pytest.fixture
+def unreadable_live_sibling(monkeypatch):
+    child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        birth = active_sessions._process_start_time(child.pid)
+        assert birth is not None and active_sessions._pid_liveness(child.pid, birth) is True
+        original_start = active_sessions._process_start_time
+        monkeypatch.setattr(active_sessions, "_process_start_time",
+                            lambda pid: None if int(pid) == child.pid else original_start(pid))
+        assert active_sessions._pid_liveness(child.pid, birth) is None
+        yield child.pid, birth
+    finally:
+        child.stdin.close()
+        child.wait(timeout=10)
+
+
 
 def _backdate_leases(*homes, age_seconds=600.0):
     """Age every lease in the given registries past the self-orphan grace."""
@@ -55,6 +72,8 @@ def test_resolve_max_concurrent_sessions_values():
 
 def test_cross_process_acquire_claims_only_one_last_slot(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("max_concurrent_sessions: 1\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     repo_root = Path(__file__).resolve().parents[2]
     ready_dir = tmp_path / "ready"
@@ -68,7 +87,7 @@ def test_cross_process_acquire_claims_only_one_last_slot(tmp_path, monkeypatch):
     script = (
         "import os, time\n"
         "from pathlib import Path\n"
-        "from hermes_cli.active_sessions import try_acquire_active_session\n"
+        "from hermes_cli.execution_budget import try_acquire_execution_permit\n"
         "idx = os.environ['WORKER_INDEX']\n"
         "worker_count = int(os.environ['WORKER_COUNT'])\n"
         "delayed_worker = os.environ.get('DELAYED_WORKER_INDEX')\n"
@@ -83,10 +102,9 @@ def test_cross_process_acquire_claims_only_one_last_slot(tmp_path, monkeypatch):
         "    time.sleep(0.01)\n"
         "if idx == delayed_worker:\n"
         "    time.sleep(2.5)\n"
-        "lease, message = try_acquire_active_session(\n"
-        "    session_id=f'process-{idx}',\n"
+        "lease, message = try_acquire_execution_permit(\n"
+        "    execution_id=f'process-{idx}',\n"
         "    surface='cli',\n"
-        "    config={'max_concurrent_sessions': 1},\n"
         ")\n"
         "if lease is None:\n"
         "    (results_dir / idx).write_text('BLOCK', encoding='utf-8')\n"
@@ -141,7 +159,8 @@ def test_cross_process_acquire_claims_only_one_last_slot(tmp_path, monkeypatch):
 
     assert outputs.count("OK") == 1
     assert outputs.count("BLOCK") == len(workers) - 1
-    assert active_sessions.active_session_registry_snapshot() == []
+    from hermes_cli.execution_budget import execution_budget_snapshot
+    assert execution_budget_snapshot() == (1, [])
 
 
 
@@ -460,42 +479,31 @@ def test_liveness_guard_rejects_unknown_pid_state(tmp_path, monkeypatch):
         with active_sessions.active_session_liveness_guard("session-1"):
             pass
 
-    # The unknown owner is unrelated to a NEW session id: it stays in the live
-    # set (fail closed on capacity, #94595) but no longer refuses the claim
-    # outright (#113683).
+    # Writer ownership only fences the exact stored conversation. Execution
+    # capacity is checked independently against the host execution registry.
     lease, message = active_sessions.try_acquire_active_session(
         session_id="cli-cap-session",
         surface="cli",
         config={"max_concurrent_sessions": 1},
     )
-    assert lease is None
-    assert getattr(message, "reason", None) == active_sessions.MAX_CONCURRENT_SESSIONS
-    assert "unknown-owner" in state_path.read_text(encoding="utf-8")
-
-    lease, message = active_sessions.try_acquire_active_session(
-        session_id="cli-cap-session", surface="cli", config={},
-    )
     assert lease is not None and message is None
     assert "unknown-owner" in state_path.read_text(encoding="utf-8")
+    lease.release()
 
 
-def test_unknown_sibling_liveness_only_fences_its_own_session(tmp_path, monkeypatch):
+def test_unknown_sibling_liveness_only_fences_its_own_session(tmp_path, monkeypatch, unreadable_live_sibling):
     """A desktop (liveness-tracked) claim, release and transfer survive an unrelated
     sibling whose owner pid exists but whose start time cannot be read (LXC /proc after
     a backend restart, #113683); the SAME session id still fails closed."""
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
     state_path = home / "runtime" / "active_sessions.json"
+    pid, birth = unreadable_live_sibling
     active_sessions._write_entries(state_path, [{
         "lease_id": "stale-sibling", "session_id": "old-chat", "surface": "desktop",
-        "pid": 1, "process_start_time": 1234.5, "track_liveness": True,
+        "pid": pid, "process_start_time": birth, "track_liveness": True,
     }])
-    original_start = active_sessions._process_start_time
-    monkeypatch.setattr(
-        active_sessions, "_process_start_time",
-        lambda pid: None if int(pid) == 1 else original_start(pid),
-    )
-    assert active_sessions._pid_liveness(1, 1234.5) is None
+    assert active_sessions._pid_liveness(pid, birth) is None
 
     with pytest.raises(active_sessions.ActiveSessionRegistryError, match="liveness is unknown"):
         active_sessions.try_acquire_active_session(
@@ -513,22 +521,18 @@ def test_unknown_sibling_liveness_only_fences_its_own_session(tmp_path, monkeypa
     assert [e["lease_id"] for e in remaining] == ["stale-sibling"]
 
 
-def test_unknown_sibling_does_not_block_guarded_release_or_orphan_sweep(tmp_path, monkeypatch):
+def test_unknown_sibling_does_not_block_guarded_release_or_orphan_sweep(tmp_path, monkeypatch, unreadable_live_sibling):
     """Desktop automatic cleanup (orphan reap, disconnect, idle timeout) releases its
     lease through ``release_active_session_liveness_guard``; that path and the
     orphan sweep must tolerate an unknowable, unrelated sibling as well (#113683)."""
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))
     state_path = home / "runtime" / "active_sessions.json"
+    pid, birth = unreadable_live_sibling
     active_sessions._write_entries(state_path, [{
         "lease_id": "stale-sibling", "session_id": "old-chat", "surface": "desktop",
-        "pid": 1, "process_start_time": 1234.5, "track_liveness": True,
+        "pid": pid, "process_start_time": birth, "track_liveness": True,
     }])
-    original_start = active_sessions._process_start_time
-    monkeypatch.setattr(
-        active_sessions, "_process_start_time",
-        lambda pid: None if int(pid) == 1 else original_start(pid),
-    )
     lease, message = active_sessions.try_acquire_active_session(
         session_id="new-chat", surface="desktop", config={}, track_liveness=True,
     )
@@ -599,15 +603,16 @@ def test_liveness_transfer_upserts_missing_entry_without_consuming_a_new_slot(
         (lease.lease_id, "session-new")
     ]
 
-    blocked, limit_message = active_sessions.try_acquire_active_session(
+    other, limit_message = active_sessions.try_acquire_active_session(
         session_id="session-other",
         surface="desktop",
         config={"max_concurrent_sessions": 1},
         track_liveness=True,
     )
-    assert blocked is None
-    assert limit_message is not None
+    assert other is not None
+    assert limit_message is None
     lease.release()
+    other.release()
 
 
 def test_liveness_transfer_write_failure_keeps_old_id_for_retry(tmp_path, monkeypatch):

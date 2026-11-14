@@ -108,7 +108,7 @@ def encode_frame(frame):
 
 
 def validate_bootstrap(frame):
-    if set(frame) - {'attachments_v1'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
+    if set(frame) - {'attachments_v1', 'execution_permit'} != BOOTSTRAP_FIELDS or frame['version'] != 1:
         raise ValueError('invalid_managed_worker_bootstrap')
     scope = frame['scope']
     fields = {'profile_id', 'session_id', 'execution_id', 'generation', 'pid', 'birth', 'secret', 'epoch'}
@@ -124,7 +124,20 @@ def validate_bootstrap(frame):
     if frame['turn_author'] is not None and (not isinstance(frame['turn_author'], dict)
                                             or parse_turn_author(frame['turn_author']) is None):
         raise ValueError('invalid_managed_worker_bootstrap')
+    _validate_execution_permit(frame)
     return frame
+
+
+def _validate_execution_permit(frame):
+    permit = frame.get('execution_permit')
+    if permit is not None:
+        fields = {'root', 'lease_id', 'budget_id', 'profile_home', 'execution_id', 'conversation_root'}
+        if (not isinstance(permit, dict) or set(permit) != fields
+                or any(not isinstance(permit[key], str) or not permit[key].strip()
+                       for key in fields - {'conversation_root'})
+                or permit['profile_home'] != frame['home']
+                or (permit['conversation_root'] is not None and not isinstance(permit['conversation_root'], str))):
+            raise ValueError('invalid_execution_permit')
 
 
 def bind_worker_policy(frame):
@@ -438,7 +451,10 @@ def _construct_agent(frame, factory, policy, **kwargs):
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
     try:
         from gateway.session_worker_construct import worker_route
-        return factory(**{**kwargs, **worker_route(policy, kwargs)})
+        agent = factory(**{**kwargs, **worker_route(policy, kwargs)})
+        if frame.get('execution_permit') is not None:
+            agent._execution_permit_vouch = frame['execution_permit']
+        return agent
     except Exception as exc:
         from gateway.session_kanban import record_start_failure
         record_start_failure(frame, exc)

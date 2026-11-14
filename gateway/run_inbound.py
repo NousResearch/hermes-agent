@@ -1427,49 +1427,8 @@ class GatewayInboundMixin(
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 
-        try:
-            # Fail-open plugin consume inside the claimed slot (#129958); once per message.
-            if not is_internal:
-                _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
-                if _consumed:
-                    return _consumer_reply
-            try:
-                _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
-            except TurnLeaseTimeoutError as exc:
-                # A rejected message, not a completed turn: return before the /goal judge so it
-                # cannot consume the resend notice and enqueue a synthetic continuation loop.
-                logger.error(
-                    "Rejecting turn for routing key %s on session %s after "
-                    "turn-lease timeout; transcript load was not started and "
-                    "the user must resend",
-                    _quick_key, exc.session_id,
-                )
-                return t("gateway.busy.another_turn_running")
-            try:
-                await self._run_post_turn_hooks(
-                    agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
-                )
-            except Exception as _goal_exc:
-                logger.debug("post-turn hook failed: %s", _goal_exc)
-            return _agent_result
-        finally:
-            # One-shot restore (/moa, /model --once) must run on EVERY exit path (success,
-            # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
-            self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
-            # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
-            # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
-            # clears it only once the reply is in the delivery ledger (else a kill in between
-            # left neither marker nor ledger row and the persisted reply was never sent).
-            if not getattr(event, "_turn_marker_handoff", False):
-                await self._clear_durable_active_turn(event)
-            # Release only this turn's generation. Eviction may immediately admit a replacement
-            # through the cold path; an unconditional release here would then clear the replacement
-            # sentinel/agent and lease. Reset/stop release their stale slot before installing a
-            # successor, preserving reset-zombie cleanup without granting gen-N successor authority.
-            self._release_running_agent_state(_quick_key, run_generation=_run_generation)
-            # Turn lease is keyed by (routing key, run generation) so this unwind can only free
-            # the lease its own turn acquired, never a newer turn's.
-            self._release_turn_lease(_quick_key, _run_generation)
+        from gateway.execution_admission import run_claimed_message
+        return await run_claimed_message(self, event, source, _quick_key, _run_generation, is_internal)
 
     def _restore_pending_one_turn_model_override(self, session_key: str, run_generation: int | None = None) -> None:
         """Restore the per-session model override captured by ``/model --once`` or ``/moa``.

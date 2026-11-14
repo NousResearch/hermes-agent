@@ -7,6 +7,9 @@ from gateway.config import Platform
 
 logger = logging.getLogger("gateway.run")
 
+RELAY_NOT_CONNECTED = "relay transport not connected"
+SETTLE_RETRY_DELAYS = (0.05, 0.25, 1.0)
+
 
 def relay_obligation_adapter(runner, platform, profile=None):
     # The ledger names the receiving adapter's profile, which can differ from
@@ -21,6 +24,48 @@ def relay_obligation_adapter(runner, platform, profile=None):
         return None  # a configured native bot can be offline, but still owns its rows
     fronts = getattr(relay, "fronts_platform", None)
     return relay if callable(fronts) and fronts(platform) else None
+
+
+def relay_fronted_platforms(adapter):
+    """Platforms the relay's transport advertises. Plugin platforms are not members that
+    ``for p in Platform`` yields, so the advertised names are the only complete list."""
+    identities = getattr(getattr(adapter, "_transport", None), "_identities", None) or ()
+    platforms = []
+    for name in dict.fromkeys(str(name) for name, _ in identities):
+        try:
+            platforms.append(Platform(name))
+        except ValueError:
+            continue
+    return platforms
+
+
+def relay_refused_before_sending(adapter, row, error) -> bool:
+    """The local transport returned this error before any frame went out, so the claim's
+    attempt bought nothing and is refunded. Any other failure may have reached the platform."""
+    return (
+        getattr(adapter, "platform", None) is Platform.RELAY
+        and row.get("platform") != Platform.RELAY.value
+        and error == RELAY_NOT_CONNECTED
+    )
+
+
+async def record_delivered(obligation_id) -> bool:
+    """Record a redelivery that already succeeded. A failed write is retried on its own: the
+    reply is out, and a row left ``attempting`` would be sent again at the next boot."""
+    from gateway.delivery_ledger import mark_delivered
+
+    for delay in (0, *SETTLE_RETRY_DELAYS):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await asyncio.to_thread(mark_delivered, obligation_id)
+            return True
+        except Exception:
+            logger.debug("delivery ledger update failed", exc_info=True)
+    logger.warning(
+        "obligation %s was redelivered but could not be recorded; the next boot may send it "
+        "again with a recovery marker", obligation_id)
+    return False
 
 
 def relay_platform_ready(adapter, platform):
@@ -64,7 +109,7 @@ async def resolve_obligation_adapter(runner, row: dict, *, relay_adapter=None):
 
         last_error = str(row.get("last_error") or "")
         reconnect_error = (
-            "relay transport not connected" if relay_unready else "send_path_degraded"
+            RELAY_NOT_CONNECTED if relay_unready else "send_path_degraded"
         )
         await runner._release_runtime_claim_quiet(
             row["obligation_id"],
@@ -100,14 +145,30 @@ async def send_relay_obligation(runner, adapter, row, content, metadata):
 def _schedule_replay(runner, adapter, platform):
     if not runner._running or relay_obligation_adapter(runner, platform) is not adapter:
         return
+    # One worker per relay platform. A handshake that lands while it runs asks for one more
+    # pass instead of starting a second sweep beside it.
+    workers = getattr(runner, "_relay_replay_workers", None)
+    if workers is None:
+        workers = runner._relay_replay_workers = {}
+    key = (id(adapter), platform.value)
+    if key in workers:
+        workers[key] = True
+        return
+    workers[key] = False
+
+    async def replay():
+        try:
+            while True:
+                await runner._redeliver_failed_obligations_for_platform(platform, relay_adapter=adapter)
+                again, workers[key] = workers[key], False
+                if not again or not runner._running or relay_obligation_adapter(runner, platform) is not adapter:
+                    return
+        finally:
+            workers.pop(key, None)
+
     # The socket reader delivers outbound_result frames. Run the sweep off
     # the reader so it can keep receiving the replay's acknowledgements.
-    task = asyncio.create_task(
-        runner._redeliver_failed_obligations_for_platform(
-            platform, relay_adapter=adapter
-        ),
-        name=f"relay-obligation-replay:{platform.value}",
-    )
+    task = asyncio.create_task(replay(), name=f"relay-obligation-replay:{platform.value}")
     runner._track_task_in(runner._background_tasks, task)
     task.add_done_callback(
         runner._late_failure_callback("relay obligation replay failed")
@@ -133,7 +194,7 @@ def wire_relay_obligation_replay(runner, adapter):
 
 def replay_on_relay_replacement(runner, adapter):
     """A replacement may have acknowledged its platforms before it was registered."""
-    for platform in Platform:
+    for platform in relay_fronted_platforms(adapter):
         if relay_obligation_adapter(
             runner, platform
         ) is adapter and relay_platform_ready(adapter, platform):

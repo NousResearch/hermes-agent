@@ -947,6 +947,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         migrate_windows_bin_path(_m().PROJECT_ROOT)
 
     for message, step in (
+        ('Pre-update session notice failed: %s', _print_pre_update_session_notice),
         # v23 FTS layout is opt-in (existing indexes untouched); surface the command here.
         ('FTS optimize notice failed: %s', _print_fts_optimize_available_notice),
         ('Curator first-run notice failed: %s', _print_curator_first_run_notice),
@@ -963,6 +964,23 @@ def _print_post_update_notices_and_self_heals() -> None:
     ):
         with _best_effort(message):
             step()
+
+
+def _print_pre_update_session_notice() -> None:
+    """Chat/TUI/ACP sessions left on pre-update code, judged against this run's receipt (its start
+    time and pre-update commit); nothing outside an update run."""
+    from hermes_cli import update_receipt
+    from datetime import datetime
+
+    from hermes_cli.update_abort_recovery import _warn_pre_update_sessions
+    from hermes_cli.update_cmd import _capture_head_sha, _m
+    run = update_receipt._current.get()
+    data = run.data if run is not None else {}
+    pre_sha, started = (data.get("pre_update") or {}).get("sha"), data.get("started_at")
+    post_sha = _capture_head_sha(["git"], _m().PROJECT_ROOT)
+    _warn_pre_update_sessions(
+        since=datetime.fromisoformat(started).timestamp() if started else None,
+        code_changed=bool(pre_sha and post_sha and pre_sha != post_sha))
 
 
 def _migrate_relay_exporter_env() -> None:

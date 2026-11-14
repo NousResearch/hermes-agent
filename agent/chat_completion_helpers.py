@@ -2422,13 +2422,6 @@ def _wait_stream_retry_backoff(agent, delay: float) -> None:
         time.sleep(min(0.1, remaining))
 
 
-def _anthropic_connection_error_types() -> tuple:
-    # An Anthropic error instance implies the SDK is already imported; never import
-    # (or lazy-install) it from inside an error handler.
-    anthropic = sys.modules.get("anthropic")
-    return (anthropic.APIConnectionError,) if anthropic is not None else ()
-
-
 def _is_sse_connection_error(exc: BaseException) -> bool:
     from openai import APIError as _APIError
     if not isinstance(exc, _APIError) or getattr(exc, "status_code", None):
@@ -3547,10 +3540,15 @@ class _StreamingCall(StreamingWaitMonitor):
         ``result["error"]`` set (unless our own interrupt force-closed the
         socket). Runs inside the ``except`` so ``logger.exception`` works."""
         import httpx as _httpx
+        from agent.chat_completion_helpers_errors import anthropic_connection_error_types
         # Our own interrupt force-close: no retry/fallback/"reconnecting" (the
         # poll loop raises InterruptedError).
         if self._request_cancelled["value"]:
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
+            return False
+        # Explicit terminal failures must not enter reconnect or compatibility recovery.
+        if getattr(e, "hermes_terminal_stream_error", False) is True:
+            self.result["error"] = e
             return False
         e = self._as_lifetime_error(e)  # a cap kill: transient, and its copy names the setting
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout, StreamLifetimeExceeded))
@@ -3558,7 +3556,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # anthropic.APIConnectionError: the Anthropic SDK wraps connect/read drops
         # (incl. stale-kill aborts) in its own type, not httpx's.
         _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError,
-                                      *_anthropic_connection_error_types()))
+                                      *anthropic_connection_error_types()))
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
@@ -3945,6 +3943,8 @@ class _StreamingCall(StreamingWaitMonitor):
             error, response = self._abandon_error, None
             self._forget_invisible_deltas(error)  # nothing visible: retry, not a stub
         if error is not None:
+            if getattr(error, "hermes_terminal_stream_error", False) is True:
+                raise error
             if self.deltas_were_sent["yes"]:
                 return self._partial_stream_stub(error)
             raise error

@@ -426,6 +426,35 @@ Keep the class attributes in step with the profile's `process_*` fields. Overrid
 
 `agent.copilot_acp_client.CopilotACPClient` is a deprecated alias of `ACPClient` with the old GitHub Copilot launch defaults. The module keeps its whole former surface for listed catalog plugins pinned to it (`ACP_MARKER_BASE_URL`, its former private helpers, `subprocess` for `Popen` patching); the first access of any of its names warns once per process. Subclass `ACPClient` instead (set `placeholder_model` to your own placeholder id). The alias stays for at least two minor releases.
 
+### Explicit terminal streaming failures
+
+A custom Chat Completions or Anthropic streaming client can mark an exception
+with `hermes_terminal_stream_error = True` when the failed response must not be
+replayed or continued (for example, a final response envelope failed validation).
+The value must be the boolean `True`; absent, false, and merely truthy values
+retain normal recovery.
+
+```python
+class InvalidStreamResponse(RuntimeError):
+    hermes_terminal_stream_error = True
+
+# Inside the response iterator, after validating the final envelope:
+raise InvalidStreamResponse("Response validation failed") from validation_error
+```
+
+Hermes closes the owned stream and request client normally and propagates the
+same exception, preserving its cause, even if text was already delivered. It
+neither reopens the stream nor converts the failure to a length-limited partial
+completion. The turn error handler also propagates it before recovery,
+credential rotation or fallback; callers must handle the failed turn rather than
+treating visible partial text as a successful answer. Incomplete tool calls are
+not returned for execution. User cancellation retains precedence.
+
+This is an error-level opt-in for custom streaming clients, not a global retry
+switch or a replacement for transient network recovery. It does not change the
+Responses, Bedrock or auxiliary-stream transport contracts. Do not attach raw
+prompts, tool arguments or credentials to exception messages.
+
 ### Picker rows for non-api-key plugins
 
 Every registered profile joins `CANONICAL_PROVIDERS` by slug (a plugin re-declaring a built-in slug such as `bedrock` is deduped, never doubled), so external-process and OAuth plugins appear in `hermes model`, `/model` and the Desktop model selector alongside the built-in providers. Visibility is gated by credentials, not by `auth_type`:

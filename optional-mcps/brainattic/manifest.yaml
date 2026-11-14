@@ -1,0 +1,30 @@
+manifest_version: 1
+
+name: brainattic
+description: >-
+  Search and manage versioned documents, rules, and reusable agent skills
+  in your brainattic knowledge base, within your workspace permissions.
+source: https://github.com/rutash/brainattic-mcp
+
+# Vendor-hosted Streamable HTTP; OAuth discovery, Dynamic Client
+# Registration, and PKCE are handled by Hermes's native MCP client.
+transport:
+  type: http
+  url: https://app.brainattic.ai/api/mcp
+
+auth:
+  type: oauth
+
+suggest:
+  keywords:
+    - brainattic
+  hosts:
+    - brainattic.ai
+
+post_install: |
+  A brainattic account and access to a workspace are required.
+  On first connection Hermes opens a browser to sign in and approve access
+  (or run `hermes mcp login brainattic`). Then restart the session so tools load.
+  Access follows your brainattic permissions. Tools can create, change,
+  archive, or delete content; start with a search or another read-only action
+  and review write actions before approving them.

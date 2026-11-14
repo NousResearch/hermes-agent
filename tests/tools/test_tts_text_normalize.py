@@ -1,6 +1,6 @@
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
-from tools.tts_text_normalize import prepare_spoken_text
+from tools.tts_text_normalize import prepare_spoken_text, smooth_whitespace_for_tts
 
 
 class _DummyAdapter(BasePlatformAdapter):
@@ -81,3 +81,32 @@ def test_prepare_spoken_text_closes_colon_on_single_line():
     assert prepare_spoken_text("Here is the list:") == "Here is the list."
     # ...but a digit-preceded colon is a ratio and must stay intact.
     assert prepare_spoken_text("Final score 3:2") == "Final score 3:2"
+
+
+def test_sentence_mark_inside_closing_quote_or_bracket_ends_the_line():
+    # Story dialogue often ends a paragraph inside quotes. The per-line pause must
+    # not append another "." after the closer ('peace.".'), which voices read as a
+    # second full stop.
+    for line in ('He said, "Speak now or forever hold your peace."',
+                 '"Stop running!"',
+                 "Asked twice (really?)",
+                 "It was covered earlier (see above.)",
+                 "[Done.]",
+                 "\u00abC'est fini.\u00bb",
+                 "She whispered \u201cgoodbye\u2026\u201d",
+                 "He called it \u2018done.\u2019"):
+        assert smooth_whitespace_for_tts(f"{line}\nShe nodded.") == f"{line}\nShe nodded."
+    # A line that ends in a plain word, or a closer with no sentence mark before it,
+    # still gets its period.
+    assert smooth_whitespace_for_tts("A plain line\nAnother plain line") == "A plain line.\nAnother plain line."
+    assert smooth_whitespace_for_tts('He said "no"\nShe nodded') == 'He said "no".\nShe nodded.'
+
+
+def test_prepare_spoken_text_adds_no_stray_period_after_finished_paragraphs():
+    # Through the whole pipeline: the newline flattening must not turn a paragraph
+    # break after a finished sentence into ". " either.
+    assert (prepare_spoken_text('He said, "Speak now or forever hold your peace."\n\nShe nodded.')
+            == 'He said, "Speak now or forever hold your peace." She nodded.')
+    assert prepare_spoken_text('"Stop running!"\nHe stopped.') == '"Stop running!" He stopped.'
+    assert prepare_spoken_text("Wow!\n\nReally?\n\nYes.") == "Wow! Really? Yes."
+    assert prepare_spoken_text("A plain line\n\nAnother plain line") == "A plain line. Another plain line."

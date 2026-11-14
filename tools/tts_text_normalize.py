@@ -15,6 +15,13 @@ import re
 # "Weather." label.
 _HEAD = "\x00"
 
+# A sentence mark, optionally inside closing quotes/brackets ('"Stop!"', "(see above.)").
+# Text ending like this is already a finished sentence: adding "." after the closer
+# is read aloud as a second full stop.
+_SENTENCE_END = r"[.!?\u2026][\"')\]\u00bb\u201d\u2019]*"
+_ENDS_SENTENCE_RE = re.compile(_SENTENCE_END + r"$")
+_NEWLINES_AFTER_SENTENCE_RE = re.compile("(" + _SENTENCE_END + r")\n+")
+
 _MD_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^()]|\([^)]*\))*\)")
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)")
@@ -223,7 +230,7 @@ def smooth_whitespace_for_tts(text: str) -> str:
                 # token after it (file link, code fence) is already gone from
                 # speech, so the voice would hang on the open pause. Close it.
                 line = line.rstrip(":;").rstrip() + "."
-            elif line[-1] not in ".!?":
+            elif not _ENDS_SENTENCE_RE.search(line):
                 line += "."
         lines.append(line)
     flush_pending()
@@ -271,8 +278,8 @@ def flatten_newlines_for_payload(text: str) -> str:
     """
     if not text:
         return ""
-    for pattern, repl in ((r"\n{2,}", ". "), (r"(?<=[.!?;:,])\n", " "), (r"\n", ". "), (r"\.\s*\.", "."),
-                          (r"[ \t]{2,}", " ")):
+    for pattern, repl in ((_NEWLINES_AFTER_SENTENCE_RE, r"\1 "), (r"\n{2,}", ". "), (r"(?<=[.!?;:,])\n", " "),
+                          (r"\n", ". "), (r"\.\s*\.", "."), (r"[ \t]{2,}", " ")):
         text = re.sub(pattern, repl, text)
     # Single-line text ("Here is the list:") skips the per-line pause pass, so close a
     # final colon here too -- never a digit-preceded one ("final score 3:2" is a ratio).

@@ -5,7 +5,7 @@ from tools.patch_parser import apply_v4a_operations, parse_v4a_patch
 
 
 def test_hash_unavailable_refuses_deletion(tmp_path, monkeypatch):
-    import tools.file_operations as file_operations
+    from tools import file_operations
 
     monkeypatch.setattr(file_operations, "_RAW_READ_MAX_BYTES", 64)
     path = tmp_path / "large.txt"

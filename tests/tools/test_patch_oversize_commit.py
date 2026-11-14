@@ -5,7 +5,7 @@ from tools.patch_parser import _commit_resolved, _resolve_operations, parse_v4a_
 
 
 def test_commit_refuses_changed_oversized_file(tmp_path, monkeypatch):
-    import tools.file_operations as file_operations
+    from tools import file_operations
 
     monkeypatch.setattr(file_operations, "_RAW_READ_MAX_BYTES", 64)
     path = tmp_path / "large.txt"

@@ -9,6 +9,7 @@ import {
   alignToBranchGroup,
   MAX_SESSION_WINDOWS,
   selectTranscriptWindow,
+  type SessionWindowMemo,
   TRANSCRIPT_WINDOW_BUDGET,
   TRANSCRIPT_WINDOW_MIN_MESSAGES,
   TRANSCRIPT_WINDOW_SLACK
@@ -241,6 +242,19 @@ describe('advanceTranscriptWindow', () => {
 })
 
 describe('advanceSessionTranscriptWindow', () => {
+  it('keeps the store head on screen on the flush after the cut reaches it', () => {
+    const memos = new Map<string, SessionWindowMemo>()
+    const messages = transcript(400, RENDER_WEIGHT_CHARS * 50)
+    const cut = advanceSessionTranscriptWindow(memos, 'runtime', messages, 1)
+    const trimmed = messages.slice(messages.findIndex(message => message.id === cut.anchorId))
+
+    expect(advanceSessionTranscriptWindow(memos, 'runtime', trimmed, 1).window.windowed).toBe(false)
+
+    const next = advanceSessionTranscriptWindow(memos, 'runtime', [...trimmed, ...transcript(1, 10)], 1)
+
+    expect(next.window.messages[0]).toBe(trimmed[0])
+  })
+
   const heavyChars = RENDER_WEIGHT_CHARS * 40
 
   it('matches a fresh walk on first visit', () => {

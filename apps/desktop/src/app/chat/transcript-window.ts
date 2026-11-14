@@ -163,8 +163,9 @@ export function advanceTranscriptWindow(
         // OFF the REST backfill (`expandWindow` runs that branch only when
         // !windowed), and hands retention an anchor that no longer marks a cut.
         if (start === 0) {
+          // The anchor stays so the next flush keeps this cut instead of a fresh walk.
           return {
-            anchorId: null,
+            anchorId: prev.anchorId,
             pages,
             window: { messages: messages as ChatMessage[], windowed: false }
           }
@@ -218,7 +219,9 @@ export interface SessionWindowMemo {
  *   through to `advanceTranscriptWindow`'s existing fresh-walk behaviour.
  * - An unwindowed result is the source array itself, so caching it adds no
  *   identity benefit and would make `state.window.messages` a second strong
- *   owner of the complete transcript. Pass-through sessions are not memoized.
+ *   owner of the complete transcript. Pass-through sessions are not memoized,
+ *   except a cut that reached the store head: it keeps its anchor so the next
+ *   flush holds the cut, and that store is within one window budget.
  *
  * The map is bounded (oldest session evicted) and source arrays are weakly held,
  * so cold-session cleanup can release the full transcript independently.
@@ -239,7 +242,7 @@ export function advanceSessionTranscriptWindow(
 
   const state = advanceTranscriptWindow(memo?.state ?? null, messages, pages)
 
-  if (!state.window.windowed) {
+  if (!state.window.windowed && state.anchorId === null) {
     // The pass-through state already returns `messages` itself. Keeping it in
     // the component-local map would pin the complete source array after the
     // session store intentionally releases a cold transcript.

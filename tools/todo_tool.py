@@ -19,6 +19,9 @@ _TRUNCATION_MARKER = "… [truncated]"
 # Persisted as ordinary message content; ContextCompressor keys on this stable header to
 # tell the synthetic post-compaction row from a real user message.
 TODO_INJECTION_HEADER = "[Your active task list was preserved across context compression]"
+# Closes a folded snapshot block (after any skill-reload notice), so stripping a stale block keeps user
+# text merged after it (agent/conversation_compression_todo.py).
+TODO_INJECTION_FOOTER = "[End of preserved task list]"
 _STATUS_MARKERS = {"completed": "[x]", "in_progress": "[>]", "pending": "[ ]", "cancelled": "[~]"}
 _ACTIVE_STATUSES = {"pending", "in_progress"}
 

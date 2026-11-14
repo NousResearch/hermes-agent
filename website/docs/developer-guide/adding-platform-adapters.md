@@ -292,6 +292,25 @@ for key, value in (("group_allowed_chats_env", "MY_CHAT_GROUP_ALLOWED_CHATS"),
 ctx.register_platform(**kwargs)
 ```
 
+## Background activity after a turn
+
+`BasePlatformAdapter.has_background_work(session_key)` is a synchronous, read-only
+query for work that can still produce a completion for that conversation. Pass the
+canonical session key, including its profile namespace. It reports live background
+delegations and running terminal jobs with `notify_on_complete=True`; silent
+servers, watch-only jobs and completed work do not keep an indicator alive. It
+uses in-memory registry state without polling a remote process or reading config.
+An empty key returns `False`. It does not include the foreground turn and does not
+start, stop or take ownership of work.
+
+The native Discord adapter uses this method to keep typing after foreground
+cleanup while a conversation's workers run. One channel can have several session
+owners, including different profiles. Stopping one owner must not stop siblings.
+The adapter's `interrupt_session_activity` and `cancel_background_tasks` overrides
+retire their typing owners on `/stop`, `/new`, disconnect and shutdown. Other
+platforms retain their existing foreground-only behavior unless they opt into
+this query. Plugins must not import the process or delegation registries directly.
+
 ## Public helpers for platform plugins
 
 A platform adapter needs more of core than a tool plugin does. These names are public: `hermes plugins

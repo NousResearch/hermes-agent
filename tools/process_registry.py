@@ -39,6 +39,7 @@ from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_env_scope import ProcessEnvScopeMixin
 from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
 from tools.process_registry_ownership import ProcessOwnershipMixin
+from tools.process_registry_liveness import ProcessLivenessMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
 from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
@@ -677,7 +678,7 @@ _WSL_CHAIN_NOTE = (
 )
 
 
-class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin, ProcessEnvScopeMixin):
+class ProcessRegistry(ProcessLivenessMixin, ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOutputLogMixin, ProcessOwnershipMixin, ProcessEnvScopeMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
     the gateway asyncio loop (watchers, reset checks) and the cleanup thread."""
@@ -2426,24 +2427,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     # ----- Session/Task Queries (for gateway integration) -----
 
-    def _any_running(self, predicate) -> bool:
-        """True if any still-running session satisfies *predicate*, after refreshing
-        detached sessions so a finished-but-unreaped process reads as inactive."""
-        with self._lock:
-            sessions = list(self._running.values())
-        for session in sessions:
-            self._refresh_detached_session(session)
-        with self._lock:
-            return any(not s.exited and predicate(s) for s in self._running.values())
-
-    def has_active_processes(self, task_id: str) -> bool:
-        """Whether any process for ``task_id`` is still running. Ownership is
-        ``owner_task_id`` (the raw spawning id) like the other task-scoped queries:
-        ``task_id`` on a session is the collapsed container key, shared across
-        turns and delegate children, so a container-key match alone would miss a
-        delegate child's own background work (#120546)."""
-        return self._any_running(lambda s: s.owner_task_id == task_id)
-
     def running_owned_by(self, owner_task_id: str) -> list[ProcessSession]:
         """Running processes whose RAW spawning owner is ``owner_task_id``."""
         with self._lock:
@@ -2473,21 +2456,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             session.session_key = to_session_key
             session.handoff_note = note
             return session
-
-    def has_active_for_session(self, session_key: str, max_active_age: Optional[float] = None) -> bool:
-        """Active processes for a gateway session key. Processes older than
-        ``max_active_age`` seconds are ignored as stale so a forgotten ``http.server``
-        can't freeze session idle/daily reset forever; ``None`` keeps legacy behaviour
-        (any running process blocks)."""
-        now = time.time()
-        return self._any_running(
-            lambda s: s.session_key == session_key
-            and (max_active_age is None or (now - s.started_at) < max_active_age))
-
-    def has_any_active(self) -> bool:
-        """Whether ANY background process is running — scale-to-zero must not
-        suspend a gateway with live background work or the process is lost."""
-        return self._any_running(lambda s: True)
 
     def snapshot_running_ids(self, task_id: str) -> frozenset[str]:
         """Running IDs owned by ``task_id`` — a turn-boundary marker: on timeout

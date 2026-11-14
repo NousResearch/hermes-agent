@@ -93,6 +93,42 @@ def test_bg_review_spillover_does_not_overwrite_parent_europe_west2_affinity():
         assert vertex_adapter.release_vertex_hybrid_slot(h) is True
 
 
+def test_deep_europe_west2_epoch_preserves_regional_affinity_across_transient_cooldown():
+    """A session that already has a warm >=35k-token cache on europe-west2 must NOT
+    permanently exile itself to the 8-cluster global pool just because another session
+    triggered a 15-second regional 429 cooldown or momentary slot saturation."""
+    vertex_adapter.reset_vertex_hybrid_router_state()
+    sid = "deep-ew2-session-140k"
+    vertex_adapter._record_session_vertex_region_affinity(sid, vertex_adapter.EUROPE_WEST2_VERTEX_REGION)
+
+    # Another session triggers a temporary regional 429 cooldown
+    vertex_adapter.record_vertex_regional_429(cooldown_seconds=15.0, session_id="other-session-429")
+
+    # While cooldown is active, the deep session (140k tokens) spills over for this single call
+    r1, acq1 = vertex_adapter.acquire_vertex_hybrid_region(
+        "google/gemini-4-argon",
+        configured_region="global",
+        interactive=True,
+        session_id=sid,
+        last_prompt_tokens=140_000,
+    )
+    assert (r1, acq1) == (vertex_adapter.GLOBAL_VERTEX_REGION, False)
+    # CRITICAL: its regional affinity is preserved so the next call after cooldown returns to europe-west2!
+    assert vertex_adapter.get_session_vertex_region_affinity(sid) == vertex_adapter.EUROPE_WEST2_VERTEX_REGION
+
+    # Once cooldown clears, the next call resumes on europe-west2
+    vertex_adapter._europe_west2_cooldown_until = 0.0
+    r2, acq2 = vertex_adapter.acquire_vertex_hybrid_region(
+        "google/gemini-4-argon",
+        configured_region="global",
+        interactive=True,
+        session_id=sid,
+        last_prompt_tokens=142_000,
+    )
+    assert (r2, acq2) == (vertex_adapter.EUROPE_WEST2_VERTEX_REGION, True)
+    assert vertex_adapter.release_vertex_hybrid_slot(SimpleNamespace(_vertex_regional_slot_held=True)) is True
+
+
 def test_subagent_under_desktop_session_env_classifies_as_subagent_and_trips_breaker(
     tmp_path, monkeypatch
 ):

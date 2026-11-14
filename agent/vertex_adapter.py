@@ -249,7 +249,10 @@ def acquire_vertex_hybrid_region(
                 if acquired:
                     _record_session_vertex_region_affinity(session_id, EUROPE_WEST2_VERTEX_REGION)
                     return (EUROPE_WEST2_VERTEX_REGION, True)
-            if session_id and (interactive or pinned_region is None):
+            if session_id and (
+                pinned_region is None
+                or (interactive and prompt_tok < GLOBAL_STICKY_EPOCH_MIN_TOKENS)
+            ):
                 _record_session_vertex_region_affinity(session_id, GLOBAL_VERTEX_REGION)
         return (GLOBAL_VERTEX_REGION, False)
     return (reg, False)

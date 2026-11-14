@@ -15,10 +15,10 @@ _TABLE_WIDTH = 40
 _CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.DOTALL)
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _INLINE_PATTERNS = [
+    (re.compile(r"`(.+?)`"), "MONOSPACE"),
     (re.compile(r"\*\*(.+?)\*\*", re.DOTALL), "BOLD"),
     (re.compile(r"__(.+?)__", re.DOTALL), "BOLD"),
     (re.compile(r"~~(.+?)~~", re.DOTALL), "STRIKETHROUGH"),
-    (re.compile(r"`(.+?)`"), "MONOSPACE"),
     (re.compile(r"(?<!\*)\*(?!\*| )(.+?)(?<!\*)\*(?!\*)"), "ITALIC"),
     (re.compile(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)"), "ITALIC")]
 
@@ -69,24 +69,49 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE."""
     text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip()))
     styles: list[tuple[int, int, str]] = []
+    code_blocks: list[tuple[int, int]] = []
     while match := _CODE_BLOCK_RE.search(text):
         inner = match.group(1).rstrip("\n")
-        styles.append((match.start(), len(inner), "MONOSPACE"))
-        text = text[: match.start()] + inner + text[match.end() :]
+        start = match.start()
+        length = len(inner)
+        styles.append((start, length, "MONOSPACE"))
+        code_blocks.append((start, start + length))
+        text = text[:start] + inner + text[match.end() :]
     new_text, last_end = "", 0
+    heading_removals: list[tuple[int, int]] = []
+    heading_styles: list[tuple[int, int, str]] = []
     for match in _HEADING_RE.finditer(text):
-        new_text += text[last_end : match.start()]
-        eol = text.find("\n", match.end())
+        ms, me = match.start(), match.end()
+        if any(cs <= ms < ce for cs, ce in code_blocks):
+            continue
+        new_text += text[last_end:ms]
+        eol = text.find("\n", me)
         if eol == -1:
             eol = len(text)
-        heading_text = text[match.end() : eol]
-        styles.append((len(new_text), len(heading_text), "BOLD"))
+        heading_text = text[me:eol]
+        heading_styles.append((len(new_text), len(heading_text), "BOLD"))
         new_text += heading_text
+        heading_removals.append((ms, me - ms))
         last_end = eol
-    text = new_text + text[last_end:]
-    # Inline markers: first pattern to claim a span wins; later overlapping matches are dropped.
+    if heading_removals:
+        text = new_text + text[last_end:]
+        def _adjust_heading(pos: int) -> int:
+            shift = 0
+            for r_pos, r_len in heading_removals:
+                if r_pos >= pos:
+                    break
+                shift += min(r_len, pos - r_pos)
+            return pos - shift
+
+        code_blocks = [(_adjust_heading(s), _adjust_heading(e)) for s, e in code_blocks]
+        adjusted_monospace = [(_adjust_heading(s), _adjust_heading(s + l) - _adjust_heading(s), st)
+                              for s, l, st in styles if st == "MONOSPACE"]
+        styles = adjusted_monospace + heading_styles
+    else:
+        styles.extend(heading_styles)
+    # Inline markers: seed occupied with code blocks so code text is never restyled.
     all_matches: list[tuple[int, int, int, int, str]] = []
-    occupied: list[tuple[int, int]] = []
+    occupied: list[tuple[int, int]] = list(code_blocks)
     for pattern, style in _INLINE_PATTERNS:
         for match in pattern.finditer(text):
             ms, me = match.start(), match.end()

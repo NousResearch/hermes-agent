@@ -23,7 +23,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, MutableMapping, Optional, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 SECRET_SOURCE_API_VERSION = 1
 
@@ -50,7 +50,7 @@ def get_source_environment() -> MutableMapping[str, str]:
     return environ if environ is not None else os.environ
 
 
-def source_child_env() -> Dict[str, str]:
+def source_child_env() -> dict[str, str]:
     """Environment for a helper child that legitimately needs the caller's env:
     full process env (minus the terminal blocklist) in single-profile startup;
     ONLY the per-fetch view under multiplex, so no sibling profile's secrets leak."""
@@ -79,7 +79,7 @@ class ErrorKind(str, Enum):
 
 # Ordered (kind, substrings) rules for mapping CLI failure text onto ErrorKind;
 # first rule whose substring appears (case-insensitive) wins.
-ErrorRules = Sequence[Tuple[ErrorKind, Sequence[str]]]
+ErrorRules = Sequence[tuple[ErrorKind, Sequence[str]]]
 
 
 def classify_cli_error(message: str, rules: ErrorRules) -> ErrorKind:
@@ -105,10 +105,10 @@ class FetchResult:
     contribute; ``applied``/``skipped`` serve the legacy fetch-and-apply entry
     points and stay empty in ``fetch()``."""
 
-    secrets: Dict[str, str] = field(default_factory=dict)
-    applied: List[str] = field(default_factory=list)
-    skipped: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
+    secrets: dict[str, str] = field(default_factory=dict)
+    applied: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     error: Optional[str] = None
     error_kind: Optional[ErrorKind] = None
     # Helper binary used (CLI-driven sources); surfaced by status commands.
@@ -118,7 +118,7 @@ class FetchResult:
     def ok(self) -> bool:
         return self.error is None
 
-    def fail(self, error: str, kind: ErrorKind) -> "FetchResult":
+    def fail(self, error: str, kind: ErrorKind) -> FetchResult:
         self.error, self.error_kind = error, kind
         return self
 
@@ -155,7 +155,7 @@ class SecretSource(ABC):
     token_env_key: Optional[str] = None
     default_token_env: str = ""
     override_existing_default: bool = False
-    remediation_hints: Dict[ErrorKind, str] = {}
+    remediation_hints: dict[ErrorKind, str] = {}
 
     @abstractmethod
     def fetch(self, cfg: dict, home_path: Path) -> FetchResult:
@@ -177,7 +177,7 @@ class SecretSource(ABC):
             return str(cfg.get(self.token_env_key) or self.default_token_env)
         return self.default_token_env
 
-    def protected_env_vars(self, cfg: dict) -> FrozenSet[str]:
+    def protected_env_vars(self, cfg: dict) -> frozenset[str]:
         """Env vars the orchestrator must never let ANY source overwrite."""
         return frozenset({self.token_env(cfg)}) if self.token_env_key else frozenset()
 
@@ -191,7 +191,7 @@ class SecretSource(ABC):
         """Informational ``{key: {"description": str, "default": Any}}`` for setup UIs."""
         return {}
 
-    def remediation(self, kind: Optional["ErrorKind"], cfg: dict) -> str:
+    def remediation(self, kind: Optional[ErrorKind], cfg: dict) -> str:
         """One-line actionable next step for a failed fetch (pure); "" suppresses the hint."""
         if kind is None:
             return ""
@@ -219,14 +219,15 @@ def scrub_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text or "")
 
 
-def run_cli(argv: Sequence[str], *, env: Dict[str, str], timeout: float, label: str,
+def run_cli(argv: Sequence[str], *, env: dict[str, str], timeout: float, label: str,
             timeout_message: str, stdin: Any = subprocess.DEVNULL) -> subprocess.CompletedProcess:
     """``subprocess.run`` an argv list (never a shell), capturing utf-8 text; timeout
     and spawn failure become ``RuntimeError``. Callers own returncode interpretation."""
     try:
-        return subprocess.run(  # noqa: S603 — argv list, no shell
+        return subprocess.run(
             list(argv), env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, stdin=stdin,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(timeout_message) from exc
@@ -234,18 +235,40 @@ def run_cli(argv: Sequence[str], *, env: Dict[str, str], timeout: float, label: 
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
-def run_secret_cli(argv: Sequence[str], *, allow_env: Sequence[str] = (), extra_env: Optional[Dict[str, str]] = None,
+# What a vault helper CLI needs from the parent: process location, locale, and
+# the standard proxy/TLS settings. Never a broad *_TOKEN/*_API_KEY pattern; each
+# caller adds its own auth names explicitly so the contract stays reviewable.
+_PROVIDER_ENV_BASE = (
+    "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "SystemRoot", "APPDATA", "LOCALAPPDATA",
+    "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "LC_CTYPE",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
+    "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY",
+    "https_proxy", "http_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+)
+
+
+def build_minimal_provider_env(source_env: Optional[Mapping[str, str]] = None, *,
+                               allow_env: Sequence[str] = (),
+                               extra_env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """Allowlisted env for a vault helper CLI child (never the full post-dotenv
+    ``os.environ``, which holds every provider credential). ``source_env``
+    defaults to the active per-fetch view so multiplex fetches stay profile-local."""
+    source = source_env if source_env is not None else get_source_environment()
+    env = {k: source[k] for k in (*_PROVIDER_ENV_BASE, *allow_env) if k in source}
+    if extra_env:
+        env.update(extra_env)
+    env["NO_COLOR"] = "1"
+    return env
+
+
+def run_secret_cli(argv: Sequence[str], *, allow_env: Sequence[str] = (), extra_env: Optional[dict[str, str]] = None,
                    timeout: float = DEFAULT_CLI_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
     """Run a secret-manager helper CLI with a minimal, allowlisted env (never the
     full post-dotenv ``os.environ``): PATH/HOME/locale basics plus ``allow_env``
     and ``extra_env``. ``NO_COLOR=1`` + ANSI-scrubbed stderr; stdin is /dev/null so
     a prompting helper fails fast. Pass user refs AFTER a ``--`` terminator."""
-    base_keep = ("PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "TEMP",
-                 "LANG", "LC_ALL", "XDG_CONFIG_HOME", "XDG_DATA_HOME")
-    env = {k: os.environ[k] for k in (*base_keep, *allow_env) if k in os.environ}
-    if extra_env:
-        env.update(extra_env)
-    env.setdefault("NO_COLOR", "1")
+    env = build_minimal_provider_env(os.environ, allow_env=allow_env, extra_env=extra_env)
 
     name = Path(str(argv[0])).name
     proc = run_cli(argv, env=env, timeout=timeout, label=name,

@@ -94,8 +94,8 @@ def print_table(console: Console, columns: Sequence, rows: Iterable,
 def cli_version(binary: Path) -> str:
     """Return the first line of ``<binary> --version`` or ``"version unknown"``."""
     try:
-        res = subprocess.run([str(binary), "--version"], capture_output=True, text=True, encoding='utf-8',
-                             errors='replace', timeout=5)
+        res = subprocess.run([str(binary), "--version"], env=secret_cli_env(), capture_output=True, text=True, encoding='utf-8',
+                             errors='replace', timeout=5, check=False)
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired):
@@ -103,17 +103,12 @@ def cli_version(binary: Path) -> str:
     return "version unknown"
 
 
-def secret_cli_env() -> dict:
-    """Env for a secret-manager CLI child (``bws`` / ``op``).
+def secret_cli_env(*allow_env: str) -> dict:
+    """Allowlisted env for a secret-manager CLI probe (``bws`` / ``op``): the real HOME
+    (both CLIs keep state there) plus ``allow_env``; callers add the token explicitly."""
+    from agent.secret_sources.base import build_minimal_provider_env
 
-    Intentionally receives tokens — no scrub, no HOME rewrite (both CLIs store state under the
-    real user home).
-    """
-    from tools.environments.local import build_subprocess_env
-
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
-    env.setdefault("NO_COLOR", "1")
-    return env
+    return build_minimal_provider_env(os.environ, allow_env=allow_env)
 
 
 def rotate_token(

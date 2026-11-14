@@ -79,6 +79,17 @@ _ACP_FLAGS = (
 
 def cmd_acp(args):
     """Launch Hermes Agent as an ACP server."""
+    import os
+    # The gateway-backed ACP server forwards launch flags from their documented env equivalents
+    # (main() already exported --yolo / --safe-mode / --ignore-user-config).
+    for attr, name in (("accept_hooks", "HERMES_ACCEPT_HOOKS"), ("ignore_rules", "HERMES_IGNORE_RULES")):
+        if getattr(args, attr, False):
+            os.environ[name] = "1"
+    # -m / --provider: the route a --safe-mode / --ignore-user-config session freezes (it reads no
+    # profile default), carried like the TUI launcher's.
+    for attr, name in (("model", "HERMES_MODEL"), ("provider", "HERMES_INFERENCE_PROVIDER")):
+        if getattr(args, attr, None):
+            os.environ[name] = getattr(args, attr)
     try:
         from acp_adapter.entry import main as acp_main
         acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])
@@ -109,17 +120,22 @@ def cmd_tools(args):
 def cmd_insights(args):
     db = None
     try:
-        from hermes_state import SessionDB, _default_db_path
+        from hermes_state import SessionDB
         from agent.insights import InsightsEngine
-        if not _default_db_path().exists():
-            print("No session data yet.")
+        from hermes_cli.config import get_hermes_home
+        path = get_hermes_home() / "state.db"
+        if not path.exists():
+            from agent.i18n import t
+            print(f"  {t('cli.insights.no_session_data')}")
             return
-        db = SessionDB(read_only=True)
+        db = SessionDB(db_path=path, read_only=True)
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))
     except Exception as e:
-        print(f"Error generating insights: {e}")
+        # Interactive /insights delegates here, so keep main's localized error line.
+        from agent.i18n import t
+        print(t("gateway.insights.error", error=str(e)))
     finally:
         if db is not None:
             try:
@@ -180,7 +196,7 @@ def cmd_skills(args):
         _cmd_skills_trust(args)
     else:
         from hermes_cli.skills_hub import skills_command
-        skills_command(args)
+        return skills_command(args)
 
 
 def _cmd_skills_trust(args):

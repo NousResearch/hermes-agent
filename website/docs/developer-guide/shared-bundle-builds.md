@@ -15,7 +15,7 @@ interfaces, not proof that every distribution passed native acceptance.
 
 Providers retain their package managers and locks. Product builders do not
 install missing dependencies or download inputs. The Node dependency provider
-uses one locked workspace union. Nix supplies its own npm and Python inputs.
+uses one locked workspace union. Nix supplies its own Node and Python inputs.
 Termux supplies bionic tools and wheels. Shared recipes do not imply identical
 bytes, dependency selections, or Python environments across targets.
 
@@ -43,12 +43,12 @@ The current-checkout retry, pulled-checkout, and ZIP update paths all use
 `update_cmd_maint._prepare_updated_checkout`: one PM dependency sync, then a
 fresh process on the selected interpreter for the frontend builds. Build
 failure aborts completion; an existing stale product is not a successful
-update. There is no updater-specific npm cache, fallback install, extra
+update. There is no updater-specific pnpm store, fallback install, extra
 refresh, or memory-provider reinstall. PM owns the complete Python union.
 
 Build a desktop distribution from a clean checkout at its release tag. Start
 with a host Python that can run the entrypoint and Git; preparation acquires the
-pinned Python, Node and npm through PM. Native compilers/SDKs remain host inputs:
+pinned Python, Node and pnpm through PM. Native compilers/SDKs remain host inputs:
 
 ```sh
 python -m scripts.bundles.desktop --tag=vX.Y.Z
@@ -118,8 +118,10 @@ Stage a native agent with both frontend products, without Electron packaging:
 python -m scripts.bundles.stage --out /work/agent-payload --ref HEAD
 ```
 
-This command prepares and builds TUI/web products if none are supplied. It
-also accepts `--tui` and `--web` together as prepared product roots. It rejects
+This command prepares and builds the TUI, dashboard and Webapp products if none
+are supplied; `pnpm run dist:bundled` stages its payload this way. It also
+accepts `--tui` and `--web` together as prepared product roots, which leaves the
+payload without a Webapp. It rejects
 a selection with only one of those arguments. The standalone products have
 explicit input/output contracts in the builder README.
 
@@ -129,7 +131,7 @@ come from the selected revision.
 
 `hermes pm bundle --out /work/agent-payload --ref HEAD` stages native tools,
 the application environment, and the agent. That PM command does not build
-frontends. `npm run payload --workspace apps/desktop` uses the stage driver
+frontends. `pnpm --dir apps/desktop run payload` uses the stage driver
 that includes them. Neither command creates an Electron installer.
 
 ### Split PM Bundle preparation and assembly
@@ -155,10 +157,10 @@ bootstraps or repairs dependencies. The receipt and lock are output siblings
 Assembly deliberately supplies no frontend products, as with `hermes pm bundle`.
 
 The `payload-test` producer on the existing cache action selects only `tools`,
-`python/runtime` and `native`. It excludes source `node_modules`, npm caches,
+`python/runtime` and `native`. It excludes source `node_modules`, pnpm stores,
 icon environments and packagers. PM's managed tool bootstrap still includes Node
-and npm, but does not run desktop `npm ci`. Native compiler identity and Windows
-ARM64 prerequisites use the shared owner once. Cache hits always undergo provider
+and npm, but does not install the desktop workspace dependencies. Native
+compiler identity and Windows ARM64 prerequisites use the shared owner once. Cache hits always undergo provider
 admission; native SDK/compiler prerequisites still belong to the host. PR jobs
 only restore; saves require successful preparation on the default-branch trusted
 lane with no alternate source ref. No signing or publication is added.
@@ -235,7 +237,7 @@ admission, generation selection, and transaction state. Both paths use
 
 | Distribution | Selected products | Current output layout |
 |---|---|---|
-| Desktop bundled/Store | Icons, TUI, web, agent, desktop UI | Products: `apps/desktop/build/products/`. Agent: `apps/desktop/build/agent-payload/`. UI: `apps/desktop/dist/`. Packages: `apps/desktop/release/` |
+| Desktop bundled/Store | Icons, TUI, web, Webapp, agent, desktop UI | Products: `apps/desktop/build/products/`. Agent: `apps/desktop/build/agent-payload/`. UI: `apps/desktop/dist/`. Packages: `apps/desktop/release/` |
 | Desktop light | Icons and desktop UI | `apps/desktop/dist/` and `apps/desktop/release/`, without an agent payload |
 | Docker | Icons, TUI, web, agent | Agent at `/opt/hermes`, dependencies at `.venv`, PM at `pm-runtime`, generated commands at `libexec` |
 | Nix TUI | TUI | `$out/lib/hermes-tui/{dist/entry.js,package.json}` |
@@ -246,21 +248,27 @@ admission, generation selection, and transaction state. Both paths use
 
 Native payloads contain `hermes-agent`, `tools`, `venv`, `pm-runtime`, `bin`,
 `uv-cache`, and their manifests/facts. Copied frontend assets live at
-`hermes-agent/hermes_cli/tui_dist/` and `hermes-agent/hermes_cli/web_dist/`.
+`hermes-agent/hermes_cli/tui_dist/` and `hermes-agent/hermes_cli/web_dist/`;
+desktop bundles also carry the Webapp at `hermes-agent/apps/desktop/dist-webapp/`,
+which `hermes webapp` serves as shipped and never rebuilds.
 The TUI asset directory contains `entry.js` and module-mode package metadata.
+The `tools` store ships a user install's pinned PM tools, except Chromium on
+macOS: the browser tool installs it into the writable store on first use. It is left out
+because Squirrel.Mac before Electron 44.7 cannot download an update ZIP of 1 GiB
+or more, and v0.22.0 ships Electron 40.
 
 Docker keeps its existing TUI product at `/opt/hermes/ui-tui` and web output
 at `/opt/hermes/hermes_cli/web_dist`. The assembler also plants its shared TUI
 asset layout beneath `hermes_cli/tui_dist`. Venv command symlinks preserve the
 paths used by s6 and the privilege-drop shim.
 
-The Docker frontend stage owns npm dependencies and compilation. The runtime
-stage copies only the frontend products and the locked TypeScript package for
+The Docker frontend stage owns pnpm workspace dependencies and compilation. The
+runtime stage copies only the frontend products and the locked TypeScript package for
 runtime linting. Node/npm and Photon's separately installed sidecar dependencies
 remain runtime inputs. Python dependency preparation precedes the application
 source copy. Actual cache-hit and layer-size claims require build evidence.
 
-Nix retains `importNpmLock`, uv2nix, platform overrides, and store references.
+Nix retains `fetchPnpmDeps`, uv2nix, platform overrides, and store references.
 Its builders run during derivation builds, not evaluation. Per-product source
 filters keep frontend, Python, and resource inputs separate. Nix wrappers
 consume the assembler's command map and retain their PATH and extra-Python
@@ -316,10 +324,16 @@ consumers. They are not interchangeable cleanup targets.
 - Native staging prunes obsolete entries only in its build-owned tool store.
   It does not prune the user's machine-wide store.
 - Native staging retains `uv-cache/` for offline mutable-environment rebuilds.
-  It copies extracted wheels and index/revision metadata, but excludes redundant
-  wheel ZIPs and cached sdist `src/` trees (including Rust `target/` outputs)
-  before copying. The provider cache is unchanged; native signing reaches the
-  extracted binaries without scanning build-only artifacts.
+  It copies extracted wheels, built wheel ZIPs and index/revision metadata, but
+  excludes cached sdist `src/` trees (including Rust `target/` outputs) before
+  copying. On macOS and Linux, uv's wheel entries stay relative symlinks into
+  `archive-v0/`, so each unpacked wheel ships once; on Windows uv writes
+  pointer files instead. Off Windows, each `archive-v0/` file the payload venv
+  holds byte for byte is then replaced by a relative link to the venv copy.
+  That shrinks the macOS update ZIP, which Squirrel.Mac before Electron 44.7
+  cannot download at 1 GiB or more. The first-use seed copies those links'
+  bytes into the machine cache. The provider cache is unchanged; native
+  signing reaches the extracted binaries without scanning build-only artifacts.
 - PM-runtime and application builds share the provider's persistent uv cache.
   CI restores/saves that cache, not the temporary build HOME. Failed builds
   retain completed wheels. General PM staging uses its v2 cache namespace;
@@ -336,8 +350,8 @@ consumers. They are not interchangeable cleanup targets.
 The native cache behavior is in `scripts/bundles/native.py`.
 Removing all caches from a payload can break offline environment reconstruction.
 
-Desktop transport selects PM tool entries, Python download/wheel caches, npm's
-content-addressed downloads, prepared workspace dependencies, and native/package
+Desktop transport selects PM tool entries, Python download/wheel caches, pnpm's
+content-addressable store, prepared workspace dependencies, and native/package
 tool inputs through `scripts/ci/desktop_build_cache.py`. It does not select the
 workdir, virtual environments, live user home, signing tokens, or products.
 The signature-result cache is separate. Native wheel partitions depend on

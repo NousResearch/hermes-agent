@@ -1,0 +1,16 @@
+name: warden
+repo: https://gitlab.com/Zaygalx1/warden
+sha: 2a10176a20bbc1645a6f25b47a572416d744d636
+subdir: src/hermes_warden
+description: "Defensive security operations plugin for Hermes Agent, built on one rule: model-facing tools read and request, they never configure. A deny-by-default scope engine decides what may be touched before anything runs; scopes are created only by the operator (the hermes warden CLI), never by the model, and adapter directories are operator config, never tool input. Vulnerability assessment runs two engines (Grype and Trivy) over one canonical SBOM from Syft and records their disagreement as finding confidence instead of hiding it. Sigma rules evaluate over the event store through sec_campaign, osquery host telemetry feeds the same store, and a deterministic correlation engine groups actors into campaigns; the anchored membership view (measured precision 1.000, recall 1.000 on the validation corpus) is the only view allowed to justify defensive action. Investigations answer only with citations to stored evidence; uncitable claims are dropped and counted. Containment is a policy-enforced plan engine (approval classes, blast radius, TTL, rollback) whose execution is disabled in this build; apply mode is refused. The agent's own actions are written to a redacted ledger and a hash-chained audit log. Dry run by default. Disclosure — Warden runs operator-installed scanner binaries (nuclei, trivy, grype, syft, osquery; version-attested against their adapter manifests at run time, with an optional operator SHA-256 pin, never bundled) as local subprocesses with a scrubbed environment, only against targets in operator-created scopes; a hostname target is authorised by name and resolved by the scanner at run time. It connects only to those targets and, when configured, to threat-intelligence providers, stores no credentials, and executes no containment action in this build."
+maintainer: Zaygalx
+tier: community
+category: tools
+version: "0.1.0"
+platforms: [linux, macos]
+requires_hermes: ">=0.22.5"
+capabilities:
+  provides_tools: [sec_scope, sec_tool, sec_assess, sec_investigate, sec_campaign, sec_contain]
+  provides_hooks: [post_tool_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

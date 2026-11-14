@@ -148,6 +148,8 @@ export const zhHantChrome = {
       copyPath: '複製路徑',
       removeFromSidebar: '從側邊欄移除',
       createdInPreviousContext: '專案已在先前的連線或設定檔中建立。請切換回去；IDEA.md 尚未寫入。',
+      hiddenFromSidebar: '已從側邊欄移除',
+      undoHide: '復原',
       createFailed: '無法建立專案',
       staleBackend: '請更新 Hermes 後端以建立專案——目前後端比桌面應用舊（設定 → 更新 → 後端）。',
       deleteConfirm: '這會從 Hermes 中移除已儲存的專案。檔案、git 儲存庫和工作樹維持不變。',
@@ -247,6 +249,7 @@ export const zhHantChrome = {
     paneControls: '窗格控制項',
     appControls: '應用程式控制項',
     modelMenu: {
+      pickDeferred: (model: string) => `${model} 將從你的下一則訊息開始生效`,
       search: '搜尋模型',
       noModels: '找不到模型',
       editModels: '編輯模型…',
@@ -260,7 +263,30 @@ export const zhHantChrome = {
       free: '免費',
       cacheRead: '快取讀取',
       priceTitle: (input: string, output: string, cache: string) =>
-        `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : '')
+        `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : ''),
+      localSetup: {
+        title: '本機執行 · 免費、私密',
+        text: (model: string, size: string) => `${model} 適合這台電腦 · 下載 ${size}`,
+        action: '設定'
+      },
+      limited: '已限額',
+      limitedUntil: (time: string) => `限額至 ${time}`,
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `${provider} 已達到用量上限，將於 ${time} 重設；現在就可以先選好之後要用的模型。`
+          : `${provider} 已達到用量上限；現在就可以先選好重設後要用的模型。`,
+      modelResets: (time: string) => `${time} 恢復`,
+      modelLimitedTip: (time: string) => `此模型已達到自身上限，將於 ${time} 恢復。這裡的其他模型仍可使用。`,
+      usageLeft: (percent: number, time: null | string) =>
+        time ? `剩餘 ${percent}% · ${time} 重設` : `剩餘 ${percent}%`,
+      poolAccounts: (count: number) => `${count} 個帳戶`,
+      poolLimited: (limited: number, total: number) => `${limited}/${total} 個帳戶已限額`,
+      poolAccount: (number: number) => `帳戶 ${number}`,
+      poolUnknown: '用量暫時無法取得',
+      poolUnavailable: '請重新登入',
+      usageTip: (provider: string) => `${provider} 即將達到用量上限。`,
+      usageWindow: (label: string, percent: number, time: null | string) =>
+        time ? `${label}：剩餘 ${percent}%，${time} 重設` : `${label}：剩餘 ${percent}%`
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',
@@ -279,7 +305,9 @@ export const zhHantChrome = {
       ultra: '超高',
       sendsOnRoute: (level: string) => `此路由實際傳送 ${level}`,
       updateFailed: '模型選項更新失敗',
-      fastFailed: '快速模式更新失敗'
+      fastFailed: '快速模式更新失敗',
+      daybreak: 'Daybreak',
+      daybreakFailed: 'Daybreak 更新失敗'
     },
     gatewayMenu: {
       gateway: '閘道',
@@ -330,6 +358,9 @@ export const zhHantChrome = {
       showTerminal: '顯示終端機',
       hideTerminal: '隱藏終端機',
       gateway: '閘道',
+      backend: '後端',
+      messagingStopped: '訊息閘道已停止',
+      messagingDegraded: name => `${name} 異常`,
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
       gatewayUnavailable: '推論不可用',
@@ -371,6 +402,15 @@ export const zhHantChrome = {
           system_prompt: '系統提示詞',
           tool_definitions: '工具定義'
         },
+        compact: {
+          action: '壓縮對話',
+          busyHint: '請先完成或停止目前的回覆',
+          confirm: '壓縮',
+          hint: '摘要較早的上下文以騰出空間，繼續目前的對話。',
+          question: '將此對話壓縮為摘要？',
+          questionNamed: title => `將「${title}」壓縮為摘要？`,
+          working: '正在壓縮…'
+        },
         empty: '尚無上下文資料',
         loading: '正在載入明細…',
         percentFull: percent => `已用 ${percent}%`,
@@ -392,6 +432,7 @@ export const zhHantChrome = {
   },
 
   rightSidebar: {
+    terminalDropUnquotable: (shell, paths) => `無法在 ${shell} 中安全地輸入這些名稱：${paths}`,
     terminalReadOnly: '唯讀輸出',
     terminalReadOnlyHelp:
       '如需回應提示，請停止背景命令，再於新終端機中執行。新終端機會開啟獨立的 shell，不會連線至此程序。',
@@ -436,6 +477,14 @@ export const zhHantChrome = {
     terminalNew: '新增終端機',
     terminalCloseOthers: '關閉其他',
     terminalCloseAll: '全部關閉',
+    terminalNewOn: '新增終端機於…',
+    terminalGatewayRemoved: '已移除的閘道',
+    terminalGatewayRemovedBody:
+      '此終端機所在的閘道已被移除，無法重新開啟。請關閉此分頁。',
+    terminalGatewayNoShellBody:
+      '此閘道不提供 Shell 存取，此終端機無法重新開啟。請關閉此分頁。',
+    terminalDisconnectedBody:
+      '終端機已中斷連線。按 Enter 啟動新的 shell；捲動記錄會保留。',
     addToChat: '新增至聊天'
   },
 
@@ -481,7 +530,8 @@ export const zhHantChrome = {
     saveApply: '儲存並套用',
     notExpressible: '此排列互相咬合（風車形）——暫時無法表示為巢狀分割',
     zoneCount: count => `${count} 個區域`,
-    tabCount: count => `${count} 個分頁`
+    tabCount: count => `${count} 個分頁`,
+    tabActions: title => `${title} 的動作`
   },
 
   contextMenu: {

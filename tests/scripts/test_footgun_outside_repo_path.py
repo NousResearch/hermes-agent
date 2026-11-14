@@ -29,7 +29,7 @@ def linter():
 def run_cli(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts/check-windows-footguns.py"), *args],
-        capture_output=True, text=True, encoding="utf-8", cwd=str(REPO_ROOT),
+        capture_output=True, text=True, encoding="utf-8", cwd=str(REPO_ROOT), check=False,
     )
 
 

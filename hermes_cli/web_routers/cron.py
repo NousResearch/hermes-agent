@@ -7,6 +7,7 @@ late-binding seam so ``monkeypatch.setattr(web_server_cron, ...)`` keeps working
 
 import asyncio
 import functools
+import math
 import re
 import time
 from contextlib import contextmanager
@@ -19,12 +20,14 @@ from fastapi.responses import JSONResponse
 
 from hermes_cli.web_deps import late
 from hermes_cli.config import cfg_get
+from hermes_cli.isolated_scope import scope_to_launch_profile
 from hermes_cli.web_server_cron import (
-    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
+    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job, _validate_dashboard_cron_security,
 )
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
 from hermes_time import get_timezone as _get_timezone
+from hermes_state_keys import legacy_cron_run_job
 from hermes_constants import (
     get_hermes_home as _get_hermes_home,
     reset_hermes_home_override as _reset_hermes_home_override,
@@ -49,7 +52,18 @@ def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
 
 
-def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Path) -> Dict[str, Any]:
+# The cronjob tool's user-editable surface. Everything else on a stored job is scheduler
+# bookkeeping (manual_run_prompt, run/fire claims, state, next_run_at, ...): update_job would
+# store it verbatim, and manual_run_prompt reaches the agent as extra_prompt unscanned.
+_DASHBOARD_UPDATABLE_FIELDS = frozenset({
+    "name", "prompt", "schedule", "deliver", "failure_deliver", "skills", "skill", "repeat",
+    "enabled", "model", "provider", "base_url", "reasoning_effort", "pinned", "script",
+    "monitor_script", "monitor_url", "interpreter", "context_from", "enabled_toolsets",
+    "attach_to_session", "workdir", "no_agent", "timezone", "grace_minutes", "catch_up",
+})
+
+
+def _normalize_dashboard_cron_updates(updates: dict[str, Any], profile_home: Path) -> dict[str, Any]:
     """Normalize dashboard JSON into cron.jobs.update_job's storage shape.
 
     Stays in the dashboard adapter layer on purpose: cron/jobs.py is the source
@@ -57,19 +71,27 @@ def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Pat
     core functions already accept.
     """
     normalized = dict(updates or {})
+    internal = sorted(set(normalized) - _DASHBOARD_UPDATABLE_FIELDS)
+    if internal:
+        raise HTTPException(
+            status_code=400, detail=f"Cron job field(s) cannot be updated: {', '.join(internal)}")
     for key in ("model", "provider", "workdir"):
         if key in normalized:
             normalized[key] = _cron_optional_text(normalized[key])
-    if "script" in normalized:
-        normalized["script"] = _normalize_dashboard_cron_script(normalized["script"], profile_home)
+    for key in ("script", "monitor_script"):
+        if key in normalized:
+            normalized[key] = _normalize_dashboard_cron_script(normalized[key], profile_home)
     if "base_url" in normalized:
         normalized["base_url"] = _cron_optional_text(normalized["base_url"], strip_trailing_slash=True)
+    # The tool path's canonicalizer: a JSON list joins to "a,b" instead of a
+    # Python list repr that the bot-chat guard and the scheduler cannot parse.
+    from tools.cronjob_job_args import _normalize_deliver_param
     if "deliver" in normalized:
-        normalized["deliver"] = _cron_optional_text(normalized["deliver"]) or "local"
+        normalized["deliver"] = _normalize_deliver_param(normalized["deliver"]) or "local"
     if "failure_deliver" in normalized:
         # Same normalization as deliver, but empty CLEARS the override (failures
         # fall back to deliver) rather than coalescing — the field is optional.
-        normalized["failure_deliver"] = _cron_optional_text(normalized["failure_deliver"])
+        normalized["failure_deliver"] = _normalize_deliver_param(normalized["failure_deliver"])
     for key in ("context_from", "enabled_toolsets"):
         if key in normalized:
             normalized[key] = _cron_string_list(normalized[key])
@@ -82,7 +104,7 @@ def _job_owner_profile(job_id: str, profile: Optional[str]) -> Optional[str]:
     ``profile`` is a caller *hint*, not proof of ownership: the Desktop lists
     jobs cross-profile (``?profile=all``) while its per-item calls carry the
     ambient active profile. Trusting that hint opened a profile that does not
-    hold the job, so the ``cron_{job_id}_*`` id-range scan matched nothing and
+    hold the job, so the job's run-session lookup matched nothing and
     answered ``200 {"runs": []}`` — the UI rendered "No runs yet" for a job
     that had run many times (#115345). A hint that does hold the job still
     wins, so deliberately scoped lookups (the same job id in two profiles,
@@ -122,8 +144,8 @@ def _list_cron_jobs_sync(profile: str = "all"):
     # profile's copy over per-iteration order (#51721): collect all jobs first,
     # then resolve duplicates by id with default-profile priority, rather than
     # keeping whichever copy happened to be seen first during the profile loop.
-    all_jobs: List[Dict[str, Any]] = []
-    for item in _cron_profile_dicts():
+    all_jobs: list[dict[str, Any]] = []
+    for item in scope_to_launch_profile(_cron_profile_dicts(), lambda row: row.get("name")):
         name = str(item.get("name") or "")
         if not name:
             continue
@@ -132,8 +154,8 @@ def _list_cron_jobs_sync(profile: str = "all"):
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
 
-    by_id: Dict[str, Dict[str, Any]] = {}
-    unkeyed: List[Dict[str, Any]] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    unkeyed: list[dict[str, Any]] = []
     for job in all_jobs:
         if not isinstance(job, dict):
             continue
@@ -233,7 +255,7 @@ def _cron_output_run_preview(path: Path, max_chars: int = 180) -> str:
     return preview[: max_chars - 1].rstrip() + "…"
 
 
-def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[float]:
+def _cron_job_last_run_timestamp(job: Optional[dict[str, Any]]) -> Optional[float]:
     if not isinstance(job, dict):
         return None
     raw = job.get("last_run_at")
@@ -244,13 +266,13 @@ def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[floa
         if not text:
             return None
         try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            return datetime.fromisoformat(text).timestamp()
         except ValueError:
             return None
     return None
 
 
-def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
+def _cron_output_status_label(job: Optional[dict[str, Any]]) -> str:
     if not isinstance(job, dict):
         return ""
     status = str(job.get("last_status") or "").strip()
@@ -259,7 +281,7 @@ def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
     return status.replace("_", " ").upper()
 
 
-def _cron_output_run_row(started_at: float, title: str, preview: Optional[str]) -> Dict[str, Any]:
+def _cron_output_run_row(started_at: float, title: str, preview: Optional[str]) -> dict[str, Any]:
     return {
         "title": title,
         "preview": preview or None,
@@ -282,12 +304,12 @@ def _iso_to_epoch(text: Any) -> Optional[float]:
     if not isinstance(text, str) or not text.strip():
         return None
     try:
-        return datetime.fromisoformat(text.strip().replace("Z", "+00:00")).timestamp()
+        return datetime.fromisoformat(text.strip()).timestamp()
     except ValueError:
         return None
 
 
-def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
+def _owner_profile_executions(canonical_job_id: str) -> list[dict[str, Any]]:
     """Terminal execution-ledger rows for the job, newest first.
 
     Each script-only fire creates exactly one ledger row (claimed → completed /
@@ -296,16 +318,17 @@ def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
     the owner-home scope so it opens the OWNER's cron/executions.db.
     """
     try:
-        from cron.executions import list_executions
+        from cron.executions import _TERMINAL_STATES, list_executions
 
         rows = list_executions(job_id=canonical_job_id, limit=100)
     except Exception:
         return []
-    terminal: List[Dict[str, Any]] = []
+    terminal: list[dict[str, Any]] = []
     for row in rows:
-        if str(row.get("status") or "") not in ("completed", "failed", "unknown"):
+        if str(row.get("status") or "") not in _TERMINAL_STATES:
             continue
         terminal.append({
+            "id": str(row.get("id") or ""),
             "claimed_at": _iso_to_epoch(row.get("claimed_at")) or 0.0,
             "finished_at": _iso_to_epoch(row.get("finished_at")),
             "status": str(row.get("status") or ""),
@@ -316,7 +339,7 @@ def _owner_profile_executions(canonical_job_id: str) -> List[Dict[str, Any]]:
 
 
 def _execution_contains(
-    attempt: Dict[str, Any], started_at: float, grace_seconds: float = 300.0,
+    attempt: dict[str, Any], started_at: float, grace_seconds: float = 300.0,
 ) -> bool:
     """Whether an output doc's timestamp falls inside a ledger attempt's window.
 
@@ -326,12 +349,21 @@ def _execution_contains(
     lands within ``[claimed_at, finished_at + grace]`` of THAT attempt (a still-
     open attempt has no ``finished_at``). Older attempts closed before this doc
     was written, which is what keeps a fast-firing job's status from bleeding
-    onto an earlier run's row.
+    onto an earlier run's row. The doc's filename keeps whole seconds only, so
+    the claim is floored to its second: an attempt claimed at ``:00.500`` that
+    writes at ``:00.750`` files its doc as ``:00``.
     """
-    if started_at + 0.001 < attempt["claimed_at"]:
+    if started_at + 0.001 < math.floor(attempt["claimed_at"]):
         return False
     finish = attempt["finished_at"]
     return finish is None or started_at <= finish + grace_seconds
+
+
+# A cancelled or missed attempt's ``error`` is its reason ("job removed while running",
+# "missed ×3 (...)"), the row's whole point — show it like a failure's.
+_LABELS_WITH_REASON = frozenset({"FAILED", "CANCELLED", "MISSED"})
+# Terminal attempts that carry a real outcome (``unknown`` is an owner that vanished).
+_OUTCOME_STATES = ("completed", "failed", "cancelled", "missed")
 
 
 def _execution_status_title(status: str, error: str, fallback: str) -> str:
@@ -340,28 +372,28 @@ def _execution_status_title(status: str, error: str, fallback: str) -> str:
         return fallback
     if not label:
         return fallback
-    return f"{label} · {error}" if (label == "FAILED" and error) else f"{label} · {fallback}"
+    return f"{label} · {error}" if (label in _LABELS_WITH_REASON and error) else f"{label} · {fallback}"
 
 
 def _list_cron_output_runs(
-    job: Optional[Dict[str, Any]],
+    job: Optional[dict[str, Any]],
     canonical_job_id: str,
     profile: Optional[str],
     limit: int,
-) -> List[Dict[str, Any]]:
-    """SessionDB-less run history for jobs that never create agent sessions.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """SessionDB-less run records for jobs that never create agent sessions: ``(docs, attempts)``.
 
     Script-only (no_agent) jobs deliberately skip SessionDB (cron/scheduler.run_job),
     so their completed runs are invisible to the run-history endpoint. Their
-    output docs — one .md per fire under cron/output/<job_id>/ — are the only
-    per-run record. Rows mirror /api/sessions shape with source='cron_output'
-    so the frontend reuses SessionInfo; ids use a cron_output: prefix that can
-    never collide with SessionDB cron_{job_id}_* session ids.
-
-    Status comes from the execution ledger (one row per fire), matched to a doc
-    by claim window — never from ``last_run_at`` proximity, which mislabels an
-    older doc when the newest run's doc is missing. Terminal attempts with no
-    surviving doc get their own metadata rows.
+    output docs (one .md per fire under cron/output/<job_id>/) and the execution
+    ledger (one row per fire) are the only per-run records. ``docs`` are rows in
+    /api/sessions shape with source='cron_output', newest first, so the frontend
+    reuses SessionInfo; ids use a cron_output: prefix that can never collide with a
+    SessionDB session id. ``attempts`` are the job's terminal ledger rows, newest
+    first. A doc never records its execution, so which attempt it stands for is
+    decided by ``_reconcile_cron_runs`` beside the sessions, never here, and never
+    from ``last_run_at`` proximity, which mislabels an older doc when the newest
+    run's doc is missing.
     """
     output_dir = _cron_output_runs_dir(profile, canonical_job_id)
     try:
@@ -373,10 +405,8 @@ def _list_cron_output_runs(
     except OSError:
         files = []
 
-    executions = _owner_profile_executions(canonical_job_id)
-    represented: set = set()
-    runs: List[Dict[str, Any]] = []
-
+    attempts = _owner_profile_executions(canonical_job_id)
+    docs: list[dict[str, Any]] = []
     for path in files[:limit]:
         started_at = _cron_output_run_timestamp(path)
         if started_at is None:
@@ -385,52 +415,20 @@ def _list_cron_output_runs(
             except OSError:
                 started_at = 0.0
         preview = _cron_output_run_preview(path)
-        title = preview or "Script-only run"
-        for index, attempt in enumerate(executions):
-            if attempt["status"] not in ("completed", "failed"):
-                continue
-            if _execution_contains(attempt, started_at):
-                represented.add(index)
-                title = _execution_status_title(attempt["status"], attempt["error"], title)
-                break
-        runs.append({
+        docs.append({
             "id": f"cron_output:{canonical_job_id}:{path.stem}",
-            **_cron_output_run_row(started_at, title, preview),
+            **_cron_output_run_row(started_at, preview or "Script-only run", preview),
         })
 
-    # Terminal attempts whose output doc is gone (pruned, or the run never
-    # wrote one — e.g. a failed fire) are still real executions: give each its
-    # own metadata row from the ledger instead of letting the latest attempt's
-    # status bleed onto an older surviving document.
-    for index, attempt in enumerate(executions):
-        if index in represented or attempt["status"] not in ("completed", "failed"):
-            continue
-        if len(runs) >= limit:
-            break
-        when = attempt["finished_at"] or attempt["claimed_at"]
-        error = attempt["error"]
-        runs.append({
-            "id": f"cron_output:{canonical_job_id}:exec:{index}",
-            **_cron_output_run_row(
-                when,
-                _execution_status_title(attempt["status"], error, "Script-only run"),
-                error or None,
-            ),
-            # Internal: the attempt's claim window, so the caller can drop this
-            # row when a session already represents the same execution.
-            "_claim_window": (attempt["claimed_at"], attempt["finished_at"]),
-        })
-    runs.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
-
-    if runs:
-        return runs
+    if docs or any(attempt["status"] in _OUTCOME_STATES for attempt in attempts):
+        return docs, attempts
 
     # No output docs survived (pruned or never written) but the job HAS run:
     # surface one metadata-only row from last_run_at/last_status instead of the
     # bare "No runs" the issue reports.
     latest_ts = _cron_job_last_run_timestamp(job)
     if latest_ts is None:
-        return []
+        return [], attempts
 
     preview = ""
     if isinstance(job, dict):
@@ -441,16 +439,15 @@ def _list_cron_output_runs(
     return [{
         "id": f"cron_output:{canonical_job_id}:latest",
         **_cron_output_run_row(latest_ts, title, preview),
-    }]
+    }], attempts
 
 
-_CRON_RUN_SESSION_ID = re.compile(r"^cron_(.+)_\d{8}_\d{6}$")
-# The run's session row is written just AFTER its execution claim; the grace only
+# A legacy run's session row is written just AFTER its execution claim; the grace only
 # absorbs float/ISO rounding between the two clocks on one host.
 _OWNERSHIP_CLAIM_GRACE_SECONDS = 5.0
 
 
-def _live_inflight_execution(canonical_job_id: str) -> Optional[Dict[str, Any]]:
+def _live_inflight_execution(canonical_job_id: str) -> Optional[dict[str, Any]]:
     """The job's claimed/running ledger attempt under a live owner, or None (fail closed).
 
     Must run inside the owner-home scope so it reads the OWNER's executions.db.
@@ -463,17 +460,20 @@ def _live_inflight_execution(canonical_job_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _run_owned_by(session: Dict[str, Any], inflight: Optional[Dict[str, Any]]) -> bool:
+def _run_owned_by(session: dict[str, Any], inflight: Optional[dict[str, Any]]) -> bool:
     """Whether the scheduler still OWNS this never-closed run session (#88443).
 
     ``is_active`` is a 300s activity window, so a live run inside a long tool call
     (no heartbeat, no message) reads inactive exactly like a zombie whose process
     died. Ownership is the durable answer: the job's in-flight attempt is held by a
-    live process and this session started under that claim. An older never-closed
-    run of the same job predates the claim, so it stays a zombie.
+    live process and this session is that attempt's run. A unified-runtime run names
+    its execution, so that is exact; a legacy run must have started under the claim,
+    so an older never-closed run of the same job predates it and stays a zombie.
     """
     if not inflight or session.get("ended_at") is not None:
         return False
+    if session.get("cron_execution_id"):
+        return session["cron_execution_id"] == inflight.get("id")
     claimed_at = _iso_to_epoch(inflight.get("claimed_at"))
     try:
         started_at = float(session.get("started_at") or 0)
@@ -482,41 +482,46 @@ def _run_owned_by(session: Dict[str, Any], inflight: Optional[Dict[str, Any]]) -
     return claimed_at is not None and started_at >= claimed_at - _OWNERSHIP_CLAIM_GRACE_SECONDS
 
 
-def cron_run_scheduler_owned(session: Dict[str, Any], profile: Optional[str] = None) -> Optional[bool]:
+def cron_run_scheduler_owned(session: dict[str, Any], profile: Optional[str] = None) -> Optional[bool]:
     """``scheduler_owned`` for one session row, or None when it is not a cron run session.
 
     The session-detail endpoint stamps this so a client re-checking a run it
     already has open (a restored tab, a send) gets the same answer as the runs list.
+    A unified-runtime run's ``local-*`` id says nothing, so the caller stamps the
+    row's ``cron_job_id`` / ``cron_execution_id`` (``SessionDB.cron_run_identity``)
+    first; a legacy ``cron_{job_id}_{timestamp}`` id still names its job.
     """
     if session.get("source") != "cron":
         return None
-    match = _CRON_RUN_SESSION_ID.match(str(session.get("id") or ""))
-    if not match:
+    job_id = session.get("cron_job_id") or legacy_cron_run_job(session.get("id"))
+    if not job_id:
         return None
     if session.get("ended_at") is not None:
         return False
     with _owner_home_scope(profile):
-        return _run_owned_by(session, _live_inflight_execution(match.group(1)))
+        return _run_owned_by(session, _live_inflight_execution(job_id))
 
 
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run history for a cron job, newest first: agent sessions PLUS script-only fires.
 
-    Agent runs are ordinary sessions with id ``cron_{job_id}_{timestamp}`` (see
-    cron/scheduler.run_job); ``source='cron'`` plus the id prefix binds them to
-    this job. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
-    scan, so cost scales with the requested window, not total cron history.
-    Script-only (no_agent) jobs never write sessions; their per-fire output docs
-    (``_list_cron_output_runs``) fill the gaps. The two representations are
-    reconciled PER EXECUTION, not by branch: a job can switch modes without
-    changing its id (update_job supports no_agent on an existing record), so a
-    surviving historical agent session must not hide newer script-only fires
-    and a recent session must not hide older script output. Rows carrying the
-    same wall-clock execution (an agent fire writes BOTH a session and an
-    output doc) are de-duplicated by timestamp window; script-only rows that
-    match no session are added in. All owner-scoped reads (SessionDB, output
-    docs, execution ledger, filename timezone) run inside the owner's profile
-    scope so the dashboard's own zone/store is never borrowed cross-profile.
+    Agent runs are ordinary ``source='cron'`` sessions: a legacy
+    ``cron_{job_id}_{timestamp}`` id, or a unified-runtime ``local-*`` id bound to
+    this job by its scheduler admission. Backed by ``SessionDB.list_cron_job_runs``
+    — bounded index range scans, so cost scales with this job's runs, not total
+    cron history. Script-only (no_agent) jobs never write sessions; their
+    per-fire output docs (``_list_cron_output_runs``) fill the gaps. The two
+    representations are reconciled PER EXECUTION, not by branch: a job can
+    switch modes without changing its id (update_job supports no_agent on an
+    existing record), so a surviving historical agent session must not hide
+    newer script-only fires and a recent session must not hide older script
+    output. Rows carrying the same execution (an agent fire writes BOTH a
+    session and an output doc) are de-duplicated by execution id, or by
+    timestamp window for a legacy session that names none; script-only rows
+    that match no session are added in. All owner-scoped reads (SessionDB,
+    output docs, execution ledger, filename timezone) run inside the owner's
+    profile scope so the dashboard's own zone/store is never borrowed
+    cross-profile.
     """
     selected = _job_owner_profile(job_id, profile)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
@@ -548,40 +553,112 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
             if selected:
                 s["profile"] = selected
 
-        doc_runs = _list_cron_output_runs(job, canonical, selected, limit_n)
+        docs, attempts = _list_cron_output_runs(job, canonical, selected, limit_n)
 
-    return {"runs": _reconcile_cron_runs(session_runs, doc_runs, limit_n), "limit": limit_n}
+    return {"runs": _reconcile_cron_runs(session_runs, docs, attempts, canonical, limit_n), "limit": limit_n}
+
+
+# A doc within this of a session's span can be that session's run's doc (see _doc_matches_session).
+_SESSION_DOC_MATCH_SECONDS = 300.0
 
 
 def _reconcile_cron_runs(
-    session_runs: List[Dict[str, Any]],
-    doc_runs: List[Dict[str, Any]],
+    session_runs: list[dict[str, Any]],
+    docs: list[dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    canonical_job_id: str,
     limit: int,
-) -> List[Dict[str, Any]]:
-    """Merge session rows and output-doc rows per execution, newest first.
+) -> list[dict[str, Any]]:
+    """One row per execution, newest first: each terminal ledger attempt is its session, else the
+    output doc it wrote, else a metadata row from the ledger.
 
-    An agent fire writes BOTH a session and an output doc for the same
-    execution; keeping both would double-render the run. Sessions carry the
-    richer record (tokens, message counts, chat navigation), so a doc row
-    within ``_SESSION_DOC_MATCH_SECONDS`` of a session row is the same
-    execution and the session wins. Doc rows matching no session are distinct
-    executions — script-only fires — and are kept. A session row must never be
-    dropped in favor of a doc: the doc is the fallback representation.
+    An agent fire writes BOTH a session and an output doc; sessions carry the richer
+    record (tokens, message counts, chat navigation), so the session wins and is never
+    dropped. A unified-runtime session names its execution, so that pairing is exact.
+    A doc only has a window guess (``_execution_contains``), so docs pair with attempts
+    only once every attempt's session is known (``_doc_writer``), one doc per attempt:
+    the doc folds into its writer's session, or into a legacy session (which names no
+    execution) by time, and otherwise is its writer's row with the ledger status. A doc
+    no attempt claims is matched against every session by time, and kept if none matches.
     """
-    _SESSION_DOC_MATCH_SECONDS = 300.0
+    def matches(doc_ts: float, sessions: list[dict[str, Any]]) -> bool:
+        return any(_doc_matches_session(doc_ts, s, _SESSION_DOC_MATCH_SECONDS) for s in sessions)
 
-    merged = list(session_runs)
-    for doc in doc_runs:
-        doc = {k: v for k, v in doc.items() if not k.startswith("_")}
+    by_execution = {s["cron_execution_id"]: s for s in session_runs if s.get("cron_execution_id")}
+    legacy = [s for s in session_runs if not s.get("cron_execution_id")]
+    terminal = [(index, a) for index, a in enumerate(attempts) if a["status"] in _OUTCOME_STATES]
+    represented = {index for index, a in terminal if a["id"] in by_execution}
+    paired: set = set()
+    merged = _with_cancel_reasons(session_runs, terminal)
+
+    for doc in docs:
         doc_ts = float(doc.get("started_at") or 0)
-        if any(_doc_matches_session(doc_ts, s, _SESSION_DOC_MATCH_SECONDS) for s in session_runs):
+        candidates = [(index, a) for index, a in terminal
+                      if index not in paired and _execution_contains(a, doc_ts)]
+        if not candidates:
+            if not matches(doc_ts, session_runs):
+                merged.append(doc)
             continue
-        merged.append(doc)
+        index, attempt = min(candidates, key=lambda c: _doc_writer(doc_ts, c[1], by_execution.get(c[1]["id"])))
+        paired.add(index)
+        represented.add(index)
+        if attempt["id"] in by_execution or matches(doc_ts, legacy):
+            continue
+        merged.append({**doc, "title": _execution_status_title(attempt["status"], attempt["error"], doc["title"])})
+
+    # Attempts with neither a session nor a surviving doc (pruned, or the run never wrote one,
+    # e.g. a failed fire) are still real executions: each keeps its own ledger row instead of
+    # letting a neighbour's status bleed onto its doc. Only a legacy session can claim one by time.
+    for index, attempt in terminal:
+        if index in represented:
+            continue
+        when = attempt["finished_at"] or attempt["claimed_at"]
+        if matches(when, legacy):
+            continue
+        error = attempt["error"]
+        merged.append({
+            "id": f"cron_output:{canonical_job_id}:exec:{index}",
+            **_cron_output_run_row(
+                when, _execution_status_title(attempt["status"], error, "Script-only run"), error or None),
+        })
     merged.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
     return merged[:limit]
 
 
-def _doc_matches_session(doc_ts: float, session: Dict[str, Any], grace_seconds: float) -> bool:
+def _with_cancel_reasons(
+    session_runs: list[dict[str, Any]], terminal: list[tuple[int, dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Session rows, with a stopped agent run's title naming the stop and its reason.
+
+    The session stands in for its ledger attempt (richer record), so the attempt's own row is
+    dropped; without this, a cancelled agent run would read like any finished one.
+    """
+    cancelled = {a["id"]: a for _, a in terminal if a["status"] == "cancelled"}
+    return [
+        {**s, "title": _execution_status_title(
+            "cancelled", cancelled[s["cron_execution_id"]]["error"], s.get("title") or "")}
+        if s.get("cron_execution_id") in cancelled else s
+        for s in session_runs
+    ]
+
+
+def _doc_writer(doc_ts: float, attempt: dict[str, Any], session: Optional[dict[str, Any]]) -> tuple:
+    """Sort key over a doc's candidate attempts, likeliest writer first.
+
+    ``save_job_output`` runs before ``finish_execution``, so an attempt that closed before
+    the doc's second only reaches it through the grace. Among the rest, an attempt whose
+    own session spans the doc beats an overlapping one that has none (a manual run claimed
+    while a tick's run was still going); then the newest claim wins.
+    """
+    finish = attempt["finished_at"]
+    return (
+        finish is not None and doc_ts > finish,
+        session is None or not _doc_matches_session(doc_ts, session, _SESSION_DOC_MATCH_SECONDS),
+        -attempt["claimed_at"],
+    )
+
+
+def _doc_matches_session(doc_ts: float, session: dict[str, Any], grace_seconds: float) -> bool:
     """Whether an output doc belongs to a session's run.
 
     The doc is written when the run FINISHES, so its filename timestamp sits
@@ -605,11 +682,12 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
         updates = _normalize_dashboard_cron_updates(body.updates, profile_home)
         if "context_from" in updates:
             _validate_dashboard_cron_context_from(updates.get("context_from"), profile_name)
+        effective = {**existing, **updates}
         if _EXECUTION_FIELDS.intersection(updates):
-            effective = {**existing, **updates}
             if "skills" in updates and "skill" not in updates:
                 effective["skill"] = None
             _validate_dashboard_cron_effective_job(effective)
+        _validate_dashboard_cron_security(profile_name, effective, updates)
         job = _mutate_cron_for_profile(profile_name, "update_job", job_id, updates)
     except HTTPException:
         raise
@@ -646,6 +724,15 @@ def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     # shape without inventing an outcome the store no longer holds; the list
     # refresh removes the completed row.
     return {**job, "enabled": False, "state": "completed"}
+
+
+def _cancel_cron_job_sync(job_id: str, profile: Optional[str] = None):
+    """Stop the job's live run; ``cancelled: false`` when nothing is in flight. Schedule untouched."""
+    selected = _job_profile(job_id, profile)
+    job = _found(_call_cron_for_profile(selected, "resolve_job_ref", job_id))
+    # The reason lands in the run history row, so it names the surface that asked.
+    result = _call_cron_for_profile(selected, "cancel_job_run", job["id"], reason="cancelled on request (Stop)")
+    return {**result, "job_id": job["id"]}
 
 
 def _delete_cron_job_sync(job_id: str, profile: Optional[str] = None):
@@ -729,6 +816,11 @@ async def resume_cron_job(job_id: str, profile: Optional[str] = None):
 @router.post("/api/cron/jobs/{job_id}/trigger")
 async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_trigger_cron_job_sync, job_id, profile)
+
+
+@router.post("/api/cron/jobs/{job_id}/cancel")
+async def cancel_cron_job(job_id: str, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_cancel_cron_job_sync, job_id, profile)
 
 
 @router.delete("/api/cron/jobs/{job_id}")
@@ -827,34 +919,39 @@ async def cron_fire_webhook(request: Request):
     return JSONResponse(gateway_body, status_code=status_code, headers=headers)
 
 
-@router.get("/api/cron/blueprints")
-async def list_cron_blueprints(profile: Optional[str] = None):
-    """Blueprint catalog as form schemas; the ``deliver`` slot's options are
-    rewritten from the actually configured gateway platforms."""
-    try:
-        from cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
+def _blueprint_catalog_sync(profile: Optional[str]) -> list:
+    """Built-in + ``profile``'s plugin blueprints, with the ``deliver`` slot's options rewritten
+    from that profile's configured gateway platforms. Plugin discovery can import plugin code, so
+    this runs off the event loop, inside the profile scope that picks the plugin manager."""
+    from cron.blueprint_catalog import blueprint_catalog_entry, list_blueprints
 
+    with _config_profile_scope(profile):  # an unknown ?profile= raises the scope's 404
+        catalog = list_blueprints()
         deliver_options = None
         try:
             from cron.scheduler_delivery import cron_delivery_targets
 
-            with _config_profile_scope(profile):
-                platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
             deliver_options = ["origin", "local", *platforms]
-        except HTTPException:
-            raise  # an unknown ?profile= is the scope's 404, not a reason for static options
-        except Exception:
+        except Exception:  # health: allow BLE001 -- gateway targets are optional; static options are the fallback
             _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)
 
-        entries = []
-        for r in CATALOG:
-            entry = blueprint_catalog_entry(r)
-            if deliver_options:
-                for f in entry.get("fields", []):
-                    if f.get("name") == "deliver":
-                        f["options"] = deliver_options
-            entries.append(entry)
-        return {"blueprints": entries}
+    entries = []
+    for r in catalog:
+        entry = blueprint_catalog_entry(r)
+        if deliver_options:
+            for f in entry.get("fields", []):
+                if f.get("name") == "deliver":
+                    f["options"] = deliver_options
+        entries.append(entry)
+    return entries
+
+
+@router.get("/api/cron/blueprints")
+async def list_cron_blueprints(profile: Optional[str] = None):
+    """Blueprint catalog (built-ins + the profile's plugin blueprints) as form schemas."""
+    try:
+        return {"blueprints": await _run_cron_dashboard_io(_blueprint_catalog_sync, profile)}
     except HTTPException:
         raise
     except Exception as e:
@@ -862,13 +959,20 @@ async def list_cron_blueprints(profile: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _blueprint_for_profile(key: str, profile: Optional[str]):
+    from cron.blueprint_catalog import get_blueprint
+
+    with _config_profile_scope(profile):
+        return get_blueprint(key)
+
+
 @router.post("/api/cron/blueprints/instantiate")
 async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
     """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:
-        from cron.blueprint_catalog import BlueprintFillError, fill_blueprint, get_blueprint
+        from cron.blueprint_catalog import BlueprintFillError, fill_blueprint
 
-        blueprint = get_blueprint(body.blueprint)
+        blueprint = await _run_cron_dashboard_io(_blueprint_for_profile, body.blueprint, profile)
         if blueprint is None:
             raise HTTPException(status_code=404, detail=f"Unknown blueprint: {body.blueprint}")
         try:
@@ -878,6 +982,9 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         # Blueprint jobs deliver to the dashboard's configured target by default;
         # the form's deliver slot overrides via spec["deliver"].
         spec.pop("origin", None)
+        # Slot values are user text interpolated into the stored prompt; the
+        # blueprint path must not bypass the tool path's prompt/deliver guards.
+        await _run_cron_dashboard_io(_validate_dashboard_cron_security, profile, spec)
         # Off-loop like the siblings; partial keeps **spec keys from colliding
         # with the wrapper's own parameters.
         _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)

@@ -28,9 +28,9 @@ RETIRED_ROW = "_retired_row"
 OWN_ROW = "_own_row"
 
 
-def retired_row_payload(message: Dict[str, Any]) -> Dict[str, Any]:
+def retired_row_payload(message: dict[str, Any]) -> dict[str, Any]:
     """The fields the commit matches a retired id-less row by."""
-    payload: Dict[str, Any] = {"role": message.get("role"), "content": message.get("content")}
+    payload: dict[str, Any] = {"role": message.get("role"), "content": message.get("content")}
     if message.get("tool_call_id"):
         payload["tool_call_id"] = message["tool_call_id"]
     calls = [call.get("id") for call in message.get("tool_calls") or () if isinstance(call, dict)]
@@ -47,7 +47,7 @@ def _positive_id(value: Any) -> Optional[int]:
 
 def held_archive_coverage(
     messages: Sequence[Any], verbatim_tail: Optional[Sequence[Any]] = None,
-) -> Tuple[List[int], List[Dict[str, Any]]]:
+) -> tuple[list[int], list[dict[str, Any]]]:
     """``(covered ids, unresolved dicts)`` from the history the compressor was handed.
 
     A positive ``_row_id`` is covered, including ids a repair merged into that dict.
@@ -55,8 +55,8 @@ def held_archive_coverage(
     marker-less miss is an unpersisted turn rather than a reason to archive the
     lease watermark.
     """
-    covered: List[int] = []
-    unresolved: List[Dict[str, Any]] = []
+    covered: list[int] = []
+    unresolved: list[dict[str, Any]] = []
     for batch in (messages or (), verbatim_tail or ()):
         for message in batch:
             if not isinstance(message, dict):
@@ -83,7 +83,7 @@ def newest_exact_held_id(
     """
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
-    exact: List[int] = []
+    exact: list[int] = []
     for message in messages or ():
         if not isinstance(message, dict) or not message.get(_DB_PERSISTED_MARKER):
             continue
@@ -101,7 +101,7 @@ def newest_exact_held_id(
 def coverage_for_commit(
     session_db: Any, session_id: str, messages: Sequence[Any],
     verbatim_tail: Optional[Sequence[Any]] = None,
-) -> Tuple[Optional[List[int]], Optional[List[Dict[str, Any]]]]:
+) -> tuple[Optional[list[int]], Optional[list[dict[str, Any]]]]:
     """Coverage to pass into ``archive_and_compact``, or ``(None, None)`` to keep the watermark.
 
     ``None`` when the newest exact held row is already inactive (another compaction
@@ -120,7 +120,7 @@ def coverage_for_commit(
     if newest is not None and callable(role_of) and role_of(session_id, newest) is None:
         return None, None
     covered, unresolved = held_archive_coverage(messages, verbatim_tail)
-    retired: List[Dict[str, Any]] = []
+    retired: list[dict[str, Any]] = []
     for message in unresolved:
         named = [row for row in message.get(RETIRED_DURABLE_ROWS) or () if isinstance(row, dict)]
         if int(message.get(UNNAMED_DURABLE_ROWS) or 0) > sum(1 for row in named if not row.get(OWN_ROW)):

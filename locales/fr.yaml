@@ -66,12 +66,17 @@ gateway:
     usage_switch_model: "`/model <name>` — changer de modèle"
     usage_switch_provider: "`/model <name> --provider <slug>` — changer de fournisseur"
     usage_persist: "`/model <name> --global` — conserver"
+    usage_reset: "`/model reset` — effacer l'override de cette session"
+    reset_done: "Override de modèle de session effacé — utilisation de `{model}` (valeur par défaut du canal/globale). Historique de conversation conservé."
+    reset_none: "Aucun override de modèle actif pour cette session — `{model}` (valeur par défaut du canal/globale) est déjà utilisé."
     err_skew: "Ce gateway exécute le code de {boot_rev}, mais le checkout sur disque est maintenant à {disk_rev}. Changer de modèle risquerait un plantage dû à des modules obsolètes — redémarrez le gateway pour charger le nouveau code : hermes gateway restart"
     err_switch_failed: "Le passage au modèle {model} a échoué ({error}) ; le modèle {current} est conservé."
     err_config_not_updated: "config.yaml non mis à jour ({error})"
     err_stale_override: "enregistré dans config.yaml, mais l'ancienne surcharge de session n'a pas été effacée ({error})"
     next_turn_only: "    (prochain tour uniquement — rétabli après une réponse)"
     switch_cancelled: "🟡 Changement de modèle annulé. Le modèle actuel est inchangé ({model})."
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
     guard_confirm: |-
       ⚠️ **{title}**
 
@@ -185,9 +190,13 @@ gateway:
     upload_failed: "✗ Échec de l'envoi du rapport de débogage : {error}"
     header: "**Rapport de débogage envoyé :**"
     auto_delete: "⏱ Les pastes s'effaceront automatiquement dans 6 heures."
-    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
+    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share --nous` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
+    local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse."
+    upload_hint_local: "Rien n'a été téléversé. Envoyez `/debug upload` pour téléverser le rapport de synthèse, ou `/debug local` pour l'afficher ici."
+    nous_refused: "Rien n'a été téléversé. Les envois privés vers Nous ne sont pas disponibles ici : lancez `hermes debug share --nous` dans un terminal, ou utilisez Send diagnostics dans l'application de bureau. `/debug upload` téléverse plutôt la synthèse vers un paste public."
   deny:
     stale: "❌ Commande refusée (l'approbation était périmée)."
     no_pending: "Aucune commande en attente de refus."
@@ -195,6 +204,10 @@ gateway:
     denied_plural: "❌ Commandes refusées ({count} commandes)."
     denied_reason_singular: "❌ Commande refusée. Raison transmise à l'agent: \"{reason}\""
     denied_reason_plural: "❌ Commandes refusées ({count} commandes). Raison transmise à l'agent: \"{reason}\""
+
+  usage_limit:
+    picker_title: "Continuer avec un autre modèle :"
+    switch_choice: "Passer à {model} ({note})"
   fast:
     not_supported: "⚡ /fast n'est disponible que pour les modèles OpenAI qui prennent en charge Priority Processing."
     status: "⚡ Priority Processing\n\nMode actuel : `{mode}`\n\n_Usage :_ `/fast <normal|fast|status>`"
@@ -210,8 +223,8 @@ gateway:
     choice_normal: "normal — traitement standard"
     choice_auto: "auto — rapide pendant les premières secondes de chaque tour"
     choice_cold: "cold — rapide uniquement au premier tour d'une session"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, prix x6)"
-    ultrafast_not_supported: "⚡ Ultrafast n'est disponible que pour GPT-6 Astra (modèle actuel : `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, prix x6"
+    ultrafast_not_supported: "⚡ Ultrafast n'est pas disponible pour `{model}` sur ce compte ou cette route."
   footer:
     status: "📎 Pied de page d'exécution : **{state}**\nChamps : `{fields}`\nPlateforme : `{platform}`"
     usage: "Usage : `/footer [on|off|status]`"
@@ -358,6 +371,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — session démarrée sans titre."
     title_empty_untitled: "\n⚠️ Le titre est vide après nettoyage — session démarrée sans titre."
     tip: "\n✦ Astuce : {tip}"
+    paused_left: "\n⚠️ {count} message(s) envoyé(s) pendant la pause de la conversation précédente sont toujours enregistrés dans la conversation précédente, sans réponse. Pour les exécuter : /resume {session_id}, puis {discard}."
   restart:
     in_progress: "⏳ Redémarrage du gateway déjà en cours..."
     restarting: "♻ Redémarrage du gateway. Si vous n'êtes pas notifié dans les 60 secondes, redémarrez depuis la console avec `hermes gateway restart`."
@@ -475,7 +489,6 @@ gateway:
     last_activity: "**Dernière activité :** {timestamp}"
     model: "**Modèle :** `{model}`"
     model_provider: "**Modèle :** `{model}` ({provider})"
-    free_tier: "Nous · offre gratuite · nous/welcome · /login pour se connecter"
     context: "**Contexte :** {used} / {total} ({pct}%)"
     context_used: "**Contexte :** ~{used} jetons"
     tokens: "**Jetons facturés au total :** {tokens} _(pas la taille actuelle de votre contexte ; utilisez `/context`)_"
@@ -484,6 +497,9 @@ gateway:
     state_no: "Non"
     queued: "**Suivis en file :** {count}"
     platforms: "**Plateformes connectées :** {platforms}"
+  discard:
+    nothing: "Rien à ignorer : ce chat n'a aucun tour perdu lors d'un redémarrage."
+    done: "🗑️ {count} tour(s) perdu(s) ignoré(s) ; ils n'ont pas été relancés. Vos messages enregistrés vont maintenant recevoir une réponse."
   stop:
     stopped_pending: "⚡ Arrêté. L'agent n'avait pas encore commencé — vous pouvez continuer cette session."
     stopped: "⚡ Arrêté. Vous pouvez continuer cette session."
@@ -542,8 +558,6 @@ gateway:
          /help, /usage. Les prompts normaux vont dans un topic.
       4. /new dans un topic réinitialise uniquement la session de ce topic.
       5. /topic <id> dans un topic y restaure une ancienne session.
-    system_topic_name: "Système"
-    system_topic_intro: "Topic système pour les commandes et l'état d'Hermes."
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "Impossible de déterminer l'ID du chat."
     mode_not_enabled: "Le mode topic multi-session n'est pas activé pour ce chat."
@@ -578,6 +592,7 @@ gateway:
     not_git_repo: "✗ Pas un dépôt git — impossible de mettre à jour."
     hermes_cmd_not_found: "✗ Impossible de localiser la commande `hermes`. Hermes est en cours d'exécution, mais la commande de mise à jour n'a pas pu trouver l'exécutable dans le PATH ni via l'interpréteur Python actuel. Essayez d'exécuter `hermes update` manuellement dans votre terminal."
     start_failed: "✗ Échec du démarrage de la mise à jour : {error}"
+    already_running: "⏳ Une mise à jour est déjà en cours ; seule la personne qui l'a lancée peut répondre à ses questions. Attendez qu'elle se termine, puis relancez /update."
     starting: "☤ Démarrage de la mise à jour Hermes… Je diffuserai la progression ici."
     reply_failed: "✗ Échec de l'envoi de la réponse au processus de mise à jour : {error}"
     reply_sent: "✓ `{label}` envoyé au processus de mise à jour."
@@ -678,6 +693,7 @@ gateway:
     disabled: "⚠️ Mode YOLO **DÉSACTIVÉ** pour cette session — les commandes dangereuses nécessiteront une approbation."
     enabled: "⚡ Mode YOLO **ACTIVÉ** pour cette session — toutes les commandes sont auto-approuvées. À utiliser avec prudence."
   shared:
+    fallback_model_suffix: " — secours pour `{primary}`"
     session_db_unavailable: "Base de données de sessions indisponible."
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found: "Session introuvable dans la base de données."
@@ -706,6 +722,8 @@ gateway:
     action_always: "Toujours autoriser"
     action_deny: "Refuser"
     deadline: "Sans réponse de votre part dans {window}, elle ne sera PAS exécutée."
+    not_requester: "Seul {requester} peut répondre à cette demande d'approbation."
+    not_requester_admins_only: "Seul un administrateur ou un approbateur listé peut répondre à cette demande d'approbation."
     text_choice_once: "Répondez `{prefix}approve` pour l'exécuter une fois"
     text_choice_session: "`{prefix}approve session` pour autoriser ce motif jusqu'à la fin de cette session"
     text_choice_always: "`{prefix}approve always` pour l'autoriser définitivement"
@@ -719,6 +737,9 @@ gateway:
       {command}
       ```
       {reason_label} : {reason}
+    truncated_full_above: "Aperçu raccourci : la commande complète ({total} caractères) se trouve dans le message ci-dessus."
+    truncated_deny_only: "Aperçu raccourci ({total} caractères) et la commande complète n'a pas pu être affichée ici : seul Refuser est proposé. Vérifie-la dans la CLI ou l'app Desktop."
+    text_prompt_deny_only: "La demande de validation complète est trop longue pour cette plateforme : seul Refuser est proposé. Vérifie-la dans la CLI ou l'app Desktop."
 
   notify:
     media_kind:
@@ -733,11 +754,6 @@ gateway:
       (Échec du formatage de la réponse, texte brut :)
 
       {content}
-    turn_error_no_details: "aucun détail disponible"
-    turn_error_detailed: |-
-      Désolé, j'ai rencontré une erreur ({error_type}).
-      {error_detail}
-      Réessayez ou utilisez /reset pour démarrer une nouvelle session.
     turn_error: "Désolé, j'ai rencontré une erreur."
     context_injection_refused: "Injection de contexte refusée."
     no_home_channel: |-
@@ -797,6 +813,9 @@ gateway:
       Utilisez /retry pour réessayer, ou /new pour démarrer une nouvelle conversation. Les détails techniques sont dans le journal du gateway (`hermes logs`).
     history_unavailable: "⚠️ L'historique de cette session est temporairement indisponible ; ce message n'a donc pas été traité. Demandez à l'opérateur d'inspecter state.db, puis renvoyez-le une fois le problème réglé. N'utilisez /reset que si vous voulez vraiment démarrer une nouvelle conversation."
     no_credentials: "⚠️ Je n'ai pas pu me connecter au service de modèle IA ; ce message n'a donc pas été traité. Utilisez /login pour vous reconnecter, ou /model pour choisir un autre modèle. Si l'échec persiste, lancez `hermes doctor` sur l'hôte."
+    cron_session_read_only: "⚠️ Cette conversation appartient à une tâche planifiée et n'exécute que cette tâche ; votre message n'a donc pas été exécuté. Démarrez une nouvelle conversation pour l'envoyer."
+    workspace_unavailable: "⚠️ Le dossier de travail de cette conversation n'existe plus ({path}) ; votre message n'a donc pas été exécuté. Recréez le dossier ou déplacez la conversation vers un autre (`/worktree new` dans la CLI, « Déplacer vers un projet » dans l'application de bureau), puis renvoyez votre message."
+    launch_credentials_unavailable: "⚠️ Cette conversation ne peut plus utiliser la clé API avec laquelle elle a été démarrée{detail}, plus rien ne peut donc s'y exécuter. Une conversation ouverte ne passe jamais d'elle-même à une autre clé, donc /retry échoue de la même façon. Utilisez /new pour démarrer une nouvelle conversation avec votre clé actuelle."
   skills:
     disabled: |-
       La skill **{name}** est installée mais désactivée.
@@ -848,6 +867,8 @@ gateway:
     reject_loop: "L'agent est en cours d'exécution — utilisez /loop status / pause / stop pendant l'exécution, ou /stop avant de définir une nouvelle boucle."
     draining_maintenance: "⏳ Cet agent se vide pour une opération de maintenance et n'accepte pas de nouveaux tours pour le moment. Il sera de retour dans un instant — merci de renvoyer votre message d'ici peu."
     another_turn_running: "⏳ Un autre tour est encore en cours sur cette session. Pour protéger la transcription, ce message n'a pas été traité. Attendez la fin du tour actif, puis renvoyez-le."
+    setup_timeout: "⏳ La préparation du tour s'est bloquée sans activité de l'agent et a été annulée. Merci de renvoyer ton message."
+    setup_waiting: "⏳ Ce tour démarre encore ({minutes} min, aucune activité de l'agent pour l'instant). Ton message est en file d'attente. Utilise /stop pour l'annuler, ainsi que tout ce qui est en file d'attente."
     behavior_queue_short: "mise en file pour le prochain tour"
     behavior_queue_long: "Les messages seront mis en file pour le prochain tour pendant que Hermes est occupé."
     behavior_steer_short: "orientation de l'exécution en cours (après le prochain appel d'outil)"
@@ -927,6 +948,7 @@ gateway:
     ack_generate: "Génération d'AGENTS.md à partir d'une analyse du projet…"
   moa:
     prepare_failed: "Échec de la préparation du tour MoA."
+    managed_session: "/moa n'est pas disponible dans cette session : les sessions en mode sans échec, sans configuration, kanban et à worker géré exécutent chaque tour sur leur propre modèle. Envoyez le prompt sans /moa."
   quick_command:
     no_output: "La commande n'a renvoyé aucune sortie."
     timed_out: "Délai de la commande rapide dépassé (30 s)."
@@ -997,7 +1019,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Gateway redémarré avec succès. Votre session continue."
-    free_tier_line: "Inférence : offre gratuite Nous (nous/welcome). Connectez-vous pour en obtenir plus : /login"
     online: "♻️ Gateway en ligne — Hermes est de retour et prêt."
     db_corrupt: |-
       ⚠️ Corruption détectée dans la base de données des sessions. Les messages risquent de ne pas être persistés. Options de récupération :
@@ -1011,6 +1032,9 @@ gateway:
     db_fts_corrupt: "⚠️ La base de données des sessions a signalé une erreur de corruption limitée à l'index de recherche (FTS5) ; les tables de messages ne sont pas endommagées. Les messages risquent de ne pas être persistés tant qu'elle n'est pas réparée : exécutez `hermes {profile_arg}doctor --fix`, puis redémarrez le gateway. N'exécutez pas d'outils de récupération et ne restaurez pas de sauvegarde à moins que `hermes {profile_arg}doctor` ne confirme des dégâts."
     db_then_restart: "{action} Puis `hermes {profile_arg}gateway restart`."
     db_unavailable: "⚠️ Base de données des sessions indisponible — les messages risquent de ne pas être enregistrés et /resume sera vide. Cause : {cause}. {action}"
+  cron_store:
+    unwritable: "⚠️ Le stockage cron {store} n'est plus accessible en écriture ({error}) depuis {since}. Les tâches planifiées sont ignorées jusqu'à ce qu'il accepte à nouveau les écritures. Correctif : {fix}."
+    recovered: "✅ Le stockage cron {store} est de nouveau accessible en écriture ; {skipped} exécution(s) ignorée(s), chaque tâche est rattrapée une fois."
   whoami:
     scope_dm: "MP"
     scope_group: "groupe/canal"
@@ -1148,10 +1172,8 @@ platform:
     approved: "✅ Approuvé."
     denied: "❌ Refusé."
     approval_expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà résolue ailleurs)."
-  yuanbao:
-    slow_response_notice: "Cette tâche est un peu complexe — je m'en occupe encore, merci de patienter..."
-    owner_command_denied: "⚠️ {command} n'est disponible que pour le créateur en mode discussion privée"
   shared:
+    response_as_file: "📎 Réponse longue : le texte complet est en pièce jointe."
     truncated_suffix: |2-
 
       ...(tronqué)
@@ -1187,6 +1209,8 @@ platform:
       confirm_title: "Confirmer"
       already_resolved: "Cette approbation a déjà été traitée~"
       expired: "⌛ Approbation expirée — la commande n'a pas été exécutée (délai dépassé ou déjà traitée ailleurs)"
+      no_longer_pending: "⌛ Cette approbation n'est plus en attente (expirée ou traitée ailleurs)"
+      click_failed: "⚠️ Impossible d'enregistrer ton choix. Clique à nouveau ou réponds avec /approve ou /deny."
       by_user: "{label} par {user}"
       resolved_once: "Approuvé une fois"
       resolved_session: "Approuvé pour la session"
@@ -1351,8 +1375,6 @@ platform:
         unknown: "Skill inconnue : `{name}`. Commencez à taper pour obtenir des suggestions."
       auto_args_description: "Arguments : {args_hint}"
       auto_description_fallback: "Exécuter /{name}"
-    limits:
-      response_truncated: "⚠️ **Réponse tronquée** — cette réponse a dépassé la limite d'envoi ({max_messages} messages). {dropped_chars} caractères n'ont pas été transmis ; la réponse complète se trouve dans les journaux de la session."
     forum:
       default_title: "Nouvelle publication"
     voice:
@@ -1436,6 +1458,11 @@ platform:
       affirm: "✓ Oui"
       negate: "✗ Non"
       other: "✏️ Autre (saisir)"
+      multi_hint: "Sélectionnez une ou plusieurs options, puis touchez Envoyer."
+      send: "✅ Envoyer"
+      selected_count: "Sélectionnées : {count}"
+      select_one: "Sélectionnez d'abord au moins une option."
+      toggle_failed: "Impossible de mettre à jour la sélection — touchez à nouveau."
       expired_toast: "⚠️ Ce prompt a expiré — veuillez utiliser /retry."
       expired_body: "⚠️ Cette question a expiré ou la session a été réinitialisée — veuillez utiliser /retry."
       type_answer: "✏️ Saisissez votre réponse dans le chat."
@@ -1573,6 +1600,12 @@ platform:
       unauthorized: "Seul un utilisateur Matrix autorisé peut utiliser ces contrôles."
       not_requester: "Seul l'utilisateur à l'origine de cette action peut utiliser ces contrôles."
   feishu:
+    clarify:
+      title: "Hermes a besoin de votre réponse"
+      other: "✏️ Autre (saisir)"
+      awaiting_typed: "En attente de la réponse saisie par {user}…"
+    picker:
+      apply_error: "Erreur lors de l'application de la sélection : {error}"
     approval:
       action_session: "Session"
       action_always: "Toujours"
@@ -1707,6 +1740,8 @@ platform:
     prompt_other: "✏️ Autre (saisir)"
     prompt_expired: ⌛ Cette invite n'attend plus de réponse. Envoyez votre réponse comme un message normal.
 slash:
+  rewind:
+    description: "Rembobiner jusqu'à un prompt précédent pour le modifier et le renvoyer, ou bifurquer à partir de là (Esc Esc)"
   approve:
     description: "Approuver une commande dangereuse en attente"
   bg:
@@ -1779,6 +1814,8 @@ slash:
     description: "Importer une archive de profil partagée comme nouveau profil"
   stop:
     description: "Tuer tous les processus en arrière-plan en cours"
+  discard:
+    description: "Ignorer un tour perdu au redémarrage de Hermes pour que la file de ce chat reprenne"
   pause:
     description: "Suspendre tout nouveau travail globalement (arrêt d'urgence) ; '/pause off' reprend"
   deny:
@@ -1896,7 +1933,7 @@ slash:
   reload-skills:
     description: "Réanalyser ~/.hermes/skills/ pour détecter les skills installées ou supprimées"
   browser:
-    description: "Connecter les outils navigateur à votre navigateur Chromium via CDP, ou passer en mode Browser Use"
+    description: "Connecter les outils navigateur à votre navigateur Chromium via CDP"
   plugins:
     description: "Lister les plugins installés et leur état"
   commands:
@@ -1928,10 +1965,39 @@ slash:
   version:
     description: "Afficher la version de Hermes Agent"
   debug:
-    description: "Envoyer un rapport de débogage (infos système + journaux) et obtenir des liens partageables"
+    description: "Rapport de débogage (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) : affiche d'abord l'avis de confidentialité ; /debug upload partage les liens"
   quit:
     description: "Quitter la CLI (--delete supprime aussi l'historique de session)"
 cli:
+  backtrack:
+    title: "↺ Transcription — choisir un prompt à modifier"
+    keys_hint: "Parcours de la transcription · ↑↓/jk défiler · ←→/hl prompts · ↵ modifier · f bifurquer · esc retour"
+    prime_hint: "esc à nouveau pour modifier le message précédent"
+    no_previous: "Aucun message précédent à modifier."
+    editing_hint: "↺ Modification du prompt {number} — Enter rembobine ici et envoie · Esc Esc annule"
+    edit_cancelled: "↺ Rembobinage annulé ; rien n'a été supprimé."
+    rewound: "↺ Rembobiné au prompt {number} ({count} message(s) archivé(s)) ; envoi de la modification."
+    forked: "⑂ Bifurcation avant le prompt {number} ; la session d'origine {parent} est inchangée. Modifiez le prompt ci-dessous et appuyez sur Enter pour l'envoyer."
+    nothing: "(._.) Aucun prompt précédent vers lequel rembobiner."
+    target_changed: "(x_x) La session a changé depuis que vous avez choisi le prompt {number} ; rien n'a été supprimé. Votre modification est de retour dans la zone de saisie."
+    invalid: "(._.) Aucun prompt {value} — choisissez entre 1 et {total}."
+    usage: "Utilisation : /rewind [N | fork N]"
+    rewind_failed: "(x_x) Échec du rembobinage ; l'historique n'a pas été modifié : {error}"
+  modern:
+    thought_for: "Réflexion pendant {seconds}s"
+    thought: "Réflexion"
+    working: "En cours…"
+    preparing: "Préparation de {what}…"
+    hint_steer: "orienter"
+    hint_queue: "mettre en file"
+    hint_interrupt: "interrompre"
+    hint_stop: "arrêter"
+    hint_commands: "commandes"
+    hint_files: "fichiers"
+    hint_shell: "shell"
+    placeholder_busy_steer: "tapez pour orienter ce tour · Tab le met en file pour après"
+    placeholder_busy_interrupt: "tapez pour rediriger ce tour · Tab le met en file pour après"
+    placeholder_busy_queue: "tapez pour mettre un message en file après ce tour"
   billing:
     load_failed: "{label} : {error}"
     load_failed_label: "Facturation indisponible"
@@ -1995,6 +2061,21 @@ cli:
     desc_auto_reload: "recharger automatiquement quand votre solde est bas"
     choice_monthly_limit: "Limite mensuelle"
     desc_monthly_limit: "afficher le plafond de dépenses mensuel (lecture seule)"
+    # Keep going on credits (window plans only; the portal sends the setting only there)
+    keep_going_choice: "Continuer avec les crédits"
+    keep_going_desc: "utilise vos crédits quand l’usage inclus est épuisé"
+    keep_going_on_line: "Continuer avec les crédits : activé (utilise vos crédits quand l’usage inclus est épuisé)"
+    keep_going_off_line: "Continuer avec les crédits : désactivé (Hermes attend la réinitialisation)"
+    keep_going_confirm_title: "Continuer avec les crédits ?"
+    keep_going_confirm_body: "Utiliser vos crédits quand l’usage inclus est épuisé. Désactivé : Hermes attend la réinitialisation."
+    keep_going_turn_on: "Activer"
+    keep_going_keep_off_desc: "le laisser désactivé : Hermes attend la réinitialisation"
+    keep_going_is_on_title: "Continuer avec les crédits est activé"
+    keep_going_turn_off: "Le désactiver"
+    keep_going_turn_off_desc: "Hermes attend la réinitialisation"
+    keep_going_leave_on: "Le laisser activé"
+    keep_going_turned_on: "✅ Continuer avec les crédits : activé. Utiliser vos crédits quand l’usage inclus est épuisé."
+    keep_going_turned_off: "✅ Continuer avec les crédits : désactivé. Hermes attend la réinitialisation."
     cancelled: "Annulé."
     cancelled_yellow: "🟡 Annulé."
     cancelled_no_funds: "Annulé. Aucun fonds ajouté."
@@ -2213,17 +2294,19 @@ cli:
     usage_switch_reasoning: "changer et définir l'effort de raisonnement"
     usage_switch_provider: "changer de fournisseur"
     usage_refresh: "recharger les listes de modèles en direct"
+    reset_none: "Déjà sur le modèle par défaut configuré ({model}) — rien à réinitialiser."
+    reset_no_default: "Aucun model.default dans config.yaml — rien vers quoi revenir."
     choice_switch_anyway: "Changer quand même"
     desc_switch_anyway: "Utiliser ce modèle pour la session Hermes en cours."
     choice_cancel: "Annuler"
     desc_keep_current_model: "Conserver le modèle actuel."
+    confirm_choice_prompt: "Choix [1/2] : "
     switch_cancelled: "Changement de modèle annulé."
     selection_failed: "✗ Échec de la sélection du modèle : {error}"
     switch_failed: "⚠ Échec du passage au modèle {model} ({error}) ; {old_model} est conservé."
     cleared_picker_cache: "Cache du sélecteur de modèles vidé. Actualisation..."
     moa_one_shot_queued: "MoA en une passe mis en file avec le preset {preset} ; le modèle précédent sera rétabli après ce tour."
     normalized_model: "Modèle '{old}' normalisé en '{new}' pour {provider}."
-    normalized_copilot_model: "Modèle Copilot '{old}' normalisé en '{new}'."
     stripped_provider_prefix: "Préfixe de fournisseur retiré de '{old}' ; utilisation de '{new}' pour {provider}."
     restored_from_session: "Modèle rétabli depuis la session : {model}"
     could_not_load_config: "❌ impossible de charger la configuration : {error}"
@@ -2375,6 +2458,7 @@ cli:
     images_attached_other: "📎 {count} images jointes"
     command_interrupted: "Commande interrompue."
     welcome: "Bienvenue dans Hermes Agent ! Tapez votre message ou /help pour les commandes."
+    vscode_images_hint: "VS Code peut afficher ici les images en pleine résolution : activez terminal.integrated.enableImages dans les paramètres."
     activated_skills_label: "Skills activées :"
     redaction_disabled_title: "⚠  La censure des secrets est DÉSACTIVÉE"
     redaction_disabled_body: "(HERMES_REDACT_SECRETS={value}). Les clés API et les tokens peuvent apparaître en clair dans la sortie du chat, les JSON de session et les logs. Définissez {setting} dans config.yaml pour la réactiver."
@@ -2495,6 +2579,7 @@ cli:
     queue_heading: "File d'attente · {count} en file · /queue list{controls}"
     more_queued: "+{count} de plus"
     transcript_unavailable: "Transcription en direct pas encore disponible."
+    control_pending: "Envoi…"
     steer_prompt: "Orienter : "
     roster_empty: "Aucun sous-agent ni processus en arrière-plan en cours. Les résultats arrivent dans la conversation."
     entry_gone: "Cette entrée n'est plus active."
@@ -2545,6 +2630,7 @@ cli:
     failed: "Échec de la connexion"
     authorized_no_tools: "Autorisé. Outils indisponibles."
     connected: "Connecté"
+    named_account: "Hermes a nommé ce compte {name} {alias}. Vous pouvez le renommer à tout moment."
     waiting: "En attente…"
   editor:
     only_interactive: "L'éditeur externe n'est disponible que dans la CLI interactive."
@@ -2632,6 +2718,14 @@ cli:
     move_out_of_range: "Déplacement hors limites de la file. Taille actuelle : {size}"
     moved: "Élément {source} de la file déplacé vers {destination}."
     usage_add: "Usage : /queue add <prompt>"
+    gateway_refused: "Le gateway ne l'a pas mis en file : {error}. Rien n'a été mis en file ; renvoyez-le à la fin du tour."
+    submit_unknown: "Le gateway n'a pas répondu ({error}) ; le prompt est peut-être déjà en file. Vérifiez /queue list avant de le renvoyer."
+    move_gateway_fifo: "Le gateway exécute les prompts en file dans l'ordre d'envoi ; modifiez ou supprimez-en un à la place."
+    remove_refused: "Impossible de retirer l'élément {index} de la file : {error}"
+    edit_refused: "Impossible de modifier l'élément {index} de la file : {error}"
+    already_started: "L'élément {index} de la file a déjà démarré ; il s'exécute tel qu'envoyé."
+    started_stopped: "L'élément {index} de la file avait déjà démarré ; le gateway l'a arrêté."
+    change_unknown: "Le gateway n'a pas répondu pour l'élément {index} de la file ({error}) ; vérifiez /queue list avant de réessayer."
   reload:
     env_reloaded: ".env rechargé ({count} variable(s) mise(s) à jour)"
   steer:
@@ -2665,6 +2759,7 @@ cli:
     session_not_found: "Session introuvable : {session_id}"
     compressed_into: "La session {session_id} a été compressée dans {descendant} ; reprise de la session descendante avec votre transcription."
     cannot_resume: "Impossible de reprendre la session : {error}"
+    kanban_owned: "⛔ La session {session_id} est la transcription d'un worker Kanban. La reprendre ici créerait un écrivain que le tableau Kanban ne peut ni observer ni superviser — relance ou débloque plutôt la carte sur le tableau, afin que le dispatcher possède la prochaine exécution."
     cannot_resume_prefix: "Impossible de reprendre la session :"
     resumed_session: "↻ Session reprise"
     counts_one: "({count} message utilisateur, {total} messages au total)"
@@ -2699,7 +2794,6 @@ cli:
     run_model_to_retry: "Exécutez 'hermes model' pour réessayer."
     provider_configured: "✓ Fournisseur configuré — vous pouvez commencer à discuter."
     provider_setup_incomplete: "La configuration du fournisseur n'a pas abouti. Exécutez 'hermes model' pour réessayer."
-    tirith_unavailable: "⚠ Le scanner de sécurité tirith est activé mais indisponible — l'analyse des commandes se limitera à la détection par motifs"
     unknown_toolsets: "Avertissement : ensembles d'outils inconnus : {names}"
     stdin_unusable: |2-
 
@@ -2833,6 +2927,7 @@ cli:
     goal_turns: "⊙ objectif {used}/{max}"
     goal: "⊙ objectif"
     ctx_pinned: " épinglé"
+    ctx_fallback: " par défaut"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 Réserve ({count} élément)"
@@ -2931,7 +3026,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast n'est disponible que pour GPT-6 Astra (modèle actuel : {model})."
+      ultrafast_not_supported: "(._.) Ultrafast n'est pas disponible pour {model} sur ce compte ou cette route."
       usage: "Usage : /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature} : {status}"
       set_to: "✓ {feature} défini sur {value} {scope}"
@@ -3258,12 +3353,6 @@ cli:
       engine_lightpanda: "Moteur : Lightpanda — {reason} (pas de captures d'écran)"
       binary: "Binaire : {path}"
       binary_not_found: "⚠ binaire lightpanda introuvable — {hint}"
-      use_usage: "Usage : /browser use [off]"
-      use_on_hint: "/browser use       — passer en mode Browser Use (browser_exec via la CLI 3.0)"
-      use_off_hint: "/browser use off   — revenir aux outils de navigateur intégrés"
-      use_enabled: "🌐 Mode Browser Use activé — browser_exec via la CLI Browser Use 3.0"
-      use_disabled: "🌐 Mode Browser Use désactivé — outils de navigateur intégrés restaurés"
-      session_reset: "Session réinitialisée. La nouvelle configuration d'outils est active."
       scheme_missing: "(absent)"
       unsupported_scheme: "⚠ Schéma d'URL de navigateur non pris en charge : {scheme} (attendu : http, https, ws ou wss)"
       invalid_port: "⚠ Port invalide dans l'URL du navigateur : {url}"
@@ -3285,25 +3374,22 @@ cli:
       already_default: "Le navigateur n'est pas connecté à un navigateur Chromium actif (mode par défaut déjà utilisé)"
       disconnected: "🌐 Navigateur déconnecté du navigateur Chromium actif"
       reverted: "Outils de navigateur revenus au mode par défaut (headless local ou fournisseur cloud)"
-      status_lightpanda: "🌐 Navigateur : Lightpanda local (agent-browser --engine lightpanda)"
+      status_lightpanda: "🌐 Navigateur : Lightpanda local (lightpanda serve)"
       status_lightpanda_note: "⚡ Lightpanda : navigation plus rapide, pas de captures d'écran"
-      status_lightpanda_fallback: "Repli automatique sur Chromium pour les captures d'écran et les commandes en échec"
-      status_chrome: "🌐 Navigateur : Chromium headless local (agent-browser --engine chrome)"
-      status_auto: "🌐 Navigateur : Chromium headless local (agent-browser)"
-      status_browser_use: "🌐 Navigateur : mode Browser Use (browser_exec via la CLI Browser Use 3.0)"
-      status_browser_use_note: "Chrome local via CDP, ou navigateurs cloud Browser Use"
-      status_use_off_hint: "/browser use off      — revenir aux outils de navigateur intégrés"
+      status_auto: "🌐 Navigateur : Chromium headless local"
       status_connected: "🌐 Navigateur : connecté à un navigateur Chromium actif via CDP"
       status_reachable: "État : ✓ joignable"
       status_unreachable: "État : ⚠ injoignable (le navigateur n'est peut-être pas lancé)"
       status_cloud: "🌐 Navigateur : {provider} (cloud)"
       status_connect_hint: "/browser connect      — se connecter à votre navigateur Chromium actif"
       status_disconnect_hint: "/browser disconnect   — revenir au mode par défaut"
-      usage: "Usage : /browser connect|disconnect|status|use"
+      usage: "Usage : /browser connect|disconnect|status"
       usage_connect: "connect      Connecter les outils de navigateur à votre session Chromium active"
       usage_disconnect: "disconnect   Revenir au backend de navigateur par défaut"
       usage_status: "status       Afficher le mode de navigateur actuel"
-      usage_use: "use [off]    Passer en mode Browser Use (CLI 3.0) / revenir aux outils intégrés"
+      remote_gateway: "/browser connect et /browser disconnect gèrent un navigateur Chromium sur l'hôte de la passerelle — disponible uniquement avec une passerelle locale."
+      checking: "Vérification du débogage distant du navigateur Chromium à {url}..."
+      status_gateway_default: "🌐 Navigateur : backend de navigateur par défaut de la passerelle (pas de connexion CDP en direct)"
     heartbeat:
       label: "Heartbeats"
       paused: "⏸ Heartbeat en pause : {prompt}"
@@ -3414,6 +3500,10 @@ cli:
     loaded: "(chargé)"
     not_found: "(introuvable)"
     microsoft_entra_id: "Microsoft Entra ID"
+    google_vertex_oauth: "Google OAuth (Vertex AI)"
+    key_cmd_token: "key_cmd token (command)"
+    minimax_oauth: "MiniMax OAuth"
+    token_provider: "Token provider"
     api_key_not_set: "Non définie !"
     value_not_set: "non défini"
     section_model: "Modèle"
@@ -3605,8 +3695,22 @@ cli:
     next_session_deepens: "La prochaine session `hermes -w` approfondira le clone et supprimera automatiquement les worktrees fusionnés."
     unpushed_keeping: "⚠ Le worktree a des commits non poussés, conservé : {path}"
     uncommitted_keeping: "⚠ Le worktree a des modifications non commitées, conservé : {path}"
+    kept_reason: "⚠ Worktree conservé ({reason}) : {path}"
     clean_up_manually: "Pour nettoyer manuellement : git worktree remove --force {path}"
     cleaned_up: "✓ Worktree nettoyé : {path}"
+    exit_question_dirty: "Ce worktree contient des modifications non commitées : {path}"
+    exit_question_unpushed: "Ce worktree contient des commits non poussés : {path}"
+    exit_choice_keep: "Conserver le worktree (par défaut)"
+    exit_choice_archive: "L'archiver et le supprimer (restaurable)"
+    exit_choice_discard: "Le supprimer et abandonner les modifications"
+    archiving: "Archivage de {path} … (cela peut prendre du temps pour un grand arbre)"
+    archived: "✓ Worktree archivé dans {ref} et supprimé : {path}"
+    restore_hint: "Pour le restaurer : hermes worktree restore {name}"
+    archive_failed: "✗ Impossible d'archiver {path}, conservé : {error}"
+    archived_kept: "✓ Worktree archivé dans {ref} mais conservé ({reason}) : {path}"
+    sweep_archived_removed: "archivé + supprimé → {ref}"
+    sweep_archived_kept: "archivé, conservé ({reason}) → {ref}"
+    discarded: "Worktree supprimé et modifications abandonnées : {path}"
 display:
   verb:
     web_search: "Recherche sur le web"
@@ -3871,7 +3975,7 @@ tips:
   t069: "hermes skills tap add myorg/skills-repo ajoute une source de skills GitHub personnalisée."
   t070: "hermes skills snapshot export setup.json exporte votre configuration de skills pour sauvegarde ou partage."
   t071: "hermes mcp add github --command npx ajoute des serveurs MCP depuis la ligne de commande."
-  t072: "hermes mcp serve fait tourner Hermes lui-même comme serveur MCP pour d'autres agents."
+  t072: "hermes mcp-serve fait tourner Hermes lui-même comme serveur MCP pour d'autres agents."
   t073: "hermes auth add permet d'ajouter plusieurs clés API pour la rotation d'un pool d'identifiants."
   t074: "hermes completion bash >> ~/.bashrc active la complétion par Tab pour toutes les commandes et tous les profils."
   t075: "hermes logs -f suit agent.log en temps réel. --level WARNING --since 1h filtre la sortie."
@@ -3897,7 +4001,7 @@ tips:
   t095: "Définissez approvals.mode: smart pour laisser un LLM approuver automatiquement les commandes sûres et refuser les dangereuses."
   t096: "Définissez fallback_model dans config.yaml pour basculer automatiquement vers un fournisseur de secours."
   t097: "Définissez privacy.redact_pii: true pour hacher les identifiants utilisateur et numéros de téléphone avant l'envoi au LLM."
-  t098: "Définissez browser.record_sessions: true pour enregistrer automatiquement les sessions navigateur en vidéos WebM."
+  t098: "Définissez browser.headed: true pour voir la fenêtre Chromium locale pendant que l'agent navigue."
   t099: "Définissez worktree: true dans config.yaml pour toujours créer un worktree git (équivalent de hermes -w)."
   t100: "Définissez security.website_blocklist.enabled: true pour bloquer certains domaines dans les outils web."
   t101: "Définissez cron.wrap_response: false pour livrer la sortie brute de l'agent sans l'en-tête ni le pied de page cron."
@@ -3914,8 +4018,8 @@ tips:
   t112: "patch prend en charge le format V4A pour modifier plusieurs fichiers en un seul appel."
   t113: "read_file suggère des noms de fichiers similaires quand un fichier est introuvable."
   t114: "read_file déduplique automatiquement — relire un fichier inchangé renvoie un stub léger."
-  t115: "browser_vision prend une capture d'écran et l'analyse avec l'IA — fonctionne pour les CAPTCHA et les contenus visuels."
-  t116: "browser_console peut évaluer des expressions JavaScript dans le contexte de la page."
+  t115: "Définissez browser.user_data_dir sur un dossier pour garder un profil Chromium persistant : les connexions aux sites survivent d'une session à l'autre."
+  t116: "browser.chromium_args ajoute des options Chromium supplémentaires aux sessions navigateur locales, par exemple --lang=de."
   t117: "image_generate crée des images avec FLUX 2 Pro et une mise à l'échelle 2x automatique."
   t118: "text_to_speech convertit du texte en audio — lu sous forme de bulles vocales sur Telegram."
   t119: "send_message peut joindre n'importe quelle plateforme de messagerie connectée depuis une session."
@@ -3969,7 +4073,7 @@ tips:
   t167: "L'approbation des commandes dangereuses a 4 niveaux : once, session, always (liste d'autorisation permanente), deny."
   t168: "Le mode d'approbation intelligent utilise un LLM pour approuver automatiquement les commandes sûres et signaler les dangereuses."
   t169: "La protection SSRF bloque les réseaux privés, le loopback, les adresses link-local et les adresses de métadonnées cloud."
-  t170: "L'analyse pré-exécution Tirith détecte l'usurpation d'URL par homoglyphes et les schémas de type « pipe vers interpréteur »."
+  t170: "Les ID de session sont préfixés par un horodatage (20250305_091523_abcd), donc le tri fonctionne naturellement avec ls et jq."
   t171: "Les sous-processus MCP reçoivent un environnement filtré — seules les variables système sûres sont transmises."
   t172: "Les fichiers de contexte (.hermes.md, AGENTS.md) sont analysés contre les injections de prompt avant chargement."
   t173: "command_allowlist dans config.yaml approuve de façon permanente certains motifs de commandes shell."
@@ -3979,10 +4083,10 @@ tips:
   t177: "Hermes charge le contexte du projet depuis .hermes.md, AGENTS.md, CLAUDE.md ou .cursorrules (première correspondance)."
   t178: "Les fichiers AGENTS.md des sous-répertoires sont découverts progressivement à mesure que l'agent explore les dossiers."
   t179: "Les fichiers de contexte sont plafonnés à 20 000 caractères avec une troncature intelligente début/fin."
-  t180: "Cinq fournisseurs de navigateur : Chromium local, Browserbase, Browser Use, Camofox et Firecrawl."
-  t181: "Camofox est un navigateur anti-détection — un fork de Firefox avec falsification d'empreinte en C++."
-  t182: "browser_navigate renvoie automatiquement un instantané de la page — inutile d'appeler browser_snapshot ensuite."
-  t183: "browser_vision avec annotate=true superpose des étiquettes numérotées sur les éléments interactifs."
+  t180: "Backends navigateur : Chromium local, Lightpanda, Browserbase, Browser Use et Firecrawl — plus Camofox en plugin."
+  t181: "Camofox (Firefox anti-détection) est désormais un plugin : hermes plugins install camofox."
+  t182: "browser_exec exécute plusieurs étapes navigateur en un seul appel Python — naviguer, extraire et cliquer ensemble."
+  t183: "browser.dialog_policy définit la gestion des boîtes de dialogue natives des pages : must_respond (l'agent répond avec browser_dialog), auto_dismiss ou auto_accept."
   t184: "hermes mcp ouvre un sélecteur interactif de MCP approuvés par Nous, installables en une touche."
   t185: "hermes mcp catalog liste les serveurs MCP approuvés par Nous fournis avec le dépôt."
   t186: "hermes mcp install <name> installe une entrée du catalogue, demande les identifiants et vous laisse choisir les outils à activer."
@@ -3999,7 +4103,7 @@ tips:
   t197: "L'enregistrement des trajectoires (--save-trajectories) capture les traces complètes d'utilisation des outils pour l'entraînement de modèles."
   t198: "Trois types de plugins : généraux (outils/hooks), fournisseurs de mémoire et moteurs de contexte."
   t199: "hermes plugins install owner/repo installe des plugins directement depuis GitHub."
-  t200: "Fournisseurs de mémoire externes : OpenViking et Mem0 intégrés ; Honcho, Hindsight et d'autres via hermes plugins install."
+  t200: "Fournisseurs de mémoire externes : Honcho, Hindsight, Mem0, OpenViking et d'autres via hermes plugins install."
   t201: "Les hooks de plugin incluent pre/post_tool_call, pre/post_llm_call et transform_terminal_output pour normaliser la sortie."
   t202: "Le cache de prompt (Anthropic) réduit les coûts en réutilisant les préfixes de prompt système déjà mis en cache."
   t203: "L'agent génère les titres de session dans un thread d'arrière-plan — aucun impact sur la latence."
@@ -4043,12 +4147,12 @@ tips:
   t241: "Le gateway met en cache les instances AIAgent par session — détruire ce cache casse le cache de prompt Anthropic."
   t242: "N'importe quel site web peut exposer des skills via /.well-known/skills/index.json — le hub de skills les découvre automatiquement."
   t243: "Le journal d'audit des skills dans ~/.hermes/skills/.hub/audit.log trace chaque installation et suppression."
-  t244: "Les worktrees git obsolètes sont nettoyés automatiquement au démarrage : les arbres propres et entièrement fusionnés sont supprimés ; le travail modifié ou non poussé est toujours préservé."
+  t244: "Les worktrees git obsolètes sont nettoyés automatiquement : les arbres propres et fusionnés sont supprimés ; les arbres inactifs avec des modifications non commitées ou non poussées sont d'abord archivés et restaurables avec hermes worktree restore."
   t245: "Les profils délimitent l'état d'Hermes via HERMES_HOME ; les sous-processus d'outils sur l'hôte conservent votre vrai HOME sauf si terminal.home_mode vaut profile."
   t246: "La variable d'environnement HERMES_HOME_MODE (octal, ex. 0701) définit des permissions de répertoire personnalisées pour la traversée par le serveur web."
   t247: "Mode conteneur : placez .container-mode dans HERMES_HOME et la CLI hôte s'exécute automatiquement dans le conteneur."
   t248: "Ctrl+C a 5 niveaux de priorité : annuler l'enregistrement → annuler les invites → annuler le sélecteur → interrompre l'agent → quitter."
-  t249: "Chaque interruption pendant une exécution de l'agent est consignée dans ~/.hermes/interrupt_debug.log avec horodatage."
+  t249: "Les interruptions pendant une exécution de l'agent sont consignées dans agent.log (à consulter avec `hermes logs`) ; définissez HERMES_DEBUG_INTERRUPT=1 pour une trace détaillée."
   t250: "BROWSER_CDP_URL connecte les outils navigateur à n'importe quel navigateur de la famille Chromium en cours d'exécution — accepte WebSocket, HTTP ou host:port."
   t251: "BROWSERBASE_ADVANCED_STEALTH=true active l'anti-détection avancée avec un Chromium personnalisé (Scale Plan)."
   t252: "La CLI passe automatiquement en mode compact dans les terminaux de moins de 80 colonnes."
@@ -4061,7 +4165,7 @@ tips:
   t259: "Les modèles GPT et Codex reçoivent des consignes spéciales dans le prompt système pour la discipline et l'usage obligatoire des outils."
   t260: "Les modèles Gemini reçoivent des directives adaptées : chemins absolus, appels d'outils en parallèle et commandes non interactives."
   t261: "context.engine dans config.yaml peut désigner un nom de plugin pour d'autres stratégies de gestion du contexte."
-  t262: "Les instantanés de page navigateur de plus de 15 000 caractères sont tronqués ou résumés automatiquement ; l'instantané complet est enregistré dans cache/web pour être parcouru avec read_file."
+  t262: "Avec un navigateur cloud, les URL localhost et du réseau local s'ouvrent plutôt dans un Chromium local (browser.auto_local_for_private_urls, activé par défaut)."
   t263: "Le compresseur effectue une pré-passe peu coûteuse : les sorties d'outils de plus de 200 caractères sont remplacées par des marqueurs avant l'appel au LLM."
   t264: "Quand une compression échoue, les tentatives suivantes sont suspendues pendant 10 minutes pour éviter de marteler l'API."
   t265: "Les commandes dangereuses longues (>70 caractères) offrent une option 'view' dans l'invite d'approbation pour voir d'abord le texte complet."
@@ -4074,7 +4178,7 @@ tips:
   t272: "GPT-5 et Codex utilisent le rôle 'developer' au lieu de 'system' dans le format des messages."
   t273: "Surcharges auxiliaires par tâche : auxiliary.vision.provider, auxiliary.compression.model, etc. dans config.yaml."
   t274: "Le client auxiliaire traite 'main' comme un alias de fournisseur — il correspond à votre fournisseur et modèle principaux réels."
-  t275: "hermes claw migrate --dry-run prévisualise la migration OpenClaw sans rien écrire."
+  t275: "hermes import-agent openclaw --dry-run prévisualise la migration OpenClaw sans rien écrire."
   t276: "Les chemins de fichiers collés avec des guillemets ou des espaces échappés sont gérés automatiquement — aucun nettoyage manuel nécessaire."
   t277: "Les commandes slash ne déclenchent jamais le repli des gros collages — /command avec de gros arguments fonctionne correctement."
   t278: "En mode interruption, les commandes slash saisies pendant l'exécution de l'agent contournent la logique d'interruption et s'exécutent immédiatement."
@@ -4145,7 +4249,7 @@ tips:
   t343: "/voice tts bascule en mode TTS seul — l'agent répond à voix haute mais vous continuez à taper vos prompts."
   t344: "/reload-skills rescanne ~/.hermes/skills/ pour que les skills déposées apparaissent sans redémarrer la session."
   t345: "/indicator kaomoji|emoji|unicode|ascii choisit le style de l'indicateur d'activité de la TUI affiché pendant les exécutions de l'agent."
-  t346: "/debug téléverse un bundle de support (infos système + journaux) et renvoie des liens partageables — fonctionne aussi dans le chat."
+  t346: "/debug upload téléverse un résumé (versions, clés de configuration, compteurs d’erreurs ; aucun texte de journal) et renvoie un lien partageable — fonctionne aussi dans le chat."
   t347: "hermes -z \"<prompt>\" est le one-shot le plus pur : la réponse finale sur stdout, rien d'autre — idéal pour les pipes dans des scripts."
   t348: "hermes chat --pass-session-id injecte l'ID de session dans le prompt système pour que l'agent puisse y faire référence lui-même."
   t349: "hermes chat --image path/to/pic.png joint une image locale à une requête -q unique, sans étape de téléversement séparée."
@@ -4174,12 +4278,9 @@ tips:
   t372: "image_gen.model dans config.yaml choisit le modèle FAL : flux-2/klein, gpt-image-2, nano-banana-pro, et d'autres."
   t373: "image_gen.provider fait passer la génération d'images par un plugin (OpenAI Images, Codex, FAL) au lieu du fournisseur par défaut."
   t374: "AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY dirigent l'analyse d'images vers n'importe quel point de terminaison compatible OpenAI."
-  t375: "security.tirith_fail_open: false fait bloquer les commandes par Hermes quand le scanner tirith lui-même tombe en erreur."
-  t376: "La variable d'environnement TIRITH_FAIL_OPEN remplace la configuration tirith_fail_open — une bascule rapide sans modifier config.yaml."
+  t375: "API_SERVER_MODEL_NAME personnalise le nom du modèle sur /v1/models — indispensable pour les configurations Open WebUI multi-profils."
+  t376: "Les plugins du tableau de bord sont servis depuis /dashboard-plugins/<name>/ — déposez les fichiers dans ~/.hermes/dashboard-plugins/."
   t377: "Les chats --source tool sont exclus de hermes sessions list par défaut — passez --source explicitement pour les voir."
-  t378: "Les ID de session sont préfixés par un horodatage (20250305_091523_abcd), donc le tri fonctionne naturellement avec ls et jq."
-  t379: "API_SERVER_MODEL_NAME personnalise le nom du modèle sur /v1/models — indispensable pour les configurations Open WebUI multi-profils."
-  t380: "Les plugins du tableau de bord sont servis depuis /dashboard-plugins/<name>/ — déposez les fichiers dans ~/.hermes/dashboard-plugins/."
   placeholder:
     p01: "Posez une question, ou tapez / pour les commandes…"
     p02: "Résume le contenu de ce dossier"
@@ -4192,3 +4293,29 @@ tips:
     p09: "Explique cette erreur et comment la corriger"
     p10: "Définis un rappel ou planifie une tâche récurrente"
     p11: "Tapez / pour parcourir les commandes, ou Ctrl+P pour la palette"
+
+# Window plans (Nous subscription with included usage): picker words, limit lines, Large-model notice.
+plan_usage:
+  level_free: "Gratuit"
+  level_top_tier: "Grand"
+  resets_in: "réinitialisation dans {duration}"
+  resets_soon: "réinitialisation bientôt"
+  limit_reached: "Limite {name} atteinte · {resets}"
+  limit_day: "quotidienne"
+  limit_week: "hebdomadaire"
+  limit_month: "mensuelle"
+  limit_top_tier: "mensuelle des grands modèles"
+  then_credits: "les modèles payants utilisent maintenant vos crédits (paiement à l'usage)"
+  then_credits_large: "les grands modèles utilisent maintenant vos crédits (paiement à l'usage)"
+  then_wait: "uniquement les modèles gratuits d'ici là"
+  then_wait_large: "grands modèles en pause d'ici là"
+  large_notice: "Grand modèle : consomme davantage de votre forfait par message."
+  large_notice_credits: "Grand modèle : consomme davantage de crédits par message (paiement à l'usage)."
+  large_notice_limit: "Grand modèle : votre limite {name} est atteinte ({resets})."
+  large_notice_limit_stops: "Grand modèle : votre limite {name} est atteinte ({resets}), il ne fonctionnera pas d'ici là."
+  large_notice_percent: "Grand modèle : consomme davantage de votre forfait par message. Limite mensuelle des grands modèles : {percent} utilisé."
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ Fichiers modifiés dans les tours annulés : {files}. Lancez /rollback pour lister les checkpoints et en restaurer un."
+    more: "+{count} de plus"

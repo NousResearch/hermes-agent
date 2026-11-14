@@ -39,7 +39,7 @@ def _run(tmp_path: Path, body: str, *, env: dict | None = None, **kwargs) -> sub
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\nsleep() {{ :; }}\n{body}\n"
     full_env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                     HERMES_INSTALL_DIR=(tmp_path / "install").as_posix(), **(env or {}))
-    return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, timeout=60, **kwargs)
+    return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, timeout=60, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
 
 
 def _stage(tmp_path: Path, origin: Path, *, commit: str = "", extra_env: dict | None = None,
@@ -51,7 +51,7 @@ def _stage(tmp_path: Path, origin: Path, *, commit: str = "", extra_env: dict | 
 def test_piped_one_liner_runs_the_installer():
     """`curl ... | bash` has an empty BASH_SOURCE; under `set -u` the entry guard must still run main."""
     result = subprocess.run(["bash", "-s", "--", "--manifest"], input=INSTALL_SH.read_bytes(),
-                            capture_output=True, timeout=30)
+                            capture_output=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr.decode()
     assert json.loads(result.stdout)["protocol_version"] == 1
 
@@ -97,17 +97,121 @@ def test_commit_pin_must_come_from_the_installed_branch(tmp_path):
     assert _git(tmp_path / "install", "rev-parse", "HEAD") == on_branch
 
 
-def test_commitless_checkout_is_moved_aside_and_recloned(tmp_path):
+def test_pinned_fresh_clone_never_materializes_the_branch_tip(tmp_path):
+    """A pinned install (the desktop bootstrap passes --commit) checks out only the pin.
+
+    Every file the tip changed is fetched and written once for the tip, then again for the pin.
+    """
+    origin = _origin(tmp_path / "origin")
+    pin = _git(origin, "rev-parse", "HEAD")
+    _commit(origin, "tip")
+    _git(origin, "config", "uploadpack.allowFilter", "true")
+    trace = tmp_path / "trace.log"
+    tracer = f'git() {{ printf "%s\\n" "$*" >> {shlex.quote(trace.as_posix())}; command git "$@"; }}'
+    result = _stage(tmp_path, origin, commit=pin, prelude=tracer)
+    assert result.returncode == 0, result.stdout + result.stderr
+    install = tmp_path / "install"
+    assert _git(install, "rev-parse", "HEAD") == pin
+    assert (install / "README").read_text() == "one"
+    assert _git(install, "status", "--porcelain") == ""
+    [clone] = [line for line in trace.read_text().splitlines() if line.startswith("clone ")]
+    assert "--no-checkout" in clone.split()
+    unpinned_root = tmp_path / "unpinned"
+    unpinned_root.mkdir()
+    trace.unlink()
+    result = _stage(unpinned_root, origin, prelude=tracer)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (unpinned_root / "install" / "README").read_text() == "tip"
+    [clone] = [line for line in trace.read_text().splitlines() if line.startswith("clone ")]
+    assert "--no-checkout" not in clone.split()
+
+
+def test_pinned_fresh_clone_publishes_nothing_when_the_pin_fails(tmp_path):
+    """A pinned fresh clone pins before it publishes: a refused or failed pin leaves no empty checkout."""
+    origin = _origin(tmp_path / "origin")
+    pin = _git(origin, "rev-parse", "HEAD")
+    _commit(origin, "tip")
+    _git(origin, "checkout", "-qb", "side")
+    off_branch = _commit(origin, "side")
+    _git(origin, "checkout", "-q", "main")
+    refused = _stage(tmp_path, origin, commit=off_branch)
+    assert refused.returncode != 0
+    assert "is not on branch main" in refused.stdout + refused.stderr
+    assert not (tmp_path / "install").exists()
+    failing_checkout = 'git() { [ "${3:-}" = checkout ] && return 1; command git "$@"; }'
+    failed = _stage(tmp_path, origin, commit=pin, prelude=failing_checkout)
+    assert failed.returncode != 0
+    assert "no checkout published" in failed.stdout + failed.stderr
+    assert not (tmp_path / "install").exists()
+    assert not list(tmp_path.glob(".hermes-clone-*"))
+
+
+@pytest.mark.parametrize("damage", ["commitless", "lost_head", "dangling_gitdir_file", "dangling_symlink"])
+def test_unusable_checkout_is_moved_aside_and_recloned(tmp_path, damage):
+    """An interrupted clone, or a .git a killed update left unreadable (the state `hermes update`
+    tells the user to repair by rerunning the installer): moved aside, never deleted, then cloned."""
     origin = _origin(tmp_path / "origin")
     install = tmp_path / "install"
     install.mkdir()
-    _git(install, "init", "-q")
+    if damage == "dangling_gitdir_file":
+        (install / ".git").write_text(f"gitdir: {tmp_path / 'gone'}\n")
+    elif damage == "dangling_symlink":
+        (install / ".git").symlink_to(tmp_path / "gone")
+    else:
+        _git(install, "init", "-q")
+        if damage == "lost_head":
+            (install / ".git" / "HEAD").unlink()
     (install / "keep").write_text("user file")
     result = _stage(tmp_path, origin)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (install / "README").read_text() == "one"
     [broken] = tmp_path.glob("install.broken-*")
     assert (broken / "keep").read_text() == "user file"
+
+
+def test_damaged_checkout_inside_a_git_managed_home_never_touches_the_home_repo(tmp_path):
+    """A damaged .git makes git search upward; the home repo it finds is not the checkout (#146032)."""
+    origin = _origin(tmp_path / "origin")
+    _git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "tracked").write_text("v1")
+    _git(tmp_path, "add", "tracked")
+    _git(tmp_path, "commit", "-qm", "home")
+    _git(tmp_path, "remote", "add", "origin", origin.as_posix())
+    (tmp_path / "tracked").write_text("edited")
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "id_ed25519").write_text("secret")
+    install = tmp_path / "install"
+    install.mkdir()
+    _git(install, "init", "-q")
+    (install / ".git" / "HEAD").unlink()
+    result = _stage(tmp_path, origin)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (install / "README").read_text() == "one"
+    assert list(tmp_path.glob("install.broken-*"))
+    assert (tmp_path / ".ssh" / "id_ed25519").read_text() == "secret"
+    assert (tmp_path / "tracked").read_text() == "edited"
+    assert _git(tmp_path, "stash", "list") == ""
+
+
+def test_rerun_with_an_exported_git_dir_never_touches_that_repo(tmp_path):
+    """A GIT_DIR/GIT_WORK_TREE from the user's shell must not retarget the rerun's stash/reset (#146032)."""
+    origin = _origin(tmp_path / "origin")
+    assert _stage(tmp_path, origin).returncode == 0
+    _commit(origin, "two")
+    home = tmp_path / "dotfiles"
+    _origin(home, "home")
+    _git(home, "remote", "add", "origin", origin.as_posix())
+    head = _git(home, "rev-parse", "HEAD")
+    (home / "README").write_text("edited")
+    (home / "notes.txt").write_text("untracked")
+    result = _stage(tmp_path, origin, extra_env={"GIT_DIR": (home / ".git").as_posix(),
+                                                  "GIT_WORK_TREE": home.as_posix()})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "install" / "README").read_text() == "two"
+    assert _git(home, "rev-parse", "HEAD") == head
+    assert (home / "README").read_text() == "edited"
+    assert (home / "notes.txt").read_text() == "untracked"
+    assert _git(home, "stash", "list") == ""
 
 
 def test_unmerged_index_is_cleared_then_stashed(tmp_path):
@@ -119,7 +223,7 @@ def test_unmerged_index_is_cleared_then_stashed(tmp_path):
     _git(install, "checkout", "-q", "main")
     _commit(install, "ours")
     subprocess.run(["git", "-C", str(install), "-c", "user.email=t@t", "-c", "user.name=t", "merge", "conflict"],
-                   capture_output=True)
+                   capture_output=True, check=False)
     assert _git(install, "ls-files", "--unmerged")
     _commit(origin, "two")
     result = _stage(tmp_path, origin)

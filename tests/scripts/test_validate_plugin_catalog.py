@@ -49,6 +49,7 @@ def run_validator(*args: str) -> subprocess.CompletedProcess:
         [sys.executable, str(SCRIPT), *args],
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -109,6 +110,20 @@ def test_version_and_image_are_validated_when_present(tmp_path):
     assert run_validator(str(path)).returncode == 0
 
 
+def test_docs_url_must_be_https_when_present(tmp_path):
+    """docs_url lands verbatim in an <a href> on the docs site, so admission rejects
+    script-executing schemes outright instead of relying on the site to sanitize."""
+    _expect_error(tmp_path, {"docs_url": "javascript:alert(document.domain)"}, "docs_url")
+    _expect_error(tmp_path, {"docs_url": "https://example.com/docs\r\njavascript:x"}, "docs_url")
+    _expect_error(tmp_path, {"docs_url": "http://example.com/docs"}, "docs_url")
+    _expect_error(tmp_path, {"docs_url": "https:///docs"}, "docs_url")
+    _expect_error(tmp_path, {"docs_url": "https://:443/docs"}, "docs_url")
+    _expect_error(tmp_path, {"docs_url": "https://user@/docs"}, "docs_url")
+    _expect_error(tmp_path, {"docs_url": "https://["}, "docs_url")
+    path = write_entry(tmp_path, {**VALID_ENTRY, "docs_url": "https://example.com/docs"}, "ok.yaml")
+    assert run_validator(str(path)).returncode == 0
+
+
 def test_screenshots_and_readme_are_validated_when_present(tmp_path):
     """Page fields: screenshots follow the image host rule and are capped; readme is a bool and needs a
     forge the site can fetch raw files from at the pinned commit."""
@@ -164,6 +179,10 @@ def test_source_fields_the_pinned_gate_joins_or_echoes(tmp_path, field, value, o
 
 def test_bad_tier_fails(tmp_path):
     _expect_error(tmp_path, {"tier": "platinum"}, "tier")
+
+
+def test_verified_tier_passes(tmp_path):
+    assert run_validator(str(write_entry(tmp_path, {**VALID_ENTRY, "tier": "verified"}))).returncode == 0
 
 
 def test_empty_description_fails(tmp_path):

@@ -407,7 +407,7 @@ class TestContextVarInterpolation:
     def test_workspace_folder_falls_back_to_cwd(self, monkeypatch):
         import os
 
-        import tools.file_tools_paths as file_tools_paths
+        from tools import file_tools_paths
         from tools.mcp_tool_config import _workspace_folder
 
         monkeypatch.setattr(
@@ -634,7 +634,7 @@ class TestProbeCapabilityGating:
     def test_config_disables_prompts_probe(self, monkeypatch):
         # Server advertises both, but user turned prompts off.
         caps = self._Caps(prompts=object(), resources=object())
-        called, details = self._run_probe(
+        called, _details = self._run_probe(
             monkeypatch, {"url": "http://x/mcp", "tools": {"prompts": False}}, caps
         )
         assert "prompts" not in called
@@ -643,7 +643,7 @@ class TestProbeCapabilityGating:
 
     def test_advertised_and_enabled_is_probed(self, monkeypatch):
         caps = self._Caps(prompts=object(), resources=object())
-        called, details = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, caps)
+        called, _details = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, caps)
         assert set(called) == {"prompts", "resources"}
 
 

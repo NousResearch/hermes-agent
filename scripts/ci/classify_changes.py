@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Classify a PR's changed files into CI work lanes.
 
-Reads newline-separated changed paths on stdin and writes ``key=value``
+Reads changed paths on stdin, one file per line (a renamed file as
+``path<TAB>old path``), and writes ``key=value``
 booleans (one per lane) to ``$GITHUB_OUTPUT`` and stdout. The
 ``detect-changes`` composite action consumes them so steps gate on
 ``if: steps.changes.outputs.<lane> == 'true'``.
@@ -17,17 +18,20 @@ Lanes:
 * ``nix``         — ``nix flake check``: the flake files and the dependency
   manifests.
 * ``e2e``, ``e2e_upgrade``, ``e2e_desktop_core``, ``e2e_desktop_update`` —
-  the end-to-end suites. Each runs on a pull request only when the PR edits
-  that suite or the code the suite exists to guard (``_E2E_LANES``), or
-  carries the ``run-e2e`` label.
-* ``frontend``    — TS typecheck matrix + desktop build.
+  the end-to-end suites. The classifier still says which suites a diff
+  touches (``_E2E_LANES``, the ``run-e2e`` label), but ci.yaml's ``detect``
+  gate forces these lanes off on pull requests and pushes to main: the E2E
+  suites run only on a release run or a manual dispatch.
+* ``frontend``    — TS typecheck matrix + desktop build, and the WhatsApp
+  bridge's ``node --test`` suites.
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
 * ``uv_lock``     — ``PM lock check``. Re-resolves the whole graph against
   PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
   must not run it.
-* ``npm_lock``    — semantic package-lock.json diff PR comment.
+* ``npm_lock``    — semantic JS lockfile diff PR comment (pnpm-lock.yaml and
+  the standalone npm projects' package-lock.json).
 * ``bootstrap``   — the bootstrap installer lane: install.sh sandbox install,
   pin-fragment drift check, and shipped version-stamp verification.
 * ``desktop_updater`` — the Windows desktop-update hand-off script and the
@@ -39,6 +43,16 @@ Lanes:
 * ``rust``        — ``cargo test`` for the Tauri bootstrap installer. ``.rs``
   lives under ``apps/``, so without this lane a Rust change matched ``frontend``
   and only the TypeScript matrix ran.
+* ``catalog``     — the plugin-catalog tests (catalog-tests.yml). A diff made
+  only of catalog entry data (``plugin-catalog/*.yaml``, ``contributors/emails/``)
+  runs this lane INSTEAD of the Python suite: those files are data that a known
+  set of tests reads, so a one-entry PR need not run 23k tests on three OSes.
+  ``plugin-catalog/README.md`` is not entry data (a docs page mirrors it), and
+  any other file in the diff brings the full Python suite back.
+* ``remote_backends`` — the SSH and Docker terminal backends against a real
+  sshd container and the runner's Docker daemon (remote-backends.yml). Every
+  other test of those backends is mocked, so a change to the backends, the
+  terminal tool, or the real-backend tests runs it on the PR.
 
 ``docker``, ``nix`` and the E2E lanes take most of the larger-runner minutes.
 An ordinary product change does not start them on a pull request. Every push
@@ -67,6 +81,10 @@ must never skip one a change could break:
 * ``website/docs/`` and ``website/scripts/`` are python-relevant for the same
   reason: the docs tree generates ``llms.txt``, and
   ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
+* A cross-language fixture (``_SHARED_FIXTURE_CONSUMERS``) selects the test
+  lanes of every consumer that reads it: the update-marker corpus runs pytest,
+  cargo, vitest and the Windows hand-off tests, not only ``python``; the plugin
+  component-detection cases run pytest and vitest.
 """
 
 from __future__ import annotations
@@ -76,14 +94,28 @@ import os
 import subprocess
 import sys
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from hermes_agent.compat.paths import current_path, original_path
+
 _FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
-# Shipped page outside those packages, exercised by the desktop Electron suite.
-_FRONTEND_FILES = {"scripts/desktop-update/ui.html"}
-_ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
+# Shipped page outside those packages, exercised by the desktop Electron suite. The desktop cache
+# key owner is checked by tests-js/desktop-build-cache-inputs.test.mjs against the Node graph.
+_FRONTEND_FILES = {"scripts/desktop-update/ui.html", "scripts/ci/desktop_build_cache.py"}
+# The WhatsApp bridge's ``node --test`` suites run in the JS & TS job, so a
+# change to the bridge or to the Python adapter that speaks its protocol
+# selects ``frontend``.
+_WHATSAPP_BRIDGE = ("scripts/whatsapp-bridge/", "plugins/platforms/whatsapp/")
+# Shift every package's tree (pnpm-workspace.yaml carries the overrides).
+_ROOT_NPM = {"package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"}
 _DOCKER_META = ("docker/", ".hadolint.yaml", "Dockerfile", ".dockerignore") # docker setup
+# The docker_meta lint step runs it; it is not an image input, so it builds no image.
+_DOCKER_LINT = "scripts/ci/lint_docker.sh"
 _NIX_PATHS = ("nix/",) # nix files
 _NIX_FILES = {"flake.nix", "flake.lock"} # base nix files
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
+# CI configuration outside .github/: workflows run their commands as just recipes
+# through this wrapper, so a change here can break any lane, as a workflow edit can.
+_CI_CONFIG_FILES = {"justfile", "scripts/hermes-python"}
 # Prose/frontend trees that can't touch Python. skills/ is excluded on purpose.
 _PY_SKIP = ("docs/", "website/") + _FRONTEND
 # Published artifacts that live under website/ but that Python asserts about.
@@ -109,13 +141,21 @@ _PY_RELEVANT_CONTRACT_FILES = {
     # tests/tui_gateway/contracts/test_generated.py (rendered from tui_gateway/contracts)
     "apps/shared/src/gateway-contract.generated.ts",
     "apps/shared/src/gateway-contract.openrpc.json",
+    # tests/gateway/test_control_socket_vectors.py (the public control-socket contract)
+    "apps/shared/src/node/control-socket.vectors.json",
     # tests/hermes_cli/test_desktop_slash_registry.py
     "apps/desktop/src/lib/desktop-slash-registry.json",
     # tests/tui_gateway/test_show_reasoning_display_gate.py (card-tool names vs the gateway lifecycle set)
     "apps/desktop/src/lib/tool-render-class.ts",
     # tests/website/test_catalog_rules_mirror.py (docs page mirrors the canonical rules)
     "plugin-catalog/README.md",
+    # tests/hermes_cli/test_plugin_docs_public_imports.py (its examples import only the plugin API)
+    "plugins/AGENTS.md",
 }
+
+# Catalog entry data: read by the catalog tests and the Plugin Catalog CI
+# admission gate, executed by nothing. Same set that gate allows in an entry PR.
+_CATALOG_DATA = ("plugin-catalog/", "contributors/emails/")
 
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")
@@ -135,9 +175,49 @@ _DESKTOP_UPDATER_TEST_PREFIX = "tests/scripts/desktop_update/"
 _DESKTOP_UPDATER_FILES = {
     "apps/desktop/electron/updater-process.ts",
     "apps/desktop/electron/managed-ssh-update.ts",
+    # The other half of the marker / result contract the script implements.
+    "apps/desktop/electron/update-marker.ts",
+    "apps/desktop/electron/update-marker-gate.ts",  # the gate's live-marker probe
+    "apps/desktop/electron/handoff-result.ts",
+    # Stops a remote backend for the update the hand-off script then runs.
+    "apps/desktop/electron/remote-lifecycle.ts",
+    # The SSH remote's marker judge/gate programs: marker.sh/marker.ps1's contract, run remotely.
+    "apps/desktop/electron/remote-update-marker-programs.ts",
+    "apps/desktop/electron/remote-update-marker-programs.test.ts",
+    # Python the script runs: the post-update verify and the staged app swap.
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_cli/main_desktop.py",
     "tests/conftest.py",
     "pyproject.toml",
 }
+
+# Cross-language fixtures: one data file that tests in several languages read as
+# their shared contract. Editing it is editing every consumer, so it selects each
+# lane that runs one (a path-prefix rule would see only ``tests/`` -> python, and
+# the cargo / vitest / PowerShell readers of the same cases would never run).
+# tests/ci/test_update_ci_routing.py finds the consumers in the tree and fails
+# until every one is listed here.
+_SHARED_FIXTURE_CONSUMERS: dict[str, tuple[str, ...]] = {
+    # A7 rule 7: the update-marker parse / judge / release corpus.
+    "tests/fixtures/update_marker_corpus.json": (
+        "tests/hermes_cli/test_update_marker_corpus.py",  # Python: update_lock
+        "apps/bootstrap-installer/src-tauri/src/marker_tests.rs",  # Rust: cargo test
+        "apps/desktop/electron/update-marker-corpus.test.ts",  # Electron: vitest
+        "tests/scripts/desktop_update/test_desktop_update_posix_marker_corpus.py",  # marker.sh
+        "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py",  # marker.ps1
+        "apps/desktop/electron/remote-update-marker-programs.test.ts",  # SSH remote judge
+        "apps/desktop/electron/remote-lifecycle-v2-marker.test.ts",  # SSH relaunch/spawn gate
+    ),
+    # Which halves a plugin folder ships: the gateway's and native Desktop's inspectors.
+    "tests/fixtures/plugin_component_detection.json": (
+        "tests/hermes_cli/test_plugins_cmd_inspect.py",  # Python: detect_components
+        "apps/desktop/electron/desktop-plugin-install.test.ts",  # Electron: detectPluginComponents
+    ),
+}
+# What a fixture inherits from its consumers: the lanes that run them as tests.
+# Not the slow suites a consumer's path also matches (an Electron test file under
+# electron/update-* starts the Desktop update E2E, which never reads the corpus).
+_FIXTURE_CONSUMER_LANES = ("python", "rust", "frontend", "desktop_updater")
 
 # Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
 # These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
@@ -146,12 +226,25 @@ _DESKTOP_UPDATER_FILES = {
 _RUST_PATHS = ("apps/bootstrap-installer/src-tauri/",)
 _RUST_FILENAMES = {"Cargo.toml", "Cargo.lock"}
 
+# The real SSH/Docker backend lane: the backends, the terminal tool that drives
+# them, the tests it runs, the sshd it starts, and the runner's env allowlist
+# that carries the sshd/image coordinates into each pytest process.
+_REMOTE_BACKEND_PATHS = (
+    "tools/environments/",
+    "tools/terminal_tool",
+    "tests/tools/test_ssh_environment.py",
+    "tests/tools/test_docker_backend_real.py",
+    "scripts/ci/start_test_sshd.sh",
+    "scripts/ci/test_sshd_container_setup.sh",
+    "scripts/run_tests.sh",
+)
+
 # The slow lanes and the paths that start each one on a pull request. A path
 # belongs here when the lane is the only CI that exercises it for real: the
 # suite itself, its harness, and the product code the suite exists to guard.
 # Everything else reaches these lanes on the next push to main.
 _DEP_MANIFESTS = ("pyproject.toml", "uv.lock", "setup.py")
-_NPM_MANIFESTS = ("package.json", "package-lock.json")
+_NPM_MANIFESTS = ("package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml")
 # Shared pytest harness: a bad edit here can break every Python E2E suite.
 _PY_TEST_HARNESS = (
     "tests/conftest.py",
@@ -161,6 +254,8 @@ _PY_TEST_HARNESS = (
     "tests/e2e/core/_",
     "scripts/run_tests.sh",
     "scripts/run_tests_parallel.py",
+    "scripts/run_tests_launch.py",
+    "scripts/run_tests_fork_child.py",
 )
 # Both Desktop suites package the app and share this harness (the update
 # suite imports the core suite's harness and provider).
@@ -174,6 +269,180 @@ _DESKTOP_E2E_SHARED = (
     "apps/desktop/e2e/fix-electron-tracing",
     "apps/desktop/e2e/run-tmp",
 )
+# The Tauri updater (update.rs, its marker claim marker.rs, the paths.rs both resolve) is
+# compiled and tested by ``cargo test`` alone (the ``rust`` lane, via ``.rs``): no slow lane
+# builds the bootstrap installer, so none of the three starts one.
+# What `hermes update` runs outside the update_* module family: the steps of the
+# pipeline (entry, lock, early recovery, completion tail, launchers, fleet
+# restart/verify, Windows pause/resume) and the lock / marker / recovery state
+# the update_* modules import. Editing any of these changes what a real update
+# does, so the real-update suites (Linux e2e-upgrade and the Windows
+# install + update journey, including its crash cells) must run on the PR.
+_UPDATE_PIPELINE = (
+    "hermes_cli/main.py",  # cmd_update: lock, pre-update backup, receipt boundary
+    "hermes_cli/main_dashboard.py",  # hangup protection + update.log mirror
+    "hermes_cli/main_web_build.py",  # completion's bytecode sweep and dropped-folder prune
+    # Prefix: main_desktop.py (staged Desktop swap / rebuild in the tail) and the
+    # main_desktop_* siblings it imports (macOS signing identity).
+    "hermes_cli/main_desktop",
+    # Prefix: _early_recovery.py and its _early_recovery_* siblings (ZIP swap journal).
+    "hermes_cli/_early_recovery",  # interrupted pull / shim restore at launch
+    "hermes_cli/venv_sync.py",  # completion obligation + launch-time tail
+    "hermes_cli/source_",  # source_completion/_build/_releases/_check/_stamp
+    "hermes_cli/_launchers.py",
+    "hermes_cli/release_channels.py",
+    "hermes_cli/gitlock.py",  # git self-heal + partial-clone fetch
+    "hermes_cli/git_commit_graph.py",  # every update starts the install checkout's graph refresh
+    "hermes_cli/process_identity.py",  # marker owner liveness
+    "hermes_cli/runtime_state.py",
+    "hermes_cli/relaunch.py",
+    "hermes_cli/managed_uv.py",
+    "hermes_cli/npm_engine.py",
+    "hermes_cli/_scan_venv_blockers.py",
+    "hermes_cli/dashboard_procs.py",
+    "hermes_cli/desktop_update",  # desktop_update_verify
+    "hermes_cli/gateway.py",  # fleet restart / verify
+    "hermes_cli/gateway_windows",  # Windows pause / resume
+    "hermes_cli/gateway_launchd.py",
+    "hermes_cli/gateway_migrate",
+    "hermes_cli/gateway_supervised_restart.py",
+    "hermes_cli/gateway_restart_env.py",  # the fleet restart watcher's env
+    "hermes_cli/gateway_runtime_start.py",  # supervisor-marker strip for the watcher and the pause replay
+    "hermes_cli/git_pack_tidy.py",  # partial-clone pack tidy: every update's pre-fetch runs it
+    "hermes_bootstrap.py",  # every launch's prepare_launch
+    "hermes_constants.py",  # root home = update marker location
+    "hermes_dir_acl.py",  # update restores the Windows user ACL on the home after elevation
+    "gateway/status.py",  # code_sha stamp the fleet verify reads
+    "gateway/status_inline_source.py",  # the Windows pause identifies inline-bootstrapped gateways
+    "gateway/status_lock_dir.py",  # gateway/status.py imports it at module level
+    "gateway/control_socket.py",  # pause-for-update verb
+    "gateway/code_skew.py",
+    "gateway/host_rendezvous.py",
+    "gateway/shutdown_forensics.py",
+    "gateway/restart.py",
+    "scripts/desktop-update/",  # the hand-off scripts run `hermes update`
+)
+# Selectors are owned by the import graph, not remembered. The update
+# transaction's own modules (what `hermes update` and the launch-time completion
+# run between the lock and the receipt) are the entry points;
+# tests/ci/test_update_ci_routing.py reads every repo module they import (AST,
+# module level and lazy) and every build script they run, and fails until each
+# one is routed to the suite below or is a _SHARED_HUBS entry.
+_UPDATE_ENTRY_POINTS = (
+    "hermes_cli/update_",
+    "hermes_cli/_update_",
+    "hermes_cli/source_",
+    "hermes_cli/old_updater",
+    "hermes_cli/_old_updater",
+    "hermes_cli/post_update",
+    "hermes_cli/venv_sync.py",
+    "hermes_cli/_early_recovery",
+    "hermes_cli/main_desktop.py",
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_cli/desktop_build_lock.py",
+    "hermes_cli/subcommands/update",
+)
+# The entry points that build or verify the Desktop app inside an update
+# (`hermes desktop --build-only`, the source build/completion that feeds it).
+_DESKTOP_BUILD_ENTRY_POINTS = (
+    "hermes_cli/source_build.py",
+    "hermes_cli/source_completion.py",
+    "hermes_cli/main_desktop.py",
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_cli/desktop_build_lock.py",
+)
+# What the entry points import, outside the update_* family and the pipeline above.
+_UPDATE_DEPENDENCIES = (
+    "hermes_cli/_subprocess_compat.py",  # update git env, process-tree kill, PM git exposure
+    "hermes_cli/local_runtime/processes.py",  # bounded probes' spawn_server/job custody
+    "agent/deadline.py",  # bounded probes' process-tree timeout cleanup
+    # migrate_all_homes' second-hop provider/profile decisions, run on every update. Its
+    # plugin-install branch (plugins_cmd, plugins_cmd_install) runs only for a home whose
+    # configured memory provider left core; no update journey's home has one, so those
+    # modules stay with the unit lane (tests/ci/test_update_transitive_routing.py).
+    "agent/memory_provider.py",
+    "pm/plugins_state.py",
+    "pm/install.py",  # also sealed()/lazy_installs_allowed(): every update's default-tool install
+    "pm/packages.py",  # source_build's pnpm environment (pnpm_env)
+    "pm/index_config.py",  # source_build's npmrc bridge (read_npmrc, user_npmrc, hermes_npmrc)
+    "hermes_cli/desktop_build_lock.py",
+    "hermes_cli/desktop_build_reuse.py",  # source_build keeps the packaged app when no input changed
+    "hermes_cli/desktop_release_holders.py",  # main_desktop names/closes a holder of release/ on a failed swap
+    "hermes_cli/memory_provider_migration.py",
+    "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
+    "hermes_cli/default_plugins.py",  # the update tail and boot bootstrap install catalog defaults
+    "hermes_cli/config_version_stamp.py",  # post_update converts legacy AGENT_BROWSER_* before stamping
+    "hermes_cli/web_build_limits.py",  # source_build caps the dashboard Node build
+    "hermes_cli/desktop_console.py",
+    "hermes_cli/bundled_app.py",
+    "hermes_cli/gui_uninstall.py",
+    "hermes_cli/linux_desktop_entry.py",
+    "hermes_cli/github_api.py",  # source_check's release lookup
+    "hermes_cli/build_info.py",
+    "hermes_cli/image_provenance.py",
+    "hermes_cli/backup.py",  # pre-update backup
+    "hermes_cli/backup_cron_prompts.py",  # restore_cron_prompt_fields_if_degraded (update_cmd_config)
+    "hermes_cli/backup_restore.py",
+    "hermes_cli/config_backend.py",  # update_channel writes the channel key through the seam
+    "hermes_cli/env_loader.py",  # update_proxy_env keeps proxy keys a .env load wrote
+    "agent/proxy_bypass.py",  # update_proxy_env reads NO_PROXY entries with it
+    "hermes_cli/relay_plugin_migrate.py",
+    "hermes_cli/macos_tcc_anchor.py",
+    "hermes_cli/model_catalog.py",
+    "hermes_cli/sqlite_runtime.py",
+    "hermes_cli/sqlite_safe_read.py",
+    "hermes_cli/sizefmt.py",
+    "hermes_cli/tools_config_cua.py",
+    "hermes_cli/_startup_fast.py",
+    "hermes_cli/_parser.py",
+    "hermes_cli/gateway_multiplex_mode.py",
+    "hermes_cli/plugin_catalog.py",
+    "hermes_cli/plugins_auto_update.py",  # update_cmd_maint's catalog-pin notice after the code swap
+    "hermes_cli/steward.py",
+    "hermes_cli/observability/shared_metrics_update.py",
+    "hermes_cli/main_install_repair.py",
+    "hermes_logging.py",
+    "hermes_platform/host/__init__.py",
+    "hermes_platform/host/facts.py",
+    "hermes_platform/resolver/__init__.py",  # update_cmd_commit's interpreter lookup
+    "hermes_platform/resolver/base.py",
+    "hermes_platform/resolver/core.py",
+    "agent/curator.py",
+    "plugins/memory/__init__.py",
+    "tools/checkpoint_maintenance.py",
+    "tools/skills_sync.py",
+    "tools/environments/local_env_policy.py",
+    "pm/progress.py",
+    # The compilers source_build / the Desktop build run (freshness, node-deps,
+    # tui, web, desktop and their shared frontend-common).
+    "scripts/build/",
+    "apps/desktop/scripts/build-webapp.mjs",  # source_build's Webapp renderer build
+    "hermes_cli/webapp.py",  # source_build rebuilds the Webapp bundle a home serves
+    "gateway/webapp_listener.py",  # source_build reads which homes serve the Webapp
+)
+# General-purpose modules an entry point imports but that half the product
+# imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
+# unit lanes cover them on every PR and the update suites on every push to main;
+# routing each config.py / utils.py edit through the update suites would make
+# them run on most PRs. Never an update-specific module: own those above.
+HUB_MIN_IMPORTERS = 25
+_SHARED_HUBS = frozenset({
+    "hermes_cli/__init__.py",
+    "hermes_cli/config.py",
+    "hermes_cli/profiles.py",
+    "hermes_cli/version_info.py",
+    "utils.py",
+    "hermes_state.py",
+    "agent/__init__.py",
+    "cron/jobs.py",
+    "tools/environments/local.py",
+    # Desktop lane only (the upgrade lane owns these outright):
+    "hermes_constants.py",
+    "gateway/status.py",
+    "pm/__init__.py",
+    "pm/paths.py",
+    "pm/environments.py",
+})
 _E2E_LANES: dict[str, tuple[str, ...]] = {
     "e2e": (
         *_PY_TEST_HARNESS,
@@ -181,6 +450,14 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # The state.db torture chamber and the compaction/exactly-once
         # suites are the only tests that run real concurrent writers.
         "hermes_state",
+        # Messaging-gated gateway cases: only the e2e job installs the real
+        # Discord/Telegram SDKs (tests.yml "Run messaging-gated gateway cases").
+        "tests/gateway/test_session_terminal_cwd_restart.py",
+        "tests/gateway/test_native_role_reauthorization.py",
+        "tests/gateway/test_native_telegram_startup_recovery.py",
+        "tests/gateway/test_native_pause_notice.py",
+        "tests/gateway/test_reset_paused_queue_notice.py",
+        "tests/gateway/test_native_reply_crash_recovery.py",
     ),
     "e2e_upgrade": (
         *_PY_TEST_HARNESS,
@@ -194,13 +471,24 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/update_",
         "hermes_cli/_update_",
         "hermes_cli/old_updater",
+        # The downgrade refusal (hermes_cli/update_downgrade_guard.py) reads state.db through it.
+        "hermes_state_holders.py",
+        # The search-index notice (hermes_cli/update_cmd_maint.py) reads the stored FTS layout through it.
+        "hermes_state_fts.py",
         "hermes_cli/_old_updater",
         "hermes_cli/post_update",
         "hermes_cli/config_migrations",
         "hermes_cli/subcommands/update",
         "hermes_cli/install_",
         "hermes_cli/_install_",
+        # The module-rename finder and its table: every update entry point installs it, and a move
+        # changes the table.
+        "hermes_agent/__init__.py",
+        "hermes_agent/compat/",
         "hermes_cli/main_install",
+        *_UPDATE_PIPELINE,
+        *_UPDATE_ENTRY_POINTS,
+        *_UPDATE_DEPENDENCIES,
     ),
     "e2e_desktop_core": (
         *_DESKTOP_E2E_SHARED,
@@ -209,9 +497,15 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/shared/src/",
         "apps/desktop/src/store/session",
         "apps/desktop/src/store/transcript",
+        # Every core spec drives open/resume/switch; #132017 changed resume
+        # without running them and main sat red on remote-secondary.
+        "apps/desktop/src/app/session/",
+        "apps/desktop/src/app/open-session",
         # fleet-condensed-default.spec.ts: the profile rail's doors per gateway.
         "apps/desktop/src/app/chat/sidebar/profile-switcher",
         "apps/desktop/src/app/chat/sidebar/fleet-",
+        # reconnect-turn-state.spec.ts: the lost-turn card and Discard live in the queue panel.
+        "apps/desktop/src/app/chat/composer/queue-",
     ),
     "e2e_desktop_update": (
         *_DESKTOP_E2E_SHARED,
@@ -222,19 +516,63 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/desktop/electron/gateway-stop-before-update",
         "apps/desktop/electron/pre-update-",
         "apps/desktop/electron/install-stamp",
+        # The rest of the Electron update path (codemap desktop-update §1):
+        # main.ts owns the gate / backend stop / hand-off launch hunks (the
+        # classifier sees files, not hunks), the result reader, the install
+        # kind, the attach-time version check and the in-place app swap.
+        "apps/desktop/electron/main.ts",
+        "apps/desktop/electron/handoff-result",
+        "apps/desktop/electron/desktop-installation",
+        "apps/desktop/electron/backend-discovery",
+        "apps/desktop/electron/local-gateway",  # gateway ensure: code_sha vs checkout, restart on skew
+        "apps/desktop/electron/bundle-swap",
+        "apps/desktop/electron/app-installer-file",
         "scripts/desktop-update/",
         "scripts/install.sh",
-        "hermes_cli/desktop_update",
         "hermes_cli/update_",
+        "hermes_cli/main_desktop",  # the entry point and the main_desktop_* siblings it imports
+        *_DESKTOP_BUILD_ENTRY_POINTS,
+        *_UPDATE_DEPENDENCIES,
+        # Pipeline modules the Desktop build entry points import directly.
+        "hermes_cli/main.py",  # `hermes desktop --build-only`
+        "hermes_cli/venv_sync.py",
+        "hermes_cli/source_stamp.py",
+        # Imported by the Desktop build's scripts (scripts/build/desktop.mjs closure).
+        "apps/desktop/product-identity.cjs",
+        "scripts/msix-shared.mjs",
+        # The launchers the Desktop relaunches through reach the launch-time repair first.
+        "hermes_cli/_launchers.py",
+        # The backend's /api/health `commit`, which the Desktop compares to the checkout
+        # before attaching to a running backend after an update.
+        "hermes_cli/web_routers/status.py",
     ),
 }
+
+
+def _with_package_inits(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Importing a/b/c.py runs a/__init__.py and a/b/__init__.py first, so a routed module
+    routes the package inits above it. A shared hub's inits run whenever the hub is imported, so
+    they are routed too; only an init that is itself a hub stays out. A moved module also runs the
+    inits above where it lives now; each init is listed by its original path, as classify() reads it."""
+    inits = [original_path(f"{'/'.join(parts[:i])}/__init__.py")
+             for p in (*paths, *sorted(_SHARED_HUBS)) if p.endswith(".py")
+             for parts in [current_path(p).split("/")[:-1]] for i in range(1, len(parts) + 1)]
+    return tuple(dict.fromkeys([*paths, *(i for i in inits if i not in _SHARED_HUBS)]))
+
+
+for _lane in ("e2e_upgrade", "e2e_desktop_update"):
+    _E2E_LANES[_lane] = _with_package_inits(_E2E_LANES[_lane])
 # The upgrade journeys are their own lane; editing one does not start ``e2e``.
 # The update suite shares apps/desktop/e2e/ with the core suite but not its specs.
 _E2E_LANE_EXCLUDES = {
     "e2e": ("tests/e2e/core/upgrade/", "tests/e2e/core/windows_update/"),
     "e2e_desktop_core": ("apps/desktop/e2e/update/",),
 }
-_DOCKER_PATHS = (*_DOCKER_META, *_DEP_MANIFESTS, *_NPM_MANIFESTS, "pm/", "tests/docker/")
+# The image builds the Webapp (webapp_build stage), so its manifests and build
+# recipe route here; Desktop sources stay out, as web/ and ui-tui/ do.
+_DOCKER_PATHS = (*_DOCKER_META, *_DEP_MANIFESTS, *_NPM_MANIFESTS, "pm/", "tests/docker/",
+                 "apps/desktop/package.json", "apps/desktop/scripts/build-webapp.mjs",
+                 "apps/shared/package.json", "scripts/build/")
 _NIX_LANE_PATHS = (*_NIX_PATHS, *_NIX_FILES, *_DEP_MANIFESTS, *_NPM_MANIFESTS)
 
 # A pull request with this label runs every slow lane, whatever it touches.
@@ -260,6 +598,10 @@ def _py_irrelevant(p: str) -> bool:
         or p.startswith(_DOCKER_META)
         or _is_nix(p)
     )
+
+
+def _is_catalog_data(p: str) -> bool:
+    return p.startswith(_CATALOG_DATA) and p not in _PY_RELEVANT_CONTRACT_FILES
 
 
 def _py_test_only(p: str) -> bool:
@@ -314,18 +656,20 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
     ``run_e2e`` is the pull request's ``run-e2e`` label: it turns every slow
     lane on.
     """
-    files = [f.strip() for f in files if f.strip()]
-    python = any(not _py_irrelevant(f) for f in files)
-    python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in files)
+    files = [original_path(f.strip()) for f in files if f.strip()]
+    catalog = any(_is_catalog_data(f) for f in files)
+    code = [f for f in files if not _is_catalog_data(f)]
+    python = any(not _py_irrelevant(f) for f in code)
+    python_prod = any(not _py_irrelevant(f) and not _py_test_only(f) for f in code)
     frontend = any(
         f.startswith(_FRONTEND) or f in _ROOT_NPM or f in _FRONTEND_FILES
-        or f.startswith("tests-js/")
+        or f.startswith(("tests-js/",) + _WHATSAPP_BRIDGE)
         or (f.startswith("scripts/build/") and f.endswith((".mjs", ".js", ".ts")))
         for f in files
     )
     deps = any(f == "pyproject.toml" for f in files)
-    npm_lock = any(f.split("/")[-1] == "package-lock.json" for f in files)
-    docker_meta = any(f.startswith(_DOCKER_META) for f in files)
+    npm_lock = any(f.split("/")[-1] in ("pnpm-lock.yaml", "package-lock.json") for f in files)
+    docker_meta = any(f.startswith(_DOCKER_META) or f == _DOCKER_LINT for f in files)
     
     ret = {
         "python": python,
@@ -342,9 +686,16 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         ),
         "desktop_updater": any(_is_desktop_updater(f) for f in files),
         "rust": any(_is_rust(f) for f in files),
+        "remote_backends": any(f.startswith(_REMOTE_BACKEND_PATHS) for f in files),
+        "catalog": catalog,
         **{lane: run_e2e or on for lane, on in _slow_lanes(files).items()},
     }
-    if not files or any(f.startswith(".github/") for f in files):
+    consumers = [c for f in files for c in _SHARED_FIXTURE_CONSUMERS.get(f, ())]
+    if consumers:
+        inherited = classify(consumers)
+        for lane in _FIXTURE_CONSUMER_LANES:
+            ret[lane] = ret[lane] or inherited[lane]
+    if not files or any(f.startswith(".github/") or f in _CI_CONFIG_FILES for f in files):
         ret["python"] = True
         ret["python_prod"] = True
         ret["docker_meta"] = True
@@ -357,6 +708,8 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         ret["bootstrap"] = True
         ret["desktop_updater"] = True
         ret["rust"] = True
+        ret["remote_backends"] = True
+        ret["catalog"] = True
         ret.update(dict.fromkeys(_slow_lanes([]), True))
     return ret
 
@@ -415,7 +768,8 @@ def pull_request_changed_files() -> list[str]:
     pr = _pull_request_number()
     if not repo or not pr:
         return []
-    return _gh_lines("api", "--paginate", f"repos/{repo}/pulls/{pr}/files", "--jq", ".[].filename") or []
+    return _gh_lines("api", "--paginate", f"repos/{repo}/pulls/{pr}/files", "--jq",
+                     ".[] | [.filename, .previous_filename // empty] | @tsv") or []
 
 
 def pull_request_labels() -> list[str]:
@@ -437,9 +791,26 @@ def pull_request_labels() -> list[str]:
     return [label["name"] for label in labels if isinstance(label, dict) and label.get("name")]
 
 
+# The compare API lists at most this many files and drops the rest without saying so.
+COMPARE_FILE_CAP = 300
+
+
+def changed_paths(lines: list[str]) -> list[str]:
+    """Paths from lines of ``path`` or ``path<TAB>old path``; ``[]`` (every lane runs) at the cap.
+
+    A rename counts under both names: a lane keyed on the old location still has to see a file move
+    away from it."""
+    lines = [line for line in lines if line.strip()]
+    if len(lines) >= COMPARE_FILE_CAP:
+        print(f"{len(lines)} changed files reached the compare API's {COMPARE_FILE_CAP}-file cap; "
+              "the list may be cut short, so every lane runs", file=sys.stderr)
+        return []
+    return [path for line in lines for path in line.split("\t") if path.strip()]
+
+
 def main() -> int:
-    files = sys.stdin.read().splitlines()
-    if not any(f.strip() for f in files):
+    lines = sys.stdin.read().splitlines()
+    if not any(f.strip() for f in lines):
         recovered = pull_request_changed_files()
         if recovered:
             print(
@@ -447,7 +818,8 @@ def main() -> int:
                 "path(s) from the pull request files endpoint",
                 file=sys.stderr,
             )
-            files = recovered
+            lines = recovered
+    files = changed_paths(lines)
     lanes = classify(files, run_e2e=RUN_E2E_LABEL in pull_request_labels())
     out = "\n".join(f"{key}={str(value).lower()}" for key, value in lanes.items())
     if dest := os.environ.get("GITHUB_OUTPUT"):

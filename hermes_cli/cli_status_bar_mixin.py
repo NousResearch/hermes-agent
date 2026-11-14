@@ -13,6 +13,7 @@ import threading
 import time
 
 from agent.i18n import t
+from agent import terminal_image
 from agent.pet import render as pet_render
 from hermes_cli.banner import _format_context_length
 from typing import Any, Dict, Optional
@@ -52,7 +53,7 @@ class CLIStatusBarMixin:
             return "class:status-bar-bad"
         return _threshold_style(percent_used, ((50, "warn"),), "good")
 
-    def _cache_hit_rate(self, snapshot: dict, precision: int = 1) -> "tuple[float, str] | None":
+    def _cache_hit_rate(self, snapshot: dict, precision: int = 1) -> tuple[float, str] | None:
         """Return (cache_pct, label) or None without cache data. Prefers the baseline-delta pct
         from ``_get_status_bar_snapshot`` (resets on model switch / compression, so it reflects
         the *current* cache regime); falls back to the session-lifetime ratio."""
@@ -189,7 +190,7 @@ class CLIStatusBarMixin:
             return ""
         return f"✓ {format_duration_compact(max(0.0, time.time() - last_finished_at))}"
 
-    def _get_status_bar_snapshot(self) -> Dict[str, Any]:
+    def _get_status_bar_snapshot(self) -> dict[str, Any]:
         from cli import _reverse_alias_for_display, datetime, format_duration_compact
         agent = getattr(self, "agent", None)
         # Prefer the agent's model name — it updates on fallback; self.model never changes.
@@ -202,8 +203,7 @@ class CLIStatusBarMixin:
             # Shared RID-prefix stripper so this and ModelSwitchResult can't drift.
             from hermes_cli.model_switch import format_model_for_display
             model_short = format_model_for_display(model_short)
-        if model_short.endswith(".gguf"):
-            model_short = model_short[:-5]
+        model_short = model_short.removesuffix(".gguf")
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
@@ -274,13 +274,8 @@ class CLIStatusBarMixin:
         except Exception:
             pass
         try:
-            from tools.process_registry import process_registry
-            snapshot["active_background_processes"] = process_registry.count_running()
-        except Exception:
-            pass
-        try:
-            from tools.async_delegation import active_count as _async_active_count
-            snapshot["active_background_subagents"] = _async_active_count()
+            from hermes_cli.gateway_tools import background_counts
+            snapshot.update(background_counts())
         except Exception:
             pass
 
@@ -336,9 +331,10 @@ class CLIStatusBarMixin:
                 context_tokens = min(context_tokens, context_length)
             snapshot["context_tokens"] = context_tokens
             snapshot["context_length"] = context_length or None
-            from agent.context_pin import is_context_pinned
-            snapshot["context_pinned"] = is_context_pinned(
-                context_length, getattr(compressor, "_config_context_length", None))
+            from agent.context_pin import agent_context_marker
+            marker = agent_context_marker(agent)
+            snapshot["context_pinned"] = marker == "pinned"
+            snapshot["context_fallback"] = marker == "fallback"
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 pct = round((context_tokens / context_length) * 100)
@@ -456,7 +452,7 @@ class CLIStatusBarMixin:
         return "".join(out).rstrip() + "..."
 
     @classmethod
-    def _status_title_badge(cls, title: str, width: int) -> "tuple[str, int] | None":
+    def _status_title_badge(cls, title: str, width: int) -> tuple[str, int] | None:
         """(badge, left_width) for the far-right session-title badge, or None when it
         doesn't fit (no title / bar narrower than 24 cells)."""
         title = str(title or "").strip()
@@ -545,14 +541,14 @@ class CLIStatusBarMixin:
 
     def _agent_spacer_height(self, width: Optional[int] = None) -> int:
         """Spacer height above the status bar while the agent runs."""
-        if not getattr(self, "_agent_running", False):
+        if not getattr(self, "_agent_running", False) or getattr(self, "_modern_layout", False):
             return 0
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
 
     def _spinner_widget_height(self, width: Optional[int] = None) -> int:
         """Visible height of the spinner/status line above the status bar."""
         spinner_line = self._render_spinner_text()
-        if not spinner_line or self._use_minimal_tui_chrome(width=width):
+        if not spinner_line or self._use_minimal_tui_chrome(width=width) or getattr(self, "_modern_layout", False):
             return 0
         width = width or self._get_tui_terminal_width()
         if width and width > 10:
@@ -603,7 +599,9 @@ class CLIStatusBarMixin:
         if getattr(self, "tool_progress_mode", "all") == "off":
             return False
         agent = getattr(self, "agent", None)
-        if agent is not None and getattr(agent, "quiet_mode", False):
+        # The interactive agent itself runs quiet unless --verbose, so in the classic layout this
+        # line only shows under --verbose; the glyph layout closes every interactive turn with it.
+        if agent is not None and getattr(agent, "quiet_mode", False) and not getattr(self, "_modern_layout", False):
             return False
         return bool(getattr(self, "_interactive_turn", False))
 
@@ -644,7 +642,10 @@ class CLIStatusBarMixin:
         try:
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
             line = collector.render(max(0.0, time.monotonic() - started) if started else 0.0)
-            if line:
+            if line and getattr(self, "_modern_layout", False):
+                from hermes_cli.cli_modern_layout import turn_footer
+                _cprint(turn_footer(line))
+            elif line:
                 _cprint(f"  {_D}{line}{_RST}")
         except Exception:
             logger.debug("Turn summary render failed", exc_info=True)
@@ -679,7 +680,7 @@ class CLIStatusBarMixin:
             # Placeholders only on kitty/Ghostty: WezTerm speaks kitty APC but not U+10EEEE
             # while detect_terminal_graphics() still says kitty, hence the narrower gate.
             use_kitty = (
-                configured_mode in ("", "auto", "kitty") and pet_render.supports_kitty_placeholders()
+                configured_mode in ("", "auto", "kitty") and terminal_image.supports_kitty_placeholders()
             )
             renderer_mode = "kitty" if use_kitty else "unicode"
 
@@ -830,7 +831,7 @@ class CLIStatusBarMixin:
         except (OSError, ValueError):
             pass
 
-    def _pet_view(self) -> "tuple[str, bool] | None":
+    def _pet_view(self) -> tuple[str, bool] | None:
         """(state, is_kitty) for the current frame, or None when no pet shows."""
         with self._pet_lock:
             if not self._pet_enabled or self._pet_renderer is None:
@@ -848,7 +849,7 @@ class CLIStatusBarMixin:
             payload = self._pet_kitty_payload_for(state)
             if not payload:
                 return []
-            color = pet_render.kitty_color_hex(payload["image_id"])
+            color = terminal_image.kitty_color_hex(payload["image_id"])
             for y, row in enumerate(payload["placeholder"]):
                 if y:
                     frags.append(("", "\n"))
@@ -948,7 +949,7 @@ class CLIStatusBarMixin:
         re-reading config per render could advertise a chord that isn't bound — and this sits on
         the hot render path.
 
-        Two reasons (Copilot round-13 on 19835): See #19835.
+        Two reasons (review round-13 on 19835): See #19835.
         """
         return getattr(self, "_voice_record_key_display_cache", None) or "Ctrl+B"
 
@@ -982,7 +983,7 @@ class CLIStatusBarMixin:
     # ── status bar rendering ──────────────────────────────────────────────────
 
     @staticmethod
-    def _status_bar_goal_segment(snapshot: Dict[str, Any]) -> str:
+    def _status_bar_goal_segment(snapshot: dict[str, Any]) -> str:
         """``⊙ goal 3/20`` while a goal is active, else ``""`` (paused/done goals already
         print their own glyph lines in the thread)."""
         if not snapshot.get("goal_active"):
@@ -1057,7 +1058,8 @@ class CLIStatusBarMixin:
                 if snapshot["context_length"]:
                     ctx_total = _format_context_length(snapshot["context_length"])
                     ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                    pin = t("cli.status_bar.ctx_pinned") if snapshot.get("context_pinned") else ""
+                    pin = (t("cli.status_bar.ctx_pinned") if snapshot.get("context_pinned")
+                           else t("cli.status_bar.ctx_fallback") if snapshot.get("context_fallback") else "")
                     context_label = f"{mark}{ctx_used}/{ctx_total}{pin}"
                 else:
                     context_label = t("cli.status_bar.ctx_unknown")
@@ -1137,6 +1139,9 @@ class CLIStatusBarMixin:
             or getattr(self, "_model_picker_state", None)
             or getattr(self, "_command_palette_state", None)):
             return []
+        if getattr(self, "_modern_layout", False):
+            from hermes_cli.cli_modern_layout import status_line_fragments
+            return status_line_fragments(self)
         try:
             snapshot = self._get_status_bar_snapshot()
             # prompt_toolkit's own width: shutil's can be stale (esp. over SSH) and an overflow

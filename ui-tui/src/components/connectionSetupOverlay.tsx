@@ -73,6 +73,12 @@ const isUnresolved = (target: ConnectionOperationTarget): boolean =>
 // The card's title verb, resolved from the active catalog at render (never at import).
 const verbOf = (T: Translations, action: ConnectionTargetAction): string => T.connection.verb[action]
 
+const titleOf = (T: Translations, target: ConnectionOperationTarget): string => {
+  const title = `${verbOf(T, target.action)} ${target.name}`
+
+  return target.alias ? T.connection.header.account(title, target.alias) : title
+}
+
 const phaseOf = (target: ConnectionOperationTarget): Phase => {
   if (target.state === 'connected') {
     return 'authorized'
@@ -112,7 +118,7 @@ function Header({ more, t, target }: HeaderProps) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.text}>
-        {verbOf(T, target.action)} {target.name}
+        {titleOf(T, target)}
       </Text>
       {more > 0 ? <Text color={t.color.muted}>{T.connection.header.moreToAnswer(more)}</Text> : null}
       {target.instructions ? (
@@ -249,6 +255,7 @@ function AuthorizedPhase({ t, target }: { t: Theme; target: ConnectionOperationT
       <Text bold color={t.color.ok}>
         {T.connection.authorized.title}
       </Text>
+      {target.alias ? <Text color={t.color.muted}>{T.connection.namedAccount(target.name, target.alias)}</Text> : null}
       <Text color={t.color.muted}>{target.discovery_error ?? ''}</Text>
       <Text color={t.color.accent}>▸ {T.connection.authorized.continue}</Text>
       <Text color={t.color.muted}>{T.connection.authorized.hint}</Text>

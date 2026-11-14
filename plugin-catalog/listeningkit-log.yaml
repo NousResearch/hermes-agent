@@ -1,0 +1,25 @@
+name: listeningkit-log
+title: log by ListeningKit
+repo: https://github.com/deepmroot/listeningkit-log
+sha: 26028c9bdc89f1d7d2a4d55e258ca0d827af8c88
+description: "Your agent, working your DMs the way you would. Ask Hermes who is waiting on a reply across X, Discord, Slack, Instagram and Reddit, read the whole thread, and get a draft in your own voice that sends only after you approve it. A log tab in the dashboard shows who is waiting, every account's session and today's sends against its daily limit. LinkedIn support is currently limited to a session-status check. Portable Agent Plugins v1 package (plugin.json + mcp.json + skills/) plus a dashboard tab. Disclosure — starts the separately installed logMcp executable as a long-running stdio process; log makes network calls directly to the social platforms the user signed into and reads account sessions, cookies and message history from its own ~/.logCli data directory. Write tools can send replies, DMs and posts, and can like or follow as the user's account; the server is marked untrusted so Hermes asks for approval. The dashboard tab's backend reads, read-only, log's session.json, governor_state.json and synced X inbox (inboxSync.json, including message previews) under ~/.logCli; it makes no network call, runs no command, writes nothing and never reads cookies. The MCP tool set comes from the user's installed log version at runtime and is not covered by this plugin's pinned commit."
+maintainer: deepmroot
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/deepmroot/listeningkit-log#readme
+version: "0.2.0"
+image: https://raw.githubusercontent.com/deepmroot/listeningkit-log/26028c9bdc89f1d7d2a4d55e258ca0d827af8c88/docs/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/deepmroot/listeningkit-log/26028c9bdc89f1d7d2a4d55e258ca0d827af8c88/docs/screenshots/dashboard.png
+  - https://raw.githubusercontent.com/deepmroot/listeningkit-log/26028c9bdc89f1d7d2a4d55e258ca0d827af8c88/docs/screenshots/xInbox.jpg
+  - https://raw.githubusercontent.com/deepmroot/listeningkit-log/26028c9bdc89f1d7d2a4d55e258ca0d827af8c88/docs/screenshots/platforms.jpg
+  - https://raw.githubusercontent.com/deepmroot/listeningkit-log/26028c9bdc89f1d7d2a4d55e258ca0d827af8c88/docs/screenshots/indexes.jpg
+  - https://raw.githubusercontent.com/deepmroot/listeningkit-log/26028c9bdc89f1d7d2a4d55e258ca0d827af8c88/docs/screenshots/yourVoice.jpg
+readme: true
+platforms: [windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [LOG_ACCOUNTS]

@@ -14,7 +14,7 @@ import fnmatch
 import os
 from pathlib import Path
 
-from agent.file_safety import get_nt_namespace_error
+from agent.file_safety import deny_key, get_nt_namespace_error
 from tools import file_state
 from tools.binary_extensions import (
     has_binary_extension,
@@ -24,7 +24,8 @@ from tools.binary_extensions import (
 )
 from tools.file_tools_paths import (
     _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
-from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
+from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
+import itertools
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -115,12 +116,14 @@ def _hermes_exempt_homes() -> tuple[str, ...]:
     """Realpaths of the Hermes home tree(s) the protected-instruction gate must stay out of:
     the ACTIVE profile's home, plus the Hermes ROOT when that home is a named profile
     (``<root>/profiles/<name>``). Exempting only the profile dir left the root's DIRECT files
-    (LEDGER.md / MEMORY.md / SOUL.md / AGENTS.md ...) to the ``.hermes`` component rule, which
+    (LEDGER.md / MEMORY.md / USER.md ...) to the ``.hermes`` component rule, which
     gated them like a project-local ``<repo>/.hermes/config.yaml`` — fail-closed headless
     (#110630). They are the agent's own store, governed by their own guards, exactly like
     ``~/.hermes`` under the default profile. The root is added only when the shape really is a
     named profile (``named_profile_home``), so a coincidental ``profiles/`` dir elsewhere never
-    exempts its parent; the home comes from the ACTIVE scope, never ``HERMES_HOME`` alone."""
+    exempts its parent; the home comes from the ACTIVE scope, never ``HERMES_HOME`` alone.
+    The exemption only skips the ``.hermes`` component rule: instruction files (SOUL.md,
+    AGENTS.md, ...) and ``extra_patterns`` are still gated inside these homes (#92146)."""
     home = _get_real_hermes_home()
     if not home:
         return ()
@@ -153,23 +156,36 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     nt_err = get_nt_namespace_error(filepath, verb="Write")
     if nt_err:
         return nt_err
-    candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
+    try:
+        expanded = _expand_tilde(filepath, task_id)
+    except ValueError as exc:  # a hosted ``~`` the sandbox gives no meaning to
+        return f"Refusing to write to {filepath}: {exc}"
+    candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(expanded))
     if _ssh_path_escapes_home(candidates[0]) and _terminal_env_type_for_task(task_id) == "ssh":
         return (
             f"Refusing to write to {filepath}: it climbs above the SSH home and the remote "
             "home could not be detected, so its target cannot be checked. Pass an absolute path.")
-    if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
+    keys = [deny_key(c) for c in candidates]
+    if any(k.startswith(_SENSITIVE_PATH_PREFIXES) or k in _SENSITIVE_EXACT_PATHS for k in keys):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
             "Use the terminal tool with sudo if you need to modify system files.")
     # approvals.mode and other security settings live in config.yaml; a
     # prompt-injected agent could silently disable exec approval by editing it.
     hermes_config = _get_hermes_config_resolved()
-    if hermes_config and hermes_config in candidates:
+    if hermes_config and deny_key(hermes_config) in keys:
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
+    # A hosted path names the tenant's sandbox, and its skills are not this host's: resolving it
+    # against this profile's locked skills would stat host paths and name host skills.
+    from tools.hosted_tool_policy import host_feature_enabled
+    if not host_feature_enabled("skills"):
+        return None
+    from tools.skill_lock import path_refusal
+    if reason := path_refusal(candidates):
+        return f"Refusing to write to {filepath}: {reason}"
     return None
 
 
@@ -222,32 +238,45 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     if not enabled:
         return None
 
-    normalized = os.path.normpath(_expand_tilde(filepath))
+    from tools.environments.sandbox_scope import hosted_scope, sandbox_lexical_path
+    hosted = hosted_scope() is not None
     try:
-        resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
+        normalized = os.path.normpath(_expand_tilde(filepath, task_id))
+    except ValueError:
+        if not hosted:
+            raise
+        normalized = os.path.normpath(filepath)  # a hosted ``~`` with no sandbox meaning: judged as written
+    try:
+        anchored = str(_resolve_path_for_task(filepath, task_id))
+        lexical = sandbox_lexical_path(anchored)  # a hosted agent's sandbox path: never resolved here
+        resolved = lexical if lexical is not None else os.path.realpath(anchored)
     except (OSError, ValueError, RuntimeError):
-        resolved = os.path.realpath(normalized)
+        resolved = normalized if hosted else os.path.realpath(normalized)
 
-    # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
-    # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
-    # Must run before the ``.hermes`` component rule, which would match the home.
-    # ``_hermes_exempt_homes`` also covers the ROOT when the active home is a named
-    # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.
-    for real_home in _hermes_exempt_homes():
-        if resolved == real_home or resolved.startswith(real_home + os.sep):
-            return None
-
+    # Basenames and operator patterns gate EVERYWHERE, the Hermes home included:
+    # the live SOUL.md / AGENTS.md and cron ``scripts/`` there steer the agent and
+    # no other file-tool guard covers them (#92146).
     for candidate in (normalized, resolved):
         base = os.path.basename(candidate)
         base_lower = base.lower()
         if base_lower in _PROTECTED_INSTRUCTION_BASENAMES or any(
                 fnmatch.fnmatch(base_lower, pattern.lower()) for pattern in extra_patterns):
             return base
+
+    # The ``.hermes`` component rule below targets PROJECT-LOCAL config, and the home
+    # itself is usually named ``.hermes``; without this every state/cache/session write
+    # there would prompt. ``_hermes_exempt_homes`` also covers the ROOT when the active
+    # home is a named profile (#110630).
+    for real_home in _hermes_exempt_homes():
+        if resolved == real_home or resolved.startswith(real_home + os.sep):
+            return None
+
+    for candidate in (normalized, resolved):
         # Project-local .hermes config dirs (<repo>/.hermes/config.yaml) steer
         # behavior too. Only the IMMEDIATE parent counts — matching any ancestor
         # would gate every write inside a checkout living under ~/.hermes.
         parts = candidate.replace("\\", "/").rstrip("/").split("/")
-        if len(parts) >= 2 and parts[-2] == ".hermes":
+        if len(parts) >= 2 and deny_key(parts[-2]) == ".hermes":
             return candidate
     return None
 
@@ -279,20 +308,17 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 
     try:
         import tools.approval as _approval
-        from tools.approval_context import get_current_session_key
+        from tools.approval_context import _fire_approval_hook, get_current_session_key
         from tools.approval_gateway_wait import _await_gateway_decision
         from tools.approval_prompt import prompt_dangerous_approval
     except Exception:
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
     # Gateway surface: block on the button round-trip when a notify callback
-    # is registered for this session. One-operation only — no scope buttons.
+    # is registered for this session, or a background child's lease carries one
+    # past its parent turn (#133514). One-operation only — no scope buttons.
     session_key = get_current_session_key()
-    try:
-        with _approval._lock:
-            notify_cb = _approval._gateway_notify_cbs.get(session_key)
-    except Exception:
-        notify_cb = None
+    notify_cb = _approval._gateway_notify_cb(session_key)
 
     if notify_cb is not None:
         approval_data = {
@@ -319,8 +345,19 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             # No human channel (script, cron, background thread): fail closed —
             # auto-approving here would recreate the persistence vector.
             return blocked.format(why=_NO_HUMAN)
+        # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
+        # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.
+        from tools.approval_context import _no_user_can_answer
+        if _no_user_can_answer():
+            return blocked.format(why=_NO_HUMAN)
+        # Same observer payload as the gateway branch (#131876), fired like the
+        # dangerous-command CLI prompt in tools/approval.py.
+        hook_kwargs = dict(command=display, description=description, pattern_key="protected_instruction_file",
+                           pattern_keys=["protected_instruction_file"], session_key=session_key, surface="cli")
+        _fire_approval_hook("pre_approval_request", **hook_kwargs)
         choice = prompt_dangerous_approval(
             display, description, allow_permanent=False, allow_session=False, approval_callback=callback)
+        _fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
         if choice == "cancelled":
             return blocked.format(why="approval prompt could not be delivered or was not answered "
                                       f"({getattr(choice, 'cause', 'no answer')}).")
@@ -353,7 +390,9 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     except Exception:
         return None
 
-    targets = [p for p in paths if is_write_approval_required(p)]
+    # Resolve against the task's cwd, not the process's: a gateway-hosted turn runs in a
+    # process whose cwd is not the session workspace, so a relative path would miss the gate.
+    targets = [p for p in paths if is_write_approval_required(_resolved_or_raw(p, task_id))]
     if not targets:
         return None
 
@@ -445,7 +484,7 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
     if _file_ops_uses_host_paths(file_ops):
         # Host writes land on the resolved path, else today's HOST
         # ``_expand_tilde`` fallback — probe exactly that string.
-        probe = _expand_tilde(filepath) if resolved is None else resolved
+        probe = _expand_tilde(filepath, task_id) if resolved is None else resolved
         try:
             return "exists" if Path(probe).is_file() else "absent"
         except OSError:
@@ -486,7 +525,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
             "corrupt the file (read_file showed you EXTRACTED text, not the real "
-            "bytes). Use the docx/xlsx/powerpoint skills or a library like "
+            "bytes). Use the microsoft-office skill or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
     # A -wal/-shm/-journal path is never a legitimate text target, even when
@@ -546,9 +585,10 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
     Refuses BEFORE any disk mutation (the pre-#65604 warning arrived after the
     clobber): a sibling/external/partial-read staleness finding, or an existing
     file with no full-content baseline for this task (never read in full, read
-    redacted, only patched). Net-new files, files this task fully read (in one
-    page or by paging contiguously to the last line) or wrote, unresolvable
-    paths and the file-state kill switch all let the write proceed.
+    redacted, only patched without one). Net-new files, files this task fully read
+    (in one page or by paging contiguously to the last line), wrote, or patched
+    from such a baseline, unresolvable paths and the file-state kill switch all
+    let the write proceed.
     """
     if file_state.guard_disabled():
         return None
@@ -559,7 +599,10 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
         return (
             f"{filepath} was modified since you last read it (external edit or "
             "concurrent agent). Re-read the file before writing.")
-    if not resolved or _has_full_write_baseline(resolved, task_id):
+    from tools.environments.sandbox_scope import hosted_scope
+    if not resolved or hosted_scope() is not None or _has_full_write_baseline(resolved, task_id):
+        # A hosted agent's path names its sandbox, where no host baseline can exist (as for any
+        # remote backend, whose files the host-side existence check below never finds).
         return None
     try:
         exists = Path(resolved).exists()
@@ -567,9 +610,13 @@ def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) 
         return None
     if not exists:
         return None
+    if _is_own_blind_patch(resolved, task_id):
+        return (
+            "Your patch changed this file without a full view of its current content. Read the current file "
+            "in full before a whole-file overwrite, or continue with targeted patches.")
     return (
         f"{resolved} exists but this task has not seen its full current content "
-        "(never read, only patched, or only a redacted/partial view). Read the "
+        "(never read, patched without a prior full read, or only a redacted/partial view). Read the "
         "file — every page of it, if it needs offset/limit — or use patch for a "
         "targeted edit; a stale conversation copy must not overwrite the current "
         "disk content.")
@@ -618,7 +665,7 @@ def _looks_like_read_file_line_numbered_content(content: str) -> bool:
             numbered.append(int(prefix))
     if len(numbered) < 2 or len(numbered) / len(lines) < 0.6:
         return False
-    consecutive_pairs = sum(1 for prev, current in zip(numbered, numbered[1:]) if current == prev + 1)
+    consecutive_pairs = sum(1 for prev, current in itertools.pairwise(numbered) if current == prev + 1)
     return consecutive_pairs >= len(numbered) - 1
 
 

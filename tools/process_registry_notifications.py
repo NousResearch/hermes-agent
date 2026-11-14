@@ -52,6 +52,23 @@ def group_process_notifications(notifications):
 
 
 
+def is_child_process_notification(evt: dict) -> bool:
+    """Raw child process noise, not a delegation or work-closeout deliverable."""
+    if evt.get("type") in {"async_delegation", "async_delegation_work_closeout"}:
+        return False
+    return str(evt.get("owner_task_id") or evt.get("task_id") or "").startswith("sa-")
+
+
+def should_surface_notification(evt: dict, *, surface_child: bool | None = None) -> bool:
+    """Shared policy; callers must first enter the event's owning profile scope."""
+    if not is_child_process_notification(evt):
+        return True
+    if surface_child is None:
+        from tools.process_registry import ProcessRegistry
+        surface_child = ProcessRegistry._surface_child_process_notifications()
+    return surface_child
+
+
 def _format_age(seconds: float) -> str:
     """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
     try:
@@ -67,7 +84,7 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" + (f"{m}m" if m else "")
 
 
-def _model_not_found_patterns() -> "list[str]":
+def _model_not_found_patterns() -> list[str]:
     """Model-not-found phrases from ``agent.error_classifier`` (the failover path's
     own list, so nothing drifts); a minimal built-in set if the import fails.
 
@@ -103,7 +120,7 @@ def _delegation_model_not_found(results, config) -> bool:
     return any(model in text and any(p in text for p in patterns) for text in texts)
 
 
-def _delegation_model_not_found_notice(results) -> "list[str] | None":
+def _delegation_model_not_found_notice(results) -> list[str] | None:
     """Config-level model_not_found notice lines, or None (fail-open) — once per batch."""
     config = _delegation_config()
     if not _delegation_model_not_found(results, config):
@@ -133,13 +150,88 @@ def _is_truncated(entry: dict) -> bool:
     return bool(entry.get("truncated") or entry.get("exit_reason") == "max_iterations")
 
 
-def _notice_lines(results) -> "list[str]":
+# A stop the parent or user asked for is not a failure the parent has to recover from.
+_STOPPED = frozenset({"interrupted", "cancelled"})
+
+
+def delegation_wakes_parent(evt: dict) -> bool:
+    """True for an async delegation's FINAL result with a failed child (any status other than done or a
+    requested stop). Its unviewed local parent runs it as a turn rather than a note
+    (gateway/session_completion_notes.py), so the parent can re-dispatch or report. The early per-task
+    notice is a diagnostic: the final result that follows it is the one that wakes."""
+    if evt.get("type") != "async_delegation" or evt.get("task_failure_notice"):
+        return False
+    if evt.get("_sibling_failed"):
+        return True
+    if evt.get("role") == "cron_run":
+        return False  # a manual cron run's outcome is finished text, like a scheduled one's: a note
+    raw = evt.get("results")
+    # No child results (a single child's event, or a crashed batch's ``results=[]``): the unit's own
+    # status decides. Otherwise the children do, so an interrupted-only batch's aggregate error stays asleep.
+    results = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    results = results or [evt]
+    # The stall monitor stops a stuck unit with the same cooperative stop a user's does; its stall
+    # context on the event is what tells the two apart (``async_delegation._finalize``).
+    stopped = () if evt.get("stalled_after_quiet_seconds") is not None else _STOPPED
+    return any(
+        (r.get("status") or ("failed" if r.get("error") else "completed")) not in (*_DONE, *stopped)
+        for r in results)
+
+
+def completion_resumes_parent(evt: dict) -> bool:
+    """True for a result the parent asked to hear about and carries on from: an async delegation's
+    final result (not the early per-task notice, not a manual cron run's finished text) or a background
+    process's exit, whatever its exit code. Its unviewed local parent runs it as a turn, as a watched one
+    does, so the work goes on while no client is connected (a laptop asleep, a closed tab).
+    ``delegation_wakes_parent`` is the failed-delegation subset, whose wakes are bounded
+    (gateway/session_completion_notes.py); a process exit is never in it."""
+    if evt.get("type") == "async_delegation":
+        if evt.get("task_failure_notice"):
+            return False
+        return bool(evt.get("_sibling_resumes")) or evt.get("role") != "cron_run"
+    return evt.get("type") == "completion"
+
+
+_CONTENT_POLICY_RECOVERY = (
+    "This model's provider refused the task (content_policy_blocked). The refusal is deterministic for "
+    "that model, so do not re-dispatch it unchanged: re-dispatch it with delegate_task on a different "
+    "model (another option/model), or tell the user it was refused.")
+
+
+def _failure_recovery_lines(r: dict) -> list[str]:
+    """What the parent should do about a failed child, when its classified reason names a remedy."""
+    from agent.error_surface import _NON_RETRYABLE_REASONS
+    reason = r.get("failure_reason")
+    if reason == "content_policy_blocked":
+        return [_CONTENT_POLICY_RECOVERY]
+    if reason in _NON_RETRYABLE_REASONS and reason != "interpreter_shutdown":
+        return [f"This failure ({reason}) repeats for the same task on the same model and provider, so do not "
+                "re-dispatch it unchanged: re-dispatch it with delegate_task on a different model or provider "
+                "only if that avoids the cause, otherwise tell the user what failed."]
+    return []
+
+
+def _auto_resume_lines(r: dict) -> list[str]:
+    """A mixed unit's line for a child ``delegation.auto_resume`` will continue (``auto_resume``); a give-up's
+    terminal failure carries its own reason in ``error``."""
+    if not r.get("subagent_id"):
+        return []
+    if r.get("auto_gave_up"):
+        lines = [f"Last transcript tail:\n{r['transcript_tail']}"] if r.get("transcript_tail") else []
+        return lines or ["Not resumed automatically any more; continue it by hand or re-dispatch it."]
+    if not isinstance(r.get("auto_resume"), dict):
+        return []
+    from tools.delegate_tool_auto_resume import notice_line
+    return [notice_line(str(r["subagent_id"]), r["auto_resume"])]
+
+
+def _notice_lines(results) -> list[str]:
     """Blank + model_not_found notice block, or [] when the notice does not apply."""
     notice = _delegation_model_not_found_notice(results)
     return ["", *notice] if notice else []
 
 
-def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> "list[str]":
+def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> list[str]:
     """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
     lines = [title, intro, ""]
     dispatched_at = evt.get("dispatched_at")
@@ -152,7 +244,7 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
         lines.append(f"Context you provided: {evt['context']}")
     if evt.get("toolsets"):
         lines.append(f"Toolsets: {', '.join(evt['toolsets'])}")
-    lines.append(f"Role: {evt.get('role') or 'leaf'}   Model: {evt.get('model') or '?'}")
+    lines.append(f"Role: {evt.get('role') or 'leaf'}" + (f"   Model: {evt['model']}" if evt.get("model") else ""))
     return lines
 
 
@@ -175,7 +267,7 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def _recovery_lines(evt: dict) -> "list[str]":
+def _recovery_lines(evt: dict) -> list[str]:
     """Owner-died recovery diagnostics (``recover_abandoned_delegations``): last persisted
     status, per-task transcript paths, their verbatim tails and the owner's git state."""
     if not evt.get("last_known_status"):
@@ -209,6 +301,9 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     lines += _recovery_lines(evt)
+    if evt.get("stalled_after_quiet_seconds") is not None and any(r.get("status") in _STOPPED for r in results):
+        lines.append(f"The stall monitor stopped this unit after {evt['stalled_after_quiet_seconds']:g}s without "
+                     "progress: an interrupted task below was stuck, not stopped by you or the user.")
     if evt.get("error") and not results:
         lines += ["--- ERROR ---", f"The batch did not complete successfully: {evt['error']}"]
         return "\n".join(lines)
@@ -235,6 +330,8 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
             lines += ["Partial output:", r_summary]
         else:
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
+        if r_status not in _DONE:
+            lines += _auto_resume_lines(r) or _failure_recovery_lines(r)
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
         lines += _process_accounting_lines(r)
@@ -280,7 +377,8 @@ def _format_async_delegation(evt: dict) -> str:
         "you can act on the result or re-dispatch if things have changed.",
         completed_at, with_goal=True)
     lines += _notice_lines([evt]) + [
-        f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
+        f"Status: {status}" + (f"   API calls: {evt['api_calls']}" if evt.get("api_calls") is not None else "")
+        + f"   Duration: {evt.get('duration_seconds', '?')}s"
         + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),
         "--- RESULT ---"]
     if status in _DONE and summary:
@@ -318,10 +416,15 @@ def async_delegation_display_text(evt: dict) -> str:
         goal = goals[index] if 0 <= index < len(goals) else result.get("goal", "")
         titles.append(" ".join(str(goal or "Background task").split()))
     if len(results) == 1:
-        return f"Subagent Task {labels[0]}: {titles[0]}"
+        return f"Subagent Task {labels[0]}: {_short_title(titles[0])}"
     outcome = labels[0] if len(set(labels)) == 1 else "Finished with Issues"
     title = " ".join(str(evt.get("group") or "").split()) or "; ".join(titles)
-    return f"Subagent Tasks {outcome}: {title} ({len(results)} tasks)"
+    return f"Subagent Tasks {outcome}: {_short_title(title)} ({len(results)} tasks)"
+
+
+def _short_title(title: str) -> str:
+    # A goal is free text: the card's title stays one line (and within an admission's display limit).
+    return title[:197] + "..." if len(title) > 200 else title
 
 
 PROCESS_COMPLETE_DISPLAY_KIND = "process_complete"
@@ -350,6 +453,36 @@ def process_completion_display_text(events: list) -> str:
 
 
 HEARTBEAT_DISPLAY_KIND = "hidden"  # a wake, not a message: no surface paints the row
+HEARTBEAT_OUTPUT_CHARS = 2000
+
+
+def heartbeat_output_tail(output: str, omitted: int = 0) -> tuple[str, int]:
+    """A tick's output capped to its newest characters (a long job's latest lines are what matter),
+    and the count of characters cut before it. ``omitted`` counts characters already cut before
+    ``output``. The count rides the tick as its own field (``omitted``): text a job printed is never
+    read back as a cut marker."""
+    if len(output) > HEARTBEAT_OUTPUT_CHARS:
+        omitted += len(output) - HEARTBEAT_OUTPUT_CHARS
+        output = output[-HEARTBEAT_OUTPUT_CHARS:]
+    return output, omitted
+
+
+def join_heartbeat_outputs(earlier: dict, later: dict) -> dict:
+    """Two consecutive ticks' ``output``/``omitted`` as one tick's, capped the same way, counting
+    every character either cut. A later tick that was itself cut leaves none of the earlier output."""
+    earlier_cut, earlier_text = int(earlier.get("omitted") or 0), str(earlier.get("output") or "")
+    later_cut, later_text = int(later.get("omitted") or 0), str(later.get("output") or "")
+    if later_cut:
+        output, omitted = heartbeat_output_tail(later_text, earlier_cut + len(earlier_text) + later_cut)
+    else:
+        output, omitted = heartbeat_output_tail(earlier_text + later_text, earlier_cut)
+    return {"output": output, "omitted": omitted}
+
+
+def heartbeat_output_text(evt: dict) -> str:
+    """A tick's output as the agent reads it: the cut marker, rendered here only, then the tail."""
+    omitted, output = int(evt.get("omitted") or 0), str(evt.get("output") or "")
+    return f"...({omitted} earlier characters omitted)\n{output}" if omitted else output
 
 
 def heartbeat_display_text(evt: dict) -> str:
@@ -381,7 +514,7 @@ class TimelineNotification(str):
                    "diagnostic" if diagnostic_process_event(event) else "result")
 
 
-def _delegation_attribution_line(evt: dict) -> "str | None":
+def _delegation_attribution_line(evt: dict) -> str | None:
     """One-line provenance for a subagent-owned process event, else None. Such a process
     outlives the child and lands in the PARENT conversation, which would otherwise see an
     anonymous output wall. Keyed on ``owner_task_id`` — ``task_id`` may be the session key."""
@@ -408,7 +541,7 @@ def _completion_status(evt: dict) -> str:
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
 
 
-def format_process_notification(evt: dict) -> "str | None":
+def format_process_notification(evt: dict) -> str | None:
     """Format a completion_queue event into an ``[IMPORTANT: ...]`` message."""
     evt_type = evt.get("type", "completion")
     # watch_disabled and overflow events carry their own human-readable `message`;
@@ -428,7 +561,7 @@ def format_process_notification(evt: dict) -> "str | None":
             f"[Background process {_sid} heartbeat #{evt.get('seq', '?')} — still running after "
             f"{_format_age(float(evt.get('elapsed') or 0))} (next in {evt.get('interval', '?')}s when there "
             f"is new output; you will also be told when it exits).\n"
-            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{evt.get('output', '')}]")
+            f"{attribution}Command: {_cmd}\nOutput since last heartbeat:\n{heartbeat_output_text(evt)}]")
     if evt_type == "watch_match":
         _sup = evt.get("suppressed", 0)
         return (

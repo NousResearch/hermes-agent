@@ -1,0 +1,30 @@
+name: hermes-sonic-ui
+title: Hermes Sound Studio
+repo: "https://github.com/iKnz990/hermes-sound-studio"
+sha: 93af2b7625c53dc0a562ffc098eb92a59bb8d919
+description: "Design procedural sounds, assign them to Hermes Desktop interactions, compose layered loops, and export WAV, JSON or TypeScript. Local synthesis; optional configured-model drafts. Disclosure — the inject_sonic_hooks tool rewrites .jsx/.tsx files (with backups under <project>/.sonic-ui-backups) and synthesize_ui_soundscape writes a new TypeScript file at a model-chosen path, each only after Hermes's approval prompt and never inside the Hermes home or install; injection runs a bundled Node parser with a minimal environment; the optional \"Generate sound\" action sends your description and patch to the active profile's configured model."
+maintainer: "iKnz990"
+tier: community
+category: desktop
+version: "0.5.01"
+requires_hermes: ">=0.23.0"
+readme: true
+platforms: []
+image: "https://raw.githubusercontent.com/iKnz990/hermes-sound-studio/93af2b7625c53dc0a562ffc098eb92a59bb8d919/docs/images/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/iKnz990/hermes-sound-studio/93af2b7625c53dc0a562ffc098eb92a59bb8d919/docs/images/sound-design.png"
+  - "https://raw.githubusercontent.com/iKnz990/hermes-sound-studio/93af2b7625c53dc0a562ffc098eb92a59bb8d919/docs/images/compose.png"
+  - "https://raw.githubusercontent.com/iKnz990/hermes-sound-studio/93af2b7625c53dc0a562ffc098eb92a59bb8d919/docs/images/fine-tune.png"
+known_issues:
+  - Windows and Chromium are the tested desktop environment; other operating systems have not been verified.
+  - The separate native draft tool requires the native bridge and a configured default-profile model.
+capabilities:
+  provides_tools:
+    - synthesize_ui_soundscape
+    - audit_ui_silence
+    - inject_sonic_hooks
+    - sonic_create_patch
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

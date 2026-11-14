@@ -54,6 +54,7 @@ import {
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 
 import { deferred } from '../../../test/deferred'
+import { FakeWebSocket } from '../../../test/fake-gateway-socket'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { primaryRuntimeConnectionId, useGatewayBoot } from './use-gateway-boot'
@@ -78,7 +79,6 @@ vi.mock(import('@/store/terminal-backend-warning'), () => ({
 // stuck store combo — closing the "inferred by reading code" gap on the
 // post-boot reconnect loop.
 
-type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
 let powerResume: null | (() => void) = null
 let backendExit: null | ((payload?: unknown) => void) = null
@@ -96,96 +96,6 @@ describe('primaryRuntimeConnectionId', () => {
     expect(primaryRuntimeConnectionId({ mode: 'remote' })).toBeNull()
   })
 })
-
-// Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
-// touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
-class FakeWebSocket {
-  static OPEN = 1
-  static CLOSED = 3
-  // Flipped by the test: 'open' = next socket connects; 'fail' = next socket
-  // errors (a dead remote). Mirrors a VPS going away after the first connect.
-  static mode: 'open' | 'fail' = 'open'
-  static instances: FakeWebSocket[] = []
-  // Ping behavior: 'pong' answers with a healthy pong frame; 'silent' swallows
-  // the request (the half-open-socket simulation — connection looks OPEN but
-  // every RPC hangs until its per-call timeout); 'method-not-found' answers
-  // the JSON-RPC error a PRE-ping backend returns (a healthy, version-skewed
-  // response that must NOT trigger a reconnect).
-  static pingMode: 'pong' | 'silent' | 'method-not-found' = 'pong'
-
-  readyState = 0
-  private listeners: Record<string, Set<Listener>> = {}
-
-  constructor(public url: string) {
-    FakeWebSocket.instances.push(this)
-    const willOpen = FakeWebSocket.mode === 'open'
-    // Resolve on the next microtask/macrotask so connect()'s promise wiring is
-    // in place before open/error fires (matches real async socket handshake).
-    setTimeout(() => {
-      if (willOpen) {
-        this.readyState = FakeWebSocket.OPEN
-        this.emit('open', {})
-      } else {
-        this.readyState = FakeWebSocket.CLOSED
-        this.emit('error', {})
-      }
-    }, 0)
-  }
-
-  addEventListener(type: string, fn: Listener) {
-    ;(this.listeners[type] ??= new Set()).add(fn)
-  }
-
-  removeEventListener(type: string, fn: Listener) {
-    this.listeners[type]?.delete(fn)
-  }
-
-  close() {
-    this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
-  }
-
-  // Force-drop an open socket, as a sleeping laptop / restarted remote would.
-  drop() {
-    this.readyState = FakeWebSocket.CLOSED
-    this.emit('close', {})
-  }
-
-  send(data: string) {
-    let frame: { id?: unknown; method?: string }
-
-    try {
-      frame = JSON.parse(data) as { id?: unknown; method?: string }
-    } catch {
-      return
-    }
-
-    if (frame.method !== 'ping') {
-      return
-    }
-
-    if (FakeWebSocket.pingMode === 'pong') {
-      this.emit('message', {
-        data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, result: { pong: true } })
-      })
-    } else if (FakeWebSocket.pingMode === 'method-not-found') {
-      this.emit('message', {
-        data: JSON.stringify({
-          jsonrpc: '2.0',
-          id: frame.id,
-          error: { code: -32601, message: 'Method not found' }
-        })
-      })
-    }
-    // 'silent': swallow — a healthy socket answers, a half-open one never does.
-  }
-
-  private emit(type: string, ev: unknown) {
-    for (const fn of this.listeners[type] ?? []) {
-      fn(ev)
-    }
-  }
-}
 
 const primaryConn = {
   authMode: 'token' as 'oauth' | 'token',
@@ -261,7 +171,6 @@ function fakeDesktop() {
     }),
     revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
     onWindowStateChanged: vi.fn(() => () => undefined),
-    touchBackend: vi.fn(async () => undefined),
     profile: { get: vi.fn(async () => ({ profile: 'default' })) }
   }
 }
@@ -378,7 +287,7 @@ async function flushAsync() {
 it('loads and tracks saved gateways without mounting the statusbar or Settings', async () => {
   const desktop = fakeDesktop()
   const bootFetch = deferred<void>()
-  type Listener = Parameters<NonNullable<Window['hermesDesktop']['connections']['onChanged']>>[0]
+  type Listener = Parameters<NonNullable<NonNullable<Window['hermesDesktop']['connections']>['onChanged']>>[0]
   const listeners = new Set<Listener>()
 
   let registry: DesktopConnectionsRegistry = {
@@ -558,6 +467,7 @@ describe('primary failure foreground isolation', () => {
     expect($desktopBoot.get().error).toBeNull()
     expect($desktopBoot.get().visible).toBe(false)
   })
+
   it('ignores a boot snapshot superseded by a newer progress event', async () => {
     const snapshot = deferred<Awaited<ReturnType<ReturnType<typeof fakeDesktop>['getBootProgress']>>>()
     const connection = deferred<typeof primaryConn>()
@@ -1111,11 +1021,10 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
   it("#93937: the Sessions switcher never publishes the new source while the previous backend's runtime id is still bound", async () => {
     // Real stores end to end: real useGatewayBoot, real gateway registry, real
     // selectConnection, fake sockets. Boot on the primary VPS with a transcript
-    // open (its runtime id was minted by THAT backend), then switch sources
-    // through the sidebar door. Before the fix that door activated the new
-    // socket first and wiped the bindings after an IPC round-trip, so the
-    // renderer sat on "gateway B + runtime id from A" and B answered every
-    // session RPC with "session not found".
+    // open (its runtime id was minted by THAT backend), then pick another
+    // gateway in the sidebar. Before #93937 that door activated the new socket
+    // and unbound the old runtime after an IPC round-trip, so the renderer sat
+    // on "gateway B + runtime id from A" and B answered "session not found".
     const registryConnections: DesktopConnectionsRegistry = {
       connections: [
         { id: 'primary-vps', kind: 'remote', label: 'VPS', tokenPreview: '...t', tokenSet: true },
@@ -1128,7 +1037,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & Record<string, unknown>
     const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...registryConnections, lastUsed: id } }))
-    let bindingAtDial: null | string = null
+    let dials = 0
 
     desktop.api = vi.fn(async ({ path }: { path: string }) =>
       path === '/api/profiles/active' ? { active: 'default', current: 'default' } : { profiles: [] }
@@ -1140,8 +1049,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       registryScoped: true
     }))
     desktop.getGatewayWsUrlFor = vi.fn(async () => {
-      // Phase 1 (the dial) runs with the previous source still fully bound.
-      bindingAtDial = $activeSessionId.get()
+      dials += 1
 
       return coderConn.wsUrl
     })
@@ -1168,6 +1076,8 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       }
     })
 
+    await vi.waitFor(() => expect(dials).toBeGreaterThan(0)) // connected before any pick
+    const dialsBeforePick = dials
     const switching = selectConnection('coder-remote')
     await flushAsync()
     await flushAsync()
@@ -1175,13 +1085,13 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await switching
     off()
 
-    // The previous backend's runtime id was already gone — and the barrier up —
-    // at every publication of the new source. (Pre-fix: the first publication
-    // carried activeSessionId 'a93bb39d' with the barrier down.)
+    // The previous backend's runtime id was already gone at every publication
+    // of the new source (pre-fix the first one carried 'a93bb39d'). A gateway
+    // pick is a live activation: no switch barrier, no machine-context reset.
     expect(published.length).toBeGreaterThan(0)
-    expect(published).toEqual(published.map(() => ({ activeSessionId: null, switching: true })))
-    expect(bindingAtDial).toBe('a93bb39d')
-    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
+    expect(published).toEqual(published.map(() => ({ activeSessionId: null, switching: false })))
+    expect(dials).toBe(dialsBeforePick) // the pick dials nothing
+    expect(beforeConnectionSwitch).not.toHaveBeenCalled()
     expect($connection.get()?.connectionId).toBe('coder-remote')
     expect(isActivePrimary()).toBe(false)
     expect($activeSessionId.get()).toBeNull()

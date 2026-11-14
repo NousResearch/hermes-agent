@@ -1,0 +1,18 @@
+name: openaccountants
+repo: https://github.com/lEWFkRAD/openaccountants-hermes-plugin
+sha: da1f65a3537340ec4025587c375e1341cc218126
+subdir: ""
+description: "OpenAccountants connector for Hermes: today's tax figures for 190+ jurisdictions through the hosted OpenAccountants MCP server. The plugin ships no skills; tax skills install separately, per jurisdiction, from the OpenAccountants agent-skills tree. Disclosure — when enabled, connects to the hosted OpenAccountants MCP server at https://www.openaccountants.com/api/mcp and its tool results enter the conversation; runs no code, needs no credentials, writes nothing. The plugin ships no skills: the README's optional skills step pipes an installer script from the openaccountants/openaccountants main branch into sh, which is outside this pin and not reviewed here. The repository mirrors upstream's plugins/openaccountants-hermes bundle every 15 minutes; the SHA pin freezes the reviewed snapshot."
+maintainer: Jeffrey Watts
+tier: community
+category: general
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/lEWFkRAD/openaccountants-hermes-plugin
+version: "0.1.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -4,7 +4,10 @@ names are Hermes-managed credentials. The env *builders* applying it (``_make_ru
 
 import functools
 import os
-from typing import Optional
+import re
+from typing import Any, Iterable, Optional
+
+from gateway.bridged_env import BRIDGED_ENV_MARKER_PREFIX
 
 # Prefix a caller uses in ``extra_env`` to force a blocklisted var through.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
@@ -35,6 +38,9 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_IGNORE_STORIES",
     "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST",
     "EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME", "HERMES_DASHBOARD_SESSION_TOKEN",
+    # The dashboard PTY child's WS URLs carry that token (or the gated internal
+    # credential) in their query string; the TUI reads them at start-up, no child does.
+    "HERMES_TUI_SIDECAR_URL", "HERMES_TUI_GATEWAY_URL",
     "GATEWAY_ALLOWED_USERS", "GH_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
     "GITHUB_APP_INSTALLATION_ID", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
@@ -52,6 +58,15 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
 })
 
 
+def _secret_source_bootstrap_env() -> frozenset[str]:
+    """Env names holding a secret source's bootstrap credential (``BWS_ACCESS_TOKEN``,
+    ``OP_SERVICE_ACCOUNT_TOKEN``, ...): the one token that unlocks every other secret.
+    No spawned child needs it; each source hands it to its own CLI explicitly
+    (``_run_bws_list``, ``_op_child_env``), so it is Tier 1 on every spawn path."""
+    from agent.secret_sources.registry import list_sources
+    return frozenset(name for source in list_sources() if (name := source.token_env({})))
+
+
 def _left_core_env(*, secrets_only: bool) -> frozenset:
     """Env of features that left core for a catalog plugin (``hermes_cli.left_core_migration``):
     stripped exactly as when core shipped them, plugin installed or not."""
@@ -62,7 +77,8 @@ def _left_core_env(*, secrets_only: bool) -> frozenset:
 
 def _build_provider_env_blocklist() -> frozenset:
     """Derive the blocklist from provider, tool, and gateway config."""
-    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
+    blocked: set[str] = (set(_STATIC_PROVIDER_ENV_BLOCKLIST) | _left_core_env(secrets_only=False)
+                         | _secret_source_bootstrap_env())
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         for pconfig in PROVIDER_REGISTRY.values():
@@ -110,8 +126,12 @@ def _build_adapter_secret_env() -> frozenset:
         CORE_DECLARED_ENV_NAMES, OPTIONAL_ENV_VARS, PLATFORM_SECRET_ENV_SUFFIXES, platform_manifest_secret_envs)
     from hermes_cli.profile_channels import config_env_table_keys
     # Read in code only, declared nowhere else: the Microsoft Graph app secret and webhook
-    # clientState, and the QQ bot's speech-to-text key.
-    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY"}
+    # clientState, the QQ bot's speech-to-text key, and secrets only a plugin's ``env_overrides``
+    # reads (Feishu webhook keys; Yuanbao's legacy app key, kept while the plugin is absent). Those rows live on the adapter's
+    # PlatformEntry, which this import-time policy cannot load without importing every adapter;
+    # tests/gateway/test_platform_env_overrides.py pins that every such secret is listed here.
+    names: set[str] = {"MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE", "QQ_STT_API_KEY",
+                       "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN", "YUANBAO_APP_KEY"}
     names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
                  if name in CORE_DECLARED_ENV_NAMES
                  and meta.get("category") == "messaging" and meta.get("password"))
@@ -170,7 +190,7 @@ def _registered_adapter_secret_env() -> frozenset:
     return _registry_adapter_secret_env() | _home_adapter_secret_env()
 
 
-def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = None) -> bool:
+def _is_provider_env_blocklisted(name: str, _registered: frozenset | None = None) -> bool:
     """``name`` is a blocklisted provider/tool credential or adapter secret, matched the way the
     platform's environment resolves names: exact plus case-folded. On Windows the environment
     block is case-insensitive, so ``openai_api_key`` IS ``OPENAI_API_KEY``; consistent with
@@ -205,7 +225,7 @@ def _is_provider_env_blocklisted(name: str, _registered: "frozenset | None" = No
 # computer-use driver binary, and user-script runners (bang ``!`` commands, quick commands, cron scripts,
 # webhook-filter scripts), so those children receive the vars too — matching the approved background/PTY
 # scope. Every other surface stays sealed — execute_code scrubbing, :func:`hermes_subprocess_env` (browser /
-# TUI host / copilot-executor spawns), docker children, and ``env_passthrough`` registration (skills/config
+# TUI host / ACP agent spawns), docker children, and ``env_passthrough`` registration (skills/config
 # still cannot register these names). The GHSA-rhgp-j443-p4rf seal is preserved because no registration path
 # is opened; this is a scrub-path exemption, not an allowlist addition. First-party matches use the merged
 # env value directly — they are the process's own env values and are never scope-resolved (a profile secret
@@ -272,17 +292,195 @@ def _is_terminal_first_party_env(name: str) -> bool:
 # _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries, preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
+# Identity a supervisor hands to the ONE process it started, which no child of that process owns.
+# HERMES_LAUNCHD_LABEL is the stderr-timestamp wrapper's re-export of its launchd job label for the
+# gateway it starts (#120087); HERMES_GATEWAY_EXTERNAL_SUPERVISOR is stamped into the gateway's own
+# environ by ``gateway run --external-supervisor``. Inherited, a gateway an agent starts from its
+# terminal answers ``launchd``/supervised and takes the exit-75 restart route no supervisor answers.
+# NOTIFY_SOCKET/WATCHDOG_* name the systemd unit's main process (sd_notify's unset_environment).
+# Kept on purpose: XPC_SERVICE_NAME (launchd's own per-process stamp, "0" below the wrapper, which
+# ``hermes update`` compares to tell it runs inside a job), INVOCATION_ID/JOURNAL_STREAM (systemd
+# sets them for every process of the unit, and the gateway-child dispatch reads them there), and the
+# launch markers HERMES_SUPERVISED_CHILD / HERMES_S6_SUPERVISED_CHILD (profile pinning, s6 redirect).
+_SUPERVISED_PROCESS_IDENTITY_VARS = (
+    "HERMES_LAUNCHD_LABEL", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "NOTIFY_SOCKET", "WATCHDOG_USEC", "WATCHDOG_PID",
+)
+# The supervisor markers are also profile pins: a CLI under them skips the sticky active_profile
+# (``hermes_cli.main._under_gateway_supervisor``, #74872), and HERMES_GATEWAY_EXTERNAL_SUPERVISOR is an
+# --external-supervisor gateway's ONLY one. A child that loses a marker keeps the pin under a name the
+# restart-route and launch-identity probes never read, so it stays on the gateway's profile without
+# claiming the supervisor.
+GATEWAY_PROFILE_PIN_ENV = "HERMES_GATEWAY_PROFILE_PIN"
+
+
+def carry_gateway_profile_pin(env: dict) -> dict:
+    """Mark *env* with :data:`GATEWAY_PROFILE_PIN_ENV` while it still holds a pinning supervisor marker."""
+    if env.get("HERMES_SUPERVISED_CHILD") or str(
+            env.get("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        env[GATEWAY_PROFILE_PIN_ENV] = "1"
+    return env
+
+
+def strip_supervised_process_identity(env: dict) -> dict:
+    """Drop :data:`_SUPERVISED_PROCESS_IDENTITY_VARS` from a child env, in place; returns *env*.
+    The profile pin they carried survives (:func:`carry_gateway_profile_pin`)."""
+    carry_gateway_profile_pin(env)
+    for name in _SUPERVISED_PROCESS_IDENTITY_VARS:
+        env.pop(name, None)
+    return env
+
+
+# ``<KEY>_2``, ``<KEY>_3`` ...: the rotation-pool siblings of a declared key.
+_NUMBERED_SIBLING_RE = re.compile(r"_\d+$")
+
 
 def _is_hermes_internal_secret(key: str) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static
     blocklist cannot enumerate: ``AUXILIARY_<TASK>_API_KEY``/``_BASE_URL`` (per-task
-    side-LLM credentials) and ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay
-    auth; non-secret routing hints stay visible). Stripped on every spawn path
-    regardless of env_passthrough registration or ``inherit_credentials``."""
+    side-LLM credentials), the ``.env`` names config writers store model / delegation /
+    custom-endpoint keys under (``HERMES_MODEL_API_KEY``, ``HERMES_DELEGATION_API_KEY``,
+    ``HERMES_CUSTOM_<ID>_API_KEY``, ``HERMES_PROVIDER_<NAME>_API_KEY``;
+    ``hermes_cli.config_secret_refs``) and
+    ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay auth; non-secret routing hints stay
+    visible). Stripped on every spawn path regardless of env_passthrough registration or
+    ``inherit_credentials``. Also the YAML bridge's ``HERMES_BRIDGED_*`` ownership markers
+    (``gateway.platforms._shared``): a child that is not the launch profile's own restart has
+    no use for them, and ``served_profile_child_env`` puts back the ones whose value the child
+    kept."""
     upper = key.upper()
+    if upper.startswith(BRIDGED_ENV_MARKER_PREFIX):
+        return True
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
         return True
+    if upper in {"HERMES_MODEL_API_KEY", "HERMES_DELEGATION_API_KEY"} or (
+            upper.startswith(("HERMES_CUSTOM_", "HERMES_PROVIDER_")) and upper.endswith("_API_KEY")):
+        return True
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
+
+
+# A field naming the env var a credential is read from: ``key_env``, ``api_key_env``, ``secret_env``
+# (``hooks.outbound[]``), ``access_token_env`` / ``service_account_token_env`` (secret sources).
+_CONFIG_KEY_ENV_FIELD_RE = re.compile(r"(?:^|_)(?:key|token|secret|password)_env$", re.IGNORECASE)
+
+
+def _config_declared_key_envs(node: Any) -> set:
+    """Every env name a credential-pointer field (:data:`_CONFIG_KEY_ENV_FIELD_RE`) anywhere in
+    *node* points at. The readers (``model``, ``custom_providers[]``, ``providers.*``,
+    ``auxiliary.<task>``, ``fallback_providers[]``, ``image_gen.*``, ``hooks.outbound[]``, the
+    secret sources) share that field convention, so the walk keys on the field shape rather than
+    enumerating sections a new reader would be missing from."""
+    if isinstance(node, list):
+        return set().union(*(_config_declared_key_envs(item) for item in node))
+    if not isinstance(node, dict):
+        return set()
+    names = {str(v).strip() for k, v in node.items()
+             if isinstance(v, str) and _CONFIG_KEY_ENV_FIELD_RE.search(str(k))}
+    names.discard("")
+    return names.union(*(_config_declared_key_envs(value) for value in node.values()))
+
+
+# A field holding a credential value: ``key``, ``*_key`` (``api_key``, Feishu's ``encrypt_key``,
+# api_server's ``extra.key``), ``token``, ``*_token``, ``secret``, ``*_secret``, ``password``,
+# ``*_password``. A non-credential ``*_key`` holding a ``${VAR}`` is withheld too: safe side, and a
+# server that needs the name declares it in its own ``env:``.
+_CONFIG_CREDENTIAL_FIELD_RE = re.compile(r"(?:^|_)(?:key|token|secret|password)$", re.IGNORECASE)
+
+
+def _config_credential_env_refs(node: Any) -> set:
+    """Every env name a credential field (:data:`_CONFIG_CREDENTIAL_FIELD_RE`) anywhere in the RAW
+    *node* references as ``${VAR}`` / ``${env:VAR}``, whole-value or embedded
+    (``api_key: "prefix-${VAR}"``), parsed exactly as the config loader expands them.
+    Must be the unexpanded config: the merged one already holds the value, not the name. The
+    top-level ``mcp_servers`` block is skipped: its ``env:`` refs are what a server is meant to get."""
+    from hermes_cli.config import _ENV_REF_RE, _env_ref_var_name
+
+    def ref_name(value: str) -> set:
+        return {name for ref in _ENV_REF_RE.finditer(value) if (name := _env_ref_var_name(ref.group(1)))}
+
+    def walk(item: Any) -> set:
+        if isinstance(item, list):
+            return set().union(*(walk(v) for v in item))
+        if not isinstance(item, dict):
+            return set()
+        names = set()
+        for key, value in item.items():
+            if isinstance(value, str) and _CONFIG_CREDENTIAL_FIELD_RE.search(str(key)):
+                names |= ref_name(value)
+            else:
+                names |= walk(value)
+        return names
+
+    if not isinstance(node, dict):
+        return set()
+    names = walk({k: v for k, v in node.items() if k != "mcp_servers"})
+    # ``model.api`` is read as the main model's key (runtime_provider_backends); elsewhere ``api``
+    # is a base-URL alias, so only this one site counts.
+    model = node.get("model")
+    if isinstance(model, dict) and isinstance(model.get("api"), str):
+        names |= ref_name(model["api"])
+    return names
+
+
+def _raw_config_behind_effective() -> Any:
+    """The raw (unexpanded) config.yaml the effective config was expanded from. While the file
+    fails to parse, the loader keeps serving its last-known-good, whose credentials stay in use;
+    that is the file as of the last successful load, which the loader backs up as the newest
+    ``good`` copy (``config_backups.backup_config``), so its refs come from there, not from ``{}``."""
+    from hermes_cli.config import FailedConfigRead, get_config_path, read_raw_config_readonly
+    from hermes_cli.config_backups import load_newest_good_backup
+
+    raw = read_raw_config_readonly()
+    if not isinstance(raw, FailedConfigRead):
+        return raw
+    try:
+        return load_newest_good_backup(get_config_path()) or {}
+    except OSError:  # an unreadable backups dir must not stop the stdio server from starting
+        return {}
+
+
+def hermes_consumed_credentials(names: Iterable[str]) -> frozenset:
+    """The subset of *names* the ACTIVE profile itself consumes as a credential, for env that is
+    forwarded implicitly (no skill, operator or server declared the name). Derived from the
+    consumers, not listed: the blocklist and dynamic internal secrets; the tokens a messaging
+    adapter connects with (``profile_channels.credential_env_keys``); the numbered siblings
+    ``<KEY>_2``.. and the persisted ``env:VAR`` rows the credential pool rotates through
+    (``credential_pool._env_key_var_candidates``); the names the profile's config.yaml points a
+    credential at (``key_env``, ``secret_env``, ..., :func:`_config_declared_key_envs`) or that a
+    credential field of it or of the managed-scope config references as ``${VAR}``
+    (:func:`_config_credential_env_refs`); and a
+    ``<NAME>_<PROFILE>`` source name that hydration also applies as ``<NAME>``
+    (``secret_sources.registry._profile_alias_target``). Resolved per call: pool rows, config,
+    plugin adapters and the profile differ per served profile."""
+    from agent.secret_sources.registry import _active_profile_name, _profile_alias_target
+    from hermes_cli.auth import read_credential_pool
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.managed_scope import load_managed_config
+    from hermes_cli.profile_channels import credential_env_keys
+    from hermes_constants import get_hermes_home
+
+    adapter_keys = credential_env_keys()
+    registered = _registered_adapter_secret_env()
+    pool_rows = {
+        str(entry.get("source"))[len("env:"):].strip()
+        for entries in read_credential_pool().values() if isinstance(entries, list)
+        for entry in entries if isinstance(entry, dict) and str(entry.get("source")).startswith("env:")}
+    # ``mcp_servers`` is skipped as in :func:`_config_credential_env_refs`: a server's own ``env:``
+    # entry named like a pointer (``api_key_env: VENDOR_TOKEN``) is not a Hermes credential.
+    effective = {k: v for k, v in load_config_readonly().items() if k != "mcp_servers"}
+    declared = (pool_rows | _config_declared_key_envs(effective)
+                | _config_credential_env_refs(_raw_config_behind_effective())
+                | _config_credential_env_refs(load_managed_config()))
+    profile = _active_profile_name(get_hermes_home())
+
+    def consumed(name: str) -> bool:
+        upper = name.upper()
+        return name in declared or _is_hermes_internal_secret(name) or any(
+            _is_provider_env_blocklisted(candidate, registered) or candidate in adapter_keys
+            for candidate in (upper, _NUMBERED_SIBLING_RE.sub("", upper)))
+
+    return frozenset(
+        name for name in names
+        if consumed(name) or consumed(_profile_alias_target(name, profile) or name))
 
 
 # Authorization gates: the env names platform adapters read to decide WHO may talk to the
@@ -316,7 +514,7 @@ def _static_gate_env_prefixes() -> frozenset:
         bundled, aliases = Platform._scan_bundled_plugin_platforms()
         names.update(bundled)
         names.update(aliases)
-    except Exception:  # noqa: BLE001 — a broken gateway import must not disable the gate strip
+    except Exception:
         pass
     return frozenset(str(n).upper().replace("-", "_") for n in names if n)
 
@@ -329,7 +527,7 @@ def _platform_gate_env_prefixes() -> frozenset:
     try:
         from gateway.platform_registry import platform_registry
         names.update(str(n).upper().replace("-", "_") for n in platform_registry.registered_names() if n)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return frozenset(names)
 
@@ -382,7 +580,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # _is_hermes_internal_secret, but _ID has no secret suffix, so it must be
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
-    "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
+    "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN", "HERMES_TUI_SIDECAR_URL", "HERMES_TUI_GATEWAY_URL",
     # Dashboard auth: the basic-auth password and session-signing secret, the OIDC client
     # secret and the drain bearer. They let a holder mint or forge dashboard sessions, and no
     # child (credentialed CLIs included) consumes them.
@@ -390,5 +588,6 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
-}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True)  # every declared adapter secret is Tier 1
+}) | _ADAPTER_SECRET_ENV | _left_core_env(secrets_only=True) | _secret_source_bootstrap_env()
+# ^ every declared adapter secret and every secret source's bootstrap token is Tier 1
 _ALWAYS_STRIP_FOLDED: frozenset[str] = frozenset(k.upper() for k in _ALWAYS_STRIP_KEYS)

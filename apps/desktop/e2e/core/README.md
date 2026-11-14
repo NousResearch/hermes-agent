@@ -30,6 +30,10 @@ A small, deterministic Electron suite that guards three issue classes end to end
     steer at each point of a tool turn, then reload and switch-back over the
     folded tool turns. `switch-back-race.spec.ts` runs both orders with a tool
     turn too (history folds it under its first row, #128809).
+    `behind-window-send.spec.ts`: two windows on one chat, window 2 deaf to
+    window 1's turn pings; window 2's send from behind goes through with no
+    "Chat out of date" refusal, the model's request carries window 1's turn,
+    and both windows converge under the oracle.
     `onboarding-first-chat.spec.ts` starts from a fresh home with no provider:
     the real onboarding (custom endpoint → the fake provider's URL), then the
     first chat, a second turn and a reload under the same oracle, plus
@@ -68,6 +72,9 @@ A small, deterministic Electron suite that guards three issue classes end to end
   enough profiles to condense the sidebar rail; the profile menu lists the
   ACTIVE gateway's default (checked, home glyph) on both sides of a switch
   (#106017, #131632).
+- **Transcript images** — `transcript-image-frame.spec.ts`: a portrait image
+  reply, reloaded so it mounts cold in its reserved 4:3 frame, scales into the
+  frame instead of painting over the text below it (#154409).
 - **Packaged build** — `packaged-smoke.spec.ts`: asarUnpack contract of the
   `electron-builder --dir` output (#121097) and the packaged binary booting to
   a first chat (≤60 s to interactive, main-process log tail on failure). It
@@ -90,11 +97,11 @@ by the turn's own marker), no visual baselines, `retries: 0`, one worker,
 sandboxed `HOME`/`HERMES_HOME`/user-data per test, all `HERMES_*` and
 credential env stripped from the spawned app.
 
-Run locally (Linux, after `npm run build` in `apps/desktop`):
+Run locally (Linux, after `pnpm run build` in `apps/desktop`):
 
 ```sh
 cd apps/desktop
-xvfb-run -a npx playwright test -c e2e/core/playwright.config.ts
+xvfb-run -a pnpm exec playwright test -c e2e/core/playwright.config.ts
 ```
 
 `HERMES_E2E_CORE_ROOT` picks the sandbox parent dir (default: OS tmpdir);

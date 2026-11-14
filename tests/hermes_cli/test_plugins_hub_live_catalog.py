@@ -48,7 +48,7 @@ def test_failed_live_fetch_is_remembered_until_the_failure_ttl(monkeypatch, tmp_
     clock = {"now": 1_000_000.0}
     monkeypatch.setattr(pc.time, "time", lambda: clock["now"])
     unreachable = _UnreachableCatalog()
-    monkeypatch.setattr("httpx.get", unreachable)
+    monkeypatch.setattr("httpx.stream", unreachable)
 
     assert pc.fetch_live_catalog() is None
     assert pc.fetch_live_catalog() is None
@@ -78,22 +78,22 @@ def test_hub_rebuild_and_plugins_list_resolve_the_kill_list_once(monkeypatch, tm
     """Both listing surfaces cost at most ONE network attempt with the catalog unreachable — not
     one per installed plugin — and still report an in-tree removal for every affected row."""
     unreachable = _UnreachableCatalog()
-    monkeypatch.setattr("httpx.get", unreachable)
+    monkeypatch.setattr("httpx.stream", unreachable)
     monkeypatch.setattr(pc, "get_catalog_dir", lambda: tmp_path)
     (tmp_path / "removed.yaml").write_text("removed:\n- name: demo\n  reason: exfiltrated env vars\n")
 
     monkeypatch.setattr(web_server, "_get_dashboard_plugins", lambda force_rescan=False: [])
-    monkeypatch.setattr(_web_server_memory, "_discover_memory_provider_statuses", lambda: [])
+    monkeypatch.setattr(_web_server_memory, "_discover_memory_provider_statuses", list)
     monkeypatch.setattr(_cfg_mod, "get_hermes_home", lambda: Path("/tmp/hermes-home"))
     monkeypatch.setattr(_cfg_mod, "load_config", lambda: {"dashboard": {"hidden_plugins": []}})
     monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: list(_PLUGIN_ROWS))
     monkeypatch.setattr(plugins_cmd, "_get_current_context_engine", lambda: "compressor")
     monkeypatch.setattr(plugins_cmd, "_get_current_memory_provider", lambda: "")
-    monkeypatch.setattr(plugins_cmd, "_discover_context_engines", lambda: [])
+    monkeypatch.setattr(plugins_cmd, "_discover_context_engines", list)
     monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"demo"})
     monkeypatch.setattr(plugins_cmd, "_read_manifest", lambda _path: {"provides_tools": []})
-    monkeypatch.setattr(plugins_cmd, "_read_install_metadata", lambda: {})
+    monkeypatch.setattr(plugins_cmd, "_read_install_metadata", dict)
     monkeypatch.setattr(tools_registry.registry, "get_entry", lambda _name: SimpleNamespace(check_fn=None))
 
     payload = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
@@ -113,7 +113,7 @@ def test_dropped_cache_no_longer_outvotes_the_in_tree_catalog(monkeypatch):
     is fresh, even with the catalog host dead. After the update drops it, the same dead host
     yields ``None`` — callers fall back to the in-tree catalog the update just installed —
     instead of resurrecting the pre-update snapshot for the rest of the TTL."""
-    monkeypatch.setattr("httpx.get", _UnreachableCatalog())
+    monkeypatch.setattr("httpx.stream", _UnreachableCatalog())
     cache = pc._live_cache_path()
     cache.parent.mkdir(parents=True)
     cache.write_text(json.dumps({"entries": [], "removed": []}))

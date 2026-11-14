@@ -12,8 +12,8 @@ import pytest
 
 from pm.plugin_inputs import Candidates, Selection, StagedUpdate
 
-from tests.pm.test_worker import client, isolated_python, _current_environment  # noqa: F401
-from tests.pm._fixtures import worker_toolchain
+from tests.pm.test_worker import client, isolated_python, _current_environment
+from tests.pm._fixtures import installing_member, windows_account, worker_toolchain
 
 
 def test_worker_publishes_selection_even_when_dependencies_are_current(client, tmp_path, monkeypatch):
@@ -95,7 +95,7 @@ def test_staged_plugin_publication_uses_installed_identity_and_local_dependencie
     if active:
         python = selected / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         probe = subprocess.run([str(python), "-I", "-c", "import publication_dep; print(publication_dep.__version__)"],
-                               text=True, capture_output=True, timeout=30)
+                               text=True, capture_output=True, timeout=30, check=False)
         assert probe.returncode == 0, probe.stderr
         assert probe.stdout.strip() == "1.0"
         facts = (install_state_dir(project) / "facts.json").read_bytes()
@@ -215,7 +215,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
     before_tree = tree_digest(target)
     if kind == "selection":
         if rebuild:
-            (target / "pyproject.toml").write_text(core.replace("death-proof", "example"))
+            installing_member(target, "example", tmp_path / "wheels")
         arguments = {"plugins": Selection({"home": str(home), "enabled": ["example"], "disabled": []})}
         payload = config
     else:
@@ -223,7 +223,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
         shutil.copytree(target, staged)
         (staged / "code.py").write_text("new")
         if rebuild:
-            (staged / "pyproject.toml").write_text(core.replace("death-proof", "example"))
+            installing_member(staged, "example", tmp_path / "wheels")
         arguments = {"plugins": StagedUpdate({
             "target": str(target), "staged": str(staged), "target_digest": before_tree,
             "old_metadata": {"example": {"revision": "old"}}, "new_metadata": {"example": {"revision": "new"}}})}
@@ -256,7 +256,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
                f"project = Path({str(project)!r})\n"
                "activate_dependencies(project)\nactivate_dependencies(project)\n")
     recovery = subprocess.run([sys.executable, "-I", "-S", "-c", program], capture_output=True, text=True,
-                              env=dict(os.environ), timeout=30)
+                              env=dict(os.environ), timeout=30, check=False)
     assert recovery.returncode == 0, recovery.stderr
     committed = phase == "commit"
     assert (selected_venv(project) != before_env) is (committed and rebuild)
@@ -354,6 +354,52 @@ def test_staged_publication_preserves_a_concurrent_sibling_install_record(
         "sibling": {"revision": "sibling-new"},
     }
     assert (target / "code.py").read_text() == "new code"
+
+
+def _icacls(path: Path) -> list[str]:
+    out = subprocess.run(["icacls", str(path)], capture_output=True, text=True, encoding="oem",
+                         errors="replace", check=True).stdout
+    return [line.replace(str(path), "").strip() for line in out.splitlines() if ":(" in line]
+
+
+@pytest.mark.platforms("windows")
+def test_published_plugin_takes_the_plugins_dir_permissions_not_the_staging_folders(
+    client, tmp_path, monkeypatch, isolated_python,  # health: allow F811 -- pytest injects the imported client and isolated_python fixtures by parameter name
+):
+    """`plugins install` / `update` stage in tempfile.TemporaryDirectory, which Python >= 3.13 gives a
+    private, protected DACL on Windows (SYSTEM, Administrators, OWNER RIGHTS), and os.replace keeps it.
+    The published plugin then lacks every entry of plugins/: the user's own, the sandbox groups'. A
+    gateway run as a Windows service is elevated, so the __pycache__ it writes there is owned by
+    Administrators and the same user's non-elevated hermes can neither read nor delete it."""
+    import tempfile
+
+    from pm.store import tree_digest
+
+    _current_environment(tmp_path, monkeypatch, [])
+    home = tmp_path / "home"
+    plugins = home / "plugins"
+    plugins.mkdir(parents=True)
+    (home / "config.yaml").write_text("plugins:\n  enabled: []\n", encoding="utf-8")
+    # An entry only plugins/ carries, so inheritance is visible whatever tmp_path's own DACL is.
+    subprocess.run(["icacls", str(plugins), "/grant", "*S-1-5-32-545:(OI)(CI)(RX)"], check=True, capture_output=True)
+    worker_toolchain(client, monkeypatch, isolated_python, "")
+    target = plugins / "example"
+    with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins) as tmp:
+        staged = Path(tmp) / "plugin"
+        (staged / "pkg").mkdir(parents=True)
+        (staged / "plugin.yaml").write_text("name: example\n", encoding="utf-8")
+        (staged / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        client.sync_venv(explicit=True, plugins=StagedUpdate({
+            "target": str(target), "staged": str(staged), "target_digest": None,
+            "old_metadata": {}, "new_metadata": {"example": {"revision": "new"}},
+        }))
+
+    assert (target / "pkg" / "mod.py").read_text(encoding="utf-8-sig") == "x = 1\n"
+    users = windows_account("S-1-5-32-545")
+    for path in (target, target / "pkg", target / "pkg" / "mod.py"):
+        entries = _icacls(path)
+        assert any(line.startswith(f"{users}:(I)") for line in entries), (path, entries)
+        assert all("(I)" in line for line in entries), (path, entries)
 
 
 def test_inactive_portable_publication_does_not_inspect_unrelated_dependency_manifests(client, tmp_path, monkeypatch):
